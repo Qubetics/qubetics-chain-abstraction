@@ -7,33 +7,42 @@ use std::{
 use anyhow::Result;
 use futures::StreamExt;
 use libp2p::{
-    gossipsub::{self, Message, TopicHash}, identity::Keypair, mdns::{self}, noise, request_response::{cbor::Behaviour as CborReqRespBehaviour, Event as ReqRespEvent, Message as ReqRespMessage}, swarm::{ConnectionError, NetworkBehaviour, SwarmEvent}, tcp, yamux, Multiaddr, PeerId, Swarm, Transport
+    kad::{self, store::MemoryStore, QueryResult, BootstrapOk, GetClosestPeersOk, Event as KademliaEvent},
+    gossipsub::{self, Message, TopicHash}, 
+    identity::Keypair, mdns::{self}, 
+    noise, request_response::{cbor::Behaviour as CborReqRespBehaviour, 
+    Event as ReqRespEvent, Message as ReqRespMessage}, 
+    swarm::{ConnectionError, NetworkBehaviour, SwarmEvent}, 
+    tcp, yamux, Multiaddr, PeerId, Swarm, Transport
 };
 use tokio::sync::{mpsc, RwLock,};
 use tokio::{io, io::AsyncBufReadExt, select, io::Error};
 use tonic::transport::Server;
 use tracing::{debug, info, warn};
 
-use crate::{dkg::DKGStatus, protos::intent::intent_service_server::IntentServiceServer, types::{dkg::MSG_TOPIC_DKG, p2p::SerializablePeerId, rpc::{build_mpc_behaviour, MPCCodec, MPCCodecRequest, MPCCodecResponse, MPCProtocol, RPCRequest, RPCResponse}, GossipsubMessage, ChannelMessage, PeerInfo}};
+use crate::{dkg::DKGStatus, node_management, protos::intent::intent_service_server::IntentServiceServer, types::{dkg::MSG_TOPIC_DKG, p2p::SerializablePeerId, rpc::{build_mpc_behaviour, MPCCodec, MPCCodecRequest, MPCCodecResponse, MPCProtocol, RPCRequest, RPCResponse}, ChannelMessage, GossipsubMessage, PeerInfo}};
 use crate::dkg::DKGNode;
 use crate::signing::SigningNode;
 use crate::consensus::ConsensusNode;
 use crate::commands::CommandProcessor;
 use crate::protos::intent::{IntentRequest, intent_service_server::IntentService};
+use crate::node_management::NodeMembership;
 
 #[derive(NetworkBehaviour)]
 #[behaviour(out_event = "NetworkEvent")]
 pub struct MPCBehaviour {
     pub gossipsub: gossipsub::Behaviour,
-    mdns: mdns::tokio::Behaviour,
-    pub request_response: CborReqRespBehaviour<MPCCodecRequest, MPCCodecResponse>
+    // mdns: mdns::tokio::Behaviour,
+    pub request_response: CborReqRespBehaviour<MPCCodecRequest, MPCCodecResponse>,
+    pub kademlia: kad::Behaviour<MemoryStore>,
 }
 
 #[derive(Debug)]
 pub enum NetworkEvent {
     Gossipsub(gossipsub::Event),
-    Mdns(mdns::Event),
+    // Mdns(mdns::Event),
     RequestResponse(ReqRespEvent<RPCRequest, RPCResponse>),
+    Kademlia(KademliaEvent),
 }
 
 impl From<gossipsub::Event> for NetworkEvent {
@@ -42,9 +51,15 @@ impl From<gossipsub::Event> for NetworkEvent {
     }
 }
 
-impl From<mdns::Event> for NetworkEvent {
-    fn from(event: mdns::Event) -> Self {
-        NetworkEvent::Mdns(event)
+// impl From<mdns::Event> for NetworkEvent {
+//     fn from(event: mdns::Event) -> Self {
+//         NetworkEvent::Mdns(event)
+//     }
+// }
+
+impl From<KademliaEvent> for NetworkEvent {
+    fn from(event: KademliaEvent) -> Self {
+        NetworkEvent::Kademlia(event)
     }
 }
 
@@ -65,10 +80,11 @@ pub struct NetworkLayer {
     signing_node: Option<SigningNode>,
     consensus_node: Option<ConsensusNode>,
     command_processor: Option<CommandProcessor>,
+    node_manager: Box<dyn NodeMembership>,
 }
 
 impl NetworkLayer {
-    pub async fn new() -> Result<Self> {
+    pub async fn new(node_manager: Box<dyn NodeMembership>) -> Result<Self> {
         let local_key = Keypair::generate_ed25519();
         let local_peer_id = PeerId::from(local_key.public());
         let (tx, rx) = mpsc::channel(100);
@@ -84,6 +100,7 @@ impl NetworkLayer {
             signing_node: None,
             consensus_node: None,
             command_processor: None,
+            node_manager,
         })
     }
 
@@ -145,21 +162,50 @@ impl NetworkLayer {
                 gossipsub_config,
             )?;
 
-            let mdns_config = mdns::Config {
-                query_interval: Duration::from_secs(10),
-                ttl: Duration::from_secs(10),
-                ..Default::default()
-            };
+            // let mdns_config = mdns::Config {
+            //     query_interval: Duration::from_secs(10),
+            //     ttl: Duration::from_secs(10),
+            //     ..Default::default()
+            // };
 
-            let mdns =
-                mdns::tokio::Behaviour::new(mdns_config, key.public().to_peer_id())?;
+            // let mdns =
+            //     mdns::tokio::Behaviour::new(mdns_config, key.public().to_peer_id())?;
+
+
+
+            // Initialize Kademlia
+            let store = MemoryStore::new(key.public().to_peer_id());
+            let mut kademlia = kad::Behaviour::new(key.public().to_peer_id(),store);
+
+            // Add bootstrap nodes
+            let bootstrap_nodes = vec![
+                "/dnsaddr/bootstrap-0.mainnet.libp2p.io/tcp/443/wss/p2p/QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN",
+                "/dnsaddr/bootstrap-1.mainnet.libp2p.io/tcp/443/wss/p2p/QmQCU2EcMqAqQPR2i9bChDtGNJchTbq5TbXJJ16u19uLTa",
+                "/dnsaddr/bootstrap-2.mainnet.libp2p.io/tcp/443/wss/p2p/QmbLHAnMoJPWSCR5Zhtx6BHJX9KiKNN6tpvbUcqanj75Nb",
+                "/dnsaddr/bootstrap-3.mainnet.libp2p.io/tcp/443/wss/p2p/QmcZf59bWwK5XFi76CZX8cbJ4BhTzzA3gU1ZjYZcYW3dwt",
+            ];
+
+            for addr in bootstrap_nodes {
+                if let Ok(addr) = addr.parse::<Multiaddr>() {
+                    if let Some(peer_id) = addr.iter().find_map(|proto| {
+                        if let libp2p::multiaddr::Protocol::P2p(multihash) = proto {
+                            PeerId::from_multihash(multihash.clone().into()).ok()
+                        } else {
+                            None
+                        }
+                    }) {
+                        kademlia.add_address(&peer_id, addr);
+                    }
+                }
+            }
 
             let request_response = build_mpc_behaviour();
 
             Ok(MPCBehaviour {
                 gossipsub,
-                mdns,
+                // mdns,
                 request_response,
+                kademlia,
             })
         })?
         .build();
@@ -243,6 +289,7 @@ impl NetworkLayer {
                                 // handle dkg start
                                 match self.dkg_node.as_mut() {
                                     Some(dkg) => {
+                                        info!("------------Starting DKG------------");
                                         dkg.start_dkg().await?;
                                         RPCResponse::DKGStarted {peer_id: SerializablePeerId(peer)}
                                     }
@@ -314,25 +361,66 @@ impl NetworkLayer {
             SwarmEvent::Behaviour(NetworkEvent::RequestResponse(ReqRespEvent::ResponseSent { peer, .. })) => {
                 info!("Response sent to peer {}", peer);
             }
-            SwarmEvent::Behaviour(NetworkEvent::Mdns(mdns::Event::Discovered(peers))) => {
-                for (peer_id, addr) in peers {
-                    info!("Discovered peer: {peer_id} at {addr}");
-                    self.peers.write().await.insert(peer_id, PeerInfo {
-                        addresses: vec![addr],
-                        connected: true,
-                    });
+            // SwarmEvent::Behaviour(NetworkEvent::Mdns(mdns::Event::Discovered(peers))) => {
+            //     for (peer_id, addr) in peers {
+            //         info!("Discovered peer: {peer_id} at {addr}");
+            //         self.peers.write().await.insert(peer_id, PeerInfo {
+            //             addresses: vec![addr],
+            //             connected: true,
+            //         });
+            //         self.node_manager.add_node(peer_id).map_err(|e| anyhow::anyhow!(e))?;
+            //         info!("Added node: {peer_id}");
+            //         // Restart DKG when new node joins
+            //         if let Some(dkg_node) = &mut self.dkg_node {
+            //             dkg_node.start_dkg().await?;
+            //         }
+            //     }
+            //     println!("[NEW] Peers: {}", self.peers.read().await.values().filter(|peer| peer.connected).collect::<Vec<_>>().len());
+            // }
+            
+            // SwarmEvent::Behaviour(NetworkEvent::Mdns(mdns::Event::Expired(peers))) => {
+            //     info!("[EXP]");
+            //     for (peer_id, _) in peers {
+            //         if let Some(peer) = self.peers.write().await.get_mut(&peer_id) {
+            //             peer.connected = false;
+            //         }
+            //         self.node_manager.remove_node(peer_id).map_err(|e| anyhow::anyhow!(e))?;
+            //     }
+            //     println!("[EXP] Peers: {}", self.peers.read().await.values().filter(|peer| peer.connected).collect::<Vec<_>>().len());
+            //     // Restart DKG when a node leaves or expired from the network
+            //     if let Some(dkg_node) = &mut self.dkg_node {
+            //         dkg_node.start_dkg().await?;
+            //     }
+            // }
+
+            SwarmEvent::Behaviour(NetworkEvent::Kademlia(event)) => {
+                match event {
+                    KademliaEvent::RoutingUpdated { peer, is_new_peer, addresses, bucket_range, old_peer } => {
+                        info!("-----------routing updated----------: Peer{:?}, is_new_peer{:?}, addresses{:?}, bucket_range{:?}, old_peer{:?}", peer, is_new_peer, addresses, bucket_range, old_peer);
+                                    }
+                    KademliaEvent::InboundRequest { request } => {
+                        info!("-----------InboundRequest----------: {:?}", request);
+                    },
+                    KademliaEvent::OutboundQueryProgressed { id, result, stats, step } => {
+                        info!("-----------OutboundQueryProgressed----------: {:?}, {:?}, {:?}, {:?}", id, result, stats, step);
+
+                    },
+                    KademliaEvent::UnroutablePeer { peer } => {
+                        info!("-----------UnroutablePeer----------: {:?}", peer);
+                    },
+                    KademliaEvent::RoutablePeer { peer, address } => {
+                        info!("-----------RoutablePeer----------: {:?}, {:?}", peer, address);
+                    },
+                    KademliaEvent::PendingRoutablePeer { peer, address } => {
+                        info!("-----------PendingRoutablePeer----------: {:?}, {:?}", peer, address);
+
+                    },
+                    KademliaEvent::ModeChanged { new_mode } => {
+                        info!("-----------ModeChanged----------: {:?}", new_mode);
+                    },
                 }
-                println!("[NEW] Peers: {}", self.peers.read().await.values().filter(|peer| peer.connected).collect::<Vec<_>>().len());
             }
-            SwarmEvent::Behaviour(NetworkEvent::Mdns(mdns::Event::Expired(peers))) => {
-                info!("[EXP]");
-                for (peer_id, _) in peers {
-                    if let Some(peer) = self.peers.write().await.get_mut(&peer_id) {
-                        peer.connected = false;
-                    }
-                }
-                println!("[EXP] Peers: {}", self.peers.read().await.values().filter(|peer| peer.connected).collect::<Vec<_>>().len());
-            }
+            
             // if the msg sent by a peer has event type of Gossipsub, this branch will be hit on the 
             // reciever(s)
             SwarmEvent::Behaviour(NetworkEvent::Gossipsub(gossipsub::Event::Message { // dkg.r.2.0

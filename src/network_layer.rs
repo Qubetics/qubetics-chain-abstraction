@@ -14,6 +14,8 @@ use tokio::{io, io::AsyncBufReadExt, select};
 use tracing_subscriber::EnvFilter;
 
 use crate::adkg_layer::{ADKGMessage, ADKGNode};
+use crate::dkg::{DKGNode, DKGStatus};
+use crate::node_management::NodeMembership;
 
 #[derive(NetworkBehaviour)]
 #[behaviour(out_event = "MyBehaviourEvent")]
@@ -136,6 +138,23 @@ pub async fn run(n: usize, t: usize, idx: u64) -> Result<(), Box<dyn Error>> {
                         peer_list.push(peer_id);
                         swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
                         println!("[NEW] Peers: {}", peer_list.len());
+                        
+                        // Add node to node manager and start DKG if needed
+                        if let Some(node_manager) = &mut adkg_node {
+                            if let Ok(()) = node_manager.add_node(peer_id) {
+                                let total = node_manager.get_total_nodes();
+                                let threshold = node_manager.get_threshold();
+                                
+                                // Update DKG node with new parameters
+                                if let Some(dkg_node) = &mut adkg_node {
+                                    if dkg_node.get_status() == DKGStatus::New {
+                                        if let Err(e) = dkg_node.start_dkg().await {
+                                            println!("Failed to start DKG process: {}", e);
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
                 SwarmEvent::Behaviour(MyBehaviourEvent::Mdns(mdns::Event::Expired(list))) => {

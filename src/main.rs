@@ -1,4 +1,3 @@
-
 #[allow(dead_code)]
 #[allow(unused_imports)]
 #[allow(non_snake_case)]
@@ -16,6 +15,7 @@ use mpc_node::{
     consensus::ConsensusNode,
     commands::CommandProcessor,
 };
+use mpc_node::node_management::{BasicNodeManager, DefaultThresholdCalculator, ThresholdCalculator, NodeMembership};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -56,11 +56,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
     .with(stderr_layer)
     .init();
 
+    // let threshold = 3;
+    // let total = 5;
+    let node_manager = Box::new(BasicNodeManager::new(Box::new(DefaultThresholdCalculator)));
+    let total = node_manager.get_total_nodes();
+    let threshold = node_manager.get_threshold();
 
-    let threshold = 3;
-    let total = 5;
-
-    let mut network = NetworkLayer::new().await?;
+    let mut network = NetworkLayer::new(node_manager).await?;
     
     let dkg_node = DKGNode::new(
         network.get_local_peer_id().to_string(),
