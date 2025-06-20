@@ -1,17 +1,19 @@
-use std::{any, usize};
-use std::collections::HashMap;
 use anyhow::Result;
 use bls12_381::{G1Affine, G1Projective, Scalar};
 use ethers::core::k256::ecdsa::Error;
 use ff::Field;
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::{any, usize};
+use tokio::sync::mpsc;
 use tokio::sync::RwLock;
-use tokio::sync::{mpsc};
 use tracing::info;
 
 use crate::types::dkg::MSG_TOPIC_DKG;
-use crate::types::{ChannelMessage, GossipsubMessage, KeyShare, SerializableG1Affine, SerializableScalar};
+use crate::types::{
+    ChannelMessage, GossipsubMessage, KeyShare, SerializableG1Affine, SerializableScalar,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DKGMessage {
@@ -30,7 +32,7 @@ pub enum DKGMessage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DKGStatus {
     New,
-    Error {kind: String},
+    Error { kind: String },
     Started,
     Completed,
 }
@@ -61,15 +63,17 @@ impl DKGNode {
             shares: RwLock::new(HashMap::new()),
             commitments: RwLock::new(HashMap::new()),
             validations: RwLock::new(HashMap::new()),
-            message_tx
+            message_tx,
         }
     }
 
     pub async fn broadcast(&self, topic: &str, data: &[u8]) -> Result<()> {
-        self.message_tx.send(ChannelMessage::Broadcast {
-            topic: topic.to_string(),
-            data: data.to_vec(),
-        }).await?;
+        self.message_tx
+            .send(ChannelMessage::Broadcast {
+                topic: topic.to_string(),
+                data: data.to_vec(),
+            })
+            .await?;
         Ok(())
     }
 
@@ -89,31 +93,43 @@ impl DKGNode {
     fn generate_polynomial(&self) -> Result<Vec<Scalar>> {
         let mut rng = OsRng;
         let mut coefficients = Vec::with_capacity(self.threshold + 1);
-        
+
         for _ in 0..=self.threshold {
             coefficients.push(Scalar::random(&mut rng));
         }
-        
+
         Ok(coefficients)
     }
 
+    pub fn update_node_params(&mut self, total_nodes: usize, threshold: usize) {
+        info!(
+            "Updating DKGNode params: total_nodes = {}, threshold = {}",
+            total_nodes, threshold
+        );
+        self.total_nodes = total_nodes;
+        self.threshold = threshold;
+    }
+
     fn generate_shares(&self, polynomial: &[Scalar]) -> Result<Vec<KeyShare>> {
+        info!("total_nodes.{:?} bytes", self.total_nodes);
+
         let mut shares = Vec::with_capacity(self.total_nodes);
-        
+
         for i in 1..=self.total_nodes {
             let x = Scalar::from(i as u64);
             let mut y = Scalar::zero();
-            
+
             for (j, coeff) in polynomial.iter().enumerate() {
                 y += *coeff * x.pow(&[j as u64, 0, 0, 0]);
             }
-            
+
             shares.push(KeyShare {
                 index: i,
                 value: SerializableScalar(y),
             });
         }
-        
+        info!("Generated shares len: {}", shares.len());
+
         Ok(shares)
     }
 
@@ -122,7 +138,7 @@ impl DKGNode {
             .iter()
             .map(|coeff| SerializableG1Affine(G1Affine::from(G1Projective::generator() * coeff)))
             .collect();
-            
+
         Ok(commitments)
     }
 
@@ -136,7 +152,7 @@ impl DKGNode {
             shares,
             commitments,
         };
-        
+
         let gossip_wrap = GossipsubMessage::DKG(dkg_msg);
 
         let msg_bytes = serde_json::to_vec(&gossip_wrap)?;
@@ -147,8 +163,13 @@ impl DKGNode {
 
     pub async fn handle_message(&mut self, msg: DKGMessage) -> Result<()> {
         match msg {
-            DKGMessage::ShareDistribution { from, shares, commitments } => {
-                self.handle_share_distribution(from, shares, commitments).await?;
+            DKGMessage::ShareDistribution {
+                from,
+                shares,
+                commitments,
+            } => {
+                self.handle_share_distribution(from, shares, commitments)
+                    .await?;
             }
             DKGMessage::ShareValidation { from, to, is_valid } => {
                 self.handle_share_validation(from, to, is_valid).await?;
@@ -170,8 +191,11 @@ impl DKGNode {
             let my_share = shares.into_iter().find(|s| s.index == id_parsed);
             if let Some(share) = my_share {
                 self.shares.write().await.insert(from.clone(), share);
-                self.commitments.write().await.insert(from.clone(), raw_commitments);
-                
+                self.commitments
+                    .write()
+                    .await
+                    .insert(from.clone(), raw_commitments);
+
                 let validation_msg = DKGMessage::ShareValidation {
                     from: self.id.clone(),
                     to: from,
@@ -185,7 +209,11 @@ impl DKGNode {
         Ok(())
     }
 
-    pub fn verify_share(&self, share: &SerializableScalar, commitments: &[SerializableG1Affine]) -> bool {
+    pub fn verify_share(
+        &self,
+        share: &SerializableScalar,
+        commitments: &[SerializableG1Affine],
+    ) -> bool {
         // Implement share verification logic using commitments
         true // Placeholder
     }
@@ -206,7 +234,7 @@ impl DKGNode {
             .entry(to)
             .or_insert_with(Vec::new)
             .push(is_valid);
-            
+
         self.check_completion().await?;
         Ok(())
     }
@@ -214,9 +242,9 @@ impl DKGNode {
     async fn check_completion(&self) -> Result<()> {
         let validations = self.validations.read().await;
         let shares = self.shares.read().await;
-        
-        if validations.values().all(|v| v.len() >= self.threshold) 
-            && shares.len() >= self.threshold {
+
+        if validations.values().all(|v| v.len() >= self.threshold) && shares.len() >= self.threshold
+        {
             self.generate_group_key().await?;
         }
         Ok(())
@@ -225,11 +253,11 @@ impl DKGNode {
     async fn generate_group_key(&self) -> Result<G1Projective> {
         let shares = self.shares.read().await;
         let mut group_key = G1Projective::identity();
-        
+
         for share in shares.values() {
             group_key += G1Projective::generator() * share.value.0;
         }
-        
+
         Ok(group_key)
     }
 }

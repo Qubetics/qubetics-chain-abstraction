@@ -7,7 +7,7 @@ use std::{
 use anyhow::Result;
 use futures::StreamExt;
 use libp2p::{
-    kad::{self, store::MemoryStore, QueryResult, BootstrapOk, GetClosestPeersOk, Event as KademliaEvent},
+    kad::{self, store::MemoryStore, QueryResult, BootstrapOk, GetClosestPeersOk, Event as KademliaEvent, BucketInserts},
     gossipsub::{self, Message, TopicHash}, 
     identity::Keypair, mdns::{self}, 
     noise, request_response::{cbor::Behaviour as CborReqRespBehaviour, 
@@ -175,8 +175,18 @@ impl NetworkLayer {
 
             // Initialize Kademlia
             let store = MemoryStore::new(key.public().to_peer_id());
-            let mut kademlia = kad::Behaviour::new(key.public().to_peer_id(),store);
+            let mut kademlia_config = kad::Config::default();
+            kademlia_config.set_kbucket_inserts(BucketInserts::OnConnected);
+            kademlia_config.set_query_timeout(Duration::from_secs(60));
+            kademlia_config.set_replication_factor(
+                std::num::NonZeroUsize::new(3).expect("3 is non-zero")
+            );
 
+             let mut kademlia = kad::Behaviour::with_config(
+                key.public().to_peer_id(),
+                store,
+                kademlia_config
+            );
             // Add bootstrap nodes
             let bootstrap_nodes = vec![
                 "/dnsaddr/bootstrap-0.mainnet.libp2p.io/tcp/443/wss/p2p/QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN",
@@ -210,6 +220,16 @@ impl NetworkLayer {
         })?
         .build();
 
+    println!("Starting Kademlia bootstrap...");
+        
+        // Bootstrap with the configured nodes
+        if let Err(e) = swarm.behaviour_mut().kademlia.bootstrap() {
+            warn!("Failed to start bootstrap: {:?}", e);
+        }
+                let mut bootstrap_timer = tokio::time::interval(Duration::from_secs(300)); // 5 minutes
+        let mut discovery_timer = tokio::time::interval(Duration::from_secs(60));  // 1 minute
+
+
         swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
         swarm.listen_on("/ip4/0.0.0.0/udp/0/quic-v1".parse()?)?;
 
@@ -239,6 +259,23 @@ impl NetworkLayer {
                         self.handle_channel_message(msg, &mut swarm).await?;
                     }
                 }
+                 _ = bootstrap_timer.tick() => {
+                    // Periodic bootstrap to discover new peers
+                    println!("Performing periodic bootstrap...");
+                    if let Err(e) = swarm.behaviour_mut().kademlia.bootstrap() {
+                        warn!("Periodic bootstrap failed: {:?}", e);
+                    }
+                }
+
+                _ = discovery_timer.tick() => {
+                    // Periodic peer discovery
+                    info!("Performing peer discovery...");
+                    swarm.behaviour_mut().kademlia.get_closest_peers(self.local_peer_id);
+                    
+                    // Also search for random peers to populate routing table
+                    let random_peer = PeerId::random();
+                    swarm.behaviour_mut().kademlia.get_closest_peers(random_peer);
+                }
             };
         }
     }
@@ -254,7 +291,7 @@ impl NetworkLayer {
         Ok(())
     }
 
-    async fn handle_swarm_event(&mut self, event: SwarmEvent<NetworkEvent>, swarm: &mut libp2p::Swarm<MPCBehaviour>) -> Result<()> {
+     async fn handle_swarm_event(&mut self, event: SwarmEvent<NetworkEvent>, swarm: &mut libp2p::Swarm<MPCBehaviour>) -> Result<()> {
         info!("[SWARM EVENT] {:?}", event);
         match event {
             // if the event is of type RequestResponse
@@ -266,6 +303,28 @@ impl NetworkLayer {
             // the other peer(s) will recieve the it as ReqRespMessage::Request under the event NetworkEvent::RequestResponse
             // the reciever of the init will be one or many depending on how it was send
             // if sent by calling on peer_id, the reciever will be one; if called on swarm, it'll be a broadcast
+
+              // Handle connection establishment - this is crucial for Kademlia routing updates
+            SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } => {
+                info!("🔗 Connection established with peer: {:?}", peer_id);
+                
+                // Get the remote address and add it to Kademlia
+                let remote_addr = endpoint.get_remote_address();
+                info!("Remote address: {:?}", remote_addr);
+                
+                // Add the peer's address to Kademlia - this should trigger RoutingUpdated
+                swarm.behaviour_mut().kademlia.add_address(&peer_id, remote_addr.clone());
+                
+                // // Log current routing table size
+                // let kbucket_count: usize = swarm.behaviour().kademlia.kbuckets()
+                //     .map(|bucket| bucket.num_entries())
+                //     .sum();
+                // info!("Kademlia routing table now has {} entries", kbucket_count);
+                
+                // Try to discover more peers through this connection
+                swarm.behaviour_mut().kademlia.get_closest_peers(peer_id);
+            }
+
             SwarmEvent::Behaviour(NetworkEvent::RequestResponse(ReqRespEvent::Message { peer, message, .. })) => { // peer.r
                 info!("RPC request: peer: {} response: {:?}",peer, message);
                 match message {
@@ -397,7 +456,25 @@ impl NetworkLayer {
                 match event {
                     KademliaEvent::RoutingUpdated { peer, is_new_peer, addresses, bucket_range, old_peer } => {
                         info!("-----------routing updated----------: Peer{:?}, is_new_peer{:?}, addresses{:?}, bucket_range{:?}, old_peer{:?}", peer, is_new_peer, addresses, bucket_range, old_peer);
-                                    }
+
+                   if is_new_peer {
+                        info!("New peer added: {:?}", peer);
+                         self.node_manager.add_node(peer).map_err(|e| anyhow::anyhow!(e))?;
+                        let total = self.node_manager.get_total_nodes();
+                        let threshold = self.node_manager.get_threshold();
+                        info!("node length: {:?}", self.node_manager.get_total_nodes());
+
+
+                        info!("Updated node count: {}, threshold: {}", total, threshold);
+
+                        if total >= 4 {
+                            if let Some(dkg_node) = &mut self.dkg_node {
+                                dkg_node.update_node_params(total, threshold); // Update total_nodes in the DKGNode
+                                dkg_node.start_dkg().await?;
+                            }
+                        }
+                    }   
+                    }
                     KademliaEvent::InboundRequest { request } => {
                         info!("-----------InboundRequest----------: {:?}", request);
                     },

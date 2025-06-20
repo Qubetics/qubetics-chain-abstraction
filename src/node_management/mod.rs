@@ -1,27 +1,25 @@
-use std::collections::HashSet;
 use libp2p::PeerId;
+use std::collections::HashSet;
 
 /// Trait for managing node membership in the network
 pub trait NodeMembership {
-
     /// Add a new node to the network
     fn add_node(&mut self, node_id: PeerId) -> Result<(), String>;
-    
+
     /// Remove a node from the network
     fn remove_node(&mut self, node_id: PeerId) -> Result<(), String>;
-    
+
     /// Get the current total number of nodes
     fn get_total_nodes(&self) -> usize;
-    
+
     /// Get the current threshold value
     fn get_threshold(&self) -> usize;
-    
+
     /// Set the threshold
     fn set_threshold(&self, threshold: usize) -> usize;
-    
+
     /// Get all active node IDs
     fn get_active_nodes(&self) -> HashSet<PeerId>;
-    
 }
 
 /// Trait for calculating threshold based on total nodes
@@ -30,11 +28,10 @@ pub trait ThresholdCalculator {
     fn calculate_threshold(&self, total_nodes: usize) -> usize;
 }
 
-/// Default implementation of ThresholdCalculator 
+/// Default implementation of ThresholdCalculator
 pub struct DefaultThresholdCalculator;
 
 impl ThresholdCalculator for DefaultThresholdCalculator {
-    
     fn calculate_threshold(&self, total_nodes: usize) -> usize {
         3
     }
@@ -81,11 +78,11 @@ impl NodeMembership for BasicNodeManager {
     }
 
     fn get_threshold(&self) -> usize {
-        self.threshold_calculator.calculate_threshold(self.get_total_nodes())
+        self.threshold_calculator
+            .calculate_threshold(self.get_total_nodes())
     }
 
     fn get_active_nodes(&self) -> HashSet<PeerId> {
         self.nodes.clone()
     }
-
-} 
+}
