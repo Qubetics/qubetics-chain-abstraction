@@ -3,10 +3,7 @@ use futures::StreamExt;
 use libp2p::{
     gossipsub::{self, Message, TopicHash},
     identity::Keypair,
-    kad::{
-        self, store::MemoryStore, BootstrapOk, BucketInserts, Event as KademliaEvent,
-        GetClosestPeersOk, QueryResult,
-    },
+    kad::{store::MemoryStore, BucketInserts, Event as KademliaEvent},
     mdns::{self},
     noise,
     request_response::{
@@ -16,37 +13,33 @@ use libp2p::{
     tcp, yamux, Multiaddr, PeerId, Swarm, Transport,
 };
 use std::{
-    any::Any,
+    collections::hash_map::DefaultHasher,
+    hash::{Hash, Hasher},
+};
+use std::{
     collections::{HashMap, HashSet},
     env,
     fmt::Debug,
     time::Duration,
 };
-use std::{
-    collections::hash_map::DefaultHasher,
-    hash::{Hash, Hasher},
-};
+use tokio::io;
 use tokio::sync::{mpsc, RwLock};
-use tokio::{io, io::AsyncBufReadExt, io::Error, select};
-use tonic::transport::Server;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 use crate::commands::CommandProcessor;
 use crate::consensus::ConsensusNode;
 use crate::dkg::DKGNode;
 use crate::node_management::NodeMembership;
-use crate::protos::intent::{intent_service_server::IntentService, IntentRequest};
 use crate::signing::SigningNode;
 use crate::{
     dkg::DKGStatus,
-    node_management,
     protos::intent::intent_service_server::IntentServiceServer,
     types::{
         dkg::MSG_TOPIC_DKG,
         p2p::SerializablePeerId,
         rpc::{
-            build_mpc_behaviour, MPCCodec, MPCCodecRequest, MPCCodecResponse, MPCProtocol,
-            RPCRequest, RPCResponse,
+            build_mpc_behaviour, MPCCodecRequest, MPCCodecResponse, MPCProtocol, RPCRequest,
+            RPCResponse,
         },
         ChannelMessage, GossipsubMessage, PeerInfo,
     },
@@ -287,6 +280,12 @@ impl NetworkLayer {
                 _ = discovery_timer.tick() => {
                     // Periodic peer discovery
                     info!("Performing peer discovery...");
+
+                    // Debug: Show current state before discovery
+                    let current_total = self.node_manager.get_total_nodes();
+                    let active_nodes = self.node_manager.get_active_nodes();
+                    info!("Current node manager state - Total: {}, Active nodes: {:?}", current_total, active_nodes);
+
                     swarm.behaviour_mut().kademlia.get_closest_peers(self.local_peer_id);
 
                     // Also search for random peers to populate routing table
@@ -317,6 +316,20 @@ impl NetworkLayer {
         Ok(())
     }
 
+    fn is_bootstrap_node(&self, peer_id: &PeerId) -> bool {
+        let bootstrap_peer_ids = vec![
+            "QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN",
+            "QmQCU2EcMqAqQPR2i9bChDtGNJchTbq5TbXJJ16u19uLTa",
+            "QmbLHAnMoJPWSCR5Zhtx6BHJX9KiKNN6tpvbUcqanj75Nb",
+            "QmcZf59bWwK5XFi76CZX8cbJ4BhTzzA3gU1ZjYZcYW3dwt",
+        ];
+
+        let peer_id_str = peer_id.to_string();
+        bootstrap_peer_ids
+            .iter()
+            .any(|&bootstrap_id| peer_id_str.contains(bootstrap_id))
+    }
+
     async fn handle_swarm_event(
         &mut self,
         event: SwarmEvent<NetworkEvent>,
@@ -338,11 +351,42 @@ impl NetworkLayer {
             SwarmEvent::ConnectionEstablished {
                 peer_id, endpoint, ..
             } => {
-                info!("🔗 Connection established with peer: {:?}", peer_id);
+                info!(
+                    "\x1b[37m🔗 Connection established with peer: {:?}\x1b[0m",
+                    peer_id
+                );
+
+                // Debug: Check if this is a bootstrap node
+                let bootstrap_peer_ids = vec![
+                    "QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN",
+                    "QmQCU2EcMqAqQPR2i9bChDtGNJchTbq5TbXJJ16u19uLTa",
+                    "QmbLHAnMoJPWSCR5Zhtx6BHJX9KiKNN6tpvbUcqanj75Nb",
+                    "QmcZf59bWwK5XFi76CZX8cbJ4BhTzzA3gU1ZjYZcYW3dwt",
+                ];
+
+                let peer_id_str = peer_id.to_string();
+                let is_bootstrap = bootstrap_peer_ids
+                    .iter()
+                    .any(|&bootstrap_id| peer_id_str.contains(bootstrap_id));
+
+                if is_bootstrap {
+                    info!(
+                        "\x1b[33m🔗 Connected to bootstrap node: {:?}\x1b[0m",
+                        peer_id
+                    );
+                } else {
+                    info!("\x1b[32m🔗 Connected to MPC node: {:?}\x1b[0m", peer_id);
+
+                    // For MPC nodes, let's manually trigger some discovery
+                    info!(
+                        "\x1b[36m🔍 Triggering peer discovery for MPC node: {:?}\x1b[0m",
+                        peer_id
+                    );
+                }
 
                 // Get the remote address and add it to Kademlia
                 let remote_addr = endpoint.get_remote_address();
-                info!("Remote address: {:?}", remote_addr);
+                info!("\x1b[90m📍 Remote address: {:?}\x1b[0m", remote_addr);
 
                 // Add the peer's address to Kademlia - this should trigger RoutingUpdated
                 swarm
@@ -350,11 +394,17 @@ impl NetworkLayer {
                     .kademlia
                     .add_address(&peer_id, remote_addr.clone());
 
-                // // Log current routing table size
-                // let kbucket_count: usize = swarm.behaviour().kademlia.kbuckets()
-                //     .map(|bucket| bucket.num_entries())
-                //     .sum();
-                // info!("Kademlia routing table now has {} entries", kbucket_count);
+                // Debug: Log current Kademlia routing table size
+                let kbucket_count: usize = swarm
+                    .behaviour_mut()
+                    .kademlia
+                    .kbuckets()
+                    .map(|bucket| bucket.num_entries())
+                    .sum();
+                info!(
+                    "\x1b[35m📋 Kademlia routing table now has {} entries\x1b[0m",
+                    kbucket_count
+                );
 
                 // Try to discover more peers through this connection
                 swarm.behaviour_mut().kademlia.get_closest_peers(peer_id);
@@ -408,7 +458,7 @@ impl NetworkLayer {
 
                                 RPCResponse::DKGStatus { status } // send back to the agent at peer.send.ptp
                             },
-                            RPCRequest::SendAVSSShare { dealer_id, share, commitments, .. } => {
+                            RPCRequest::SendAVSSShare { dealer_id: _, share: _, commitments: _, .. } => {
                                 if self.dkg_node.is_none() {
                                     RPCResponse::Error("DKG not initialized".to_string())
                                 } else if self.dkg_node.as_ref().unwrap().verify_share(&share, &commitments) {
@@ -427,16 +477,16 @@ impl NetworkLayer {
                     }
                     // here peer(s) will recieve the msg sent by other peer by peer.send.ptp
                     ReqRespMessage::Response {
-                        request_id,
+                        request_id: _,
                         response,
                     } => {
                         // peer.r
                         match response {
                             RPCResponse::GotAVSSShare {
-                                dealer_id,
-                                receiver_id,
-                                share,
-                                commitments,
+                                dealer_id: _,
+                                receiver_id: _,
+                                share: _,
+                                commitments: _,
                             } => {
                                 // Handle AVSS share response here (maybe store in state?)
                                 // e.g., self.dkg_node.as_mut()?.handle_received_share(party_id, share, commitments);
@@ -523,15 +573,39 @@ impl NetworkLayer {
 
                         if is_new_peer {
                             info!("New peer added: {:?}", peer);
+
+                            // Check if this is a bootstrap node
+                            if self.is_bootstrap_node(&peer) {
+                                info!("⚠️  This is a bootstrap node, skipping: {:?}", peer);
+                                return Ok(());
+                            }
+
+                            info!("\x1b[32m✅ This is a real MPC node: {:?}\x1b[0m", peer);
+
                             self.node_manager
                                 .add_node(peer)
                                 .map_err(|e| anyhow::anyhow!(e))?;
+
                             let total = self.node_manager.get_total_nodes();
                             let threshold = self.node_manager.get_threshold();
-                            info!("node length: {:?}", self.node_manager.get_total_nodes());
 
-                            info!("Updated node count: {}, threshold: {}", total, threshold);
+                            // Debug: Show all active nodes
+                            let active_nodes = self.node_manager.get_active_nodes();
+                            info!(
+                                "\x1b[36m🔗 Active nodes in manager: {:?}\x1b[0m",
+                                active_nodes
+                            );
+                            info!(
+                                "\x1b[33m📊 node length: {:?}\x1b[0m",
+                                self.node_manager.get_total_nodes()
+                            );
 
+                            info!(
+                                "\x1b[35m🎯 Updated node count: {}, threshold: {}\x1b[0m",
+                                total, threshold
+                            );
+
+                            // Start DKG when 2nd node and onwards join the network
                             if total > 1 {
                                 if let Some(dkg_node) = &mut self.dkg_node {
                                     dkg_node.update_node_params(total, threshold); // Update total_nodes in the DKGNode
@@ -604,10 +678,10 @@ impl NetworkLayer {
                 );
             }
             SwarmEvent::ConnectionClosed {
-                peer_id,
-                connection_id,
-                endpoint,
-                num_established,
+                peer_id: _,
+                connection_id: _,
+                endpoint: _,
+                num_established: _,
                 cause,
             } => {
                 if let Some(ca) = cause {
@@ -670,10 +744,10 @@ impl NetworkLayer {
             }
             GossipsubMessage::VrfSelection(vrf_msg) => {
                 // Handle VRF selection messages
-                if let Some(vrf_manager) = self
-                    .node_manager
-                    .as_any()
-                    .downcast_ref::<crate::node_management::VrfNodeManager>()
+                if let Some(_vrf_manager) =
+                    self.node_manager
+                        .as_any()
+                        .downcast_ref::<crate::node_management::VrfNodeManager>()
                 {
                     // We need to handle this differently since we can't mutate through a trait object
                     // For now, we'll log the message

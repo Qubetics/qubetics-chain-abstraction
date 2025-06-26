@@ -62,7 +62,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let local_key = Keypair::generate_ed25519();
     let local_peer_id = libp2p::PeerId::from(local_key.public());
 
-    info!("Starting MPC node with PeerId: {}", local_peer_id);
 
     // Create VRF-based node manager
     let threshold_calculator = Box::new(DefaultThresholdCalculator);

@@ -1,6 +1,7 @@
 use libp2p::PeerId;
 use std::any::Any;
 use std::collections::HashSet;
+use tracing::{debug, info, warn};
 
 pub mod vrf_manager;
 pub use vrf_manager::VrfNodeManager;
@@ -68,6 +69,7 @@ impl NodeMembership for BasicNodeManager {
         if self.nodes.contains(&node_id) {
             return Err(format!("Node {} already exists", node_id));
         }
+        info!("Adding nodeasasa: {:?}", node_id);
         self.nodes.insert(node_id);
         Ok(())
     }

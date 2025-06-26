@@ -118,7 +118,10 @@ impl NodeMembership for VrfNodeManager {
             return Err(format!("Node {} already exists", node_id));
         }
         self.base_nodes.insert(node_id);
-        info!("Added node {} to VRF node manager", node_id);
+        info!(
+            "\x1b[34m➕ Added node {} to VRF node manager\x1b[0m",
+            node_id
+        );
         Ok(())
     }
 
@@ -127,7 +130,10 @@ impl NodeMembership for VrfNodeManager {
             return Err(format!("Node {} not found", node_id));
         }
         self.base_nodes.remove(&node_id);
-        info!("Removed node {} from VRF node manager", node_id);
+        info!(
+            "\x1b[31m➖ Removed node {} from VRF node manager\x1b[0m",
+            node_id
+        );
         Ok(())
     }
 
