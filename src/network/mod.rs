@@ -3,7 +3,10 @@ use futures::StreamExt;
 use libp2p::{
     gossipsub::{self, Message, TopicHash},
     identity::Keypair,
-    kad::{store::MemoryStore, BucketInserts, Event as KademliaEvent},
+    kad::{
+        self, store::MemoryStore, BootstrapOk, BucketInserts, Event as KademliaEvent,
+        GetClosestPeersOk, QueryResult,
+    },
     mdns::{self},
     noise,
     request_response::{
@@ -13,33 +16,37 @@ use libp2p::{
     tcp, yamux, Multiaddr, PeerId, Swarm, Transport,
 };
 use std::{
-    collections::hash_map::DefaultHasher,
-    hash::{Hash, Hasher},
-};
-use std::{
+    any::Any,
     collections::{HashMap, HashSet},
     env,
     fmt::Debug,
     time::Duration,
 };
-use tokio::io;
+use std::{
+    collections::hash_map::DefaultHasher,
+    hash::{Hash, Hasher},
+};
 use tokio::sync::{mpsc, RwLock};
-use tracing::{info, warn};
+use tokio::{io, io::AsyncBufReadExt, io::Error, select};
+use tonic::transport::Server;
+use tracing::{debug, info, warn};
 
 use crate::commands::CommandProcessor;
 use crate::consensus::ConsensusNode;
 use crate::dkg::DKGNode;
 use crate::node_management::NodeMembership;
+use crate::protos::intent::{intent_service_server::IntentService, IntentRequest};
 use crate::signing::SigningNode;
 use crate::{
     dkg::DKGStatus,
+    node_management,
     protos::intent::intent_service_server::IntentServiceServer,
     types::{
         dkg::MSG_TOPIC_DKG,
         p2p::SerializablePeerId,
         rpc::{
-            build_mpc_behaviour, MPCCodecRequest, MPCCodecResponse, MPCProtocol, RPCRequest,
-            RPCResponse,
+            build_mpc_behaviour, MPCCodec, MPCCodecRequest, MPCCodecResponse, MPCProtocol,
+            RPCRequest, RPCResponse,
         },
         ChannelMessage, GossipsubMessage, PeerInfo,
     },
@@ -458,7 +465,7 @@ impl NetworkLayer {
 
                                 RPCResponse::DKGStatus { status } // send back to the agent at peer.send.ptp
                             },
-                            RPCRequest::SendAVSSShare { dealer_id: _, share: _, commitments: _, .. } => {
+                            RPCRequest::SendAVSSShare { dealer_id, share, commitments, .. } => {
                                 if self.dkg_node.is_none() {
                                     RPCResponse::Error("DKG not initialized".to_string())
                                 } else if self.dkg_node.as_ref().unwrap().verify_share(&share, &commitments) {
@@ -477,16 +484,16 @@ impl NetworkLayer {
                     }
                     // here peer(s) will recieve the msg sent by other peer by peer.send.ptp
                     ReqRespMessage::Response {
-                        request_id: _,
+                        request_id,
                         response,
                     } => {
                         // peer.r
                         match response {
                             RPCResponse::GotAVSSShare {
-                                dealer_id: _,
-                                receiver_id: _,
-                                share: _,
-                                commitments: _,
+                                dealer_id,
+                                receiver_id,
+                                share,
+                                commitments,
                             } => {
                                 // Handle AVSS share response here (maybe store in state?)
                                 // e.g., self.dkg_node.as_mut()?.handle_received_share(party_id, share, commitments);
@@ -678,10 +685,10 @@ impl NetworkLayer {
                 );
             }
             SwarmEvent::ConnectionClosed {
-                peer_id: _,
-                connection_id: _,
-                endpoint: _,
-                num_established: _,
+                peer_id,
+                connection_id,
+                endpoint,
+                num_established,
                 cause,
             } => {
                 if let Some(ca) = cause {
@@ -744,10 +751,10 @@ impl NetworkLayer {
             }
             GossipsubMessage::VrfSelection(vrf_msg) => {
                 // Handle VRF selection messages
-                if let Some(_vrf_manager) =
-                    self.node_manager
-                        .as_any()
-                        .downcast_ref::<crate::node_management::VrfNodeManager>()
+                if let Some(vrf_manager) = self
+                    .node_manager
+                    .as_any()
+                    .downcast_ref::<crate::node_management::VrfNodeManager>()
                 {
                     // We need to handle this differently since we can't mutate through a trait object
                     // For now, we'll log the message
