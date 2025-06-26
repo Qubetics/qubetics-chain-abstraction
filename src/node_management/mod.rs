@@ -1,5 +1,9 @@
 use libp2p::PeerId;
+use std::any::Any;
 use std::collections::HashSet;
+
+pub mod vrf_manager;
+pub use vrf_manager::VrfNodeManager;
 
 /// Trait for managing node membership in the network
 pub trait NodeMembership {
@@ -20,6 +24,9 @@ pub trait NodeMembership {
 
     /// Get all active node IDs
     fn get_active_nodes(&self) -> HashSet<PeerId>;
+
+    /// Get reference to self as Any for downcasting
+    fn as_any(&self) -> &dyn Any;
 }
 
 /// Trait for calculating threshold based on total nodes
@@ -84,5 +91,9 @@ impl NodeMembership for BasicNodeManager {
 
     fn get_active_nodes(&self) -> HashSet<PeerId> {
         self.nodes.clone()
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
     }
 }

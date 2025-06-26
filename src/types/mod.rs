@@ -4,10 +4,9 @@ use serde::{Deserialize, Serialize};
 mod bls;
 pub use bls::{SerializableG1Affine, SerializableScalar};
 
-pub mod rpc;
 pub mod dkg;
 pub mod p2p;
-
+pub mod rpc;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PeerInfo {
@@ -17,14 +16,8 @@ pub struct PeerInfo {
 
 #[derive(Debug, Clone)]
 pub enum ChannelMessage {
-    Broadcast {
-        topic: String,
-        data: Vec<u8>,
-    },
-    Unicast {
-        peer_id: String,
-        data: Vec<u8>,
-    },
+    Broadcast { topic: String, data: Vec<u8> },
+    Unicast { peer_id: String, data: Vec<u8> },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,4 +32,5 @@ pub enum GossipsubMessage {
     Signing(crate::signing::SigningMessage),
     Command(crate::commands::Command),
     Consensus(crate::consensus::ConsensusMessage),
+    VrfSelection(crate::vrf::VrfSelectionMessage),
 }

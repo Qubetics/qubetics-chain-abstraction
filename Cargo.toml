@@ -11,6 +11,10 @@ path = "src/bin/ptp.rs"
 name = "mpcn"
 path = "src/main.rs"
 
+[[bin]]
+name = "vrf_demo"
+path = "src/bin/vrf_demo.rs"
+
 [dependencies]
 libp2p = { version = "0.55", features = ["request-response", "cbor", "tokio", "gossipsub", "mdns", "noise", "macros", "tcp", "yamux", "quic", "identify", "request-response", "kad"] }
 tokio = { version = "1", features = ["full"] }

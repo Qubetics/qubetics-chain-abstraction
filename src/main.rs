@@ -1,5 +1,6 @@
+use libp2p::identity::Keypair;
 use mpc_node::node_management::{
-    BasicNodeManager, DefaultThresholdCalculator, NodeMembership, ThresholdCalculator,
+    DefaultThresholdCalculator, NodeMembership, ThresholdCalculator, VrfNodeManager,
 };
 use mpc_node::{
     commands::CommandProcessor, consensus::ConsensusNode, dkg::DKGNode, network::NetworkLayer,
@@ -57,12 +58,24 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .with(stderr_layer)
         .init();
 
-    // let threshold = 3;
-    // let total = 5;
-    let node_manager = Box::new(BasicNodeManager::new(Box::new(DefaultThresholdCalculator)));
+    // Generate node identity
+    let local_key = Keypair::generate_ed25519();
+    let local_peer_id = libp2p::PeerId::from(local_key.public());
+
+    info!("Starting MPC node with PeerId: {}", local_peer_id);
+
+    // Create VRF-based node manager
+    let threshold_calculator = Box::new(DefaultThresholdCalculator);
+    let node_manager = Box::new(VrfNodeManager::new(
+        local_peer_id,
+        threshold_calculator,
+        10, // selection interval
+    ));
+
     let total = node_manager.get_total_nodes();
-  
     let threshold = node_manager.get_threshold();
+
+    info!("Initial node count: {}, threshold: {}", total, threshold);
 
     let mut network = NetworkLayer::new(node_manager).await?;
 
@@ -132,5 +145,3 @@ mod test {
         assert_eq!(ct, 102);
     }
 }
-
-

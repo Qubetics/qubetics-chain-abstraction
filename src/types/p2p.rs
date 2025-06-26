@@ -1,9 +1,9 @@
 use libp2p::PeerId;
+use serde::de::{self, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
-use serde::de::{self, Visitor};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SerializablePeerId(pub PeerId);
 
 impl Serialize for SerializablePeerId {
@@ -32,10 +32,10 @@ impl<'de> Visitor<'de> for PeerIdVisitor {
         if v.len() != 48 {
             return Err(E::custom("invalid length for peerId"));
         }
-        
+
         let mut bytes = [0u8; 48];
         bytes.copy_from_slice(v);
-        
+
         PeerId::from_bytes(&bytes)
             .map(SerializablePeerId)
             .map_err(|_| E::custom("invalid peerId"))
