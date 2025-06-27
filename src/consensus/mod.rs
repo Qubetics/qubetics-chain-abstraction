@@ -81,7 +81,7 @@ impl ConsensusNode {
 
     async fn handle_proposal(
         &self,
-        round: u64,
+        _round: u64,
         value: Vec<u8>,
         vrf_proof: VrfOutput,
     ) -> Result<()> {
@@ -94,9 +94,9 @@ impl ConsensusNode {
 
     async fn handle_vote(
         &self,
-        round: u64,
-        proposal_hash: Hash,
-        voter: String,
+        _round: u64,
+        _proposal_hash: Hash,
+        _voter: String,
     ) -> Result<()> {
         // Process vote and check for consensus
         Ok(())

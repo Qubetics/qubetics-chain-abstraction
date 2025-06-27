@@ -4,8 +4,7 @@ use libp2p::{
     gossipsub::{self, Message, TopicHash},
     identity::Keypair,
     kad::{
-        self, store::MemoryStore, BootstrapOk, BucketInserts, Event as KademliaEvent,
-        GetClosestPeersOk, QueryResult,
+        self, store::MemoryStore,BucketInserts, Event as KademliaEvent,
     },
     mdns::{self},
     noise,
@@ -13,10 +12,9 @@ use libp2p::{
         cbor::Behaviour as CborReqRespBehaviour, Event as ReqRespEvent, Message as ReqRespMessage,
     },
     swarm::{ConnectionError, NetworkBehaviour, SwarmEvent},
-    tcp, yamux, Multiaddr, PeerId, Swarm, Transport,
+    tcp, yamux, Multiaddr, PeerId,Transport,
 };
 use std::{
-    any::Any,
     collections::{HashMap, HashSet},
     env,
     fmt::Debug,
@@ -27,25 +25,22 @@ use std::{
     hash::{Hash, Hasher},
 };
 use tokio::sync::{mpsc, RwLock};
-use tokio::{io, io::AsyncBufReadExt, io::Error, select};
-use tonic::transport::Server;
-use tracing::{debug, info, warn};
+use tokio::io;
+use tracing::{info, warn};
 
 use crate::commands::CommandProcessor;
 use crate::consensus::ConsensusNode;
 use crate::dkg::DKGNode;
 use crate::node_management::NodeMembership;
-use crate::protos::intent::{intent_service_server::IntentService, IntentRequest};
 use crate::signing::SigningNode;
 use crate::{
     dkg::DKGStatus,
-    node_management,
     protos::intent::intent_service_server::IntentServiceServer,
     types::{
         dkg::MSG_TOPIC_DKG,
         p2p::SerializablePeerId,
         rpc::{
-            build_mpc_behaviour, MPCCodec, MPCCodecRequest, MPCCodecResponse, MPCProtocol,
+            build_mpc_behaviour, MPCCodecRequest, MPCCodecResponse, MPCProtocol,
             RPCRequest, RPCResponse,
         },
         ChannelMessage, GossipsubMessage, PeerInfo,
@@ -465,7 +460,7 @@ impl NetworkLayer {
 
                                 RPCResponse::DKGStatus { status } // send back to the agent at peer.send.ptp
                             },
-                            RPCRequest::SendAVSSShare { dealer_id, share, commitments, .. } => {
+                            RPCRequest::SendAVSSShare { share, commitments, .. } => {
                                 if self.dkg_node.is_none() {
                                     RPCResponse::Error("DKG not initialized".to_string())
                                 } else if self.dkg_node.as_ref().unwrap().verify_share(&share, &commitments) {
@@ -577,6 +572,9 @@ impl NetworkLayer {
                         old_peer,
                     } => {
                         info!("-----------routing updated----------: Peer{:?}, is_new_peer{:?}, addresses{:?}, bucket_range{:?}, old_peer{:?}", peer, is_new_peer, addresses, bucket_range, old_peer);
+                        self.node_manager
+                                .add_node(peer)
+                                .map_err(|e| anyhow::anyhow!(e))?;
 
                         if is_new_peer {
                             info!("New peer added: {:?}", peer);
@@ -588,10 +586,6 @@ impl NetworkLayer {
                             }
 
                             info!("\x1b[32m✅ This is a real MPC node: {:?}\x1b[0m", peer);
-
-                            self.node_manager
-                                .add_node(peer)
-                                .map_err(|e| anyhow::anyhow!(e))?;
 
                             let total = self.node_manager.get_total_nodes();
                             let threshold = self.node_manager.get_threshold();

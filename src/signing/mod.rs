@@ -6,7 +6,6 @@ use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, RwLock};
 
-use crate::network::NetworkLayer;
 use crate::types::{KeyShare, ChannelMessage, SerializableG1Affine, SerializableScalar};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -1,6 +1,6 @@
 use crate::types::p2p::SerializablePeerId;
 use anyhow::Result;
-use blake3::{Hash, Hasher};
+use blake3::Hash;
 use libp2p::PeerId;
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};

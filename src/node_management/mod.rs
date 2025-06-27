@@ -41,7 +41,7 @@ pub struct DefaultThresholdCalculator;
 
 impl ThresholdCalculator for DefaultThresholdCalculator {
     fn calculate_threshold(&self, total_nodes: usize) -> usize {
-        3
+        1
     }
 }
 
