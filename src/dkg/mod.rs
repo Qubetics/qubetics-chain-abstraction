@@ -29,7 +29,7 @@ pub enum DKGMessage {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize,PartialEq)]
 pub enum DKGStatus {
     New,
     Error { kind: String },
@@ -92,9 +92,9 @@ impl DKGNode {
 
     fn generate_polynomial(&self) -> Result<Vec<Scalar>> {
         let mut rng = OsRng;
-        let mut coefficients = Vec::with_capacity(self.threshold + 1);
+        let mut coefficients = Vec::with_capacity(self.threshold);
 
-        for _ in 0..=self.threshold {
+        for _ in 0..self.threshold {
             coefficients.push(Scalar::random(&mut rng));
         }
 

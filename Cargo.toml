@@ -16,7 +16,7 @@ name = "vrf_demo"
 path = "src/bin/vrf_demo.rs"
 
 [dependencies]
-libp2p = { version = "0.55", features = ["request-response", "cbor", "tokio", "gossipsub", "mdns", "noise", "macros", "tcp", "yamux", "quic", "identify", "request-response", "kad"] }
+libp2p = { version = "0.55", features = ["request-response", "cbor", "tokio", "gossipsub", "mdns", "noise", "macros", "tcp", "yamux", "quic", "identify", "request-response", "kad" , "serde"] }
 tokio = { version = "1", features = ["full"] }
 futures = "0.3"
 anyhow = "1.0"

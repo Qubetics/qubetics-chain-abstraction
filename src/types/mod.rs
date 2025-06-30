@@ -1,4 +1,4 @@
-use libp2p::Multiaddr;
+use libp2p::{Multiaddr, PeerId};
 use serde::{Deserialize, Serialize};
 
 mod bls;
@@ -33,4 +33,5 @@ pub enum GossipsubMessage {
     Command(crate::commands::Command),
     Consensus(crate::consensus::ConsensusMessage),
     VrfSelection(crate::vrf::VrfSelectionMessage),
+    PeerDiscovered {peer : PeerId}
 }

@@ -1,18 +1,11 @@
 use anyhow::Result;
 use futures::StreamExt;
 use libp2p::{
-    gossipsub::{self, Message, TopicHash},
-    identity::Keypair,
-    kad::{
+    gossipsub::{self, Message, TopicHash}, identity::Keypair, kad::{
         self, store::MemoryStore,BucketInserts, Event as KademliaEvent,
-    },
-    mdns::{self},
-    noise,
-    request_response::{
+    }, mdns::{self}, multiaddr::Protocol, noise, request_response::{
         cbor::Behaviour as CborReqRespBehaviour, Event as ReqRespEvent, Message as ReqRespMessage,
-    },
-    swarm::{ConnectionError, NetworkBehaviour, SwarmEvent},
-    tcp, yamux, Multiaddr, PeerId,Transport,
+    }, swarm::{ConnectionError, NetworkBehaviour, SwarmEvent}, tcp, yamux, Multiaddr, PeerId, Transport
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -37,7 +30,7 @@ use crate::{
     dkg::DKGStatus,
     protos::intent::intent_service_server::IntentServiceServer,
     types::{
-        dkg::MSG_TOPIC_DKG,
+        dkg::{MSG_TOPIC_DKG,MSG_TOPIC_PEER_DISCOVERY},
         p2p::SerializablePeerId,
         rpc::{
             build_mpc_behaviour, MPCCodecRequest, MPCCodecResponse, MPCProtocol,
@@ -59,7 +52,6 @@ pub struct MPCBehaviour {
 #[derive(Debug)]
 pub enum NetworkEvent {
     Gossipsub(gossipsub::Event),
-    // Mdns(mdns::Event),
     RequestResponse(ReqRespEvent<RPCRequest, RPCResponse>),
     Kademlia(KademliaEvent),
 }
@@ -91,7 +83,6 @@ impl From<ReqRespEvent<RPCRequest, RPCResponse>> for NetworkEvent {
 pub struct NetworkLayer {
     local_key: Keypair,
     local_peer_id: PeerId,
-    peers: RwLock<HashMap<PeerId, PeerInfo>>,
     message_tx: mpsc::Sender<ChannelMessage>,
     message_rx: mpsc::Receiver<ChannelMessage>,
     topics: HashSet<TopicHash>,
@@ -111,7 +102,6 @@ impl NetworkLayer {
         Ok(Self {
             local_key,
             local_peer_id,
-            peers: RwLock::new(HashMap::new()),
             message_tx: tx,
             message_rx: rx,
             topics: HashSet::new(),
@@ -171,6 +161,7 @@ impl NetworkLayer {
                     .heartbeat_interval(Duration::from_secs(30))
                     .validation_mode(gossipsub::ValidationMode::Strict)
                     .message_id_fn(message_id_fn)
+                    .flood_publish(true)
                     .build()
                     .map_err(io::Error::other)
                     .map_err(io::Error::other)?;
@@ -179,15 +170,6 @@ impl NetworkLayer {
                     gossipsub::MessageAuthenticity::Signed(key.clone()),
                     gossipsub_config,
                 )?;
-
-                // let mdns_config = mdns::Config {
-                //     query_interval: Duration::from_secs(10),
-                //     ttl: Duration::from_secs(10),
-                //     ..Default::default()
-                // };
-
-                // let mdns =
-                //     mdns::tokio::Behaviour::new(mdns_config, key.public().to_peer_id())?;
 
                 // Initialize Kademlia
                 let store = MemoryStore::new(key.public().to_peer_id());
@@ -200,12 +182,8 @@ impl NetworkLayer {
                 let mut kademlia =
                     kad::Behaviour::with_config(key.public().to_peer_id(), store, kademlia_config);
 
-                    // Add bootstrap nodes
-            let bootstrap_nodes = vec![
-                "/dnsaddr/bootstrap-0.mainnet.libp2p.io/tcp/443/wss/p2p/QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN",
-                "/dnsaddr/bootstrap-1.mainnet.libp2p.io/tcp/443/wss/p2p/QmQCU2EcMqAqQPR2i9bChDtGNJchTbq5TbXJJ16u19uLTa",
-                "/dnsaddr/bootstrap-2.mainnet.libp2p.io/tcp/443/wss/p2p/QmbLHAnMoJPWSCR5Zhtx6BHJX9KiKNN6tpvbUcqanj75Nb",
-                "/dnsaddr/bootstrap-3.mainnet.libp2p.io/tcp/443/wss/p2p/QmcZf59bWwK5XFi76CZX8cbJ4BhTzzA3gU1ZjYZcYW3dwt",
+            let bootstrap_nodes: Vec<&'static str> = vec![
+                
             ];
 
             for addr in bootstrap_nodes {
@@ -232,7 +210,7 @@ impl NetworkLayer {
                 })
             })?
             .build();
-
+        self.subscribe_to_default_topics(&mut swarm)?;
         println!("Starting Kademlia bootstrap...");
 
         // Bootstrap with the configured nodes
@@ -247,16 +225,15 @@ impl NetworkLayer {
 
         let args: Vec<String> = env::args().collect();
         if args.len() >= 2 {
-            // eprintln!("Usage: {} <multiaddr>", args[0]);
-            // std::process::exit(1);
             let server_addr: Multiaddr = args[1].parse()?;
             println!("Dialing address: {}", server_addr);
             swarm.dial(server_addr.clone())?;
         }
 
         println!("Local Peer ID: {}", self.local_peer_id);
+        self.node_manager.add_node(self.local_peer_id.clone())
+            .map_err(|e| anyhow::anyhow!(e))?;
 
-        self.subscribe_to_default_topics(&mut swarm)?;
 
         loop {
             tokio::select! {
@@ -304,6 +281,7 @@ impl NetworkLayer {
     ) -> Result<()> {
         let topics = vec![
             MSG_TOPIC_DKG,
+            MSG_TOPIC_PEER_DISCOVERY,
             "signing",
             "consensus",
             "commands",
@@ -311,19 +289,29 @@ impl NetworkLayer {
         ];
         for topic in topics {
             let topic_hash = gossipsub::IdentTopic::new(topic);
-            info!("topic hash for {} is {}", topic, topic_hash);
-            swarm.behaviour_mut().gossipsub.subscribe(&topic_hash)?;
+            info!("topic for {}", topic);
+            info!("topic hash for {:?}", topic_hash.hash());
+
+            let res = swarm.behaviour_mut().gossipsub.subscribe(&topic_hash);
+            match res  {
+                Ok(_) => {
+                    info!("YES !! Subscribed to topic: {}", topic);
+                } 
+                Err(err) => {
+                    info!("Failed to subscribe to topic: {} with error {:?}", topic,err);
+                }
+            }
             self.topics.insert(topic_hash.hash());
         }
         Ok(())
     }
 
     fn is_bootstrap_node(&self, peer_id: &PeerId) -> bool {
-        let bootstrap_peer_ids = vec![
-            "QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN",
-            "QmQCU2EcMqAqQPR2i9bChDtGNJchTbq5TbXJJ16u19uLTa",
-            "QmbLHAnMoJPWSCR5Zhtx6BHJX9KiKNN6tpvbUcqanj75Nb",
-            "QmcZf59bWwK5XFi76CZX8cbJ4BhTzzA3gU1ZjYZcYW3dwt",
+        let bootstrap_peer_ids:Vec<&'static str>  = vec![
+            // "QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN",
+            // "QmQCU2EcMqAqQPR2i9bChDtGNJchTbq5TbXJJ16u19uLTa",
+            // "QmbLHAnMoJPWSCR5Zhtx6BHJX9KiKNN6tpvbUcqanj75Nb",
+            // "QmcZf59bWwK5XFi76CZX8cbJ4BhTzzA3gU1ZjYZcYW3dwt",
         ];
 
         let peer_id_str = peer_id.to_string();
@@ -359,11 +347,11 @@ impl NetworkLayer {
                 );
 
                 // Debug: Check if this is a bootstrap node
-                let bootstrap_peer_ids = vec![
-                    "QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN",
-                    "QmQCU2EcMqAqQPR2i9bChDtGNJchTbq5TbXJJ16u19uLTa",
-                    "QmbLHAnMoJPWSCR5Zhtx6BHJX9KiKNN6tpvbUcqanj75Nb",
-                    "QmcZf59bWwK5XFi76CZX8cbJ4BhTzzA3gU1ZjYZcYW3dwt",
+                let bootstrap_peer_ids: Vec<&'static str> = vec![
+                    // "QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN",
+                    // "QmQCU2EcMqAqQPR2i9bChDtGNJchTbq5TbXJJ16u19uLTa",
+                    // "QmbLHAnMoJPWSCR5Zhtx6BHJX9KiKNN6tpvbUcqanj75Nb",
+                    // "QmcZf59bWwK5XFi76CZX8cbJ4BhTzzA3gU1ZjYZcYW3dwt",
                 ];
 
                 let peer_id_str = peer_id.to_string();
@@ -531,37 +519,7 @@ impl NetworkLayer {
             })) => {
                 info!("Response sent to peer {}", peer);
             }
-            // SwarmEvent::Behaviour(NetworkEvent::Mdns(mdns::Event::Discovered(peers))) => {
-            //     for (peer_id, addr) in peers {
-            //         info!("Discovered peer: {peer_id} at {addr}");
-            //         self.peers.write().await.insert(peer_id, PeerInfo {
-            //             addresses: vec![addr],
-            //             connected: true,
-            //         });
-            //         self.node_manager.add_node(peer_id).map_err(|e| anyhow::anyhow!(e))?;
-            //         info!("Added node: {peer_id}");
-            //         // Restart DKG when new node joins
-            //         if let Some(dkg_node) = &mut self.dkg_node {
-            //             dkg_node.start_dkg().await?;
-            //         }
-            //     }
-            //     println!("[NEW] Peers: {}", self.peers.read().await.values().filter(|peer| peer.connected).collect::<Vec<_>>().len());
-            // }
-
-            // SwarmEvent::Behaviour(NetworkEvent::Mdns(mdns::Event::Expired(peers))) => {
-            //     info!("[EXP]");
-            //     for (peer_id, _) in peers {
-            //         if let Some(peer) = self.peers.write().await.get_mut(&peer_id) {
-            //             peer.connected = false;
-            //         }
-            //         self.node_manager.remove_node(peer_id).map_err(|e| anyhow::anyhow!(e))?;
-            //     }
-            //     println!("[EXP] Peers: {}", self.peers.read().await.values().filter(|peer| peer.connected).collect::<Vec<_>>().len());
-            //     // Restart DKG when a node leaves or expired from the network
-            //     if let Some(dkg_node) = &mut self.dkg_node {
-            //         dkg_node.start_dkg().await?;
-            //     }
-            // }
+    
             SwarmEvent::Behaviour(NetworkEvent::Kademlia(event)) => {
                 match event {
                     KademliaEvent::RoutingUpdated {
@@ -578,7 +536,12 @@ impl NetworkLayer {
 
                         if is_new_peer {
                             info!("New peer added: {:?}", peer);
-
+                            let msg     = GossipsubMessage::PeerDiscovered { peer: peer.clone() };
+                            info!("Broadcasting PeerDiscovered message: {:?}", msg);
+                            let payload = serde_json::to_vec(&msg)
+                                .map_err(|e| anyhow::anyhow!("serialize PeerDiscovered: {}", e))?;
+                            self.broadcast(MSG_TOPIC_PEER_DISCOVERY, &payload).await?;
+                            
                             // Check if this is a bootstrap node
                             if self.is_bootstrap_node(&peer) {
                                 info!("⚠️  This is a bootstrap node, skipping: {:?}", peer);
@@ -606,11 +569,17 @@ impl NetworkLayer {
                                 total, threshold
                             );
 
-                            // Start DKG when 2nd node and onwards join the network
-                            if total > 1 {
+                            if total >= threshold + 1 {
                                 if let Some(dkg_node) = &mut self.dkg_node {
-                                    dkg_node.update_node_params(total, threshold); // Update total_nodes in the DKGNode
+                                    dkg_node.update_node_params(total, threshold);
                                     dkg_node.start_dkg().await?;
+
+                                    for peer in self.node_manager.get_active_nodes() {
+                                        let _ = swarm
+                                            .behaviour_mut()
+                                            .request_response
+                                            .send_request(&peer, RPCRequest::StartADKG);
+                                    }
                                 }
                             }
                         }
@@ -659,8 +628,8 @@ impl NetworkLayer {
                 message,
             })) => {
                 info!(
-                    "Received message with id: {} from: {}",
-                    message_id, propagation_source
+                    "Received message with topic : {} from: {}",
+                    message.topic, propagation_source
                 );
                 self.handle_gossipsub_message(&message).await?;
             }
@@ -672,11 +641,11 @@ impl NetworkLayer {
             }
             SwarmEvent::NewListenAddr { address, .. } => {
                 info!("Listening on {}", address);
-                info!(
-                    "Listening for RPC connections on {}{}",
-                    address,
-                    MPCProtocol.as_ref()
-                );
+                    let full = address.clone().with(Protocol::P2p(self.local_peer_id.clone().into()));
+                    info!("📡 multiaddress   : {}", full);
+
+                info!("Listening for RPC connections on {}{}", address, MPCProtocol.as_ref());
+                
             }
             SwarmEvent::ConnectionClosed {
                 peer_id,
@@ -709,7 +678,7 @@ impl NetworkLayer {
     }
 
     async fn handle_gossipsub_message(&mut self, message: &Message) -> Result<()> {
-        info!("i am at handle_gossipsub_message ---------- {:?}", message);
+        info!("i am at handle_gossipsub_message ---------- {:?}", message.topic);
         let res = serde_json::from_slice::<GossipsubMessage>(&message.data);
         if let Err(e) = &res {
             info!("now I know the error ----- {:?}", e);
@@ -759,6 +728,15 @@ impl NetworkLayer {
                         vrf_msg
                     );
                 }
+            },
+            GossipsubMessage::PeerDiscovered { peer } => {
+                info!("SPeer discovered: {:?}", peer);
+
+                if let Ok(_) = self.node_manager.add_node(peer) {
+                    info!("Added peer {} to node manager", peer);
+                } else {
+                    warn!("Failed to add peer {} to node manager", peer);
+                }
             }
         }
         Ok(())
@@ -787,6 +765,10 @@ impl NetworkLayer {
                     "[handle_channel_message()] [BCAST] prs count: {}",
                     swarm_mut.gossipsub.all_peers().count()
                 );
+
+                for x in swarm_mut.gossipsub.all_peers() {
+                    info!("[handle_channel_message()] [BCAST] peer: {:?}, {:?}", x.0, x.1);
+                }
                 if let Err(e) = swarm_mut.gossipsub.publish(topic_hash, data) {
                     info!("error: {:?}", e);
                 };

@@ -1,7 +1,7 @@
 use libp2p::PeerId;
 use std::any::Any;
 use std::collections::HashSet;
-use tracing::{debug, info, warn};
+use tracing:: info;
 
 pub mod vrf_manager;
 pub use vrf_manager::VrfNodeManager;
@@ -28,6 +28,10 @@ pub trait NodeMembership {
 
     /// Get reference to self as Any for downcasting
     fn as_any(&self) -> &dyn Any;
+
+    // /// marking that Kademlia’s RoutingUpdated fired for `peer`
+    // fn mark_routing_updated(&mut self, peer: PeerId) -> Result<(), String>;
+
 }
 
 /// Trait for calculating threshold based on total nodes
@@ -40,7 +44,7 @@ pub trait ThresholdCalculator {
 pub struct DefaultThresholdCalculator;
 
 impl ThresholdCalculator for DefaultThresholdCalculator {
-    fn calculate_threshold(&self, total_nodes: usize) -> usize {
+    fn calculate_threshold(&self, _total_nodes: usize) -> usize {
         1
     }
 }
