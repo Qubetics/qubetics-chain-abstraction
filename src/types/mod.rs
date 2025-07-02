@@ -33,5 +33,5 @@ pub enum GossipsubMessage {
     Command(crate::commands::Command),
     Consensus(crate::consensus::ConsensusMessage),
     VrfSelection(crate::vrf::VrfSelectionMessage),
-    PeerDiscovered {peer : PeerId}
+    PeerDiscovered { peer: PeerId, sequence: Option<u64> },
 }

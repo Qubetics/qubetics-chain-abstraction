@@ -1,11 +1,21 @@
 use anyhow::Result;
 use futures::StreamExt;
 use libp2p::{
-    gossipsub::{self, Message, TopicHash}, identity::Keypair, kad::{
-        self, store::MemoryStore,BucketInserts, Event as KademliaEvent,
-    }, mdns::{self}, multiaddr::Protocol, noise, request_response::{
+    gossipsub::{self, Message, TopicHash},
+    identity::Keypair,
+    kad::{self, store::MemoryStore, BucketInserts, Event as KademliaEvent},
+    mdns::{self},
+    multiaddr::Protocol,
+    noise,
+    request_response::{
         cbor::Behaviour as CborReqRespBehaviour, Event as ReqRespEvent, Message as ReqRespMessage,
-    }, swarm::{ConnectionError, NetworkBehaviour, SwarmEvent}, tcp, yamux, Multiaddr, PeerId, Transport
+    },
+    swarm::{ConnectionError, NetworkBehaviour, SwarmEvent},
+    tcp, yamux, Multiaddr, PeerId, Transport,
+};
+use std::{
+    collections::hash_map::DefaultHasher,
+    hash::{Hash, Hasher},
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -13,12 +23,8 @@ use std::{
     fmt::Debug,
     time::Duration,
 };
-use std::{
-    collections::hash_map::DefaultHasher,
-    hash::{Hash, Hasher},
-};
-use tokio::sync::{mpsc, RwLock};
 use tokio::io;
+use tokio::sync::{mpsc, RwLock};
 use tracing::{info, warn};
 
 use crate::commands::CommandProcessor;
@@ -30,11 +36,11 @@ use crate::{
     dkg::DKGStatus,
     protos::intent::intent_service_server::IntentServiceServer,
     types::{
-        dkg::{MSG_TOPIC_DKG,MSG_TOPIC_PEER_DISCOVERY},
+        dkg::{MSG_TOPIC_DKG, MSG_TOPIC_PEER_DISCOVERY},
         p2p::SerializablePeerId,
         rpc::{
-            build_mpc_behaviour, MPCCodecRequest, MPCCodecResponse, MPCProtocol,
-            RPCRequest, RPCResponse,
+            build_mpc_behaviour, MPCCodecRequest, MPCCodecResponse, MPCProtocol, RPCRequest,
+            RPCResponse,
         },
         ChannelMessage, GossipsubMessage, PeerInfo,
     },
@@ -154,14 +160,23 @@ impl NetworkLayer {
                 let message_id_fn = |message: &gossipsub::Message| {
                     let mut s = DefaultHasher::new();
                     message.data.hash(&mut s);
+                    // Add timestamp to prevent duplicate message ID issues
+                    // std::time::SystemTime::now()
+                    //     .duration_since(std::time::UNIX_EPOCH)
+                    //     .unwrap_or_default()
+                    //     .as_nanos()
+                    //     .hash(&mut s);
                     gossipsub::MessageId::from(s.finish().to_string())
                 };
 
                 let gossipsub_config = gossipsub::ConfigBuilder::default()
-                    .heartbeat_interval(Duration::from_secs(30))
+                    .heartbeat_interval(Duration::from_secs(5))
                     .validation_mode(gossipsub::ValidationMode::Strict)
                     .message_id_fn(message_id_fn)
                     .flood_publish(true)
+                    .fanout_ttl(Duration::from_secs(60))
+                    .prune_peers(10)
+                    .prune_backoff(Duration::from_secs(1))
                     .build()
                     .map_err(io::Error::other)
                     .map_err(io::Error::other)?;
@@ -182,23 +197,21 @@ impl NetworkLayer {
                 let mut kademlia =
                     kad::Behaviour::with_config(key.public().to_peer_id(), store, kademlia_config);
 
-            let bootstrap_nodes: Vec<&'static str> = vec![
-                
-            ];
+                let bootstrap_nodes: Vec<&'static str> = vec![];
 
-            for addr in bootstrap_nodes {
-                if let Ok(addr) = addr.parse::<Multiaddr>() {
-                    if let Some(peer_id) = addr.iter().find_map(|proto| {
-                        if let libp2p::multiaddr::Protocol::P2p(multihash) = proto {
-                            PeerId::from_multihash(multihash.clone().into()).ok()
-                        } else {
-                            None
+                for addr in bootstrap_nodes {
+                    if let Ok(addr) = addr.parse::<Multiaddr>() {
+                        if let Some(peer_id) = addr.iter().find_map(|proto| {
+                            if let libp2p::multiaddr::Protocol::P2p(multihash) = proto {
+                                PeerId::from_multihash(multihash.clone().into()).ok()
+                            } else {
+                                None
+                            }
+                        }) {
+                            kademlia.add_address(&peer_id, addr);
                         }
-                    }) {
-                        kademlia.add_address(&peer_id, addr);
                     }
                 }
-            }
 
                 let request_response = build_mpc_behaviour();
 
@@ -218,7 +231,7 @@ impl NetworkLayer {
             warn!("Failed to start bootstrap: {:?}", e);
         }
         let mut bootstrap_timer = tokio::time::interval(Duration::from_secs(300)); // 5 minutes
-        let mut discovery_timer = tokio::time::interval(Duration::from_secs(60)); // 1 minute
+        let mut discovery_timer = tokio::time::interval(Duration::from_secs(120)); // 2 minutes (reduced from 60 seconds)
 
         swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
         swarm.listen_on("/ip4/0.0.0.0/udp/0/quic-v1".parse()?)?;
@@ -231,9 +244,9 @@ impl NetworkLayer {
         }
 
         println!("Local Peer ID: {}", self.local_peer_id);
-        self.node_manager.add_node(self.local_peer_id.clone())
+        self.node_manager
+            .add_node(self.local_peer_id.clone())
             .map_err(|e| anyhow::anyhow!(e))?;
-
 
         loop {
             tokio::select! {
@@ -258,18 +271,55 @@ impl NetworkLayer {
 
                 _ = discovery_timer.tick() => {
                     // Periodic peer discovery
-                    info!("Performing peer discovery...");
+                    info!("🔄 Performing periodic peer discovery...");
 
                     // Debug: Show current state before discovery
                     let current_total = self.node_manager.get_total_nodes();
                     let active_nodes = self.node_manager.get_active_nodes();
-                    info!("Current node manager state - Total: {}, Active nodes: {:?}", current_total, active_nodes);
+                    info!("📊 Current node manager state - Total: {}, Active nodes: {:?}", current_total, active_nodes);
+
+                    // Log gossipsub state
+                    let gossipsub_peers = swarm.behaviour_mut().gossipsub.all_peers().count();
+                    info!("📡 Gossipsub connected peers: {}", gossipsub_peers);
+
+                    // Log Kademlia state
+                    let kbucket_count: usize = swarm
+                        .behaviour_mut()
+                        .kademlia
+                        .kbuckets()
+                        .map(|bucket| bucket.num_entries())
+                        .sum();
+                    info!("🌐 Kademlia routing table entries: {}", kbucket_count);
 
                     swarm.behaviour_mut().kademlia.get_closest_peers(self.local_peer_id);
 
                     // Also search for random peers to populate routing table
                     let random_peer = PeerId::random();
                     swarm.behaviour_mut().kademlia.get_closest_peers(random_peer);
+
+                    // Periodic broadcast of our local peer to ensure all peers know about us
+                    // Only broadcast if we have peers but haven't seen recent activity
+                    if current_total > 1 && gossipsub_peers > 0 {
+                        // Add a sequence number to make each message unique
+                        static mut SEQUENCE: u64 = 0;
+                        let seq = unsafe {
+                            SEQUENCE += 1;
+                            SEQUENCE
+                        };
+
+                        let msg = GossipsubMessage::PeerDiscovered {
+                            peer: self.local_peer_id.clone(),
+                            sequence: Some(seq), // Add sequence number
+                        };
+                        // info!("🔄 Periodic broadcast of local peer: {:?} (seq: {})", self.local_peer_id, seq);
+                        // if let Ok(payload) = serde_json::to_vec(&msg) {
+                        //     if let Err(e) = self.broadcast(MSG_TOPIC_PEER_DISCOVERY, &payload).await {
+                        //         warn!("❌ Failed periodic peer broadcast: {:?}", e);
+                        //     }
+                        // }
+                    } else {
+                        info!("⏸️ Skipping periodic broadcast - peers: {}, gossipsub peers: {}", current_total, gossipsub_peers);
+                    }
                 }
             };
         }
@@ -289,25 +339,33 @@ impl NetworkLayer {
         ];
         for topic in topics {
             let topic_hash = gossipsub::IdentTopic::new(topic);
-            info!("topic for {}", topic);
-            info!("topic hash for {:?}", topic_hash.hash());
+            info!("🔔 Attempting to subscribe to topic: {}", topic);
+            info!("🔔 Topic hash: {:?}", topic_hash.hash());
 
             let res = swarm.behaviour_mut().gossipsub.subscribe(&topic_hash);
-            match res  {
+            match res {
                 Ok(_) => {
-                    info!("YES !! Subscribed to topic: {}", topic);
-                } 
+                    info!("✅ Successfully subscribed to topic: {}", topic);
+                }
                 Err(err) => {
-                    info!("Failed to subscribe to topic: {} with error {:?}", topic,err);
+                    warn!(
+                        "❌ Failed to subscribe to topic: {} with error {:?}",
+                        topic, err
+                    );
                 }
             }
             self.topics.insert(topic_hash.hash());
         }
+
+        // Log current gossipsub state
+        let peer_count = swarm.behaviour_mut().gossipsub.all_peers().count();
+        info!("📊 Current gossipsub peer count: {}", peer_count);
+
         Ok(())
     }
 
     fn is_bootstrap_node(&self, peer_id: &PeerId) -> bool {
-        let bootstrap_peer_ids:Vec<&'static str>  = vec![
+        let bootstrap_peer_ids: Vec<&'static str> = vec![
             // "QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN",
             // "QmQCU2EcMqAqQPR2i9bChDtGNJchTbq5TbXJJ16u19uLTa",
             // "QmbLHAnMoJPWSCR5Zhtx6BHJX9KiKNN6tpvbUcqanj75Nb",
@@ -341,10 +399,7 @@ impl NetworkLayer {
             SwarmEvent::ConnectionEstablished {
                 peer_id, endpoint, ..
             } => {
-                info!(
-                    "\x1b[37m🔗 Connection established with peer: {:?}\x1b[0m",
-                    peer_id
-                );
+                info!("🔗 Connection established with peer: {:?}", peer_id);
 
                 // Debug: Check if this is a bootstrap node
                 let bootstrap_peer_ids: Vec<&'static str> = vec![
@@ -360,29 +415,27 @@ impl NetworkLayer {
                     .any(|&bootstrap_id| peer_id_str.contains(bootstrap_id));
 
                 if is_bootstrap {
-                    info!(
-                        "\x1b[33m🔗 Connected to bootstrap node: {:?}\x1b[0m",
-                        peer_id
-                    );
+                    info!("🔗 Connected to bootstrap node: {:?}", peer_id);
                 } else {
-                    info!("\x1b[32m🔗 Connected to MPC node: {:?}\x1b[0m", peer_id);
+                    info!("🔗 Connected to MPC node: {:?}", peer_id);
 
                     // For MPC nodes, let's manually trigger some discovery
-                    info!(
-                        "\x1b[36m🔍 Triggering peer discovery for MPC node: {:?}\x1b[0m",
-                        peer_id
-                    );
+                    info!("🔍 Triggering peer discovery for MPC node: {:?}", peer_id);
                 }
 
                 // Get the remote address and add it to Kademlia
                 let remote_addr = endpoint.get_remote_address();
-                info!("\x1b[90m📍 Remote address: {:?}\x1b[0m", remote_addr);
+                info!("📍 Remote address: {:?}", remote_addr);
 
                 // Add the peer's address to Kademlia - this should trigger RoutingUpdated
                 swarm
                     .behaviour_mut()
                     .kademlia
                     .add_address(&peer_id, remote_addr.clone());
+
+                // Add peer to gossipsub as explicit peer for better message delivery
+                swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
+                info!("➕ Added peer {} to gossipsub explicit peers", peer_id);
 
                 // Debug: Log current Kademlia routing table size
                 let kbucket_count: usize = swarm
@@ -392,8 +445,15 @@ impl NetworkLayer {
                     .map(|bucket| bucket.num_entries())
                     .sum();
                 info!(
-                    "\x1b[35m📋 Kademlia routing table now has {} entries\x1b[0m",
+                    "📋 Kademlia routing table now has {} entries",
                     kbucket_count
+                );
+
+                // Log current gossipsub peer count
+                let gossipsub_peer_count = swarm.behaviour_mut().gossipsub.all_peers().count();
+                info!(
+                    "📊 Gossipsub peer count after adding {}: {}",
+                    peer_id, gossipsub_peer_count
                 );
 
                 // Try to discover more peers through this connection
@@ -519,7 +579,7 @@ impl NetworkLayer {
             })) => {
                 info!("Response sent to peer {}", peer);
             }
-    
+
             SwarmEvent::Behaviour(NetworkEvent::Kademlia(event)) => {
                 match event {
                     KademliaEvent::RoutingUpdated {
@@ -531,17 +591,53 @@ impl NetworkLayer {
                     } => {
                         info!("-----------routing updated----------: Peer{:?}, is_new_peer{:?}, addresses{:?}, bucket_range{:?}, old_peer{:?}", peer, is_new_peer, addresses, bucket_range, old_peer);
                         self.node_manager
-                                .add_node(peer)
-                                .map_err(|e| anyhow::anyhow!(e))?;
+                            .add_node(peer)
+                            .map_err(|e| anyhow::anyhow!(e))?;
 
                         if is_new_peer {
                             info!("New peer added: {:?}", peer);
-                            let msg     = GossipsubMessage::PeerDiscovered { peer: peer.clone() };
+                            let msg = GossipsubMessage::PeerDiscovered {
+                                peer: peer.clone(),
+                                sequence: Some(1), // Add sequence number
+                            };
                             info!("Broadcasting PeerDiscovered message: {:?}", msg);
                             let payload = serde_json::to_vec(&msg)
                                 .map_err(|e| anyhow::anyhow!("serialize PeerDiscovered: {}", e))?;
-                            self.broadcast(MSG_TOPIC_PEER_DISCOVERY, &payload).await?;
-                            
+
+                            // Check if we have connected peers before broadcasting
+                            let connected_peers =
+                                swarm.behaviour_mut().gossipsub.all_peers().count();
+                            info!("Connected peers before broadcast: {}", connected_peers);
+
+                            if connected_peers > 0 {
+                                // Add a small delay to ensure topic subscription is complete
+                                tokio::time::sleep(Duration::from_millis(100)).await;
+
+                                match self.broadcast(MSG_TOPIC_PEER_DISCOVERY, &payload).await {
+                                    Ok(_) => {
+                                        info!(
+                                            "✅ Successfully broadcasted peer discovery for: {:?}",
+                                            peer
+                                        );
+                                    }
+                                    Err(e) => {
+                                        warn!("❌ Failed to broadcast peer discovery: {:?}", e);
+                                        // Retry once after a short delay
+                                        tokio::time::sleep(Duration::from_millis(500)).await;
+                                        if let Err(retry_e) =
+                                            self.broadcast(MSG_TOPIC_PEER_DISCOVERY, &payload).await
+                                        {
+                                            warn!(
+                                                "❌ Retry failed to broadcast peer discovery: {:?}",
+                                                retry_e
+                                            );
+                                        }
+                                    }
+                                }
+                            } else {
+                                warn!("⚠️ No connected peers available for broadcasting peer discovery");
+                            }
+
                             // Check if this is a bootstrap node
                             if self.is_bootstrap_node(&peer) {
                                 info!("⚠️  This is a bootstrap node, skipping: {:?}", peer);
@@ -628,24 +724,65 @@ impl NetworkLayer {
                 message,
             })) => {
                 info!(
-                    "Received message with topic : {} from: {}",
-                    message.topic, propagation_source
+                    "📨 Received gossipsub message - Topic: {}, From: {}, Message ID: {:?}",
+                    message.topic, propagation_source, message_id
                 );
+
+                // Log message size and topic hash
+                info!("📦 Message size: {} bytes", message.data.len());
+                info!("🏷️ Topic hash: {:?}", message.topic);
+
                 self.handle_gossipsub_message(&message).await?;
             }
             SwarmEvent::Behaviour(NetworkEvent::Gossipsub(gossipsub::Event::Subscribed {
                 peer_id,
                 topic,
             })) => {
-                info!("Subscribed to topic: {}", topic);
+                info!("📡 Peer {} subscribed to topic: {}", peer_id, topic);
+
+                // If this is the peer discovery topic, we can now safely broadcast our presence
+                if topic.as_str() == MSG_TOPIC_PEER_DISCOVERY {
+                    info!(
+                        "🎯 Peer discovery topic subscription confirmed by: {}",
+                        peer_id
+                    );
+
+                    // Small delay to ensure subscription is fully processed
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+
+                    // Broadcast our presence to this newly subscribed peer
+                    let msg = GossipsubMessage::PeerDiscovered {
+                        peer: self.local_peer_id.clone(),
+                        sequence: Some(1), // Add sequence number
+                    };
+                    if let Ok(payload) = serde_json::to_vec(&msg) {
+                        if let Err(e) = self.broadcast(MSG_TOPIC_PEER_DISCOVERY, &payload).await {
+                            warn!(
+                                "Failed to broadcast presence to newly subscribed peer: {:?}",
+                                e
+                            );
+                        }
+                    }
+                }
+            }
+            SwarmEvent::Behaviour(NetworkEvent::Gossipsub(gossipsub::Event::Unsubscribed {
+                peer_id,
+                topic,
+            })) => {
+                warn!("📡 Peer {} unsubscribed from topic: {}", peer_id, topic);
             }
             SwarmEvent::NewListenAddr { address, .. } => {
                 info!("Listening on {}", address);
-                    let full = address.clone().with(Protocol::P2p(self.local_peer_id.clone().into()));
-                    info!("📡 multiaddress   : {}", full);
+                let full = address
+                    .clone()
+                    .with(Protocol::P2p(self.local_peer_id.clone().into()));
+                info!("📡 multiaddress   : {}", full);
 
-                info!("Listening for RPC connections on {}{}", address, MPCProtocol.as_ref());
-                
+                info!(
+                    "Listening for RPC connections on {}{}",
+                    address,
+                    MPCProtocol.as_ref()
+                );
             }
             SwarmEvent::ConnectionClosed {
                 peer_id,
@@ -678,12 +815,21 @@ impl NetworkLayer {
     }
 
     async fn handle_gossipsub_message(&mut self, message: &Message) -> Result<()> {
-        info!("i am at handle_gossipsub_message ---------- {:?}", message.topic);
-        let res = serde_json::from_slice::<GossipsubMessage>(&message.data);
-        if let Err(e) = &res {
-            info!("now I know the error ----- {:?}", e);
-        }
-        let msg = res.unwrap();
+        info!(
+            "i am at handle_gossipsub_message ---------- {:?}",
+            message.topic
+        );
+
+        // Better error handling for message deserialization
+        let msg = match serde_json::from_slice::<GossipsubMessage>(&message.data) {
+            Ok(msg) => msg,
+            Err(e) => {
+                warn!("Failed to deserialize gossipsub message: {:?}", e);
+                warn!("Message data: {:?}", String::from_utf8_lossy(&message.data));
+                return Ok(()); // Continue processing other messages
+            }
+        };
+
         info!("[GMSG] {:?}", msg);
         match msg {
             // this must be used by broadcast in dkg (sending end)
@@ -714,10 +860,10 @@ impl NetworkLayer {
             }
             GossipsubMessage::VrfSelection(vrf_msg) => {
                 // Handle VRF selection messages
-                if let Some(vrf_manager) = self
-                    .node_manager
-                    .as_any()
-                    .downcast_ref::<crate::node_management::VrfNodeManager>()
+                if let Some(_vrf_manager) =
+                    self.node_manager
+                        .as_any()
+                        .downcast_ref::<crate::node_management::VrfNodeManager>()
                 {
                     // We need to handle this differently since we can't mutate through a trait object
                     // For now, we'll log the message
@@ -728,14 +874,32 @@ impl NetworkLayer {
                         vrf_msg
                     );
                 }
-            },
-            GossipsubMessage::PeerDiscovered { peer } => {
-                info!("SPeer discovered: {:?}", peer);
+            }
+            GossipsubMessage::PeerDiscovered { peer, sequence } => {
+                info!(
+                    "🎯 Peer discovered via gossipsub: {:?} (seq: {:?})",
+                    peer, sequence
+                );
 
-                if let Ok(_) = self.node_manager.add_node(peer) {
-                    info!("Added peer {} to node manager", peer);
-                } else {
-                    warn!("Failed to add peer {} to node manager", peer);
+                // Check if we already have this peer to avoid duplicates
+                let current_nodes = self.node_manager.get_active_nodes();
+                if current_nodes.contains(&peer) {
+                    info!("ℹ️ Peer {} already exists in node manager, skipping", peer);
+                    return Ok(());
+                }
+
+                match self.node_manager.add_node(peer) {
+                    Ok(_) => {
+                        info!("✅ Successfully added peer {} to node manager", peer);
+
+                        // Log updated node count
+                        let total = self.node_manager.get_total_nodes();
+                        let threshold = self.node_manager.get_threshold();
+                        info!("📊 Updated node count: {}, threshold: {}", total, threshold);
+                    }
+                    Err(e) => {
+                        warn!("❌ Failed to add peer {} to node manager: {:?}", peer, e);
+                    }
                 }
             }
         }
@@ -755,23 +919,46 @@ impl NetworkLayer {
             // this is used in the dkg code
             ChannelMessage::Broadcast { topic, data } => {
                 // dkg.s.1
-                info!("[handle_channel_message()] [BCAST] topic: {}", topic);
-                let topic_hash = gossipsub::IdentTopic::new(topic);
+                info!("📢 [BROADCAST] Attempting to broadcast to topic: {}", topic);
+                let topic_hash = gossipsub::IdentTopic::new(topic.clone());
+                info!("🏷️ [BROADCAST] Topic hash: {:?}", topic_hash.hash());
+
                 // here the channel msg is sent to other peer(s) as Gossipsub MSG type
                 // if peer(s) have already subscribed to this topic, they will recieve this
                 // msg (check subscribe_to_default_topics())
                 let swarm_mut = swarm.behaviour_mut();
+                let peer_count = swarm_mut.gossipsub.all_peers().count();
                 info!(
-                    "[handle_channel_message()] [BCAST] prs count: {}",
-                    swarm_mut.gossipsub.all_peers().count()
+                    "📊 [BROADCAST] Available peers for topic {}: {}",
+                    topic, peer_count
                 );
 
-                for x in swarm_mut.gossipsub.all_peers() {
-                    info!("[handle_channel_message()] [BCAST] peer: {:?}, {:?}", x.0, x.1);
+                if peer_count > 0 {
+                    info!("👥 [BROADCAST] Connected peers:");
+                    for (peer_id, _peer_info) in swarm_mut.gossipsub.all_peers() {
+                        info!("   - Peer: {:?}", peer_id);
+                    }
+
+                    match swarm_mut.gossipsub.publish(topic_hash, data) {
+                        Ok(_) => {
+                            info!(
+                                "✅ [BROADCAST] Successfully published message to topic: {}",
+                                topic
+                            );
+                        }
+                        Err(e) => {
+                            warn!(
+                                "❌ [BROADCAST] Failed to publish message to topic {}: {:?}",
+                                topic, e
+                            );
+                        }
+                    }
+                } else {
+                    warn!(
+                        "⚠️ [BROADCAST] No peers available for broadcasting to topic: {}",
+                        topic
+                    );
                 }
-                if let Err(e) = swarm_mut.gossipsub.publish(topic_hash, data) {
-                    info!("error: {:?}", e);
-                };
             }
             // this is not used anywhere yet
             ChannelMessage::Unicast { peer_id, data } => {
