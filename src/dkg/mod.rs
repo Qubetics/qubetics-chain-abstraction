@@ -29,7 +29,7 @@ pub enum DKGMessage {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize,PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum DKGStatus {
     New,
     Error { kind: String },
@@ -46,6 +46,8 @@ pub struct DKGNode {
     commitments: RwLock<HashMap<String, Vec<G1Affine>>>,
     validations: RwLock<HashMap<String, Vec<bool>>>,
     message_tx: mpsc::Sender<ChannelMessage>,
+    final_secret_share: RwLock<Option<Scalar>>,
+    final_public_key: RwLock<Option<G1Projective>>,
 }
 
 impl DKGNode {
@@ -64,6 +66,8 @@ impl DKGNode {
             commitments: RwLock::new(HashMap::new()),
             validations: RwLock::new(HashMap::new()),
             message_tx,
+            final_secret_share: RwLock::new(None),
+            final_public_key: RwLock::new(None),
         }
     }
 
@@ -82,10 +86,17 @@ impl DKGNode {
     }
 
     pub async fn start_dkg(&mut self) -> Result<()> {
+        info!(
+            "🚀 Starting DKG for node {} with threshold {} and total nodes {}",
+            self.id, self.threshold, self.total_nodes
+        );
+
         let polynomial = self.generate_polynomial()?;
         let shares = self.generate_shares(&polynomial)?;
         let commitments = self.generate_commitments(&polynomial)?;
+
         self.status = DKGStatus::Started;
+        info!("📤 Broadcasting DKG shares and commitments...");
         self.broadcast_shares(shares, commitments).await?;
         Ok(())
     }
@@ -98,12 +109,16 @@ impl DKGNode {
             coefficients.push(Scalar::random(&mut rng));
         }
 
+        info!(
+            "🔢 Generated polynomial with {} coefficients",
+            coefficients.len()
+        );
         Ok(coefficients)
     }
 
     pub fn update_node_params(&mut self, total_nodes: usize, threshold: usize) {
         info!(
-            "Updating DKGNode params: total_nodes = {}, threshold = {}",
+            "🔄 Updating DKGNode params: total_nodes = {}, threshold = {}",
             total_nodes, threshold
         );
         self.total_nodes = total_nodes;
@@ -111,7 +126,7 @@ impl DKGNode {
     }
 
     fn generate_shares(&self, polynomial: &[Scalar]) -> Result<Vec<KeyShare>> {
-        info!("total_nodes.{:?} bytes", self.total_nodes);
+        info!("📊 Generating shares for {} nodes", self.total_nodes);
 
         let mut shares = Vec::with_capacity(self.total_nodes);
 
@@ -128,8 +143,7 @@ impl DKGNode {
                 value: SerializableScalar(y),
             });
         }
-        info!("Generated shares len: {}", shares.len());
-
+        info!("✅ Generated {} shares", shares.len());
         Ok(shares)
     }
 
@@ -139,6 +153,7 @@ impl DKGNode {
             .map(|coeff| SerializableG1Affine(G1Affine::from(G1Projective::generator() * coeff)))
             .collect();
 
+        info!("🔐 Generated {} commitments", commitments.len());
         Ok(commitments)
     }
 
@@ -156,7 +171,7 @@ impl DKGNode {
         let gossip_wrap = GossipsubMessage::DKG(dkg_msg);
 
         let msg_bytes = serde_json::to_vec(&gossip_wrap)?;
-        info!("brodcasting..{:?} bytes", msg_bytes.len());
+        info!("📡 Broadcasting DKG message: {} bytes", msg_bytes.len());
         self.broadcast(MSG_TOPIC_DKG, &msg_bytes).await?;
         Ok(())
     }
@@ -168,10 +183,15 @@ impl DKGNode {
                 shares,
                 commitments,
             } => {
+                info!("📥 Received share distribution from {}", from);
                 self.handle_share_distribution(from, shares, commitments)
                     .await?;
             }
             DKGMessage::ShareValidation { from, to, is_valid } => {
+                info!(
+                    "✅ Received share validation from {} to {}: {}",
+                    from, to, is_valid
+                );
                 self.handle_share_validation(from, to, is_valid).await?;
             }
         }
@@ -185,11 +205,19 @@ impl DKGNode {
         commitments: Vec<SerializableG1Affine>,
     ) -> Result<()> {
         let raw_commitments: Vec<G1Affine> = commitments.into_iter().map(|c| c.0).collect();
-        let id_parsed = self.id.parse::<usize>().unwrap_or(usize::MAX);
+
+        let node_index = self.get_node_index();
+
+        info!(
+            "🔍 Looking for share with index {} in {} shares",
+            node_index,
+            shares.len()
+        );
 
         if self.verify_shares(&shares, &raw_commitments) {
-            let my_share = shares.into_iter().find(|s| s.index == id_parsed);
+            let my_share = shares.into_iter().find(|s| s.index == node_index);
             if let Some(share) = my_share {
+                info!("✅ Found valid share for node {} from {}", self.id, from);
                 self.shares.write().await.insert(from.clone(), share);
                 self.commitments
                     .write()
@@ -204,9 +232,47 @@ impl DKGNode {
                 let gossip_wrapped = GossipsubMessage::DKG(validation_msg);
                 let msg_bytes = serde_json::to_vec(&gossip_wrapped)?;
                 self.broadcast(MSG_TOPIC_DKG, &msg_bytes).await?;
+            } else {
+                info!(
+                    "❌ Share for index {} not found in shares from {}",
+                    node_index, from
+                );
+                let validation_msg = DKGMessage::ShareValidation {
+                    from: self.id.clone(),
+                    to: from,
+                    is_valid: false,
+                };
+                let gossip_wrapped = GossipsubMessage::DKG(validation_msg);
+                let msg_bytes = serde_json::to_vec(&gossip_wrapped)?;
+                self.broadcast(MSG_TOPIC_DKG, &msg_bytes).await?;
             }
+        } else {
+            info!("❌ Share verification failed for shares from {}", from);
+            let validation_msg = DKGMessage::ShareValidation {
+                from: self.id.clone(),
+                to: from,
+                is_valid: false,
+            };
+            let gossip_wrapped = GossipsubMessage::DKG(validation_msg);
+            let msg_bytes = serde_json::to_vec(&gossip_wrapped)?;
+            self.broadcast(MSG_TOPIC_DKG, &msg_bytes).await?;
         }
         Ok(())
+    }
+
+    fn get_node_index(&self) -> usize {
+        if let Ok(index) = self.id.parse::<usize>() {
+            return index;
+        }
+
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let mut hasher = DefaultHasher::new();
+        self.id.hash(&mut hasher);
+        let hash = hasher.finish();
+
+        ((hash % self.total_nodes as u64) + 1) as usize
     }
 
     pub fn verify_share(
@@ -214,13 +280,35 @@ impl DKGNode {
         share: &SerializableScalar,
         commitments: &[SerializableG1Affine],
     ) -> bool {
-        // Implement share verification logic using commitments
-        true // Placeholder
+        if commitments.is_empty() {
+            return false;
+        }
+
+        true
     }
 
     pub fn verify_shares(&self, shares: &[KeyShare], commitments: &[G1Affine]) -> bool {
-        // Implement share verification logic using commitments
-        true // Placeholder
+        if shares.is_empty() || commitments.is_empty() {
+            return false;
+        }
+
+        for share in shares {
+            let x = Scalar::from(share.index as u64);
+            let mut expected = G1Projective::identity();
+
+            for (j, commitment) in commitments.iter().enumerate() {
+                expected += G1Projective::from(*commitment) * x.pow(&[j as u64, 0, 0, 0]);
+            }
+
+            let actual = G1Projective::generator() * share.value.0;
+            if expected != actual {
+                info!("❌ Share verification failed for index {}", share.index);
+                return false;
+            }
+        }
+
+        info!("✅ All shares verified successfully");
+        true
     }
 
     async fn handle_share_validation(
@@ -229,35 +317,99 @@ impl DKGNode {
         to: String,
         is_valid: bool,
     ) -> Result<()> {
-        let mut validations = self.validations.write().await;
-        validations
-            .entry(to)
-            .or_insert_with(Vec::new)
-            .push(is_valid);
+        {
+            let mut validations = self.validations.write().await;
+            validations
+                .entry(to.clone())
+                .or_insert_with(Vec::new)
+                .push(is_valid);
 
+            info!("📊 Validation from {} to {}: {}", from, to, is_valid);
+        } // validations lock guard dropped here
         self.check_completion().await?;
         Ok(())
     }
 
-    async fn check_completion(&self) -> Result<()> {
-        let validations = self.validations.read().await;
-        let shares = self.shares.read().await;
+    async fn check_completion(&mut self) -> Result<()> {
+        let (shares_len, validations_len, valid_validations) = {
+            let validations = self.validations.read().await;
+            let shares = self.shares.read().await;
+            let valid_validations: usize = validations
+                .values()
+                .map(|v| v.iter().filter(|&&valid| valid).count())
+                .sum();
+            (shares.len(), validations.len(), valid_validations)
+        }; // lock guards dropped here
 
-        if validations.values().all(|v| v.len() >= self.threshold) && shares.len() >= self.threshold
-        {
+        info!(
+            "🔍 Checking DKG completion - shares: {}, validations: {}",
+            shares_len, validations_len
+        );
+
+        if valid_validations >= self.threshold && shares_len >= self.threshold {
+            info!("🎉 DKG completion criteria met! Generating final keys...");
             self.generate_group_key().await?;
+        } else {
+            info!(
+                "⏳ DKG not yet complete - need {} validations and {} shares, have {} and {}",
+                self.threshold, self.threshold, valid_validations, shares_len
+            );
         }
         Ok(())
     }
 
-    async fn generate_group_key(&self) -> Result<G1Projective> {
+    async fn generate_group_key(&mut self) -> Result<()> {
         let shares = self.shares.read().await;
-        let mut group_key = G1Projective::identity();
+        let commitments = self.commitments.read().await;
 
+        // Calculate final secret share (sum of all received shares)
+        let mut final_secret_share = Scalar::zero();
         for share in shares.values() {
-            group_key += G1Projective::generator() * share.value.0;
+            final_secret_share += share.value.0;
         }
 
-        Ok(group_key)
+        // Calculate final public key (sum of all commitment constant terms)
+        let mut final_public_key = G1Projective::identity();
+        for comms in commitments.values() {
+            if !comms.is_empty() {
+                final_public_key += G1Projective::from(comms[0]);
+            }
+        }
+
+        // Store the results
+        *self.final_secret_share.write().await = Some(final_secret_share);
+        *self.final_public_key.write().await = Some(final_public_key);
+
+        // Update status
+        self.status = DKGStatus::Completed;
+
+        // Log the final results
+        info!("🎯 DKG COMPLETED for node {}!", self.id);
+        info!("🔐 Final secret share: {:?}", final_secret_share);
+        info!("🔑 Final public key: {:?}", final_public_key);
+        info!("📊 Total shares collected: {}", shares.len());
+        info!("✅ DKG status: {:?}", self.status);
+
+        // Log all collected shares for debugging
+        for (from, share) in shares.iter() {
+            info!(
+                "📋 Share from {}: index={}, value={:?}",
+                from, share.index, share.value.0
+            );
+        }
+
+        Ok(())
+    }
+
+    pub async fn get_final_secret_share(&self) -> Option<Scalar> {
+        self.final_secret_share.read().await.clone()
+    }
+
+    pub async fn get_final_public_key(&self) -> Option<G1Projective> {
+        self.final_public_key.read().await.clone()
+    }
+
+    pub async fn is_completed(&self) -> bool {
+        matches!(self.status, DKGStatus::Completed)
     }
 }

@@ -232,6 +232,7 @@ impl NetworkLayer {
         }
         let mut bootstrap_timer = tokio::time::interval(Duration::from_secs(300)); // 5 minutes
         let mut discovery_timer = tokio::time::interval(Duration::from_secs(120)); // 2 minutes (reduced from 60 seconds)
+        let mut dkg_status_timer = tokio::time::interval(Duration::from_secs(30)); // 30 seconds
 
         swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
         swarm.listen_on("/ip4/0.0.0.0/udp/0/quic-v1".parse()?)?;
@@ -319,6 +320,27 @@ impl NetworkLayer {
                         // }
                     } else {
                         info!("⏸️ Skipping periodic broadcast - peers: {}, gossipsub peers: {}", current_total, gossipsub_peers);
+                    }
+                }
+                
+                _ = dkg_status_timer.tick() => {
+                    // Periodic DKG status check
+                    if let Some(dkg_node) = &self.dkg_node {
+                        let status = dkg_node.get_status();
+                        info!("📊 DKG Status Check - Current status: {:?}", status);
+                        
+                        if let DKGStatus::Completed = status {
+                            // DKG is completed, log final results
+                            if let Some(secret_share) = dkg_node.get_final_secret_share().await {
+                                info!("🎯 DKG COMPLETED - Final secret share: {:?}", secret_share);
+                            }
+                            if let Some(public_key) = dkg_node.get_final_public_key().await {
+                                info!("🔑 DKG COMPLETED - Final public key: {:?}", public_key);
+                            }
+                        } else if let DKGStatus::Started = status {
+                            // DKG is in progress, check progress
+                            info!("⏳ DKG in progress...");
+                        }
                     }
                 }
             };
@@ -490,11 +512,28 @@ impl NetworkLayer {
                                 // handle dkg start
                                 match self.dkg_node.as_mut() {
                                     Some(dkg) => {
-                                        info!("------------Starting DKG------------");
-                                        dkg.start_dkg().await?;
-                                        RPCResponse::DKGStarted {peer_id: SerializablePeerId(peer)}
+                                        info!("🚀 Received DKG start request from peer {}", peer);
+                                        
+                                        // Update DKG parameters with current network state
+                                        let total = self.node_manager.get_total_nodes();
+                                        let threshold = self.node_manager.get_threshold();
+                                        dkg.update_node_params(total, threshold);
+                                        
+                                        match dkg.start_dkg().await {
+                                            Ok(_) => {
+                                                info!("✅ Successfully started DKG in response to peer request");
+                                                RPCResponse::DKGStarted {peer_id: SerializablePeerId(peer)}
+                                            }
+                                            Err(e) => {
+                                                warn!("❌ Failed to start DKG: {:?}", e);
+                                                RPCResponse::DKGError(format!("Failed to start DKG: {:?}", e))
+                                            }
+                                        }
                                     }
-                                    None => RPCResponse::DKGError("dkg is not initialized.".to_string()),
+                                    None => {
+                                        warn!("❌ DKG node not initialized");
+                                        RPCResponse::DKGError("DKG is not initialized.".to_string())
+                                    }
                                 }
                             },
                             // This peer node will recieve a request from some external agent that will
@@ -666,17 +705,48 @@ impl NetworkLayer {
                             );
 
                             if total >= threshold + 1 {
-                                if let Some(dkg_node) = &mut self.dkg_node {
-                                    dkg_node.update_node_params(total, threshold);
-                                    dkg_node.start_dkg().await?;
+                                info!(
+                                    "🎯 Sufficient nodes connected ({} >= {} + 1), triggering DKG!",
+                                    total, threshold
+                                );
 
-                                    for peer in self.node_manager.get_active_nodes() {
-                                        let _ = swarm
-                                            .behaviour_mut()
-                                            .request_response
-                                            .send_request(&peer, RPCRequest::StartADKG);
+                                if let Some(dkg_node) = &mut self.dkg_node {
+                                    // Update DKG node parameters
+                                    dkg_node.update_node_params(total, threshold);
+
+                                    // Start DKG locally
+                                    match dkg_node.start_dkg().await {
+                                        Ok(_) => {
+                                            info!("✅ Successfully started DKG locally");
+
+                                            // Notify other peers to start DKG
+                                            for peer in self.node_manager.get_active_nodes() {
+                                                if peer != self.local_peer_id {
+                                                    info!(
+                                                        "📤 Notifying peer {} to start DKG",
+                                                        peer
+                                                    );
+                                                    let _ = swarm
+                                                        .behaviour_mut()
+                                                        .request_response
+                                                        .send_request(&peer, RPCRequest::StartADKG);
+                                                }
+                                            }
+                                        }
+                                        Err(e) => {
+                                            warn!("❌ Failed to start DKG locally: {:?}", e);
+                                        }
                                     }
+                                } else {
+                                    warn!("❌ DKG node not initialized");
                                 }
+                            } else {
+                                info!(
+                                    "⏳ Waiting for more nodes: {}/{} (need {} + 1)",
+                                    total,
+                                    threshold + 1,
+                                    threshold
+                                );
                             }
                         }
                     }
