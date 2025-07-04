@@ -135,6 +135,14 @@ impl NetworkLayer {
         self.command_processor = Some(processor);
     }
 
+    pub fn get_dkg_node(&mut self) -> Option<&mut DKGNode> {
+        self.dkg_node.as_mut()
+    }
+
+    pub fn get_signing_node(&mut self) -> Option<&mut SigningNode> {
+        self.signing_node.as_mut()
+    }
+
     pub fn get_msg_tx(&self) -> mpsc::Sender<ChannelMessage> {
         self.message_tx.clone()
     }

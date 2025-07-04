@@ -37,6 +37,8 @@ pub enum DKGStatus {
     Completed,
 }
 
+pub type DKGCompletionCallback = Box<dyn Fn(Scalar, G1Projective) + Send + Sync>;
+
 pub struct DKGNode {
     id: String,
     status: DKGStatus,
@@ -48,6 +50,7 @@ pub struct DKGNode {
     message_tx: mpsc::Sender<ChannelMessage>,
     final_secret_share: RwLock<Option<Scalar>>,
     final_public_key: RwLock<Option<G1Projective>>,
+    completion_callback: Option<DKGCompletionCallback>,
 }
 
 impl DKGNode {
@@ -68,7 +71,13 @@ impl DKGNode {
             message_tx,
             final_secret_share: RwLock::new(None),
             final_public_key: RwLock::new(None),
+            completion_callback: None,
         }
+    }
+
+    pub fn set_completion_callback(&mut self, callback: DKGCompletionCallback) {
+        self.completion_callback = Some(callback);
+        info!("🔗 [DKG] Node {} set completion callback", self.id);
     }
 
     pub async fn broadcast(&self, topic: &str, data: &[u8]) -> Result<()> {
@@ -396,6 +405,10 @@ impl DKGNode {
                 "📋 Share from {}: index={}, value={:?}",
                 from, share.index, share.value.0
             );
+        }
+
+        if let Some(callback) = self.completion_callback.take() {
+            callback(final_secret_share, final_public_key);
         }
 
         Ok(())

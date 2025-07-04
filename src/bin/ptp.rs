@@ -56,10 +56,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         })?
         .build();
     swarm.dial(server_addr.clone())?;
-    
-
-    
-
     loop {
         match swarm.select_next_some().await {
             SwarmEvent::ConnectionEstablished { peer_id, connection_id, endpoint, num_established, concurrent_dial_errors, established_in } => {
