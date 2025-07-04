@@ -4,7 +4,7 @@ use mpc_node::node_management::{
 };
 use mpc_node::{
     commands::CommandProcessor, consensus::ConsensusNode, dkg::DKGNode, network::NetworkLayer,
-    signing::SigningNode,
+    rpc_server, signing::SigningNode,
 };
 use rand::{thread_rng, Rng};
 #[allow(dead_code)]
@@ -131,6 +131,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
     network.set_signing_node(signing_node.lock().await.clone());
     network.set_consensus_node(consensus_node);
     network.set_command_processor(command_processor);
+
+    // Start RPC server in a separate task
+    let message_tx = network.get_msg_tx();
+    let rpc_port = 8080; // You can make this configurable
+
+    tokio::spawn(async move {
+        info!("🚀 Starting RPC server on port {}", rpc_port);
+        if let Err(e) = rpc_server::start_http_server(message_tx, rpc_port).await {
+            info!("❌ RPC server failed: {:?}", e);
+        }
+    });
 
     // Start the network
     network.start().await?;

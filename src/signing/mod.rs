@@ -260,7 +260,8 @@ impl SigningNode {
         Ok(())
     }
 
-    async fn generate_signature_share(&self, message_hash: &[u8]) -> Result<Scalar> {
+    pub async fn generate_signature_share(&self, message_hash: &[u8]) -> Result<Scalar> {
+        info!("Here at signature generation");
         if let Some(secret_share) = self.secret_share {
             if self.nonces.is_empty() {
                 return Err(anyhow::anyhow!("No nonces available for signing"));

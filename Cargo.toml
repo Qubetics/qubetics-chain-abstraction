@@ -48,6 +48,7 @@ tonic = "0.13.0"
 prost = "0.13.5"
 libp2p-grpc-rs = "0.1.2"
 tracing-appender = "0.2.3"
+warp = "0.3"
 
 [build-dependencies]
 tonic-build = "0.13.0"

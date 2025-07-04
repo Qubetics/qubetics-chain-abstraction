@@ -366,6 +366,8 @@ impl NetworkLayer {
             "consensus",
             "commands",
             "vrf-selection",
+            "transactions",
+            "dkg-commands",
         ];
         for topic in topics {
             let topic_hash = gossipsub::IdentTopic::new(topic);
@@ -951,6 +953,49 @@ impl NetworkLayer {
                         "Received VRF selection message but node manager is not VRF-based: {:?}",
                         vrf_msg
                     );
+                }
+            }
+            GossipsubMessage::Transaction(transaction) => {
+                info!("📝 Received transaction via gossipsub: {:?}", transaction);
+                // Here you can add transaction processing logic
+                // For example, validate the transaction, add to mempool, etc.
+                if let Some(signing_node) = &mut self.signing_node {
+                    // Get secret share from DKG node if available
+                    if let Some(dkg_node) = &self.dkg_node {
+                        if let Some(secret_share) = dkg_node.get_final_secret_share().await {
+                            info!("🔐 [NETWORK] Got secret share from DKG: {:?}", secret_share);
+                            signing_node.set_secret_share(secret_share);
+                        } else {
+                            info!("⏳ [NETWORK] DKG not completed yet, no secret share available");
+                            return Ok(());
+                        }
+                    } else {
+                        info!("❌ [NETWORK] DKG node not available");
+                        return Ok(());
+                    }
+                    
+                    // Convert transaction to bytes for signing
+                    let tx_bytes = serde_json::to_vec(&transaction)?;
+                    signing_node.sign_message(&tx_bytes).await?;
+                    signing_node.generate_signature_share(&tx_bytes).await?;
+                }
+            }
+            GossipsubMessage::DKGCommand(dkg_cmd) => {
+                info!("🚀 Received DKG command via gossipsub: {:?}", dkg_cmd);
+                match dkg_cmd {
+                    RPCRequest::StartADKG => {
+                        if let Some(dkg_node) = &mut self.dkg_node {
+                            info!("🚀 Starting DKG in response to gossipsub command");
+                            if let Err(e) = dkg_node.start_dkg().await {
+                                warn!("❌ Failed to start DKG from gossipsub command: {:?}", e);
+                            }
+                        } else {
+                            warn!("❌ DKG node not initialized for gossipsub command");
+                        }
+                    }
+                    _ => {
+                        info!("📋 Received other DKG command: {:?}", dkg_cmd);
+                    }
                 }
             }
             GossipsubMessage::PeerDiscovered { peer, sequence } => {

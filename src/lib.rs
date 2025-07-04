@@ -10,6 +10,7 @@ pub mod frost;
 pub mod network;
 pub mod node_management;
 pub mod protos;
+pub mod rpc_server;
 pub mod signing;
 pub mod types;
 pub mod vrf;
