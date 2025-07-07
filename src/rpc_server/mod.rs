@@ -103,14 +103,27 @@ async fn handle_submit_transaction(
         sha2::Sha256::digest(format!("{:?}", tx).as_bytes())
     );
 
-    // Wrap the transaction in a GossipsubMessage
+    // First, process the transaction locally (this node will sign it)
+    info!("🔐 [LOCAL] Processing transaction locally for signing");
+
+    // Send a special local processing message
+    let local_msg = ChannelMessage::LocalTransaction {
+        transaction: tx.clone(),
+    };
+
+    let tx_sender = message_tx.lock().await;
+    if let Err(e) = tx_sender.send(local_msg).await {
+        warn!("Failed to send transaction for local processing: {:?}", e);
+        return Err(warp::reject::custom(TransactionError::NetworkError));
+    }
+
+    // Then broadcast to other nodes
     let gossipsub_msg = crate::types::GossipsubMessage::Transaction(tx.clone());
     let tx_data = serde_json::to_vec(&gossipsub_msg).map_err(|e| {
         warn!("Failed to serialize transaction: {}", e);
         warp::reject::custom(TransactionError::SerializationError)
     })?;
 
-    let tx_sender = message_tx.lock().await;
     if let Err(e) = tx_sender
         .send(ChannelMessage::Broadcast {
             topic: "transactions".to_string(),
@@ -122,8 +135,8 @@ async fn handle_submit_transaction(
         return Err(warp::reject::custom(TransactionError::NetworkError));
     }
 
-    // println!("✅ HTTP: Transaction submitted to network: {}", tx_hash);
     info!("✅ HTTP: Transaction submitted to network: {}", tx_hash);
+
     Ok(warp::reply::json(&TransactionResponse {
         tx_hash,
         status: "submitted".to_string(),
@@ -184,5 +197,3 @@ pub enum TransactionError {
 
 impl warp::reject::Reject for TransactionError {}
 
-// Note: gRPC implementation would require proper proto files and generated code
-// For now, we focus on the HTTP server implementation

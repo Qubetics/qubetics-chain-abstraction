@@ -18,7 +18,7 @@ async function testRPC() {
             from: "abcd",
             to: "0x742d35Cc6634C0532925a3b8D4C9db96C4b4d8b7",
             amount: 1000000000000000000,
-            nonce: 2,
+            nonce: 3,
             data: [72, 101, 108, 108, 111, 32, 77, 80, 67, 32, 78, 101, 116, 119, 111, 114, 107, 33] // "Hello MPC Network!" as byte array
         };
 

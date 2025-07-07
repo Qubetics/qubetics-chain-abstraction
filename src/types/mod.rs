@@ -16,8 +16,17 @@ pub struct PeerInfo {
 
 #[derive(Debug, Clone)]
 pub enum ChannelMessage {
-    Broadcast { topic: String, data: Vec<u8> },
-    Unicast { peer_id: String, data: Vec<u8> },
+    Broadcast {
+        topic: String,
+        data: Vec<u8>,
+    },
+    Unicast {
+        peer_id: String,
+        data: Vec<u8>,
+    },
+    LocalTransaction {
+        transaction: crate::rpc_server::DummyTransaction,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

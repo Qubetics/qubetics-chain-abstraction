@@ -1,6 +1,6 @@
 use crate::types::p2p::SerializablePeerId;
 use anyhow::Result;
-use blake3::Hash;
+use ecvrf::{keygen, prove, verify, VrfPk, VrfProof, VrfSk};
 use libp2p::PeerId;
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
@@ -11,7 +11,7 @@ use tracing::{debug, info};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VrfOutput {
     pub proof: Vec<u8>,
-    pub hash: Hash,
+    pub hash: Vec<u8>,
     pub value: u64,
 }
 
@@ -41,10 +41,11 @@ pub enum VrfSelectionMessage {
     },
 }
 
-/// VRF-based node selector
+/// VRF-based node selector using ecvrf
+#[derive(Debug)]
 pub struct VrfNodeSelector {
-    vrf_secret_key: [u8; 32],
-    vrf_public_key: [u8; 32],
+    vrf_secret_key: VrfSk,
+    vrf_public_key: VrfPk,
     node_id: PeerId,
     selection_round: u64,
     submissions: HashMap<u64, HashMap<PeerId, VrfOutput>>,
@@ -53,18 +54,12 @@ pub struct VrfNodeSelector {
 
 impl VrfNodeSelector {
     pub fn new(node_id: PeerId) -> Self {
-        let mut rng = OsRng;
-        let mut secret_key = [0u8; 32];
-        rng.fill_bytes(&mut secret_key);
-
-        // Generate public key using blake3 keyed hash
-        let public_key = blake3::keyed_hash(&secret_key, b"vrf-public-key")
-            .as_bytes()
-            .clone();
+        // Generate VRF key pair
+        let (vrf_secret_key, vrf_public_key) = keygen();
 
         Self {
-            vrf_secret_key: secret_key,
-            vrf_public_key: public_key,
+            vrf_secret_key,
+            vrf_public_key,
             node_id,
             selection_round: 0,
             submissions: HashMap::new(),
@@ -72,38 +67,56 @@ impl VrfNodeSelector {
         }
     }
 
-    /// Generate VRF proof for a given input
+    /// Generate VRF proof for a given input using ecvrf
     pub fn generate_vrf_proof(&self, input: &[u8]) -> VrfOutput {
-        // Create a hasher with the secret key
-        let mut hasher = blake3::Hasher::new_keyed(&self.vrf_secret_key);
-        hasher.update(input);
-        let hash = hasher.finalize();
+        // Generate VRF proof using ecvrf
+        let (hash, proof) = prove(input, &self.vrf_secret_key);
 
         // Extract a u64 value from the hash for selection
-        let value = u64::from_le_bytes([
-            hash.as_bytes()[0],
-            hash.as_bytes()[1],
-            hash.as_bytes()[2],
-            hash.as_bytes()[3],
-            hash.as_bytes()[4],
-            hash.as_bytes()[5],
-            hash.as_bytes()[6],
-            hash.as_bytes()[7],
-        ]);
+        let value = if hash.len() >= 8 {
+            u64::from_le_bytes([
+                hash[0], hash[1], hash[2], hash[3], hash[4], hash[5], hash[6], hash[7],
+            ])
+        } else {
+            0
+        };
 
         VrfOutput {
-            proof: hash.as_bytes().to_vec(),
-            hash,
+            proof: proof.to_bytes().to_vec(),
+            hash: hash.to_vec(),
             value,
         }
     }
 
-    /// Verify VRF proof from another node
-    pub fn verify_vrf_proof(&self, _node_id: &PeerId, input: &[u8], output: &VrfOutput) -> bool {
-        // In a real implementation, you would need the public key of the other node
-        // For now, we'll use a simplified verification
-        let expected_hash = blake3::hash(input);
-        output.hash == expected_hash
+    /// Verify VRF proof from another node using ecvrf
+    pub fn verify_vrf_proof(
+        &self,
+        node_public_key: &[u8],
+        input: &[u8],
+        output: &VrfOutput,
+    ) -> bool {
+        // Deserialize the public key
+        let pubkey = match VrfPk::from_bytes(node_public_key.try_into().unwrap_or(&[0; 32])) {
+            Ok(pk) => pk,
+            Err(_) => {
+                debug!("Failed to deserialize public key");
+                return false;
+            }
+        };
+
+        // Deserialize the proof
+        let proof = match VrfProof::from_bytes(&output.proof.clone().try_into().unwrap_or([0; 96]))
+        {
+            Ok(p) => p,
+            Err(_) => {
+                debug!("Failed to deserialize VRF proof");
+                return false;
+            }
+        };
+
+        // Verify the proof
+        let hash: [u8; 32] = output.hash.clone().try_into().unwrap_or([0; 32]);
+        verify(input, &pubkey, &hash, &proof)
     }
 
     /// Generate VRF proof for node selection
@@ -193,8 +206,23 @@ impl VrfNodeSelector {
     }
 
     /// Get VRF public key for verification
-    pub fn get_public_key(&self) -> [u8; 32] {
-        self.vrf_public_key
+    pub fn get_public_key(&self) -> Vec<u8> {
+        self.vrf_public_key.to_bytes().to_vec()
+    }
+
+    /// Get VRF public key as hex string
+    pub fn get_public_key_hex(&self) -> String {
+        hex::encode(self.vrf_public_key.to_bytes())
+    }
+
+    /// Get VRF secret key (for testing purposes)
+    pub fn get_secret_key(&self) -> Vec<u8> {
+        self.vrf_secret_key.to_bytes().to_vec()
+    }
+
+    /// Get VRF secret key as hex string
+    pub fn get_secret_key_hex(&self) -> String {
+        hex::encode(self.vrf_secret_key.to_bytes())
     }
 
     /// Handle incoming VRF selection messages
@@ -282,7 +310,27 @@ mod tests {
         let output = selector.generate_vrf_proof(input);
 
         assert!(!output.proof.is_empty());
+        assert!(!output.hash.is_empty());
         assert!(output.value > 0);
+
+        println!("Generated proof: {} bytes", output.proof.len());
+        println!("Generated hash: {:?} bytes", output.hash.len());
+        println!("Generated value: {}", output.value);
+    }
+
+    #[test]
+    fn test_vrf_verification() {
+        let keypair = Keypair::generate_ed25519();
+        let node_id = PeerId::from(keypair.public());
+        let selector = VrfNodeSelector::new(node_id);
+
+        let input = b"test verification input";
+        let output = selector.generate_vrf_proof(input);
+        let public_key = selector.get_public_key();
+
+        // Verify the proof
+        let is_valid = selector.verify_vrf_proof(&public_key, input, &output);
+        assert!(is_valid, "VRF proof verification failed");
     }
 
     #[test]
@@ -318,6 +366,12 @@ mod tests {
         let result2 = selector.select_mpc_nodes(&nodes, 3, 1);
 
         // Same round should produce same result
+        assert_eq!(result1.selected_nodes.len(), result2.selected_nodes.len());
+        assert_eq!(result1.threshold, result2.threshold);
+        assert_eq!(result1.total_nodes, result2.total_nodes);
+        assert_eq!(result1.selection_round, result2.selection_round);
+
+        // The selected nodes should be the same (deterministic VRF)
         assert_eq!(result1.selected_nodes, result2.selected_nodes);
     }
 }

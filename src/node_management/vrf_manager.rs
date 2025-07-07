@@ -92,8 +92,8 @@ impl VrfNodeManager {
     }
 
     /// Get VRF public key for this node
-    pub fn get_vrf_public_key(&self) -> [u8; 32] {
-        self.vrf_selector.get_public_key()
+    pub fn get_vrf_public_key(&self) -> String {
+        self.vrf_selector.get_public_key_hex()
     }
 
     /// Get the current selection result
@@ -165,11 +165,19 @@ mod tests {
     use crate::node_management::DefaultThresholdCalculator;
     use libp2p::identity::Keypair;
 
+    // Custom threshold calculator for testing
+    struct TestThresholdCalculator;
+    impl ThresholdCalculator for TestThresholdCalculator {
+        fn calculate_threshold(&self, _total_nodes: usize) -> usize {
+            3 // Always return 3 for testing
+        }
+    }
+
     #[tokio::test]
     async fn test_vrf_node_manager() {
         let keypair = Keypair::generate_ed25519();
         let node_id = PeerId::from(keypair.public());
-        let threshold_calculator = Box::new(DefaultThresholdCalculator);
+        let threshold_calculator = Box::new(TestThresholdCalculator);
         let mut manager = VrfNodeManager::new(node_id, threshold_calculator, 10);
 
         // Add some test nodes
@@ -185,7 +193,7 @@ mod tests {
 
         // Trigger selection
         let result = manager.trigger_selection().await.unwrap();
-        assert_eq!(result.selected_nodes.len(), 3); // Default threshold
+        assert_eq!(result.selected_nodes.len(), 3); // Should select 3 nodes
         assert_eq!(result.total_nodes, 5);
     }
 

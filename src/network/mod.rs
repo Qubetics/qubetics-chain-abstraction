@@ -1083,6 +1083,35 @@ impl NetworkLayer {
                     );
                 }
             }
+            // Handle local transaction processing (for the node that receives the HTTP request)
+            ChannelMessage::LocalTransaction { transaction } => {
+                info!("🔐 [LOCAL] Processing transaction locally: {:?}", transaction);
+                
+                if let Some(signing_node) = &mut self.signing_node {
+                    // Get secret share from DKG node if available
+                    if let Some(dkg_node) = &self.dkg_node {
+                        if let Some(secret_share) = dkg_node.get_final_secret_share().await {
+                            info!("🔐 [LOCAL] Got secret share from DKG: {:?}", secret_share);
+                            signing_node.set_secret_share(secret_share);
+                        } else {
+                            info!("⏳ [LOCAL] DKG not completed yet, no secret share available");
+                            return Ok(());
+                        }
+                    } else {
+                        info!("❌ [LOCAL] DKG node not available");
+                        return Ok(());
+                    }
+                    
+                    // Convert transaction to bytes for signing
+                    let tx_bytes = serde_json::to_vec(&transaction)?;
+                    info!("🔐 [LOCAL] Starting local signing process");
+                    signing_node.sign_message(&tx_bytes).await?;
+                    signing_node.generate_signature_share(&tx_bytes).await?;
+                    info!("✅ [LOCAL] Local transaction signing completed");
+                } else {
+                    warn!("❌ [LOCAL] Signing node not available for local processing");
+                }
+            }
             // this is not used anywhere yet
             ChannelMessage::Unicast { peer_id, data } => {
                 // Implement direct message sending using request-response protocol
