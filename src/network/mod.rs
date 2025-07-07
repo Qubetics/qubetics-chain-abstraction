@@ -960,11 +960,11 @@ impl NetworkLayer {
                 // Here you can add transaction processing logic
                 // For example, validate the transaction, add to mempool, etc.
                 if let Some(signing_node) = &mut self.signing_node {
-                    // Get secret share from DKG node if available
+                    // Generate BLS key pair if not already done
                     if let Some(dkg_node) = &self.dkg_node {
                         if let Some(secret_share) = dkg_node.get_final_secret_share().await {
                             info!("🔐 [NETWORK] Got secret share from DKG: {:?}", secret_share);
-                            signing_node.set_secret_share(secret_share);
+                            signing_node.set_private_key(secret_share);
                         } else {
                             info!("⏳ [NETWORK] DKG not completed yet, no secret share available");
                             return Ok(());
@@ -977,7 +977,6 @@ impl NetworkLayer {
                     // Convert transaction to bytes for signing
                     let tx_bytes = serde_json::to_vec(&transaction)?;
                     signing_node.sign_message(&tx_bytes).await?;
-                    signing_node.generate_signature_share(&tx_bytes).await?;
                 }
             }
             GossipsubMessage::DKGCommand(dkg_cmd) => {
@@ -998,6 +997,16 @@ impl NetworkLayer {
                     }
                 }
             }
+            // GossipsubMessage::StartSigning { message } => {
+            //     // if let Some(signing_node) = &mut self.signing_node {
+            //     //     // Generate BLS key pair if not already done
+            //     //     if !signing_node.has_private_key() {
+            //     //         info!("🔐 [NETWORK] Generating BLS key pair for signing");
+            //     //         signing_node.generate_key_pair()?;
+            //     //     }
+            //     //     signing_node.sign_message(&message).await?;
+            //     // }
+            // }
             GossipsubMessage::PeerDiscovered { peer, sequence } => {
                 info!(
                     "🎯 Peer discovered via gossipsub: {:?} (seq: {:?})",
@@ -1088,25 +1097,16 @@ impl NetworkLayer {
                 info!("🔐 [LOCAL] Processing transaction locally: {:?}", transaction);
                 
                 if let Some(signing_node) = &mut self.signing_node {
-                    // Get secret share from DKG node if available
-                    if let Some(dkg_node) = &self.dkg_node {
-                        if let Some(secret_share) = dkg_node.get_final_secret_share().await {
-                            info!("🔐 [LOCAL] Got secret share from DKG: {:?}", secret_share);
-                            signing_node.set_secret_share(secret_share);
-                        } else {
-                            info!("⏳ [LOCAL] DKG not completed yet, no secret share available");
-                            return Ok(());
-                        }
-                    } else {
-                        info!("❌ [LOCAL] DKG node not available");
-                        return Ok(());
+                    // Generate BLS key pair if not already done
+                    if !signing_node.has_private_key() {
+                        info!("🔐 [LOCAL] Generating BLS key pair for signing");
+                        signing_node.generate_key_pair()?;
                     }
                     
                     // Convert transaction to bytes for signing
                     let tx_bytes = serde_json::to_vec(&transaction)?;
                     info!("🔐 [LOCAL] Starting local signing process");
                     signing_node.sign_message(&tx_bytes).await?;
-                    signing_node.generate_signature_share(&tx_bytes).await?;
                     info!("✅ [LOCAL] Local transaction signing completed");
                 } else {
                     warn!("❌ [LOCAL] Signing node not available for local processing");

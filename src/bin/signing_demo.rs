@@ -86,9 +86,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let signing_node = signing_node_clone.clone();
         tokio::spawn(async move {
             let mut signing_node = signing_node.lock().await;
-            signing_node.set_secret_share(secret_share);
-            signing_node.set_group_key(group_key);
-            info!("🔗 [DEMO] DKG completion callback executed - signing node configured");
+            // For BLS, we'll generate a key pair instead of using DKG shares
+            if !signing_node.has_private_key() {
+                if let Err(e) = signing_node.generate_key_pair() {
+                    info!("❌ [DEMO] Failed to generate BLS key pair: {:?}", e);
+                }
+            }
+            info!("🔗 [DEMO] DKG completion callback executed - signing node configured with BLS keys");
         });
     }));
 

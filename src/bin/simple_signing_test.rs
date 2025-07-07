@@ -1,6 +1,4 @@
-use bls12_381::{G1Projective, Scalar};
-use ff::Field;
-use rand::rngs::OsRng;
+use bls12_381::G1Projective;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::info;
@@ -45,27 +43,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         info!("✅ Created {}", node_id);
     }
 
-    // Simulate DKG completion by setting secret shares and group keys
-    info!("🔐 Setting up secret shares and group keys...");
+    // Generate BLS key pairs for each node
+    info!("🔐 Setting up BLS key pairs...");
 
-    let mut rng = OsRng;
-    let secret_shares = vec![
-        Scalar::random(&mut rng),
-        Scalar::random(&mut rng),
-        Scalar::random(&mut rng),
-    ];
-
-    let group_key = G1Projective::generator() * secret_shares.iter().sum::<Scalar>();
-
-    // Configure each node with its secret share and group key
+    // Configure each node with BLS key pairs
     for (i, node) in nodes.iter().enumerate() {
         let mut node = node.lock().await;
-        node.set_secret_share(secret_shares[i]);
-        node.set_group_key(group_key);
-        info!(
-            "🔑 Configured {} with secret share and group key",
-            format!("Node-{}", i + 1)
-        );
+        if let Err(e) = node.generate_key_pair() {
+            info!("❌ Failed to generate key pair for Node-{}: {:?}", i + 1, e);
+        } else {
+            info!(
+                "🔑 Configured {} with BLS key pair",
+                format!("Node-{}", i + 1)
+            );
+        }
     }
 
     // Test message to sign
@@ -95,74 +86,57 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Simulate the commitment and signature share exchange
-    info!("📤 Simulating commitment and signature share exchange...");
+    // Simulate BLS signature exchange
+    info!("📤 Simulating BLS signature exchange...");
 
-    // In a real scenario, nodes would exchange commitments and signature shares
+    // In a real scenario, nodes would exchange BLS signatures
     // For this demo, we'll show what the process looks like
     for i in 0..total_nodes {
         info!(
-            "📋 {} would broadcast commitment share",
+            "📋 {} would broadcast BLS signature",
             format!("Node-{}", i + 1)
         );
         info!(
-            "✍️ {} would generate signature share using secret: {:?}",
-            format!("Node-{}", i + 1),
-            secret_shares[i]
+            "✍️ {} would generate BLS signature using private key",
+            format!("Node-{}", i + 1)
         );
     }
 
-    // Simulate signature aggregation
-    info!("🔢 Simulating signature aggregation...");
-    let aggregated_signature = secret_shares.iter().sum::<Scalar>();
-    info!("🎉 Final aggregated signature: {:?}", aggregated_signature);
+    // Simulate BLS signature aggregation
+    info!("🔢 Simulating BLS signature aggregation...");
+    info!("🎉 Final aggregated BLS signature would be computed");
 
     // Show what each node would log
     info!("📋 Logs that each node would produce:");
     info!("=====================================");
 
     for i in 0..total_nodes {
-        info!(
-            "[Node-{}] 🔐 Secret share set: {:?}",
-            i + 1,
-            secret_shares[i]
-        );
-        info!("[Node-{}] 🔑 Group key set: {:?}", i + 1, group_key);
+        info!("[Node-{}] 🔐 BLS key pair generated", i + 1);
         info!(
             "[Node-{}] 📝 Starting to sign message: {:?}",
             i + 1,
             test_message
         );
-        info!("[Node-{}] 🎲 Generated nonces for signing", i + 1);
-        info!("[Node-{}] 📤 Broadcasted commitment share", i + 1);
+        info!("[Node-{}] ✍️ Generated BLS signature", i + 1);
+        info!("[Node-{}] 📤 Broadcasted BLS signature", i + 1);
         info!(
-            "[Node-{}] ✍️ Generated signature share: {:?}",
-            i + 1,
-            secret_shares[i]
-        );
-        info!(
-            "[Node-{}] 📥 Received commitment shares from other nodes",
+            "[Node-{}] 📥 Received BLS signatures from other nodes",
             i + 1
         );
+        info!("[Node-{}] 🎯 Aggregating BLS signatures", i + 1);
         info!(
-            "[Node-{}] 📥 Received signature shares from other nodes",
+            "[Node-{}] 🎉 Final aggregated BLS signature computed",
             i + 1
-        );
-        info!("[Node-{}] 🎯 Aggregating signature shares", i + 1);
-        info!(
-            "[Node-{}] 🎉 Final signature: {:?}",
-            i + 1,
-            aggregated_signature
         );
         info!("");
     }
 
-    info!("✅ Simple signing test completed successfully!");
+    info!("✅ Simple BLS signing test completed successfully!");
     info!("💡 In a real distributed environment, nodes would:");
     info!("   1. Discover each other via P2P network");
-    info!("   2. Run DKG to generate secret shares");
-    info!("   3. Exchange commitments and signature shares");
-    info!("   4. Aggregate signatures to produce final result");
+    info!("   2. Generate individual BLS key pairs");
+    info!("   3. Exchange BLS signatures");
+    info!("   4. Aggregate BLS signatures to produce final result");
     info!("   5. Log all steps for monitoring and debugging");
 
     Ok(())

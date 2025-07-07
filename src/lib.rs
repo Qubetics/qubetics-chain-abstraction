@@ -25,7 +25,7 @@ pub use node_management::{
     BasicNodeManager, DefaultThresholdCalculator, NodeMembership, ThresholdCalculator,
     VrfNodeManager,
 };
-pub use signing::{FrostCommitment, SigningMessage, SigningNode};
+pub use signing::{BLSSignature, SigningMessage, SigningNode};
 pub use vrf::{NodeSelectionResult, VrfNodeSelector, VrfOutput, VrfSelectionMessage};
 
 // pub mod protos {

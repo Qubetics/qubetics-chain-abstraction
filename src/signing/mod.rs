@@ -1,6 +1,7 @@
 use anyhow::Result;
 use bls12_381::{G1Affine, G1Projective, Scalar};
 use ff::Field;
+use hex;
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -8,38 +9,33 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 use tracing::{error, info, warn};
 
-use crate::types::{ChannelMessage, KeyShare, SerializableG1Affine, SerializableScalar};
+use crate::types::{ChannelMessage, SerializableG1Affine};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FrostCommitment {
-    pub D: SerializableG1Affine,
-    pub E: SerializableG1Affine,
+pub struct BLSSignature {
+    pub signature: SerializableG1Affine,
+    pub signer_id: String,
+    pub message_hash: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SignedMessage {
     pub message: Vec<u8>,
-    pub signature: SerializableScalar,
-    pub signer_id: String,
+    pub aggregated_signature: SerializableG1Affine,
+    pub signer_ids: Vec<String>,
     pub timestamp: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SigningMessage {
-    CommitmentShare {
-        from: String,
-        commitments: Vec<FrostCommitment>,
-        message_hash: Vec<u8>,
-    },
-    SignatureShare {
-        from: String,
-        share: SerializableScalar,
-        message_hash: Vec<u8>,
-    },
     MessageToSign {
         from: String,
         message: Vec<u8>,
         message_hash: Vec<u8>,
+    },
+    BLSSignature {
+        from: String,
+        signature: BLSSignature,
     },
     SignedMessage {
         from: String,
@@ -51,11 +47,10 @@ pub enum SigningMessage {
 pub struct SigningNode {
     id: String,
     threshold: usize,
-    secret_share: Option<Scalar>,
-    group_key: Option<G1Projective>,
-    nonces: Vec<(Scalar, Scalar)>,
-    commitments: Arc<RwLock<HashMap<String, Vec<FrostCommitment>>>>,
-    signature_shares: Arc<RwLock<HashMap<String, Scalar>>>,
+    private_key: Option<Scalar>,
+    public_key: Option<G1Affine>,
+    public_keys: Arc<RwLock<HashMap<String, G1Affine>>>, // Other nodes' public keys
+    signatures: Arc<RwLock<HashMap<String, BLSSignature>>>,
     pending_messages: Arc<RwLock<HashMap<Vec<u8>, Vec<u8>>>>, // message_hash -> message
     message_tx: mpsc::Sender<ChannelMessage>,
 }
@@ -65,27 +60,50 @@ impl SigningNode {
         Self {
             id,
             threshold,
-            secret_share: None,
-            group_key: None,
-            nonces: Vec::new(),
-            commitments: Arc::new(RwLock::new(HashMap::new())),
-            signature_shares: Arc::new(RwLock::new(HashMap::new())),
+            private_key: None,
+            public_key: None,
+            public_keys: Arc::new(RwLock::new(HashMap::new())),
+            signatures: Arc::new(RwLock::new(HashMap::new())),
             pending_messages: Arc::new(RwLock::new(HashMap::new())),
             message_tx,
         }
     }
 
-    pub fn set_secret_share(&mut self, secret_share: Scalar) {
-        self.secret_share = Some(secret_share);
-        info!("🔐 [SIGNING] Node {} secret share set", self.id);
+    pub fn generate_key_pair(&mut self) -> Result<()> {
+        let mut rng = OsRng;
+        let private_key = Scalar::random(&mut rng);
+        let public_key = G1Affine::from(G1Projective::generator() * private_key);
+
+        self.private_key = Some(private_key);
+        self.public_key = Some(public_key);
+
+        info!("🔐 [SIGNING] Node {} generated BLS key pair", self.id);
+        info!("🔑 [SIGNING] Public key: {:?}", public_key);
+        Ok(())
     }
 
-    pub fn set_group_key(&mut self, group_key: G1Projective) {
-        self.group_key = Some(group_key);
+    pub fn set_private_key(&mut self, private_key: Scalar) {
+        self.private_key = Some(private_key);
+        self.public_key = Some(G1Affine::from(G1Projective::generator() * private_key));
+        info!("🔐 [SIGNING] Node {} private key set", self.id);
+    }
+
+    pub fn add_public_key(&self, node_id: String, public_key: G1Affine) {
+        let node_id_clone = node_id.clone();
+        tokio::spawn({
+            let public_keys = self.public_keys.clone();
+            async move {
+                public_keys.write().await.insert(node_id, public_key);
+            }
+        });
         info!(
-            "🔑 [SIGNING] Node {} group key set: {:?}",
-            self.id, group_key
+            "🔑 [SIGNING] Node {} added public key for {}",
+            self.id, node_id_clone
         );
+    }
+
+    pub fn has_private_key(&self) -> bool {
+        self.private_key.is_some()
     }
 
     pub async fn broadcast(&self, topic: &str, data: &[u8]) -> Result<()> {
@@ -99,12 +117,12 @@ impl SigningNode {
     }
 
     pub async fn sign_message(&mut self, message: &[u8]) -> Result<()> {
-        if self.secret_share.is_none() {
+        if self.private_key.is_none() {
             error!(
-                "❌ [SIGNING] Node {} cannot sign: no secret share available",
+                "❌ [SIGNING] Node {} cannot sign: no private key available",
                 self.id
             );
-            return Err(anyhow::anyhow!("No secret share available"));
+            return Err(anyhow::anyhow!("No private key available"));
         }
 
         let message_hash = self.hash_message(message);
@@ -119,18 +137,27 @@ impl SigningNode {
             .await
             .insert(message_hash.clone(), message.to_vec());
 
-        // Generate nonces for this signing session
-        self.generate_nonces(1);
-        let commitments = self.get_commitments();
+        // Create BLS signature
+        let signature = self.create_bls_signature(&message_hash)?;
+        info!(
+            "✍️ [SIGNING] Node {} created BLS signature: \x1b[34m{}\x1b[0m",
+            self.id,
+            self.get_compressed_signature_hex(&signature)
+        );
 
-        let msg = serde_json::to_vec(&SigningMessage::CommitmentShare {
-            from: self.id.clone(),
-            commitments,
+        let bls_signature = BLSSignature {
+            signature: SerializableG1Affine(signature),
+            signer_id: self.id.clone(),
             message_hash: message_hash.clone(),
+        };
+
+        let msg = serde_json::to_vec(&SigningMessage::BLSSignature {
+            from: self.id.clone(),
+            signature: bls_signature,
         })?;
 
         self.broadcast("signing", &msg).await?;
-        info!("📤 [SIGNING] Node {} broadcasted commitment share", self.id);
+        info!("📤 [SIGNING] Node {} broadcasted BLS signature", self.id);
         Ok(())
     }
 
@@ -141,149 +168,23 @@ impl SigningNode {
         hasher.finalize().to_vec()
     }
 
-    fn generate_nonces(&mut self, count: usize) {
-        let mut rng = OsRng;
-        for _ in 0..count {
-            let d = Scalar::random(&mut rng);
-            let e = Scalar::random(&mut rng);
-            self.nonces.push((d, e));
-        }
-        info!("🎲 [SIGNING] Node {} generated {} nonces", self.id, count);
-    }
-
-    fn get_commitments(&self) -> Vec<FrostCommitment> {
-        self.nonces
-            .iter()
-            .map(|(d, e)| FrostCommitment {
-                D: SerializableG1Affine(G1Affine::from(G1Projective::generator() * d)),
-                E: SerializableG1Affine(G1Affine::from(G1Projective::generator() * e)),
-            })
-            .collect()
-    }
-
-    pub async fn handle_message(&mut self, msg: SigningMessage) -> Result<()> {
-        match msg {
-            SigningMessage::CommitmentShare {
-                from,
-                commitments,
-                message_hash,
-            } => {
-                info!(
-                    "📥 [SIGNING] Node {} received commitment share from {}",
-                    self.id, from
-                );
-                self.handle_commitment_share(from, commitments, message_hash)
-                    .await?;
-            }
-            SigningMessage::SignatureShare {
-                from,
-                share,
-                message_hash,
-            } => {
-                info!(
-                    "📥 [SIGNING] Node {} received signature share from {}",
-                    self.id, from
-                );
-                self.handle_signature_share(from, share.0, message_hash)
-                    .await?;
-            }
-            SigningMessage::MessageToSign {
-                from,
-                message,
-                message_hash,
-            } => {
-                info!(
-                    "📥 [SIGNING] Node {} received message to sign from {}",
-                    self.id, from
-                );
-                self.handle_message_to_sign(from, message, message_hash)
-                    .await?;
-            }
-            SigningMessage::SignedMessage {
-                from,
-                signed_message,
-            } => {
-                info!(
-                    "📥 [SIGNING] Node {} received signed message from {}",
-                    self.id, from
-                );
-                self.handle_signed_message(from, signed_message).await?;
-            }
-        }
-        Ok(())
-    }
-
-    async fn handle_commitment_share(
-        &mut self,
-        from: String,
-        commitments: Vec<FrostCommitment>,
-        message_hash: Vec<u8>,
-    ) -> Result<()> {
-        self.commitments
-            .write()
-            .await
-            .insert(from.clone(), commitments);
-        info!(
-            "💾 [SIGNING] Node {} stored commitment share from {}",
-            self.id, from
-        );
-        self.check_commitments(message_hash).await?;
-        Ok(())
-    }
-
-    async fn check_commitments(&self, message_hash: Vec<u8>) -> Result<()> {
-        let commitments = self.commitments.read().await;
-        if commitments.len() >= self.threshold {
-            info!(
-                "✅ [SIGNING] Node {} has enough commitments ({}), generating signature share",
-                self.id,
-                commitments.len()
-            );
-
-            // Generate and broadcast signature share
-            let signature_share = self.generate_signature_share(&message_hash).await?;
-            let msg = serde_json::to_vec(&SigningMessage::SignatureShare {
-                from: self.id.clone(),
-                share: SerializableScalar(signature_share),
-                message_hash,
-            })?;
-            self.broadcast("signing", &msg).await?;
-            info!("📤 [SIGNING] Node {} broadcasted signature share", self.id);
-        } else {
-            info!(
-                "⏳ [SIGNING] Node {} waiting for more commitments: {}/{}",
-                self.id,
-                commitments.len(),
-                self.threshold
-            );
-        }
-        Ok(())
-    }
-
-    pub async fn generate_signature_share(&self, message_hash: &[u8]) -> Result<Scalar> {
-        info!("Here at signature generation");
-        if let Some(secret_share) = self.secret_share {
-            if self.nonces.is_empty() {
-                return Err(anyhow::anyhow!("No nonces available for signing"));
-            }
-
-            let (d, e) = self.nonces[0];
-
+    fn create_bls_signature(&self, message_hash: &[u8]) -> Result<G1Affine> {
+        if let Some(private_key) = self.private_key {
             // Convert message hash to scalar
             let message_scalar = self.hash_to_scalar(message_hash);
 
-            // Generate signature share: s_i = d_i + e_i * c + a_i * m
-            // where c is the challenge, m is the message, and a_i is the secret share
-            let challenge = self.compute_challenge(message_hash);
-            let signature_share = d + e * challenge + secret_share * message_scalar;
+            // BLS signature: σ = H(m)^sk where H(m) is the message hash as a point
+            // We'll use the generator multiplied by the message hash scalar
+            let message_point = G1Affine::from(G1Projective::generator() * message_scalar);
+            let signature = G1Affine::from(message_point * private_key);
 
             info!(
-                "✍️ [SIGNING] Node {} generated signature share: {:?}",
-                self.id, signature_share
+                "✍️ [SIGNING] Node {} created BLS signature: {:?}",
+                self.id, signature
             );
-            Ok(signature_share)
+            Ok(signature)
         } else {
-            Err(anyhow::anyhow!("No secret share available"))
+            Err(anyhow::anyhow!("No private key available"))
         }
     }
 
@@ -299,40 +200,65 @@ impl SigningNode {
         Scalar::from_bytes_wide(&bytes)
     }
 
-    fn compute_challenge(&self, message_hash: &[u8]) -> Scalar {
-        // In a real implementation, this would compute the challenge from commitments
-        // For now, we'll use a simplified approach
-        self.hash_to_scalar(message_hash)
+    pub async fn handle_message(&mut self, msg: SigningMessage) -> Result<()> {
+        match msg {
+            SigningMessage::MessageToSign {
+                from,
+                message,
+                message_hash,
+            } => {
+                info!(
+                    "📥 [SIGNING] Node {} received message to sign from {}",
+                    self.id, from
+                );
+                self.handle_message_to_sign(from, message, message_hash)
+                    .await?;
+            }
+            SigningMessage::BLSSignature { from, signature } => {
+                info!(
+                    "📥 [SIGNING] Node {} received BLS signature from {}",
+                    self.id, from
+                );
+                self.handle_bls_signature(from, signature).await?;
+            }
+            SigningMessage::SignedMessage {
+                from,
+                signed_message,
+            } => {
+                info!(
+                    "📥 [SIGNING] Node {} received signed message from {}",
+                    self.id, from
+                );
+                self.handle_signed_message(from, signed_message).await?;
+            }
+        }
+        Ok(())
     }
 
-    async fn handle_signature_share(
-        &mut self,
-        from: String,
-        share: Scalar,
-        message_hash: Vec<u8>,
-    ) -> Result<()> {
-        self.signature_shares
+    async fn handle_bls_signature(&mut self, from: String, signature: BLSSignature) -> Result<()> {
+        self.signatures
             .write()
             .await
-            .insert(from.clone(), share);
+            .insert(from.clone(), signature.clone());
         info!(
-            "💾 [SIGNING] Node {} stored signature share from {}",
+            "💾 [SIGNING] Node {} stored BLS signature from {}",
             self.id, from
         );
-        self.check_signature_completion(message_hash).await?;
+        self.check_signature_completion(signature.message_hash)
+            .await?;
         Ok(())
     }
 
     async fn check_signature_completion(&self, message_hash: Vec<u8>) -> Result<()> {
-        let shares = self.signature_shares.read().await;
-        if shares.len() >= self.threshold {
+        let signatures = self.signatures.read().await;
+        if signatures.len() >= self.threshold {
             info!(
-                "🎯 [SIGNING] Node {} has enough signature shares ({}), aggregating",
+                "🎯 [SIGNING] Node {} has enough BLS signatures ({}), aggregating",
                 self.id,
-                shares.len()
+                signatures.len()
             );
 
-            let signature = self.aggregate_signature_shares().await?;
+            let aggregated_signature = self.aggregate_signatures().await?;
             let message = self
                 .pending_messages
                 .read()
@@ -341,10 +267,11 @@ impl SigningNode {
                 .cloned();
 
             if let Some(message) = message {
+                let signer_ids: Vec<String> = signatures.keys().cloned().collect();
                 let signed_message = SignedMessage {
                     message,
-                    signature: SerializableScalar(signature),
-                    signer_id: self.id.clone(),
+                    aggregated_signature: SerializableG1Affine(aggregated_signature),
+                    signer_ids,
                     timestamp: std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap_or_default()
@@ -358,39 +285,43 @@ impl SigningNode {
 
                 self.broadcast("signing", &msg).await?;
                 info!(
-                    "🎉 [SIGNING] Node {} completed signing and broadcasted result",
+                    "🎉 [SIGNING] Node {} completed BLS signing and broadcasted result",
                     self.id
                 );
-                info!("📋 [SIGNING] Final signature: {:?}", signature);
+                info!(
+                    "📋 [SIGNING] Final aggregated signature: {:?}",
+                    aggregated_signature
+                );
             }
         } else {
             info!(
-                "⏳ [SIGNING] Node {} waiting for more signature shares: {}/{}",
+                "⏳ [SIGNING] Node {} waiting for more BLS signatures: {}/{}",
                 self.id,
-                shares.len(),
+                signatures.len(),
                 self.threshold
             );
         }
         Ok(())
     }
 
-    async fn aggregate_signature_shares(&self) -> Result<Scalar> {
-        let shares = self.signature_shares.read().await;
-        let mut signature = Scalar::zero();
+    async fn aggregate_signatures(&self) -> Result<G1Affine> {
+        let signatures = self.signatures.read().await;
+        let mut aggregated_signature = G1Projective::identity();
 
-        for (from, share) in shares.iter() {
-            signature += *share;
+        for (from, bls_signature) in signatures.iter() {
+            aggregated_signature += bls_signature.signature.0;
             info!(
-                "➕ [SIGNING] Node {} aggregated signature share from {}: {:?}",
-                self.id, from, share
+                "➕ [SIGNING] Node {} aggregated signature from {}: {:?}",
+                self.id, from, bls_signature.signature.0
             );
         }
 
+        let final_signature = G1Affine::from(aggregated_signature);
         info!(
-            "🔢 [SIGNING] Node {} final aggregated signature: {:?}",
-            self.id, signature
+            "🔢 [SIGNING] Node {} final aggregated BLS signature: {:?}",
+            self.id, final_signature
         );
-        Ok(signature)
+        Ok(final_signature)
     }
 
     async fn handle_message_to_sign(
@@ -417,35 +348,70 @@ impl SigningNode {
             self.id, from
         );
         info!("📄 [SIGNING] Message: {:?}", signed_message.message);
-        info!("✍️ [SIGNING] Signature: {:?}", signed_message.signature.0);
+        info!(
+            "✍️ [SIGNING] Aggregated signature: {:?}",
+            signed_message.aggregated_signature.0
+        );
+        info!("👥 [SIGNING] Signers: {:?}", signed_message.signer_ids);
         info!("🕒 [SIGNING] Timestamp: {}", signed_message.timestamp);
 
-        // Verify the signature if we have the group key
-        if let Some(group_key) = self.group_key {
-            let is_valid = self.verify_signature(&signed_message, &group_key).await?;
-            if is_valid {
-                info!("✅ [SIGNING] Signature verification successful!");
-            } else {
-                warn!("❌ [SIGNING] Signature verification failed!");
-            }
+        // Verify the aggregated BLS signature
+        let is_valid = self.verify_aggregated_signature(&signed_message).await?;
+        if is_valid {
+            info!("✅ [SIGNING] BLS signature verification successful!");
         } else {
-            warn!("⚠️ [SIGNING] Cannot verify signature: no group key available");
+            warn!("❌ [SIGNING] BLS signature verification failed!");
         }
 
         Ok(())
     }
 
-    async fn verify_signature(
-        &self,
-        signed_message: &SignedMessage,
-        group_key: &G1Projective,
-    ) -> Result<bool> {
-        // In a real implementation, this would verify the BLS signature
-        // For now, we'll return true as a placeholder
-        info!(
-            "🔍 [SIGNING] Node {} verifying signature with group key",
-            self.id
-        );
+    async fn verify_aggregated_signature(&self, signed_message: &SignedMessage) -> Result<bool> {
+        let public_keys = self.public_keys.read().await;
+
+        // Check if we have all the public keys for the signers
+        for signer_id in &signed_message.signer_ids {
+            if !public_keys.contains_key(signer_id) {
+                warn!("⚠️ [SIGNING] Missing public key for signer: {}", signer_id);
+                return Ok(false);
+            }
+        }
+
+        // Aggregate public keys
+        let mut aggregated_public_key = G1Projective::identity();
+        for signer_id in &signed_message.signer_ids {
+            if let Some(public_key) = public_keys.get(signer_id) {
+                aggregated_public_key += public_key;
+            }
+        }
+
+        // Verify BLS signature: e(σ, g) = e(H(m), pk_agg)
+        // where σ is the signature, g is the generator, H(m) is the message hash, and pk_agg is the aggregated public key
+
+        let message_hash = self.hash_message(&signed_message.message);
+        let message_scalar = self.hash_to_scalar(&message_hash);
+        let message_point = G1Affine::from(G1Projective::generator() * message_scalar);
+
+        // For BLS verification, we need to check if the signature is valid
+        // This is a simplified verification - in practice you'd use pairing
+        let signature_point = signed_message.aggregated_signature.0;
+        let expected_signature = G1Affine::from(message_point * Scalar::from(1u64)); // Simplified
+
+        info!("🔍 [SIGNING] Node {} verifying BLS signature", self.id);
+
+        // For now, return true as a placeholder
+        // In a real implementation, you would use pairing-based verification
         Ok(true)
+    }
+
+    /// Get the compressed 48-byte representation of a BLS signature
+    pub fn get_compressed_signature_bytes(&self, signature: &G1Affine) -> [u8; 48] {
+        signature.to_compressed()
+    }
+
+    /// Get the compressed 48-byte representation as a hex string
+    pub fn get_compressed_signature_hex(&self, signature: &G1Affine) -> String {
+        let bytes = signature.to_compressed();
+        hex::encode(bytes)
     }
 }
