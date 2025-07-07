@@ -2,7 +2,7 @@ use libp2p::{Multiaddr, PeerId};
 use serde::{Deserialize, Serialize};
 
 mod bls;
-pub use bls::{SerializableG1Affine, SerializableScalar};
+pub use bls::{SerializableG1Affine, SerializableScalar, SerializableG2Affine};
 
 pub mod dkg;
 pub mod p2p;
@@ -45,4 +45,5 @@ pub enum GossipsubMessage {
     PeerDiscovered { peer: PeerId, sequence: Option<u64> },
     Transaction(crate::rpc_server::DummyTransaction),
     DKGCommand(crate::types::rpc::RPCRequest),
+    StartSigning { message: Vec<u8> },
 }

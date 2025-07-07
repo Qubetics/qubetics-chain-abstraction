@@ -19,13 +19,12 @@ pub use chain::BlockchainClient;
 pub use commands::CommandProcessor;
 pub use consensus::ConsensusNode;
 pub use dkg::DKGNode;
-pub use frost::FrostSigner;
 pub use network::NetworkLayer;
 pub use node_management::{
     BasicNodeManager, DefaultThresholdCalculator, NodeMembership, ThresholdCalculator,
     VrfNodeManager,
 };
-pub use signing::{FrostCommitment, SigningMessage, SigningNode};
+pub use signing::{SigningMessage, SigningNode};
 pub use vrf::{NodeSelectionResult, VrfNodeSelector, VrfOutput, VrfSelectionMessage};
 
 // pub mod protos {

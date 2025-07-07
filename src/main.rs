@@ -80,13 +80,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let mut network = NetworkLayer::new(node_manager).await?;
 
-    let signing_node = Arc::new(Mutex::new(SigningNode::new(
-        network.get_local_peer_id().to_string(),
-        threshold,
-        network.get_msg_tx(),
-    )));
-
-    let signing_node_clone = signing_node.clone();
     let mut dkg_node = DKGNode::new(
         network.get_local_peer_id().to_string(),
         threshold,
@@ -94,41 +87,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
         network.get_msg_tx(),
     );
 
-    // Set up DKG completion callback to provide secret share and group key to signing node
-    dkg_node.set_completion_callback(Box::new(move |secret_share, group_key| {
-        let signing_node = signing_node_clone.clone();
-        tokio::spawn(async move {
-            let mut signing_node = signing_node.lock().await;
-            signing_node.set_secret_share(secret_share);
-            signing_node.set_group_key(group_key);
-            info!("🔗 [MAIN] DKG completion callback executed - signing node configured");
-        });
-    }));
 
     let consensus_node = ConsensusNode::new();
     let mut command_processor = CommandProcessor::new();
 
-    // Register signing command handler
-    let signing_node_cmd = signing_node.clone();
-    command_processor.register_handler("sign_message".to_string(), move |cmd| {
-        let signing_node = signing_node_cmd.clone();
-        match cmd {
-            mpc_node::commands::Command::SignMessage { message } => {
-                info!("📝 [MAIN] Received sign message command: {:?}", message);
-                tokio::spawn(async move {
-                    let mut signing_node = signing_node.lock().await;
-                    if let Err(e) = signing_node.sign_message(&message).await {
-                        info!("❌ [MAIN] Failed to sign message: {:?}", e);
-                    }
-                });
-                Ok(())
-            }
-            _ => Ok(()),
-        }
-    });
-
     network.set_dkg_node(dkg_node);
-    network.set_signing_node(signing_node.lock().await.clone());
     network.set_consensus_node(consensus_node);
     network.set_command_processor(command_processor);
 

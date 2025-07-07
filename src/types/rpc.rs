@@ -64,6 +64,10 @@ pub enum RPCRequest {
         from: SerializablePeerId,
         share: SerializableScalar,
     },
+
+    StartSigning {
+        message: Vec<u8>,
+    },
 }
 
 /// RPC response variants.
@@ -89,7 +93,8 @@ pub enum RPCResponse {
         receiver_id: SerializablePeerId,
         share: SerializableScalar,
         commitments: Vec<SerializableG1Affine>,
-    }
+    },
+    SigningSuccess,
 }
 
 /// CBOR + serde codec for our MPC protocol.

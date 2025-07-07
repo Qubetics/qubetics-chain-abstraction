@@ -32,6 +32,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = env::args().collect();
 
     let local_key = Keypair::generate_ed25519();
+    print!("Local Peer ID: {}\n", PeerId::from(local_key.public()));
     let local_peer_id = PeerId::from(local_key.public());
 
     if args.len() < 2 {
@@ -56,12 +57,22 @@ async fn main() -> Result<(), Box<dyn Error>> {
         })?
         .build();
     swarm.dial(server_addr.clone())?;
+    
+
+    
+
     loop {
         match swarm.select_next_some().await {
             SwarmEvent::ConnectionEstablished { peer_id, connection_id, endpoint, num_established, concurrent_dial_errors, established_in } => {
                 println!("Established to {:?}", peer_id);
-                let rq = RPCRequest::StartADKG;// { n: 5, threshold: 3 };
-                swarm.behaviour_mut().request_response.send_request(&peer_id, rq);
+                let rq1 = RPCRequest::StartADKG;// { n: 5, threshold: 3 };
+                let message_to_sign = b"test-message".to_vec();
+                // tokio::time::sleep(std::time::Duration::from_secs(10)).await; 
+                let rq2: RPCRequest = RPCRequest::StartSigning { message: message_to_sign };
+                // tokio::time::sleep(std::time::Duration::from_secs(2)).await; 
+                println!("[MPC REQ-RESP] Sending requests to {:?}", peer_id);
+                let res = swarm.behaviour_mut().request_response.send_request(&peer_id, rq1);
+                swarm.behaviour_mut().request_response.send_request(&peer_id, rq2);
             }
             SwarmEvent::Behaviour(MyBehaviourEvent::RequestResponse(event)) => match event {
                 ReqRespEvent::Message { peer, message, .. } => match message {

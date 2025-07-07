@@ -124,6 +124,7 @@ impl NetworkLayer {
     }
 
     pub fn set_signing_node(&mut self, signing_node: SigningNode) {
+        info!("[set_signing_node] SigningNode set successfully.");
         self.signing_node = Some(signing_node);
     }
 
@@ -137,10 +138,6 @@ impl NetworkLayer {
 
     pub fn get_dkg_node(&mut self) -> Option<&mut DKGNode> {
         self.dkg_node.as_mut()
-    }
-
-    pub fn get_signing_node(&mut self) -> Option<&mut SigningNode> {
-        self.signing_node.as_mut()
     }
 
     pub fn get_msg_tx(&self) -> mpsc::Sender<ChannelMessage> {
@@ -519,31 +516,48 @@ impl NetworkLayer {
                             },
                             RPCRequest::StartADKG// {n, threshold } 
                             => {
+                                info!("Received StartADKG request from peer: {:?}", peer);
                                 // handle dkg start
                                 match self.dkg_node.as_mut() {
                                     Some(dkg) => {
-                                        info!("🚀 Received DKG start request from peer {}", peer);
-                                        
-                                        // Update DKG parameters with current network state
-                                        let total = self.node_manager.get_total_nodes();
-                                        let threshold = self.node_manager.get_threshold();
-                                        dkg.update_node_params(total, threshold);
-                                        
-                                        match dkg.start_dkg().await {
-                                            Ok(_) => {
-                                                info!("✅ Successfully started DKG in response to peer request");
-                                                RPCResponse::DKGStarted {peer_id: SerializablePeerId(peer)}
-                                            }
-                                            Err(e) => {
-                                                warn!("❌ Failed to start DKG: {:?}", e);
-                                                RPCResponse::DKGError(format!("Failed to start DKG: {:?}", e))
-                                            }
+                                        info!("------------Starting DKG------------");            
+                                        dkg.start_dkg().await?;
+                                        // let all_shares = dkg.get_all_shares().await;
+                                        //     for (peer, share) in all_shares {
+                                        //         println!("Peer {} → share {:?}", peer, share);
+                                        //     }
+                                        //     if let Some(my_share) = dkg.get_own_share().await {
+                                        //         println!("My own share is {:?}", my_share);
+                                        //     }
+
+                                        //tokio::time::sleep(Duration::from_secs(20)).await; // wait for DKG to complete
+                                        info!("DKG started successfully");
+                                        let all_shares = dkg.get_all_shares().await;
+                                        let key_share = dkg.get_final_secret_share().await;
+                                        let group_key = dkg.get_final_public_key().await;
+
+                                        info!("Key Share: {:?}", key_share);
+                                        info!("Group Key: {:?}", group_key);
+                                        info!("All Shares: {:?}", all_shares);
+
+                                        if let (Some(ks), Some(pk)) = (key_share, group_key) {
+                                            let signing_node = SigningNode::new(
+                                                self.local_peer_id.to_string(),
+                                                self.node_manager.get_threshold(),
+                                                ks.clone(),
+                                                pk.clone().into(),
+                                                self.message_tx.clone(),
+                                            );
+                                            self.set_signing_node(signing_node);
+                                            info!("SigningNode initialized!");
+                                        } else {
+                                            warn!("Key share or group public key not available after DKG");
                                         }
+
+                                       
+                                        RPCResponse::DKGStarted {peer_id: SerializablePeerId(peer)}
                                     }
-                                    None => {
-                                        warn!("❌ DKG node not initialized");
-                                        RPCResponse::DKGError("DKG is not initialized.".to_string())
-                                    }
+                                    None => RPCResponse::DKGError("dkg is not initialized.".to_string()),
                                 }
                             },
                             // This peer node will recieve a request from some external agent that will
@@ -557,6 +571,32 @@ impl NetworkLayer {
 
                                 RPCResponse::DKGStatus { status } // send back to the agent at peer.send.ptp
                             },
+
+                            RPCRequest::StartSigning { message } => {
+                                println!("[SIGNING RPC] Got signing request with msg: {:?}", message);
+                            
+                                // Broadcast StartSigning request to all nodes
+                                let signing_msg = GossipsubMessage::StartSigning { message: message.clone() };
+                                let encoded = match serde_json::to_vec(&signing_msg) {
+                                    Ok(data) => data,
+                                    Err(e) => {
+                                        return Err(anyhow::anyhow!("Serialization failed: {:?}", e));
+                                    }
+                                };
+                            
+                                if let Some(signing_node) = &self.signing_node {
+                                    // Broadcast the message to all peers so they all sign
+                                    if let Err(e) = signing_node.broadcast("signing", &encoded).await {
+                                        println!("Failed to broadcast StartSigning: {:?}", e);
+                                        return Err(anyhow::anyhow!("Failed to broadcast signing request: {:?}", e));
+                                    }
+                            
+                                    RPCResponse::SigningSuccess
+                                } else {
+                                    RPCResponse::Error("Signing node not ready".into())
+                                }
+                            },
+
                             RPCRequest::SendAVSSShare { share, commitments, .. } => {
                                 if self.dkg_node.is_none() {
                                     RPCResponse::Error("DKG not initialized".to_string())
@@ -925,7 +965,7 @@ impl NetworkLayer {
             }
             GossipsubMessage::Signing(signing_msg) => {
                 if let Some(signing_node) = &mut self.signing_node {
-                    signing_node.handle_message(signing_msg).await?;
+                    signing_node.handle_message(signing_msg, &message.data).await?;
                 }
             }
             GossipsubMessage::Command(cmd) => {
@@ -956,29 +996,15 @@ impl NetworkLayer {
                 }
             }
             GossipsubMessage::Transaction(transaction) => {
-                info!("📝 Received transaction via gossipsub: {:?}", transaction);
-                // Here you can add transaction processing logic
-                // For example, validate the transaction, add to mempool, etc.
-                if let Some(signing_node) = &mut self.signing_node {
-                    // Get secret share from DKG node if available
-                    if let Some(dkg_node) = &self.dkg_node {
-                        if let Some(secret_share) = dkg_node.get_final_secret_share().await {
-                            info!("🔐 [NETWORK] Got secret share from DKG: {:?}", secret_share);
-                            signing_node.set_secret_share(secret_share);
-                        } else {
-                            info!("⏳ [NETWORK] DKG not completed yet, no secret share available");
-                            return Ok(());
-                        }
-                    } else {
-                        info!("❌ [NETWORK] DKG node not available");
-                        return Ok(());
+               println!("[SIGNING RPC] Got signing request with msg: {:?}", transaction);       
+                let encoded = match serde_json::to_vec(&transaction) {
+                    Ok(data) => data,
+                    Err(e) => {
+                        return Err(anyhow::anyhow!("Serialization failed: {:?}", e));
                     }
-                    
-                    // Convert transaction to bytes for signing
-                    let tx_bytes = serde_json::to_vec(&transaction)?;
-                    signing_node.sign_message(&tx_bytes).await?;
-                    signing_node.generate_signature_share(&tx_bytes).await?;
-                }
+                };
+
+                let _ = GossipsubMessage::StartSigning { message: encoded };
             }
             GossipsubMessage::DKGCommand(dkg_cmd) => {
                 info!("🚀 Received DKG command via gossipsub: {:?}", dkg_cmd);
@@ -996,6 +1022,12 @@ impl NetworkLayer {
                     _ => {
                         info!("📋 Received other DKG command: {:?}", dkg_cmd);
                     }
+                }
+            }
+
+            GossipsubMessage::StartSigning { message } => {
+                if let Some(signing_node) = &self.signing_node {
+                    signing_node.start_signing(&message).await?;
                 }
             }
             GossipsubMessage::PeerDiscovered { peer, sequence } => {
@@ -1087,29 +1119,27 @@ impl NetworkLayer {
             ChannelMessage::LocalTransaction { transaction } => {
                 info!("🔐 [LOCAL] Processing transaction locally: {:?}", transaction);
                 
-                if let Some(signing_node) = &mut self.signing_node {
-                    // Get secret share from DKG node if available
-                    if let Some(dkg_node) = &self.dkg_node {
-                        if let Some(secret_share) = dkg_node.get_final_secret_share().await {
-                            info!("🔐 [LOCAL] Got secret share from DKG: {:?}", secret_share);
-                            signing_node.set_secret_share(secret_share);
-                        } else {
-                            info!("⏳ [LOCAL] DKG not completed yet, no secret share available");
-                            return Ok(());
-                        }
-                    } else {
-                        info!("❌ [LOCAL] DKG node not available");
-                        return Ok(());
+                let encoded = match serde_json::to_vec(&transaction) {
+                    Ok(data) => data,
+                    Err(e) => {
+                        return Err(anyhow::anyhow!("Serialization failed: {:?}", e));
                     }
-                    
-                    // Convert transaction to bytes for signing
-                    let tx_bytes = serde_json::to_vec(&transaction)?;
-                    info!("🔐 [LOCAL] Starting local signing process");
-                    signing_node.sign_message(&tx_bytes).await?;
-                    signing_node.generate_signature_share(&tx_bytes).await?;
-                    info!("✅ [LOCAL] Local transaction signing completed");
-                } else {
-                    warn!("❌ [LOCAL] Signing node not available for local processing");
+                };
+
+                let signing_msg = GossipsubMessage::StartSigning { message: encoded.clone() };
+                let encoded = match serde_json::to_vec(&signing_msg) {
+                    Ok(data) => data,
+                    Err(e) => {
+                        return Err(anyhow::anyhow!("Serialization failed: {:?}", e));
+                    }
+                };
+            
+                if let Some(signing_node) = &self.signing_node {
+                    // Broadcast the message to all peers so they all sign
+                    if let Err(e) = signing_node.broadcast("signing", &encoded).await {
+                        println!("Failed to broadcast StartSigning: {:?}", e);
+                        return Err(anyhow::anyhow!("Failed to broadcast signing request: {:?}", e));
+                    }
                 }
             }
             // this is not used anywhere yet

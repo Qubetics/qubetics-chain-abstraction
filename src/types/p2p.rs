@@ -29,14 +29,14 @@ impl<'de> Visitor<'de> for PeerIdVisitor {
     where
         E: de::Error,
     {
-        if v.len() != 48 {
-            return Err(E::custom("invalid length for peerId"));
-        }
+        // if v.len() != 48 {
+        //     return Err(E::custom("invalid length for peerId"));
+        // }
 
-        let mut bytes = [0u8; 48];
-        bytes.copy_from_slice(v);
+        // let mut bytes = [0u8; 48];
+        // bytes.copy_from_slice(v);
 
-        PeerId::from_bytes(&bytes)
+        PeerId::from_bytes(v)
             .map(SerializablePeerId)
             .map_err(|_| E::custom("invalid peerId"))
     }
