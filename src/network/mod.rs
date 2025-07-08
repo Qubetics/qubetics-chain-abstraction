@@ -294,22 +294,22 @@ impl NetworkLayer {
 
                     // Periodic broadcast of our local peer to ensure all peers know about us
                     // Only broadcast if we have peers but haven't seen recent activity
-                    if current_total > 1 && gossipsub_peers > 0 {
-                        // Add a sequence number to make each message unique
-                        static mut SEQUENCE: u64 = 0;
-                        let seq = unsafe {
-                            SEQUENCE += 1;
-                            SEQUENCE
-                        };
+                    // if current_total > 1 && gossipsub_peers > 0 {
+                    //     // Add a sequence number to make each message unique
+                    //     static mut SEQUENCE: u64 = 0;
+                    //     let seq = unsafe {
+                    //         SEQUENCE += 1;
+                    //         SEQUENCE
+                    //     };
 
-                        let _msg = GossipsubMessage::PeerDiscovered {
-                            peer: self.local_peer_id.clone(),
-                            sequence: Some(seq),
-                        };
+                    //     let _msg = GossipsubMessage::PeerDiscovered {
+                    //         peer: self.local_peer_id.clone(),
+                    //         sequence: Some(seq),
+                    //     };
 
-                    } else {
-                        info!("⏸️ Skipping periodic broadcast - peers: {}, gossipsub peers: {}", current_total, gossipsub_peers);
-                    }
+                    // } else {
+                    //     info!("⏸️ Skipping periodic broadcast - peers: {}, gossipsub peers: {}", current_total, gossipsub_peers);
+                    // }
                 }
                 
                 _ = dkg_status_timer.tick() => {
@@ -611,54 +611,55 @@ impl NetworkLayer {
                         bucket_range,
                         old_peer,
                     } => {
-                        info!("-----------routing updated----------: Peer{:?}, is_new_peer{:?}, addresses{:?}, bucket_range{:?}, old_peer{:?}", peer, is_new_peer, addresses, bucket_range, old_peer);
+                        info!("-----------routing updated----------: Peer{:?}, is_new_peer{:?}, addresses{:?}, bucket_range{:?}, old_peer{:?}\n", peer, is_new_peer, addresses, bucket_range, old_peer);
+
+                        info!("[RoutingUpdated] New peer added : {:?}", peer);
                         self.node_manager
                             .add_node(peer)
                             .map_err(|e| anyhow::anyhow!(e))?;
 
                         if is_new_peer {
-                            info!("New peer added: {:?}", peer);
-                            let msg = GossipsubMessage::PeerDiscovered {
-                                peer: peer.clone(),
-                                sequence: Some(1), // Add sequence number
-                            };
-                            info!("Broadcasting PeerDiscovered message: {:?}", msg);
-                            let payload = serde_json::to_vec(&msg)
-                                .map_err(|e| anyhow::anyhow!("serialize PeerDiscovered: {}", e))?;
+                            // let msg = GossipsubMessage::PeerDiscovered {
+                            //     peer: peer.clone(),
+                            //     sequence: Some(1), // Add sequence number
+                            // };
+                            // info!("[RoutingUpdated] Broadcasting PeerDiscovered message: {:?}", msg);
+                            // let payload = serde_json::to_vec(&msg)
+                                // .map_err(|e| anyhow::anyhow!("serialize PeerDiscovered: {}", e))?;
 
                             // Check if we have connected peers before broadcasting
-                            let connected_peers =
-                                swarm.behaviour_mut().gossipsub.all_peers().count();
-                            info!("Connected peers before broadcast: {}", connected_peers);
+                            // let connected_peers =
+                            //     swarm.behaviour_mut().gossipsub.all_peers().count();
+                            // info!("Connected peers before broadcast: {}", connected_peers);
 
-                            if connected_peers > 0 {
-                                // Add a small delay to ensure topic subscription is complete
-                                tokio::time::sleep(Duration::from_millis(100)).await;
+                            // if connected_peers > 0 {
+                            //     // Add a small delay to ensure topic subscription is complete
+                            //     // tokio::time::sleep(Duration::from_millis(100)).await;
 
-                                match self.broadcast(MSG_TOPIC_PEER_DISCOVERY, &payload).await {
-                                    Ok(_) => {
-                                        info!(
-                                            "✅ Successfully broadcasted peer discovery for: {:?}",
-                                            peer
-                                        );
-                                    }
-                                    Err(e) => {
-                                        warn!("❌ Failed to broadcast peer discovery: {:?}", e);
-                                        // Retry once after a short delay
-                                        tokio::time::sleep(Duration::from_millis(500)).await;
-                                        if let Err(retry_e) =
-                                            self.broadcast(MSG_TOPIC_PEER_DISCOVERY, &payload).await
-                                        {
-                                            warn!(
-                                                "❌ Retry failed to broadcast peer discovery: {:?}",
-                                                retry_e
-                                            );
-                                        }
-                                    }
-                                }
-                            } else {
-                                warn!("⚠️ No connected peers available for broadcasting peer discovery");
-                            }
+                            //     match self.broadcast(MSG_TOPIC_PEER_DISCOVERY, &payload).await {
+                            //         Ok(_) => {
+                            //             info!(
+                            //                 "✅ Successfully broadcasted peer discovery for: {:?}",
+                            //                 peer
+                            //             );
+                            //         }
+                            //         Err(e) => {
+                            //             warn!("❌ Failed to broadcast peer discovery: {:?}", e);
+                            //             // Retry once after a short delay
+                            //             tokio::time::sleep(Duration::from_millis(500)).await;
+                            //             if let Err(retry_e) =
+                            //                 self.broadcast(MSG_TOPIC_PEER_DISCOVERY, &payload).await
+                            //             {
+                            //                 warn!(
+                            //                     "❌ Retry failed to broadcast peer discovery: {:?}",
+                            //                     retry_e
+                            //                 );
+                            //             }
+                            //         }
+                            //     }
+                            // } else {
+                            //     warn!("⚠️ No connected peers available for broadcasting peer discovery");
+                            // }
 
                             // Check if this is a bootstrap node
                             if self.is_bootstrap_node(&peer) {
@@ -801,7 +802,7 @@ impl NetworkLayer {
                     );
 
                     // Small delay to ensure subscription is fully processed
-                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    // tokio::time::sleep(Duration::from_millis(50)).await;
 
                     // Broadcast our presence to this newly subscribed peer
                     let msg = GossipsubMessage::PeerDiscovered {
