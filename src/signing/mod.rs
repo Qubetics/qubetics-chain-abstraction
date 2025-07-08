@@ -56,6 +56,7 @@ pub struct SigningNode {
     pending_messages: Arc<RwLock<HashMap<Vec<u8>, Vec<u8>>>>, // message_hash -> message
     message_tx: mpsc::Sender<ChannelMessage>,
     vrf_selector: Option<VrfNodeSelector>, // VRF selector for node selection
+    available_nodes: Option<Vec<PeerId>>,  // Available nodes from node manager
 }
 
 impl SigningNode {
@@ -73,6 +74,7 @@ impl SigningNode {
             pending_messages: Arc::new(RwLock::new(HashMap::new())),
             message_tx,
             vrf_selector: Some(VrfNodeSelector::new(peer_id)),
+            available_nodes: None,
         }
     }
 
@@ -157,15 +159,28 @@ impl SigningNode {
             self.id, message_hash
         );
 
+        // Get available nodes before the mutable borrow
+        let available_nodes = self.get_available_nodes_from_manager().await;
+        let round = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
         // Generate VRF proof for this signing operation
         if let Some(vrf_selector) = &mut self.vrf_selector {
-            let vrf_output = vrf_selector.generate_vrf_proof(&message_hash);
+
+            let selection_result = vrf_selector.select_mpc_nodes(&available_nodes, 1, round);
             info!(
-                "🎲 [VRF] Node {} generated VRF proof for message signing: value={}, hash={:?}",
+                "🎯 [VRF] Node {} selected {} MPC nodes for signing round {}: {:?}",
                 self.id,
-                vrf_output.value,
-                hex::encode(&vrf_output.hash) 
+                selection_result.selected_nodes.len(),
+                round,
+                selection_result.selected_nodes
             );
+            info!(
+                "available nodes for vrf are : {:?}",
+                self.get_available_nodes().await
+            )
         }
 
         // Store the message for later use
@@ -482,5 +497,24 @@ impl SigningNode {
             .as_ref()
             .map(|vrf| vrf.verify_vrf_proof(node_public_key, input, output))
             .unwrap_or(false)
+    }
+
+    /// Get available nodes as PeerIds derived from stored public keys
+    async fn get_available_nodes(&self) -> Vec<PeerId> {
+        self.available_nodes.clone().unwrap()
+    }
+
+    /// Set available nodes from node manager
+    pub fn set_available_nodes(&mut self, nodes: Vec<PeerId>) {
+
+        self.available_nodes = Some(nodes);
+    }
+
+    async fn get_available_nodes_from_manager(&self) -> Vec<PeerId> {
+        if let Some(ref nodes) = self.available_nodes {
+            nodes.clone()
+        } else {
+            self.get_available_nodes().await
+        }
     }
 }

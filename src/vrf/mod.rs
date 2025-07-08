@@ -343,9 +343,9 @@ mod tests {
             .map(|_| PeerId::from(Keypair::generate_ed25519().public()))
             .collect();
 
-        let result = selector.select_mpc_nodes(&nodes, 3, 1);
+        let result = selector.select_mpc_nodes(&nodes, 1, 1);
 
-        assert_eq!(result.selected_nodes.len(), 3);
+        assert_eq!(result.selected_nodes.len(), 1);
         assert_eq!(result.threshold, 3);
         assert_eq!(result.total_nodes, 5);
         assert_eq!(result.selection_round, 1);

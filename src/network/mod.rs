@@ -926,6 +926,10 @@ impl NetworkLayer {
                 // Here you can add transaction processing logic
                 // For example, validate the transaction, add to mempool, etc.
                 if let Some(signing_node) = &mut self.signing_node {
+                    // Set available nodes from node manager before signing
+                    let available_nodes: Vec<PeerId> = self.node_manager.get_active_nodes().into_iter().collect();
+                    signing_node.set_available_nodes(available_nodes);
+                    
                     // Generate BLS key pair if not already done
                     if let Some(dkg_node) = &self.dkg_node {
                         if let Some(secret_share) = dkg_node.get_final_secret_share().await {
@@ -1052,6 +1056,10 @@ impl NetworkLayer {
                 info!("🔐 [LOCAL] Processing transaction locally: {:?}", transaction);
                 
                 if let Some(signing_node) = &mut self.signing_node {
+                    // Set available nodes from node manager before signing
+                    let available_nodes: Vec<PeerId> = self.node_manager.get_active_nodes().into_iter().collect();
+                    signing_node.set_available_nodes(available_nodes);
+                    
                     // Generate BLS key pair if not already done
                     if !signing_node.has_private_key() {
                         info!("🔐 [LOCAL] Generating BLS key pair for signing");
