@@ -35,7 +35,7 @@ impl CommandProcessor {
 
     pub async fn handle_message(&mut self, msg: Command) -> anyhow::Result<()> {
         match msg {
-            Command::ShareGeneration { threshold} => {
+            Command::ShareGeneration { threshold } => {
                 if let Some(handler) = self.handlers.get("share_generation") {
                     handler(Command::ShareGeneration { threshold })?;
                 }
@@ -49,12 +49,12 @@ impl CommandProcessor {
                 if let Some(handler) = self.handlers.get("update_state") {
                     handler(Command::UpdateState { key, value })?;
                 }
-            },
+            }
             Command::ConsensusProposal { round, value } => {
                 if let Some(handler) = self.handlers.get("consensus_proposal") {
                     handler(Command::ConsensusProposal { round, value })?;
                 }
-            },
+            }
         }
         Ok(())
     }

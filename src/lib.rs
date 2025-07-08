@@ -19,7 +19,6 @@ pub use chain::BlockchainClient;
 pub use commands::CommandProcessor;
 pub use consensus::ConsensusNode;
 pub use dkg::DKGNode;
-pub use frost::FrostSigner;
 pub use network::NetworkLayer;
 pub use node_management::{
     BasicNodeManager, DefaultThresholdCalculator, NodeMembership, ThresholdCalculator,
@@ -28,10 +27,4 @@ pub use node_management::{
 pub use signing::{BLSSignature, SigningMessage, SigningNode};
 pub use vrf::{NodeSelectionResult, VrfNodeSelector, VrfOutput, VrfSelectionMessage};
 
-// pub mod protos {
-//     pub mod intent {
-//         tonic::include_proto!("google.pubsub.v1");
-//     }
-// }
 
-// pub use protos::intent;

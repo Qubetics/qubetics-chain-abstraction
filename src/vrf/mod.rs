@@ -2,7 +2,6 @@ use crate::types::p2p::SerializablePeerId;
 use anyhow::Result;
 use ecvrf::{keygen, prove, verify, VrfPk, VrfProof, VrfSk};
 use libp2p::PeerId;
-use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tracing::{debug, info};

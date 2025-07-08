@@ -1,5 +1,4 @@
 use bls12_381::{G1Affine, Scalar};
-use group::GroupEncoding;
 use serde::{Deserialize, Serialize, Serializer, Deserializer};
 use serde::de::{self, Visitor};
 use tracing::info;

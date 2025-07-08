@@ -1,6 +1,6 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+use sha2::{Digest};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 use warp::Filter;

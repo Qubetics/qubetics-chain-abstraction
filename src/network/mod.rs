@@ -4,27 +4,26 @@ use libp2p::{
     gossipsub::{self, Message, TopicHash},
     identity::Keypair,
     kad::{self, store::MemoryStore, BucketInserts, Event as KademliaEvent},
-    mdns::{self},
     multiaddr::Protocol,
     noise,
     request_response::{
         cbor::Behaviour as CborReqRespBehaviour, Event as ReqRespEvent, Message as ReqRespMessage,
     },
     swarm::{ConnectionError, NetworkBehaviour, SwarmEvent},
-    tcp, yamux, Multiaddr, PeerId, Transport,
+    tcp, yamux, Multiaddr, PeerId,
 };
 use std::{
     collections::hash_map::DefaultHasher,
     hash::{Hash, Hasher},
 };
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{ HashSet},
     env,
     fmt::Debug,
     time::Duration,
 };
 use tokio::io;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{mpsc};
 use tracing::{info, warn};
 
 use crate::commands::CommandProcessor;
@@ -34,7 +33,6 @@ use crate::node_management::NodeMembership;
 use crate::signing::SigningNode;
 use crate::{
     dkg::DKGStatus,
-    protos::intent::intent_service_server::IntentServiceServer,
     types::{
         dkg::{MSG_TOPIC_DKG, MSG_TOPIC_PEER_DISCOVERY},
         p2p::SerializablePeerId,
@@ -67,12 +65,6 @@ impl From<gossipsub::Event> for NetworkEvent {
         NetworkEvent::Gossipsub(event)
     }
 }
-
-// impl From<mdns::Event> for NetworkEvent {
-//     fn from(event: mdns::Event) -> Self {
-//         NetworkEvent::Mdns(event)
-//     }
-// }
 
 impl From<KademliaEvent> for NetworkEvent {
     fn from(event: KademliaEvent) -> Self {
@@ -168,12 +160,6 @@ impl NetworkLayer {
                 let message_id_fn = |message: &gossipsub::Message| {
                     let mut s = DefaultHasher::new();
                     message.data.hash(&mut s);
-                    // Add timestamp to prevent duplicate message ID issues
-                    // std::time::SystemTime::now()
-                    //     .duration_since(std::time::UNIX_EPOCH)
-                    //     .unwrap_or_default()
-                    //     .as_nanos()
-                    //     .hash(&mut s);
                     gossipsub::MessageId::from(s.finish().to_string())
                 };
 
@@ -316,16 +302,11 @@ impl NetworkLayer {
                             SEQUENCE
                         };
 
-                        let msg = GossipsubMessage::PeerDiscovered {
+                        let _msg = GossipsubMessage::PeerDiscovered {
                             peer: self.local_peer_id.clone(),
-                            sequence: Some(seq), // Add sequence number
+                            sequence: Some(seq),
                         };
-                        // info!("🔄 Periodic broadcast of local peer: {:?} (seq: {})", self.local_peer_id, seq);
-                        // if let Ok(payload) = serde_json::to_vec(&msg) {
-                        //     if let Err(e) = self.broadcast(MSG_TOPIC_PEER_DISCOVERY, &payload).await {
-                        //         warn!("❌ Failed periodic peer broadcast: {:?}", e);
-                        //     }
-                        // }
+
                     } else {
                         info!("⏸️ Skipping periodic broadcast - peers: {}, gossipsub peers: {}", current_total, gossipsub_peers);
                     }
@@ -398,10 +379,6 @@ impl NetworkLayer {
 
     fn is_bootstrap_node(&self, peer_id: &PeerId) -> bool {
         let bootstrap_peer_ids: Vec<&'static str> = vec![
-            // "QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN",
-            // "QmQCU2EcMqAqQPR2i9bChDtGNJchTbq5TbXJJ16u19uLTa",
-            // "QmbLHAnMoJPWSCR5Zhtx6BHJX9KiKNN6tpvbUcqanj75Nb",
-            // "QmcZf59bWwK5XFi76CZX8cbJ4BhTzzA3gU1ZjYZcYW3dwt",
         ];
 
         let peer_id_str = peer_id.to_string();
@@ -435,10 +412,6 @@ impl NetworkLayer {
 
                 // Debug: Check if this is a bootstrap node
                 let bootstrap_peer_ids: Vec<&'static str> = vec![
-                    // "QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN",
-                    // "QmQCU2EcMqAqQPR2i9bChDtGNJchTbq5TbXJJ16u19uLTa",
-                    // "QmbLHAnMoJPWSCR5Zhtx6BHJX9KiKNN6tpvbUcqanj75Nb",
-                    // "QmcZf59bWwK5XFi76CZX8cbJ4BhTzzA3gU1ZjYZcYW3dwt",
                 ];
 
                 let peer_id_str = peer_id.to_string();
@@ -576,16 +549,16 @@ impl NetworkLayer {
                     }
                     // here peer(s) will recieve the msg sent by other peer by peer.send.ptp
                     ReqRespMessage::Response {
-                        request_id,
+                        request_id: _,
                         response,
                     } => {
                         // peer.r
                         match response {
                             RPCResponse::GotAVSSShare {
-                                dealer_id,
-                                receiver_id,
-                                share,
-                                commitments,
+                                dealer_id: _,
+                                receiver_id: _,
+                                share: _group_key,
+                                commitments: _,
                             } => {
                                 // Handle AVSS share response here (maybe store in state?)
                                 // e.g., self.dkg_node.as_mut()?.handle_received_share(party_id, share, commitments);
@@ -865,10 +838,10 @@ impl NetworkLayer {
                 );
             }
             SwarmEvent::ConnectionClosed {
-                peer_id,
-                connection_id,
-                endpoint,
-                num_established,
+                peer_id: _,
+                connection_id: _,
+                endpoint: _,
+                num_established: _,
                 cause,
             } => {
                 if let Some(ca) = cause {
@@ -997,16 +970,7 @@ impl NetworkLayer {
                     }
                 }
             }
-            // GossipsubMessage::StartSigning { message } => {
-            //     // if let Some(signing_node) = &mut self.signing_node {
-            //     //     // Generate BLS key pair if not already done
-            //     //     if !signing_node.has_private_key() {
-            //     //         info!("🔐 [NETWORK] Generating BLS key pair for signing");
-            //     //         signing_node.generate_key_pair()?;
-            //     //     }
-            //     //     signing_node.sign_message(&message).await?;
-            //     // }
-            // }
+
             GossipsubMessage::PeerDiscovered { peer, sequence } => {
                 info!(
                     "🎯 Peer discovered via gossipsub: {:?} (seq: {:?})",
@@ -1039,8 +1003,6 @@ impl NetworkLayer {
     }
 
     // ChannelMessage is related to the MPSC channel only
-    // the channel is setup between
-    // 1. dkg thread (writing end) and tokio async task executor (reading end)
     async fn handle_channel_message(
         &mut self,
         message: ChannelMessage,

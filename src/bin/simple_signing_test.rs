@@ -1,4 +1,3 @@
-use bls12_381::G1Projective;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::info;

@@ -1,17 +1,24 @@
 use libp2p::{
-    identity::{self, Keypair}, noise, request_response::{cbor::Behaviour as CborReqRespBehaviour, Event as ReqRespEvent, Message as ReqRespMsg, ProtocolSupport }, swarm::{dial_opts::DialOpts, NetworkBehaviour}, tcp, yamux, Multiaddr, PeerId, Swarm, Transport
+    identity::Keypair,
+    noise,
+    request_response::{
+        cbor::Behaviour as CborReqRespBehaviour, Event as ReqRespEvent, Message as ReqRespMsg,
+    },
+    swarm::NetworkBehaviour,
+    tcp, yamux, Multiaddr,
 };
-use mpc_node::types::rpc::{build_mpc_behaviour, MPCCodec, MPCCodecRequest, MPCCodecResponse, RPCRequest, RPCResponse};
-use serde::{Deserialize, Serialize};
-use std::{env, error::Error};
+use mpc_node::types::rpc::{
+    build_mpc_behaviour, MPCCodecRequest, MPCCodecResponse, RPCRequest, RPCResponse,
+};
+// use serde::{Deserialize, Serialize};
 use libp2p::futures::StreamExt;
 use libp2p::swarm::SwarmEvent;
+use std::{env, error::Error};
 
 #[derive(NetworkBehaviour)]
 #[behaviour(out_event = "MyBehaviourEvent")]
 struct MyBehaviour {
-    pub request_response: CborReqRespBehaviour<MPCCodecRequest, MPCCodecResponse>
-    // other behaviours..
+    pub request_response: CborReqRespBehaviour<MPCCodecRequest, MPCCodecResponse>, // other behaviours..
 }
 
 #[derive(Debug)]
@@ -26,13 +33,12 @@ impl From<ReqRespEvent<RPCRequest, RPCResponse>> for MyBehaviourEvent {
     }
 }
 
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = env::args().collect();
 
     let local_key = Keypair::generate_ed25519();
-    let local_peer_id = PeerId::from(local_key.public());
+    // let local_peer_id = PeerId::from(local_key.public());
 
     if args.len() < 2 {
         eprintln!("Usage: {} <multiaddr>", args[0]);
@@ -50,28 +56,47 @@ async fn main() -> Result<(), Box<dyn Error>> {
             yamux::Config::default,
         )?
         .with_quic()
-        .with_behaviour(|key| {
+        .with_behaviour(|_key| {
             let request_response = build_mpc_behaviour();
-            Ok(MyBehaviour {request_response})
+            Ok(MyBehaviour { request_response })
         })?
         .build();
     swarm.dial(server_addr.clone())?;
     loop {
         match swarm.select_next_some().await {
-            SwarmEvent::ConnectionEstablished { peer_id, connection_id, endpoint, num_established, concurrent_dial_errors, established_in } => {
+            SwarmEvent::ConnectionEstablished {
+                peer_id,
+                connection_id: _,
+                endpoint: _,
+                num_established: _,
+                concurrent_dial_errors: _,
+                established_in: _,
+            } => {
                 println!("Established to {:?}", peer_id);
-                let rq = RPCRequest::StartADKG;// { n: 5, threshold: 3 };
-                swarm.behaviour_mut().request_response.send_request(&peer_id, rq);
+                let rq = RPCRequest::StartADKG; // { n: 5, threshold: 3 };
+                swarm
+                    .behaviour_mut()
+                    .request_response
+                    .send_request(&peer_id, rq);
             }
             SwarmEvent::Behaviour(MyBehaviourEvent::RequestResponse(event)) => match event {
                 ReqRespEvent::Message { peer, message, .. } => match message {
-                    ReqRespMsg::Response { request_id, response } => {
+                    ReqRespMsg::Response {
+                        request_id: _,
+                        response,
+                    } => {
                         println!("Received response from {:?}: {:?}", peer, response);
                     }
-                    ReqRespMsg::Request { request, channel, .. } => {
+                    ReqRespMsg::Request {
+                        request, channel, ..
+                    } => {
                         println!("Received request from {:?}: {:?}", peer, request);
                         // send a response.. (optional!)
-                        if let Err(e) = swarm.behaviour_mut().request_response.send_response(channel, RPCResponse::Pong) {
+                        if let Err(e) = swarm
+                            .behaviour_mut()
+                            .request_response
+                            .send_response(channel, RPCResponse::Pong)
+                        {
                             eprintln!("Failed to send response: {:?}", e);
                         }
                     }
@@ -93,6 +118,4 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     }
 
-
-    Ok(())
 }

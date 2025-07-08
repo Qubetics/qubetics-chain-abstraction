@@ -1,6 +1,6 @@
 use libp2p::identity::Keypair;
 use mpc_node::node_management::{
-    DefaultThresholdCalculator, NodeMembership, ThresholdCalculator, VrfNodeManager,
+    DefaultThresholdCalculator, NodeMembership, VrfNodeManager,
 };
 use mpc_node::{
     commands::CommandProcessor, consensus::ConsensusNode, dkg::DKGNode, network::NetworkLayer,
@@ -12,8 +12,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 use tracing::info;
-use tracing::{instrument::WithSubscriber, level_filters::LevelFilter};
-use tracing_appender::{non_blocking, rolling};
+use tracing::{level_filters::LevelFilter};
+use tracing_appender::{non_blocking};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 #[tokio::main]
@@ -21,7 +21,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let rand_num: u32 = thread_rng().gen_range(1000..9999);
     let file_appender =
         tracing_appender::rolling::never("logs", format!("signing-demo-{}.log", rand_num));
-    let (writer, guard) = non_blocking(file_appender);
+    let (writer, _guard) = non_blocking(file_appender);
     let file_layer = fmt::layer::<_>()
         .with_writer(writer)
         .with_target(false)
@@ -82,7 +82,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     );
 
     // Set up DKG completion callback to provide secret share and group key to signing node
-    dkg_node.set_completion_callback(Box::new(move |secret_share, group_key| {
+    dkg_node.set_completion_callback(Box::new(move |_secret_share, _group_key| {
         let signing_node = signing_node_clone.clone();
         tokio::spawn(async move {
             let mut signing_node = signing_node.lock().await;

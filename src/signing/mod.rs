@@ -394,8 +394,8 @@ impl SigningNode {
 
         // For BLS verification, we need to check if the signature is valid
         // This is a simplified verification - in practice you'd use pairing
-        let signature_point = signed_message.aggregated_signature.0;
-        let expected_signature = G1Affine::from(message_point * Scalar::from(1u64)); // Simplified
+        let _signature_point = signed_message.aggregated_signature.0;
+        let _expected_signature = G1Affine::from(message_point * Scalar::from(1u64)); // Simplified
 
         info!("🔍 [SIGNING] Node {} verifying BLS signature", self.id);
 

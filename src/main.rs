@@ -1,6 +1,6 @@
 use libp2p::identity::Keypair;
 use mpc_node::node_management::{
-    DefaultThresholdCalculator, NodeMembership, ThresholdCalculator, VrfNodeManager,
+    DefaultThresholdCalculator, NodeMembership, VrfNodeManager,
 };
 use mpc_node::{
     commands::CommandProcessor, consensus::ConsensusNode, dkg::DKGNode, network::NetworkLayer,
@@ -12,23 +12,18 @@ use rand::{thread_rng, Rng};
 #[allow(non_snake_case)]
 #[allow(unused_variables)]
 use std::error::Error;
-use std::fs::File;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::info;
-use tracing::{instrument::WithSubscriber, level_filters::LevelFilter};
-use tracing_appender::{non_blocking, rolling};
+use tracing::{level_filters::LevelFilter};
+use tracing_appender::{non_blocking};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let rand_num: u32 = thread_rng().gen_range(1000..9999);
-    // let filename = format!("logs/mpcn-{}.log", rand_num);
-    // let file_appender = rolling::daily("logs", "mpcn.log");
-    // let (file_writer, _guard) = tracing_appender::non_blocking(file_appender);
     let file_appender = tracing_appender::rolling::never("logs", format!("mpcn-{}.log", rand_num));
-    // let file = File::create(&filename).expect("Failed to create log file");
-    let (writer, guard) = non_blocking(file_appender);
+    let (writer, _guard) = non_blocking(file_appender);
     let file_layer = fmt::layer::<_>()
         .with_writer(writer)
         .with_target(false)
@@ -49,7 +44,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .with_thread_ids(false)
         .with_thread_names(false);
 
-    let x = EnvFilter::new("info");
+    // let x = EnvFilter::new("info");
     let y = EnvFilter::builder()
         .with_default_directive(LevelFilter::INFO.into())
         .parse("")?;
@@ -86,50 +81,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
         network.get_msg_tx(),
     )));
 
-    let signing_node_clone = signing_node.clone();
-    let mut dkg_node = DKGNode::new(
+    // let signing_node_clone = signing_node.clone();
+    let dkg_node = DKGNode::new(
         network.get_local_peer_id().to_string(),
         threshold,
         total,
         network.get_msg_tx(),
     );
 
-    // Set up DKG completion callback to provide secret share and group key to signing node
-    dkg_node.set_completion_callback(Box::new(move |secret_share, group_key| {
-        let signing_node = signing_node_clone.clone();
-        tokio::spawn(async move {
-            let mut signing_node = signing_node.lock().await;
-            // For BLS, we'll generate a key pair instead of using DKG shares
-            if !signing_node.has_private_key() {
-                if let Err(e) = signing_node.generate_key_pair() {
-                    info!("❌ [MAIN] Failed to generate BLS key pair: {:?}", e);
-                }
-            }
-            info!("🔗 [MAIN] DKG completion callback executed - signing node configured with BLS keys");
-        });
-    }));
-
     let consensus_node = ConsensusNode::new();
-    let mut command_processor = CommandProcessor::new();
-
-    // Register signing command handler
-    let signing_node_cmd = signing_node.clone();
-    command_processor.register_handler("sign_message".to_string(), move |cmd| {
-        let signing_node = signing_node_cmd.clone();
-        match cmd {
-            mpc_node::commands::Command::SignMessage { message } => {
-                info!("📝 [MAIN] Received sign message command: {:?}", message);
-                tokio::spawn(async move {
-                    let mut signing_node = signing_node.lock().await;
-                    if let Err(e) = signing_node.sign_message(&message).await {
-                        info!("❌ [MAIN] Failed to sign message: {:?}", e);
-                    }
-                });
-                Ok(())
-            }
-            _ => Ok(()),
-        }
-    });
+    let command_processor = CommandProcessor::new();
 
     network.set_dkg_node(dkg_node);
     network.set_signing_node(signing_node.lock().await.clone());
@@ -151,51 +112,4 @@ async fn main() -> Result<(), Box<dyn Error>> {
     network.start().await?;
 
     Ok(())
-}
-
-#[cfg(test)]
-mod test {
-    use tracing_subscriber::fmt::format;
-
-    fn call_once<F>(f: F)
-    where
-        F: FnOnce(),
-    {
-        f();
-    }
-
-    fn call_borrow<F>(f: F)
-    where
-        F: Fn(),
-    {
-        f();
-        f();
-    }
-
-    fn call_borrow_mut<F: FnMut()>(mut f: F) {
-        f();
-        f();
-    }
-
-    #[test]
-    fn test_it() {
-        let mut ct = 100;
-        let mut s = String::from("value");
-        let inc = || {
-            ct += 1;
-            let a = ct;
-        };
-        call_borrow_mut(inc);
-        assert_eq!(ct, 102);
-        let inc = || println!("ct {}", ct);
-        call_borrow(inc);
-        assert_eq!(ct, 102);
-        let inc = move || {
-            for i in 0..10 {
-                println!("{s}");
-            }
-        };
-        call_borrow(inc);
-        assert_eq!(ct, 102);
-    }
 }

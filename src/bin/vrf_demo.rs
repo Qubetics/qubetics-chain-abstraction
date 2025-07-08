@@ -2,7 +2,7 @@ use anyhow::Result;
 use libp2p::identity::Keypair;
 use mpc_node::{
     node_management::{DefaultThresholdCalculator, NodeMembership, VrfNodeManager},
-    vrf::{VrfNodeSelector, VrfSelectionMessage},
+    vrf::{VrfNodeSelector},
 };
 use tracing::info;
 
