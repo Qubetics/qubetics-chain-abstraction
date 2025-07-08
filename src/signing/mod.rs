@@ -2,6 +2,7 @@ use anyhow::Result;
 use bls12_381::{G1Affine, G1Projective, Scalar};
 use ff::Field;
 use hex;
+use libp2p::PeerId;
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -10,6 +11,7 @@ use tokio::sync::{mpsc, RwLock};
 use tracing::{error, info, warn};
 
 use crate::types::{ChannelMessage, SerializableG1Affine};
+use crate::vrf::VrfNodeSelector;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BLSSignature {
@@ -53,10 +55,14 @@ pub struct SigningNode {
     signatures: Arc<RwLock<HashMap<String, BLSSignature>>>,
     pending_messages: Arc<RwLock<HashMap<Vec<u8>, Vec<u8>>>>, // message_hash -> message
     message_tx: mpsc::Sender<ChannelMessage>,
+    vrf_selector: Option<VrfNodeSelector>, // VRF selector for node selection
 }
 
 impl SigningNode {
     pub fn new(id: String, threshold: usize, message_tx: mpsc::Sender<ChannelMessage>) -> Self {
+        // Create a deterministic PeerId from the string ID for VRF selector
+        let peer_id = Self::derive_peer_id_from_string(&id);
+
         Self {
             id,
             threshold,
@@ -66,7 +72,27 @@ impl SigningNode {
             signatures: Arc::new(RwLock::new(HashMap::new())),
             pending_messages: Arc::new(RwLock::new(HashMap::new())),
             message_tx,
+            vrf_selector: Some(VrfNodeSelector::new(peer_id)),
         }
+    }
+
+    /// Derive a deterministic PeerId from a string ID
+    fn derive_peer_id_from_string(id: &str) -> PeerId {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(id.as_bytes());
+        let hash = hasher.finalize();
+
+        // Create a deterministic keypair from the hash
+        let mut key_bytes = [0u8; 32];
+        key_bytes.copy_from_slice(&hash[..32]);
+
+        // Create a deterministic Ed25519 keypair
+        let ed_kp = libp2p::identity::ed25519::Keypair::try_from_bytes(&mut key_bytes)
+            .unwrap_or_else(|_| libp2p::identity::ed25519::Keypair::generate());
+        let kp = libp2p::identity::Keypair::from(ed_kp);
+
+        PeerId::from_public_key(&kp.public())
     }
 
     pub fn generate_key_pair(&mut self) -> Result<()> {
@@ -130,6 +156,17 @@ impl SigningNode {
             "📝 [SIGNING] Node {} starting to sign message: {:?}",
             self.id, message_hash
         );
+
+        // Generate VRF proof for this signing operation
+        if let Some(vrf_selector) = &mut self.vrf_selector {
+            let vrf_output = vrf_selector.generate_vrf_proof(&message_hash);
+            info!(
+                "🎲 [VRF] Node {} generated VRF proof for message signing: value={}, hash={:?}",
+                self.id,
+                vrf_output.value,
+                hex::encode(&vrf_output.hash) 
+            );
+        }
 
         // Store the message for later use
         self.pending_messages
@@ -413,5 +450,37 @@ impl SigningNode {
     pub fn get_compressed_signature_hex(&self, signature: &G1Affine) -> String {
         let bytes = signature.to_compressed();
         hex::encode(bytes)
+    }
+
+    /// Get VRF public key for this node
+    pub fn get_vrf_public_key(&self) -> Option<String> {
+        self.vrf_selector
+            .as_ref()
+            .map(|vrf| vrf.get_public_key_hex())
+    }
+
+    /// Get VRF public key as bytes
+    pub fn get_vrf_public_key_bytes(&self) -> Option<Vec<u8>> {
+        self.vrf_selector.as_ref().map(|vrf| vrf.get_public_key())
+    }
+
+    /// Generate VRF proof for a given input
+    pub fn generate_vrf_proof(&self, input: &[u8]) -> Option<crate::vrf::VrfOutput> {
+        self.vrf_selector
+            .as_ref()
+            .map(|vrf| vrf.generate_vrf_proof(input))
+    }
+
+    /// Verify VRF proof from another node
+    pub fn verify_vrf_proof(
+        &self,
+        node_public_key: &[u8],
+        input: &[u8],
+        output: &crate::vrf::VrfOutput,
+    ) -> bool {
+        self.vrf_selector
+            .as_ref()
+            .map(|vrf| vrf.verify_vrf_proof(node_public_key, input, output))
+            .unwrap_or(false)
     }
 }

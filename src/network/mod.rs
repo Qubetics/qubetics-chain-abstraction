@@ -560,26 +560,19 @@ impl NetworkLayer {
                                 share: _group_key,
                                 commitments: _,
                             } => {
-                                // Handle AVSS share response here (maybe store in state?)
-                                // e.g., self.dkg_node.as_mut()?.handle_received_share(party_id, share, commitments);
                             }
 
                             RPCResponse::DKGStarted { peer_id } => {
-                                // dkg started by sending peer
                                 info!("DKG has started by: {:?}", peer_id);
                             }
 
                             RPCResponse::Error(err) => {
-                                // error received because of previous sent request
                                 warn!("Received error from peer {}: {}", peer, err);
                             }
 
                             RPCResponse::ShareAccepted => {
-                                // share accepted by the peer whom this node sent it to
                             }
-
                             _ => {
-                                // Optionally handle other responses like DKGStatus, ShareAccepted, etc.
                             }
                         }
                     }

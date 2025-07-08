@@ -41,7 +41,7 @@ pub enum VrfSelectionMessage {
 }
 
 /// VRF-based node selector using ecvrf
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct VrfNodeSelector {
     vrf_secret_key: VrfSk,
     vrf_public_key: VrfPk,
