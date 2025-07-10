@@ -106,6 +106,8 @@ impl DKGNode {
 
         self.status = DKGStatus::Started;
         info!("📤 Broadcasting DKG shares and commitments...");
+        tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+
         self.broadcast_shares(shares, commitments).await?;
         Ok(())
     }
