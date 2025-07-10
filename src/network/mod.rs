@@ -349,6 +349,7 @@ impl NetworkLayer {
             "vrf-selection",
             "transactions",
             "dkg-commands",
+            "signatures-to-final-node",
         ];
         for topic in topics {
             let topic_hash = gossipsub::IdentTopic::new(topic);
@@ -891,7 +892,22 @@ impl NetworkLayer {
             }
             GossipsubMessage::Signing(signing_msg) => {
                 if let Some(signing_node) = &mut self.signing_node {
-                    signing_node.handle_message(signing_msg).await?;
+                    // Check if this message is from the signatures-to-final-node topic
+                    if message.topic.to_string() == "signatures-to-final-node" {
+                        // Handle as signature to final node
+                        match signing_msg {
+                            crate::signing::SigningMessage::BLSSignature { from, signature } => {
+                                signing_node.handle_signature_to_final_node(from, signature).await?;
+                            }
+                            _ => {
+                                // Handle other signing messages normally
+                                signing_node.handle_message(signing_msg).await?;
+                            }
+                        }
+                    } else {
+                        // Handle normal signing messages
+                        signing_node.handle_message(signing_msg).await?;
+                    }
                 }
             }
             GossipsubMessage::Command(cmd) => {
