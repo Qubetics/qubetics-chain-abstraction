@@ -26,20 +26,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let (writer, _guard) = non_blocking(file_appender);
     let file_layer = fmt::layer::<_>()
         .with_writer(writer)
-        .with_target(false)
+        .with_target(true)
         .with_level(true)
         .with_thread_ids(false)
         .with_thread_names(false);
 
     let stdout_layer = fmt::layer::<_>()
         .with_writer(std::io::stdout)
-        .with_target(false)
+        .with_target(true)
         .with_level(true)
         .with_thread_ids(false)
         .with_thread_names(false);
     let stderr_layer = fmt::layer::<_>()
         .with_writer(std::io::stderr)
-        .with_target(false)
+        .with_target(true)
         .with_level(true)
         .with_thread_ids(false)
         .with_thread_names(false);

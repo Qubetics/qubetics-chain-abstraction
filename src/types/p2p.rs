@@ -11,8 +11,9 @@ impl Serialize for SerializablePeerId {
     where
         S: Serializer,
     {
-        let bytes = self.0.to_bytes();
-        serializer.serialize_bytes(&bytes)
+        // let bytes = self.0.to_bytes();
+        // serializer.serialize_bytes(&bytes)
+        serializer.serialize_str(&self.0.to_string())
     }
 }
 
@@ -29,9 +30,9 @@ impl<'de> Visitor<'de> for PeerIdVisitor {
     where
         E: de::Error,
     {
-        if v.len() != 48 {
-            return Err(E::custom("invalid length for peerId"));
-        }
+        // if v.len() != 48 {
+        //     return Err(E::custom("invalid length for peerId"));
+        // }
 
         let mut bytes = [0u8; 48];
         bytes.copy_from_slice(v);
@@ -47,6 +48,9 @@ impl<'de> Deserialize<'de> for SerializablePeerId {
     where
         D: Deserializer<'de>,
     {
-        deserializer.deserialize_bytes(PeerIdVisitor)
+        let s = String::deserialize(deserializer)?;
+        let pid = s.parse().map_err(de::Error::custom)?;
+        Ok(SerializablePeerId(pid))
+        // deserializer.deserialize_bytes(PeerIdVisitor)
     }
 }

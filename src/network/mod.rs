@@ -1,20 +1,13 @@
 use anyhow::Result;
 use futures::StreamExt;
 use libp2p::{
-    gossipsub::{self, Message, TopicHash},
-    identity::Keypair,
-    kad::{self, store::MemoryStore, BucketInserts, Event as KademliaEvent},
-    multiaddr::Protocol,
-    noise,
-    request_response::{
+    core::ConnectedPoint, gossipsub::{self, Message, TopicHash}, identity::Keypair, kad::{self, store::MemoryStore, BucketInserts, Event as KademliaEvent}, multiaddr::Protocol, noise, request_response::{
         cbor::Behaviour as CborReqRespBehaviour, Event as ReqRespEvent, Message as ReqRespMessage,
-    },
-    swarm::{ConnectionError, NetworkBehaviour, SwarmEvent},
-    tcp, yamux, Multiaddr, PeerId,
+    }, swarm::{ConnectionError, NetworkBehaviour, SwarmEvent}, tcp, yamux, Multiaddr, PeerId
 };
 use std::{
     collections::hash_map::DefaultHasher,
-    hash::{Hash, Hasher},
+    hash::{Hash, Hasher}, time::{SystemTime, UNIX_EPOCH},
 };
 use std::{
     collections::{ HashSet},
@@ -219,17 +212,23 @@ impl NetworkLayer {
             .build();
         self.subscribe_to_default_topics(&mut swarm)?;
         println!("Starting Kademlia bootstrap...");
+        self.node_manager
+            .add_node(self.local_peer_id.clone())
+            .map_err(|e| anyhow::anyhow!(e))?;
 
         // Bootstrap with the configured nodes
         if let Err(e) = swarm.behaviour_mut().kademlia.bootstrap() {
             warn!("Failed to start bootstrap: {:?}", e);
         }
         let mut bootstrap_timer = tokio::time::interval(Duration::from_secs(300)); // 5 minutes
-        let mut discovery_timer = tokio::time::interval(Duration::from_secs(120)); // 2 minutes (reduced from 60 seconds)
-        let mut dkg_status_timer = tokio::time::interval(Duration::from_secs(30)); // 30 seconds
+        let mut discovery_timer = tokio::time::interval(Duration::from_secs(300)); // 2 minutes (reduced from 60 seconds)
+        let mut dkg_status_timer = tokio::time::interval(Duration::from_secs(300)); // 30 seconds
+        let mut peerlist_logger = tokio::time::interval(Duration::from_secs(30));
+
 
         swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
         swarm.listen_on("/ip4/0.0.0.0/udp/0/quic-v1".parse()?)?;
+
 
         let args: Vec<String> = env::args().collect();
         if args.len() >= 2 {
@@ -239,9 +238,6 @@ impl NetworkLayer {
         }
 
         println!("Local Peer ID: {}", self.local_peer_id);
-        self.node_manager
-            .add_node(self.local_peer_id.clone())
-            .map_err(|e| anyhow::anyhow!(e))?;
 
         loop {
             tokio::select! {
@@ -256,6 +252,16 @@ impl NetworkLayer {
                         self.handle_channel_message(msg, &mut swarm).await?;
                     }
                 }
+
+                _ = peerlist_logger.tick() => {
+                    let peers = self.node_manager.get_active_nodes();
+                    info!(
+                        "🕒 PeerList snapshot ({} peers): {:?}",
+                        peers.len(),
+                        peers
+                    );
+                }
+                
                  _ = bootstrap_timer.tick() => {
                     // Periodic bootstrap to discover new peers
                     println!("Performing periodic bootstrap...");
@@ -309,7 +315,7 @@ impl NetworkLayer {
 
                     // } else {
                     //     info!("⏸️ Skipping periodic broadcast - peers: {}, gossipsub peers: {}", current_total, gossipsub_peers);
-                    // }
+                    // }    
                 }
                 
                 _ = dkg_status_timer.tick() => {
@@ -387,6 +393,28 @@ impl NetworkLayer {
             .any(|&bootstrap_id| peer_id_str.contains(bootstrap_id))
     }
 
+    fn schedule_local_dkg(&self, start_time: u64, total: usize, threshold: usize) {
+        if let Some(dkg_node) = &self.dkg_node {
+            // spawn a task to wait until start_time
+            tokio::spawn(async move {
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH).unwrap()
+                    .as_secs();
+                if start_time > now {
+                    tokio::time::sleep(Duration::from_secs(start_time - now)).await;
+                }
+                info!("🚀 Starting DKG now (scheduled for {})", start_time);
+                // update params & start
+                dkg_node.update_node_params(total, threshold);
+                if let Err(e) = dkg_node.start_dkg().await {
+                    warn!("❌ Scheduled DKG start failed: {:?}", e);
+                }
+            });   
+        }else {
+            
+        }
+    }
+
     async fn handle_swarm_event(
         &mut self,
         event: SwarmEvent<NetworkEvent>,
@@ -409,28 +437,16 @@ impl NetworkLayer {
                 peer_id, endpoint, ..
             } => {
                 info!("🔗 Connection established with peer: {:?}", peer_id);
-
-                // Debug: Check if this is a bootstrap node
-                let bootstrap_peer_ids: Vec<&'static str> = vec![
-                ];
-
-                let peer_id_str = peer_id.to_string();
-                let is_bootstrap = bootstrap_peer_ids
-                    .iter()
-                    .any(|&bootstrap_id| peer_id_str.contains(bootstrap_id));
-
-                if is_bootstrap {
-                    info!("🔗 Connected to bootstrap node: {:?}", peer_id);
-                } else {
-                    info!("🔗 Connected to MPC node: {:?}", peer_id);
-
-                    // For MPC nodes, let's manually trigger some discovery
-                    info!("🔍 Triggering peer discovery for MPC node: {:?}", peer_id);
-                }
-
                 // Get the remote address and add it to Kademlia
                 let remote_addr = endpoint.get_remote_address();
                 info!("📍 Remote address: {:?}", remote_addr);
+
+                // Determine whether they dialed us (we’re the listener) or we dialed them
+                let is_listener = matches!(endpoint, ConnectedPoint::Listener { .. });
+                let is_dialer   = matches!(endpoint, ConnectedPoint::Dialer   { .. });
+
+                // Check if we already know this peer
+                let already_known = self.node_manager.get_active_nodes().contains(&peer_id);
 
                 // Add the peer's address to Kademlia - this should trigger RoutingUpdated
                 swarm
@@ -441,6 +457,47 @@ impl NetworkLayer {
                 // Add peer to gossipsub as explicit peer for better message delivery
                 swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
                 info!("➕ Added peer {} to gossipsub explicit peers", peer_id);
+
+                if is_listener && !already_known {
+                    info!("📡 New peer {} connected; announcing to mesh", peer_id);
+                    let msg = GossipsubMessage::PeerDiscovered {
+                        peer: peer_id.clone(),
+                        sequence: Some(1),
+                    };
+                    let payload = serde_json::to_vec(&msg)
+                        .expect("serialize PeerDiscovered");
+                    match self.broadcast(MSG_TOPIC_PEER_DISCOVERY, &payload).await {
+                        Ok(_) => {
+                            info!(
+                                "✅ Successfully broadcasted peer discovery for: {:?}",
+                                peer_id.clone()
+                            );
+                        }
+                        Err(e) => {
+                            warn!("❌ Failed to broadcast peer discovery: {:?}", e);
+                            // Retry once after a short delay
+                            tokio::time::sleep(Duration::from_millis(500)).await;
+                            if let Err(retry_e) =
+                                self.broadcast(MSG_TOPIC_PEER_DISCOVERY, &payload).await
+                            {
+                                warn!(
+                                    "❌ Retry failed to broadcast peer discovery: {:?}",
+                                    retry_e
+                                );
+                            }
+                        }
+                    }
+                }
+
+                if is_dialer {
+                    info!("🎉 Dialed {}; waiting 2sec before GetPeerList…", peer_id);
+                    // give libp2p a moment to set up the request-response substream
+                    tokio::time::sleep(Duration::from_millis(2000)).await;
+                    info!("🚀 Sending GetPeerList RPC to {}", peer_id);
+                    swarm.behaviour_mut()
+                        .request_response
+                        .send_request(&peer_id, RPCRequest::GetPeerList);
+                }
 
                 // Debug: Log current Kademlia routing table size
                 let kbucket_count: usize = swarm
@@ -478,6 +535,28 @@ impl NetworkLayer {
                         request, channel, ..
                     } => {
                         let response = match request {
+                            RPCRequest::GetPeerList => {
+                                // Log that we received the full‐list request
+                                info!("🔄 GetPeerList RPC received from {}", peer);
+
+                                // Gather everyone we know
+                                let peers: Vec<SerializablePeerId> = self
+                                    .node_manager
+                                    .get_active_nodes()
+                                    .into_iter()
+                                    .map(SerializablePeerId)
+                                    .collect();
+
+                                // Log how many peers we’re returning (and list them if you like)
+                                info!(
+                                    "📋 Sending PeerList response to {}: {} entries: {:?}",
+                                    peer,
+                                    peers.len(),
+                                    peers
+                                );
+
+                                RPCResponse::PeerList { peers }
+                            }
                             RPCRequest::Ping => RPCResponse::Pong,
                             RPCRequest::GetPeerInfo => {
                                 // Provide your implementation to get peer info
@@ -542,18 +621,34 @@ impl NetworkLayer {
                             _ => RPCResponse::Ack
                         };
                         // here the following line will send to the other connected peers (incl any testing agent(s))
-                        let _ = swarm
+                        let res = swarm
                             .behaviour_mut()
                             .request_response
                             .send_response(channel, response); // peer.send.ptp
+                        if res.is_err() {
+                            warn!("❌ Failed to send response to peer {}: {:?}", peer, res.err());
+                        } else {
+                            info!("📤 Sent RPC response to {}: {:?}", peer, res);
+                        }
                     }
                     // here peer(s) will recieve the msg sent by other peer by peer.send.ptp
                     ReqRespMessage::Response {
                         request_id: _,
                         response,
                     } => {
+                        info!("📥 Got RPC response {:?} from {}", response, peer);
                         // peer.r
                         match response {
+                            RPCResponse::PeerList { peers } => {
+                                info!("🔄 Merging peer‐set from {}: {:?}", peer, peers);
+                                for SerializablePeerId(p) in peers {
+                                    if !self.node_manager.get_active_nodes().contains(&p) {
+                                        self.node_manager.add_node(p.clone())
+                                            .map_err(|e| anyhow::anyhow!(e))?;
+                                    }
+                                }
+                            },
+
                             RPCResponse::GotAVSSShare {
                                 dealer_id: _,
                                 receiver_id: _,
@@ -571,8 +666,9 @@ impl NetworkLayer {
                             }
 
                             RPCResponse::ShareAccepted => {
-                            }
-                            _ => {
+                            } 
+                            other => {
+                                info!("ℹ️  RPCResponse::{:?} from {} (no action)", other, peer);
                             }
                         }
                     }
@@ -605,55 +701,13 @@ impl NetworkLayer {
                         old_peer,
                     } => {
                         info!("-----------routing updated----------: Peer{:?}, is_new_peer{:?}, addresses{:?}, bucket_range{:?}, old_peer{:?}\n", peer, is_new_peer, addresses, bucket_range, old_peer);
-
-                        info!("[RoutingUpdated] New peer added : {:?}", peer);
+                        // let before = self.node_manager.get_total_nodes();
+                        // info!("[RoutingUpdated] New peer added : {:?}", peer);
                         self.node_manager
                             .add_node(peer)
                             .map_err(|e| anyhow::anyhow!(e))?;
 
                         if is_new_peer {
-                            // let msg = GossipsubMessage::PeerDiscovered {
-                            //     peer: peer.clone(),
-                            //     sequence: Some(1), // Add sequence number
-                            // };
-                            // info!("[RoutingUpdated] Broadcasting PeerDiscovered message: {:?}", msg);
-                            // let payload = serde_json::to_vec(&msg)
-                                // .map_err(|e| anyhow::anyhow!("serialize PeerDiscovered: {}", e))?;
-
-                            // Check if we have connected peers before broadcasting
-                            // let connected_peers =
-                            //     swarm.behaviour_mut().gossipsub.all_peers().count();
-                            // info!("Connected peers before broadcast: {}", connected_peers);
-
-                            // if connected_peers > 0 {
-                            //     // Add a small delay to ensure topic subscription is complete
-                            //     // tokio::time::sleep(Duration::from_millis(100)).await;
-
-                            //     match self.broadcast(MSG_TOPIC_PEER_DISCOVERY, &payload).await {
-                            //         Ok(_) => {
-                            //             info!(
-                            //                 "✅ Successfully broadcasted peer discovery for: {:?}",
-                            //                 peer
-                            //             );
-                            //         }
-                            //         Err(e) => {
-                            //             warn!("❌ Failed to broadcast peer discovery: {:?}", e);
-                            //             // Retry once after a short delay
-                            //             tokio::time::sleep(Duration::from_millis(500)).await;
-                            //             if let Err(retry_e) =
-                            //                 self.broadcast(MSG_TOPIC_PEER_DISCOVERY, &payload).await
-                            //             {
-                            //                 warn!(
-                            //                     "❌ Retry failed to broadcast peer discovery: {:?}",
-                            //                     retry_e
-                            //                 );
-                            //             }
-                            //         }
-                            //     }
-                            // } else {
-                            //     warn!("⚠️ No connected peers available for broadcasting peer discovery");
-                            // }
-
                             // Check if this is a bootstrap node
                             if self.is_bootstrap_node(&peer) {
                                 info!("⚠️  This is a bootstrap node, skipping: {:?}", peer);
@@ -687,36 +741,55 @@ impl NetworkLayer {
                                     total, threshold
                                 );
 
-                                if let Some(dkg_node) = &mut self.dkg_node {
-                                    // Update DKG node parameters
-                                    dkg_node.update_node_params(total, threshold);
+                                // if let Some(dkg_node) = &mut self.dkg_node {
+                                //     // Update DKG node parameters
+                                //     dkg_node.update_node_params(total, threshold);
+                                let now_secs = SystemTime::now()
+                                    .duration_since(UNIX_EPOCH).unwrap()
+                                    .as_secs();
+                                let start_time = now_secs + 5;  
+                                info!("🕒 Scheduling DKG start at unix time {}", start_time);
+
+                                for peer in self.node_manager.get_active_nodes() {
+                                    if peer != *self.get_local_peer_id() {
+                                        swarm.behaviour_mut()
+                                            .request_response
+                                            .send_request(
+                                                &peer,
+                                                RPCRequest::ScheduleADKG { start_time },
+                                            );
+                                    }
+                                }
+                                    info!("📅 Scheduled DKG start for all peers at {}", start_time);
+                                    // self.schedule_local_dkg(start_time, total, thresh);
+                                    // self.dkg_started = true;
 
                                     // Start DKG locally
-                                    match dkg_node.start_dkg().await {
-                                        Ok(_) => {
-                                            info!("✅ Successfully started DKG locally");
+                                    // match dkg_node.start_dkg().await {
+                                    //     Ok(_) => {
+                                    //         info!("✅ Successfully started DKG locally");
 
-                                            // Notify other peers to start DKG
-                                            for peer in self.node_manager.get_active_nodes() {
-                                                if peer != self.local_peer_id {
-                                                    info!(
-                                                        "📤 Notifying peer {} to start DKG",
-                                                        peer
-                                                    );
-                                                    let _ = swarm
-                                                        .behaviour_mut()
-                                                        .request_response
-                                                        .send_request(&peer, RPCRequest::StartADKG);
-                                                }
-                                            }
-                                        }
-                                        Err(e) => {
-                                            warn!("❌ Failed to start DKG locally: {:?}", e);
-                                        }
-                                    }
-                                } else {
-                                    warn!("❌ DKG node not initialized");
-                                }
+                                    //         // Notify other peers to start DKG
+                                    //         for peer in self.node_manager.get_active_nodes() {
+                                    //             if peer != self.local_peer_id {
+                                    //                 info!(
+                                    //                     "📤 Notifying peer {} to start DKG",
+                                    //                     peer
+                                    //                 );
+                                    //                 let _ = swarm
+                                    //                     .behaviour_mut()
+                                    //                     .request_response
+                                    //                     .send_request(&peer, RPCRequest::StartADKG);
+                                    //             }
+                                    //         }
+                                    //     }
+                                    //     Err(e) => {
+                                    //         warn!("❌ Failed to start DKG locally: {:?}", e);
+                                    //     }
+                                    // }
+                                // } else {
+                                //     warn!("❌ DKG node not initialized");
+                                // }
                             } else {
                                 info!(
                                     "⏳ Waiting for more nodes: {}/{} (need {} + 1)",
