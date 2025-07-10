@@ -25,6 +25,6 @@ pub use node_management::{
     VrfNodeManager,
 };
 pub use signing::{BLSSignature, SigningMessage, SigningNode};
-pub use vrf::{NodeSelectionResult, VrfNodeSelector, VrfOutput, VrfSelectionMessage};
-
-
+pub use vrf::{
+    NodeSelectionResult, VrfNodeSelector, VrfOutput, VrfSelectedNodesBroadcast, VrfSelectionMessage,
+};

@@ -1,3 +1,4 @@
+use base64::Engine;
 use libp2p::PeerId;
 use serde::de::{self, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -12,7 +13,8 @@ impl Serialize for SerializablePeerId {
         S: Serializer,
     {
         let bytes = self.0.to_bytes();
-        serializer.serialize_bytes(&bytes)
+        let base64_string = base64::engine::general_purpose::STANDARD.encode(bytes);
+        serializer.serialize_str(&base64_string)
     }
 }
 
@@ -22,19 +24,16 @@ impl<'de> Visitor<'de> for PeerIdVisitor {
     type Value = SerializablePeerId;
 
     fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        formatter.write_str("a peerId in bytes form")
+        formatter.write_str("a peerId in base64 string form")
     }
 
-    fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
+    fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
     where
         E: de::Error,
     {
-        if v.len() != 48 {
-            return Err(E::custom("invalid length for peerId"));
-        }
-
-        let mut bytes = [0u8; 48];
-        bytes.copy_from_slice(v);
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(v)
+            .map_err(|_| E::custom("invalid base64 encoding"))?;
 
         PeerId::from_bytes(&bytes)
             .map(SerializablePeerId)
@@ -47,6 +46,6 @@ impl<'de> Deserialize<'de> for SerializablePeerId {
     where
         D: Deserializer<'de>,
     {
-        deserializer.deserialize_bytes(PeerIdVisitor)
+        deserializer.deserialize_str(PeerIdVisitor)
     }
 }

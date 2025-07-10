@@ -6,11 +6,13 @@ use libp2p::PeerId;
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 use tracing::{error, info, warn};
 
-use crate::types::{ChannelMessage, SerializableG1Affine};
+use crate::consensus::{ConsensusMessage, ConsensusNode, ConsensusResult};
+use crate::types::{p2p::SerializablePeerId, ChannelMessage, SerializableG1Affine};
 use crate::vrf::VrfNodeSelector;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,13 +58,17 @@ pub struct SigningNode {
     pending_messages: Arc<RwLock<HashMap<Vec<u8>, Vec<u8>>>>, // message_hash -> message
     message_tx: mpsc::Sender<ChannelMessage>,
     vrf_selector: Option<VrfNodeSelector>, // VRF selector for node selection
+    consensus_node: Option<ConsensusNode>, // Consensus node for final node selection
     available_nodes: Option<Vec<PeerId>>,  // Available nodes from node manager
 }
 
 impl SigningNode {
     pub fn new(id: String, threshold: usize, message_tx: mpsc::Sender<ChannelMessage>) -> Self {
-        // Create a deterministic PeerId from the string ID for VRF selector
-        let peer_id = Self::derive_peer_id_from_string(&id);
+        // Parse the actual PeerId from the string ID
+        let peer_id = PeerId::from_str(&id).unwrap_or_else(|_| {
+            // Fallback to derived PeerId if parsing fails
+            Self::derive_peer_id_from_string(&id)
+        });
 
         Self {
             id,
@@ -74,6 +80,7 @@ impl SigningNode {
             pending_messages: Arc::new(RwLock::new(HashMap::new())),
             message_tx,
             vrf_selector: Some(VrfNodeSelector::new(peer_id)),
+            consensus_node: Some(ConsensusNode::new()),
             available_nodes: None,
         }
     }
@@ -168,7 +175,6 @@ impl SigningNode {
 
         // Generate VRF proof for this signing operation
         if let Some(vrf_selector) = &mut self.vrf_selector {
-
             let selection_result = vrf_selector.select_mpc_nodes(&available_nodes, 1, round);
             info!(
                 "🎯 [VRF] Node {} selected {} MPC nodes for signing round {}: {:?}",
@@ -177,10 +183,19 @@ impl SigningNode {
                 round,
                 selection_result.selected_nodes
             );
-            info!(
-                "available nodes for vrf are : {:?}",
-                self.get_available_nodes().await
-            )
+            info!("available nodes for vrf are : {:?}", available_nodes);
+
+            // Broadcast the VRF-selected nodes to all peers
+            if let Some(broadcast_msg) = vrf_selector.create_selected_nodes_broadcast(round) {
+                let broadcast_data = serde_json::to_vec(
+                    &crate::types::GossipsubMessage::VrfSelectedNodes(broadcast_msg),
+                )?;
+                self.broadcast("vrf-selection", &broadcast_data).await?;
+                info!(
+                    "📤 [VRF] Node {} broadcasted VRF-selected nodes for round {}",
+                    self.id, round
+                );
+            }
         }
 
         // Store the message for later use
@@ -506,7 +521,6 @@ impl SigningNode {
 
     /// Set available nodes from node manager
     pub fn set_available_nodes(&mut self, nodes: Vec<PeerId>) {
-
         self.available_nodes = Some(nodes);
     }
 
@@ -516,5 +530,192 @@ impl SigningNode {
         } else {
             self.get_available_nodes().await
         }
+    }
+
+    /// Handle VRF selected nodes broadcast from another node
+    pub fn handle_vrf_selected_nodes_broadcast(
+        &mut self,
+        broadcast: crate::vrf::VrfSelectedNodesBroadcast,
+    ) {
+        if let Some(vrf_selector) = &mut self.vrf_selector {
+            // Extract round before moving broadcast
+            let round = broadcast.round;
+            let min_selections = 4; // Or set to your desired threshold
+
+            vrf_selector.handle_selected_nodes_broadcast(broadcast);
+
+            // Check if consensus should be triggered after receiving this broadcast
+            if vrf_selector.can_start_consensus(round, min_selections) {
+                info!(
+                    "🎯 [VRF] Enough selections collected for round {}, triggering consensus check",
+                    round
+                );
+
+                // Spawn a task to trigger consensus asynchronously
+                let mut signing_node_clone = self.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = signing_node_clone
+                        .check_and_trigger_consensus(round, min_selections)
+                        .await
+                    {
+                        error!(
+                            "❌ [CONSENSUS] Failed to trigger consensus for round {}: {}",
+                            round, e
+                        );
+                    }
+                });
+            }
+        }
+    }
+
+    /// Check and trigger consensus if ready
+    pub async fn check_and_trigger_consensus(
+        &mut self,
+        round: u64,
+        min_selections: usize,
+    ) -> Result<Option<ConsensusResult>> {
+        if self.can_start_consensus(round, min_selections) {
+            info!(
+                "🎯 [CONSENSUS] Consensus ready for round {}, starting...",
+                round
+            );
+            self.start_consensus_for_round(round).await
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Start consensus for a specific round
+    pub async fn start_consensus_for_round(
+        &mut self,
+        round: u64,
+    ) -> Result<Option<ConsensusResult>> {
+        // Get the node ID first to avoid borrow checker issues
+        let own_node_id = SerializablePeerId(PeerId::from_str(&self.id)?);
+
+        if let (Some(vrf_selector), Some(consensus_node)) =
+            (&self.vrf_selector, &mut self.consensus_node)
+        {
+            // Get all selected nodes with frequencies for this round
+            let all_selected_nodes = vrf_selector.get_all_selected_nodes_with_frequencies(round);
+
+            if all_selected_nodes.is_empty() {
+                info!(
+                    "⚠️ [CONSENSUS] No selected nodes available for consensus round {}",
+                    round
+                );
+                return Ok(None);
+            }
+
+            info!(
+                "🎯 [CONSENSUS] Starting consensus for round {} with {} selected nodes",
+                round,
+                all_selected_nodes.len()
+            );
+
+            // Add selected nodes to consensus
+            consensus_node.add_selected_nodes(round, all_selected_nodes);
+
+            // Start consensus
+            match consensus_node.start_consensus(round) {
+                Ok(result) => {
+                    info!(
+                        "✅ [CONSENSUS] Consensus completed for round {}: final node = {:?}",
+                        round, result.final_node
+                    );
+
+                    // Broadcast the consensus result
+                    let consensus_msg = ConsensusMessage::FinalNodeResult {
+                        result: result.clone(),
+                        round,
+                    };
+
+                    let broadcast_data = serde_json::to_vec(&consensus_msg)?;
+
+                    // Store the result for later use
+                    let is_final_node = consensus_node.is_final_node(round, &own_node_id);
+
+                    // Broadcast outside of the borrow
+                    self.broadcast("consensus-result", &broadcast_data).await?;
+
+                    info!(
+                        "📤 [CONSENSUS] Broadcasted consensus result for round {}",
+                        round
+                    );
+
+                    // Check if this node is the final selected node
+                    if is_final_node {
+                        info!(
+                            "\x1b[32m🏆 [CONSENSUS] This node is the final selected node for round {}!\x1b[0m",
+                            round
+                        );
+                        // Trigger aggregate signature for the final node
+                        self.trigger_aggregate_signature_for_final_node(round)
+                            .await?;
+                    } else {
+                        info!(
+                            "\x1b[31m📋 [CONSENSUS] This node is not the final selected node for round {}\x1b[0m",
+                            round
+                        );
+                    }
+
+                    Ok(Some(result))
+                }
+                Err(e) => {
+                    error!(
+                        "❌ [CONSENSUS] Failed to start consensus for round {}: {}",
+                        round, e
+                    );
+                    Err(e)
+                }
+            }
+        } else {
+            Err(anyhow::anyhow!(
+                "VRF selector or consensus node not available"
+            ))
+        }
+    }
+
+    /// Check if consensus can be started for a round
+    pub fn can_start_consensus(&self, round: u64, min_selections: usize) -> bool {
+        if let Some(vrf_selector) = &self.vrf_selector {
+            vrf_selector.can_start_consensus(round, min_selections)
+        } else {
+            false
+        }
+    }
+
+    /// Handle consensus messages
+    pub async fn handle_consensus_message(&mut self, msg: ConsensusMessage) -> Result<()> {
+        if let Some(consensus_node) = &mut self.consensus_node {
+            consensus_node.handle_message(msg).await?;
+        }
+        Ok(())
+    }
+
+    /// Trigger aggregate signature for the final selected node
+    async fn trigger_aggregate_signature_for_final_node(&self, round: u64) -> Result<()> {
+        info!(
+            "🚀 [SIGNING] Triggering aggregate signature for final node in round {}",
+            round
+        );
+
+        // This is where you would trigger the aggregate signature process
+        // For now, we'll just log that the final node should start aggregation
+        info!(
+            "📝 [SIGNING] Final node should start BLS signature aggregation for round {}",
+            round
+        );
+
+        // You can add the actual aggregate signature logic here
+        // For example:
+        // self.aggregate_signatures().await?;
+
+        Ok(())
+    }
+
+    /// Get the node ID
+    pub fn get_node_id(&self) -> &str {
+        &self.id
     }
 }

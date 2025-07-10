@@ -110,6 +110,16 @@ impl VrfNodeManager {
     pub fn get_selection_interval(&self) -> u64 {
         self.selection_interval
     }
+
+    /// Get a reference to the VRF selector
+    pub fn get_vrf_selector(&self) -> &VrfNodeSelector {
+        &self.vrf_selector
+    }
+
+    /// Get a mutable reference to the VRF selector
+    pub fn get_vrf_selector_mut(&mut self) -> &mut VrfNodeSelector {
+        &mut self.vrf_selector
+    }
 }
 
 impl NodeMembership for VrfNodeManager {
