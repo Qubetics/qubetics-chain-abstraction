@@ -84,7 +84,7 @@ pub struct NetworkLayer {
     consensus_node: Option<ConsensusNode>,
     command_processor: Option<CommandProcessor>,
     node_manager: Box<dyn NodeMembership>,
-    scheduled_dkg_sleep: Option<Pin<Box<tokio::time::Sleep>>>,
+    // scheduled_dkg_sleep: Option<Pin<Box<tokio::time::Sleep>>>,
 }
 
 impl NetworkLayer {
@@ -104,7 +104,7 @@ impl NetworkLayer {
             consensus_node: None,
             command_processor: None,
             node_manager,
-            scheduled_dkg_sleep: None,
+            // scheduled_dkg_sleep: None,
         })
     }
 
@@ -257,29 +257,6 @@ impl NetworkLayer {
                     }
                 }
 
-                _ = async {
-                    if let Some(s) = &mut self.scheduled_dkg_sleep {
-                        s.as_mut().await
-                    } else {
-                        futures::future::pending::<()>().await
-                    }
-                } => {
-                    // once only:
-                    self.scheduled_dkg_sleep.take();
-                    info!("🚀 Starting DKG at the exact agreed instant {}!",SystemTime::now()
-                            .duration_since(UNIX_EPOCH).unwrap()
-                            .as_secs());
-                    let total     = self.node_manager.get_total_nodes();
-                    let threshold = self.node_manager.get_threshold();
-                    if let Some(dkg) = &mut self.dkg_node {
-                        dkg.update_node_params(total, threshold);
-                        if let Err(e) = dkg.start_dkg().await {
-                            warn!("❌ Scheduled DKG start failed: {:?}", e);
-                        }
-                    }
-                },
-                
-
                 _ = peerlist_logger.tick() => {
                     let peers = self.node_manager.get_active_nodes();
                     info!(
@@ -324,25 +301,6 @@ impl NetworkLayer {
                     // Also search for random peers to populate routing table
                     let random_peer = PeerId::random();
                     swarm.behaviour_mut().kademlia.get_closest_peers(random_peer);
-
-                    // Periodic broadcast of our local peer to ensure all peers know about us
-                    // Only broadcast if we have peers but haven't seen recent activity
-                    // if current_total > 1 && gossipsub_peers > 0 {
-                    //     // Add a sequence number to make each message unique
-                    //     static mut SEQUENCE: u64 = 0;
-                    //     let seq = unsafe {
-                    //         SEQUENCE += 1;
-                    //         SEQUENCE
-                    //     };
-
-                    //     let _msg = GossipsubMessage::PeerDiscovered {
-                    //         peer: self.local_peer_id.clone(),
-                    //         sequence: Some(seq),
-                    //     };
-
-                    // } else {
-                    //     info!("⏸️ Skipping periodic broadcast - peers: {}, gossipsub peers: {}", current_total, gossipsub_peers);
-                    // }    
                 }
                 
                 _ = dkg_status_timer.tick() => {
@@ -426,8 +384,16 @@ impl NetworkLayer {
             .expect("clock broken")
             .as_secs();
         let delay = start_time_unix.saturating_sub(now);
-        let sleep = Box::pin(time::sleep(Duration::from_secs(delay)));
-        self.scheduled_dkg_sleep = Some(sleep);
+        let tx = self.message_tx.clone();
+
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(delay)).await;
+            if let Err(e) = tx.send(ChannelMessage::ScheduledDKGStart).await {
+                warn!("❌ Error sending ScheduledDKGStart message: {:?}", e);
+            }
+        });
+
+        info!("✅ Scheduled DKG to start at {}", start_time_unix);
     }
     
     async fn handle_swarm_event(
@@ -546,9 +512,6 @@ impl NetworkLayer {
                 }
 
                 if is_dialer {
-                    info!("🎉 Dialed {}; waiting 2sec before GetPeerList…", peer_id);
-                    // give libp2p a moment to set up the request-response substream
-                    tokio::time::sleep(Duration::from_millis(2000)).await;
                     info!("🚀 Sending GetPeerList RPC to {}", peer_id);
                     swarm.behaviour_mut()
                         .request_response
@@ -1159,19 +1122,19 @@ impl NetworkLayer {
                     .request_response
                     .send_request(&peer_id, request);
             }
-            // ChannelMessage::StartScheduledDKG { total, threshold } => {
-            //     info!("🚀 Scheduled DKG trigger firing now ({} nodes, threshold {})", total, threshold);
-            //     if let Some(dkg) = &mut self.dkg_node {
-            //         dkg.update_node_params(total, threshold);
-            //         if let Err(e) = dkg.start_dkg().await {
-            //             warn!("❌ Scheduled DKG failed: {:?}", e);
-            //         } else {
-            //             info!("✅ Scheduled DKG started successfully");
-            //         }
-            //     } else {
-            //         warn!("❌ No DKG node available when scheduled start fired");
-            //     }
-            // }
+            ChannelMessage::ScheduledDKGStart => {
+                info!("🚀 Starting DKG at the exact agreed instant {}!", SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs());
+                let total = self.node_manager.get_total_nodes();
+                let threshold = self.node_manager.get_threshold();
+                if let Some(dkg) = &mut self.dkg_node {
+                    dkg.update_node_params(total, threshold);
+                    if let Err(e) = dkg.start_dkg().await {
+                        warn!("❌ Scheduled DKG start failed: {:?}", e);
+                    }
+                } else {
+                    warn!("❌ DKG node not initialized at scheduled start!");
+                }
+            }
         }
         Ok(())
     }

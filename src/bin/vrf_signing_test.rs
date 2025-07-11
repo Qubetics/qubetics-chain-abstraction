@@ -65,6 +65,12 @@ async fn main() -> anyhow::Result<()> {
             }
             ChannelMessage::Unicast { .. } | ChannelMessage::LocalTransaction { .. } => {
                 info!("ℹ️ Received unhandled channel message variant");
+            },
+            ChannelMessage::ScheduledDKGStart => {
+                info!("⏳ Received scheduled DKG start message");
+            }
+            _ => {
+                info!("ℹ️ Received unknown channel message variant");    
             }
         }
     }

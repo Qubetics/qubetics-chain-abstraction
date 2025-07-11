@@ -5,6 +5,7 @@ use ff::Field;
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 use std::{any, usize};
 use tokio::sync::mpsc;
 use tokio::sync::RwLock;
@@ -283,6 +284,11 @@ impl DKGNode {
         self.id.hash(&mut hasher);
         let hash = hasher.finish();
 
+        if self.total_nodes == 0 {
+            tracing::warn!("⚠️ Total nodes still zero after 2s; defaulting index to 0");
+            return 0;
+        }
+
         ((hash % self.total_nodes as u64) + 1) as usize
     }
 
@@ -375,6 +381,8 @@ impl DKGNode {
 
         // Calculate final secret share (sum of all received shares)
         let mut final_secret_share = Scalar::zero();
+        info!("🔐 Calculating final secret share...");
+        info!("📊 Total shares received: {}", shares.len());
         for share in shares.values() {
             final_secret_share += share.value.0;
         }

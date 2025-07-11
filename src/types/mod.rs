@@ -27,10 +27,7 @@ pub enum ChannelMessage {
     LocalTransaction {
         transaction: crate::rpc_server::DummyTransaction,
     },
-    // StartScheduledDKG {
-    //     total: usize,
-    //     threshold: usize,
-    // },
+    ScheduledDKGStart
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
