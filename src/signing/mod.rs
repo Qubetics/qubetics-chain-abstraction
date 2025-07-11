@@ -6,11 +6,13 @@ use libp2p::PeerId;
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 use tracing::{error, info, warn};
 
-use crate::types::{ChannelMessage, SerializableG1Affine};
+use crate::consensus::{ConsensusMessage, ConsensusNode, ConsensusResult};
+use crate::types::{p2p::SerializablePeerId, ChannelMessage, SerializableG1Affine};
 use crate::vrf::VrfNodeSelector;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,6 +45,11 @@ pub enum SigningMessage {
         from: String,
         signed_message: SignedMessage,
     },
+    RequestSignatures {
+        round: u64,
+        final_node_id: String,
+        message: String,
+    },
 }
 
 #[derive(Clone)]
@@ -53,16 +60,22 @@ pub struct SigningNode {
     public_key: Option<G1Affine>,
     public_keys: Arc<RwLock<HashMap<String, G1Affine>>>, // Other nodes' public keys
     signatures: Arc<RwLock<HashMap<String, BLSSignature>>>,
+    signatures_by_round: Arc<RwLock<HashMap<u64, HashMap<String, BLSSignature>>>>, // round -> node_id -> signature
+    final_nodes_by_round: Arc<RwLock<HashMap<u64, String>>>, // round -> final_node_id
     pending_messages: Arc<RwLock<HashMap<Vec<u8>, Vec<u8>>>>, // message_hash -> message
     message_tx: mpsc::Sender<ChannelMessage>,
     vrf_selector: Option<VrfNodeSelector>, // VRF selector for node selection
+    consensus_node: Option<ConsensusNode>, // Consensus node for final node selection
     available_nodes: Option<Vec<PeerId>>,  // Available nodes from node manager
 }
 
 impl SigningNode {
     pub fn new(id: String, threshold: usize, message_tx: mpsc::Sender<ChannelMessage>) -> Self {
-        // Create a deterministic PeerId from the string ID for VRF selector
-        let peer_id = Self::derive_peer_id_from_string(&id);
+        // Parse the actual PeerId from the string ID
+        let peer_id = PeerId::from_str(&id).unwrap_or_else(|_| {
+            // Fallback to derived PeerId if parsing fails
+            Self::derive_peer_id_from_string(&id)
+        });
 
         Self {
             id,
@@ -71,9 +84,12 @@ impl SigningNode {
             public_key: None,
             public_keys: Arc::new(RwLock::new(HashMap::new())),
             signatures: Arc::new(RwLock::new(HashMap::new())),
+            signatures_by_round: Arc::new(RwLock::new(HashMap::new())),
+            final_nodes_by_round: Arc::new(RwLock::new(HashMap::new())),
             pending_messages: Arc::new(RwLock::new(HashMap::new())),
             message_tx,
             vrf_selector: Some(VrfNodeSelector::new(peer_id)),
+            consensus_node: Some(ConsensusNode::new()),
             available_nodes: None,
         }
     }
@@ -168,7 +184,6 @@ impl SigningNode {
 
         // Generate VRF proof for this signing operation
         if let Some(vrf_selector) = &mut self.vrf_selector {
-
             let selection_result = vrf_selector.select_mpc_nodes(&available_nodes, 1, round);
             info!(
                 "🎯 [VRF] Node {} selected {} MPC nodes for signing round {}: {:?}",
@@ -177,10 +192,19 @@ impl SigningNode {
                 round,
                 selection_result.selected_nodes
             );
-            info!(
-                "available nodes for vrf are : {:?}",
-                self.get_available_nodes().await
-            )
+            info!("available nodes for vrf are : {:?}", available_nodes);
+
+            // Broadcast the VRF-selected nodes to all peers
+            if let Some(broadcast_msg) = vrf_selector.create_selected_nodes_broadcast(round) {
+                let broadcast_data = serde_json::to_vec(
+                    &crate::types::GossipsubMessage::VrfSelectedNodes(broadcast_msg),
+                )?;
+                self.broadcast("vrf-selection", &broadcast_data).await?;
+                info!(
+                    "📤 [VRF] Node {} broadcasted VRF-selected nodes for round {}",
+                    self.id, round
+                );
+            }
         }
 
         // Store the message for later use
@@ -202,6 +226,19 @@ impl SigningNode {
             signer_id: self.id.clone(),
             message_hash: message_hash.clone(),
         };
+
+        // Store signature by round
+        {
+            let mut signatures_by_round = self.signatures_by_round.write().await;
+            let round_signatures = signatures_by_round
+                .entry(round)
+                .or_insert_with(HashMap::new);
+            round_signatures.insert(self.id.clone(), bls_signature.clone());
+            info!(
+                "💾 [SIGNING] Node {} stored signature for round {}",
+                self.id, round
+            );
+        }
 
         let msg = serde_json::to_vec(&SigningMessage::BLSSignature {
             from: self.id.clone(),
@@ -283,21 +320,122 @@ impl SigningNode {
                 );
                 self.handle_signed_message(from, signed_message).await?;
             }
+            SigningMessage::RequestSignatures {
+                round,
+                final_node_id,
+                message,
+            } => {
+                info!(
+                    "📥 [SIGNING] Node {} received signature request for round {} from final node {}",
+                    self.id, round, final_node_id
+                );
+                self.handle_signature_request(round, final_node_id, message)
+                    .await?;
+            }
         }
         Ok(())
     }
 
     async fn handle_bls_signature(&mut self, from: String, signature: BLSSignature) -> Result<()> {
+        // Store in general signatures
         self.signatures
             .write()
             .await
             .insert(from.clone(), signature.clone());
+
         info!(
             "💾 [SIGNING] Node {} stored BLS signature from {}",
             self.id, from
         );
-        self.check_signature_completion(signature.message_hash)
-            .await?;
+
+        // Check if this signature is for a specific round (from signatures-to-final-node topic)
+        // If this node is the final node for any round, handle it as a signature for that round
+        let round_to_handle = {
+            let final_nodes = self.final_nodes_by_round.read().await;
+            let mut found_round = None;
+            for (round, final_node_id) in final_nodes.iter() {
+                if final_node_id == &self.id {
+                    found_round = Some(*round);
+                    break;
+                }
+            }
+            found_round
+        };
+
+        if let Some(round) = round_to_handle {
+            // This node is the final node for this round, store the signature by round
+            let should_aggregate = {
+                let mut signatures_by_round = self.signatures_by_round.write().await;
+                let round_signatures = signatures_by_round
+                    .entry(round)
+                    .or_insert_with(HashMap::new);
+                round_signatures.insert(from.clone(), signature.clone());
+
+                info!(
+                    "💾 [SIGNING] Final node {} stored signature from {} for round {} (total: {})",
+                    self.id,
+                    from,
+                    round,
+                    round_signatures.len()
+                );
+
+                let should_agg = round_signatures.len() >= self.threshold;
+                let signature_count = round_signatures.len();
+
+                if should_agg {
+                    info!(
+                        "✅ [SIGNING] Enough signatures collected for round {}, will start aggregation",
+                        round
+                    );
+                } else {
+                    info!(
+                        "⏳ [SIGNING] Waiting for more signatures for round {}: {}/{}",
+                        round, signature_count, self.threshold
+                    );
+                }
+
+                should_agg
+            };
+
+            if should_aggregate {
+                // Get signatures for aggregation (outside the write lock)
+                let signatures_to_aggregate = {
+                    let signatures_by_round = self.signatures_by_round.read().await;
+                    if let Some(round_signatures) = signatures_by_round.get(&round) {
+                        round_signatures.clone()
+                    } else {
+                        HashMap::new()
+                    }
+                };
+
+                // Perform aggregation
+                match self
+                    .aggregate_signatures_from_map(&signatures_to_aggregate)
+                    .await
+                {
+                    Ok(_aggregated_signature) => {
+                        info!("🎉 [SIGNING] Signature aggregation completed successfully for round {}!", round);
+                        info!(
+                            "📊 [SIGNING] Aggregated signature from {} nodes for round {}",
+                            signatures_to_aggregate.len(),
+                            round
+                        );
+                    }
+                    Err(e) => {
+                        error!(
+                            "❌ [SIGNING] Failed to aggregate signatures for round {}: {}",
+                            round, e
+                        );
+                        return Err(e);
+                    }
+                }
+            }
+        } else {
+            // If not the final node, proceed with normal signature completion check
+            self.check_signature_completion(signature.message_hash)
+                .await?;
+        }
+
         Ok(())
     }
 
@@ -358,6 +496,13 @@ impl SigningNode {
 
     async fn aggregate_signatures(&self) -> Result<G1Affine> {
         let signatures = self.signatures.read().await;
+        self.aggregate_signatures_from_map(&signatures).await
+    }
+
+    async fn aggregate_signatures_from_map(
+        &self,
+        signatures: &HashMap<String, BLSSignature>,
+    ) -> Result<G1Affine> {
         let mut aggregated_signature = G1Projective::identity();
 
         for (from, bls_signature) in signatures.iter() {
@@ -370,8 +515,8 @@ impl SigningNode {
 
         let final_signature = G1Affine::from(aggregated_signature);
         info!(
-            "🔢 [SIGNING] Node {} final aggregated BLS signature: {:?}",
-            self.id, final_signature
+            "\x1b[35m🔢 🎉[SIGNING] Node {} final aggregated BLS signature: {:?}\x1b[0m",
+            self.id, self.get_compressed_signature_hex(&final_signature)
         );
         Ok(final_signature)
     }
@@ -506,7 +651,6 @@ impl SigningNode {
 
     /// Set available nodes from node manager
     pub fn set_available_nodes(&mut self, nodes: Vec<PeerId>) {
-
         self.available_nodes = Some(nodes);
     }
 
@@ -516,5 +660,420 @@ impl SigningNode {
         } else {
             self.get_available_nodes().await
         }
+    }
+
+    /// Handle VRF selected nodes broadcast from another node
+    pub fn handle_vrf_selected_nodes_broadcast(
+        &mut self,
+        broadcast: crate::vrf::VrfSelectedNodesBroadcast,
+    ) {
+        if let Some(vrf_selector) = &mut self.vrf_selector {
+            // Extract round before moving broadcast
+            let round = broadcast.round;
+            let min_selections = 4; // Or set to your desired threshold
+
+            vrf_selector.handle_selected_nodes_broadcast(broadcast);
+
+            // Check if consensus should be triggered after receiving this broadcast
+            if vrf_selector.can_start_consensus(round, min_selections) {
+                info!(
+                    "🎯 [VRF] Enough selections collected for round {}, triggering consensus check",
+                    round
+                );
+
+                // Spawn a task to trigger consensus asynchronously
+                let mut signing_node_clone = self.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = signing_node_clone
+                        .check_and_trigger_consensus(round, min_selections)
+                        .await
+                    {
+                        error!(
+                            "❌ [CONSENSUS] Failed to trigger consensus for round {}: {}",
+                            round, e
+                        );
+                    }
+                });
+            }
+        }
+    }
+
+    /// Check and trigger consensus if ready
+    pub async fn check_and_trigger_consensus(
+        &mut self,
+        round: u64,
+        min_selections: usize,
+    ) -> Result<Option<ConsensusResult>> {
+        if self.can_start_consensus(round, min_selections) {
+            info!(
+                "🎯 [CONSENSUS] Consensus ready for round {}, starting...",
+                round
+            );
+            self.start_consensus_for_round(round).await
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Start consensus for a specific round
+    pub async fn start_consensus_for_round(
+        &mut self,
+        round: u64,
+    ) -> Result<Option<ConsensusResult>> {
+        // Get the node ID first to avoid borrow checker issues
+        let own_node_id = SerializablePeerId(PeerId::from_str(&self.id)?);
+
+        if let (Some(vrf_selector), Some(consensus_node)) =
+            (&self.vrf_selector, &mut self.consensus_node)
+        {
+            // Get all selected nodes with frequencies for this round
+            let all_selected_nodes = vrf_selector.get_all_selected_nodes_with_frequencies(round);
+
+            if all_selected_nodes.is_empty() {
+                info!(
+                    "⚠️ [CONSENSUS] No selected nodes available for consensus round {}",
+                    round
+                );
+                return Ok(None);
+            }
+
+            info!(
+                "🎯 [CONSENSUS] Starting consensus for round {} with {} selected nodes",
+                round,
+                all_selected_nodes.len()
+            );
+
+            // Add selected nodes to consensus
+            consensus_node.add_selected_nodes(round, all_selected_nodes);
+
+            // Start consensus
+            match consensus_node.start_consensus(round) {
+                Ok(result) => {
+                    info!(
+                        "✅ [CONSENSUS] Consensus completed for round {}: final node = {:?}",
+                        round, result.final_node
+                    );
+
+                    // Broadcast the consensus result
+                    let consensus_msg = ConsensusMessage::FinalNodeResult {
+                        result: result.clone(),
+                        round,
+                    };
+
+                    let broadcast_data = serde_json::to_vec(&consensus_msg)?;
+
+                    // Store the result for later use
+                    let is_final_node = consensus_node.is_final_node(round, &own_node_id);
+
+                    // Broadcast outside of the borrow
+                    self.broadcast("consensus-result", &broadcast_data).await?;
+
+                    info!(
+                        "📤 [CONSENSUS] Broadcasted consensus result for round {}",
+                        round
+                    );
+
+                    // Store the final node for this round
+                    {
+                        let mut final_nodes = self.final_nodes_by_round.write().await;
+                        final_nodes.insert(round, result.final_node.0.to_string());
+                        info!(
+                            "💾 [CONSENSUS] Stored final node {} for round {}",
+                            result.final_node.0, round
+                        );
+                    }
+
+                    // Check if this node is the final selected node
+                    if is_final_node {
+                        info!(
+                            "\x1b[32m🏆 [CONSENSUS] This node is the final selected node for round {}!\x1b[0m",
+                            round
+                        );
+                        // Trigger aggregate signature for the final node
+                        self.trigger_aggregate_signature_for_final_node(round)
+                            .await?;
+
+                        // Start collecting signatures after a short delay
+                        let mut signing_node_clone = self.clone();
+                        tokio::spawn(async move {
+                            tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+                            if let Err(e) = signing_node_clone
+                                .collect_and_aggregate_signatures(round)
+                                .await
+                            {
+                                error!(
+                                    "❌ [SIGNING] Failed to collect and aggregate signatures: {}",
+                                    e
+                                );
+                            }
+                        });
+                    } else {
+                        info!(
+                            "\x1b[31m📋 [CONSENSUS] This node is not the final selected node for round {}\x1b[0m",
+                            round
+                        );
+                    }
+
+                    Ok(Some(result))
+                }
+                Err(e) => {
+                    error!(
+                        "❌ [CONSENSUS] Failed to start consensus for round {}: {}",
+                        round, e
+                    );
+                    Err(e)
+                }
+            }
+        } else {
+            Err(anyhow::anyhow!(
+                "VRF selector or consensus node not available"
+            ))
+        }
+    }
+
+    /// Check if consensus can be started for a round
+    pub fn can_start_consensus(&self, round: u64, min_selections: usize) -> bool {
+        if let Some(vrf_selector) = &self.vrf_selector {
+            vrf_selector.can_start_consensus(round, min_selections)
+        } else {
+            false
+        }
+    }
+
+    /// Handle consensus messages
+    pub async fn handle_consensus_message(&mut self, msg: ConsensusMessage) -> Result<()> {
+        if let Some(consensus_node) = &mut self.consensus_node {
+            consensus_node.handle_message(msg).await?;
+        }
+        Ok(())
+    }
+
+    /// Trigger aggregate signature for the final selected node
+    async fn trigger_aggregate_signature_for_final_node(&self, round: u64) -> Result<()> {
+        info!(
+            "🚀 [SIGNING] Triggering aggregate signature for final node in round {}",
+            round
+        );
+
+        // Broadcast a message to all nodes to send their signatures to the final node
+        let signature_request = SigningMessage::RequestSignatures {
+            round,
+            final_node_id: self.id.clone(),
+            message: "Aggregate signature request".to_string(),
+        };
+
+        // Wrap in GossipsubMessage::Signing for proper message handling
+        let gossipsub_msg = crate::types::GossipsubMessage::Signing(signature_request);
+        let broadcast_data = serde_json::to_vec(&gossipsub_msg)?;
+        self.broadcast("signing", &broadcast_data).await?;
+
+        info!(
+            "📤 [SIGNING] Broadcasted signature request for round {} to all nodes",
+            round
+        );
+
+        Ok(())
+    }
+
+    /// Send signature for specific round to the final selected node
+    pub async fn send_signature_to_final_node(
+        &mut self,
+        final_node_id: &str,
+        round: u64,
+    ) -> Result<()> {
+        info!(
+            "📤 [SIGNING] Sending signature for round {} to final node {}",
+            round, final_node_id
+        );
+
+        // Get signature for this specific round
+        let signatures_by_round = self.signatures_by_round.read().await;
+
+        if let Some(round_signatures) = signatures_by_round.get(&round) {
+            if let Some(our_signature) = round_signatures.get(&self.id) {
+                let signature_msg = SigningMessage::BLSSignature {
+                    from: self.id.clone(),
+                    signature: our_signature.clone(),
+                };
+
+                // Wrap in GossipsubMessage::Signing for proper message handling
+                let gossipsub_msg = crate::types::GossipsubMessage::Signing(signature_msg);
+                let signature_data = serde_json::to_vec(&gossipsub_msg)?;
+
+                // Broadcast to a specific topic that the final node subscribes to
+                self.broadcast("signatures-to-final-node", &signature_data)
+                    .await?;
+
+                info!(
+                    "✅ [SIGNING] Sent signature for round {} to final node {}",
+                    round, final_node_id
+                );
+            } else {
+                info!(
+                    "⚠️ [SIGNING] No signature found for round {} for this node",
+                    round
+                );
+            }
+        } else {
+            info!("⚠️ [SIGNING] No signatures found for round {}", round);
+        }
+
+        Ok(())
+    }
+
+    /// Collect signatures and perform aggregation (for final selected node)
+    pub async fn collect_and_aggregate_signatures(&mut self, round: u64) -> Result<()> {
+        info!(
+            "🔍 [SIGNING] Final node {} waiting for signatures for round {}",
+            self.id, round
+        );
+
+        // Wait a bit for signatures to arrive
+        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+
+        // Check current signature count for this round
+        let signatures_by_round = self.signatures_by_round.read().await;
+        if let Some(round_signatures) = signatures_by_round.get(&round) {
+            info!(
+                "📊 [SIGNING] Final node {} has {} signatures for round {}",
+                self.id,
+                round_signatures.len(),
+                round
+            );
+        } else {
+            info!("⚠️ [SIGNING] No signatures found for round {}", round);
+        }
+
+        Ok(())
+    }
+
+    /// Handle signature request from final selected node
+    async fn handle_signature_request(
+        &mut self,
+        round: u64,
+        final_node_id: String,
+        _message: String,
+    ) -> Result<()> {
+        info!(
+            "📤 [SIGNING] Node {} responding to signature request for round {}",
+            self.id, round
+        );
+
+        // Only send signature if we're not the final node
+        if final_node_id != self.id {
+            // Send signature to the final node
+            self.send_signature_to_final_node(&final_node_id, round)
+                .await?;
+        } else {
+            info!("🔄 [SIGNING] This node is the final node, no need to send signature to self");
+        }
+
+        Ok(())
+    }
+
+    /// Handle signature received by final node for specific round
+    pub async fn handle_signature_for_round(
+        &mut self,
+        from: String,
+        signature: BLSSignature,
+        round: u64,
+    ) -> Result<()> {
+        info!(
+            "📥 [SIGNING] Final node {} received signature from {} for round {}",
+            self.id, from, round
+        );
+
+        // Store signature by round
+        {
+            let mut signatures_by_round = self.signatures_by_round.write().await;
+            let round_signatures = signatures_by_round
+                .entry(round)
+                .or_insert_with(HashMap::new);
+            round_signatures.insert(from.clone(), signature.clone());
+
+            info!(
+                "💾 [SIGNING] Stored signature from {} for round {} (total: {})",
+                from,
+                round,
+                round_signatures.len()
+            );
+        }
+
+        // Check if we have enough signatures for this round
+        let signatures_by_round = self.signatures_by_round.read().await;
+        if let Some(round_signatures) = signatures_by_round.get(&round) {
+            if round_signatures.len() >= self.threshold {
+                info!(
+                    "✅ [SIGNING] Enough signatures collected for round {}, starting aggregation",
+                    round
+                );
+
+                // Perform aggregation
+                match self.aggregate_signatures_from_map(round_signatures).await {
+                    Ok(_aggregated_signature) => {
+                        info!("🎉 [SIGNING] Signature aggregation completed successfully for round {}!", round);
+                        info!(
+                            "📊 [SIGNING] Aggregated signature from {} nodes for round {}",
+                            round_signatures.len(),
+                            round
+                        );
+                    }
+                    Err(e) => {
+                        error!(
+                            "❌ [SIGNING] Failed to aggregate signatures for round {}: {}",
+                            round, e
+                        );
+                        return Err(e);
+                    }
+                }
+            } else {
+                info!(
+                    "⏳ [SIGNING] Waiting for more signatures for round {}: {}/{}",
+                    round,
+                    round_signatures.len(),
+                    self.threshold
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Handle signature received on the signatures-to-final-node topic
+    pub async fn handle_signature_to_final_node(
+        &mut self,
+        from: String,
+        signature: BLSSignature,
+    ) -> Result<()> {
+        info!(
+            "📥 [SIGNING] Final node {} received signature from {} on signatures-to-final-node topic",
+            self.id, from
+        );
+
+        // Get the round from the final nodes by round map
+        let round_to_handle = {
+            let final_nodes = self.final_nodes_by_round.read().await;
+            final_nodes.iter().find_map(|(round, final_node_id)| {
+                if final_node_id == &self.id {
+                    Some(*round)
+                } else {
+                    None
+                }
+            })
+        };
+
+        if let Some(round) = round_to_handle {
+            return self
+                .handle_signature_for_round(from, signature, round)
+                .await;
+        }
+
+        info!("⚠️ [SIGNING] Received signature but this node is not the final node for any round");
+        Ok(())
+    }
+
+    /// Get the node ID
+    pub fn get_node_id(&self) -> &str {
+        &self.id
     }
 }

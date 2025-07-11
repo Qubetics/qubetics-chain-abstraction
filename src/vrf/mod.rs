@@ -40,6 +40,15 @@ pub enum VrfSelectionMessage {
     },
 }
 
+/// Broadcast message for VRF-selected nodes
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VrfSelectedNodesBroadcast {
+    pub selected_nodes: Vec<SerializablePeerId>,
+    pub round: u64,
+    pub selector_node_id: SerializablePeerId,
+    pub timestamp: u64,
+}
+
 /// VRF-based node selector using ecvrf
 #[derive(Debug, Clone)]
 pub struct VrfNodeSelector {
@@ -49,6 +58,8 @@ pub struct VrfNodeSelector {
     selection_round: u64,
     submissions: HashMap<u64, HashMap<PeerId, VrfOutput>>,
     results: HashMap<u64, NodeSelectionResult>,
+    // Store received VRF selected nodes broadcasts from other nodes
+    received_selections: HashMap<u64, HashMap<SerializablePeerId, VrfSelectedNodesBroadcast>>,
 }
 
 impl VrfNodeSelector {
@@ -63,6 +74,7 @@ impl VrfNodeSelector {
             selection_round: 0,
             submissions: HashMap::new(),
             results: HashMap::new(),
+            received_selections: HashMap::new(),
         }
     }
 
@@ -291,6 +303,181 @@ impl VrfNodeSelector {
     /// Advance to the next selection round
     pub fn advance_round(&mut self) {
         self.selection_round += 1;
+    }
+
+    /// Create a broadcast message for VRF-selected nodes
+    pub fn create_selected_nodes_broadcast(&self, round: u64) -> Option<VrfSelectedNodesBroadcast> {
+        if let Some(result) = self.results.get(&round) {
+            let timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+
+            Some(VrfSelectedNodesBroadcast {
+                selected_nodes: result.selected_nodes.clone(),
+                round,
+                selector_node_id: SerializablePeerId(self.node_id),
+                timestamp,
+            })
+        } else {
+            None
+        }
+    }
+
+    /// Handle received VRF selected nodes broadcast from another node
+    pub fn handle_selected_nodes_broadcast(&mut self, broadcast: VrfSelectedNodesBroadcast) {
+        info!(
+            "📥 [VRF] Received VRF selected nodes broadcast from node {} for round {}: {} nodes selected",
+            broadcast.selector_node_id.0,
+            broadcast.round,
+            broadcast.selected_nodes.len()
+        );
+
+        let round = broadcast.round;
+        self.received_selections
+            .entry(round)
+            .or_insert_with(HashMap::new)
+            .insert(broadcast.selector_node_id.clone(), broadcast);
+
+        // Log the current aggregated state after receiving this broadcast
+        let all_selected = self.get_all_selected_nodes_for_round(round);
+        info!("All selected nodes for round {}: {:?}", round, all_selected);
+        info!(
+            "🔄 [VRF] Updating aggregated selections for round {}...",
+            round
+        );
+
+        // Check if we have enough selections to start consensus
+        let min_selections = 4; // Minimum 4 selections to start consensus
+        if self.can_start_consensus(round, min_selections) {
+            info!(
+                "🎯 [VRF] Enough selections collected for round {}, consensus can be started",
+                round
+            );
+        }
+    }
+
+    /// Get all received VRF selections for a specific round
+    pub fn get_received_selections_for_round(&self, round: u64) -> Vec<&VrfSelectedNodesBroadcast> {
+        self.received_selections
+            .get(&round)
+            .map(|selections| selections.values().collect())
+            .unwrap_or_default()
+    }
+
+    /// Get all unique selected nodes from all received broadcasts for a round
+    pub fn get_all_selected_nodes_for_round(&self, round: u64) -> Vec<SerializablePeerId> {
+        let mut all_selected = std::collections::HashSet::new();
+        let mut own_selections = Vec::new();
+        let mut received_selections = Vec::new();
+
+        // Add our own selection if available
+        if let Some(result) = self.results.get(&round) {
+            info!(
+                "🎯 [VRF] Our own selections for round {}: {:?}",
+                round, result.selected_nodes
+            );
+            for node in &result.selected_nodes {
+                all_selected.insert(node.clone());
+                own_selections.push(node.clone());
+            }
+        } else {
+            info!("⚠️ [VRF] No own selections found for round {}", round);
+        }
+
+        // Add selections from other nodes
+        if let Some(selections) = self.received_selections.get(&round) {
+            info!(
+                "📥 [VRF] Received {} broadcasts for round {}",
+                selections.len(),
+                round
+            );
+
+            for (selector_id, broadcast) in selections.iter() {
+                info!(
+                    "📋 [VRF] From node {}: selected {} nodes: {:?}",
+                    selector_id.0,
+                    broadcast.selected_nodes.len(),
+                    broadcast.selected_nodes
+                );
+
+                for node in &broadcast.selected_nodes {
+                    all_selected.insert(node.clone());
+                    received_selections.push(node.clone());
+                }
+            }
+        } else {
+            info!("⚠️ [VRF] No received selections found for round {}", round);
+        }
+
+        let final_selected: Vec<SerializablePeerId> = all_selected.into_iter().collect();
+
+        info!(
+            "🎉 [VRF] Final aggregated selections for round {}: {} unique nodes",
+            round,
+            final_selected.len()
+        );
+        info!(
+            "📊 [VRF] Own selections: {}, Received selections: {}, Total unique: {}",
+            own_selections.len(),
+            received_selections.len(),
+            final_selected.len()
+        );
+        info!("📋 [VRF] All unique selected nodes: {:?}", final_selected);
+
+        final_selected
+    }
+
+    /// Get all selected nodes with their frequencies for consensus
+    pub fn get_all_selected_nodes_with_frequencies(&self, round: u64) -> Vec<SerializablePeerId> {
+        let mut all_selected = Vec::new();
+
+        // Add our own selection if available
+        if let Some(result) = self.results.get(&round) {
+            for node in &result.selected_nodes {
+                all_selected.push(node.clone());
+            }
+        }
+
+        // Add selections from other nodes
+        if let Some(selections) = self.received_selections.get(&round) {
+            for (_selector_id, broadcast) in selections.iter() {
+                for node in &broadcast.selected_nodes {
+                    all_selected.push(node.clone());
+                }
+            }
+        }
+
+        info!(
+            "📊 [VRF] Total selected nodes for consensus round {}: {} (with frequencies)",
+            round,
+            all_selected.len()
+        );
+
+        all_selected
+    }
+
+    /// Check if we have enough selections to start consensus
+    pub fn can_start_consensus(&self, round: u64, min_selections: usize) -> bool {
+        let own_selection = self.results.get(&round).is_some();
+        let received_count = self
+            .received_selections
+            .get(&round)
+            .map(|selections| selections.len())
+            .unwrap_or(0);
+
+        let total_selections = if own_selection {
+            received_count + 1
+        } else {
+            received_count
+        };
+
+        info!(
+            "🔍 [VRF] Consensus readiness check for round {}: own={}, received={}, total={}, min_required={}",
+            round, own_selection, received_count, total_selections, min_selections
+        );
+
+        total_selections >= min_selections
     }
 }
 

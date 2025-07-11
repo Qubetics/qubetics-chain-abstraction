@@ -3573,6 +3573,7 @@ dependencies = [
  "anyhow",
  "async-stream",
  "async-trait",
+ "base64 0.21.7",
  "blake3",
  "bls12_381",
  "dashmap",

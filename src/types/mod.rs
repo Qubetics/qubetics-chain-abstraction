@@ -43,6 +43,7 @@ pub enum GossipsubMessage {
     Command(crate::commands::Command),
     Consensus(crate::consensus::ConsensusMessage),
     VrfSelection(crate::vrf::VrfSelectionMessage),
+    VrfSelectedNodes(crate::vrf::VrfSelectedNodesBroadcast),
     PeerDiscovered { peer: PeerId, sequence: Option<u64> },
     Transaction(crate::rpc_server::DummyTransaction),
     DKGCommand(crate::types::rpc::RPCRequest),

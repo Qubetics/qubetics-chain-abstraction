@@ -340,6 +340,7 @@ impl NetworkLayer {
             "vrf-selection",
             "transactions",
             "dkg-commands",
+            "signatures-to-final-node",
         ];
         for topic in topics {
             let topic_hash = gossipsub::IdentTopic::new(topic);
@@ -927,7 +928,22 @@ impl NetworkLayer {
             }
             GossipsubMessage::Signing(signing_msg) => {
                 if let Some(signing_node) = &mut self.signing_node {
-                    signing_node.handle_message(signing_msg).await?;
+                    // Check if this message is from the signatures-to-final-node topic
+                    if message.topic.to_string() == "signatures-to-final-node" {
+                        // Handle as signature to final node
+                        match signing_msg {
+                            crate::signing::SigningMessage::BLSSignature { from, signature } => {
+                                signing_node.handle_signature_to_final_node(from, signature).await?;
+                            }
+                            _ => {
+                                // Handle other signing messages normally
+                                signing_node.handle_message(signing_msg).await?;
+                            }
+                        }
+                    } else {
+                        // Handle normal signing messages
+                        signing_node.handle_message(signing_msg).await?;
+                    }
                 }
             }
             GossipsubMessage::Command(cmd) => {
@@ -936,6 +952,14 @@ impl NetworkLayer {
                 }
             }
             GossipsubMessage::Consensus(consensus_msg) => {
+                info!("📥 [CONSENSUS] Received consensus message: {:?}", consensus_msg);
+                
+                // Handle consensus message in signing node
+                if let Some(signing_node) = &mut self.signing_node {
+                    signing_node.handle_consensus_message(consensus_msg.clone()).await?;
+                }
+                
+                // Also handle in standalone consensus node if available
                 if let Some(consensus_node) = &mut self.consensus_node {
                     consensus_node.handle_message(consensus_msg).await?;
                 }
@@ -954,6 +978,20 @@ impl NetworkLayer {
                     info!(
                         "Received VRF selection message but node manager is not VRF-based: {:?}",
                         vrf_msg
+                    );
+                }
+            }
+            GossipsubMessage::VrfSelectedNodes(broadcast_msg) => {
+                info!("📥 [VRF] Received VRF selected nodes broadcast: {:?}", broadcast_msg);
+                
+                // Store the received VRF selection in the signing node's VRF selector
+                if let Some(signing_node) = &mut self.signing_node {
+                    let selector_node_id = broadcast_msg.selector_node_id.clone();
+                    let round = broadcast_msg.round;
+                    signing_node.handle_vrf_selected_nodes_broadcast(broadcast_msg);
+                    info!(
+                        "💾 [VRF] Stored VRF selected nodes from node {} for round {}",
+                        selector_node_id.0, round
                     );
                 }
             }

@@ -29,9 +29,6 @@ pub trait NodeMembership {
     /// Get reference to self as Any for downcasting
     fn as_any(&self) -> &dyn Any;
 
-    // /// marking that Kademlia’s RoutingUpdated fired for `peer`
-    // fn mark_routing_updated(&mut self, peer: PeerId) -> Result<(), String>;
-
 }
 
 /// Trait for calculating threshold based on total nodes
