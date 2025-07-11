@@ -107,8 +107,16 @@ impl DKGNode {
 
         self.status = DKGStatus::Started;
         info!("📤 Broadcasting DKG shares and commitments...");
-        tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
-
+        let node_index = self.get_node_index();
+        {
+            let my_shares      = shares.clone();
+            let my_commitments = commitments.clone();
+            // This will verify, store in `self.shares`/`self.commitments`
+            // and even send you a local “validation” message if you want.
+            self
+                .handle_share_distribution(self.id.clone(), my_shares, my_commitments)
+                .await?;
+        }
         self.broadcast_shares(shares, commitments).await?;
         Ok(())
     }

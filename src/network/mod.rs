@@ -5,7 +5,6 @@ use libp2p::{
         cbor::Behaviour as CborReqRespBehaviour, Event as ReqRespEvent, Message as ReqRespMessage,
     }, swarm::{ConnectionError, NetworkBehaviour, SwarmEvent}, tcp, yamux, Multiaddr, PeerId
 };
-use std::pin::Pin;
 
 use std::{
     collections::hash_map::DefaultHasher,
@@ -18,6 +17,7 @@ use std::{
     time::Duration,
 };
 use tokio::{io, time};
+use tokio::task::JoinHandle;
 use tokio::sync::{mpsc};
 use tracing::{info, warn};
 
@@ -84,7 +84,7 @@ pub struct NetworkLayer {
     consensus_node: Option<ConsensusNode>,
     command_processor: Option<CommandProcessor>,
     node_manager: Box<dyn NodeMembership>,
-    // scheduled_dkg_sleep: Option<Pin<Box<tokio::time::Sleep>>>,
+    scheduled_dkg_task: Option<JoinHandle<()>>,
 }
 
 impl NetworkLayer {
@@ -104,7 +104,7 @@ impl NetworkLayer {
             consensus_node: None,
             command_processor: None,
             node_manager,
-            // scheduled_dkg_sleep: None,
+            scheduled_dkg_task: None,
         })
     }
 
@@ -227,7 +227,7 @@ impl NetworkLayer {
         let mut bootstrap_timer = tokio::time::interval(Duration::from_secs(300)); // 5 minutes
         let mut discovery_timer = tokio::time::interval(Duration::from_secs(300)); // 2 minutes (reduced from 60 seconds)
         let mut dkg_status_timer = tokio::time::interval(Duration::from_secs(300)); // 30 seconds
-        let mut peerlist_logger = tokio::time::interval(Duration::from_secs(5));
+        let mut peerlist_logger = tokio::time::interval(Duration::from_secs(10));
 
 
         swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
@@ -379,20 +379,26 @@ impl NetworkLayer {
     }
 
     fn schedule_dkg_at(&mut self, start_time_unix: u64) {
+        if let Some(prev) = self.scheduled_dkg_task.take() {
+            info!("⏰ Cancelling previous scheduled DKG task");
+            prev.abort();
+        }
+
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .expect("clock broken")
+            .unwrap()
             .as_secs();
-        let delay = start_time_unix.saturating_sub(now);
-        let tx = self.message_tx.clone();
+        let delay = start_time_unix.saturating_sub(now);    
 
-        tokio::spawn(async move {
+        // clone only the sender
+        let tx = self.message_tx.clone();
+        let handle = tokio::spawn(async move {
             tokio::time::sleep(Duration::from_secs(delay)).await;
-            if let Err(e) = tx.send(ChannelMessage::ScheduledDKGStart).await {
-                warn!("❌ Error sending ScheduledDKGStart message: {:?}", e);
-            }
+            // send the one “start now” message back into your main loop
+            let _ = tx.send(ChannelMessage::ScheduledDKGStart).await;
         });
 
+        self.scheduled_dkg_task = Some(handle);
         info!("✅ Scheduled DKG to start at {}", start_time_unix);
     }
     
