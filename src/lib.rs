@@ -14,6 +14,7 @@ pub mod rpc_server;
 pub mod signing;
 pub mod types;
 pub mod vrf;
+pub mod utils;
 
 pub use chain::BlockchainClient;
 pub use commands::CommandProcessor;

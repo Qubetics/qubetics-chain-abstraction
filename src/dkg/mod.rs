@@ -10,6 +10,7 @@ use std::{any, usize};
 use tokio::sync::mpsc;
 use tokio::sync::RwLock;
 use tracing::info;
+use crate::utils;
 
 use crate::types::dkg::MSG_TOPIC_DKG;
 use crate::types::{
@@ -451,6 +452,12 @@ impl DKGNode {
         if let Some(callback) = self.completion_callback.take() {
             callback(final_secret_share, final_public_key);
         }
+
+        let eth_address = utils::get_eth_address_from_group_key(final_public_key);
+        let btc_address = utils::get_btc_address_from_group_key(final_public_key);
+
+        info!("📬 Ethereum Address from Group Key: {}", eth_address);
+        info!("📬 Bitcoin Address from Group Key: {}", btc_address);
 
         Ok(())
     }

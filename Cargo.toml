@@ -51,6 +51,12 @@ prost = "0.13.5"
 libp2p-grpc-rs = "0.1.2"
 tracing-appender = "0.2.3"
 warp = "0.3"
+blstrs = "0.7.1"
+k256 = "0.13.4"
+bitcoin = "0.32.6"
+bip39 = "2.2.0"
+bip32 = "0.5.3"
+ethers-core = "2.0.14"
 
 [build-dependencies]
 tonic-build = "0.13.0"
