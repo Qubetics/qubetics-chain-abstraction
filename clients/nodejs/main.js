@@ -1,5 +1,5 @@
 import axios from 'axios';
-
+import { ethers } from 'ethers';
 const RPC_SERVER = 'http://localhost:8080';
 
 console.log('🧪 Testing RPC Server at', RPC_SERVER);
@@ -15,11 +15,13 @@ async function testRPC() {
         // Test 2: Submit a transaction
         console.log('\n📝 Test 2: Submit Transaction');
         const transaction = {
-            from: "abcd",
-            to: "0x742d35Cc6634C0532925a3b8D4C9db96C4b4d8b7",
-            amount: 1000000000000000000,
-            nonce: 3,
-            data: [72, 101, 108, 108, 111, 32, 77, 80, 67, 32, 78, 101, 116, 119, 111, 114, 107, 33] // "Hello MPC Network!" as byte array
+            to: "0xceb5057834CB4EdE0E59F9e91046B8cB96C72e9C",                      // Required
+            amount: ethers.parseEther("0.01").toString(),              // Amount to send in wei
+            nonce: 0,                                      // Must be correct for sender's account
+            gasLimit: 21000,                               // Minimum for ETH transfer
+            maxPriorityFeePerGas: ethers.parseUnits("1.5", "gwei").toString(), // Miner tip
+            maxFeePerGas: ethers.parseUnits("2.5", "gwei").toString(),         // Base fee + priority
+            chainId: 1043,
         };
 
         const txResponse = await axios.post(`${RPC_SERVER}/submit_transaction`, transaction, {

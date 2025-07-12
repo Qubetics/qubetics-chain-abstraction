@@ -10,11 +10,30 @@ use crate::types::{rpc::RPCRequest, ChannelMessage};
 // Define the transaction types for the RPC server
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DummyTransaction {
-    pub from: String,
     pub to: String,
-    pub amount: u64,
+    #[serde(
+        rename = "amount",
+        deserialize_with = "crate::utils::bigint::deserialize",
+        serialize_with   = "crate::utils::bigint::serialize"
+    )]
+    pub amount: num_bigint::BigUint,
     pub nonce: u64,
-    pub data: Option<Vec<u8>>,
+    #[serde(rename = "gasLimit")]
+    pub gas_limit: u64,
+    #[serde(
+        rename = "maxPriorityFeePerGas",
+        deserialize_with = "crate::utils::bigint::deserialize",
+        serialize_with   = "crate::utils::bigint::serialize"
+    )]
+    pub max_priority_fee_per_gas: num_bigint::BigUint,
+    #[serde(
+        rename = "maxFeePerGas",
+        deserialize_with = "crate::utils::bigint::deserialize",
+        serialize_with   = "crate::utils::bigint::serialize"
+    )]
+    pub max_fee_per_gas: num_bigint::BigUint,
+    #[serde(rename = "chainId")]
+    pub chain_id: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -493,7 +493,7 @@ impl NetworkLayer {
                         let now_secs = SystemTime::now()
                             .duration_since(UNIX_EPOCH).unwrap()
                             .as_secs();
-                        let start_time = now_secs + 5;
+                        let start_time = now_secs + 30;
                         info!("🕒 Scheduling DKG start at unix time {}", start_time);
 
                         for peer in self.node_manager.get_active_nodes() {

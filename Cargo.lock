@@ -3753,6 +3753,7 @@ dependencies = [
  "k256",
  "libp2p 0.55.0",
  "libp2p-grpc-rs",
+ "num-bigint",
  "parking_lot",
  "prost 0.13.5",
  "rand 0.8.5",

@@ -57,6 +57,7 @@ bitcoin = "0.32.6"
 bip39 = "2.2.0"
 bip32 = "0.5.3"
 ethers-core = "2.0.14"
+num-bigint = "0.4.6"
 
 [build-dependencies]
 tonic-build = "0.13.0"
