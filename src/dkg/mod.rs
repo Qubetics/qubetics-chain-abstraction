@@ -5,6 +5,7 @@ use ff::Field;
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 use std::{any, usize};
 use tokio::sync::mpsc;
 use tokio::sync::RwLock;
@@ -106,6 +107,17 @@ impl DKGNode {
 
         self.status = DKGStatus::Started;
         info!("📤 Broadcasting DKG shares and commitments...");
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let node_index = self.get_node_index();
+        {
+            let my_shares      = shares.clone();
+            let my_commitments = commitments.clone();
+            // This will verify, store in `self.shares`/`self.commitments`
+            // and even send you a local “validation” message if you want.
+            self
+                .handle_share_distribution(self.id.clone(), my_shares, my_commitments)
+                .await?;
+        }
         self.broadcast_shares(shares, commitments).await?;
         Ok(())
     }
@@ -131,7 +143,7 @@ impl DKGNode {
             total_nodes, threshold
         );
         self.total_nodes = total_nodes;
-        self.threshold = threshold;
+        self.threshold = total_nodes-1;
     }
 
     fn generate_shares(&self, polynomial: &[Scalar]) -> Result<Vec<KeyShare>> {
@@ -233,6 +245,10 @@ impl DKGNode {
                     .await
                     .insert(from.clone(), raw_commitments);
 
+
+                self.handle_share_validation(self.id.clone(), from.clone(), true)
+                    .await?;
+
                 let validation_msg = DKGMessage::ShareValidation {
                     from: self.id.clone(),
                     to: from,
@@ -280,6 +296,11 @@ impl DKGNode {
         let mut hasher = DefaultHasher::new();
         self.id.hash(&mut hasher);
         let hash = hasher.finish();
+
+        if self.total_nodes == 0 {
+            tracing::warn!("⚠️ Total nodes still zero after 2s; defaulting index to 0");
+            return 0;
+        }
 
         ((hash % self.total_nodes as u64) + 1) as usize
     }
@@ -342,6 +363,7 @@ impl DKGNode {
         let (shares_len, validations_len, valid_validations) = {
             let validations = self.validations.read().await;
             let shares = self.shares.read().await;
+            info!("🎉 validations: {:?}", validations);
             let valid_validations: usize = validations
                 .values()
                 .map(|v| v.iter().filter(|&&valid| valid).count())
@@ -354,13 +376,13 @@ impl DKGNode {
             shares_len, validations_len
         );
 
-        if valid_validations >= self.threshold && shares_len >= self.threshold {
+        if valid_validations >= (self.threshold + 1) * (self.threshold + 1) && shares_len >= self.threshold + 1 {
             info!("🎉 DKG completion criteria met! Generating final keys...");
             self.generate_group_key().await?;
         } else {
             info!(
                 "⏳ DKG not yet complete - need {} validations and {} shares, have {} and {}",
-                self.threshold, self.threshold, valid_validations, shares_len
+                (self.threshold + 1) * (self.threshold + 1), self.threshold + 1, valid_validations, shares_len
             );
         }
         Ok(())
@@ -369,18 +391,37 @@ impl DKGNode {
     async fn generate_group_key(&mut self) -> Result<()> {
         let shares = self.shares.read().await;
         let commitments = self.commitments.read().await;
-
+        info!("comm: {:?}", commitments);
+        info!("Commitments size: {}", commitments.len());
         // Calculate final secret share (sum of all received shares)
         let mut final_secret_share = Scalar::zero();
+        info!("🔐 Calculating final secret share...");
+        info!("📊 Total shares received: {}", shares.len());
         for share in shares.values() {
             final_secret_share += share.value.0;
         }
 
+        let first_comms: Vec<G1Affine> = commitments
+            .values()
+            .filter_map(|comms| comms.get(0).cloned())
+            .collect();
+
+        // 2. Print out the array of first commitments
+        println!("First commitments array: {:#?}", first_comms);
         // Calculate final public key (sum of all commitment constant terms)
         let mut final_public_key = G1Projective::identity();
-        for comms in commitments.values() {
-            if !comms.is_empty() {
-                final_public_key += G1Projective::from(comms[0]);
+        let mut keys : Vec<_> = commitments.keys().collect();
+        keys.sort();
+        // for comms in commitments.values() {
+        //     if !comms.is_empty() {
+        //         final_public_key += G1Projective::from(comms[0]);
+        //     }
+        // }
+        for key in keys {
+            if let Some(comms) = commitments.get(key) {
+                if !comms.is_empty() {
+                    final_public_key += G1Projective::from(comms[0]);
+                }
             }
         }
 

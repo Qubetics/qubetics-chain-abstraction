@@ -29,19 +29,14 @@ impl AsRef<str> for MPCProtocol {
 /// RPC request variants.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum RPCRequest {
+    ScheduleADKG { start_time: u64 },
+    GetPeerList,
     Custom { id: String, data: Vec<u8> },
     GetDKGStatus,
     GetPeerInfo,
     Ping,
     StartDKG,
-
     StartADKG, 
-    // { 
-    //     n: usize,
-    //     threshold: usize, 
-    //     // participants: Vec<SerializablePeerId> 
-    // },
-
     SendAVSSShare {
         dealer_id: SerializablePeerId,
         receiver_id: SerializablePeerId,
@@ -69,6 +64,7 @@ pub enum RPCRequest {
 /// RPC response variants.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum RPCResponse {
+    PeerList{peers : Vec<SerializablePeerId>},
     Custom { id: String, data: Vec<u8> },
     DKGStarted {peer_id: SerializablePeerId},
     DKGError(String),
