@@ -292,7 +292,6 @@ impl DKGNode {
         if commitments.is_empty() {
             return false;
         }
-
         true
     }
 

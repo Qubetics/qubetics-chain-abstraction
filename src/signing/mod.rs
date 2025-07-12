@@ -5,7 +5,7 @@ use hex;
 use libp2p::PeerId;
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
@@ -62,6 +62,7 @@ pub struct SigningNode {
     signatures: Arc<RwLock<HashMap<String, BLSSignature>>>,
     signatures_by_round: Arc<RwLock<HashMap<u64, HashMap<String, BLSSignature>>>>, // round -> node_id -> signature
     final_nodes_by_round: Arc<RwLock<HashMap<u64, String>>>, // round -> final_node_id
+    aggregated_rounds: Arc<RwLock<HashSet<u64>>>, // rounds that have already been aggregated
     pending_messages: Arc<RwLock<HashMap<Vec<u8>, Vec<u8>>>>, // message_hash -> message
     message_tx: mpsc::Sender<ChannelMessage>,
     vrf_selector: Option<VrfNodeSelector>, // VRF selector for node selection
@@ -86,6 +87,7 @@ impl SigningNode {
             signatures: Arc::new(RwLock::new(HashMap::new())),
             signatures_by_round: Arc::new(RwLock::new(HashMap::new())),
             final_nodes_by_round: Arc::new(RwLock::new(HashMap::new())),
+            aggregated_rounds: Arc::new(RwLock::new(HashSet::new())),
             pending_messages: Arc::new(RwLock::new(HashMap::new())),
             message_tx,
             vrf_selector: Some(VrfNodeSelector::new(peer_id)),
@@ -431,7 +433,7 @@ impl SigningNode {
                 }
             }
         } else {
-            // If not the final node, proceed with normal signature completion check
+            
             self.check_signature_completion(signature.message_hash)
                 .await?;
         }
@@ -516,7 +518,8 @@ impl SigningNode {
         let final_signature = G1Affine::from(aggregated_signature);
         info!(
             "\x1b[35m🔢 🎉[SIGNING] Node {} final aggregated BLS signature: {:?}\x1b[0m",
-            self.id, self.get_compressed_signature_hex(&final_signature)
+            self.id,
+            self.get_compressed_signature_hex(&final_signature)
         );
         Ok(final_signature)
     }
@@ -999,40 +1002,79 @@ impl SigningNode {
             );
         }
 
-        // Check if we have enough signatures for this round
-        let signatures_by_round = self.signatures_by_round.read().await;
-        if let Some(round_signatures) = signatures_by_round.get(&round) {
-            if round_signatures.len() >= self.threshold {
+        // Check if we have enough signatures for this round and if it hasn't been aggregated yet
+        let should_aggregate = {
+            let aggregated_rounds = self.aggregated_rounds.read().await;
+            if aggregated_rounds.contains(&round) {
                 info!(
-                    "✅ [SIGNING] Enough signatures collected for round {}, starting aggregation",
+                    "🔄 [SIGNING] Round {} has already been aggregated, skipping",
                     round
                 );
-
-                // Perform aggregation
-                match self.aggregate_signatures_from_map(round_signatures).await {
-                    Ok(_aggregated_signature) => {
-                        info!("🎉 [SIGNING] Signature aggregation completed successfully for round {}!", round);
+                false
+            } else {
+                let signatures_by_round = self.signatures_by_round.read().await;
+                if let Some(round_signatures) = signatures_by_round.get(&round) {
+                    let has_enough = round_signatures.len() >= self.threshold;
+                    if has_enough {
                         info!(
-                            "📊 [SIGNING] Aggregated signature from {} nodes for round {}",
-                            round_signatures.len(),
+                            "✅ [SIGNING] Enough signatures collected for round {}, starting aggregation",
                             round
                         );
-                    }
-                    Err(e) => {
-                        error!(
-                            "❌ [SIGNING] Failed to aggregate signatures for round {}: {}",
-                            round, e
+                    } else {
+                        info!(
+                            "⏳ [SIGNING] Waiting for more signatures for round {}: {}/{}",
+                            round,
+                            round_signatures.len(),
+                            self.threshold
                         );
-                        return Err(e);
                     }
+                    has_enough
+                } else {
+                    false
                 }
-            } else {
-                info!(
-                    "⏳ [SIGNING] Waiting for more signatures for round {}: {}/{}",
-                    round,
-                    round_signatures.len(),
-                    self.threshold
-                );
+            }
+        };
+
+        if should_aggregate {
+            // Mark this round as aggregated to prevent duplicate aggregation
+            {
+                let mut aggregated_rounds = self.aggregated_rounds.write().await;
+                aggregated_rounds.insert(round);
+            }
+
+            // Get signatures for aggregation
+            let signatures_to_aggregate = {
+                let signatures_by_round = self.signatures_by_round.read().await;
+                if let Some(round_signatures) = signatures_by_round.get(&round) {
+                    round_signatures.clone()
+                } else {
+                    HashMap::new()
+                }
+            };
+
+            // Perform aggregation
+            match self
+                .aggregate_signatures_from_map(&signatures_to_aggregate)
+                .await
+            {
+                Ok(_aggregated_signature) => {
+                    info!(
+                        "🎉 [SIGNING] Signature aggregation completed successfully for round {}!",
+                        round
+                    );
+                    info!(
+                        "📊 [SIGNING] Aggregated signature from {} nodes for round {}",
+                        signatures_to_aggregate.len(),
+                        round
+                    );
+                }
+                Err(e) => {
+                    error!(
+                        "❌ [SIGNING] Failed to aggregate signatures for round {}: {}",
+                        round, e
+                    );
+                    return Err(e);
+                }
             }
         }
 
