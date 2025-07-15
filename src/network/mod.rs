@@ -927,23 +927,42 @@ impl NetworkLayer {
                 }
             }
             GossipsubMessage::Signing(signing_msg) => {
+                info!("📥 [NETWORK] Received signing message on topic: {}", message.topic);
+                info!("📋 [NETWORK] Signing message type: {:?}", signing_msg);
+                
                 if let Some(signing_node) = &mut self.signing_node {
                     // Check if this message is from the signatures-to-final-node topic
                     if message.topic.to_string() == "signatures-to-final-node" {
+                        info!("🎯 [NETWORK] Processing signature for final node topic");
                         // Handle as signature to final node
                         match signing_msg {
                             crate::signing::SigningMessage::ECDSASignature { from, signature } => {
+                                info!("📤 [NETWORK] Routing ECDSA signature to final node handler from: {}", from);
                                 signing_node.handle_signature_to_final_node(from, signature).await?;
                             }
                             _ => {
+                                info!("📤 [NETWORK] Routing other signing message to normal handler");
                                 // Handle other signing messages normally
                                 signing_node.handle_message(signing_msg).await?;
                             }
                         }
                     } else {
+                        info!("📤 [NETWORK] Processing normal signing message on topic: {}", message.topic);
                         // Handle normal signing messages
+                        match &signing_msg {
+                            crate::signing::SigningMessage::ECDSASignature { from, signature } => {
+                                info!("📥 [NETWORK] Received ECDSA signature from {} on topic {}", from, message.topic);
+                                info!("🔍 [NETWORK] Signature details - signer_id: {}, message_hash: {:?}", 
+                                      signature.signer_id, signature.message_hash);
+                            }
+                            _ => {
+                                info!("📥 [NETWORK] Received other signing message type");
+                            }
+                        }
                         signing_node.handle_message(signing_msg).await?;
                     }
+                } else {
+                    warn!("❌ [NETWORK] Signing node not available to handle signing message");
                 }
             }
             GossipsubMessage::Command(cmd) => {
