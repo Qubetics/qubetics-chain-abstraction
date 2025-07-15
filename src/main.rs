@@ -99,7 +99,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // Start RPC server in a separate task
     let message_tx = network.get_msg_tx();
-    let rpc_port = 8080; // You can make this configurable
+    let rpc_port = 8081; // You can make this configurable
 
     tokio::spawn(async move {
         info!("🚀 Starting RPC server on port {}", rpc_port);

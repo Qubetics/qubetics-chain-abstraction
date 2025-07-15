@@ -16,7 +16,7 @@ use std::{
     fmt::Debug,
     time::Duration,
 };
-use tokio::{io, time};
+use tokio::io;
 use tokio::task::JoinHandle;
 use tokio::sync::{mpsc};
 use tracing::{info, warn};
@@ -932,7 +932,7 @@ impl NetworkLayer {
                     if message.topic.to_string() == "signatures-to-final-node" {
                         // Handle as signature to final node
                         match signing_msg {
-                            crate::signing::SigningMessage::BLSSignature { from, signature } => {
+                            crate::signing::SigningMessage::ECDSASignature { from, signature } => {
                                 signing_node.handle_signature_to_final_node(from, signature).await?;
                             }
                             _ => {
@@ -1008,7 +1008,7 @@ impl NetworkLayer {
                     if let Some(dkg_node) = &self.dkg_node {
                         if let Some(secret_share) = dkg_node.get_final_secret_share().await {
                             info!("🔐 [NETWORK] Got secret share from DKG: {:?}", secret_share);
-                            signing_node.set_private_key(secret_share);
+                            signing_node.set_private_key_from_bls_scalar(secret_share);
                         } else {
                             info!("⏳ [NETWORK] DKG not completed yet, no secret share available");
                             return Ok(());
@@ -1018,8 +1018,8 @@ impl NetworkLayer {
                         return Ok(());
                     }
                     
-                    // Convert transaction to bytes for signing
-                    let tx_bytes = serde_json::to_vec(&transaction)?;
+                    // Convert transaction to bytes for signing using RLP encoding
+                    let tx_bytes = crate::utils::transaction::create_transaction_for_signing(&transaction);
                     signing_node.sign_message(&tx_bytes).await?;
                 }
             }
@@ -1140,8 +1140,8 @@ impl NetworkLayer {
                         signing_node.generate_key_pair()?;
                     }
                     
-                    // Convert transaction to bytes for signing
-                    let tx_bytes = serde_json::to_vec(&transaction)?;
+                    // Convert transaction to bytes for signing using RLP encoding
+                    let tx_bytes = crate::utils::transaction::create_transaction_for_signing(&transaction);
                     info!("🔐 [LOCAL] Starting local signing process");
                     signing_node.sign_message(&tx_bytes).await?;
                     info!("✅ [LOCAL] Local transaction signing completed");

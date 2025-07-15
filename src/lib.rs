@@ -13,8 +13,8 @@ pub mod protos;
 pub mod rpc_server;
 pub mod signing;
 pub mod types;
-pub mod vrf;
 pub mod utils;
+pub mod vrf;
 
 pub use chain::BlockchainClient;
 pub use commands::CommandProcessor;
@@ -25,7 +25,7 @@ pub use node_management::{
     BasicNodeManager, DefaultThresholdCalculator, NodeMembership, ThresholdCalculator,
     VrfNodeManager,
 };
-pub use signing::{BLSSignature, SigningMessage, SigningNode};
+pub use signing::{ECDSASignature, SigningMessage, SigningNode};
 pub use vrf::{
     NodeSelectionResult, VrfNodeSelector, VrfOutput, VrfSelectedNodesBroadcast, VrfSelectionMessage,
 };

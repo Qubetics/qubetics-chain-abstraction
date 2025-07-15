@@ -1,9 +1,9 @@
 use anyhow::Result;
-use bls12_381::{G1Affine, G1Projective, Scalar};
-use ff::Field;
+use bls12_381::Scalar;
 use hex;
 use libp2p::PeerId;
 use rand::rngs::OsRng;
+use secp256k1::{self, ecdsa::RecoverableSignature, Message, PublicKey, Secp256k1, SecretKey};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::str::FromStr;
@@ -12,20 +12,21 @@ use tokio::sync::{mpsc, RwLock};
 use tracing::{error, info, warn};
 
 use crate::consensus::{ConsensusMessage, ConsensusNode, ConsensusResult};
-use crate::types::{p2p::SerializablePeerId, ChannelMessage, SerializableG1Affine};
+use crate::types::{p2p::SerializablePeerId, ChannelMessage};
 use crate::vrf::VrfNodeSelector;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BLSSignature {
-    pub signature: SerializableG1Affine,
+pub struct ECDSASignature {
+    pub signature: Vec<u8>, // 65-byte recoverable signature
     pub signer_id: String,
     pub message_hash: Vec<u8>,
+    pub recovery_id: u8,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SignedMessage {
     pub message: Vec<u8>,
-    pub aggregated_signature: SerializableG1Affine,
+    pub aggregated_signature: Vec<u8>, // ECDSA signature
     pub signer_ids: Vec<String>,
     pub timestamp: u64,
 }
@@ -37,9 +38,9 @@ pub enum SigningMessage {
         message: Vec<u8>,
         message_hash: Vec<u8>,
     },
-    BLSSignature {
+    ECDSASignature {
         from: String,
-        signature: BLSSignature,
+        signature: ECDSASignature,
     },
     SignedMessage {
         from: String,
@@ -56,11 +57,11 @@ pub enum SigningMessage {
 pub struct SigningNode {
     id: String,
     threshold: usize,
-    private_key: Option<Scalar>,
-    public_key: Option<G1Affine>,
-    public_keys: Arc<RwLock<HashMap<String, G1Affine>>>, // Other nodes' public keys
-    signatures: Arc<RwLock<HashMap<String, BLSSignature>>>,
-    signatures_by_round: Arc<RwLock<HashMap<u64, HashMap<String, BLSSignature>>>>, // round -> node_id -> signature
+    private_key: Option<SecretKey>,
+    public_key: Option<PublicKey>,
+    public_keys: Arc<RwLock<HashMap<String, PublicKey>>>, // Other nodes' public keys
+    signatures: Arc<RwLock<HashMap<String, ECDSASignature>>>,
+    signatures_by_round: Arc<RwLock<HashMap<u64, HashMap<String, ECDSASignature>>>>, // round -> node_id -> signature
     final_nodes_by_round: Arc<RwLock<HashMap<u64, String>>>, // round -> final_node_id
     pending_messages: Arc<RwLock<HashMap<Vec<u8>, Vec<u8>>>>, // message_hash -> message
     message_tx: mpsc::Sender<ChannelMessage>,
@@ -114,25 +115,47 @@ impl SigningNode {
     }
 
     pub fn generate_key_pair(&mut self) -> Result<()> {
+        let secp = Secp256k1::new();
         let mut rng = OsRng;
-        let private_key = Scalar::random(&mut rng);
-        let public_key = G1Affine::from(G1Projective::generator() * private_key);
+        let (private_key, public_key) = secp.generate_keypair(&mut rng);
 
         self.private_key = Some(private_key);
         self.public_key = Some(public_key);
 
-        info!("🔐 [SIGNING] Node {} generated BLS key pair", self.id);
+        info!("🔐 [SIGNING] Node {} generated ECDSA key pair", self.id);
         info!("🔑 [SIGNING] Public key: {:?}", public_key);
         Ok(())
     }
 
-    pub fn set_private_key(&mut self, private_key: Scalar) {
+    pub fn set_private_key(&mut self, private_key: SecretKey) {
+        let secp = Secp256k1::new();
+        let public_key = PublicKey::from_secret_key(&secp, &private_key);
         self.private_key = Some(private_key);
-        self.public_key = Some(G1Affine::from(G1Projective::generator() * private_key));
+        self.public_key = Some(public_key);
         info!("🔐 [SIGNING] Node {} private key set", self.id);
     }
 
-    pub fn add_public_key(&self, node_id: String, public_key: G1Affine) {
+    pub fn set_private_key_from_bls_scalar(&mut self, bls_scalar: Scalar) {
+        // Convert BLS scalar to secp256k1 secret key
+        let scalar_bytes = bls_scalar.to_bytes();
+        let secret_key = SecretKey::from_slice(&scalar_bytes).unwrap_or_else(|_| {
+            // If conversion fails, generate a new key
+            let secp = Secp256k1::new();
+            let (sk, _) = secp.generate_keypair(&mut OsRng);
+            sk
+        });
+
+        let secp = Secp256k1::new();
+        let public_key = PublicKey::from_secret_key(&secp, &secret_key);
+        self.private_key = Some(secret_key);
+        self.public_key = Some(public_key);
+        info!(
+            "🔐 [SIGNING] Node {} private key set from BLS scalar",
+            self.id
+        );
+    }
+
+    pub fn add_public_key(&self, node_id: String, public_key: PublicKey) {
         let node_id_clone = node_id.clone();
         tokio::spawn({
             let public_keys = self.public_keys.clone();
@@ -213,18 +236,28 @@ impl SigningNode {
             .await
             .insert(message_hash.clone(), message.to_vec());
 
-        // Create BLS signature
-        let signature = self.create_bls_signature(&message_hash)?;
+        // Create ECDSA signature
+        let signature = self.create_ecdsa_signature(&message_hash)?;
+        // Extract signature components
+        let (recovery_id, signature_bytes) = signature.serialize_compact();
+        let v: u64 = recovery_id.to_i32() as u64 + 35 + 1043 * 2; // ✅ use u64 to prevent overflow
+        let r = &signature_bytes[0..32];
+        let s = &signature_bytes[32..64];
         info!(
-            "✍️ [SIGNING] Node {} created BLS signature: \x1b[34m{}\x1b[0m",
+            "✍️ [SIGNING] Node {} created ECDSA signature: \x1b[34m{:?}\x1b[0m",
             self.id,
-            self.get_compressed_signature_hex(&signature)
+            signature.serialize_compact()
         );
+        println!("\nSignature Components:");
+        println!("  v: {}", v);
+        println!("  r: 0x{}", hex::encode(r));
+        println!("  s: 0x{}", hex::encode(s));
 
-        let bls_signature = BLSSignature {
-            signature: SerializableG1Affine(signature),
+        let ecdsa_signature = ECDSASignature {
+            signature: signature.serialize_compact().1.to_vec(),
             signer_id: self.id.clone(),
             message_hash: message_hash.clone(),
+            recovery_id: signature.serialize_compact().0.to_i32() as u8,
         };
 
         // Store signature by round
@@ -233,20 +266,22 @@ impl SigningNode {
             let round_signatures = signatures_by_round
                 .entry(round)
                 .or_insert_with(HashMap::new);
-            round_signatures.insert(self.id.clone(), bls_signature.clone());
+            round_signatures.insert(self.id.clone(), ecdsa_signature.clone());
             info!(
                 "💾 [SIGNING] Node {} stored signature for round {}",
                 self.id, round
             );
         }
 
-        let msg = serde_json::to_vec(&SigningMessage::BLSSignature {
-            from: self.id.clone(),
-            signature: bls_signature,
-        })?;
+        let msg = serde_json::to_vec(&crate::types::GossipsubMessage::Signing(
+            SigningMessage::ECDSASignature {
+                from: self.id.clone(),
+                signature: ecdsa_signature,
+            },
+        ))?;
 
         self.broadcast("signing", &msg).await?;
-        info!("📤 [SIGNING] Node {} broadcasted BLS signature", self.id);
+        info!("📤 [SIGNING] Node {} broadcasted ECDSA signature", self.id);
         Ok(())
     }
 
@@ -257,36 +292,50 @@ impl SigningNode {
         hasher.finalize().to_vec()
     }
 
-    fn create_bls_signature(&self, message_hash: &[u8]) -> Result<G1Affine> {
+    fn create_ecdsa_signature(&self, message_hash: &[u8]) -> Result<RecoverableSignature> {
         if let Some(private_key) = self.private_key {
-            // Convert message hash to scalar
-            let message_scalar = self.hash_to_scalar(message_hash);
+            let secp = Secp256k1::new();
 
-            // BLS signature: σ = H(m)^sk where H(m) is the message hash as a point
-            // We'll use the generator multiplied by the message hash scalar
-            let message_point = G1Affine::from(G1Projective::generator() * message_scalar);
-            let signature = G1Affine::from(message_point * private_key);
+            // Create a message from the hash
+            let message = Message::from_digest_slice(message_hash)?;
+
+            // Sign the message with recoverable signature
+            let signature = secp.sign_ecdsa_recoverable(&message, &private_key);
+            // Extract signature components
+            let (recovery_id, signature_bytes) = signature.serialize_compact();
+            let v: u64 = recovery_id.to_i32() as u64 + 35 + 1043 * 2; // ✅ use u64 to prevent overflow
+            let r = &signature_bytes[0..32];
+            let s = &signature_bytes[32..64];
+
+            println!("\nSignature Components:");
+            println!("  v: {}", v);
+            println!("  r: 0x{}", hex::encode(r));
+            println!("  s: 0x{}", hex::encode(s));
+
+            // Create signed transaction
+            let dummy_transaction = crate::rpc_server::DummyTransaction {
+                to: "0xceb5057834CB4EdE0E59F9e91046B8cB96C72e9C".to_string(),
+                value: "0x2386f26fc10000".to_string(), // 1 ETH in wei
+                nonce: 0,
+                gas_limit: 21000,
+                gas_price: "0x3b9aca00".to_string(), // 2.5 gwei
+                chain_id: 1043,
+            };
+            let signed_tx =
+                crate::utils::transaction::create_signed_transaction(&dummy_transaction, r, s, v);
+            println!("\nSigned Transaction (RLP): {:?}", &signed_tx);
+            let raw_tx = format!("0x{}", hex::encode(&signed_tx));
+
+            println!("\nRaw Transaction: {}", raw_tx);
 
             info!(
-                "✍️ [SIGNING] Node {} created BLS signature: {:?}",
+                "✍️ [SIGNING] Node {} created ECDSA signature: {:?}",
                 self.id, signature
             );
             Ok(signature)
         } else {
             Err(anyhow::anyhow!("No private key available"))
         }
-    }
-
-    fn hash_to_scalar(&self, data: &[u8]) -> Scalar {
-        use sha2::{Digest, Sha256};
-        let mut hasher = Sha256::new();
-        hasher.update(data);
-        let hash = hasher.finalize();
-
-        // Convert hash to scalar (simplified)
-        let mut bytes = [0u8; 64];
-        bytes[..32].copy_from_slice(&hash);
-        Scalar::from_bytes_wide(&bytes)
     }
 
     pub async fn handle_message(&mut self, msg: SigningMessage) -> Result<()> {
@@ -303,12 +352,12 @@ impl SigningNode {
                 self.handle_message_to_sign(from, message, message_hash)
                     .await?;
             }
-            SigningMessage::BLSSignature { from, signature } => {
+            SigningMessage::ECDSASignature { from, signature } => {
                 info!(
-                    "📥 [SIGNING] Node {} received BLS signature from {}",
+                    "📥 [SIGNING] Node {} received ECDSA signature from {}",
                     self.id, from
                 );
-                self.handle_bls_signature(from, signature).await?;
+                self.handle_ecdsa_signature(from, signature).await?;
             }
             SigningMessage::SignedMessage {
                 from,
@@ -336,7 +385,11 @@ impl SigningNode {
         Ok(())
     }
 
-    async fn handle_bls_signature(&mut self, from: String, signature: BLSSignature) -> Result<()> {
+    async fn handle_ecdsa_signature(
+        &mut self,
+        from: String,
+        signature: ECDSASignature,
+    ) -> Result<()> {
         // Store in general signatures
         self.signatures
             .write()
@@ -344,7 +397,7 @@ impl SigningNode {
             .insert(from.clone(), signature.clone());
 
         info!(
-            "💾 [SIGNING] Node {} stored BLS signature from {}",
+            "💾 [SIGNING] Node {} stored ECDSA signature from {}",
             self.id, from
         );
 
@@ -443,12 +496,18 @@ impl SigningNode {
         let signatures = self.signatures.read().await;
         if signatures.len() >= self.threshold {
             info!(
-                "🎯 [SIGNING] Node {} has enough BLS signatures ({}), aggregating",
+                "🎯 [SIGNING] Node {} has enough ECDSA signatures ({}), aggregating",
                 self.id,
                 signatures.len()
             );
 
             let aggregated_signature = self.aggregate_signatures().await?;
+
+            info!(
+                "Aggregated signature: {:?}",
+                aggregated_signature.serialize_compact()
+            );
+
             let message = self
                 .pending_messages
                 .read()
@@ -460,7 +519,7 @@ impl SigningNode {
                 let signer_ids: Vec<String> = signatures.keys().cloned().collect();
                 let signed_message = SignedMessage {
                     message,
-                    aggregated_signature: SerializableG1Affine(aggregated_signature),
+                    aggregated_signature: aggregated_signature.serialize_compact().1.to_vec(),
                     signer_ids,
                     timestamp: std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
@@ -468,14 +527,16 @@ impl SigningNode {
                         .as_secs(),
                 };
 
-                let msg = serde_json::to_vec(&SigningMessage::SignedMessage {
-                    from: self.id.clone(),
-                    signed_message: signed_message.clone(),
-                })?;
+                let msg = serde_json::to_vec(&crate::types::GossipsubMessage::Signing(
+                    SigningMessage::SignedMessage {
+                        from: self.id.clone(),
+                        signed_message: signed_message.clone(),
+                    },
+                ))?;
 
                 self.broadcast("signing", &msg).await?;
                 info!(
-                    "🎉 [SIGNING] Node {} completed BLS signing and broadcasted result",
+                    "🎉 [SIGNING] Node {} completed ECDSA signing and broadcasted result",
                     self.id
                 );
                 info!(
@@ -485,7 +546,7 @@ impl SigningNode {
             }
         } else {
             info!(
-                "⏳ [SIGNING] Node {} waiting for more BLS signatures: {}/{}",
+                "⏳ [SIGNING] Node {} waiting for more ECDSA signatures: {}/{}",
                 self.id,
                 signatures.len(),
                 self.threshold
@@ -494,31 +555,30 @@ impl SigningNode {
         Ok(())
     }
 
-    async fn aggregate_signatures(&self) -> Result<G1Affine> {
+    async fn aggregate_signatures(&self) -> Result<RecoverableSignature> {
         let signatures = self.signatures.read().await;
         self.aggregate_signatures_from_map(&signatures).await
     }
 
     async fn aggregate_signatures_from_map(
         &self,
-        signatures: &HashMap<String, BLSSignature>,
-    ) -> Result<G1Affine> {
-        let mut aggregated_signature = G1Projective::identity();
+        signatures: &HashMap<String, ECDSASignature>,
+    ) -> Result<RecoverableSignature> {
+        if let Some((_, first_signature)) = signatures.iter().next() {
+            let secp = Secp256k1::new();
+            let recovery_id =
+                secp256k1::ecdsa::RecoveryId::from_i32(first_signature.recovery_id as i32)?;
+            let signature =
+                RecoverableSignature::from_compact(&first_signature.signature, recovery_id)?;
 
-        for (from, bls_signature) in signatures.iter() {
-            aggregated_signature += bls_signature.signature.0;
             info!(
-                "➕ [SIGNING] Node {} aggregated signature from {}: {:?}",
-                self.id, from, bls_signature.signature.0
+                "🔢 [SIGNING] Node {} using first ECDSA signature as aggregated result",
+                self.id
             );
+            Ok(signature)
+        } else {
+            Err(anyhow::anyhow!("No signatures to aggregate"))
         }
-
-        let final_signature = G1Affine::from(aggregated_signature);
-        info!(
-            "\x1b[35m🔢 🎉[SIGNING] Node {} final aggregated BLS signature: {:?}\x1b[0m",
-            self.id, self.get_compressed_signature_hex(&final_signature)
-        );
-        Ok(final_signature)
     }
 
     async fn handle_message_to_sign(
@@ -545,70 +605,62 @@ impl SigningNode {
             self.id, from
         );
         info!("📄 [SIGNING] Message: {:?}", signed_message.message);
-        info!(
-            "✍️ [SIGNING] Aggregated signature: {:?}",
-            signed_message.aggregated_signature.0
-        );
+
         info!("👥 [SIGNING] Signers: {:?}", signed_message.signer_ids);
         info!("🕒 [SIGNING] Timestamp: {}", signed_message.timestamp);
 
-        // Verify the aggregated BLS signature
+        // Verify the aggregated ECDSA signature
         let is_valid = self.verify_aggregated_signature(&signed_message).await?;
         if is_valid {
-            info!("✅ [SIGNING] BLS signature verification successful!");
+            info!("✅ [SIGNING] ECDSA signature verification successful!");
         } else {
-            warn!("❌ [SIGNING] BLS signature verification failed!");
+            warn!("❌ [SIGNING] ECDSA signature verification failed!");
         }
 
         Ok(())
     }
 
     async fn verify_aggregated_signature(&self, signed_message: &SignedMessage) -> Result<bool> {
+        info!(
+            "🔍 [SIGNING] Node {} verifying aggregated signature",
+            self.id
+        );
+        info!(
+            "✍️ [SIGNING] Aggregated signature: {:?}",
+            signed_message.aggregated_signature
+        );
+        info!("👥 [SIGNING] Signers: {:?}", signed_message.signer_ids);
+        info!("🕒 [SIGNING] Timestamp: {}", signed_message.timestamp);
+
         let public_keys = self.public_keys.read().await;
 
-        // Check if we have all the public keys for the signers
+        // Check if we have public keys for all signers
         for signer_id in &signed_message.signer_ids {
             if !public_keys.contains_key(signer_id) {
-                warn!("⚠️ [SIGNING] Missing public key for signer: {}", signer_id);
+                warn!("❌ [SIGNING] Missing public key for signer: {}", signer_id);
                 return Ok(false);
             }
         }
 
-        // Aggregate public keys
-        let mut aggregated_public_key = G1Projective::identity();
-        for signer_id in &signed_message.signer_ids {
-            if let Some(public_key) = public_keys.get(signer_id) {
-                aggregated_public_key += public_key;
-            }
-        }
-
-        // Verify BLS signature: e(σ, g) = e(H(m), pk_agg)
-        // where σ is the signature, g is the generator, H(m) is the message hash, and pk_agg is the aggregated public key
-
-        let message_hash = self.hash_message(&signed_message.message);
-        let message_scalar = self.hash_to_scalar(&message_hash);
-        let message_point = G1Affine::from(G1Projective::generator() * message_scalar);
-
-        // For BLS verification, we need to check if the signature is valid
-        // This is a simplified verification - in practice you'd use pairing
-        let _signature_point = signed_message.aggregated_signature.0;
-        let _expected_signature = G1Affine::from(message_point * Scalar::from(1u64)); // Simplified
-
-        info!("🔍 [SIGNING] Node {} verifying BLS signature", self.id);
+        info!("🔍 [SIGNING] Node {} verifying ECDSA signature", self.id);
 
         // For now, return true as a placeholder
-        // In a real implementation, you would use pairing-based verification
+        // In a real implementation, you'd verify each signature individually
         Ok(true)
     }
 
-    /// Get the compressed 48-byte representation of a BLS signature
-    pub fn get_compressed_signature_bytes(&self, signature: &G1Affine) -> [u8; 48] {
-        signature.to_compressed()
+    /// Get the compressed 65-byte representation of an ECDSA signature
+    pub fn get_compressed_signature_bytes(&self, signature: &RecoverableSignature) -> [u8; 65] {
+        let (recovery_id, signature_bytes) = signature.serialize_compact();
+        let mut result = [0u8; 65];
+        result[0] = recovery_id.to_i32() as u8;
+        result[1..].copy_from_slice(&signature_bytes);
+        result
     }
 
-    /// Get the compressed 48-byte representation as a hex string
-    pub fn get_compressed_signature_hex(&self, signature: &G1Affine) -> String {
-        let bytes = signature.to_compressed();
+    /// Get the compressed 65-byte representation as a hex string
+    pub fn get_compressed_signature_hex(&self, signature: &RecoverableSignature) -> String {
+        let bytes = self.get_compressed_signature_bytes(signature);
         hex::encode(bytes)
     }
 
@@ -891,7 +943,7 @@ impl SigningNode {
 
         if let Some(round_signatures) = signatures_by_round.get(&round) {
             if let Some(our_signature) = round_signatures.get(&self.id) {
-                let signature_msg = SigningMessage::BLSSignature {
+                let signature_msg = SigningMessage::ECDSASignature {
                     from: self.id.clone(),
                     signature: our_signature.clone(),
                 };
@@ -975,7 +1027,7 @@ impl SigningNode {
     pub async fn handle_signature_for_round(
         &mut self,
         from: String,
-        signature: BLSSignature,
+        signature: ECDSASignature,
         round: u64,
     ) -> Result<()> {
         info!(
@@ -1043,7 +1095,7 @@ impl SigningNode {
     pub async fn handle_signature_to_final_node(
         &mut self,
         from: String,
-        signature: BLSSignature,
+        signature: ECDSASignature,
     ) -> Result<()> {
         info!(
             "📥 [SIGNING] Final node {} received signature from {} on signatures-to-final-node topic",

@@ -1,6 +1,6 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest};
+use sha2::Digest;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 use warp::Filter;
@@ -11,27 +11,12 @@ use crate::types::{rpc::RPCRequest, ChannelMessage};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DummyTransaction {
     pub to: String,
-    #[serde(
-        rename = "amount",
-        deserialize_with = "crate::utils::bigint::deserialize",
-        serialize_with   = "crate::utils::bigint::serialize"
-    )]
-    pub amount: num_bigint::BigUint,
+    pub value: String,
     pub nonce: u64,
     #[serde(rename = "gasLimit")]
     pub gas_limit: u64,
-    #[serde(
-        rename = "maxPriorityFeePerGas",
-        deserialize_with = "crate::utils::bigint::deserialize",
-        serialize_with   = "crate::utils::bigint::serialize"
-    )]
-    pub max_priority_fee_per_gas: num_bigint::BigUint,
-    #[serde(
-        rename = "maxFeePerGas",
-        deserialize_with = "crate::utils::bigint::deserialize",
-        serialize_with   = "crate::utils::bigint::serialize"
-    )]
-    pub max_fee_per_gas: num_bigint::BigUint,
+    #[serde(rename = "gasPrice")]
+    pub gas_price: String,
     #[serde(rename = "chainId")]
     pub chain_id: u64,
 }
@@ -215,4 +200,3 @@ pub enum TransactionError {
 }
 
 impl warp::reject::Reject for TransactionError {}
-
