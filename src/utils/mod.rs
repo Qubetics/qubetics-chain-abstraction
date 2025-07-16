@@ -7,6 +7,7 @@ use ethers_core::utils::keccak256;
 use sha2::{Digest, Sha256};
 pub mod bigint;
 pub mod transaction;
+
 pub fn get_eth_address_from_group_key(pubkey: G1Projective) -> String {
     let affine = G1Affine::from(pubkey);
     let pubkey_bytes = affine.to_uncompressed(); // [u8; 96]

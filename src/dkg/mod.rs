@@ -1,3 +1,4 @@
+use crate::utils;
 use anyhow::Result;
 use bls12_381::{G1Affine, G1Projective, Scalar};
 use ethers::core::k256::ecdsa::Error;
@@ -10,7 +11,6 @@ use std::{any, usize};
 use tokio::sync::mpsc;
 use tokio::sync::RwLock;
 use tracing::info;
-use crate::utils;
 
 use crate::types::dkg::MSG_TOPIC_DKG;
 use crate::types::{
@@ -111,12 +111,11 @@ impl DKGNode {
         tokio::time::sleep(Duration::from_secs(1)).await;
         let node_index = self.get_node_index();
         {
-            let my_shares      = shares.clone();
+            let my_shares = shares.clone();
             let my_commitments = commitments.clone();
             // This will verify, store in `self.shares`/`self.commitments`
             // and even send you a local “validation” message if you want.
-            self
-                .handle_share_distribution(self.id.clone(), my_shares, my_commitments)
+            self.handle_share_distribution(self.id.clone(), my_shares, my_commitments)
                 .await?;
         }
         self.broadcast_shares(shares, commitments).await?;
@@ -132,8 +131,12 @@ impl DKGNode {
         }
 
         info!(
-            "🔢 Generated polynomial with {} coefficients",
-            coefficients.len()
+            "🔢 Generated polynomial with {} coefficients {:?}",
+            coefficients.len(),
+            coefficients
+                .iter()
+                .map(|c| c.to_string())
+                .collect::<Vec<String>>()
         );
         Ok(coefficients)
     }
@@ -144,11 +147,15 @@ impl DKGNode {
             total_nodes, threshold
         );
         self.total_nodes = total_nodes;
-        self.threshold = total_nodes-1;
+        self.threshold = total_nodes -1; // Use the actual threshold parameter
     }
 
     fn generate_shares(&self, polynomial: &[Scalar]) -> Result<Vec<KeyShare>> {
         info!("📊 Generating shares for {} nodes", self.total_nodes);
+        info!(
+            "🔢 Node {} polynomial coefficients: {:?}",
+            self.id, polynomial
+        );
 
         let mut shares = Vec::with_capacity(self.total_nodes);
 
@@ -164,8 +171,11 @@ impl DKGNode {
                 index: i,
                 value: SerializableScalar(y),
             });
+
+            info!("📋 Node {} generated share {}: {:?}", self.id, i, y);
         }
         info!("✅ Generated {} shares", shares.len());
+        info!("Shares: {:?}", shares);
         Ok(shares)
     }
 
@@ -231,21 +241,25 @@ impl DKGNode {
         let node_index = self.get_node_index();
 
         info!(
-            "🔍 Looking for share with index {} in {} shares",
+            "🔍 Looking for share with index {} in {} shares from node {}",
             node_index,
-            shares.len()
+            shares.len(),
+            from
         );
 
         if self.verify_shares(&shares, &raw_commitments) {
             let my_share = shares.into_iter().find(|s| s.index == node_index);
             if let Some(share) = my_share {
-                info!("✅ Found valid share for node {} from {}", self.id, from);
+                info!(
+                    "✅ Found valid share for node {} from {}, share value: {:?}",
+                    self.id, from, share.value.0
+                );
+                // Store share by sender ID but also track the share index
                 self.shares.write().await.insert(from.clone(), share);
                 self.commitments
                     .write()
                     .await
                     .insert(from.clone(), raw_commitments);
-
 
                 self.handle_share_validation(self.id.clone(), from.clone(), true)
                     .await?;
@@ -287,10 +301,14 @@ impl DKGNode {
     }
 
     fn get_node_index(&self) -> usize {
+        // First try to parse as a number
         if let Ok(index) = self.id.parse::<usize>() {
-            return index;
+            if index > 0 && index <= self.total_nodes {
+                return index;
+            }
         }
 
+        // Fallback to hash-based indexing with better collision handling
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
 
@@ -299,23 +317,38 @@ impl DKGNode {
         let hash = hasher.finish();
 
         if self.total_nodes == 0 {
-            tracing::warn!("⚠️ Total nodes still zero after 2s; defaulting index to 0");
-            return 0;
+            tracing::warn!("⚠️ Total nodes still zero; defaulting index to 1");
+            return 1;
         }
 
-        ((hash % self.total_nodes as u64) + 1) as usize
+        // Ensure we get a valid index between 1 and total_nodes
+        let index = ((hash % self.total_nodes as u64) + 1) as usize;
+        info!(
+            "🔢 Node {} assigned index {} (hash: {})",
+            self.id, index, hash
+        );
+        index
     }
 
     pub fn verify_share(
         &self,
         share: &SerializableScalar,
+        share_index: usize,
         commitments: &[SerializableG1Affine],
     ) -> bool {
         if commitments.is_empty() {
             return false;
         }
 
-        true
+        let x = Scalar::from(share_index as u64);
+        let mut expected = G1Projective::identity();
+
+        for (j, commitment) in commitments.iter().enumerate() {
+            expected += G1Projective::from(commitment.0) * x.pow(&[j as u64, 0, 0, 0]);
+        }
+
+        let actual = G1Projective::generator() * share.0;
+        expected == actual
     }
 
     pub fn verify_shares(&self, shares: &[KeyShare], commitments: &[G1Affine]) -> bool {
@@ -378,13 +411,18 @@ impl DKGNode {
             shares_len, validations_len
         );
 
-        if valid_validations >= (self.threshold + 1) * (self.threshold + 1) && shares_len >= self.threshold + 1 {
+        if valid_validations >= (self.threshold + 1) * (self.threshold + 1)
+            && shares_len >= self.threshold + 1
+        {
             info!("🎉 DKG completion criteria met! Generating final keys...");
             self.generate_group_key().await?;
         } else {
             info!(
                 "⏳ DKG not yet complete - need {} validations and {} shares, have {} and {}",
-                (self.threshold + 1) * (self.threshold + 1), self.threshold + 1, valid_validations, shares_len
+                (self.threshold + 1) * (self.threshold + 1),
+                self.threshold + 1,
+                valid_validations,
+                shares_len
             );
         }
         Ok(())
@@ -395,12 +433,32 @@ impl DKGNode {
         let commitments = self.commitments.read().await;
         info!("comm: {:?}", commitments);
         info!("Commitments size: {}", commitments.len());
-        // Calculate final secret share (sum of all received shares)
+
+        let node_index = self.get_node_index();
+        info!(
+            "🔍 Node {} calculating final secret share using shares for index {}",
+            self.id, node_index
+        );
+
+        // Calculate final secret share (sum of all shares meant for THIS node's index)
         let mut final_secret_share = Scalar::zero();
         info!("🔐 Calculating final secret share...");
         info!("📊 Total shares received: {}", shares.len());
-        for share in shares.values() {
-            final_secret_share += share.value.0;
+
+        for (from, share) in shares.iter() {
+            // Only use shares that are meant for this node's index
+            if share.index == node_index {
+                info!(
+                    "✅ Using share from {} with index {} (matches our index {})",
+                    from, share.index, node_index
+                );
+                final_secret_share += share.value.0;
+            } else {
+                info!(
+                    "❌ Skipping share from {} with index {} (doesn't match our index {})",
+                    from, share.index, node_index
+                );
+            }
         }
 
         let first_comms: Vec<G1Affine> = commitments
@@ -412,7 +470,7 @@ impl DKGNode {
         println!("First commitments array: {:#?}", first_comms);
         // Calculate final public key (sum of all commitment constant terms)
         let mut final_public_key = G1Projective::identity();
-        let mut keys : Vec<_> = commitments.keys().collect();
+        let mut keys: Vec<_> = commitments.keys().collect();
         keys.sort();
         // for comms in commitments.values() {
         //     if !comms.is_empty() {
@@ -472,5 +530,25 @@ impl DKGNode {
 
     pub async fn is_completed(&self) -> bool {
         matches!(self.status, DKGStatus::Completed)
+    }
+
+    // Test function to verify share generation
+    pub fn test_share_generation(&self) -> Result<()> {
+        info!("🧪 Testing share generation for node {}", self.id);
+
+        let polynomial = self.generate_polynomial()?;
+        let shares = self.generate_shares(&polynomial)?;
+
+        info!("🔬 Node {} generated {} shares", self.id, shares.len());
+        info!(
+            "🔬 First share value: {:?}",
+            shares.first().map(|s| s.value.0)
+        );
+        info!(
+            "🔬 Last share value: {:?}",
+            shares.last().map(|s| s.value.0)
+        );
+
+        Ok(())
     }
 }

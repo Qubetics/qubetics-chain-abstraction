@@ -635,13 +635,28 @@ impl NetworkLayer {
 
                                 RPCResponse::DKGStatus { status } // send back to the agent at peer.send.ptp
                             },
-                            RPCRequest::SendAVSSShare { share, commitments, .. } => {
+                            RPCRequest::SendAVSSShare { share, commitments, receiver_id, .. } => {
                                 if self.dkg_node.is_none() {
                                     RPCResponse::Error("DKG not initialized".to_string())
-                                } else if self.dkg_node.as_ref().unwrap().verify_share(&share, &commitments) {
-                                    RPCResponse::ShareAccepted
                                 } else {
-                                    RPCResponse::Error("Invalid share".into())
+                                    // Extract share index from receiver_id
+                                    let share_index = if let Ok(index) = receiver_id.0.to_string().parse::<usize>() {
+                                        index
+                                    } else {
+                                        // Fallback to hash-based index
+                                        use std::collections::hash_map::DefaultHasher;
+                                        use std::hash::{Hash, Hasher};
+                                        let mut hasher = DefaultHasher::new();
+                                        receiver_id.0.to_string().hash(&mut hasher);
+                                        let hash = hasher.finish();
+                                        ((hash % 100) + 1) as usize // Use a reasonable default range
+                                    };
+                                    
+                                    if self.dkg_node.as_ref().unwrap().verify_share(&share, share_index, &commitments) {
+                                        RPCResponse::ShareAccepted
+                                    } else {
+                                        RPCResponse::Error("Invalid share".into())
+                                    }
                                 }
                             },
                             RPCRequest::ScheduleADKG { start_time } => {
@@ -1039,7 +1054,7 @@ impl NetworkLayer {
                     
                     // Convert transaction to bytes for signing using RLP encoding
                     let tx_bytes = crate::utils::transaction::create_transaction_for_signing(&transaction);
-                    signing_node.sign_message(&tx_bytes).await?;
+                    signing_node.sign_message(&tx_bytes, &transaction).await?;
                 }
             }
             GossipsubMessage::DKGCommand(dkg_cmd) => {
@@ -1161,8 +1176,8 @@ impl NetworkLayer {
                     
                     // Convert transaction to bytes for signing using RLP encoding
                     let tx_bytes = crate::utils::transaction::create_transaction_for_signing(&transaction);
-                    info!("🔐 [LOCAL] Starting local signing process");
-                    signing_node.sign_message(&tx_bytes).await?;
+                    info!("🔐 [LOCAL] Starting local signing process {:?}", tx_bytes);
+                    signing_node.sign_message(&tx_bytes, &transaction).await?;
                     info!("✅ [LOCAL] Local transaction signing completed");
                 } else {
                     warn!("❌ [LOCAL] Signing node not available for local processing");

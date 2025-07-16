@@ -1,3 +1,4 @@
+use crate::rpc_server::DummyTransaction;
 use anyhow::Result;
 use bls12_381::Scalar;
 use hex;
@@ -158,49 +159,18 @@ impl SigningNode {
     pub fn set_private_key_from_bls_scalar(&mut self, bls_scalar: Scalar) {
         // Convert BLS scalar to secp256k1 secret key using proper field conversion
         let scalar_bytes = bls_scalar.to_bytes();
-
-        // BLS scalar field order is different from secp256k1 curve order
-        // We need to ensure the scalar is within the secp256k1 curve order
-        let secp256k1_order = [
-            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-            0xff, 0xfe, 0xba, 0xae, 0xdc, 0xe6, 0xaf, 0x48, 0xa0, 0x3b, 0xbf, 0xd2, 0x5e, 0x8c,
-            0xd0, 0x36, 0x41, 0x41,
-        ];
-
-        // Use the BLS scalar bytes as a seed for deterministic key generation
-        let mut hasher = sha2::Sha256::new();
-        hasher.update(&scalar_bytes);
-        hasher.update(b"ethereum_private_key_derivation");
-        let derived_bytes = hasher.finalize();
-
-        // Ensure the derived key is within secp256k1 curve order
-        let mut key_bytes = [0u8; 32];
-        key_bytes.copy_from_slice(&derived_bytes);
-
-        // Reduce modulo the secp256k1 curve order
-        let mut key_bigint = num_bigint::BigUint::from_bytes_be(&key_bytes);
-        let curve_order = num_bigint::BigUint::from_bytes_be(&secp256k1_order);
-        key_bigint = key_bigint % curve_order;
-
-        // Convert back to bytes
-        let reduced_bytes = key_bigint.to_bytes_be();
-        let mut final_key_bytes = [0u8; 32];
-        final_key_bytes[32 - reduced_bytes.len()..].copy_from_slice(&reduced_bytes);
-
-        let secret_key = SecretKey::from_slice(&final_key_bytes).unwrap_or_else(|_| {
-            // If conversion fails, generate a new key
-            let secp = Secp256k1::new();
-            let (sk, _) = secp.generate_keypair(&mut OsRng);
-            sk
-        });
+        let secret_key = Self::derive_secp_secret(&bls_scalar);
 
         info!(
             "🔐 [SIGNING] Node {} private key set from BLS scalar",
             self.id
         );
         info!("🔐 [SIGNING] BLS scalar bytes: {:?}", scalar_bytes);
-        info!("🔐 [SIGNING] Derived key bytes: {:?}", final_key_bytes);
-        info!("🔐 [SIGNING] Final secret key: {:?}", hex::encode(secret_key.as_ref()));
+        // info!("🔐 [SIGNING] Derived key bytes: {:?}", final_key_bytes);
+        info!(
+            "🔐 OOKK [SIGNING] Final secret key: {:?}",
+            hex::encode(secret_key.as_ref())
+        );
 
         let secp = Secp256k1::new();
         let public_key = PublicKey::from_secret_key(&secp, &secret_key);
@@ -213,6 +183,26 @@ impl SigningNode {
             "🔐 [SIGNING] Node {} private key set from BLS scalar with proper Ethereum conversion",
             self.id
         );
+    }
+
+    pub fn derive_secp_secret(bls_scalar: &Scalar) -> SecretKey {
+        // 1) Get the 32‑byte LE from BLS
+        let mut le = bls_scalar.to_bytes();
+
+        // 2) Reverse to big‑endian so that from_bytes_be() sees the right integer
+        le.reverse();
+
+        // 4) Pad or trim to 32 bytes BE
+        let mut be32 = [0u8; 32];
+        let trimmed = if le.len() > 32 {
+            &le[le.len() - 32..]
+        } else {
+            &le
+        };
+        be32[32 - trimmed.len()..].copy_from_slice(trimmed);
+
+        // 5) Build the ECDSA SecretKey (expects BE)
+        SecretKey::from_slice(&be32).expect("valid secp256k1 scalar")
     }
 
     pub fn add_public_key(&self, node_id: String, public_key: PublicKey) {
@@ -254,7 +244,11 @@ impl SigningNode {
         Ok(())
     }
 
-    pub async fn sign_message(&mut self, message: &[u8]) -> Result<()> {
+    pub async fn sign_message(
+        &mut self,
+        message: &[u8],
+        transaction: &DummyTransaction,
+    ) -> Result<()> {
         if self.private_key.is_none() {
             error!(
                 "❌ [SIGNING] Node {} cannot sign: no private key available",
@@ -308,10 +302,10 @@ impl SigningNode {
             .insert(message_hash.clone(), message.to_vec());
 
         // Create ECDSA signature
-        let signature = self.create_ecdsa_signature(&message_hash)?;
+        let signature = self.create_ecdsa_signature(&message_hash, transaction)?;
         // Extract signature components
         let (recovery_id, signature_bytes) = signature.serialize_compact();
-        let v: u64 = recovery_id.to_i32() as u64 + 35 + 1043 * 2; // ✅ use u64 to prevent overflow
+        let v: u64 = recovery_id.to_i32() as u64; // ✅ use u64 to prevent overflow
         let r = &signature_bytes[0..32];
         let s = &signature_bytes[32..64];
 
@@ -365,7 +359,11 @@ impl SigningNode {
         hasher.finalize().to_vec()
     }
 
-    fn create_ecdsa_signature(&self, message_hash: &[u8]) -> Result<RecoverableSignature> {
+    fn create_ecdsa_signature(
+        &self,
+        message_hash: &[u8],
+        transaction: &DummyTransaction,
+    ) -> Result<RecoverableSignature> {
         if let Some(private_key) = self.private_key {
             let secp = Secp256k1::new();
 
@@ -376,7 +374,7 @@ impl SigningNode {
             let signature = secp.sign_ecdsa_recoverable(&message, &private_key);
             // Extract signature components
             let (recovery_id, signature_bytes) = signature.serialize_compact();
-            let v: u64 = recovery_id.to_i32() as u64 + 35 + 1043 * 2; // ✅ use u64 to prevent overflow
+            let v: u64 = recovery_id.to_i32() as u64; // ✅ use u64 to prevent overflow
             let r = &signature_bytes[0..32];
             let s = &signature_bytes[32..64];
 
@@ -384,18 +382,12 @@ impl SigningNode {
             println!("  v: {}", v);
             println!("  r: 0x{}", hex::encode(r));
             println!("  s: 0x{}", hex::encode(s));
+            println!("message hash : {:?}", message_hash);
+            println!("private key : {:?}", private_key);
+            println!("transaction data : {:?}", transaction);
 
-            // Create signed transaction
-            let dummy_transaction = crate::rpc_server::DummyTransaction {
-                to: "0xceb5057834CB4EdE0E59F9e91046B8cB96C72e9C".to_string(),
-                value: "0x2386f26fc10000".to_string(), // 1 ETH in wei
-                nonce: 0,
-                gas_limit: 21000,
-                gas_price: "0x3b9aca00".to_string(), // 2.5 gwei
-                chain_id: 1043,
-            };
             let signed_tx =
-                crate::utils::transaction::create_signed_transaction(&dummy_transaction, r, s, v);
+                crate::utils::transaction::create_signed_transaction(&transaction, r, s, v);
             println!("\nSigned Transaction (RLP): {:?}", &signed_tx);
             let raw_tx = format!("0x{}", hex::encode(&signed_tx));
 
@@ -423,12 +415,12 @@ impl SigningNode {
                 message,
                 message_hash,
             } => {
-                info!(
-                    "📥 [SIGNING] Node {} received message to sign from {}",
-                    self.id, from
-                );
-                self.handle_message_to_sign(from, message, message_hash)
-                    .await?;
+                // info!(
+                //     "📥 [SIGNING] Node {} received message to sign from {}",
+                //     self.id, from
+                // );
+                // self.handle_message_to_sign(from, message, message_hash)
+                //     .await?;
             }
             SigningMessage::ECDSASignature { from, signature } => {
                 info!(
@@ -520,7 +512,7 @@ impl SigningNode {
                     round_signatures.len()
                 );
 
-                let should_agg = round_signatures.len() >= self.threshold;
+                let should_agg = round_signatures.len() >= 4;
                 let signature_count = round_signatures.len();
 
                 if should_agg {
@@ -565,7 +557,7 @@ impl SigningNode {
                         // Log the aggregated signature details
                         let (recovery_id, signature_bytes) =
                             aggregated_signature.serialize_compact();
-                        let v: u64 = recovery_id.to_i32() as u64 + 35 + 1043 * 2;
+                        let v: u64 = recovery_id.to_i32() as u64;
                         let r = &signature_bytes[0..32];
                         let s = &signature_bytes[32..64];
 
@@ -592,82 +584,8 @@ impl SigningNode {
                 }
             }
         }
-        // } else {
-        //     // If not the final node, proceed with normal signature completion check
-        //     self.check_signature_completion(signature.message_hash)
-        //         .await?;
-        // }
-
         Ok(())
     }
-
-    // async fn check_signature_completion(&self, message_hash: Vec<u8>) -> Result<()> {
-    //     let signatures = self.signatures.read().await;
-    //     if signatures.len() >= self.threshold {
-    //         info!(
-    //             "🎯 [SIGNING] Node {} has enough ECDSA signatures ({}), aggregating",
-    //             self.id,
-    //             signatures.len()
-    //         );
-
-    //         let aggregated_signature = self.aggregate_signatures().await?;
-
-    //         info!(
-    //             "Aggregated signature: {:?}",
-    //             aggregated_signature.serialize_compact()
-    //         );
-
-    //         let message = self
-    //             .pending_messages
-    //             .read()
-    //             .await
-    //             .get(&message_hash)
-    //             .cloned();
-
-    //         if let Some(message) = message {
-    //             let signer_ids: Vec<String> = signatures.keys().cloned().collect();
-    //             let signed_message = SignedMessage {
-    //                 message,
-    //                 aggregated_signature: aggregated_signature.serialize_compact().1.to_vec(),
-    //                 signer_ids,
-    //                 timestamp: std::time::SystemTime::now()
-    //                     .duration_since(std::time::UNIX_EPOCH)
-    //                     .unwrap_or_default()
-    //                     .as_secs(),
-    //             };
-
-    //             let msg = serde_json::to_vec(&crate::types::GossipsubMessage::Signing(
-    //                 SigningMessage::SignedMessage {
-    //                     from: self.id.clone(),
-    //                     signed_message: signed_message.clone(),
-    //                 },
-    //             ))?;
-
-    //             self.broadcast("signing", &msg).await?;
-    //             info!(
-    //                 "🎉 [SIGNING] Node {} completed ECDSA signing and broadcasted result",
-    //                 self.id
-    //             );
-    //             info!(
-    //                 "📋 [SIGNING] Final aggregated signature: {:?}",
-    //                 aggregated_signature
-    //             );
-    //         }
-    //     } else {
-    //         info!(
-    //             "⏳ [SIGNING] Node {} waiting for more ECDSA signatures: {}/{}",
-    //             self.id,
-    //             signatures.len(),
-    //             self.threshold
-    //         );
-    //     }
-    //     Ok(())
-    // }
-
-    // async fn aggregate_signatures(&self) -> Result<RecoverableSignature> {
-    //     let signatures = self.signatures.read().await;
-    //     self.aggregate_signatures_from_map(&signatures).await
-    // }
 
     async fn aggregate_signatures_from_map(
         &self,
@@ -682,9 +600,6 @@ impl SigningNode {
             self.id,
             signatures.len()
         );
-
-        // Implement proper threshold ECDSA signature aggregation
-        // This uses Lagrange interpolation to combine signature shares
 
         let threshold = signatures.len() as u32;
         let total_shares = threshold;
@@ -857,19 +772,19 @@ impl SigningNode {
         Ok(secp256k1::ecdsa::RecoveryId::from_i32(*most_common)?)
     }
 
-    async fn handle_message_to_sign(
-        &mut self,
-        from: String,
-        message: Vec<u8>,
-        message_hash: Vec<u8>,
-    ) -> Result<()> {
-        info!(
-            "📝 [SIGNING] Node {} received message to sign from {}: {:?}",
-            self.id, from, message_hash
-        );
-        self.sign_message(&message).await?;
-        Ok(())
-    }
+    // async fn handle_message_to_sign(
+    //     &mut self,
+    //     from: String,
+    //     message: Vec<u8>,
+    //     message_hash: Vec<u8>,
+    // ) -> Result<()> {
+    //     info!(
+    //         "📝 [SIGNING] Node {} received message to sign from {}: {:?}",
+    //         self.id, from, message_hash
+    //     );
+    //     self.sign_message(&message).await?;
+    //     Ok(())
+    // }
 
     async fn handle_signed_message(
         &mut self,
@@ -1349,7 +1264,7 @@ impl SigningNode {
                         // Log the aggregated signature details
                         let (recovery_id, signature_bytes) =
                             aggregated_signature.serialize_compact();
-                        let v: u64 = recovery_id.to_i32() as u64 + 35 + 1043 * 2;
+                        let v: u64 = recovery_id.to_i32() as u64;
                         let r = &signature_bytes[0..32];
                         let s = &signature_bytes[32..64];
 

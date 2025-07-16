@@ -46,7 +46,7 @@ impl ThresholdCalculator for DefaultThresholdCalculator {
     }
 }
 
-/// Basic implementation of NodeMembership
+/// Basic mplementation of NodeMembership
 pub struct BasicNodeManager {
     nodes: HashSet<PeerId>,
     threshold_calculator: Box<dyn ThresholdCalculator>,

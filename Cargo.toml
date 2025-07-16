@@ -15,9 +15,9 @@ path = "src/main.rs"
 name = "vrf_demo"
 path = "src/bin/vrf_demo.rs"
 
-[[bin]]
-name = "signing_demo"
-path = "src/bin/signing_demo.rs"
+# [[bin]]
+# name = "signing_demo"
+# path = "src/bin/signing_demo.rs"
 
 [dependencies]
 libp2p = { version = "0.55", features = ["request-response", "cbor", "tokio", "gossipsub", "mdns", "noise", "macros", "tcp", "yamux", "quic", "identify", "request-response", "kad" , "serde"] }
