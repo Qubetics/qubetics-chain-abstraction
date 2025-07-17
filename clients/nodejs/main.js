@@ -17,7 +17,7 @@ async function testRPC() {
         const transaction = {
             to: "0xceb5057834CB4EdE0E59F9e91046B8cB96C72e9C",                      // Required
             value: "0x2386f26fc50000",              // Amount to send in wei
-            nonce: 9    ,                                      // Must be correct for sender's account
+            nonce: 3,                                      // Must be correct for sender's account
             gasLimit: 21000,                               // Minimum for ETH transfer   
             gasPrice: "0x3b9aca00",    // Base fee + priority
             chainId: 1043,
@@ -27,11 +27,6 @@ async function testRPC() {
             headers: { 'Content-Type': 'application/json' }
         });
         console.log('✅ Transaction submitted:', txResponse.data);
-
-        // Test 3: Start DKG
-        console.log('\n🚀 Test 3: Start DKG');
-        const dkgResponse = await axios.post(`${RPC_SERVER}/start_dkg`);
-        console.log('✅ DKG started:', dkgResponse.data);
 
         console.log('\n🎉 All tests completed successfully!');
     } catch (error) {

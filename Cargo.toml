@@ -60,6 +60,7 @@ ethers-core = "2.0.14"
 num-bigint = "0.4.6"
 rlp = "0.5"
 secp256k1 = { version = "0.28", features = ["rand", "recovery"] }
+sha3 = "0.10"
 
 [build-dependencies]
 tonic-build = "0.13.0"

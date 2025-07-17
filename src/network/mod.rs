@@ -1054,7 +1054,9 @@ impl NetworkLayer {
                     
                     // Convert transaction to bytes for signing using RLP encoding
                     let tx_bytes = crate::utils::transaction::create_transaction_for_signing(&transaction);
-                    signing_node.sign_message(&tx_bytes, &transaction).await?;
+                    println!("→ RLP payload: 0x{}", hex::encode(&tx_bytes));
+
+                    signing_node.sign_message(tx_bytes, &transaction).await?;
                 }
             }
             GossipsubMessage::DKGCommand(dkg_cmd) => {
@@ -1168,16 +1170,23 @@ impl NetworkLayer {
                     let available_nodes: Vec<PeerId> = self.node_manager.get_active_nodes().into_iter().collect();
                     signing_node.set_available_nodes(available_nodes);
                     
-                    // Generate BLS key pair if not already done
-                    if !signing_node.has_private_key() {
-                        info!("🔐 [LOCAL] Generating BLS key pair for signing");
-                        signing_node.generate_key_pair()?;
+                    if let Some(dkg_node) = &self.dkg_node {
+                        if let Some(secret_share) = dkg_node.get_final_secret_share().await {
+                            info!("🔐 [NETWORK] Got secret share from DKG: {:?}", secret_share);
+                            signing_node.set_private_key_from_bls_scalar(secret_share);
+                        } else {
+                            info!("⏳ [NETWORK] DKG not completed yet, no secret share available");
+                            return Ok(());
+                        }
+                    } else {
+                        info!("❌ [NETWORK] DKG node not available");
+                        return Ok(());
                     }
                     
                     // Convert transaction to bytes for signing using RLP encoding
                     let tx_bytes = crate::utils::transaction::create_transaction_for_signing(&transaction);
                     info!("🔐 [LOCAL] Starting local signing process {:?}", tx_bytes);
-                    signing_node.sign_message(&tx_bytes, &transaction).await?;
+                    signing_node.sign_message(tx_bytes, &transaction).await?;
                     info!("✅ [LOCAL] Local transaction signing completed");
                 } else {
                     warn!("❌ [LOCAL] Signing node not available for local processing");

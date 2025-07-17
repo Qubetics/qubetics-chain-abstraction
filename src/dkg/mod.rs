@@ -414,6 +414,9 @@ impl DKGNode {
         if valid_validations >= (self.threshold + 1) * (self.threshold + 1)
             && shares_len >= self.threshold + 1
         {
+            info!(
+                "required validations : {:?} and valid validations : {:?}",(self.threshold + 1) * (self.threshold + 1),valid_validations
+            );
             info!("🎉 DKG completion criteria met! Generating final keys...");
             self.generate_group_key().await?;
         } else {

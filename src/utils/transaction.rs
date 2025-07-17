@@ -158,7 +158,7 @@ fn encode_hex_to_bytes(hex_str: &str) -> Vec<u8> {
     hex::decode(&final_hex).expect("Invalid hex string")
 }
 
-/// Create transaction for signing using RLP encoding (EIP-155)
+
 pub fn create_transaction_for_signing(tx: &DummyTransaction) -> Vec<u8> {
     let mut content = Vec::new();
 
@@ -169,24 +169,24 @@ pub fn create_transaction_for_signing(tx: &DummyTransaction) -> Vec<u8> {
     encoder.encode_u64(tx.nonce);
     content.extend_from_slice(&encoder.finalize());
 
+    // Gas price
+    encoder = RlpEncoder::new();
+    encoder.encode_hex_string(&tx.gas_price);
+    content.extend_from_slice(&encoder.finalize());
+
     // Gas limit
     encoder = RlpEncoder::new();
     encoder.encode_u64(tx.gas_limit);
     content.extend_from_slice(&encoder.finalize());
-
-     // Gas price
-     encoder = RlpEncoder::new();
-     encoder.encode_hex_string(&tx.gas_price.to_string());
-     content.extend_from_slice(&encoder.finalize());
 
     // To address
     encoder = RlpEncoder::new();
     encoder.encode_address(&tx.to);
     content.extend_from_slice(&encoder.finalize());
 
-    // Value (amount)
+    // Value
     encoder = RlpEncoder::new();
-    encoder.encode_hex_string(&tx.value.to_string());
+    encoder.encode_hex_string(&tx.value);
     content.extend_from_slice(&encoder.finalize());
 
     // Data (empty)

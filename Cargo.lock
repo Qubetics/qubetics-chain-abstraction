@@ -3763,6 +3763,7 @@ dependencies = [
  "serde_cbor",
  "serde_json",
  "sha2",
+ "sha3 0.10.8",
  "thiserror 1.0.69",
  "tokio",
  "tonic 0.13.0",
