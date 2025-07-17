@@ -18,6 +18,16 @@ use crate::consensus::{ConsensusMessage, ConsensusNode, ConsensusResult};
 use crate::types::{p2p::SerializablePeerId, ChannelMessage};
 use crate::vrf::VrfNodeSelector;
 
+use num_bigint::BigUint;
+use secp256k1::ecdsa::RecoveryId;
+use secp256k1::Verification;
+
+use secp256k1::ecdsa::Signature;
+use secp256k1::constants::CURVE_ORDER;
+
+
+use crate::utils::transaction::create_signed_transaction;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ECDSASignature {
     pub signature: Vec<u8>, // 65-byte recoverable signature
@@ -367,54 +377,77 @@ impl SigningNode {
         tx_hash.to_vec()
     }
 
-    fn create_ecdsa_signature(
+    pub fn create_ecdsa_signature(
         &self,
         message: &Message,
         transaction: &DummyTransaction,
     ) -> Result<RecoverableSignature> {
-        if let Some(private_key) = self.private_key {
-            let secp = Secp256k1::new();
+        // 0) Secret key share
+        let sk = self
+            .private_key
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("No private key available"))?;
+        let secp = Secp256k1::new();
 
-            // Create a message from the hash
-            // let message = Message::from_digest_slice(message_hash)?;
+        // 1) Fixed nonce kᵢ = constant 32-byte
+        let k_i_bytes = [0x42u8; 32];
+        let sec_nonce = SecretKey::from_slice(&k_i_bytes)
+            .expect("constant nonce must be 32 bytes");
 
-            // Sign the message with recoverable signature
+        // 2) Compute Rᵢ = kᵢ·G, extract r = X mod n
+        let Rser = PublicKey::from_secret_key(&secp, &sec_nonce)
+            .serialize_uncompressed();       // [0x04 || X(32) || Y(32)]
+        let mut r_bytes = [0u8; 32];
+        r_bytes.copy_from_slice(&Rser[1..33]);
 
-            let constant_k: [u8;32] = [0x42; 32];  
-            let sig: RecoverableSignature = secp.sign_ecdsa_recoverable_with_noncedata(&message, &private_key,&constant_k);
-            let (rec_id, sig_bytes) = sig.serialize_compact();
-            let rec_id_u8 = rec_id.to_i32() as u8;
-            println!("Signature rec_id={} r||s={:x?}", rec_id_u8, sig_bytes);
-
-            let v = rec_id_u8 as u64 + 35 + transaction.chain_id * 2;
-            let r = &sig_bytes[..32];
-            let s = &sig_bytes[32..];
-
-            let signed = crate::utils::transaction::create_signed_transaction(&transaction, r, s, v);
-            let raw_tx = format!("0x{}", hex::encode(&signed));
-            println!("Raw tx: {}", raw_tx);
-            println!("→ rec_id: {}", rec_id.to_i32());
-            println!("→ r: 0x{}", hex::encode(r));
-            println!("→ s: 0x{}", hex::encode(s));
-            println!("→ v: {}", v);
-
-            // let signed_tx =
-                // crate::utils::transaction::create_signed_transaction(&transaction, r, s, v);
-            // println!("\nSigned Transaction (RLP): {:?}", &signed_tx);
-            // let raw_tx = format!("0x{}", hex::encode(&signed_tx));
-
-            // println!("\nRaw Transaction: {}", raw_tx);
-
-            // info!(
-            //     "✍️ [SIGNING] Node {} created ECDSA signature: {:?}",
-            //     self.id, signature
-            // );
-            Ok(sig)
-        } else {
-            Err(anyhow::anyhow!("No private key available"))
+        // 3) Compute sᵢ = kᵢ⁻¹ · (z + r·xᵢ) mod n
+        let n = BigUint::parse_bytes(
+            b"FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141",
+            16,
+        ).unwrap();
+        let z   = BigUint::from_bytes_be(message.as_ref());
+        let x_i = BigUint::from_bytes_be(&sk[..]);
+        let k_inv = BigUint::from_bytes_be(&k_i_bytes)
+            .modinv(&n)
+            .expect("nonce must be invertible");
+        let r_val = BigUint::from_bytes_be(&r_bytes);
+        let s_val = (&k_inv * (&z + (&r_val * &x_i) % &n)) % &n;
+        let mut s_bytes = s_val.to_bytes_be();
+        if s_bytes.len() < 32 {
+            let mut pad = vec![0u8; 32 - s_bytes.len()];
+            pad.extend(&s_bytes);
+            s_bytes = pad;
         }
+
+        // 4) Build the 64-byte share = r‖sᵢ
+        let mut share = [0u8; 64];
+        share[..32].copy_from_slice(&r_bytes);
+        share[32..].copy_from_slice(&s_bytes);
+
+        // ── FORCE recid=0 and skip verify_ecdsa check ─────────────
+        let rid = RecoveryId::from_i32(0).expect("valid recovery ID");
+        let sig = RecoverableSignature::from_compact(&share, rid)
+            .expect("share bytes must parse");
+
+        // 6) get the recid as u8:
+        let (rid, sig_bytes) = sig.serialize_compact();
+        let recid_byte = rid.to_i32() as u8;
+        let v = recid_byte as u64 + 35 + transaction.chain_id * 2;
+
+        let r_slice = &sig_bytes[..32];
+        let s_slice = &sig_bytes[32..];
+
+        let raw_tx   = create_signed_transaction(transaction, r_slice, s_slice, v);
+        let hex_tx   = format!("0x{}", hex::encode(&raw_tx));
+        println!("Raw tx: {}", hex_tx);
+        println!("→ r:  0x{}", hex::encode(r_slice));
+        println!("→ s:  0x{}", hex::encode(s_slice));
+        println!("→ v:  {}", v);
+
+        Ok(sig)
     }
 
+    
     pub async fn handle_message(&mut self, msg: SigningMessage) -> Result<()> {
         info!(
             "📥 [SIGNING] Node {} received signing message: {:?}",
@@ -481,39 +514,28 @@ impl SigningNode {
             signature.signer_id, signature.recovery_id
         );
 
-        // Store in general signatures
+        // Store signature from node
         self.signatures
             .write()
             .await
             .insert(from.clone(), signature.clone());
 
-        info!(
-            "💾 [SIGNING] Node {} stored ECDSA signature from {}",
-            self.id, from
-        );
+        info!("💾 [SIGNING] Node {} stored ECDSA signature from {}", self.id, from);
 
-        // Check if this signature is for a specific round (from signatures-to-final-node topic)
-        // If this node is the final node for any round, handle it as a signature for that round
+        // Check if this node is the final node for a specific round
         let round_to_handle = {
             let final_nodes = self.final_nodes_by_round.read().await;
-            let mut found_round = None;
-            for (round, final_node_id) in final_nodes.iter() {
-                if final_node_id == &self.id {
-                    found_round = Some(*round);
-                    break;
-                }
-            }
-            found_round
+            final_nodes
+                .iter()
+                .find(|(_, final_node_id)| final_node_id == &&self.id)
+                .map(|(round, _)| *round)
         };
 
         if let Some(round) = round_to_handle {
-            println!("hiiiiiiiiiiiiii");
-            // This node is the final node for this round, store the signature by round
+            // Store signature by round
             let should_aggregate = {
                 let mut signatures_by_round = self.signatures_by_round.write().await;
-                let round_signatures = signatures_by_round
-                    .entry(round)
-                    .or_insert_with(HashMap::new);
+                let round_signatures = signatures_by_round.entry(round).or_default();
                 round_signatures.insert(from.clone(), signature.clone());
 
                 info!(
@@ -524,134 +546,125 @@ impl SigningNode {
                     round_signatures.len()
                 );
 
-                let should_agg = round_signatures.len() >= 4;
-                let signature_count = round_signatures.len();
-
-                if should_agg {
-                    info!(
-                        "✅ [SIGNING] Enough signatures collected for round {}, will start aggregation",
-                        round
-                    );
-                } else {
-                    info!(
-                        "⏳ [SIGNING] Waiting for more signatures for round {}: {}/{}",
-                        round, signature_count, self.threshold
-                    );
-                }
-
-                should_agg
+                round_signatures.len() >= self.threshold
             };
 
             if should_aggregate {
-                // Get signatures for aggregation (outside the write lock)
-                let signatures_to_aggregate = {
+                // Prepare signatures for aggregation
+                let signatures_to_aggregate: Vec<RecoverableSignature> = {
                     let signatures_by_round = self.signatures_by_round.read().await;
-                    if let Some(round_signatures) = signatures_by_round.get(&round) {
-                        round_signatures.clone()
-                    } else {
-                        HashMap::new()
-                    }
+                    signatures_by_round
+                        .get(&round)
+                        .unwrap()
+                        .iter()
+                        .map(|(signer_id, ecdsa_sig)| {
+                            RecoverableSignature::from_compact(
+                                &ecdsa_sig.signature,
+                                RecoveryId::from_i32(ecdsa_sig.recovery_id as i32)?,
+                            )
+                            .map_err(|_| anyhow::anyhow!("Invalid signature from signer {}", signer_id))
+                        })
+                        .collect::<Result<_>>()?
                 };
 
-                // Perform aggregation
-                match self
-                    .aggregate_signatures_from_map(&signatures_to_aggregate)
-                    .await
-                {
+                // Aggregate signatures
+                match self.aggregate_signatures(signatures_to_aggregate).await {
                     Ok(aggregated_signature) => {
-                        info!("🎉 [SIGNING] Signature aggregation completed successfully for round {}!", round);
                         info!(
-                            "📊 [SIGNING] Aggregated signature from {} nodes for round {}",
-                            signatures_to_aggregate.len(),
+                            "🎉 [SIGNING] Signature aggregation successful for round {}!",
                             round
                         );
 
-                        // Log the aggregated signature details
-                        let (recovery_id, signature_bytes) =
-                            aggregated_signature.serialize_compact();
-                        let v: u64 = recovery_id.to_i32() as u64 + 35 + 1043 * 2;
+                        let signature_bytes = aggregated_signature.serialize_compact();
+                        let v: u64 = 35 + 1043 * 2;
                         let r = &signature_bytes[0..32];
                         let s = &signature_bytes[32..64];
 
-                        info!(
-                            "🔐 [SIGNING] Aggregated signature components for round {}:",
-                            round
-                        );
+                        info!("🔐 [SIGNING] Aggregated signature components:");
                         info!("  v: {}", v);
                         info!("  r: 0x{}", hex::encode(r));
                         info!("  s: 0x{}", hex::encode(s));
-                        info!("  recovery_id: {}", recovery_id.to_i32());
-                        info!(
-                            "\x1b[33m  full_signature: {:?}\x1b[0m",
-                            aggregated_signature.serialize_compact()
-                        );
+                        info!("  recovery_id: {}", 0);
+                        info!("  full_signature: 0x{}", hex::encode(signature_bytes));
                     }
                     Err(e) => {
-                        error!(
-                            "❌ [SIGNING] Failed to aggregate signatures for round {}: {}",
-                            round, e
-                        );
+                        error!("❌ [SIGNING] Aggregation failed: {}", e);
                         return Err(e);
                     }
                 }
+            } else {
+                info!(
+                    "⏳ [SIGNING] Waiting for more signatures: {}/{}",
+                    self.signatures_by_round.read().await.get(&round).unwrap().len(),
+                    self.threshold
+                );
             }
         }
+
         Ok(())
     }
 
-    async fn aggregate_signatures_from_map(
-        &self,
-        signatures: &HashMap<String, ECDSASignature>,
-    ) -> Result<RecoverableSignature> {
+
+    pub async fn aggregate_signatures(&self,signatures: Vec<RecoverableSignature>) -> Result<Signature, anyhow::Error> {
+        // Check there's at least one signature
         if signatures.is_empty() {
-            return Err(anyhow::anyhow!("No signatures to aggregate"));
+            return Err(anyhow::anyhow!("No signatures provided for aggregation"));
         }
 
-        info!(
-            "🔢 [SIGNING] Node {} aggregating {} ECDSA signatures using threshold scheme",
-            self.id,
-            signatures.len()
-        );
+        let secp = Secp256k1::new();
 
-        let threshold = signatures.len() as u32;
-        let total_shares = threshold;
+        // Extract r and sum up all s values
+        let mut s_sum = BigUint::from(0u32);
+        let mut r_value: Option<BigUint> = None;
 
-        // Convert signatures to threshold shares
-        let mut shares = Vec::new();
-        let mut signer_ids = Vec::new();
+        for rec_sig in signatures.iter() {
+            let sig = rec_sig.to_standard();
 
-        for (node_id, signature) in signatures.iter() {
-            let share = ThresholdSignatureShare {
-                share: signature.signature.clone(),
-                signer_id: node_id.clone(),
-                share_index: shares.len() as u32 + 1,
-                threshold,
-                total_shares,
+            // Decompose signature into r and s components
+            let (r, s) = {
+                let sig_ser = sig.serialize_compact();
+                let r_part = BigUint::from_bytes_be(&sig_ser[0..32]);
+                let s_part = BigUint::from_bytes_be(&sig_ser[32..64]);
+                (r_part, s_part)
             };
-            shares.push(share);
-            signer_ids.push(node_id.clone());
+
+            // Store r-value from the first signature
+            if r_value.is_none() {
+                r_value = Some(r.clone());
+            } else if r_value.as_ref().unwrap() != &r {
+                return Err(anyhow::anyhow!("Mismatch in r-values detected; signatures cannot be aggregated"));
+            }
+
+            // Add s to s_sum
+            s_sum = (s_sum + s) % BigUint::from_bytes_be(&CURVE_ORDER);
         }
 
-        // Aggregate using threshold signature scheme
-        let aggregated_signature = self.aggregate_threshold_signatures(&shares).await?;
+        let r_final = r_value.expect("Checked non-empty above");
+        
+        // Reconstruct aggregated signature bytes
+        let mut agg_sig_bytes = [0u8; 64];
+        let r_bytes = r_final.to_bytes_be();
+        let s_bytes = s_sum.to_bytes_be();
 
+        // Pad r and s to 32 bytes if necessary
+        agg_sig_bytes[0..32].copy_from_slice(&Self::pad_to_32_bytes(&r_bytes));
+        agg_sig_bytes[32..64].copy_from_slice(&Self::pad_to_32_bytes(&s_bytes));
         info!(
-            "🔢 [SIGNING] Node {} successfully aggregated {} signatures using threshold scheme",
-            self.id,
-            signatures.len()
+            "🔢 [SIGNING] Aggregated signature bytes: {:?}",
+            agg_sig_bytes
         );
+        let agg_signature = Signature::from_compact(&agg_sig_bytes)
+            .map_err(|_| anyhow::anyhow!("Failed to construct aggregated signature"))?;
 
-        // Log all signatures for debugging
-        for (node_id, sig) in signatures.iter() {
-            info!(
-                "📋 [SIGNING] Signature from {}: recovery_id={}, signature_len={}",
-                node_id,
-                sig.recovery_id,
-                sig.signature.len()
-            );
-        }
+        Ok(agg_signature)
+    }
 
-        Ok(aggregated_signature)
+    // Helper padding function
+    fn pad_to_32_bytes(input: &[u8]) -> [u8;32] {
+        let mut buf = [0u8; 32];
+        let offset = 32 - input.len();
+        buf[offset..].copy_from_slice(input);
+        buf
     }
 
     async fn aggregate_threshold_signatures(
@@ -1242,6 +1255,9 @@ impl SigningNode {
     }
 
     /// Handle signature received by final node for specific round
+
+    /// Handle signature received by final node for specific round
+    /// Handle signature received by final node for specific round
     pub async fn handle_signature_for_round(
         &mut self,
         from: String,
@@ -1270,27 +1286,41 @@ impl SigningNode {
         }
 
         // Check if we have enough signatures for this round
-        let signatures_by_round = self.signatures_by_round.read().await;
-        if let Some(round_signatures) = signatures_by_round.get(&round) {
-            if round_signatures.len() >= self.threshold {
+        let signatures_to_aggregate: Option<Result<Vec<RecoverableSignature>>> = {
+            let signatures_by_round = self.signatures_by_round.read().await;
+            signatures_by_round.get(&round).map(|round_signatures| {
+                round_signatures
+                    .iter()
+                    .map(|(signer_id, ecdsa_sig)| {
+                        RecoverableSignature::from_compact(
+                            &ecdsa_sig.signature,
+                            RecoveryId::from_i32(ecdsa_sig.recovery_id as i32)?,
+                        )
+                        .map_err(|_| anyhow::anyhow!("Invalid signature from signer {}", signer_id))
+                    })
+                    .collect::<Result<Vec<_>>>()
+            })
+        };
+
+        if let Some(signatures_result) = signatures_to_aggregate {
+            let signatures_vec = signatures_result?;
+            if signatures_vec.len() >= self.threshold {
                 info!(
                     "✅ [SIGNING] Enough signatures collected for round {}, starting aggregation",
                     round
                 );
 
                 // Perform aggregation
-                match self.aggregate_signatures_from_map(round_signatures).await {
+                match self.aggregate_signatures(signatures_vec).await {
                     Ok(aggregated_signature) => {
-                        info!("🎉 [SIGNING] Signature aggregation completed successfully for round {}!", round);
                         info!(
-                            "📊 [SIGNING] Aggregated signature from {} nodes for round {}",
-                            round_signatures.len(),
+                            "🎉 [SIGNING] Signature aggregation completed successfully for round {}!",
                             round
                         );
 
                         // Log the aggregated signature details
-                        let (recovery_id, signature_bytes) =
-                            aggregated_signature.serialize_compact();
+                        let signature_bytes = aggregated_signature.serialize_compact();
+                        let recovery_id = RecoveryId::from_i32(0)?; // use fixed recovery_id for testing
                         let v: u64 = recovery_id.to_i32() as u64 + 35 + 1043 * 2;
                         let r = &signature_bytes[0..32];
                         let s = &signature_bytes[32..64];
@@ -1299,15 +1329,11 @@ impl SigningNode {
                             "🔐 [SIGNING] Aggregated signature components for round {}:",
                             round
                         );
-
                         info!("  v: {}", v);
                         info!("  r: 0x{}", hex::encode(r));
                         info!("  s: 0x{}", hex::encode(s));
                         info!("  recovery_id: {}", recovery_id.to_i32());
-                        info!(
-                            "  full_signature: 0x{:?}",
-                            aggregated_signature.serialize_compact()
-                        );
+                        info!("  full_signature: 0x{}", hex::encode(signature_bytes));
                     }
                     Err(e) => {
                         error!(
@@ -1321,7 +1347,7 @@ impl SigningNode {
                 info!(
                     "⏳ [SIGNING] Waiting for more signatures for round {}: {}/{}",
                     round,
-                    round_signatures.len(),
+                    signatures_vec.len(),
                     self.threshold
                 );
             }
@@ -1329,6 +1355,7 @@ impl SigningNode {
 
         Ok(())
     }
+
 
     /// Handle signature received on the signatures-to-final-node topic
     pub async fn handle_signature_to_final_node(
