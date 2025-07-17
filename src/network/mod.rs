@@ -951,7 +951,7 @@ impl NetworkLayer {
                         info!("🎯 [NETWORK] Processing signature for final node topic");
                         // Handle as signature to final node
                         match signing_msg {
-                            crate::signing::SigningMessage::ECDSASignature { from, signature } => {
+                            crate::signing::SigningMessage::ECDSASignature { from, signature ,timestamp:_timestamp} => {
                                 info!("📤 [NETWORK] Routing ECDSA signature to final node handler from: {}", from);
                                 signing_node.handle_signature_to_final_node(from, signature).await?;
                             }
@@ -965,10 +965,10 @@ impl NetworkLayer {
                         info!("📤 [NETWORK] Processing normal signing message on topic: {}", message.topic);
                         // Handle normal signing messages
                         match &signing_msg {
-                            crate::signing::SigningMessage::ECDSASignature { from, signature } => {
+                            crate::signing::SigningMessage::ECDSASignature { from, signature ,timestamp:_timestamp} => {
                                 info!("📥 [NETWORK] Received ECDSA signature from {} on topic {}", from, message.topic);
-                                info!("🔍 [NETWORK] Signature details - signer_id: {}, message_hash: {:?}", 
-                                      signature.signer_id, signature.message_hash);
+                                info!("🔍 [NETWORK] Signature details - signer_id: {}", 
+                                      signature.signer_id);
                             }
                             _ => {
                                 info!("📥 [NETWORK] Received other signing message type");

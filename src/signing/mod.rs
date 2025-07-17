@@ -10,6 +10,7 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{mpsc, RwLock};
 use tracing::{error, info, warn};
 
@@ -21,7 +22,6 @@ use crate::vrf::VrfNodeSelector;
 pub struct ECDSASignature {
     pub signature: Vec<u8>, // 65-byte recoverable signature
     pub signer_id: String,
-    pub message_hash: Vec<u8>,
     pub recovery_id: u8,
 }
 
@@ -29,7 +29,6 @@ pub struct ECDSASignature {
 pub struct ThresholdSignatureShare {
     pub share: Vec<u8>, // The signature share
     pub signer_id: String,
-    pub message_hash: Vec<u8>,
     pub share_index: u32,
     pub threshold: u32,
     pub total_shares: u32,
@@ -62,6 +61,7 @@ pub enum SigningMessage {
     ECDSASignature {
         from: String,
         signature: ECDSASignature,
+        timestamp: u128,
     },
     SignedMessage {
         from: String,
@@ -327,35 +327,35 @@ impl SigningNode {
         println!("  r: 0x{}", hex::encode(r));
         println!("  s: 0x{}", hex::encode(s));
 
-        // let ecdsa_signature = ECDSASignature {
-        //     signature: signature.serialize_compact().1.to_vec(),
-        //     signer_id: self.id.clone(),
-        //     message_hash: message_hash.clone(),
-        //     recovery_id: signature.serialize_compact().0.to_i32() as u8,
-        // };
+        let ecdsa_signature = ECDSASignature {
+            signature: signature.serialize_compact().1.to_vec(),
+            signer_id: self.id.clone(),
+            recovery_id: signature.serialize_compact().0.to_i32() as u8,
+        };
 
         // Store signature by round
         {
-            // let mut signatures_by_round = self.signatures_by_round.write().await;
-            // let round_signatures = signatures_by_round
-            //     .entry(round)
-            //     .or_insert_with(HashMap::new);
-            // round_signatures.insert(self.id.clone(), ecdsa_signature.clone());
-            // info!(
-            //     "💾 [SIGNING] Node {} stored signature for round {}",
-            //     self.id, round
-            // );
+            let mut signatures_by_round = self.signatures_by_round.write().await;
+            let round_signatures = signatures_by_round
+                .entry(round)
+                .or_insert_with(HashMap::new);
+            round_signatures.insert(self.id.clone(), ecdsa_signature.clone());
+            info!(
+                "💾 [SIGNING] Node {} stored signature for round {}",
+                self.id, round
+            );
         }
 
-        // let msg = serde_json::to_vec(&crate::types::GossipsubMessage::Signing(
-        //     SigningMessage::ECDSASignature {
-        //         from: self.id.clone(),
-        //         signature: ecdsa_signature,
-        //     },
-        // ))?;
+        let msg = serde_json::to_vec(&crate::types::GossipsubMessage::Signing(
+            SigningMessage::ECDSASignature {
+                from: self.id.clone(),
+                signature: ecdsa_signature,
+                timestamp: SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis(),
+            },
+        ))?;
 
-        // self.broadcast("signing", &msg).await?;
-        // info!("📤 [SIGNING] Node {} broadcasted ECDSA signature", self.id);
+        self.broadcast("signing", &msg).await?;
+        info!("📤 [SIGNING] Node {} broadcasted ECDSA signature", self.id);
         Ok(())
     }
 
@@ -379,16 +379,13 @@ impl SigningNode {
             // let message = Message::from_digest_slice(message_hash)?;
 
             // Sign the message with recoverable signature
-            let sig: RecoverableSignature = secp.sign_ecdsa_recoverable(&message, &private_key);
+
+            let constant_k: [u8;32] = [0x42; 32];  
+            let sig: RecoverableSignature = secp.sign_ecdsa_recoverable_with_noncedata(&message, &private_key,&constant_k);
             let (rec_id, sig_bytes) = sig.serialize_compact();
             let rec_id_u8 = rec_id.to_i32() as u8;
             println!("Signature rec_id={} r||s={:x?}", rec_id_u8, sig_bytes);
 
-            // Extract signature components
-            // let (recovery_id, signature_bytes) = signature.serialize_compact();
-            // let v: u64 = recovery_id.to_i32() as u64 + 35 + 1043 * 2; // ✅ use u64 to prevent overflow
-            // let r = &signature_bytes[0..32];
-            // let s = &signature_bytes[32..64];
             let v = rec_id_u8 as u64 + 35 + transaction.chain_id * 2;
             let r = &sig_bytes[..32];
             let s = &sig_bytes[32..];
@@ -437,7 +434,7 @@ impl SigningNode {
                 // self.handle_message_to_sign(from, message, message_hash)
                 //     .await?;
             }
-            SigningMessage::ECDSASignature { from, signature } => {
+            SigningMessage::ECDSASignature { from, signature ,timestamp:_timestamp} => {
                 info!(
                     "📥 [SIGNING] Node {} received ECDSA signature from {}",
                     self.id, from
@@ -480,8 +477,8 @@ impl SigningNode {
             self.id, from
         );
         info!(
-            "📋 [SIGNING] Signature details - signer_id: {}, message_hash: {:?}, recovery_id: {}",
-            signature.signer_id, signature.message_hash, signature.recovery_id
+            "📋 [SIGNING] Signature details - signer_id: {}, recovery_id: {}",
+            signature.signer_id, signature.recovery_id
         );
 
         // Store in general signatures
@@ -627,7 +624,6 @@ impl SigningNode {
             let share = ThresholdSignatureShare {
                 share: signature.signature.clone(),
                 signer_id: node_id.clone(),
-                message_hash: signature.message_hash.clone(),
                 share_index: shares.len() as u32 + 1,
                 threshold,
                 total_shares,
@@ -1152,15 +1148,31 @@ impl SigningNode {
                 let signature_msg = SigningMessage::ECDSASignature {
                     from: self.id.clone(),
                     signature: our_signature.clone(),
+                    timestamp: SystemTime::now()
+                        .duration_since(UNIX_EPOCH)?
+                        .as_millis(),
                 };
-
+                
                 // Wrap in GossipsubMessage::Signing for proper message handling
                 let gossipsub_msg = crate::types::GossipsubMessage::Signing(signature_msg);
                 let signature_data = serde_json::to_vec(&gossipsub_msg)?;
 
                 // Broadcast to a specific topic that the final node subscribes to
-                self.broadcast("signatures-to-final-node", &signature_data)
-                    .await?;
+                let res = self.broadcast("signatures-to-final-node", &signature_data)
+                    .await;
+                match res {
+                    Ok(_) => info!(
+                        "📤 [SIGNING] Successfully sent signature for round {} to final node {}",
+                        round, final_node_id
+                    ),
+                    Err(e) => {
+                        error!(
+                            "❌ [SIGNING] Failed to send signature for round {} to final node {}: {}",
+                            round, final_node_id, e
+                        );
+                        return Err(e);
+                    }
+                }
 
                 info!(
                     "✅ [SIGNING] Sent signature for round {} to final node {}",
@@ -1287,13 +1299,14 @@ impl SigningNode {
                             "🔐 [SIGNING] Aggregated signature components for round {}:",
                             round
                         );
+
                         info!("  v: {}", v);
                         info!("  r: 0x{}", hex::encode(r));
                         info!("  s: 0x{}", hex::encode(s));
                         info!("  recovery_id: {}", recovery_id.to_i32());
                         info!(
-                            "  full_signature: 0x{}",
-                            hex::encode(&aggregated_signature.serialize_compact().1)
+                            "  full_signature: 0x{:?}",
+                            aggregated_signature.serialize_compact()
                         );
                     }
                     Err(e) => {
@@ -1366,7 +1379,7 @@ impl SigningNode {
         let test_signature = ECDSASignature {
             signature: vec![1, 2, 3, 4, 5], // Dummy signature
             signer_id: "test_signer".to_string(),
-            message_hash: vec![10, 20, 30, 40], // Dummy hash
+            // message_hash: vec![10, 20, 30, 40], // Dummy hash
             recovery_id: 0,
         };
 
@@ -1391,7 +1404,6 @@ impl SigningNode {
             let share = ThresholdSignatureShare {
                 share: signature.signature.clone(),
                 signer_id: signature.signer_id.clone(),
-                message_hash: signature.message_hash.clone(),
                 share_index: i + 1,
                 threshold,
                 total_shares,
