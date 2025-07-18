@@ -6,26 +6,29 @@ use libp2p::PeerId;
 use rand::rngs::OsRng;
 use secp256k1::{self, ecdsa::RecoverableSignature, Message, PublicKey, Secp256k1, SecretKey};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+use sha2::Digest;
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{mpsc, RwLock};
 use tracing::{error, info, warn};
+use num_traits::identities::One;
+use anyhow::anyhow;
+use num_bigint::BigUint;
+
+use num_bigint::{BigInt, ToBigInt};
+use secp256k1::{
+    ecdsa::RecoveryId,
+    constants::CURVE_ORDER,
+};
+
+use num_traits::Zero;
+
 
 use crate::consensus::{ConsensusMessage, ConsensusNode, ConsensusResult};
 use crate::types::{p2p::SerializablePeerId, ChannelMessage};
 use crate::vrf::VrfNodeSelector;
-
-use num_bigint::BigUint;
-use secp256k1::ecdsa::RecoveryId;
-use secp256k1::Verification;
-
-use secp256k1::constants::CURVE_ORDER;
-use secp256k1::ecdsa::Signature;
-
-use crate::utils::transaction::create_signed_transaction;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ECDSASignature {
@@ -93,7 +96,6 @@ pub struct SigningNode {
     signatures: Arc<RwLock<HashMap<String, ECDSASignature>>>,
     signatures_by_round: Arc<RwLock<HashMap<u64, HashMap<String, ECDSASignature>>>>, // round -> node_id -> signature
     final_nodes_by_round: Arc<RwLock<HashMap<u64, String>>>, // round -> final_node_id
-    pending_messages: Arc<RwLock<HashMap<Vec<u8>, Vec<u8>>>>, // message_hash -> message
     message_tx: mpsc::Sender<ChannelMessage>,
     vrf_selector: Option<VrfNodeSelector>, // VRF selector for node selection
     consensus_node: Option<ConsensusNode>, // Consensus node for final node selection
@@ -117,7 +119,6 @@ impl SigningNode {
             signatures: Arc::new(RwLock::new(HashMap::new())),
             signatures_by_round: Arc::new(RwLock::new(HashMap::new())),
             final_nodes_by_round: Arc::new(RwLock::new(HashMap::new())),
-            pending_messages: Arc::new(RwLock::new(HashMap::new())),
             message_tx,
             vrf_selector: Some(VrfNodeSelector::new(peer_id)),
             consensus_node: Some(ConsensusNode::new()),
@@ -309,12 +310,6 @@ impl SigningNode {
             }
         }
 
-        // Store the message for later use
-        // self.pending_messages
-        //     .write()
-        //     .await
-        //     .insert(message_hash.clone(), message.to_vec());
-
         // Create ECDSA signature
         let msg = Message::from_slice(&tx_hash)?;
 
@@ -368,80 +363,85 @@ impl SigningNode {
         Ok(())
     }
 
-    fn hash_message(&self, tx_for_signing: &[u8]) -> Vec<u8> {
-        let mut hasher = sha3::Keccak256::new();
-        hasher.update(&tx_for_signing); // ← hash the real RLP bytes!
-        let tx_hash = hasher.finalize();
-        println!("Tx hash: 0x{}", hex::encode(&tx_hash));
-        tx_hash.to_vec()
-    }
-
     pub fn create_ecdsa_signature(
         &self,
         message: &Message,
-        transaction: &DummyTransaction,
+        _transaction: &DummyTransaction,
     ) -> Result<RecoverableSignature> {
-        // 0) Secret key share
+        // 1) Get secret key and context
         let sk = self
             .private_key
             .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("No private key available"))?;
+            .ok_or_else(|| anyhow!("No private key available"))?;
         let secp = Secp256k1::new();
 
-        // 1) Fixed nonce kᵢ = constant 32-byte
-        let k_i_bytes = [0x42u8; 32];
-        let sec_nonce = SecretKey::from_slice(&k_i_bytes).expect("constant nonce must be 32 bytes");
+        // 2) Fixed nonce k = 0x42…42
+        let k_bytes = [0x42u8; 32];
+        let sec_nonce = SecretKey::from_slice(&k_bytes)
+            .map_err(|e| anyhow!("invalid nonce slice: {}", e))?;
 
-        // 2) Compute Rᵢ = kᵢ·G, extract r = X mod n
-        let Rser = PublicKey::from_secret_key(&secp, &sec_nonce).serialize_uncompressed(); // [0x04 || X(32) || Y(32)]
+        // 3) R = k·G
+        let r = PublicKey::from_secret_key(&secp, &sec_nonce);
+        let rser = r.serialize_uncompressed(); // [0x04 || X(32) || Y(32)]
+        info!("[SIGNING] R serialized: {:?}", rser);
+        if BigUint::from_bytes_be(&rser) == BigUint::from(0u32) {
+            return Err(anyhow!("r is zero, need new nonce"));
+        }
+
+
+        // 4) r = X mod n
         let mut r_bytes = [0u8; 32];
-        r_bytes.copy_from_slice(&Rser[1..33]);
+        r_bytes.copy_from_slice(&rser[0..32]);
+        let r = BigUint::from_bytes_be(&r_bytes);
 
-        // 3) Compute sᵢ = kᵢ⁻¹ · (z + r·xᵢ) mod n
+        // 5) z = message hash as BigUint
+        let z = BigUint::from_bytes_be(message.as_ref());
+
+        // 6) x = private key as BigUint
+        let sk_bytes = sk.secret_bytes();
+        let x = BigUint::from_bytes_be(&sk_bytes);
+
+        // 7) Curve order n
         let n = BigUint::parse_bytes(
             b"FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141",
             16,
         )
         .unwrap();
-        let z = BigUint::from_bytes_be(message.as_ref());
-        let x_i = BigUint::from_bytes_be(&sk[..]);
-        let k_inv = BigUint::from_bytes_be(&k_i_bytes)
+
+        // 8) k⁻¹ mod n
+        let k_inv = BigUint::from_bytes_be(&k_bytes)
             .modinv(&n)
-            .expect("nonce must be invertible");
-        let r_val = BigUint::from_bytes_be(&r_bytes);
-        let s_val = (&k_inv * (&z + (&r_val * &x_i) % &n)) % &n;
-        let mut s_bytes = s_val.to_bytes_be();
-        if s_bytes.len() < 32 {
-            let mut pad = vec![0u8; 32 - s_bytes.len()];
-            pad.extend(&s_bytes);
-            s_bytes = pad;
-        }
+            .ok_or_else(|| anyhow!("nonce not invertible"))?;
 
-        // 4) Build the 64-byte share = r‖sᵢ
-        let mut share = [0u8; 64];
-        share[..32].copy_from_slice(&r_bytes);
-        share[32..].copy_from_slice(&s_bytes);
+        // 9) s = k⁻¹·(z + r·x) mod n, then low-S normalize
+        let s_full = (&k_inv * (&z + (&r * &x) % &n)) % &n;
+        let half_n = &n >> 1;
+        // let s = if s_full > half_n { &n - &s_full } else { s_full };
+        let was_high_s = s_full > half_n;
+        let s = if was_high_s { &n - &s_full } else { s_full };
 
-        // ── FORCE recid=0 and skip verify_ecdsa check ─────────────
-        let rid = RecoveryId::from_i32(0).expect("valid recovery ID");
-        let sig = RecoverableSignature::from_compact(&share, rid).expect("share bytes must parse");
+        // 10) Serialize r‖s into 64-byte array
+        let mut sig_bytes = [0u8; 64];
+        let r_be = r.to_bytes_be();
+        let s_be = s.to_bytes_be();
+        sig_bytes[32 - r_be.len()..32].copy_from_slice(&r_be);
+        sig_bytes[64 - s_be.len()..64].copy_from_slice(&s_be);
 
-        // 6) get the recid as u8:
-        let (rid, sig_bytes) = sig.serialize_compact();
-        let recid_byte = rid.to_i32() as u8;
-        let v = recid_byte as u64 + 35 + transaction.chain_id * 2;
+        // // 11) Compute correct RecoveryId from R_y parity
+        // let y_parity = rser[64] & 1;
+        // let rid = RecoveryId::from_i32(y_parity as i32)
+        //     .map_err(|e| anyhow!("invalid recovery ID: {}", e))?;
 
-        let r_slice = &sig_bytes[..32];
-        let s_slice = &sig_bytes[32..];
+        // 11) Compute RecoveryId from R_y parity **and** low-S normalization
+        let y_parity  = rser[63] & 1;
+        let rid = RecoveryId::from_i32(y_parity as i32)
+            .map_err(|e| anyhow!("invalid recovery ID: {}", e))?;
 
-        let raw_tx = create_signed_transaction(transaction, r_slice, s_slice, v);
-        let hex_tx = format!("0x{}", hex::encode(&raw_tx));
-        println!("Raw tx: {}", hex_tx);
-        println!("→ r:  0x{}", hex::encode(r_slice));
-        println!("→ s:  0x{}", hex::encode(s_slice));
-        println!("→ v:  {}", v);
+        // 12) Build the recoverable signature
+        let rec_sig = RecoverableSignature::from_compact(&sig_bytes, rid)
+            .map_err(|e| anyhow!("invalid compact signature: {}", e))?;
 
-        Ok(sig)
+        Ok(rec_sig)
     }
 
     pub async fn handle_message(&mut self, msg: SigningMessage) -> Result<()> {
@@ -452,9 +452,9 @@ impl SigningNode {
 
         match msg {
             SigningMessage::MessageToSign {
-                from,
-                message,
-                message_hash,
+                from:_from,
+                message:_message,
+                message_hash:_message_hash,
             } => {
                 // info!(
                 //     "📥 [SIGNING] Node {} received message to sign from {}",
@@ -525,14 +525,7 @@ impl SigningNode {
             self.id, from
         );
 
-        // // Check if this node is the final node for a specific round
-        // let round_to_handle = {
-        //     let final_nodes = self.final_nodes_by_round.read().await;
-        //     final_nodes
-        //         .iter()
-        //         .find(|(_, final_node_id)| final_node_id == &&self.id)
-        //         .map(|(round, _)| *round)
-        // };
+
         let round_to_handle = {
             let final_nodes = self.final_nodes_by_round.read().await;
             let mut found_round = None;
@@ -544,7 +537,7 @@ impl SigningNode {
             }
             found_round
         };
-        
+
         if let Some(round) = round_to_handle {
             // Store signature by round
             let should_aggregate = {
@@ -591,8 +584,8 @@ impl SigningNode {
                             round
                         );
 
-                        let signature_bytes = aggregated_signature.serialize_compact();
-                        let v: u64 = 35 + 1043 * 2;
+                        let (recid,signature_bytes) = aggregated_signature.serialize_compact();
+                        let v: u64 = recid.to_i32() as u64 + 35 + 1043 * 2;
                         let r = &signature_bytes[0..32];
                         let s = &signature_bytes[32..64];
 
@@ -625,215 +618,138 @@ impl SigningNode {
         Ok(())
     }
 
+
     pub async fn aggregate_signatures(
         &self,
         signatures: Vec<RecoverableSignature>,
-    ) -> Result<Signature, anyhow::Error> {
-        // Check there's at least one signature
-        if signatures.is_empty() {
-            return Err(anyhow::anyhow!("No signatures provided for aggregation"));
-        }
-
-        let secp = Secp256k1::new();
-
-        // Extract r and sum up all s values
-        let mut s_sum = BigUint::from(0u32);
-        let mut r_value: Option<BigUint> = None;
-
-        for rec_sig in signatures.iter() {
-            let sig = rec_sig.to_standard();
-
-            // Decompose signature into r and s components
-            let (r, s) = {
-                let sig_ser = sig.serialize_compact();
-                let r_part = BigUint::from_bytes_be(&sig_ser[0..32]);
-                let s_part = BigUint::from_bytes_be(&sig_ser[32..64]);
-                (r_part, s_part)
-            };
-
-            // Store r-value from the first signature
-            if r_value.is_none() {
-                r_value = Some(r.clone());
-            } else if r_value.as_ref().unwrap() != &r {
-                return Err(anyhow::anyhow!(
-                    "Mismatch in r-values detected; signatures cannot be aggregated"
-                ));
-            }
-
-            // Add s to s_sum
-            s_sum = (s_sum + s) % BigUint::from_bytes_be(&CURVE_ORDER);
-        }
-
-        let r_final = r_value.expect("Checked non-empty above");
-
-        // Reconstruct aggregated signature bytes
-        let mut agg_sig_bytes = [0u8; 64];
-        let r_bytes = r_final.to_bytes_be();
-        let s_bytes = s_sum.to_bytes_be();
-
-        // Pad r and s to 32 bytes if necessary
-        agg_sig_bytes[0..32].copy_from_slice(&Self::pad_to_32_bytes(&r_bytes));
-        agg_sig_bytes[32..64].copy_from_slice(&Self::pad_to_32_bytes(&s_bytes));
-        info!(
-            "🔢 [SIGNING] Aggregated signature bytes: {:?}",
-            agg_sig_bytes
-        );
-        let agg_signature = Signature::from_compact(&agg_sig_bytes)
-            .map_err(|_| anyhow::anyhow!("Failed to construct aggregated signature"))?;
-
-        Ok(agg_signature)
-    }
-
-    // Helper padding function
-    fn pad_to_32_bytes(input: &[u8]) -> [u8; 32] {
-        let mut buf = [0u8; 32];
-        let offset = 32 - input.len();
-        buf[offset..].copy_from_slice(input);
-        buf
-    }
-
-    async fn aggregate_threshold_signatures(
-        &self,
-        shares: &[ThresholdSignatureShare],
     ) -> Result<RecoverableSignature> {
-        if shares.is_empty() {
-            return Err(anyhow::anyhow!("No signature shares to aggregate"));
+        let n_shares = signatures.len();
+        // 1) Threshold check
+        if n_shares < self.threshold {
+            return Err(anyhow!(
+                "Not enough signature shares: got {}, need {}",
+                n_shares,
+                self.threshold
+            ));
         }
 
-        let threshold = shares[0].threshold;
-        let total_shares = shares[0].total_shares;
+        // 2) Split into (index, r_bytes), (index, s_bytes) and collect recid ints
+        let mut r_shares = Vec::with_capacity(n_shares);
+        let mut s_shares = Vec::with_capacity(n_shares);
+        let mut recid_ints = Vec::with_capacity(n_shares);
 
-        info!(
-            "🔢 [SIGNING] Aggregating {} signature shares (threshold: {}, total: {})",
-            shares.len(),
-            threshold,
-            total_shares
-        );
+        for (i, sig) in signatures.into_iter().enumerate() {
+            let (recid, compact) = sig.serialize_compact();
+            recid_ints.push(recid.to_i32());
 
-        // For proper threshold ECDSA, we need to:
-        // 1. Extract the r and s components from each signature
-        // 2. Use Lagrange interpolation to combine the shares
-        // 3. Reconstruct the final signature
-
-        let mut r_shares = Vec::new();
-        let mut s_shares = Vec::new();
-        let mut recovery_ids = Vec::new();
-
-        for share in shares {
-            let recovery_id = secp256k1::ecdsa::RecoveryId::from_i32(0)?; // Default recovery ID
-            let signature = RecoverableSignature::from_compact(&share.share, recovery_id)?;
-            let (_, sig_bytes) = signature.serialize_compact();
-
-            // Split signature into r and s components (32 bytes each)
-            if sig_bytes.len() >= 64 {
-                let r = &sig_bytes[0..32];
-                let s = &sig_bytes[32..64];
-
-                r_shares.push((share.share_index, r.to_vec()));
-                s_shares.push((share.share_index, s.to_vec()));
-                recovery_ids.push(signature.serialize_compact().0);
-            }
+            let idx = (i + 1) as u32;
+            r_shares.push((idx, compact[0..32].to_vec()));
+            s_shares.push((idx, compact[32..64].to_vec()));
         }
 
-        // Use Lagrange interpolation to combine r and s shares
-        let aggregated_r = self.lagrange_interpolate(&r_shares, threshold)?;
-        let aggregated_s = self.lagrange_interpolate(&s_shares, threshold)?;
+        // 3) Lagrange interpolate r and s at x=0
+        let agg_r = self.lagrange_interpolate(&r_shares)?;
+        let agg_s = self.lagrange_interpolate(&s_shares)?;
 
-        // Use the most common recovery ID
-        let recovery_id = self.get_most_common_recovery_id(&recovery_ids)?;
+        // 4) Pick most common recid
+        let common_recid = self.get_most_common_recovery_id(&recid_ints)?;
 
-        // Reconstruct the signature
-        let mut signature_bytes = Vec::new();
-        signature_bytes.extend_from_slice(&aggregated_r);
-        signature_bytes.extend_from_slice(&aggregated_s);
+        // 5) Rebuild the recoverable signature
+        let mut sig_bytes = [0u8; 64];
+        sig_bytes[0..32].copy_from_slice(&agg_r);
+        sig_bytes[32..64].copy_from_slice(&agg_s);
+        let agg_sig = RecoverableSignature::from_compact(&sig_bytes, common_recid)?;
 
-        let aggregated_signature =
-            RecoverableSignature::from_compact(&signature_bytes, recovery_id)?;
-
-        info!(
-            "🔢 [SIGNING] Successfully aggregated threshold signature with {} shares",
-            shares.len()
-        );
-
-        Ok(aggregated_signature)
+        Ok(agg_sig)
     }
 
-    fn lagrange_interpolate(&self, shares: &[(u32, Vec<u8>)], threshold: u32) -> Result<Vec<u8>> {
-        if shares.len() < threshold as usize {
-            return Err(anyhow::anyhow!("Not enough shares for threshold"));
+    /// Shamir‐style Lagrange interpolation at x=0 over the field of order CURVE_ORDER.
+    fn lagrange_interpolate(
+        &self,
+        shares: &[(u32, Vec<u8>)],
+    ) -> Result<Vec<u8>> {
+        // 1) Check count
+        if shares.len() < self.threshold {
+            return Err(anyhow!(
+                "Not enough shares: got {}, need {}",
+                shares.len(),
+                self.threshold
+            ));
         }
 
-        // Implement proper Lagrange interpolation for threshold ECDSA
-        // This is a simplified version - in production you'd use a proper library
-
-        if shares.len() == 1 {
-            // If only one share, return it directly
-            let (_, share) = shares.first().unwrap();
-            return Ok(share.clone());
+        // 2) Prepare modulus and accumulator
+        let n = BigUint::from_bytes_be(&CURVE_ORDER);
+        // simple extended‐Euclid modinv
+        fn modinv(a: &BigUint, m: &BigUint) -> Option<BigUint> {
+            let mut mn = (m.clone(), a.clone());
+            let mut xy = (BigInt::zero(), BigInt::one());
+            while mn.1 != BigUint::zero() {
+                let q = &mn.0 / &mn.1;
+                mn = (mn.1.clone(), &mn.0 - &q * &mn.1);
+                xy = (xy.1.clone(), &xy.0 - &q.to_bigint().unwrap() * &xy.1);
+            }
+            if mn.0 != BigUint::one() {
+                return None;
+            }
+            let m_int = m.to_bigint().unwrap();
+            let res = (xy.0 % &m_int + &m_int) % &m_int;
+            Some(res.to_biguint().unwrap())
         }
 
-        // For multiple shares, we need to perform Lagrange interpolation
-        // This is a simplified implementation that averages the shares
-        // In a real implementation, you would use proper finite field arithmetic
+        let mut accum = BigUint::from(0u32);
 
-        let mut aggregated_share = vec![0u8; shares[0].1.len()];
-        let num_shares = shares.len() as u64;
+        // 3) For each share j, compute λ_j and add λ_j * y_j
+        for &(xj, ref yj_bytes) in shares {
+            let mut num = BigUint::from(1u32);
+            let mut den = BigUint::from(1u32);
 
-        for (_, share) in shares {
-            for (i, &byte) in share.iter().enumerate() {
-                if i < aggregated_share.len() {
-                    aggregated_share[i] = aggregated_share[i].wrapping_add(byte);
+            for &(xm, _) in shares {
+                if xm != xj {
+                    let xm_u = BigUint::from(xm);
+                    num = (num * (&n - &xm_u)) % &n;
+                    let xj_u = BigUint::from(xj);
+                    let diff = if xj_u >= xm_u {
+                        &xj_u - &xm_u
+                    } else {
+                        &xj_u + &n - &xm_u
+                    };
+                    den = (den * diff) % &n;
                 }
             }
+
+            let den_inv = modinv(&den, &n)
+                .ok_or_else(|| anyhow!("Denominator not invertible"))?;
+            let lambda = (num * den_inv) % &n;
+
+            let yj = BigUint::from_bytes_be(yj_bytes);
+            accum = (accum + (&lambda * yj)) % &n;
         }
 
-        // Average the shares (simplified approach)
-        for byte in aggregated_share.iter_mut() {
-            *byte = (*byte as u64 / num_shares) as u8;
+        // 4) Pad to 32-byte big-endian
+        let mut be = accum.to_bytes_be();
+        if be.len() < 32 {
+            let mut pad = vec![0u8; 32 - be.len()];
+            pad.extend_from_slice(&be);
+            be = pad;
         }
-
-        info!(
-            "🔢 [SIGNING] Lagrange interpolation completed with {} shares",
-            shares.len()
-        );
-
-        Ok(aggregated_share)
+        Ok(be)
     }
 
+    /// From a slice of RecoveryIds, pick the one that appears most often.
     fn get_most_common_recovery_id(
         &self,
-        recovery_ids: &[secp256k1::ecdsa::RecoveryId],
-    ) -> Result<secp256k1::ecdsa::RecoveryId> {
-        if recovery_ids.is_empty() {
-            return Err(anyhow::anyhow!("No recovery IDs provided"));
-        }
-
-        // Count occurrences of each recovery ID
+        recid_ints: &[i32],
+    ) -> Result<RecoveryId> {
         let mut counts = HashMap::new();
-        for recovery_id in recovery_ids {
-            let count = counts.entry(recovery_id.to_i32()).or_insert(0);
-            *count += 1;
+        for &v in recid_ints {
+            *counts.entry(v).or_insert(0usize) += 1;
         }
-
-        // Find the most common recovery ID
-        let most_common = counts.iter().max_by_key(|&(_, count)| count).unwrap().0;
-
-        Ok(secp256k1::ecdsa::RecoveryId::from_i32(*most_common)?)
+        let (&common, _) = counts.iter()
+            .max_by_key(|&(_, &cnt)| cnt)
+            .ok_or_else(|| anyhow!("No recovery IDs provided"))?;
+        RecoveryId::from_i32(common)
+            .map_err(|e| anyhow!("invalid recid {}: {}", common, e))
     }
-
-    // async fn handle_message_to_sign(
-    //     &mut self,
-    //     from: String,
-    //     message: Vec<u8>,
-    //     message_hash: Vec<u8>,
-    // ) -> Result<()> {
-    //     info!(
-    //         "📝 [SIGNING] Node {} received message to sign from {}: {:?}",
-    //         self.id, from, message_hash
-    //     );
-    //     self.sign_message(&message).await?;
-    //     Ok(())
-    // }
 
     async fn handle_signed_message(
         &mut self,
@@ -1343,8 +1259,7 @@ impl SigningNode {
                         );
 
                         // Log the aggregated signature details
-                        let signature_bytes = aggregated_signature.serialize_compact();
-                        let recovery_id = RecoveryId::from_i32(0)?; // use fixed recovery_id for testing
+                        let (recovery_id,signature_bytes) = aggregated_signature.serialize_compact();
                         let v: u64 = recovery_id.to_i32() as u64 + 35 + 1043 * 2;
                         let r = &signature_bytes[0..32];
                         let s = &signature_bytes[32..64];

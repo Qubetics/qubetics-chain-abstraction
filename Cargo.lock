@@ -3754,6 +3754,8 @@ dependencies = [
  "libp2p 0.55.0",
  "libp2p-grpc-rs",
  "num-bigint",
+ "num-integer",
+ "num-traits",
  "parking_lot",
  "prost 0.13.5",
  "rand 0.8.5",
