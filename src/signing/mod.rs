@@ -103,6 +103,10 @@ pub struct SigningNode {
 }
 
 impl SigningNode {
+    pub fn set_threshold(&mut self, new_threshold: usize) {
+        self.threshold = new_threshold;
+    }
+
     pub fn new(id: String, threshold: usize, message_tx: mpsc::Sender<ChannelMessage>) -> Self {
         // Parse the actual PeerId from the string ID
         let peer_id = PeerId::from_str(&id).unwrap_or_else(|_| {
@@ -553,8 +557,8 @@ impl SigningNode {
                     round,
                     round_signatures.len()
                 );
-
-                round_signatures.len() >= self.threshold
+                info!("threshold: {}, total: {}", self.threshold, round_signatures.len());
+                round_signatures.len() >= self.threshold + 1
             };
 
             if should_aggregate {
@@ -635,7 +639,7 @@ impl SigningNode {
         signatures: Vec<RecoverableSignature>,
     ) -> Result<RecoverableSignature> {
         let n_shares = signatures.len();
-        if n_shares < self.threshold {
+        if n_shares <= self.threshold {
             return Err(anyhow!(
                 "Not enough signature shares: got {}, need {}",
                 n_shares,
@@ -680,7 +684,7 @@ impl SigningNode {
         shares: &[(u32, Vec<u8>)],
     ) -> Result<Vec<u8>> {
         // 1) Check count
-        if shares.len() < self.threshold {
+        if shares.len() <= self.threshold {
             return Err(anyhow!(
                 "Not enough shares: got {}, need {}",
                 shares.len(),
@@ -1255,7 +1259,7 @@ impl SigningNode {
 
         if let Some(signatures_result) = signatures_to_aggregate {
             let signatures_vec = signatures_result?;
-            if signatures_vec.len() >= self.threshold {
+            if signatures_vec.len() >= self.threshold + 1 {
                 info!(
                     "✅ [SIGNING] Enough signatures collected for round {}, starting aggregation",
                     round

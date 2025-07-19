@@ -607,6 +607,13 @@ impl NetworkLayer {
                                         let threshold = self.node_manager.get_threshold();
                                         dkg.update_node_params(total, threshold);
                                         dkg.reset().await;
+                                        if let Some(signing_node) = &mut self.signing_node {
+                                            signing_node.set_threshold(self.node_manager.get_total_nodes() - 1);
+                                        }
+                                        self.node_manager
+                                            .set_threshold(total - 1);
+                                        info!("🔄 DKG parameters updated: total_nodes={}, threshold={}", total, threshold);
+                                        
                                         match dkg.start_dkg(self.node_manager.clone()).await {
                                             Ok(_) => {
                                                 info!("✅ Successfully started DKG in response to peer request");
@@ -949,7 +956,6 @@ impl NetworkLayer {
                     // Check if this message is from the signatures-to-final-node topic
                     if message.topic.to_string() == "signatures-to-final-node" {
                         info!("🎯 [NETWORK] Processing signature for final node topic");
-                        // Handle as signature to final node
                         match signing_msg {
                             crate::signing::SigningMessage::ECDSASignature { from, signature ,timestamp:_timestamp} => {
                                 info!("📤 [NETWORK] Routing ECDSA signature to final node handler from: {}", from);
@@ -1215,6 +1221,13 @@ impl NetworkLayer {
                 let threshold = self.node_manager.get_threshold();
                 if let Some(dkg) = &mut self.dkg_node {
                     dkg.update_node_params(total, threshold);
+                    dkg.reset().await;
+                    if let Some(signing_node) = &mut self.signing_node {
+                        signing_node.set_threshold(self.node_manager.get_total_nodes() - 1);
+                    }
+                    self.node_manager
+                        .set_threshold(total - 1);
+                    info!("🔄 DKG parameters updated: total_nodes={}, threshold={}", total, threshold);
                     if let Err(e) = dkg.start_dkg(self.node_manager.clone()).await {
                         warn!("❌ Scheduled DKG start failed: {:?}", e);
                     }

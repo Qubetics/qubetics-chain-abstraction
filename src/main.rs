@@ -70,7 +70,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let total = node_manager.get_total_nodes();
     let threshold = node_manager.get_threshold();
-
+    
     info!("Initial node count: {}, threshold: {}", total, threshold);
 
     let mut network = NetworkLayer::new(node_manager).await?;

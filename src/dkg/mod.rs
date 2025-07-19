@@ -165,7 +165,7 @@ impl DKGNode {
             total_nodes, threshold
         );
         self.total_nodes = total_nodes;
-        self.threshold = total_nodes -1; // Use the actual threshold parameter
+        self.threshold = total_nodes -1; 
     }
 
     fn generate_shares(&self, polynomial: &[Scalar]) -> Result<Vec<KeyShare>> {
