@@ -22,6 +22,7 @@
     "ethers": "^6.15.0",
     "it-pipe": "^3.0.1",
     "libp2p": "^2.8.5",
+    "secp256k1": "^5.0.1",
     "uint8arrays": "^5.1.0"
   },
   "description": ""
