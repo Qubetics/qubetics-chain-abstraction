@@ -122,6 +122,20 @@ impl VrfNodeManager {
     }
 }
 
+// ─── implement Clone so we can clone_box ─────────────────────────────────────
+impl Clone for VrfNodeManager {
+    fn clone(&self) -> Self {
+        VrfNodeManager {
+            base_nodes: self.base_nodes.clone(),
+            // Box<dyn ThresholdCalculator> now implements Clone
+            threshold_calculator: self.threshold_calculator.clone(),
+            vrf_selector: self.vrf_selector.clone(),
+            current_selection: self.current_selection.clone(),
+            selection_interval: self.selection_interval,
+        }
+    }
+}
+
 impl NodeMembership for VrfNodeManager {
     fn add_node(&mut self, node_id: PeerId) -> Result<(), String> {
         if self.base_nodes.contains(&node_id) {
@@ -133,6 +147,10 @@ impl NodeMembership for VrfNodeManager {
             node_id
         );
         Ok(())
+    }
+
+    fn clone_box(&self) -> Box<dyn NodeMembership> {
+        Box::new(self.clone())
     }
 
     fn remove_node(&mut self, node_id: PeerId) -> Result<(), String> {
@@ -176,10 +194,15 @@ mod tests {
     use libp2p::identity::Keypair;
 
     // Custom threshold calculator for testing
+    #[derive(Clone)]
     struct TestThresholdCalculator;
+
     impl ThresholdCalculator for TestThresholdCalculator {
         fn calculate_threshold(&self, _total_nodes: usize) -> usize {
             3 // Always return 3 for testing
+        }
+        fn clone_box(&self) -> Box<dyn ThresholdCalculator> {
+           Box::new(self.clone())
         }
     }
 

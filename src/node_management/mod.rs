@@ -29,24 +29,46 @@ pub trait NodeMembership {
     /// Get reference to self as Any for downcasting
     fn as_any(&self) -> &dyn Any;
 
+    fn clone_box(&self) -> Box<dyn NodeMembership>;
+}
+
+impl Clone for Box<dyn NodeMembership> {
+     fn clone(&self) -> Box<dyn NodeMembership> {
+         self.clone_box()
+     }
 }
 
 /// Trait for calculating threshold based on total nodes
 pub trait ThresholdCalculator {
     /// Calculate the threshold based on the total number of nodes
     fn calculate_threshold(&self, total_nodes: usize) -> usize;
+
+    fn clone_box(&self) -> Box<dyn ThresholdCalculator>;
+
 }
 
 /// Default implementation of ThresholdCalculator
+#[derive(Clone)]
 pub struct DefaultThresholdCalculator;
 
 impl ThresholdCalculator for DefaultThresholdCalculator {
     fn calculate_threshold(&self, _total_nodes: usize) -> usize {
         1
     }
+
+    fn clone_box(&self) -> Box<dyn ThresholdCalculator> {
+       Box::new(self.clone())
+    }
+}
+
+impl Clone for Box<dyn ThresholdCalculator> {
+    fn clone(&self) -> Box<dyn ThresholdCalculator> {
+        self.clone_box()
+    }
 }
 
 /// Basic mplementation of NodeMembership
+#[derive(Clone)]
 pub struct BasicNodeManager {
     nodes: HashSet<PeerId>,
     threshold_calculator: Box<dyn ThresholdCalculator>,
@@ -98,5 +120,9 @@ impl NodeMembership for BasicNodeManager {
 
     fn as_any(&self) -> &dyn Any {
         self
+    }
+
+    fn clone_box(&self) -> Box<dyn NodeMembership> {
+        Box::new(self.clone())
     }
 }

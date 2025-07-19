@@ -391,7 +391,7 @@ impl SigningNode {
 
         // 4) r = X mod n
         let mut r_bytes = [0u8; 32];
-        r_bytes.copy_from_slice(&rser[0..32]);
+        r_bytes.copy_from_slice(&rser[1..33]);
         let r = BigUint::from_bytes_be(&r_bytes);
 
         // 5) z = message hash as BigUint
@@ -422,7 +422,7 @@ impl SigningNode {
 
         // 10) Serialize r‖s into 64-byte array
         let mut sig_bytes = [0u8; 64];
-        let r_be = r.to_bytes_be();
+        let r_be: Vec<u8> = r.to_bytes_be();
         let s_be = s.to_bytes_be();
         sig_bytes[32 - r_be.len()..32].copy_from_slice(&r_be);
         sig_bytes[64 - s_be.len()..64].copy_from_slice(&s_be);
@@ -433,8 +433,9 @@ impl SigningNode {
         //     .map_err(|e| anyhow!("invalid recovery ID: {}", e))?;
 
         // 11) Compute RecoveryId from R_y parity **and** low-S normalization
-        let y_parity  = rser[63] & 1;
-        let rid = RecoveryId::from_i32(y_parity as i32)
+        let y_parity = (rser[64] & 1) as i32;
+        let rid_val = y_parity ^ (was_high_s as i32);
+        let rid: RecoveryId = RecoveryId::from_i32(rid_val)
             .map_err(|e| anyhow!("invalid recovery ID: {}", e))?;
 
         // 12) Build the recoverable signature
@@ -575,6 +576,16 @@ impl SigningNode {
                         })
                         .collect::<Result<_>>()?
                 };
+                info!(
+                    "🔍 [SIGNING] Node {} preparing to aggregate {} signatures for round {} signatures are {:?}",
+                    self.id,
+                    signatures_to_aggregate.len(),
+                    round,
+                    signatures_to_aggregate
+                        .iter()
+                        .map(|sig| sig.serialize_compact().1)
+                        .collect::<Vec<_>>()
+                );
 
                 // Aggregate signatures
                 match self.aggregate_signatures(signatures_to_aggregate).await {
@@ -619,12 +630,11 @@ impl SigningNode {
     }
 
 
-    pub async fn aggregate_signatures(
+   pub async fn aggregate_signatures(
         &self,
         signatures: Vec<RecoverableSignature>,
     ) -> Result<RecoverableSignature> {
         let n_shares = signatures.len();
-        // 1) Threshold check
         if n_shares < self.threshold {
             return Err(anyhow!(
                 "Not enough signature shares: got {}, need {}",
@@ -633,35 +643,36 @@ impl SigningNode {
             ));
         }
 
-        // 2) Split into (index, r_bytes), (index, s_bytes) and collect recid ints
-        let mut r_shares = Vec::with_capacity(n_shares);
-        let mut s_shares = Vec::with_capacity(n_shares);
-        let mut recid_ints = Vec::with_capacity(n_shares);
+        // ─── 1) Pull r + recid straight from the first share ─────────────────────────
+        let (first_recid, first_compact) = {
+            let sig0 = &signatures[0];
+            let (recid0, compact0) = sig0.serialize_compact();
+            (recid0, compact0)
+        };
+        let agg_r = first_compact[0..32].to_vec();
 
-        for (i, sig) in signatures.into_iter().enumerate() {
-            let (recid, compact) = sig.serialize_compact();
-            recid_ints.push(recid.to_i32());
+        // ─── 2) Build the (index, s_bytes) list ──────────────────────────────────────
+        let s_shares: Vec<(u32, Vec<u8>)> = signatures
+            .into_iter()
+            .enumerate()
+            .map(|(i, sig)| {
+                let (_recid, compact) = sig.serialize_compact();
+                ((i + 1) as u32, compact[32..64].to_vec())
+            })
+            .collect();
 
-            let idx = (i + 1) as u32;
-            r_shares.push((idx, compact[0..32].to_vec()));
-            s_shares.push((idx, compact[32..64].to_vec()));
-        }
-
-        // 3) Lagrange interpolate r and s at x=0
-        let agg_r = self.lagrange_interpolate(&r_shares)?;
+        // ─── 3) Reconstruct s via Lagrange at x=0 ───────────────────────────────────
         let agg_s = self.lagrange_interpolate(&s_shares)?;
 
-        // 4) Pick most common recid
-        let common_recid = self.get_most_common_recovery_id(&recid_ints)?;
-
-        // 5) Rebuild the recoverable signature
+        // ─── 4) Rebuild the recoverable signature with the original recid ───────────
         let mut sig_bytes = [0u8; 64];
         sig_bytes[0..32].copy_from_slice(&agg_r);
         sig_bytes[32..64].copy_from_slice(&agg_s);
-        let agg_sig = RecoverableSignature::from_compact(&sig_bytes, common_recid)?;
+        let agg_sig = RecoverableSignature::from_compact(&sig_bytes, first_recid)?;
 
         Ok(agg_sig)
     }
+
 
     /// Shamir‐style Lagrange interpolation at x=0 over the field of order CURVE_ORDER.
     fn lagrange_interpolate(

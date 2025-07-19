@@ -21,7 +21,7 @@ use tokio::task::JoinHandle;
 use tokio::sync::{mpsc};
 use tracing::{info, warn};
 
-use crate::commands::CommandProcessor;
+use crate::{commands::CommandProcessor, node_management};
 use crate::consensus::ConsensusNode;
 use crate::dkg::DKGNode;
 use crate::node_management::NodeMembership;
@@ -224,9 +224,9 @@ impl NetworkLayer {
         if let Err(e) = swarm.behaviour_mut().kademlia.bootstrap() {
             warn!("Failed to start bootstrap: {:?}", e);
         }
-        let mut bootstrap_timer = tokio::time::interval(Duration::from_secs(300)); // 5 minutes
-        let mut discovery_timer = tokio::time::interval(Duration::from_secs(300)); // 2 minutes (reduced from 60 seconds)
-        let mut dkg_status_timer = tokio::time::interval(Duration::from_secs(300)); // 30 seconds
+        let mut bootstrap_timer = tokio::time::interval(Duration::from_secs(300));
+        let mut discovery_timer = tokio::time::interval(Duration::from_secs(300));
+        let mut dkg_status_timer = tokio::time::interval(Duration::from_secs(300));
         let mut peerlist_logger = tokio::time::interval(Duration::from_secs(10));
 
 
@@ -493,7 +493,7 @@ impl NetworkLayer {
                         let now_secs = SystemTime::now()
                             .duration_since(UNIX_EPOCH).unwrap()
                             .as_secs();
-                        let start_time = now_secs + 30;
+                        let start_time = now_secs + 10;
                         info!("🕒 Scheduling DKG start at unix time {}", start_time);
 
                         for peer in self.node_manager.get_active_nodes() {
@@ -606,8 +606,8 @@ impl NetworkLayer {
                                         let total = self.node_manager.get_total_nodes();
                                         let threshold = self.node_manager.get_threshold();
                                         dkg.update_node_params(total, threshold);
-                                        
-                                        match dkg.start_dkg().await {
+                                        dkg.reset().await;
+                                        match dkg.start_dkg(self.node_manager.clone()).await {
                                             Ok(_) => {
                                                 info!("✅ Successfully started DKG in response to peer request");
                                                 RPCResponse::DKGStarted {peer_id: SerializablePeerId(peer)}
@@ -938,7 +938,7 @@ impl NetworkLayer {
                 // the msg bytes (check broadcast_shares() in dkg module)
                 if let Some(dkg_node) = &mut self.dkg_node {
                     // now we can unwrap the internal dkg wrap to get the DKG related things
-                    dkg_node.handle_message(dkg_msg).await?;
+                    dkg_node.handle_message(dkg_msg,self.node_manager.clone()).await?;
                 }
             }
             GossipsubMessage::Signing(signing_msg) => {
@@ -1065,7 +1065,7 @@ impl NetworkLayer {
                     RPCRequest::StartADKG => {
                         if let Some(dkg_node) = &mut self.dkg_node {
                             info!("🚀 Starting DKG in response to gossipsub command");
-                            if let Err(e) = dkg_node.start_dkg().await {
+                            if let Err(e) = dkg_node.start_dkg(self.node_manager.clone()).await {
                                 warn!("❌ Failed to start DKG from gossipsub command: {:?}", e);
                             }
                         } else {
@@ -1215,7 +1215,7 @@ impl NetworkLayer {
                 let threshold = self.node_manager.get_threshold();
                 if let Some(dkg) = &mut self.dkg_node {
                     dkg.update_node_params(total, threshold);
-                    if let Err(e) = dkg.start_dkg().await {
+                    if let Err(e) = dkg.start_dkg(self.node_manager.clone()).await {
                         warn!("❌ Scheduled DKG start failed: {:?}", e);
                     }
                 } else {
