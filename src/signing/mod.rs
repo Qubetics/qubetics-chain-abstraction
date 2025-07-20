@@ -1,6 +1,7 @@
 use crate::rpc_server::DummyTransaction;
 use anyhow::Result;
 use bls12_381::Scalar;
+use ethereum_types::U64;
 use hex;
 use libp2p::PeerId;
 use rand::rngs::OsRng;
@@ -100,6 +101,8 @@ pub struct SigningNode {
     vrf_selector: Option<VrfNodeSelector>, // VRF selector for node selection
     consensus_node: Option<ConsensusNode>, // Consensus node for final node selection
     available_nodes: Option<Vec<PeerId>>,  // Available nodes from node manager
+    curr_round: u64, // Current round for signing
+    next_round: u64, // Next round to be processed
 }
 
 impl SigningNode {
@@ -127,6 +130,8 @@ impl SigningNode {
             vrf_selector: Some(VrfNodeSelector::new(peer_id)),
             consensus_node: Some(ConsensusNode::new()),
             available_nodes: None,
+            curr_round: 0,
+            next_round: 0,
         }
     }
 
@@ -284,11 +289,9 @@ impl SigningNode {
 
         // Get available nodes before the mutable borrow
         let available_nodes = self.get_available_nodes_from_manager().await;
-        let round = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-
+        let round = self.next_round;
+        self.curr_round = round; // Set current round to the next round
+        self.next_round += 1; // Increment round for next signing operation
         // Generate VRF proof for this signing operation
         if let Some(vrf_selector) = &mut self.vrf_selector {
             let selection_result = vrf_selector.select_mpc_nodes(&available_nodes, 1, round);
@@ -535,7 +538,7 @@ impl SigningNode {
             let final_nodes = self.final_nodes_by_round.read().await;
             let mut found_round = None;
             for (round, final_node_id) in final_nodes.iter() {
-                if final_node_id == &self.id {
+                if final_node_id == &self.id && self.curr_round == *round {
                     found_round = Some(*round);
                     break;
                 }
@@ -679,75 +682,220 @@ impl SigningNode {
 
 
     /// Shamir‐style Lagrange interpolation at x=0 over the field of order CURVE_ORDER.
+    // fn lagrange_interpolate(
+    //     &self,
+    //     shares: &[(u32, Vec<u8>)],
+    // ) -> Result<Vec<u8>> {
+    //     // 1) Check count
+    //     if shares.len() <= self.threshold {
+    //         return Err(anyhow!(
+    //             "Not enough shares: got {}, need {}",
+    //             shares.len(),
+    //             self.threshold
+    //         ));
+    //     }
+
+    //     // 2) Prepare modulus and accumulator
+    //     let n = BigUint::from_bytes_be(&CURVE_ORDER);
+    //     // simple extended‐Euclid modinv
+    //     fn modinv(a: &BigUint, m: &BigUint) -> Option<BigUint> {
+    //         let mut mn = (m.clone(), a.clone());
+    //         let mut xy = (BigInt::zero(), BigInt::one());
+    //         while mn.1 != BigUint::zero() {
+    //             let q = &mn.0 / &mn.1;
+    //             mn = (mn.1.clone(), &mn.0 - &q * &mn.1);
+    //             xy = (xy.1.clone(), &xy.0 - &q.to_bigint().unwrap() * &xy.1);
+    //         }
+    //         if mn.0 != BigUint::one() {
+    //             return None;
+    //         }
+    //         let m_int = m.to_bigint().unwrap();
+    //         let res = (xy.0 % &m_int + &m_int) % &m_int;
+    //         Some(res.to_biguint().unwrap())
+    //     }
+
+    //     let mut accum = BigUint::from(0u32);
+
+    //     // 3) For each share j, compute λ_j and add λ_j * y_j
+    //     for &(xj, ref yj_bytes) in shares {
+    //         let mut num = BigUint::from(1u32);
+    //         let mut den = BigUint::from(1u32);
+
+    //         for &(xm, _) in shares {
+    //             if xm != xj {
+    //                 let xm_u = BigUint::from(xm);
+    //                 num = (num * (&n - &xm_u)) % &n;
+    //                 let xj_u = BigUint::from(xj);
+    //                 let diff = if xj_u >= xm_u {
+    //                     &xj_u - &xm_u
+    //                 } else {
+    //                     &xj_u + &n - &xm_u
+    //                 };
+    //                 den = (den * diff) % &n;
+    //             }
+    //         }
+
+    //         let den_inv = modinv(&den, &n)
+    //             .ok_or_else(|| anyhow!("Denominator not invertible"))?;
+    //         let lambda = (num * den_inv) % &n;
+
+    //         let yj = BigUint::from_bytes_be(yj_bytes);
+    //         accum = (accum + (&lambda * yj)) % &n;
+    //     }
+
+    //     // 4) Pad to 32-byte big-endian
+    //     let mut be = accum.to_bytes_be();
+    //     if be.len() < 32 {
+    //         let mut pad = vec![0u8; 32 - be.len()];
+    //         pad.extend_from_slice(&be);
+    //         be = pad;
+    //     }
+    //     Ok(be)
+    // }
+
+
     fn lagrange_interpolate(
         &self,
         shares: &[(u32, Vec<u8>)],
     ) -> Result<Vec<u8>> {
-        // 1) Check count
-        if shares.len() <= self.threshold {
+        // 1) Check count - BUG FIX: Should be < not <=
+        if shares.len() < self.threshold {
             return Err(anyhow!(
-                "Not enough shares: got {}, need {}",
+                "Not enough shares: got {}, need at least {}",
                 shares.len(),
                 self.threshold
             ));
         }
 
+        println!("=== Lagrange Interpolation Debug ===");
+        println!("Threshold: {}, Got {} shares", self.threshold, shares.len());
+        
+        // Log all input shares
+        for (i, &(x, ref y_bytes)) in shares.iter().enumerate() {
+            let y_val = BigUint::from_bytes_be(y_bytes);
+            println!("Share {}: x={}, y={}", i+1, x, y_val);
+        }
+        
         // 2) Prepare modulus and accumulator
         let n = BigUint::from_bytes_be(&CURVE_ORDER);
-        // simple extended‐Euclid modinv
+        println!("Working modulo n = {}", n);
+        
+        // Improved extended Euclidean algorithm for modular inverse
         fn modinv(a: &BigUint, m: &BigUint) -> Option<BigUint> {
-            let mut mn = (m.clone(), a.clone());
-            let mut xy = (BigInt::zero(), BigInt::one());
-            while mn.1 != BigUint::zero() {
-                let q = &mn.0 / &mn.1;
-                mn = (mn.1.clone(), &mn.0 - &q * &mn.1);
-                xy = (xy.1.clone(), &xy.0 - &q.to_bigint().unwrap() * &xy.1);
-            }
-            if mn.0 != BigUint::one() {
+            if *a == BigUint::zero() {
                 return None;
             }
+            
+            let mut old_r = m.clone();
+            let mut r = a % m;  // BUG FIX: Ensure a is reduced mod m
+            let mut old_s = BigInt::zero();
+            let mut s = BigInt::one();
+            
+            while r != BigUint::zero() {
+                let quotient = &old_r / &r;
+                
+                let temp_r = r.clone();
+                r = &old_r - &quotient * &r;
+                old_r = temp_r;
+                
+                let temp_s = s.clone();
+                s = &old_s - &quotient.to_bigint().unwrap() * &s;
+                old_s = temp_s;
+            }
+            
+            if old_r != BigUint::one() {
+                return None; // Not invertible
+            }
+            
             let m_int = m.to_bigint().unwrap();
-            let res = (xy.0 % &m_int + &m_int) % &m_int;
-            Some(res.to_biguint().unwrap())
+            let result = (old_s % &m_int + &m_int) % &m_int;
+            Some(result.to_biguint().unwrap())
         }
 
         let mut accum = BigUint::from(0u32);
+        println!("\n=== Computing Lagrange Coefficients ===");
 
         // 3) For each share j, compute λ_j and add λ_j * y_j
-        for &(xj, ref yj_bytes) in shares {
+        for (share_idx, &(xj, ref yj_bytes)) in shares.iter().enumerate() {
+            println!("\n--- Processing Share {} (x={}) ---", share_idx + 1, xj);
+            
             let mut num = BigUint::from(1u32);
             let mut den = BigUint::from(1u32);
 
+            // BUG FIX: The numerator should be 0 - xm = -xm, not n - xm
+            // For Lagrange interpolation at x=0: λⱼ = ∏(m≠j) [(0 - xₘ) / (xⱼ - xₘ)]
+            // Which becomes: λⱼ = ∏(m≠j) [(-xₘ) / (xⱼ - xₘ)]
+            // In modular arithmetic: -xₘ ≡ (n - xₘ) mod n
+            
+            println!("Computing λ_{} = ", xj);
+            let mut debug_terms = Vec::new();
+            
             for &(xm, _) in shares {
                 if xm != xj {
                     let xm_u = BigUint::from(xm);
-                    num = (num * (&n - &xm_u)) % &n;
                     let xj_u = BigUint::from(xj);
+                    
+                    // Numerator: -xₘ ≡ (n - xₘ) mod n
+                    let neg_xm = (&n - &xm_u) % &n;
+                    num = (num * &neg_xm) % &n;
+                    
+                    // Denominator: (xⱼ - xₘ) mod n
                     let diff = if xj_u >= xm_u {
                         &xj_u - &xm_u
                     } else {
                         &xj_u + &n - &xm_u
                     };
-                    den = (den * diff) % &n;
+                    den = (den * diff.clone()) % &n;
+                    
+                    debug_terms.push(format!("(-{}/({}-{})) = ({}/{})", 
+                        xm, xj, xm, neg_xm, diff.clone()));
                 }
             }
+            
+            println!("  = {}", debug_terms.join(" × "));
+            println!("  numerator = {} (mod {})", num, n);
+            println!("  denominator = {} (mod {})", den, n);
 
             let den_inv = modinv(&den, &n)
-                .ok_or_else(|| anyhow!("Denominator not invertible"))?;
-            let lambda = (num * den_inv) % &n;
+                .ok_or_else(|| anyhow!("Denominator not invertible for share x={}", xj))?;
+            
+            println!("  denominator⁻¹ = {} (mod {})", den_inv, n);
+            
+            let lambda = (num.clone() * den_inv.clone()) % &n;
+            println!("  λ_{} = {} × {} = {} (mod {})", xj, num, den_inv.clone(), lambda, n);
 
             let yj = BigUint::from_bytes_be(yj_bytes);
-            accum = (accum + (&lambda * yj)) % &n;
+            let contribution = (&lambda * &yj) % &n;
+            println!("  Contribution: {} × {} = {} (mod {})", lambda, yj, contribution, n);
+            
+            accum = (accum + contribution) % &n;
+            println!("  Running total: {} (mod {})", accum, n);
         }
 
-        // 4) Pad to 32-byte big-endian
-        let mut be = accum.to_bytes_be();
-        if be.len() < 32 {
-            let mut pad = vec![0u8; 32 - be.len()];
-            pad.extend_from_slice(&be);
-            be = pad;
+        println!("\n=== Final Result ===");
+        println!("Reconstructed value: {} (mod {})", accum, n);
+
+        // 4) Convert to 32-byte big-endian representation
+        let mut result = accum.to_bytes_be();
+        
+        // BUG FIX: Add proper bounds checking and error handling
+        match result.len().cmp(&32) {
+            std::cmp::Ordering::Less => {
+                let mut padded = vec![0u8; 32 - result.len()];
+                padded.extend_from_slice(&result);
+                result = padded;
+                println!("Padded result to 32 bytes: {:02x?}", &result[..8]);
+            }
+            std::cmp::Ordering::Greater => {
+                return Err(anyhow!("Result too large: {} bytes (expected 32)", result.len()));
+            }
+            std::cmp::Ordering::Equal => {
+                println!("Result is exactly 32 bytes: {:02x?}", &result[..8]);
+            }
         }
-        Ok(be)
+        
+        println!("=== End Debug ===\n");
+        Ok(result)
     }
 
     /// From a slice of RecoveryIds, pick the one that appears most often.
@@ -1325,7 +1473,15 @@ impl SigningNode {
         let round_to_handle = {
             let final_nodes = self.final_nodes_by_round.read().await;
             final_nodes.iter().find_map(|(round, final_node_id)| {
-                if final_node_id == &self.id {
+                info!(
+                    "🔍 [SIGNING] Checking final node {} for round {}",
+                    final_node_id, round
+                );
+                info!(
+                    "🔍 [SIGNING] Current round: {} Next round: {}",
+                    self.curr_round, self.next_round
+                );
+                if final_node_id == &self.id && *round == self.curr_round {
                     Some(*round)
                 } else {
                     None
