@@ -1,9 +1,12 @@
 use crate::rpc_server::DummyTransaction;
+use anyhow::anyhow;
 use anyhow::Result;
 use bls12_381::Scalar;
 use ethereum_types::U64;
 use hex;
 use libp2p::PeerId;
+use num_bigint::BigUint;
+use num_traits::identities::One;
 use rand::rngs::OsRng;
 use secp256k1::{self, ecdsa::RecoverableSignature, Message, PublicKey, Secp256k1, SecretKey};
 use serde::{Deserialize, Serialize};
@@ -14,46 +17,65 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{mpsc, RwLock};
 use tracing::{error, info, warn};
-use num_traits::identities::One;
-use anyhow::anyhow;
-use num_bigint::BigUint;
 
 use num_bigint::{BigInt, ToBigInt};
-use secp256k1::{
-    ecdsa::RecoveryId,
-    constants::CURVE_ORDER,
-};
+use secp256k1::{constants::CURVE_ORDER, ecdsa::RecoveryId};
 
 use num_traits::Zero;
-
 
 use crate::consensus::{ConsensusMessage, ConsensusNode, ConsensusResult};
 use crate::types::{p2p::SerializablePeerId, ChannelMessage};
 use crate::vrf::VrfNodeSelector;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ECDSASignature {
-    pub signature: Vec<u8>, // 65-byte recoverable signature
+#[derive(Debug, Clone)]
+pub struct SecretKeyShare {
+    pub secret_key: SecretKey, // The secret key directly
     pub signer_id: String,
-    pub recovery_id: u8,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ThresholdSignatureShare {
-    pub share: Vec<u8>, // The signature share
-    pub signer_id: String,
-    pub share_index: u32,
     pub threshold: u32,
     pub total_shares: u32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ThresholdSignature {
-    pub aggregated_signature: Vec<u8>,
-    pub signer_ids: Vec<String>,
-    pub message_hash: Vec<u8>,
-    pub threshold: u32,
-    pub total_shares: u32,
+impl Serialize for SecretKeyShare {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("SecretKeyShare", 4)?;
+        state.serialize_field("secret_key", &hex::encode(self.secret_key.secret_bytes()))?;
+        state.serialize_field("signer_id", &self.signer_id)?;
+        state.serialize_field("threshold", &self.threshold)?;
+        state.serialize_field("total_shares", &self.total_shares)?;
+        state.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for SecretKeyShare {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct SecretKeyShareHelper {
+            secret_key: String,
+            signer_id: String,
+            threshold: u32,
+            total_shares: u32,
+        }
+
+        let helper = SecretKeyShareHelper::deserialize(deserializer)?;
+        let secret_key_bytes = hex::decode(&helper.secret_key)
+            .map_err(|e| serde::de::Error::custom(format!("Invalid hex: {}", e)))?;
+        let secret_key = SecretKey::from_slice(&secret_key_bytes)
+            .map_err(|e| serde::de::Error::custom(format!("Invalid secret key: {}", e)))?;
+
+        Ok(SecretKeyShare {
+            secret_key,
+            signer_id: helper.signer_id,
+            threshold: helper.threshold,
+            total_shares: helper.total_shares,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -71,16 +93,16 @@ pub enum SigningMessage {
         message: Vec<u8>,
         message_hash: Vec<u8>,
     },
-    ECDSASignature {
+    SecretKeyShare {
         from: String,
-        signature: ECDSASignature,
+        secret_key_share: SecretKeyShare,
         timestamp: u128,
     },
     SignedMessage {
         from: String,
         signed_message: SignedMessage,
     },
-    RequestSignatures {
+    RequestSecretShares {
         round: u64,
         final_node_id: String,
         message: String,
@@ -94,15 +116,16 @@ pub struct SigningNode {
     private_key: Option<SecretKey>,
     public_key: Option<PublicKey>,
     public_keys: Arc<RwLock<HashMap<String, PublicKey>>>, // Other nodes' public keys
-    signatures: Arc<RwLock<HashMap<String, ECDSASignature>>>,
-    signatures_by_round: Arc<RwLock<HashMap<u64, HashMap<String, ECDSASignature>>>>, // round -> node_id -> signature
+
+    secret_key_shares: Arc<RwLock<HashMap<String, SecretKeyShare>>>, // node_id -> secret_key_share
+    secret_key_shares_by_round: Arc<RwLock<HashMap<u64, HashMap<String, SecretKeyShare>>>>, // round -> node_id -> secret_key_share
     final_nodes_by_round: Arc<RwLock<HashMap<u64, String>>>, // round -> final_node_id
     message_tx: mpsc::Sender<ChannelMessage>,
     vrf_selector: Option<VrfNodeSelector>, // VRF selector for node selection
     consensus_node: Option<ConsensusNode>, // Consensus node for final node selection
     available_nodes: Option<Vec<PeerId>>,  // Available nodes from node manager
-    curr_round: u64, // Current round for signing
-    next_round: u64, // Next round to be processed
+    curr_round: u64,                       // Current round for signing
+    next_round: u64,                       // Next round to be processed
 }
 
 impl SigningNode {
@@ -123,8 +146,8 @@ impl SigningNode {
             private_key: None,
             public_key: None,
             public_keys: Arc::new(RwLock::new(HashMap::new())),
-            signatures: Arc::new(RwLock::new(HashMap::new())),
-            signatures_by_round: Arc::new(RwLock::new(HashMap::new())),
+            secret_key_shares: Arc::new(RwLock::new(HashMap::new())),
+            secret_key_shares_by_round: Arc::new(RwLock::new(HashMap::new())),
             final_nodes_by_round: Arc::new(RwLock::new(HashMap::new())),
             message_tx,
             vrf_selector: Some(VrfNodeSelector::new(peer_id)),
@@ -292,7 +315,7 @@ impl SigningNode {
         let round = self.next_round;
         self.curr_round = round; // Set current round to the next round
         self.next_round += 1; // Increment round for next signing operation
-        // Generate VRF proof for this signing operation
+                              // Generate VRF proof for this signing operation
         if let Some(vrf_selector) = &mut self.vrf_selector {
             let selection_result = vrf_selector.select_mpc_nodes(&available_nodes, 1, round);
             info!(
@@ -317,56 +340,45 @@ impl SigningNode {
             }
         }
 
-        // Create ECDSA signature
-        let msg = Message::from_slice(&tx_hash)?;
-
-        let signature = self.create_ecdsa_signature(&msg, transaction)?;
-        // Extract signature components
-        let (recovery_id, signature_bytes) = signature.serialize_compact();
-        let v: u64 = recovery_id.to_i32() as u64 + 35 + 1043 * 2; // ✅ use u64 to prevent overflow
-        let r = &signature_bytes[0..32];
-        let s = &signature_bytes[32..64];
+        // Create secret key share instead of ECDSA signature
+        let secret_key_share = self.create_secret_key_share(&tx_hash, round)?;
 
         info!(
-            "✍️ [SIGNING] Node {} created ECDSA signature: \x1b[34m{:?} {:?}\x1b[0m",
+            "✍️ [SIGNING] Node {} created secret key share: \x1b[34m{:?}\x1b[0m",
             self.id,
-            signature.serialize_compact(),
-            self.private_key.clone()
+            hex::encode(secret_key_share.secret_key.secret_bytes())
         );
-        println!("\nSignature Components:");
-        println!("  v: {}", v);
-        println!("  r: 0x{}", hex::encode(r));
-        println!("  s: 0x{}", hex::encode(s));
+        println!("\nSecret Key Share Components:");
+        println!("  threshold: {}", secret_key_share.threshold);
+        println!("  total_shares: {}", secret_key_share.total_shares);
+        println!(
+            "  secret_key: 0x{}",
+            hex::encode(secret_key_share.secret_key.secret_bytes())
+        );
 
-        let ecdsa_signature = ECDSASignature {
-            signature: signature.serialize_compact().1.to_vec(),
-            signer_id: self.id.clone(),
-            recovery_id: signature.serialize_compact().0.to_i32() as u8,
-        };
-
-        // Store signature by round
+        // Store secret key share by round
         {
-            let mut signatures_by_round = self.signatures_by_round.write().await;
-            let round_signatures = signatures_by_round
+            let mut secret_key_shares_by_round = self.secret_key_shares_by_round.write().await;
+            let round_secret_key_shares = secret_key_shares_by_round
                 .entry(round)
                 .or_insert_with(HashMap::new);
-            round_signatures.insert(self.id.clone(), ecdsa_signature.clone());
+            round_secret_key_shares.insert(self.id.clone(), secret_key_share.clone());
             info!(
-                "💾 [SIGNING] Node {} stored signature for round {}",
+                "💾 [SIGNING] Node {} stored secret key share for round {}",
                 self.id, round
             );
         }
 
         let msg = serde_json::to_vec(&crate::types::GossipsubMessage::Signing(
-            SigningMessage::ECDSASignature {
+            SigningMessage::SecretKeyShare {
                 from: self.id.clone(),
-                signature: ecdsa_signature,
+                secret_key_share: secret_key_share,
                 timestamp: SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis(),
             },
         ))?;
 
         self.broadcast("signing", &msg).await?;
-        info!("📤 [SIGNING] Node {} broadcasted ECDSA signature", self.id);
+        info!("📤 [SIGNING] Node {} broadcasted secret key share", self.id);
         Ok(())
     }
 
@@ -384,8 +396,8 @@ impl SigningNode {
 
         // 2) Fixed nonce k = 0x42…42
         let k_bytes = [0x42u8; 32];
-        let sec_nonce = SecretKey::from_slice(&k_bytes)
-            .map_err(|e| anyhow!("invalid nonce slice: {}", e))?;
+        let sec_nonce =
+            SecretKey::from_slice(&k_bytes).map_err(|e| anyhow!("invalid nonce slice: {}", e))?;
 
         // 3) R = k·G
         let r = PublicKey::from_secret_key(&secp, &sec_nonce);
@@ -394,7 +406,6 @@ impl SigningNode {
         if BigUint::from_bytes_be(&rser) == BigUint::from(0u32) {
             return Err(anyhow!("r is zero, need new nonce"));
         }
-
 
         // 4) r = X mod n
         let mut r_bytes = [0u8; 32];
@@ -442,14 +453,36 @@ impl SigningNode {
         // 11) Compute RecoveryId from R_y parity **and** low-S normalization
         let y_parity = (rser[64] & 1) as i32;
         let rid_val = y_parity ^ (was_high_s as i32);
-        let rid: RecoveryId = RecoveryId::from_i32(rid_val)
-            .map_err(|e| anyhow!("invalid recovery ID: {}", e))?;
+        let rid: RecoveryId =
+            RecoveryId::from_i32(rid_val).map_err(|e| anyhow!("invalid recovery ID: {}", e))?;
 
         // 12) Build the recoverable signature
         let rec_sig = RecoverableSignature::from_compact(&sig_bytes, rid)
             .map_err(|e| anyhow!("invalid compact signature: {}", e))?;
 
         Ok(rec_sig)
+    }
+
+    pub fn create_secret_key_share(
+        &self,
+    ) -> Result<SecretKeyShare> {
+        // Get the secret key
+        let sk = self
+            .private_key
+            .as_ref()
+            .ok_or_else(|| anyhow!("No secret key available"))?;
+
+        // Create secret key share (simply sharing the secret key)
+        let secret_key_share = SecretKeyShare {
+            secret_key: sk.clone(),
+            signer_id: self.id.clone(),
+            threshold: self.threshold as u32,
+            total_shares: self.threshold as u32 + 1,
+        };
+
+        info!("🔐 [SIGNING] Created secret key share for node {}", self.id);
+
+        Ok(secret_key_share)
     }
 
     pub async fn handle_message(&mut self, msg: SigningMessage) -> Result<()> {
@@ -460,9 +493,9 @@ impl SigningNode {
 
         match msg {
             SigningMessage::MessageToSign {
-                from:_from,
-                message:_message,
-                message_hash:_message_hash,
+                from: _from,
+                message: _message,
+                message_hash: _message_hash,
             } => {
                 // info!(
                 //     "📥 [SIGNING] Node {} received message to sign from {}",
@@ -471,16 +504,16 @@ impl SigningNode {
                 // self.handle_message_to_sign(from, message, message_hash)
                 //     .await?;
             }
-            SigningMessage::ECDSASignature {
+            SigningMessage::SecretKeyShare {
                 from,
-                signature,
+                secret_key_share,
                 timestamp: _timestamp,
             } => {
                 info!(
-                    "📥 [SIGNING] Node {} received ECDSA signature from {}",
+                    "📥 [SIGNING] Node {} received secret key share from {}",
                     self.id, from
                 );
-                self.handle_ecdsa_signature(from, signature).await?;
+                self.handle_secret_key_share(from, secret_key_share).await?;
             }
             SigningMessage::SignedMessage {
                 from,
@@ -492,47 +525,46 @@ impl SigningNode {
                 );
                 self.handle_signed_message(from, signed_message).await?;
             }
-            SigningMessage::RequestSignatures {
+            SigningMessage::RequestSecretShares {
                 round,
                 final_node_id,
                 message,
             } => {
                 info!(
-                    "📥 [SIGNING] Node {} received signature request for round {} from final node {}",
+                    "📥 [SIGNING] Node {} received secret share request for round {} from final node {}",
                     self.id, round, final_node_id
                 );
-                self.handle_signature_request(round, final_node_id, message)
+                self.handle_secret_share_request(round, final_node_id, message)
                     .await?;
             }
         }
         Ok(())
     }
 
-    async fn handle_ecdsa_signature(
+    async fn handle_secret_key_share(
         &mut self,
         from: String,
-        signature: ECDSASignature,
+        secret_key_share: SecretKeyShare,
     ) -> Result<()> {
         info!(
-            "🚀 [SIGNING] handle_ecdsa_signature called for node {} from {}",
+            "🚀 [SIGNING] handle_secret_key_share called for node {} from {}",
             self.id, from
         );
         info!(
-            "📋 [SIGNING] Signature details - signer_id: {}, recovery_id: {}",
-            signature.signer_id, signature.recovery_id
+            "📋 [SIGNING] Secret key share details - signer_id: {}, threshold: {}, total_shares: {}",
+            secret_key_share.signer_id, secret_key_share.threshold, secret_key_share.total_shares
         );
 
-        // Store signature from node
-        self.signatures
+        // Store secret key share from node
+        self.secret_key_shares
             .write()
             .await
-            .insert(from.clone(), signature.clone());
+            .insert(from.clone(), secret_key_share.clone());
 
         info!(
-            "💾 [SIGNING] Node {} stored ECDSA signature from {}",
+            "💾 [SIGNING] Node {} stored secret key share from {}",
             self.id, from
         );
-
 
         let round_to_handle = {
             let final_nodes = self.final_nodes_by_round.read().await;
@@ -547,82 +579,112 @@ impl SigningNode {
         };
 
         if let Some(round) = round_to_handle {
-            // Store signature by round
+            // Store secret key share by round
             let should_aggregate = {
-                let mut signatures_by_round = self.signatures_by_round.write().await;
-                let round_signatures = signatures_by_round.entry(round).or_default();
-                round_signatures.insert(from.clone(), signature.clone());
+                let mut secret_key_shares_by_round = self.secret_key_shares_by_round.write().await;
+                let round_secret_key_shares = secret_key_shares_by_round.entry(round).or_default();
+                round_secret_key_shares.insert(from.clone(), secret_key_share.clone());
 
                 info!(
-                    "💾 [SIGNING] Final node {} stored signature from {} for round {} (total: {})",
+                    "💾 [SIGNING] Final node {} stored secret key share from {} for round {} (total: {})",
                     self.id,
                     from,
                     round,
-                    round_signatures.len()
+                    round_secret_key_shares.len()
                 );
-                info!("threshold: {}, total: {}", self.threshold, round_signatures.len());
-                round_signatures.len() >= self.threshold + 1
+                info!(
+                    "threshold: {}, total: {}",
+                    self.threshold,
+                    round_secret_key_shares.len()
+                );
+                round_secret_key_shares.len() >= self.threshold + 1
             };
 
             if should_aggregate {
-                // Prepare signatures for aggregation
-                let signatures_to_aggregate: Vec<RecoverableSignature> = {
-                    let signatures_by_round = self.signatures_by_round.read().await;
-                    signatures_by_round
+                // Prepare secret key shares for aggregation
+                let secret_key_shares_to_aggregate: Vec<SecretKeyShare> = {
+                    let secret_key_shares_by_round = self.secret_key_shares_by_round.read().await;
+                    secret_key_shares_by_round
                         .get(&round)
                         .unwrap()
-                        .iter()
-                        .map(|(signer_id, ecdsa_sig)| {
-                            RecoverableSignature::from_compact(
-                                &ecdsa_sig.signature,
-                                RecoveryId::from_i32(ecdsa_sig.recovery_id as i32)?,
-                            )
-                            .map_err(|_| {
-                                anyhow::anyhow!("Invalid signature from signer {}", signer_id)
-                            })
-                        })
-                        .collect::<Result<_>>()?
+                        .values()
+                        .cloned()
+                        .collect()
                 };
                 info!(
-                    "🔍 [SIGNING] Node {} preparing to aggregate {} signatures for round {} signatures are {:?}",
+                    "🔍 [SIGNING] Node {} preparing to aggregate {} secret key shares for round {}",
                     self.id,
-                    signatures_to_aggregate.len(),
-                    round,
-                    signatures_to_aggregate
-                        .iter()
-                        .map(|sig| sig.serialize_compact().1)
-                        .collect::<Vec<_>>()
+                    secret_key_shares_to_aggregate.len(),
+                    round
                 );
 
-                // Aggregate signatures
-                match self.aggregate_signatures(signatures_to_aggregate).await {
-                    Ok(aggregated_signature) => {
+                // Aggregate secret key shares
+                match self
+                    .aggregate_secret_key_shares(secret_key_shares_to_aggregate)
+                    .await
+                {
+                    Ok(aggregated_secret_key) => {
                         info!(
-                            "🎉 [SIGNING] Signature aggregation successful for round {}!",
+                            "🎉 [SIGNING] Secret key aggregation successful for round {}!",
                             round
                         );
 
-                        let (recid,signature_bytes) = aggregated_signature.serialize_compact();
-                        let v: u64 = recid.to_i32() as u64 + 35 + 1043 * 2;
-                        let r = &signature_bytes[0..32];
-                        let s = &signature_bytes[32..64];
+                        info!(
+                            "🔐 [SIGNING] Aggregated secret key: 0x{}",
+                            hex::encode(&aggregated_secret_key)
+                        );
 
-                        info!("🔐 [SIGNING] Aggregated signature components:");
-                        info!("  v: {}", v);
-                        info!("  r: 0x{}", hex::encode(r));
-                        info!("  s: 0x{}", hex::encode(s));
-                        info!("  recovery_id: {}", 0);
-                        info!("  full_signature: 0x{}", hex::encode(signature_bytes));
+                        // Store the aggregated secret key as this node's secret key
+                        let aggregated_secret_key =
+                            SecretKey::from_slice(&aggregated_secret_key)
+                                .map_err(|e| anyhow!("Invalid aggregated secret key: {}", e))?;
+
+                        // Set the aggregated secret key as this node's secret key
+                        self.private_key = Some(aggregated_secret_key);
+
+                        // Generate public key from the aggregated secret key
+                        let secp = Secp256k1::new();
+                        let aggregated_public_key =
+                            PublicKey::from_secret_key(&secp, &aggregated_secret_key);
+                        self.public_key = Some(aggregated_public_key);
+
+                        info!("🔐 [SIGNING] Set aggregated secret key as node's secret key for round {}", round);
+                        info!(
+                            "🔑 [SIGNING] Aggregated public key: {:?}",
+                            aggregated_public_key
+                        );
+
+                        // Create signature from aggregated secret key
+                        match self.create_signature_from_private_key(round).await {
+                            Ok(signature) => {
+                                info!("✅ [SIGNING] Created signature from aggregated secret key for round {}", round);
+                                let (recovery_id, signature_bytes) = signature.serialize_compact();
+                                let v: u64 = recovery_id.to_i32() as u64 + 35 + 1043 * 2;
+                                let r = &signature_bytes[0..32];
+                                let s = &signature_bytes[32..64];
+
+                                info!("🔐 [SIGNING] Final signature components:");
+                                info!("  v: {}", v);
+                                info!("  r: 0x{}", hex::encode(r));
+                                info!("  s: 0x{}", hex::encode(s));
+                                info!("  recovery_id: {}", recovery_id.to_i32());
+                                info!("  full_signature: 0x{}", hex::encode(signature_bytes));
+                            }
+                            Err(e) => {
+                                error!("❌ [SIGNING] Failed to create signature from aggregated private key: {}", e);
+                                return Err(e);
+                            }
+                        }
                     }
                     Err(e) => {
-                        error!("❌ [SIGNING] Aggregation failed: {}", e);
+                        error!("❌ [SIGNING] Private key aggregation failed: {}", e);
                         return Err(e);
                     }
                 }
             } else {
                 info!(
-                    "⏳ [SIGNING] Waiting for more signatures: {}/{}",
-                    self.signatures_by_round
+                    "⏳ [SIGNING] Waiting for more private key shares: {}/{}",
+                    self.secret_key_shares_by_round
                         .read()
                         .await
                         .get(&round)
@@ -636,283 +698,153 @@ impl SigningNode {
         Ok(())
     }
 
+    async fn handle_secret_share_request(
+        &mut self,
+        round: u64,
+        final_node_id: String,
+        _message: String,
+    ) -> Result<()> {
+        info!(
+            "📤 [SIGNING] Node {} responding to secret share request for round {}",
+            self.id, round
+        );
 
-   pub async fn aggregate_signatures(
+        // Only broadcast secret key share if we're not the final node
+        if final_node_id != self.id {
+            // Broadcast secret key share to the signing topic
+            self.broadcast_secret_key_share(round).await?;
+        } else {
+            info!(
+                "🔄 [SIGNING] This node is the final node, no need to broadcast secret key share"
+            );
+        }
+
+        Ok(())
+    }
+
+    pub async fn aggregate_secret_key_shares(
         &self,
-        signatures: Vec<RecoverableSignature>,
-    ) -> Result<RecoverableSignature> {
-        let n_shares = signatures.len();
+        secret_key_shares: Vec<SecretKeyShare>,
+    ) -> Result<Vec<u8>> {
+        let n_shares = secret_key_shares.len();
         if n_shares <= self.threshold {
             return Err(anyhow!(
-                "Not enough signature shares: got {}, need {}",
+                "Not enough secret key shares: got {}, need {}",
                 n_shares,
                 self.threshold
             ));
         }
 
-        // ─── 1) Pull r + recid straight from the first share ─────────────────────────
-        let (first_recid, first_compact) = {
-            let sig0 = &signatures[0];
-            let (recid0, compact0) = sig0.serialize_compact();
-            (recid0, compact0)
-        };
-        let agg_r = first_compact[0..32].to_vec();
+        info!("🔍 [SIGNING] Aggregating {} secret key shares", n_shares);
 
-        // ─── 2) Build the (index, s_bytes) list ──────────────────────────────────────
-        let s_shares: Vec<(u32, Vec<u8>)> = signatures
-            .into_iter()
-            .enumerate()
-            .map(|(i, sig)| {
-                let (_recid, compact) = sig.serialize_compact();
-                ((i + 1) as u32, compact[32..64].to_vec())
-            })
-            .collect();
+        // Simple addition of secret keys (modulo curve order)
+        let curve_order = BigUint::from_bytes_be(&CURVE_ORDER);
+        let mut aggregated_key = BigUint::from(0u32);
 
-        // ─── 3) Reconstruct s via Lagrange at x=0 ───────────────────────────────────
-        let agg_s = self.lagrange_interpolate(&s_shares)?;
-
-        // ─── 4) Rebuild the recoverable signature with the original recid ───────────
-        let mut sig_bytes = [0u8; 64];
-        sig_bytes[0..32].copy_from_slice(&agg_r);
-        sig_bytes[32..64].copy_from_slice(&agg_s);
-        let agg_sig = RecoverableSignature::from_compact(&sig_bytes, first_recid)?;
-
-        Ok(agg_sig)
-    }
-
-
-    /// Shamir‐style Lagrange interpolation at x=0 over the field of order CURVE_ORDER.
-    // fn lagrange_interpolate(
-    //     &self,
-    //     shares: &[(u32, Vec<u8>)],
-    // ) -> Result<Vec<u8>> {
-    //     // 1) Check count
-    //     if shares.len() <= self.threshold {
-    //         return Err(anyhow!(
-    //             "Not enough shares: got {}, need {}",
-    //             shares.len(),
-    //             self.threshold
-    //         ));
-    //     }
-
-    //     // 2) Prepare modulus and accumulator
-    //     let n = BigUint::from_bytes_be(&CURVE_ORDER);
-    //     // simple extended‐Euclid modinv
-    //     fn modinv(a: &BigUint, m: &BigUint) -> Option<BigUint> {
-    //         let mut mn = (m.clone(), a.clone());
-    //         let mut xy = (BigInt::zero(), BigInt::one());
-    //         while mn.1 != BigUint::zero() {
-    //             let q = &mn.0 / &mn.1;
-    //             mn = (mn.1.clone(), &mn.0 - &q * &mn.1);
-    //             xy = (xy.1.clone(), &xy.0 - &q.to_bigint().unwrap() * &xy.1);
-    //         }
-    //         if mn.0 != BigUint::one() {
-    //             return None;
-    //         }
-    //         let m_int = m.to_bigint().unwrap();
-    //         let res = (xy.0 % &m_int + &m_int) % &m_int;
-    //         Some(res.to_biguint().unwrap())
-    //     }
-
-    //     let mut accum = BigUint::from(0u32);
-
-    //     // 3) For each share j, compute λ_j and add λ_j * y_j
-    //     for &(xj, ref yj_bytes) in shares {
-    //         let mut num = BigUint::from(1u32);
-    //         let mut den = BigUint::from(1u32);
-
-    //         for &(xm, _) in shares {
-    //             if xm != xj {
-    //                 let xm_u = BigUint::from(xm);
-    //                 num = (num * (&n - &xm_u)) % &n;
-    //                 let xj_u = BigUint::from(xj);
-    //                 let diff = if xj_u >= xm_u {
-    //                     &xj_u - &xm_u
-    //                 } else {
-    //                     &xj_u + &n - &xm_u
-    //                 };
-    //                 den = (den * diff) % &n;
-    //             }
-    //         }
-
-    //         let den_inv = modinv(&den, &n)
-    //             .ok_or_else(|| anyhow!("Denominator not invertible"))?;
-    //         let lambda = (num * den_inv) % &n;
-
-    //         let yj = BigUint::from_bytes_be(yj_bytes);
-    //         accum = (accum + (&lambda * yj)) % &n;
-    //     }
-
-    //     // 4) Pad to 32-byte big-endian
-    //     let mut be = accum.to_bytes_be();
-    //     if be.len() < 32 {
-    //         let mut pad = vec![0u8; 32 - be.len()];
-    //         pad.extend_from_slice(&be);
-    //         be = pad;
-    //     }
-    //     Ok(be)
-    // }
-
-
-    fn lagrange_interpolate(
-        &self,
-        shares: &[(u32, Vec<u8>)],
-    ) -> Result<Vec<u8>> {
-        // 1) Check count - BUG FIX: Should be < not <=
-        if shares.len() < self.threshold {
-            return Err(anyhow!(
-                "Not enough shares: got {}, need at least {}",
-                shares.len(),
-                self.threshold
-            ));
+        for secret_key_share in secret_key_shares {
+            let key_bytes = secret_key_share.secret_key.secret_bytes();
+            let key_bigint = BigUint::from_bytes_be(&key_bytes);
+            aggregated_key = (aggregated_key + key_bigint) % &curve_order;
         }
 
-        println!("=== Lagrange Interpolation Debug ===");
-        println!("Threshold: {}, Got {} shares", self.threshold, shares.len());
-        
-        // Log all input shares
-        for (i, &(x, ref y_bytes)) in shares.iter().enumerate() {
-            let y_val = BigUint::from_bytes_be(y_bytes);
-            println!("Share {}: x={}, y={}", i+1, x, y_val);
-        }
-        
-        // 2) Prepare modulus and accumulator
-        let n = BigUint::from_bytes_be(&CURVE_ORDER);
-        println!("Working modulo n = {}", n);
-        
-        // Improved extended Euclidean algorithm for modular inverse
-        fn modinv(a: &BigUint, m: &BigUint) -> Option<BigUint> {
-            if *a == BigUint::zero() {
-                return None;
-            }
-            
-            let mut old_r = m.clone();
-            let mut r = a % m;  // BUG FIX: Ensure a is reduced mod m
-            let mut old_s = BigInt::zero();
-            let mut s = BigInt::one();
-            
-            while r != BigUint::zero() {
-                let quotient = &old_r / &r;
-                
-                let temp_r = r.clone();
-                r = &old_r - &quotient * &r;
-                old_r = temp_r;
-                
-                let temp_s = s.clone();
-                s = &old_s - &quotient.to_bigint().unwrap() * &s;
-                old_s = temp_s;
-            }
-            
-            if old_r != BigUint::one() {
-                return None; // Not invertible
-            }
-            
-            let m_int = m.to_bigint().unwrap();
-            let result = (old_s % &m_int + &m_int) % &m_int;
-            Some(result.to_biguint().unwrap())
+        // Convert back to bytes
+        let mut result = aggregated_key.to_bytes_be();
+        if result.len() < 32 {
+            let mut padded = vec![0u8; 32 - result.len()];
+            padded.extend_from_slice(&result);
+            result = padded;
+        } else if result.len() > 32 {
+            result = result[result.len() - 32..].to_vec();
         }
 
-        let mut accum = BigUint::from(0u32);
-        println!("\n=== Computing Lagrange Coefficients ===");
-
-        // 3) For each share j, compute λ_j and add λ_j * y_j
-        for (share_idx, &(xj, ref yj_bytes)) in shares.iter().enumerate() {
-            println!("\n--- Processing Share {} (x={}) ---", share_idx + 1, xj);
-            
-            let mut num = BigUint::from(1u32);
-            let mut den = BigUint::from(1u32);
-
-            // BUG FIX: The numerator should be 0 - xm = -xm, not n - xm
-            // For Lagrange interpolation at x=0: λⱼ = ∏(m≠j) [(0 - xₘ) / (xⱼ - xₘ)]
-            // Which becomes: λⱼ = ∏(m≠j) [(-xₘ) / (xⱼ - xₘ)]
-            // In modular arithmetic: -xₘ ≡ (n - xₘ) mod n
-            
-            println!("Computing λ_{} = ", xj);
-            let mut debug_terms = Vec::new();
-            
-            for &(xm, _) in shares {
-                if xm != xj {
-                    let xm_u = BigUint::from(xm);
-                    let xj_u = BigUint::from(xj);
-                    
-                    // Numerator: -xₘ ≡ (n - xₘ) mod n
-                    let neg_xm = (&n - &xm_u) % &n;
-                    num = (num * &neg_xm) % &n;
-                    
-                    // Denominator: (xⱼ - xₘ) mod n
-                    let diff = if xj_u >= xm_u {
-                        &xj_u - &xm_u
-                    } else {
-                        &xj_u + &n - &xm_u
-                    };
-                    den = (den * diff.clone()) % &n;
-                    
-                    debug_terms.push(format!("(-{}/({}-{})) = ({}/{})", 
-                        xm, xj, xm, neg_xm, diff.clone()));
-                }
-            }
-            
-            println!("  = {}", debug_terms.join(" × "));
-            println!("  numerator = {} (mod {})", num, n);
-            println!("  denominator = {} (mod {})", den, n);
-
-            let den_inv = modinv(&den, &n)
-                .ok_or_else(|| anyhow!("Denominator not invertible for share x={}", xj))?;
-            
-            println!("  denominator⁻¹ = {} (mod {})", den_inv, n);
-            
-            let lambda = (num.clone() * den_inv.clone()) % &n;
-            println!("  λ_{} = {} × {} = {} (mod {})", xj, num, den_inv.clone(), lambda, n);
-
-            let yj = BigUint::from_bytes_be(yj_bytes);
-            let contribution = (&lambda * &yj) % &n;
-            println!("  Contribution: {} × {} = {} (mod {})", lambda, yj, contribution, n);
-            
-            accum = (accum + contribution) % &n;
-            println!("  Running total: {} (mod {})", accum, n);
-        }
-
-        println!("\n=== Final Result ===");
-        println!("Reconstructed value: {} (mod {})", accum, n);
-
-        // 4) Convert to 32-byte big-endian representation
-        let mut result = accum.to_bytes_be();
-        
-        // BUG FIX: Add proper bounds checking and error handling
-        match result.len().cmp(&32) {
-            std::cmp::Ordering::Less => {
-                let mut padded = vec![0u8; 32 - result.len()];
-                padded.extend_from_slice(&result);
-                result = padded;
-                println!("Padded result to 32 bytes: {:02x?}", &result[..8]);
-            }
-            std::cmp::Ordering::Greater => {
-                return Err(anyhow!("Result too large: {} bytes (expected 32)", result.len()));
-            }
-            std::cmp::Ordering::Equal => {
-                println!("Result is exactly 32 bytes: {:02x?}", &result[..8]);
-            }
-        }
-        
-        println!("=== End Debug ===\n");
+        info!("✅ [SIGNING] Successfully aggregated secret key shares");
         Ok(result)
     }
 
-    /// From a slice of RecoveryIds, pick the one that appears most often.
-    fn get_most_common_recovery_id(
-        &self,
-        recid_ints: &[i32],
-    ) -> Result<RecoveryId> {
-        let mut counts = HashMap::new();
-        for &v in recid_ints {
-            *counts.entry(v).or_insert(0usize) += 1;
-        }
-        let (&common, _) = counts.iter()
-            .max_by_key(|&(_, &cnt)| cnt)
-            .ok_or_else(|| anyhow!("No recovery IDs provided"))?;
-        RecoveryId::from_i32(common)
-            .map_err(|e| anyhow!("invalid recid {}: {}", common, e))
+    async fn create_signature_from_private_key(&self, round: u64) -> Result<RecoverableSignature> {
+        info!(
+            "🔐 [SIGNING] Creating signature from node's private key for round {}",
+            round
+        );
+
+        // Get the private key from the node
+        let secret_key = self
+            .private_key
+            .as_ref()
+            .ok_or_else(|| anyhow!("No private key available"))?;
+
+        // Get the message hash for this round (you might need to store this)
+        // For now, we'll use a dummy message hash
+        let message_hash = vec![0u8; 32]; // This should be the actual message hash for the round
+
+        // Create the message to sign
+        let msg = Message::from_slice(&message_hash)?;
+
+        // Create ECDSA signature using the node's private key
+        let secp = Secp256k1::new();
+        let signature = secp.sign_ecdsa_recoverable(&msg, &secret_key);
+
+        info!("✅ [SIGNING] Created signature from node's private key");
+        Ok(signature)
     }
+
+    pub async fn broadcast_secret_key_share(&mut self, round: u64) -> Result<()> {
+        info!(
+            "📤 [SIGNING] Broadcasting secret key share for round {} to signing topic",
+            round
+        );
+
+        // Get our secret key share for this round
+        let secret_key_shares_by_round = self.secret_key_shares_by_round.read().await;
+
+        if let Some(round_secret_key_shares) = secret_key_shares_by_round.get(&round) {
+            if let Some(our_secret_key_share) = round_secret_key_shares.get(&self.id) {
+                let secret_key_share_msg = SigningMessage::SecretKeyShare {
+                    from: self.id.clone(),
+                    secret_key_share: our_secret_key_share.clone(),
+                    timestamp: SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis(),
+                };
+
+                // Wrap in GossipsubMessage::Signing for proper message handling
+                let gossipsub_msg = crate::types::GossipsubMessage::Signing(secret_key_share_msg);
+                let secret_key_share_data = serde_json::to_vec(&gossipsub_msg)?;
+
+                // Broadcast to the main signing topic
+                let res = self.broadcast("signing", &secret_key_share_data).await;
+                match res {
+                    Ok(_) => info!(
+                        "📤 [SIGNING] Successfully broadcasted secret key share for round {} to signing topic",
+                        round
+                    ),
+                    Err(e) => {
+                        error!(
+                            "❌ [SIGNING] Failed to broadcast secret key share for round {}: {}",
+                            round, e
+                        );
+                        return Err(e);
+                    }
+                }
+
+                info!(
+                    "✅ [SIGNING] Broadcasted secret key share for round {} to signing topic",
+                    round
+                );
+            } else {
+                info!(
+                    "⚠️ [SIGNING] No secret key share found for round {} for this node",
+                    round
+                );
+            }
+        } else {
+            info!(
+                "⚠️ [SIGNING] No secret key shares found for round {}",
+                round
+            );
+        }
+
+        Ok(())
+    }
+
 
     async fn handle_signed_message(
         &mut self,
@@ -1222,373 +1154,62 @@ impl SigningNode {
     /// Trigger aggregate signature for the final selected node
     async fn trigger_aggregate_signature_for_final_node(&self, round: u64) -> Result<()> {
         info!(
-            "🚀 [SIGNING] Triggering aggregate signature for final node in round {}",
+            "🚀 [SIGNING] Triggering secret share aggregation for final node in round {}",
             round
         );
 
-        // Broadcast a message to all nodes to send their signatures to the final node
-        let signature_request = SigningMessage::RequestSignatures {
+        // Broadcast a message to all nodes to send their secret shares to the final node
+        let secret_share_request = SigningMessage::RequestSecretShares {
             round,
             final_node_id: self.id.clone(),
-            message: "Aggregate signature request".to_string(),
+            message: "Aggregate secret share request".to_string(),
         };
 
         // Wrap in GossipsubMessage::Signing for proper message handling
-        let gossipsub_msg = crate::types::GossipsubMessage::Signing(signature_request);
+        let gossipsub_msg = crate::types::GossipsubMessage::Signing(secret_share_request);
         let broadcast_data = serde_json::to_vec(&gossipsub_msg)?;
         self.broadcast("signing", &broadcast_data).await?;
 
         info!(
-            "📤 [SIGNING] Broadcasted signature request for round {} to all nodes",
+            "📤 [SIGNING] Broadcasted secret share request for round {} to all nodes",
             round
         );
 
         Ok(())
     }
 
-    /// Send signature for specific round to the final selected node
-    pub async fn send_signature_to_final_node(
-        &mut self,
-        final_node_id: &str,
-        round: u64,
-    ) -> Result<()> {
-        info!(
-            "📤 [SIGNING] Sending signature for round {} to final node {}",
-            round, final_node_id
-        );
-
-        // Get signature for this specific round
-        let signatures_by_round = self.signatures_by_round.read().await;
-
-        if let Some(round_signatures) = signatures_by_round.get(&round) {
-            if let Some(our_signature) = round_signatures.get(&self.id) {
-                let signature_msg = SigningMessage::ECDSASignature {
-                    from: self.id.clone(),
-                    signature: our_signature.clone(),
-                    timestamp: SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis(),
-                };
-
-                // Wrap in GossipsubMessage::Signing for proper message handling
-                let gossipsub_msg = crate::types::GossipsubMessage::Signing(signature_msg);
-                let signature_data = serde_json::to_vec(&gossipsub_msg)?;
-
-                // Broadcast to a specific topic that the final node subscribes to
-                let res = self
-                    .broadcast("signatures-to-final-node", &signature_data)
-                    .await;
-                match res {
-                    Ok(_) => info!(
-                        "📤 [SIGNING] Successfully sent signature for round {} to final node {}",
-                        round, final_node_id
-                    ),
-                    Err(e) => {
-                        error!(
-                            "❌ [SIGNING] Failed to send signature for round {} to final node {}: {}",
-                            round, final_node_id, e
-                        );
-                        return Err(e);
-                    }
-                }
-
-                info!(
-                    "✅ [SIGNING] Sent signature for round {} to final node {}",
-                    round, final_node_id
-                );
-            } else {
-                info!(
-                    "⚠️ [SIGNING] No signature found for round {} for this node",
-                    round
-                );
-            }
-        } else {
-            info!("⚠️ [SIGNING] No signatures found for round {}", round);
-        }
-
-        Ok(())
-    }
-
-    /// Collect signatures and perform aggregation (for final selected node)
+    /// Collect private key shares and perform aggregation (for final selected node)
     pub async fn collect_and_aggregate_signatures(&mut self, round: u64) -> Result<()> {
         info!(
-            "🔍 [SIGNING] Final node {} waiting for signatures for round {}",
+            "🔍 [SIGNING] Final node {} waiting for private key shares for round {}",
             self.id, round
         );
 
-        // Wait a bit for signatures to arrive
+        // Wait a bit for secret key shares to arrive
         tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
 
-        // Check current signature count for this round
-        let signatures_by_round = self.signatures_by_round.read().await;
-        if let Some(round_signatures) = signatures_by_round.get(&round) {
+        // Check current secret key share count for this round
+        let secret_key_shares_by_round = self.secret_key_shares_by_round.read().await;
+        if let Some(round_secret_key_shares) = secret_key_shares_by_round.get(&round) {
             info!(
-                "📊 [SIGNING] Final node {} has {} signatures for round {}",
+                "📊 [SIGNING] Final node {} has {} secret key shares for round {}",
                 self.id,
-                round_signatures.len(),
+                round_secret_key_shares.len(),
                 round
             );
         } else {
-            info!("⚠️ [SIGNING] No signatures found for round {}", round);
-        }
-
-        Ok(())
-    }
-
-    /// Handle signature request from final selected node
-    async fn handle_signature_request(
-        &mut self,
-        round: u64,
-        final_node_id: String,
-        _message: String,
-    ) -> Result<()> {
-        info!(
-            "📤 [SIGNING] Node {} responding to signature request for round {}",
-            self.id, round
-        );
-
-        // Only send signature if we're not the final node
-        if final_node_id != self.id {
-            // Send signature to the final node
-            self.send_signature_to_final_node(&final_node_id, round)
-                .await?;
-        } else {
-            info!("🔄 [SIGNING] This node is the final node, no need to send signature to self");
-        }
-
-        Ok(())
-    }
-
-    /// Handle signature received by final node for specific round
-
-    /// Handle signature received by final node for specific round
-    /// Handle signature received by final node for specific round
-    pub async fn handle_signature_for_round(
-        &mut self,
-        from: String,
-        signature: ECDSASignature,
-        round: u64,
-    ) -> Result<()> {
-        info!(
-            "📥 [SIGNING] Final node {} received signature from {} for round {}",
-            self.id, from, round
-        );
-
-        // Store signature by round
-        {
-            let mut signatures_by_round = self.signatures_by_round.write().await;
-            let round_signatures = signatures_by_round
-                .entry(round)
-                .or_insert_with(HashMap::new);
-            round_signatures.insert(from.clone(), signature.clone());
-
             info!(
-                "💾 [SIGNING] Stored signature from {} for round {} (total: {})",
-                from,
-                round,
-                round_signatures.len()
+                "⚠️ [SIGNING] No secret key shares found for round {}",
+                round
             );
         }
 
-        // Check if we have enough signatures for this round
-        let signatures_to_aggregate: Option<Result<Vec<RecoverableSignature>>> = {
-            let signatures_by_round = self.signatures_by_round.read().await;
-            signatures_by_round.get(&round).map(|round_signatures| {
-                round_signatures
-                    .iter()
-                    .map(|(signer_id, ecdsa_sig)| {
-                        RecoverableSignature::from_compact(
-                            &ecdsa_sig.signature,
-                            RecoveryId::from_i32(ecdsa_sig.recovery_id as i32)?,
-                        )
-                        .map_err(|_| anyhow::anyhow!("Invalid signature from signer {}", signer_id))
-                    })
-                    .collect::<Result<Vec<_>>>()
-            })
-        };
-
-        if let Some(signatures_result) = signatures_to_aggregate {
-            let signatures_vec = signatures_result?;
-            if signatures_vec.len() >= self.threshold + 1 {
-                info!(
-                    "✅ [SIGNING] Enough signatures collected for round {}, starting aggregation",
-                    round
-                );
-
-                // Perform aggregation
-                match self.aggregate_signatures(signatures_vec).await {
-                    Ok(aggregated_signature) => {
-                        info!(
-                            "🎉 [SIGNING] Signature aggregation completed successfully for round {}!",
-                            round
-                        );
-
-                        // Log the aggregated signature details
-                        let (recovery_id,signature_bytes) = aggregated_signature.serialize_compact();
-                        let v: u64 = recovery_id.to_i32() as u64 + 35 + 1043 * 2;
-                        let r = &signature_bytes[0..32];
-                        let s = &signature_bytes[32..64];
-
-                        info!(
-                            "🔐 [SIGNING] Aggregated signature components for round {}:",
-                            round
-                        );
-                        info!("  v: {}", v);
-                        info!("  r: 0x{}", hex::encode(r));
-                        info!("  s: 0x{}", hex::encode(s));
-                        info!("  recovery_id: {}", recovery_id.to_i32());
-                        info!("  full_signature: 0x{}", hex::encode(signature_bytes));
-                    }
-                    Err(e) => {
-                        error!(
-                            "❌ [SIGNING] Failed to aggregate signatures for round {}: {}",
-                            round, e
-                        );
-                        return Err(e);
-                    }
-                }
-            } else {
-                info!(
-                    "⏳ [SIGNING] Waiting for more signatures for round {}: {}/{}",
-                    round,
-                    signatures_vec.len(),
-                    self.threshold
-                );
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Handle signature received on the signatures-to-final-node topic
-    pub async fn handle_signature_to_final_node(
-        &mut self,
-        from: String,
-        signature: ECDSASignature,
-    ) -> Result<()> {
-        info!(
-            "📥 [SIGNING] Final node {} received signature from {} on signatures-to-final-node topic",
-            self.id, from
-        );
-
-        // Get the round from the final nodes by round map
-        let round_to_handle = {
-            let final_nodes = self.final_nodes_by_round.read().await;
-            final_nodes.iter().find_map(|(round, final_node_id)| {
-                info!(
-                    "🔍 [SIGNING] Checking final node {} for round {}",
-                    final_node_id, round
-                );
-                info!(
-                    "🔍 [SIGNING] Current round: {} Next round: {}",
-                    self.curr_round, self.next_round
-                );
-                if final_node_id == &self.id && *round == self.curr_round {
-                    Some(*round)
-                } else {
-                    None
-                }
-            })
-        };
-
-        if let Some(round) = round_to_handle {
-            return self
-                .handle_signature_for_round(from, signature, round)
-                .await;
-        }
-
-        info!("⚠️ [SIGNING] Received signature but this node is not the final node for any round");
         Ok(())
     }
 
     /// Get the node ID
     pub fn get_node_id(&self) -> &str {
         &self.id
-    }
-
-    /// Debug function to test ECDSA signature handling
-    pub async fn test_ecdsa_signature_handling(&mut self) -> Result<()> {
-        info!(
-            "🧪 [DEBUG] Testing ECDSA signature handling for node {}",
-            self.id
-        );
-
-        // Create a test signature
-        let test_signature = ECDSASignature {
-            signature: vec![1, 2, 3, 4, 5], // Dummy signature
-            signer_id: "test_signer".to_string(),
-            // message_hash: vec![10, 20, 30, 40], // Dummy hash
-            recovery_id: 0,
-        };
-
-        // Test the handle_ecdsa_signature function directly
-        self.handle_ecdsa_signature("test_signer".to_string(), test_signature)
-            .await?;
-
-        info!("✅ [DEBUG] ECDSA signature handling test completed successfully");
-        Ok(())
-    }
-
-    /// Create threshold signature shares from a regular ECDSA signature
-    pub fn create_threshold_shares(
-        &self,
-        signature: &ECDSASignature,
-        threshold: u32,
-        total_shares: u32,
-    ) -> Vec<ThresholdSignatureShare> {
-        let mut shares = Vec::new();
-
-        for i in 0..total_shares {
-            let share = ThresholdSignatureShare {
-                share: signature.signature.clone(),
-                signer_id: signature.signer_id.clone(),
-                share_index: i + 1,
-                threshold,
-                total_shares,
-            };
-            shares.push(share);
-        }
-
-        info!(
-            "🔢 [SIGNING] Created {} threshold signature shares (threshold: {})",
-            shares.len(),
-            threshold
-        );
-
-        shares
-    }
-
-    /// Verify threshold signature shares
-    pub fn verify_threshold_shares(&self, shares: &[ThresholdSignatureShare]) -> Result<bool> {
-        if shares.is_empty() {
-            return Ok(false);
-        }
-
-        let threshold = shares[0].threshold;
-        let total_shares = shares[0].total_shares;
-
-        // Check if we have enough shares
-        if shares.len() < threshold as usize {
-            info!(
-                "⚠️ [SIGNING] Not enough shares: {}/{}",
-                shares.len(),
-                threshold
-            );
-            return Ok(false);
-        }
-
-        // Verify all shares have the same threshold and total_shares
-        for share in shares {
-            if share.threshold != threshold || share.total_shares != total_shares {
-                warn!("❌ [SIGNING] Inconsistent threshold parameters in shares");
-                return Ok(false);
-            }
-        }
-
-        info!(
-            "✅ [SIGNING] Threshold shares verification passed: {}/{} shares",
-            shares.len(),
-            threshold
-        );
-        Ok(true)
     }
 
     /// Get Ethereum address from public key

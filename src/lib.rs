@@ -25,7 +25,7 @@ pub use node_management::{
     BasicNodeManager, DefaultThresholdCalculator, NodeMembership, ThresholdCalculator,
     VrfNodeManager,
 };
-pub use signing::{ECDSASignature, SigningMessage, SigningNode};
+pub use signing::{SigningMessage, SigningNode};
 pub use vrf::{
     NodeSelectionResult, VrfNodeSelector, VrfOutput, VrfSelectedNodesBroadcast, VrfSelectionMessage,
 };
