@@ -1058,6 +1058,7 @@ impl NetworkLayer {
                 }
             }
 
+
             GossipsubMessage::PeerDiscovered { peer, sequence } => {
                 info!(
                     "🎯 Peer discovered via gossipsub: {:?} (seq: {:?})",

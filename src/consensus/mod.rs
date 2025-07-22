@@ -88,25 +88,46 @@ impl ConsensusNode {
             }
         }
 
-        let final_node = if all_same_frequency {
-            // If all nodes appear the same number of times, select the first node
-            let first_node = selected_nodes.first().unwrap().clone();
-            info!(
-                "⚖️ [CONSENSUS] All nodes have same frequency ({}), selecting first node: {:?}",
-                first_frequency.unwrap_or(0),
-                first_node
-            );
-            first_node
+        info!(
+            "🔍 [CONSENSUS] Most frequent node: {:?} with frequency {} and all same or not {}",
+            most_frequent_node,
+            max_frequency,
+            all_same_frequency
+        );
+        // Gather all candidates that have max_frequency
+        let mut candidates: Vec<SerializablePeerId> = if all_same_frequency {
+            // everyone tied → *all* selected_nodes are candidates
+            selected_nodes.clone()
         } else {
-            // Select the most frequently selected node
-            let final_node = most_frequent_node.unwrap();
-            info!(
-                "🏆 [CONSENSUS] Most frequently selected node: {:?} ({} times)",
-                final_node, max_frequency
-            );
-            final_node
+            // only those whose frequency == max_frequency
+            node_frequencies
+                .iter()
+                .filter(|(_, &freq)| freq == max_frequency)
+                .map(|(node, _)| node.clone())
+                .collect()
         };
 
+        // Sort them by their inner PeerId bytes and pick the first
+        candidates.sort_by(|a, b| a.0.to_bytes().cmp(&b.0.to_bytes()));
+        info!(
+            "📋 [CONSENSUS] Candidates with max frequency {}: {:?}",
+            max_frequency, candidates
+        );
+        let final_node = candidates[0].clone();
+
+        if all_same_frequency {
+            info!(
+                "⚖️ [CONSENSUS] All nodes tied ({} each), picking lexicographically first: {:?}",
+                first_frequency.unwrap_or(0),
+                final_node
+            );
+        } else {
+            info!(
+                "🏆 [CONSENSUS] Picking from freq‐{} candidates, lexicographically first: {:?}",
+                max_frequency,
+                final_node
+            );
+        }
         let result = ConsensusResult {
             final_node,
             round,

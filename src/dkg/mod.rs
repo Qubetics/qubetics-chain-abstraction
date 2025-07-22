@@ -527,11 +527,11 @@ impl DKGNode {
             callback(final_secret_share, final_public_key);
         }
 
-        let eth_address = utils::get_eth_address_from_group_key(final_public_key);
-        let btc_address = utils::get_btc_address_from_group_key(final_public_key);
+        // let eth_address = utils::get_eth_address_from_group_key(final_public_key);
+        // let btc_address = utils::get_btc_address_from_group_key(final_public_key);
 
-        info!("📬 Ethereum Address from Group Key: {}", eth_address);
-        info!("📬 Bitcoin Address from Group Key: {}", btc_address);
+        // info!("📬 Ethereum Address from Group Key: {}", eth_address);
+        // info!("📬 Bitcoin Address from Group Key: {}", btc_address);
 
         Ok(())
     }

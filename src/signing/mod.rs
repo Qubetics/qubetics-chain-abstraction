@@ -1,31 +1,26 @@
+use crate::consensus::{ConsensusMessage, ConsensusNode, ConsensusResult};
 use crate::rpc_server::DummyTransaction;
+use crate::types::{p2p::SerializablePeerId, ChannelMessage};
+use crate::vrf::VrfNodeSelector;
 use anyhow::anyhow;
 use anyhow::Result;
+use bitcoin::{Address, Network, PublicKey as BitcoinPubKey};
 use bls12_381::Scalar;
-use ethereum_types::U64;
 use hex;
 use libp2p::PeerId;
 use num_bigint::BigUint;
-use num_traits::identities::One;
 use rand::rngs::OsRng;
 use secp256k1::{self, ecdsa::RecoverableSignature, Message, PublicKey, Secp256k1, SecretKey};
+use secp256k1::{constants::CURVE_ORDER, ecdsa::RecoveryId};
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
+
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{mpsc, RwLock};
 use tracing::{error, info, warn};
-
-use num_bigint::{BigInt, ToBigInt};
-use secp256k1::{constants::CURVE_ORDER, ecdsa::RecoveryId};
-
-use num_traits::Zero;
-
-use crate::consensus::{ConsensusMessage, ConsensusNode, ConsensusResult};
-use crate::types::{p2p::SerializablePeerId, ChannelMessage};
-use crate::vrf::VrfNodeSelector;
 
 #[derive(Debug, Clone)]
 pub struct SecretKeyShare {
@@ -120,6 +115,7 @@ pub struct SigningNode {
     secret_key_shares: Arc<RwLock<HashMap<String, SecretKeyShare>>>, // node_id -> secret_key_share
     secret_key_shares_by_round: Arc<RwLock<HashMap<u64, HashMap<String, SecretKeyShare>>>>, // round -> node_id -> secret_key_share
     final_nodes_by_round: Arc<RwLock<HashMap<u64, String>>>, // round -> final_node_id
+    transaction_messages_by_round: Arc<RwLock<HashMap<u64, Vec<u8>>>>, // round -> transaction message
     message_tx: mpsc::Sender<ChannelMessage>,
     vrf_selector: Option<VrfNodeSelector>, // VRF selector for node selection
     consensus_node: Option<ConsensusNode>, // Consensus node for final node selection
@@ -149,6 +145,7 @@ impl SigningNode {
             secret_key_shares: Arc::new(RwLock::new(HashMap::new())),
             secret_key_shares_by_round: Arc::new(RwLock::new(HashMap::new())),
             final_nodes_by_round: Arc::new(RwLock::new(HashMap::new())),
+            transaction_messages_by_round: Arc::new(RwLock::new(HashMap::new())),
             message_tx,
             vrf_selector: Some(VrfNodeSelector::new(peer_id)),
             consensus_node: Some(ConsensusNode::new()),
@@ -289,7 +286,7 @@ impl SigningNode {
     pub async fn sign_message(
         &mut self,
         message: Vec<u8>,
-        transaction: &DummyTransaction,
+        _transaction: &DummyTransaction,
     ) -> Result<()> {
         if self.private_key.is_none() {
             error!(
@@ -369,6 +366,17 @@ impl SigningNode {
             );
         }
 
+        // Store transaction message by round
+        {
+            let mut transaction_messages_by_round =
+                self.transaction_messages_by_round.write().await;
+            transaction_messages_by_round.insert(round, message.clone());
+            info!(
+                "💾 [SIGNING] Node {} stored transaction message for round {}",
+                self.id, round
+            );
+        }
+
         let msg = serde_json::to_vec(&crate::types::GossipsubMessage::Signing(
             SigningMessage::SecretKeyShare {
                 from: self.id.clone(),
@@ -444,12 +452,6 @@ impl SigningNode {
         let s_be = s.to_bytes_be();
         sig_bytes[32 - r_be.len()..32].copy_from_slice(&r_be);
         sig_bytes[64 - s_be.len()..64].copy_from_slice(&s_be);
-
-        // // 11) Compute correct RecoveryId from R_y parity
-        // let y_parity = rser[64] & 1;
-        // let rid = RecoveryId::from_i32(y_parity as i32)
-        //     .map_err(|e| anyhow!("invalid recovery ID: {}", e))?;
-
         // 11) Compute RecoveryId from R_y parity **and** low-S normalization
         let y_parity = (rser[64] & 1) as i32;
         let rid_val = y_parity ^ (was_high_s as i32);
@@ -465,6 +467,8 @@ impl SigningNode {
 
     pub fn create_secret_key_share(
         &self,
+        _message_hash: &[u8],
+        _round: u64,
     ) -> Result<SecretKeyShare> {
         // Get the secret key
         let sk = self
@@ -496,14 +500,7 @@ impl SigningNode {
                 from: _from,
                 message: _message,
                 message_hash: _message_hash,
-            } => {
-                // info!(
-                //     "📥 [SIGNING] Node {} received message to sign from {}",
-                //     self.id, from
-                // );
-                // self.handle_message_to_sign(from, message, message_hash)
-                //     .await?;
-            }
+            } => {}
             SigningMessage::SecretKeyShare {
                 from,
                 secret_key_share,
@@ -630,8 +627,26 @@ impl SigningNode {
                         );
 
                         info!(
-                            "🔐 [SIGNING] Aggregated secret key: 0x{}",
+                            "\x1b[33m🔐 [SIGNING] Aggregated secret key: 0x{}\x1b[0m",
                             hex::encode(&aggregated_secret_key)
+                        );
+
+                        // Derive Ethereum address from aggregated private key
+                        let ethereum_address =
+                            self.derive_ethereum_address_from_private_key(&aggregated_secret_key);
+                        info!(
+                            "\x1b[32m🏦 [SIGNING] Derived Ethereum address: {}\x1b[0m",
+                            ethereum_address
+                        );
+
+                        // Derive Bitcoin testnet address from aggregated private key
+                        let bitcoin_testnet_address = self
+                            .derive_bitcoin_testnet_address_from_private_key(
+                                &aggregated_secret_key,
+                            );
+                        info!(
+                            "\x1b[36m₿ [SIGNING] Derived Bitcoin testnet address: {}\x1b[0m",
+                            bitcoin_testnet_address
                         );
 
                         // Store the aggregated secret key as this node's secret key
@@ -773,18 +788,34 @@ impl SigningNode {
             .as_ref()
             .ok_or_else(|| anyhow!("No private key available"))?;
 
-        // Get the message hash for this round (you might need to store this)
-        // For now, we'll use a dummy message hash
-        let message_hash = vec![0u8; 32]; // This should be the actual message hash for the round
+        // Get the transaction message for this round
+        let transaction_message = {
+            let transaction_messages_by_round = self.transaction_messages_by_round.read().await;
+            transaction_messages_by_round
+                .get(&round)
+                .ok_or_else(|| anyhow!("No transaction message found for round {}", round))?
+                .clone()
+        };
 
-        // Create the message to sign
-        let msg = Message::from_slice(&message_hash)?;
+        // Hash the transaction message to get a 32-byte hash for signing
+        let mut hasher = sha3::Keccak256::new();
+        hasher.update(&transaction_message);
+        let message_hash = hasher.finalize();
+
+        info!(
+            "🔐 [SIGNING] Transaction message length: {} bytes, hash: 0x{}",
+            transaction_message.len(),
+            hex::encode(&message_hash)
+        );
+
+        // Create the message to sign from the hashed transaction message
+        let msg = Message::from_digest_slice(&message_hash)?;
 
         // Create ECDSA signature using the node's private key
         let secp = Secp256k1::new();
         let signature = secp.sign_ecdsa_recoverable(&msg, &secret_key);
 
-        info!("✅ [SIGNING] Created signature from node's private key");
+        info!("✅ [SIGNING] Created signature from node's private key for transaction message");
         Ok(signature)
     }
 
@@ -844,7 +875,6 @@ impl SigningNode {
 
         Ok(())
     }
-
 
     async fn handle_signed_message(
         &mut self,
@@ -1226,7 +1256,7 @@ impl SigningNode {
                 let address = format!("0x{}", hex::encode(address_bytes));
 
                 info!(
-                    "🏦 [SIGNING] Node {} Ethereum address: {}",
+                    "🏦 [SIGNING] Node {} Ethereum address: \x1b[32m{}\x1b[0m",
                     self.id, address
                 );
                 Some(address)
@@ -1245,6 +1275,57 @@ impl SigningNode {
             Some(format!("0x{}", hex::encode(secret_key_bytes)))
         } else {
             None
+        }
+    }
+
+    /// Derive Ethereum address from private key bytes
+    fn derive_ethereum_address_from_private_key(&self, private_key_bytes: &[u8]) -> String {
+        // Create secp256k1 context
+        let secp = Secp256k1::new();
+
+        // Create secret key from bytes
+        let secret_key =
+            SecretKey::from_slice(private_key_bytes).expect("Invalid private key bytes");
+
+        // Step 2: Derive secp256k1 public key
+        let secp_pubkey = PublicKey::from_secret_key(&secp, &secret_key);
+
+        // Step 3: ETH address from uncompressed pubkey
+        let eth_address = {
+            let uncompressed = secp_pubkey.serialize_uncompressed(); // 65 bytes, [0x04 || x || y]
+            let hash = sha3::Keccak256::digest(&uncompressed[1..]); // skip 0x04
+            format!("0x{}", hex::encode(&hash[12..])) // last 20 bytes in green
+        };
+        eth_address
+    }
+
+    /// Derive Bitcoin testnet address from private key bytes
+    pub fn derive_bitcoin_testnet_address_from_private_key(
+        &self,
+        private_key_bytes: &[u8],
+    ) -> String {
+        // Step 1: Load private key
+        let secp = Secp256k1::new();
+        let secret_key = SecretKey::from_slice(private_key_bytes).expect("Invalid private key");
+
+        // Step 2: Derive public key
+        let public_key = PublicKey::from_secret_key(&secp, &secret_key);
+
+        // Step 3: Get compressed public key (33 bytes: 0x02/0x03 + 32 bytes X)
+        let _public_key_bytes = public_key.serialize();
+
+        // Step 4: Create Bitcoin address using bitcoin crate
+        // Convert to bitcoin's secp256k1 public key first
+        let bitcoin_secp = bitcoin::secp256k1::Secp256k1::new();
+        let bitcoin_secret_key = bitcoin::secp256k1::SecretKey::from_slice(private_key_bytes)
+            .expect("Invalid private key");
+        let bitcoin_public_key =
+            bitcoin::secp256k1::PublicKey::from_secret_key(&bitcoin_secp, &bitcoin_secret_key);
+
+        let bitcoin_pubkey = BitcoinPubKey::new(bitcoin_public_key);
+        match Address::p2wpkh(&bitcoin_pubkey, Network::Testnet) {
+            Ok(btc_address) => btc_address.to_string(),
+            Err(_) => "Invalid Bitcoin address".to_string(),
         }
     }
 }
