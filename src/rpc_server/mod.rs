@@ -5,7 +5,7 @@ use tokio::sync::mpsc;
 use tracing::{info, warn};
 use warp::Filter;
 
-use crate::types::{rpc::RPCRequest, ChannelMessage};
+use crate::types::{rpc::RPCRequest, ChannelMessage, DepositIntent};
 
 // Define the transaction types for the RPC server
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -77,10 +77,17 @@ pub async fn start_http_server(message_tx: mpsc::Sender<ChannelMessage>, port: u
     // POST /start_dkg
     let start_dkg = warp::path("start_dkg")
         .and(warp::post())
-        .and(with_message_tx(message_tx))
+        .and(with_message_tx(message_tx.clone()))
         .and_then(|message_tx| handle_start_dkg(message_tx));
 
-    let routes = submit_tx.or(get_status).or(start_dkg);
+    // POST /submit_intent
+    let submit_intent = warp::path("submit_intent")
+        .and(warp::post())
+        .and(warp::body::json())
+        .and(with_message_tx(message_tx))
+        .and_then(handle_submit_intent);
+
+    let routes = submit_tx.or(get_status).or(start_dkg).or(submit_intent);
 
     info!("🌐 Starting HTTP RPC server on port {}", port);
     warp::serve(routes).run(([127, 0, 0, 1], port)).await;
@@ -190,6 +197,58 @@ async fn handle_start_dkg(
         tx_hash: "dkg-start-request".to_string(),
         status: "initiated".to_string(),
         message: "DKG start request sent to P2P network".to_string(),
+    }))
+}
+
+async fn handle_submit_intent(
+    intent: DepositIntent,
+    message_tx: std::sync::Arc<tokio::sync::Mutex<mpsc::Sender<ChannelMessage>>>,
+) -> Result<impl warp::Reply, warp::Rejection> {
+    info!("🎯 HTTP: Received deposit intent: {:?}", intent);
+
+    let intent_hash = format!(
+        "0x{:x}",
+        sha2::Sha256::digest(format!("{:?}", intent).as_bytes())
+    );
+
+    // First, process the intent locally (this node will handle it)
+    info!("🔐 [LOCAL] Processing intent locally for signing");
+
+    // Send a special local processing message
+    let local_msg = ChannelMessage::LocalIntent {
+        intent: intent.clone(),
+    };
+
+    let tx_sender = message_tx.lock().await;
+    if let Err(e) = tx_sender.send(local_msg).await {
+        warn!("Failed to send intent for local processing: {:?}", e);
+        return Err(warp::reject::custom(TransactionError::NetworkError));
+    }
+
+    // Then broadcast to other nodes
+    let gossipsub_msg = crate::types::GossipsubMessage::Intent(intent.clone());
+    let intent_data = serde_json::to_vec(&gossipsub_msg).map_err(|e| {
+        warn!("Failed to serialize intent: {}", e);
+        warp::reject::custom(TransactionError::SerializationError)
+    })?;
+
+    if let Err(e) = tx_sender
+        .send(ChannelMessage::Broadcast {
+            topic: "intents".to_string(),
+            data: intent_data,
+        })
+        .await
+    {
+        warn!("Failed to send intent to network: {:?}", e);
+        return Err(warp::reject::custom(TransactionError::NetworkError));
+    }
+
+    info!("✅ HTTP: Intent submitted to network: {}", intent_hash);
+
+    Ok(warp::reply::json(&TransactionResponse {
+        tx_hash: intent_hash,
+        status: "submitted".to_string(),
+        message: "Deposit intent submitted to P2P network".to_string(),
     }))
 }
 

@@ -1,0 +1,18 @@
+# Qubertics RPC Configuration
+[qubertics]
+# RPC endpoint for Qubertics chain
+rpc_url = "https://rpc.qubertics.com"
+
+# Chain ID for Qubertics
+chain_id = 9029
+
+# Network name
+network_name = "qubertics"
+
+# Timeout for RPC calls (in seconds)
+timeout_seconds = 30
+
+# Retry configuration
+[qubertics.retry]
+max_retries = 3
+retry_delay_ms = 1000 

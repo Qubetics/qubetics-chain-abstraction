@@ -13,6 +13,7 @@ use rand::rngs::OsRng;
 use secp256k1::{self, ecdsa::RecoverableSignature, Message, PublicKey, Secp256k1, SecretKey};
 use secp256k1::{constants::CURVE_ORDER, ecdsa::RecoveryId};
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use sha2::Digest;
 
 use std::collections::HashMap;
@@ -116,6 +117,7 @@ pub struct SigningNode {
     secret_key_shares_by_round: Arc<RwLock<HashMap<u64, HashMap<String, SecretKeyShare>>>>, // round -> node_id -> secret_key_share
     final_nodes_by_round: Arc<RwLock<HashMap<u64, String>>>, // round -> final_node_id
     transaction_messages_by_round: Arc<RwLock<HashMap<u64, Vec<u8>>>>, // round -> transaction message
+    transactions_by_round: Arc<RwLock<HashMap<u64, crate::rpc_server::DummyTransaction>>>, // round -> transaction struct
     message_tx: mpsc::Sender<ChannelMessage>,
     vrf_selector: Option<VrfNodeSelector>, // VRF selector for node selection
     consensus_node: Option<ConsensusNode>, // Consensus node for final node selection
@@ -146,6 +148,7 @@ impl SigningNode {
             secret_key_shares_by_round: Arc::new(RwLock::new(HashMap::new())),
             final_nodes_by_round: Arc::new(RwLock::new(HashMap::new())),
             transaction_messages_by_round: Arc::new(RwLock::new(HashMap::new())),
+            transactions_by_round: Arc::new(RwLock::new(HashMap::new())),
             message_tx,
             vrf_selector: Some(VrfNodeSelector::new(peer_id)),
             consensus_node: Some(ConsensusNode::new()),
@@ -684,6 +687,55 @@ impl SigningNode {
                                 info!("  s: 0x{}", hex::encode(s));
                                 info!("  recovery_id: {}", recovery_id.to_i32());
                                 info!("  full_signature: 0x{}", hex::encode(signature_bytes));
+
+                                // Get the updated transaction for broadcasting
+                                let transaction_for_broadcast = {
+                                    let transactions_by_round =
+                                        self.transactions_by_round.read().await;
+                                    transactions_by_round.get(&round).cloned()
+                                };
+
+                                if let Some(transaction) = transaction_for_broadcast {
+                                    // Create the signed transaction RLP with actual signature values
+                                    let signed_transaction_rlp =
+                                        crate::utils::transaction::create_signed_transaction(
+                                            &transaction,
+                                            r,
+                                            s,
+                                            v,
+                                        );
+
+                                    let raw_transaction =
+                                        format!("0x{}", hex::encode(&signed_transaction_rlp));
+                                    info!("📡 [BROADCAST] Raw transaction: {}", raw_transaction);
+
+                                    match self
+                                        .broadcast_transaction(
+                                            &raw_transaction,
+                                            "https://rpc-testnet.qubetics.work",
+                                        )
+                                        .await
+                                    {
+                                        Ok(tx_hash) => {
+                                            println!("✅ Transaction sent successfully!");
+                                            println!("Transaction Hash: {}", tx_hash);
+                                            println!(
+                                            "View on Qubetics Scan :https://testnet.qubetics.work/tx/{}",
+                                            tx_hash
+                                        );
+                                        }
+                                        Err(e) => {
+                                            println!("❌ Failed to broadcast transaction: {}", e);
+                                            println!("This might be due to:");
+                                            println!("  - Insufficient balance for gas");
+                                            println!("  - Network issues");
+                                            println!("  - Invalid nonce");
+                                            println!("  - RPC endpoint issues");
+                                        }
+                                    }
+                                } else {
+                                    println!("❌ Could not find transaction for broadcasting");
+                                }
                             }
                             Err(e) => {
                                 error!("❌ [SIGNING] Failed to create signature from aggregated private key: {}", e);
@@ -711,6 +763,38 @@ impl SigningNode {
         }
 
         Ok(())
+    }
+
+    async fn broadcast_transaction(
+        &self,
+        raw_tx: &str,
+        rpc_url: &str,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        let client = reqwest::Client::new();
+
+        let request_body = json!({
+            "jsonrpc": "2.0",
+            "method": "eth_sendRawTransaction",
+            "params": [raw_tx],
+            "id": 1
+        });
+
+        let response = client
+            .post(rpc_url)
+            .header("Content-Type", "application/json")
+            .json(&request_body)
+            .send()
+            .await?;
+
+        let response_json: Value = response.json().await?;
+
+        if let Some(result) = response_json.get("result") {
+            Ok(result.as_str().unwrap().to_string())
+        } else if let Some(error) = response_json.get("error") {
+            Err(format!("RPC Error: {}", error).into())
+        } else {
+            Err("Unknown error occurred".into())
+        }
     }
 
     async fn handle_secret_share_request(
@@ -789,7 +873,7 @@ impl SigningNode {
             .ok_or_else(|| anyhow!("No private key available"))?;
 
         // Get the transaction message for this round
-        let transaction_message = {
+        let mut transaction_message = {
             let transaction_messages_by_round = self.transaction_messages_by_round.read().await;
             transaction_messages_by_round
                 .get(&round)
@@ -797,13 +881,63 @@ impl SigningNode {
                 .clone()
         };
 
+        // Fetch nonce from Qubertics chain
+        let nonce = self.fetch_nonce_from_qubertics_chain().await?;
+        info!(
+            "🔍 [QUBERTICS] Fetched nonce: {} for round {}",
+            nonce, round
+        );
+
+        // Get the stored transaction struct and update its nonce
+        let original_transaction = {
+            let transactions_by_round = self.transactions_by_round.read().await;
+            transactions_by_round.get(&round).cloned()
+        };
+
+        if let Some(mut transaction) = original_transaction {
+            info!(
+                "🔍 [QUBERTICS] Found stored transaction, updating nonce from {} to {}",
+                transaction.nonce, nonce
+            );
+
+            // Update the nonce and chain ID
+            transaction.nonce = nonce;
+            transaction.chain_id = 9029; // Qubertics chain ID
+
+            info!("🔍 [QUBERTICS] Updated transaction: {:?}", transaction);
+
+            // Convert the updated transaction to RLP bytes for signing
+            let updated_rlp_bytes =
+                crate::utils::transaction::create_transaction_for_signing(&transaction);
+            transaction_message = updated_rlp_bytes;
+
+            // Update the stored transaction message for this round
+            {
+                let mut transaction_messages_by_round =
+                    self.transaction_messages_by_round.write().await;
+                transaction_messages_by_round.insert(round, transaction_message.clone());
+            }
+
+            // Update the stored transaction struct
+            {
+                let mut transactions_by_round = self.transactions_by_round.write().await;
+                transactions_by_round.insert(round, transaction);
+            }
+
+            info!(
+                "✅ [SIGNING] Successfully updated transaction with new nonce and converted to RLP"
+            );
+        } else {
+            info!("⚠️ [SIGNING] Could not find stored transaction for round {}, using original transaction message", round);
+        }
+
         // Hash the transaction message to get a 32-byte hash for signing
         let mut hasher = sha3::Keccak256::new();
         hasher.update(&transaction_message);
         let message_hash = hasher.finalize();
 
         info!(
-            "🔐 [SIGNING] Transaction message length: {} bytes, hash: 0x{}",
+            "🔐 [SIGNING] Final transaction message length: {} bytes, hash: 0x{}",
             transaction_message.len(),
             hex::encode(&message_hash)
         );
@@ -815,8 +949,254 @@ impl SigningNode {
         let secp = Secp256k1::new();
         let signature = secp.sign_ecdsa_recoverable(&msg, &secret_key);
 
-        info!("✅ [SIGNING] Created signature from node's private key for transaction message");
+        info!("✅ [SIGNING] Created signature from node's private key");
         Ok(signature)
+    }
+
+    /// Fetch nonce from Qubertics chain
+    async fn fetch_nonce_from_qubertics_chain(&self) -> Result<u64> {
+        info!("🔍 [QUBERTICS] Fetching nonce from Qubertics chain");
+
+        // Get the Ethereum address for this node
+        let ethereum_address = self
+            .get_ethereum_address()
+            .ok_or_else(|| anyhow!("No Ethereum address available"))?;
+
+        info!(
+            "🔍 [QUBERTICS] Fetching nonce for address: {}",
+            ethereum_address
+        );
+
+        // Make RPC call to Qubertics chain
+        let nonce = self
+            .make_rpc_call_to_qubertics(
+                "eth_getTransactionCount",
+                vec![ethereum_address, "latest".to_string()],
+            )
+            .await?;
+
+        info!(
+            "🔍 [QUBERTICS] Retrieved nonce: {} from Qubertics chain",
+            nonce
+        );
+
+        Ok(nonce)
+    }
+
+    async fn fetch_nonce_from_sepolia_chain(&self) -> Result<u64> {
+        info!("🔍 [SEPOLIA] Fetching nonce from Sepolia testnet");
+
+        // Get the Ethereum address for this node
+        let ethereum_address = self
+            .get_ethereum_address()
+            .ok_or_else(|| anyhow!("No Ethereum address available"))?;
+
+        info!(
+            "🔍 [SEPOLIA] Fetching nonce for address: {}",
+            ethereum_address
+        );
+
+        // Make RPC call to Sepolia testnet
+        let nonce = self
+            .make_rpc_call_to_sepolia(
+                "eth_getTransactionCount",
+                vec![ethereum_address, "latest".to_string()],
+            )
+            .await?;
+
+        info!(
+            "🔍 [SEPOLIA] Retrieved nonce: {} from Sepolia testnet",
+            nonce
+        );
+
+        Ok(nonce)
+    }
+
+    /// Make RPC call to Sepolia testnet
+    async fn make_rpc_call_to_sepolia(&self, method: &str, params: Vec<String>) -> Result<u64> {
+        // Sepolia RPC endpoint
+        let rpc_url = "https://sepolia.infura.io/v3/9aa3d95b3bc440fa88ea12eaa4456161";
+
+        info!("🌐 [SEPOLIA] Making RPC call to: {}", rpc_url);
+        info!("📋 [SEPOLIA] Method: {}, Params: {:?}", method, params);
+
+        // Create the JSON-RPC request
+        let request_body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": method,
+            "params": params
+        });
+
+        info!(
+            "📤 [SEPOLIA] Request body: {}",
+            serde_json::to_string_pretty(&request_body)?
+        );
+
+        // Make HTTP POST request with retry logic
+        let max_retries = 3;
+        let mut last_error = None;
+
+        for attempt in 1..=max_retries {
+            info!("🔄 [SEPOLIA] Attempt {}/{}", attempt, max_retries);
+
+            let client = reqwest::Client::new();
+            let response = client
+                .post(rpc_url)
+                .header("Content-Type", "application/json")
+                .body(serde_json::to_string(&request_body)?)
+                .timeout(std::time::Duration::from_secs(30))
+                .send()
+                .await;
+
+            match response {
+                Ok(response) => {
+                    // Process successful response
+                    return self.process_rpc_response(response).await;
+                }
+                Err(e) => {
+                    let error_msg = e.to_string();
+                    last_error = Some(e);
+                    if attempt < max_retries {
+                        info!(
+                            "⚠️ [SEPOLIA] Attempt {} failed: {}. Retrying...",
+                            attempt, error_msg
+                        );
+                        tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+                    } else {
+                        info!("❌ [SEPOLIA] All {} attempts failed", max_retries);
+                    }
+                }
+            }
+        }
+
+        Err(anyhow!(
+            "Failed to make RPC request after {} attempts: {:?}",
+            max_retries,
+            last_error
+        ))
+    }
+
+    /// Make RPC call to Qubertics chain
+    async fn make_rpc_call_to_qubertics(&self, method: &str, params: Vec<String>) -> Result<u64> {
+        // Qubertics RPC endpoint - you can make this configurable
+        let rpc_url = std::env::var("QUBERTICS_RPC_URL")
+            .unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string());
+
+        info!("🌐 [QUBERTICS] Making RPC call to: {}", rpc_url);
+        info!("📋 [QUBERTICS] Method: {}, Params: {:?}", method, params);
+
+        // Create the JSON-RPC request
+        let request_body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": method,
+            "params": params
+        });
+
+        info!(
+            "📤 [QUBERTICS] Request body: {}",
+            serde_json::to_string_pretty(&request_body)?
+        );
+
+        // Make HTTP POST request with retry logic
+        let max_retries = 3;
+        let mut last_error = None;
+
+        for attempt in 1..=max_retries {
+            info!("🔄 [QUBERTICS] Attempt {}/{}", attempt, max_retries);
+
+            let client = reqwest::Client::new();
+            let response = client
+                .post(&rpc_url)
+                .header("Content-Type", "application/json")
+                .body(serde_json::to_string(&request_body)?)
+                .timeout(std::time::Duration::from_secs(30))
+                .send()
+                .await;
+
+            match response {
+                Ok(response) => {
+                    // Process successful response
+                    return self.process_rpc_response(response).await;
+                }
+                Err(e) => {
+                    let error_msg = e.to_string();
+                    last_error = Some(e);
+                    if attempt < max_retries {
+                        info!(
+                            "⚠️ [QUBERTICS] Attempt {} failed: {}. Retrying...",
+                            attempt, error_msg
+                        );
+                        tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+                    } else {
+                        info!("❌ [QUBERTICS] All {} attempts failed", max_retries);
+                    }
+                }
+            }
+        }
+
+        Err(anyhow!(
+            "Failed to make RPC request after {} attempts: {:?}",
+            max_retries,
+            last_error
+        ))
+    }
+
+    /// Process RPC response and extract nonce
+    async fn process_rpc_response(&self, response: reqwest::Response) -> Result<u64> {
+        let status = response.status();
+        info!("📥 [QUBERTICS] Response status: {}", status);
+
+        if !status.is_success() {
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
+            return Err(anyhow!(
+                "RPC request failed with status {}: {}",
+                status,
+                error_text
+            ));
+        }
+
+        let response_text = response
+            .text()
+            .await
+            .map_err(|e| anyhow!("Failed to read response body: {}", e))?;
+
+        info!("📥 [QUBERTICS] Response body: {}", response_text);
+
+        // Parse the JSON-RPC response
+        let response_json: serde_json::Value = serde_json::from_str(&response_text)
+            .map_err(|e| anyhow!("Failed to parse JSON response: {}", e))?;
+
+        // Check for JSON-RPC error
+        if let Some(error) = response_json.get("error") {
+            return Err(anyhow!("JSON-RPC error: {}", error));
+        }
+
+        // Extract the result
+        let result = response_json
+            .get("result")
+            .ok_or_else(|| anyhow!("No 'result' field in response"))?;
+
+        // Parse the hex nonce value
+        let nonce_hex = result
+            .as_str()
+            .ok_or_else(|| anyhow!("Result is not a string"))?;
+
+        // Remove "0x" prefix if present and parse as hex
+        let nonce_hex_clean = nonce_hex.strip_prefix("0x").unwrap_or(nonce_hex);
+        let nonce = u64::from_str_radix(nonce_hex_clean, 16)
+            .map_err(|e| anyhow!("Failed to parse nonce hex '{}': {}", nonce_hex, e))?;
+
+        info!(
+            "✅ [QUBERTICS] Successfully parsed nonce: {} from hex: {}",
+            nonce, nonce_hex
+        );
+
+        Ok(nonce)
     }
 
     pub async fn broadcast_secret_key_share(&mut self, round: u64) -> Result<()> {
@@ -1327,5 +1707,117 @@ impl SigningNode {
             Ok(btc_address) => btc_address.to_string(),
             Err(_) => "Invalid Bitcoin address".to_string(),
         }
+    }
+
+    /// Process a deposit intent and create the appropriate transaction based on target chain
+    pub async fn process_intent(&mut self, intent: crate::types::DepositIntent) -> Result<()> {
+        info!("🎯 [INTENT] Processing deposit intent: {:?}", intent);
+        info!(
+            "🔗 [INTENT] Source chain: {}, Target chain: {}",
+            intent.source_chain, intent.target_chain
+        );
+        info!(
+            "💰 [INTENT] Amount: {} {} -> {}",
+            intent.amount, intent.source_token, intent.target_token
+        );
+
+        match intent.target_chain.to_lowercase().as_str() {
+            "ethereum" | "evm" | "eth" => {
+                info!("🏦 [INTENT] Creating Ethereum transaction");
+                self.create_ethereum_transaction_from_intent(&intent)
+                    .await?;
+            }
+            "bitcoin" | "btc" => {
+                info!("₿ [INTENT] Creating Bitcoin transaction");
+                self.create_bitcoin_transaction_from_intent(&intent).await?;
+            }
+            _ => {
+                warn!(
+                    "❌ [INTENT] Unsupported target chain: {}",
+                    intent.target_chain
+                );
+                return Err(anyhow!("Unsupported target chain: {}", intent.target_chain));
+            }
+        }
+
+        info!("✅ [INTENT] Intent processing completed successfully");
+        Ok(())
+    }
+
+    /// Create an Ethereum transaction from a deposit intent
+    async fn create_ethereum_transaction_from_intent(
+        &mut self,
+        intent: &crate::types::DepositIntent,
+    ) -> Result<()> {
+        info!("🏦 [ETH] Creating Ethereum transaction from intent");
+
+        // Create a transaction from the intent data
+        let transaction = crate::rpc_server::DummyTransaction {
+            to: intent.target_address.clone(),
+            value: intent.amount.to_string(),
+            nonce: 0, // Will be updated with actual nonce from chain
+            gas_limit: 21000,
+            gas_price: "20000000000".to_string(), // 20 gwei
+            chain_id: 9029,                       // Qubertics chain ID
+        };
+
+        info!(
+            "🏦 [ETH] Created transaction from intent: {:?}",
+            transaction
+        );
+
+        // Store the transaction struct for later nonce updates
+        let current_round = self.curr_round;
+        {
+            let mut transactions_by_round = self.transactions_by_round.write().await;
+            transactions_by_round.insert(current_round, transaction.clone());
+        }
+
+        // Convert transaction to bytes for signing using RLP encoding
+        let tx_bytes = crate::utils::transaction::create_transaction_for_signing(&transaction);
+        info!(
+            "🏦 [ETH] Transaction bytes for signing: 0x{}",
+            hex::encode(&tx_bytes)
+        );
+
+        // Sign the transaction
+        self.sign_message(tx_bytes, &transaction).await?;
+
+        info!("✅ [ETH] Ethereum transaction created and signed successfully");
+        Ok(())
+    }
+
+    /// Create a Bitcoin transaction from a deposit intent
+    async fn create_bitcoin_transaction_from_intent(
+        &mut self,
+        intent: &crate::types::DepositIntent,
+    ) -> Result<()> {
+        info!("₿ [BTC] Creating Bitcoin transaction from intent");
+
+        // For Bitcoin, we'll create a simple transaction structure
+        // In a real implementation, you'd need to handle UTXOs, fees, etc.
+
+        if self.private_key.is_none() {
+            return Err(anyhow!("No private key available for Bitcoin transaction"));
+        }
+
+        let private_key_bytes = self.private_key.as_ref().unwrap().secret_bytes();
+
+        // Create a simple Bitcoin transaction (this is a simplified version)
+        // In practice, you'd need to:
+        // 1. Get UTXOs for the source address
+        // 2. Calculate fees
+        // 3. Create proper inputs and outputs
+        // 4. Sign the transaction
+
+        info!("₿ [BTC] Bitcoin transaction creation initiated");
+        info!("₿ [BTC] Target address: {}", intent.target_address);
+        info!("₿ [BTC] Amount: {} sats", intent.amount);
+
+        // For now, we'll just log the intent and create a placeholder transaction
+        // You can extend this to create actual Bitcoin transactions using the bitcoin crate
+
+        info!("✅ [BTC] Bitcoin transaction creation completed (placeholder)");
+        Ok(())
     }
 }

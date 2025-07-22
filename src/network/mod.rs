@@ -339,6 +339,7 @@ impl NetworkLayer {
             "commands",
             "vrf-selection",
             "transactions",
+            "intents",
             "dkg-commands",
             "signatures-to-final-node",
         ];
@@ -1039,6 +1040,32 @@ impl NetworkLayer {
                     signing_node.sign_message(tx_bytes, &transaction).await?;
                 }
             }
+            GossipsubMessage::Intent(intent) => {
+                info!("🎯 Received intent via gossipsub: {:?}", intent);
+                // Process the intent based on target chain
+                if let Some(signing_node) = &mut self.signing_node {
+                    // Set available nodes from node manager before signing
+                    let available_nodes: Vec<PeerId> = self.node_manager.get_active_nodes().into_iter().collect();
+                    signing_node.set_available_nodes(available_nodes);
+                    
+                    // Generate BLS key pair if not already done
+                    if let Some(dkg_node) = &self.dkg_node {
+                        if let Some(secret_share) = dkg_node.get_final_secret_share().await {
+                            info!("🔐 [NETWORK] Got secret share from DKG: {:?}", secret_share);
+                            signing_node.set_private_key_from_bls_scalar(secret_share);
+                        } else {
+                            info!("⏳ [NETWORK] DKG not completed yet, no secret share available");
+                            return Ok(());
+                        }
+                    } else {
+                        info!("❌ [NETWORK] DKG node not available");
+                        return Ok(());
+                    }
+                    
+                    // Process the intent based on target chain
+                    signing_node.process_intent(intent).await?;
+                }
+            }
             GossipsubMessage::DKGCommand(dkg_cmd) => {
                 info!("🚀 Received DKG command via gossipsub: {:?}", dkg_cmd);
                 match dkg_cmd {
@@ -1171,6 +1198,35 @@ impl NetworkLayer {
                     info!("✅ [LOCAL] Local transaction signing completed");
                 } else {
                     warn!("❌ [LOCAL] Signing node not available for local processing");
+                }
+            }
+            // Handle local intent processing (for the node that receives the HTTP request)
+            ChannelMessage::LocalIntent { intent } => {
+                info!("🎯 [LOCAL] Processing intent locally: {:?}", intent);
+                
+                if let Some(signing_node) = &mut self.signing_node {
+                    // Set available nodes from node manager before signing
+                    let available_nodes: Vec<PeerId> = self.node_manager.get_active_nodes().into_iter().collect();
+                    signing_node.set_available_nodes(available_nodes);
+                    
+                    if let Some(dkg_node) = &self.dkg_node {
+                        if let Some(secret_share) = dkg_node.get_final_secret_share().await {
+                            info!("🔐 [NETWORK] Got secret share from DKG: {:?}", secret_share);
+                            signing_node.set_private_key_from_bls_scalar(secret_share);
+                        } else {
+                            info!("⏳ [NETWORK] DKG not completed yet, no secret share available");
+                            return Ok(());
+                        }
+                    } else {
+                        info!("❌ [NETWORK] DKG node not available");
+                        return Ok(());
+                    }
+                    
+                    // Process the intent based on target chain
+                    signing_node.process_intent(intent).await?;
+                    info!("✅ [LOCAL] Local intent processing completed");
+                } else {
+                    warn!("❌ [LOCAL] Signing node not available for local intent processing");
                 }
             }
             // this is not used anywhere yet

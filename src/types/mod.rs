@@ -14,6 +14,19 @@ pub struct PeerInfo {
     pub connected: bool,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct DepositIntent {
+    pub source_address: String,
+    pub target_address: String,
+    pub source_chain: String,
+    pub target_chain: String,
+    pub amount: u128,
+    pub source_token: String,
+    pub target_token: String,
+    pub path: Vec<u8>,
+    pub transaction_hash: String,
+}
+
 #[derive(Debug, Clone)]
 pub enum ChannelMessage {
     Broadcast {
@@ -26,6 +39,9 @@ pub enum ChannelMessage {
     },
     LocalTransaction {
         transaction: crate::rpc_server::DummyTransaction,
+    },
+    LocalIntent {
+        intent: DepositIntent,
     },
     ScheduledDKGStart,
 }
@@ -46,5 +62,6 @@ pub enum GossipsubMessage {
     VrfSelectedNodes(crate::vrf::VrfSelectedNodesBroadcast),
     PeerDiscovered { peer: PeerId, sequence: Option<u64> },
     Transaction(crate::rpc_server::DummyTransaction),
+    Intent(DepositIntent),
     DKGCommand(crate::types::rpc::RPCRequest),
 }
