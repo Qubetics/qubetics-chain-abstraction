@@ -1,6 +1,7 @@
 use crate::consensus::{ConsensusMessage, ConsensusNode, ConsensusResult};
 use crate::rpc_server::DummyTransaction;
 use crate::types::{p2p::SerializablePeerId, ChannelMessage};
+use crate::utils::bitcoin_transaction::{BitcoinTransactionRequest, create_and_sign_bitcoin_transaction};
 use crate::vrf::VrfNodeSelector;
 use anyhow::anyhow;
 use anyhow::Result;
@@ -14,7 +15,7 @@ use secp256k1::{self, ecdsa::RecoverableSignature, Message, PublicKey, Secp256k1
 use secp256k1::{constants::CURVE_ORDER, ecdsa::RecoveryId};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use sha2::Digest;
+use sha2::{Digest, Sha256};
 
 use std::collections::HashMap;
 use std::str::FromStr;
@@ -118,6 +119,7 @@ pub struct SigningNode {
     final_nodes_by_round: Arc<RwLock<HashMap<u64, String>>>, // round -> final_node_id
     transaction_messages_by_round: Arc<RwLock<HashMap<u64, Vec<u8>>>>, // round -> transaction message
     transactions_by_round: Arc<RwLock<HashMap<u64, crate::rpc_server::DummyTransaction>>>, // round -> transaction struct
+    intents_by_round: Arc<RwLock<HashMap<u64, crate::types::DepositIntent>>>, // round -> deposit intent
     message_tx: mpsc::Sender<ChannelMessage>,
     vrf_selector: Option<VrfNodeSelector>, // VRF selector for node selection
     consensus_node: Option<ConsensusNode>, // Consensus node for final node selection
@@ -149,6 +151,7 @@ impl SigningNode {
             final_nodes_by_round: Arc::new(RwLock::new(HashMap::new())),
             transaction_messages_by_round: Arc::new(RwLock::new(HashMap::new())),
             transactions_by_round: Arc::new(RwLock::new(HashMap::new())),
+            intents_by_round: Arc::new(RwLock::new(HashMap::new())),
             message_tx,
             vrf_selector: Some(VrfNodeSelector::new(peer_id)),
             consensus_node: Some(ConsensusNode::new()),
@@ -289,7 +292,6 @@ impl SigningNode {
     pub async fn sign_message(
         &mut self,
         message: Vec<u8>,
-        _transaction: &DummyTransaction,
     ) -> Result<()> {
         if self.private_key.is_none() {
             error!(
@@ -312,10 +314,8 @@ impl SigningNode {
 
         // Get available nodes before the mutable borrow
         let available_nodes = self.get_available_nodes_from_manager().await;
-        let round = self.next_round;
-        self.curr_round = round; // Set current round to the next round
-        self.next_round += 1; // Increment round for next signing operation
-                              // Generate VRF proof for this signing operation
+        let round = self.curr_round;
+        // Generate VRF proof for this signing operation
         if let Some(vrf_selector) = &mut self.vrf_selector {
             let selection_result = vrf_selector.select_mpc_nodes(&available_nodes, 1, round);
             info!(
@@ -435,7 +435,7 @@ impl SigningNode {
             b"FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141",
             16,
         )
-        .unwrap();
+        .expect("Hardcoded curve order should be valid");
 
         // 8) k⁻¹ mod n
         let k_inv = BigUint::from_bytes_be(&k_bytes)
@@ -513,7 +513,10 @@ impl SigningNode {
                     "📥 [SIGNING] Node {} received secret key share from {}",
                     self.id, from
                 );
-                self.handle_secret_key_share(from, secret_key_share).await?;
+                if let Err(e) = self.handle_secret_key_share(from, secret_key_share).await {
+                    error!("❌ [SIGNING] Failed to handle secret key share: {}", e);
+                    // Log the error but don't propagate it to prevent panic
+                }
             }
             SigningMessage::SignedMessage {
                 from,
@@ -606,7 +609,7 @@ impl SigningNode {
                     let secret_key_shares_by_round = self.secret_key_shares_by_round.read().await;
                     secret_key_shares_by_round
                         .get(&round)
-                        .unwrap()
+                        .ok_or_else(|| anyhow!("No secret key shares found for round {}", round))?
                         .values()
                         .cloned()
                         .collect()
@@ -672,73 +675,13 @@ impl SigningNode {
                             aggregated_public_key
                         );
 
-                        // Create signature from aggregated secret key
-                        match self.create_signature_from_private_key(round).await {
-                            Ok(signature) => {
-                                info!("✅ [SIGNING] Created signature from aggregated secret key for round {}", round);
-                                let (recovery_id, signature_bytes) = signature.serialize_compact();
-                                let v: u64 = recovery_id.to_i32() as u64 + 35 + 1043 * 2;
-                                let r = &signature_bytes[0..32];
-                                let s = &signature_bytes[32..64];
-
-                                info!("🔐 [SIGNING] Final signature components:");
-                                info!("  v: {}", v);
-                                info!("  r: 0x{}", hex::encode(r));
-                                info!("  s: 0x{}", hex::encode(s));
-                                info!("  recovery_id: {}", recovery_id.to_i32());
-                                info!("  full_signature: 0x{}", hex::encode(signature_bytes));
-
-                                // Get the updated transaction for broadcasting
-                                let transaction_for_broadcast = {
-                                    let transactions_by_round =
-                                        self.transactions_by_round.read().await;
-                                    transactions_by_round.get(&round).cloned()
-                                };
-
-                                if let Some(transaction) = transaction_for_broadcast {
-                                    // Create the signed transaction RLP with actual signature values
-                                    let signed_transaction_rlp =
-                                        crate::utils::transaction::create_signed_transaction(
-                                            &transaction,
-                                            r,
-                                            s,
-                                            v,
-                                        );
-
-                                    let raw_transaction =
-                                        format!("0x{}", hex::encode(&signed_transaction_rlp));
-                                    info!("📡 [BROADCAST] Raw transaction: {}", raw_transaction);
-
-                                    match self
-                                        .broadcast_transaction(
-                                            &raw_transaction,
-                                            "https://rpc-testnet.qubetics.work",
-                                        )
-                                        .await
-                                    {
-                                        Ok(tx_hash) => {
-                                            println!("✅ Transaction sent successfully!");
-                                            println!("Transaction Hash: {}", tx_hash);
-                                            println!(
-                                            "View on Qubetics Scan :https://testnet.qubetics.work/tx/{}",
-                                            tx_hash
-                                        );
-                                        }
-                                        Err(e) => {
-                                            println!("❌ Failed to broadcast transaction: {}", e);
-                                            println!("This might be due to:");
-                                            println!("  - Insufficient balance for gas");
-                                            println!("  - Network issues");
-                                            println!("  - Invalid nonce");
-                                            println!("  - RPC endpoint issues");
-                                        }
-                                    }
-                                } else {
-                                    println!("❌ Could not find transaction for broadcasting");
-                                }
+                        // Create signature and transaction based on stored intent
+                        match self.create_signature_and_transaction_from_intent(round).await {
+                            Ok(_) => {
+                                info!("✅ [SIGNING] Transaction created and broadcasted successfully for round {}", round);
                             }
                             Err(e) => {
-                                error!("❌ [SIGNING] Failed to create signature from aggregated private key: {}", e);
+                                error!("❌ [SIGNING] Failed to create signature and transaction: {}", e);
                                 return Err(e);
                             }
                         }
@@ -1709,7 +1652,7 @@ impl SigningNode {
         }
     }
 
-    /// Process a deposit intent and create the appropriate transaction based on target chain
+        /// Process a deposit intent and create the appropriate transaction based on target chain
     pub async fn process_intent(&mut self, intent: crate::types::DepositIntent) -> Result<()> {
         info!("🎯 [INTENT] Processing deposit intent: {:?}", intent);
         info!(
@@ -1720,27 +1663,27 @@ impl SigningNode {
             "💰 [INTENT] Amount: {} {} -> {}",
             intent.amount, intent.source_token, intent.target_token
         );
-
-        match intent.target_chain.to_lowercase().as_str() {
-            "ethereum" | "evm" | "eth" => {
-                info!("🏦 [INTENT] Creating Ethereum transaction");
-                self.create_ethereum_transaction_from_intent(&intent)
-                    .await?;
-            }
-            "bitcoin" | "btc" => {
-                info!("₿ [INTENT] Creating Bitcoin transaction");
-                self.create_bitcoin_transaction_from_intent(&intent).await?;
-            }
-            _ => {
-                warn!(
-                    "❌ [INTENT] Unsupported target chain: {}",
-                    intent.target_chain
-                );
-                return Err(anyhow!("Unsupported target chain: {}", intent.target_chain));
-            }
+        self.curr_round = self.next_round; // Set current round to the next round
+        self.next_round += 1; // Increment round for next signing operation
+        
+        // Store the intent for this round
+        let current_round = self.curr_round;
+        {
+            let mut intents_by_round = self.intents_by_round.write().await;
+            intents_by_round.insert(current_round, intent.clone());
+            info!("💾 [INTENT] Stored intent for round {}", current_round);
         }
 
-        info!("✅ [INTENT] Intent processing completed successfully");
+        // Create a message to sign (same for both EVM and BTC)
+        let intent_hash = format!("{:?}", intent);
+        let message_bytes = intent_hash.as_bytes().to_vec();
+
+        info!("🔐 [INTENT] Starting signing process for round {}", current_round);
+        
+        // Use the same signing flow for both EVM and BTC (just sharing secret shares)
+        self.sign_message(message_bytes).await?;
+
+        info!("✅ [INTENT] Intent processing and signing initiated successfully");
         Ok(())
     }
 
@@ -1781,43 +1724,196 @@ impl SigningNode {
         );
 
         // Sign the transaction
-        self.sign_message(tx_bytes, &transaction).await?;
+        self.sign_message(tx_bytes).await?;
 
         info!("✅ [ETH] Ethereum transaction created and signed successfully");
         Ok(())
     }
 
-    /// Create a Bitcoin transaction from a deposit intent
-    async fn create_bitcoin_transaction_from_intent(
-        &mut self,
-        intent: &crate::types::DepositIntent,
-    ) -> Result<()> {
-        info!("₿ [BTC] Creating Bitcoin transaction from intent");
+    /// Create signature and transaction based on stored intent (handles both EVM and BTC)
+    async fn create_signature_and_transaction_from_intent(&self, round: u64) -> Result<()> {
+        info!("🔐 [SIGNING] Creating signature and transaction for round {}", round);
 
-        // For Bitcoin, we'll create a simple transaction structure
-        // In a real implementation, you'd need to handle UTXOs, fees, etc.
+        // Get the stored intent for this round
+        let intent = {
+            let intents_by_round = self.intents_by_round.read().await;
+            intents_by_round.get(&round).cloned()
+        };
 
-        if self.private_key.is_none() {
-            return Err(anyhow!("No private key available for Bitcoin transaction"));
+        if let Some(intent) = intent {
+            info!("🎯 [SIGNING] Found intent for round {}: {:?}", round, intent);
+            
+            match intent.target_chain.to_lowercase().as_str() {
+                "ethereum" | "evm" | "eth" => {
+                    info!("🏦 [SIGNING] Processing EVM transaction for round {}", round);
+                    self.create_and_broadcast_evm_transaction(round).await?;
+                }
+                "bitcoin" | "btc" => {
+                    info!("₿ [SIGNING] Processing Bitcoin transaction for round {}", round);
+                    self.create_and_broadcast_bitcoin_transaction(&intent).await?;
+                }
+                _ => {
+                    warn!("❌ [SIGNING] Unsupported target chain: {}", intent.target_chain);
+                    return Err(anyhow!("Unsupported target chain: {}", intent.target_chain));
+                }
+            }
+        } else {
+            error!("❌ [SIGNING] No intent found for round {}", round);
+            return Err(anyhow!("No intent found for round {}", round));
         }
 
-        let private_key_bytes = self.private_key.as_ref().unwrap().secret_bytes();
+        Ok(())
+    }
 
-        // Create a simple Bitcoin transaction (this is a simplified version)
-        // In practice, you'd need to:
-        // 1. Get UTXOs for the source address
-        // 2. Calculate fees
-        // 3. Create proper inputs and outputs
-        // 4. Sign the transaction
+    /// Create and broadcast EVM transaction
+    async fn create_and_broadcast_evm_transaction(&self, round: u64) -> Result<()> {
+        info!("🏦 [ETH] Creating and broadcasting EVM transaction for round {}", round);
+        
+        // For EVM transactions, we need to create the transaction first
+        let intent = {
+            let intents_by_round = self.intents_by_round.read().await;
+            intents_by_round.get(&round).cloned()
+        };
 
-        info!("₿ [BTC] Bitcoin transaction creation initiated");
+        if let Some(intent) = intent {
+            // Create EVM transaction from intent
+            let transaction = crate::rpc_server::DummyTransaction {
+                to: intent.target_address.clone(),
+                value: intent.amount.to_string(),
+                nonce: 0, // Will be updated with actual nonce from chain
+                gas_limit: 21000,
+                gas_price: "20000000000".to_string(), // 20 gwei
+                chain_id: 9029, // Qubertics chain ID
+            };
+
+            // Store the transaction for this round
+            {
+                let mut transactions_by_round = self.transactions_by_round.write().await;
+                transactions_by_round.insert(round, transaction.clone());
+            }
+
+            // Convert transaction to bytes for signing using RLP encoding
+            let tx_bytes = crate::utils::transaction::create_transaction_for_signing(&transaction);
+            info!("🏦 [ETH] Transaction bytes for signing: 0x{}", hex::encode(&tx_bytes));
+
+            // Store the transaction message for this round
+            {
+                let mut transaction_messages_by_round = self.transaction_messages_by_round.write().await;
+                transaction_messages_by_round.insert(round, tx_bytes.clone());
+            }
+
+            // Now create signature and broadcast
+            match self.create_signature_from_private_key(round).await {
+                Ok(signature) => {
+                    info!("✅ [SIGNING] Created signature from aggregated secret key for round {}", round);
+                    let (recovery_id, signature_bytes) = signature.serialize_compact();
+                    let v: u64 = recovery_id.to_i32() as u64 + 35 + 1043 * 2;
+                    let r = &signature_bytes[0..32];
+                    let s = &signature_bytes[32..64];
+
+                    info!("🔐 [SIGNING] Final signature components:");
+                    info!("  v: {}", v);
+                    info!("  r: 0x{}", hex::encode(r));
+                    info!("  s: 0x{}", hex::encode(s));
+                    info!("  recovery_id: {}", recovery_id.to_i32());
+                    info!("  full_signature: 0x{}", hex::encode(signature_bytes));
+
+                    // Create the signed transaction RLP with actual signature values
+                    let signed_transaction_rlp =
+                        crate::utils::transaction::create_signed_transaction(
+                            &transaction,
+                            r,
+                            s,
+                            v,
+                        );
+
+                    let raw_transaction =
+                        format!("0x{}", hex::encode(&signed_transaction_rlp));
+                    info!("📡 [BROADCAST] Raw transaction: {}", raw_transaction);
+
+                    match self
+                        .broadcast_transaction(
+                            &raw_transaction,
+                            "https://rpc-testnet.qubetics.work",
+                        )
+                        .await
+                    {
+                        Ok(tx_hash) => {
+                            println!("✅ Transaction sent successfully!");
+                            println!("Transaction Hash: {}", tx_hash);
+                            println!(
+                                "View on Qubetics Scan: https://testnet.qubetics.work/tx/{}",
+                                tx_hash
+                            );
+                        }
+                        Err(e) => {
+                            println!("❌ Failed to broadcast transaction: {}", e);
+                            println!("This might be due to:");
+                            println!("  - Insufficient balance for gas");
+                            println!("  - Network issues");
+                            println!("  - Invalid nonce");
+                            println!("  - RPC endpoint issues");
+                            return Err(anyhow!("Broadcast error: {}", e));
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!("❌ [SIGNING] Failed to create signature from aggregated private key: {}", e);
+                    return Err(e);
+                }
+            }
+        } else {
+            error!("❌ [SIGNING] No intent found for round {}", round);
+            return Err(anyhow!("No intent found for round {}", round));
+        }
+
+        Ok(())
+    }
+
+    /// Create and broadcast Bitcoin transaction
+    async fn create_and_broadcast_bitcoin_transaction(
+        &self,
+        intent: &crate::types::DepositIntent,
+    ) -> Result<()> {
+        info!("₿ [BTC] Creating and broadcasting Bitcoin transaction");
         info!("₿ [BTC] Target address: {}", intent.target_address);
         info!("₿ [BTC] Amount: {} sats", intent.amount);
 
-        // For now, we'll just log the intent and create a placeholder transaction
-        // You can extend this to create actual Bitcoin transactions using the bitcoin crate
+        let private_key = self.private_key.as_ref()
+            .ok_or_else(|| anyhow!("No private key available for Bitcoin transaction"))?;
+        
+        info!("₿ [BTC] Using aggregated private key for Bitcoin transaction");
+        info!("₿ [BTC] Private key: 0x{}", hex::encode(private_key.secret_bytes()));
+        
+        // Create Bitcoin transaction request using your tested code
+        // The sender address will be derived from the aggregated private key
+        let bitcoin_request = BitcoinTransactionRequest {
+            sender_address: "".to_string(), // Will be derived from private key
+            recipient_address: intent.target_address.clone(),
+            amount: intent.amount as u64,
+            fee: 50, // Reduced fee in sats
+            private_key: private_key.clone(),
+        };
 
-        info!("✅ [BTC] Bitcoin transaction creation completed (placeholder)");
+        info!("₿ [BTC] Bitcoin transaction request created:");
+        info!("₿ [BTC] Sender: {}", bitcoin_request.sender_address);
+        info!("₿ [BTC] Recipient: {}", bitcoin_request.recipient_address);
+        info!("₿ [BTC] Amount: {} sats", bitcoin_request.amount);
+        info!("₿ [BTC] Fee: {} sats", bitcoin_request.fee);
+
+        // Use your tested Bitcoin transaction code
+        match create_and_sign_bitcoin_transaction(&bitcoin_request).await {
+            Ok(tx_hash) => {
+                info!("✅ [BTC] Bitcoin transaction broadcasted successfully!");
+                info!("₿ [BTC] Transaction Hash: {}", tx_hash);
+                info!("₿ [BTC] View on Blockstream: https://blockstream.info/testnet/tx/{}", tx_hash);
+            }
+            Err(e) => {
+                error!("❌ [BTC] Failed to broadcast Bitcoin transaction: {}", e);
+                return Err(e);
+            }
+        }
+        
         Ok(())
     }
 }

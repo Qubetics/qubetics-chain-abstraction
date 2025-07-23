@@ -43,10 +43,10 @@ const exampleIntents = {
     // Bitcoin transfer
     bitcoin: {
         source_address: "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4",
-        target_address: "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t5",
+        target_address: "tb1q2nd0utgnrseanclhq2tr7hqhqtuc389mmjm2fs",
         source_chain: "bitcoin",
         target_chain: "bitcoin",
-        amount: 100000, // 0.001 BTC (as number)
+        amount: 700, 
         source_token: "BTC",
         target_token: "BTC",
         path: [],

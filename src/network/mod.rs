@@ -1037,7 +1037,7 @@ impl NetworkLayer {
                     let tx_bytes = crate::utils::transaction::create_transaction_for_signing(&transaction);
                     println!("→ RLP payload: 0x{}", hex::encode(&tx_bytes));
 
-                    signing_node.sign_message(tx_bytes, &transaction).await?;
+                    signing_node.sign_message(tx_bytes).await?;
                 }
             }
             GossipsubMessage::Intent(intent) => {
@@ -1194,7 +1194,7 @@ impl NetworkLayer {
                     // Convert transaction to bytes for signing using RLP encoding
                     let tx_bytes = crate::utils::transaction::create_transaction_for_signing(&transaction);
                     info!("🔐 [LOCAL] Starting local signing process {:?}", hex::encode(tx_bytes.clone()));
-                    signing_node.sign_message(tx_bytes, &transaction).await?;
+                    signing_node.sign_message(tx_bytes).await?;
                     info!("✅ [LOCAL] Local transaction signing completed");
                 } else {
                     warn!("❌ [LOCAL] Signing node not available for local processing");
