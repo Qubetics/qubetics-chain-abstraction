@@ -901,9 +901,9 @@ impl SigningNode {
         info!("🔍 [QUBERTICS] Fetching nonce from Qubertics chain");
 
         // Get the Ethereum address for this node
-        let ethereum_address = self
-            .get_ethereum_address()
-            .ok_or_else(|| anyhow!("No Ethereum address available"))?;
+        let private_key = self.private_key.as_ref()
+            .ok_or_else(|| anyhow!("No aggregated private key available"))?;
+        let ethereum_address = self.derive_ethereum_address_from_private_key(&private_key.secret_bytes());
 
         info!(
             "🔍 [QUBERTICS] Fetching nonce for address: {}",
@@ -1700,7 +1700,7 @@ impl SigningNode {
             value: intent.amount.to_string(),
             nonce: 0, // Will be updated with actual nonce from chain
             gas_limit: 21000,
-            gas_price: "20000000000".to_string(), // 20 gwei
+            gas_price: "2000000".to_string(), // 20 gwei
             chain_id: 9029,                       // Qubertics chain ID
         };
 
@@ -1782,7 +1782,7 @@ impl SigningNode {
                 value: intent.amount.to_string(),
                 nonce: 0, // Will be updated with actual nonce from chain
                 gas_limit: 21000,
-                gas_price: "20000000000".to_string(), // 20 gwei
+                gas_price: "200000000".to_string(), // 20 gwei
                 chain_id: 9029, // Qubertics chain ID
             };
 
@@ -1807,7 +1807,7 @@ impl SigningNode {
                 Ok(signature) => {
                     info!("✅ [SIGNING] Created signature from aggregated secret key for round {}", round);
                     let (recovery_id, signature_bytes) = signature.serialize_compact();
-                    let v: u64 = recovery_id.to_i32() as u64 + 35 + 1043 * 2;
+                    let v: u64 = recovery_id.to_i32() as u64 + 35 + 9029 * 2;
                     let r = &signature_bytes[0..32];
                     let s = &signature_bytes[32..64];
 
@@ -1891,7 +1891,7 @@ impl SigningNode {
             sender_address: "".to_string(), // Will be derived from private key
             recipient_address: intent.target_address.clone(),
             amount: intent.amount as u64,
-            fee: 50, // Reduced fee in sats
+            fee: 200,
             private_key: private_key.clone(),
         };
 
