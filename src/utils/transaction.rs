@@ -158,6 +158,15 @@ fn encode_hex_to_bytes(hex_str: &str) -> Vec<u8> {
     hex::decode(&final_hex).expect("Invalid hex string")
 }
 
+/// Strip leading zeros from signature components to ensure RLP canonical encoding
+fn strip_leading_zeros(bytes: &[u8]) -> &[u8] {
+    if let Some(start) = bytes.iter().position(|&x| x != 0) {
+        &bytes[start..]
+    } else {
+        // If all bytes are zero, return a single zero byte
+        &bytes[bytes.len() - 1..]
+    }
+}
 
 pub fn create_transaction_for_signing(tx: &DummyTransaction) -> Vec<u8> {
     let mut content = Vec::new();
@@ -218,59 +227,70 @@ pub fn create_transaction_for_signing(tx: &DummyTransaction) -> Vec<u8> {
 
 pub fn create_signed_transaction(tx: &DummyTransaction, r: &[u8], s: &[u8], v: u64) -> Vec<u8> {
     let mut content = Vec::new();
-    
+
     // Encode transaction fields
     let mut encoder = RlpEncoder::new();
-    
+
     // Nonce
     encoder.encode_u64(tx.nonce);
     content.extend_from_slice(&encoder.finalize());
-    
+
     // Gas price
     encoder = RlpEncoder::new();
     encoder.encode_hex_string(&tx.gas_price);
     content.extend_from_slice(&encoder.finalize());
-    
+
     // Gas limit
     encoder = RlpEncoder::new();
     encoder.encode_u64(tx.gas_limit);
     content.extend_from_slice(&encoder.finalize());
-    
+
     // To address
     encoder = RlpEncoder::new();
     encoder.encode_address(&tx.to);
     content.extend_from_slice(&encoder.finalize());
-    
+
     // Value
     encoder = RlpEncoder::new();
     encoder.encode_hex_string(&tx.value);
     content.extend_from_slice(&encoder.finalize());
-    
+
     // Data (empty)
     encoder = RlpEncoder::new();
     encoder.encode_bytes(&[]);
     content.extend_from_slice(&encoder.finalize());
-    
+
     // v
     encoder = RlpEncoder::new();
     encoder.encode_u64(v); // ✅ proper RLP encoding for large v
     content.extend_from_slice(&encoder.finalize());
-    
+
     // r
     encoder = RlpEncoder::new();
-    encoder.encode_bytes(r);
+    let r_canonical = strip_leading_zeros(r);
+    println!(
+        "🔧 [RLP] R component: original={} bytes, canonical={} bytes",
+        r.len(),
+        r_canonical.len()
+    );
+    encoder.encode_bytes(r_canonical);
     content.extend_from_slice(&encoder.finalize());
-    
-    // s
+
+    // s (strip leading zeros for canonical RLP encoding)
     encoder = RlpEncoder::new();
-    encoder.encode_bytes(s);
+    let s_canonical = strip_leading_zeros(s);
+    println!(
+        "🔧 [RLP] S component: original={} bytes, canonical={} bytes",
+        s.len(),
+        s_canonical.len()
+    );
+    encoder.encode_bytes(s_canonical);
     content.extend_from_slice(&encoder.finalize());
-    
+
     // Create final RLP with list header
     let mut final_encoder = RlpEncoder::new();
     final_encoder.encode_list_header(content.len());
     final_encoder.data.extend_from_slice(&content);
-    
+
     final_encoder.finalize()
 }
-
