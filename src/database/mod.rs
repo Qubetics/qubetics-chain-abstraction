@@ -142,6 +142,33 @@ impl DatabaseManager {
         }
     }
     
+    /// Update the transaction hash of an intent
+    pub fn update_intent_transaction_hash(&self, intent_hash: &str, tx_hash: &str) -> Result<()> {
+        let cf = self.db.cf_handle(ColumnFamilies::METADATA)
+            .ok_or_else(|| anyhow::anyhow!("Column family 'metadata' not found"))?;
+        
+        let tx_hash_key = format!("intent_tx_hash:{}", intent_hash);
+        self.db.put_cf(&cf, tx_hash_key.as_bytes(), tx_hash.as_bytes())?;
+        
+        info!("Updated transaction hash for intent {} to {}", intent_hash, tx_hash);
+        Ok(())
+    }
+    
+    /// Get the transaction hash of an intent
+    pub fn get_intent_transaction_hash(&self, intent_hash: &str) -> Result<Option<String>> {
+        let cf = self.db.cf_handle(ColumnFamilies::METADATA)
+            .ok_or_else(|| anyhow::anyhow!("Column family 'metadata' not found"))?;
+        
+        let tx_hash_key = format!("intent_tx_hash:{}", intent_hash);
+        match self.db.get_cf(&cf, tx_hash_key.as_bytes())? {
+            Some(data) => {
+                let tx_hash = String::from_utf8(data)?;
+                Ok(Some(tx_hash))
+            }
+            None => Ok(None),
+        }
+    }
+    
     /// Store arbitrary data in a specific column family
     pub fn store_data(&self, cf_name: &str, key: &str, value: &[u8]) -> Result<()> {
         let cf = self.db.cf_handle(cf_name)

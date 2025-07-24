@@ -123,6 +123,7 @@ pub struct SigningNode {
     transaction_messages_by_round: Arc<RwLock<HashMap<u64, Vec<u8>>>>, // round -> transaction message
     transactions_by_round: Arc<RwLock<HashMap<u64, crate::rpc_server::DummyTransaction>>>, // round -> transaction struct
     intents_by_round: Arc<RwLock<HashMap<u64, crate::types::DepositIntent>>>, // round -> deposit intent
+    transaction_hashes_by_round: Arc<RwLock<HashMap<u64, String>>>, // round -> transaction hash
     message_tx: mpsc::Sender<ChannelMessage>,
     vrf_selector: Option<VrfNodeSelector>, // VRF selector for node selection
     consensus_node: Option<ConsensusNode>, // Consensus node for final node selection
@@ -157,6 +158,7 @@ impl SigningNode {
             transaction_messages_by_round: Arc::new(RwLock::new(HashMap::new())),
             transactions_by_round: Arc::new(RwLock::new(HashMap::new())),
             intents_by_round: Arc::new(RwLock::new(HashMap::new())),
+            transaction_hashes_by_round: Arc::new(RwLock::new(HashMap::new())),
             message_tx,
             vrf_selector: Some(VrfNodeSelector::new(peer_id)),
             consensus_node: Some(ConsensusNode::new()),
@@ -292,6 +294,115 @@ impl SigningNode {
             "✅ [SIGNING] Node {} successfully queued broadcast message for topic: {}",
             self.id, topic
         );
+        Ok(())
+    }
+
+    /// Store transaction hash for a specific round
+    pub async fn store_transaction_hash(&self, round: u64, tx_hash: String) {
+        let mut tx_hashes = self.transaction_hashes_by_round.write().await;
+        tx_hashes.insert(round, tx_hash.clone());
+        info!("💾 [SIGNING] Stored transaction hash {} for round {}", tx_hash, round);
+    }
+
+    /// Get transaction hash for a specific round
+    pub async fn get_transaction_hash(&self, round: u64) -> Option<String> {
+        let tx_hashes = self.transaction_hashes_by_round.read().await;
+        tx_hashes.get(&round).cloned()
+    }
+
+    /// Get transaction hash for an intent by finding its round first
+    pub async fn get_transaction_hash_for_intent(&self, intent_hash: &str) -> Option<String> {
+        info!("🔍 [TX_HASH] Looking up transaction hash for intent: {}", intent_hash);
+        
+        // First, find which round this intent belongs to
+        let round_for_intent = {
+            let intents_by_round = self.intents_by_round.read().await;
+            let mut found_round = None;
+            
+            for (round, intent) in intents_by_round.iter() {
+                let stored_intent_hash = format!(
+                    "0x{:x}",
+                    sha2::Sha256::digest(format!("{:?}", intent).as_bytes())
+                );
+                
+                if stored_intent_hash == intent_hash {
+                    found_round = Some(*round);
+                    info!("🎯 [TX_HASH] Found intent {} in round {}", intent_hash, round);
+                    break;
+                }
+            }
+            found_round
+        };
+        
+        // If we found the round, get the transaction hash for that round
+        if let Some(round) = round_for_intent {
+            let tx_hash = self.get_transaction_hash(round).await;
+            if let Some(ref hash) = tx_hash {
+                info!("✅ [TX_HASH] Found transaction hash {} for intent {} (round {})", hash, intent_hash, round);
+            } else {
+                info!("⏳ [TX_HASH] No transaction hash yet for intent {} (round {})", intent_hash, round);
+            }
+            tx_hash
+        } else {
+            info!("❌ [TX_HASH] Intent {} not found in any round", intent_hash);
+            None
+        }
+    }
+
+    /// Handle transaction hash broadcast - stores in memory and updates database
+    pub async fn handle_transaction_hash_broadcast(&self, tx_hash_broadcast: crate::types::TransactionHashBroadcast) -> Result<()> {
+        info!("📤 [TX_HASH] Processing transaction hash broadcast: {:?}", tx_hash_broadcast);
+        
+        // Store transaction hash for this round in memory
+        self.store_transaction_hash(tx_hash_broadcast.round, tx_hash_broadcast.transaction_hash.clone()).await;
+        
+        // Update database with intent hash -> transaction hash mapping
+        if let Err(e) = self.database.update_intent_transaction_hash(&tx_hash_broadcast.intent_hash, &tx_hash_broadcast.transaction_hash) {
+            warn!("Failed to store transaction hash in database for intent {}: {}", tx_hash_broadcast.intent_hash, e);
+            return Err(anyhow::anyhow!("Database update failed: {}", e));
+        } else {
+            info!("💾 [DATABASE] Updated transaction hash {} for intent {} from broadcast", 
+                tx_hash_broadcast.transaction_hash, 
+                tx_hash_broadcast.intent_hash
+            );
+        }
+        
+        info!("✅ [TX_HASH] Successfully processed transaction hash broadcast for intent {} from node {}", 
+            tx_hash_broadcast.intent_hash, 
+            tx_hash_broadcast.node_id
+        );
+        
+        Ok(())
+    }
+
+    /// Broadcast transaction hash to all nodes
+    pub async fn broadcast_transaction_hash(&self, intent_hash: String, tx_hash: String, chain_type: String, round: u64) -> Result<()> {
+        let tx_hash_broadcast = crate::types::TransactionHashBroadcast {
+            intent_hash,
+            transaction_hash: tx_hash.clone(),
+            chain_type,
+            round,
+            node_id: self.id.clone(),
+        };
+
+        info!("📤 [TX_HASH] Broadcasting transaction hash {} for round {}", tx_hash, round);
+
+        // Send local message first
+        let local_msg = ChannelMessage::LocalTransactionHash {
+            tx_hash_broadcast: tx_hash_broadcast.clone(),
+        };
+
+        if let Err(e) = self.message_tx.send(local_msg).await {
+            warn!("Failed to send local transaction hash: {:?}", e);
+        }
+
+        // Then broadcast to network
+        let gossipsub_msg = crate::types::GossipsubMessage::TransactionHash(tx_hash_broadcast);
+        let broadcast_data = serde_json::to_vec(&gossipsub_msg)?;
+
+        self.broadcast("transaction-hashes", &broadcast_data).await?;
+        info!("✅ [TX_HASH] Successfully broadcasted transaction hash {} for round {}", tx_hash, round);
+        
         Ok(())
     }
 
@@ -1689,7 +1800,7 @@ impl SigningNode {
                 }
                 "bitcoin" | "btc" => {
                     info!("₿ [SIGNING] Processing Bitcoin transaction for round {}", round);
-                    self.create_and_broadcast_bitcoin_transaction(&intent).await?;
+                    self.create_and_broadcast_bitcoin_transaction(&intent, round).await?;
                 }
                 _ => {
                     warn!("❌ [SIGNING] Unsupported target chain: {}", intent.target_chain);
@@ -1791,6 +1902,32 @@ impl SigningNode {
                                 "View on Qubetics Scan: https://testnet.qubetics.work/tx/{}",
                                 tx_hash
                             );
+
+                            // Store transaction hash for this round
+                            self.store_transaction_hash(round, tx_hash.clone()).await;
+
+                            // Create intent hash for broadcasting
+                            let intent_hash = format!(
+                                "0x{:x}",
+                                sha2::Sha256::digest(format!("{:?}", intent).as_bytes())
+                            );
+
+                            // Store transaction hash in database
+                            if let Err(e) = self.database.update_intent_transaction_hash(&intent_hash, &tx_hash) {
+                                warn!("Failed to store transaction hash in database: {}", e);
+                            } else {
+                                info!("💾 [DATABASE] Stored transaction hash {} for intent {}", tx_hash, intent_hash);
+                            }
+
+                            // Broadcast transaction hash to all nodes
+                            if let Err(e) = self.broadcast_transaction_hash(
+                                intent_hash,
+                                tx_hash.clone(),
+                                "eth".to_string(),
+                                round
+                            ).await {
+                                warn!("Failed to broadcast transaction hash: {}", e);
+                            }
                         }
                         Err(e) => {
                             println!("❌ Failed to broadcast transaction: {}", e);
@@ -1820,6 +1957,7 @@ impl SigningNode {
     async fn create_and_broadcast_bitcoin_transaction(
         &self,
         intent: &crate::types::DepositIntent,
+        round: u64,
     ) -> Result<()> {
         info!("₿ [BTC] Creating and broadcasting Bitcoin transaction");
         info!("₿ [BTC] Target address: {}", intent.target_address);
@@ -1853,6 +1991,32 @@ impl SigningNode {
                 info!("✅ [BTC] Bitcoin transaction broadcasted successfully!");
                 info!("₿ [BTC] Transaction Hash: {}", tx_hash);
                 info!("₿ [BTC] View on Blockstream: https://blockstream.info/testnet/tx/{}", tx_hash);
+
+                // Store transaction hash for this round
+                self.store_transaction_hash(round, tx_hash.clone()).await;
+
+                // Create intent hash for broadcasting
+                let intent_hash = format!(
+                    "0x{:x}",
+                    sha2::Sha256::digest(format!("{:?}", intent).as_bytes())
+                );
+
+                // Store transaction hash in database
+                if let Err(e) = self.database.update_intent_transaction_hash(&intent_hash, &tx_hash) {
+                    warn!("Failed to store transaction hash in database: {}", e);
+                } else {
+                    info!("💾 [DATABASE] Stored transaction hash {} for intent {}", tx_hash, intent_hash);
+                }
+
+                // Broadcast transaction hash to all nodes
+                if let Err(e) = self.broadcast_transaction_hash(
+                    intent_hash,
+                    tx_hash.clone(),
+                    "btc".to_string(),
+                    round
+                ).await {
+                    warn!("Failed to broadcast transaction hash: {}", e);
+                }
             }
             Err(e) => {
                 error!("❌ [BTC] Failed to broadcast Bitcoin transaction: {}", e);

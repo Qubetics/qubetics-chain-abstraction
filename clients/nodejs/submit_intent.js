@@ -1,11 +1,14 @@
 import axios from 'axios';
 
-const RPC_SERVER = 'http://localhost:8082';
+const RPC_SERVER = 'http://0.0.0.0:8082';
 
 // Function to submit an intent
+// Note: This function now waits for the transaction hash to be generated
+// The server will wait up to 2 minutes before timing out
 async function submitIntent(intent) {
     try {
         console.log('📤 Submitting intent...');
+        console.log('⏳ Note: The server will wait for transaction hash generation (up to 2 minutes)');
         console.log('Intent data:', JSON.stringify(intent, null, 2));
 
         const response = await axios.post(`${RPC_SERVER}/submit_intent`, intent, {
@@ -33,7 +36,7 @@ const exampleIntents = {
         target_address: "0x5e3146991C52450bACf3c216B8C4Ab30C3795303",
         source_chain: "ethereum",
         target_chain: "ethereum",
-        amount: 2, // 1 ETH
+        amount: 200, // 1 ETH
         source_token: "ETH",
         target_token: "ETH",
         path: [],

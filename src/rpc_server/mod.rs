@@ -8,6 +8,43 @@ use warp::Filter;
 use crate::database::DatabaseManager;
 use crate::types::{rpc::RPCRequest, ChannelMessage, DepositIntent};
 
+/// Query transaction hash from signing node via message channel
+async fn query_transaction_hash_from_signing_node(
+    intent_hash: &str,
+    message_tx: &tokio::sync::Mutex<mpsc::Sender<ChannelMessage>>,
+) -> Option<String> {
+    let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+    
+    let query_msg = ChannelMessage::QueryTransactionHash {
+        intent_hash: intent_hash.to_string(),
+        response_tx,
+    };
+    
+    // Send the query
+    if let Ok(tx) = message_tx.try_lock() {
+        if let Err(e) = tx.send(query_msg).await {
+            warn!("Failed to send transaction hash query: {:?}", e);
+            return None;
+        }
+    } else {
+        warn!("Failed to acquire message channel lock for transaction hash query");
+        return None;
+    }
+    
+    // Wait for response with timeout
+    match tokio::time::timeout(std::time::Duration::from_millis(100), response_rx).await {
+        Ok(Ok(tx_hash)) => tx_hash,
+        Ok(Err(_)) => {
+            warn!("Transaction hash query response channel closed");
+            None
+        }
+        Err(_) => {
+            warn!("Transaction hash query timed out");
+            None
+        }
+    }
+}
+
 // Define the transaction types for the RPC server
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DummyTransaction {
@@ -107,13 +144,21 @@ pub async fn start_http_server(
     let get_intent = warp::path("intent")
         .and(warp::path::param::<String>())
         .and(warp::get())
-        .and(with_database(db))
+        .and(with_database(db.clone()))
         .and_then(handle_get_intent);
 
-    let routes = submit_tx.or(get_status).or(start_dkg).or(submit_intent).or(list_intents).or(get_intent);
+    // GET /intent/{hash}/transaction_hash (new endpoint to get transaction hash for intent)
+    let get_intent_tx_hash = warp::path("intent")
+        .and(warp::path::param::<String>())
+        .and(warp::path("transaction_hash"))
+        .and(warp::get())
+        .and(with_database(db))
+        .and_then(handle_get_intent_transaction_hash);
+
+    let routes = submit_tx.or(get_status).or(start_dkg).or(submit_intent).or(list_intents).or(get_intent).or(get_intent_tx_hash);
 
     info!("🌐 Starting HTTP RPC server on port {}", port);
-    warp::serve(routes).run(([127, 0, 0, 1], port)).await;
+    warp::serve(routes).run(([0, 0, 0, 0], port)).await;
     Ok(())
 }
 
@@ -305,11 +350,42 @@ async fn handle_submit_intent(
 
     info!("Intent {} processed successfully", intent_hash);
 
-    Ok(warp::reply::json(&TransactionResponse {
-        tx_hash: intent_hash,
-        status: "submitted".to_string(),
-        message: "Deposit intent submitted to P2P network".to_string(),
-    }))
+    // Wait for transaction hash to become available from signing node
+    info!("⏳ Waiting for transaction hash to be generated for intent {}", intent_hash);
+    
+    let timeout_duration = std::time::Duration::from_secs(120); // 2 minutes timeout
+    let poll_interval = std::time::Duration::from_millis(500); // Check every 500ms
+    let start_time = std::time::Instant::now();
+
+    loop {
+        // Query transaction hash from signing node using round-based lookup
+        if let Some(tx_hash) = query_transaction_hash_from_signing_node(&intent_hash, &message_tx).await {
+            info!("🎯 Transaction hash retrieved for intent {}: {}", intent_hash, tx_hash);
+            let response = serde_json::json!({
+                "intent_hash": intent_hash.clone(),
+                "transaction_hash": tx_hash,
+                "status": "completed",
+                "message": "Intent processed and transaction broadcasted successfully"
+            });
+            return Ok(warp::reply::json(&response));
+        } else {
+            // Hash not yet available, check if we've timed out
+            if start_time.elapsed() >= timeout_duration {
+                warn!("⏰ Timeout waiting for transaction hash for intent {}", intent_hash);
+                let response = serde_json::json!({
+                    "intent_hash": intent_hash.clone(),
+                    "transaction_hash": null,
+                    "status": "timeout",
+                    "message": "Transaction processing timed out. Use the polling endpoint to check status.",
+                    "polling_endpoint": format!("/intent/{}/transaction_hash", intent_hash)
+                });
+                return Ok(warp::reply::json(&response));
+            }
+            
+            // Wait before next poll
+            tokio::time::sleep(poll_interval).await;
+        }
+    }
 }
 
 async fn handle_list_intents(
@@ -411,6 +487,43 @@ pub struct IntentWithStatus {
 pub struct IntentListResponse {
     pub intents: Vec<IntentWithStatus>,
     pub count: usize,
+}
+
+async fn handle_get_intent_transaction_hash(
+    intent_hash: String,
+    db: std::sync::Arc<DatabaseManager>,
+) -> Result<impl warp::Reply, warp::Rejection> {
+    info!("🔍 Fetching transaction hash for intent: {}", intent_hash);
+    
+    match db.get_intent_transaction_hash(&intent_hash) {
+        Ok(Some(tx_hash)) => {
+            info!("✅ Found transaction hash {} for intent {}", tx_hash, intent_hash);
+
+            let response = serde_json::json!({
+                "intent_hash": intent_hash,
+                "transaction_hash": tx_hash,
+                "status": "found"
+            });
+            
+            Ok(warp::reply::json(&response))
+        }
+        Ok(None) => {
+            info!("❌ No transaction hash found for intent: {}", intent_hash);
+            
+            let response = serde_json::json!({
+                "intent_hash": intent_hash,
+                "transaction_hash": null,
+                "status": "pending",
+                "message": "Transaction hash not yet available. Transaction may still be processing."
+            });
+            
+            Ok(warp::reply::json(&response))
+        }
+        Err(e) => {
+            warn!("Failed to fetch transaction hash for intent {}: {}", intent_hash, e);
+            Err(warp::reject::custom(TransactionError::DatabaseError))
+        }
+    }
 }
 
 #[derive(Debug)]

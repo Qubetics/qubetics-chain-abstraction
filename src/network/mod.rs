@@ -340,6 +340,7 @@ impl NetworkLayer {
             "vrf-selection",
             "transactions",
             "intents",
+            "transaction-hashes",
             "dkg-commands",
             "signatures-to-final-node",
         ];
@@ -1085,6 +1086,23 @@ impl NetworkLayer {
                 }
             }
 
+            GossipsubMessage::TransactionHash(tx_hash_broadcast) => {
+                info!("📤 [TX_HASH] Received transaction hash broadcast: {:?}", tx_hash_broadcast);
+                
+                // Handle the complete transaction hash broadcast including database update
+                if let Some(signing_node) = &mut self.signing_node {
+                    if let Err(e) = signing_node.handle_transaction_hash_broadcast(tx_hash_broadcast.clone()).await {
+                        warn!("❌ [TX_HASH] Failed to handle transaction hash broadcast: {}", e);
+                    } else {
+                        info!("✅ [TX_HASH] Successfully processed transaction hash broadcast for intent {} from node {}", 
+                            tx_hash_broadcast.intent_hash, 
+                            tx_hash_broadcast.node_id
+                        );
+                    }
+                } else {
+                    warn!("❌ [TX_HASH] Signing node not available to handle transaction hash broadcast");
+                }
+            }
 
             GossipsubMessage::PeerDiscovered { peer, sequence } => {
                 info!(
@@ -1246,6 +1264,22 @@ impl NetworkLayer {
                     .request_response
                     .send_request(&peer_id, request);
             }
+            ChannelMessage::LocalTransactionHash { tx_hash_broadcast } => {
+                info!("📤 [LOCAL_TX_HASH] Processing local transaction hash: {:?}", tx_hash_broadcast);
+                
+                // Handle the complete local transaction hash broadcast including database update
+                if let Some(signing_node) = &mut self.signing_node {
+                    if let Err(e) = signing_node.handle_transaction_hash_broadcast(tx_hash_broadcast.clone()).await {
+                        warn!("❌ [LOCAL_TX_HASH] Failed to handle local transaction hash broadcast: {}", e);
+                    } else {
+                        info!("✅ [LOCAL_TX_HASH] Successfully processed local transaction hash for intent {}", 
+                            tx_hash_broadcast.intent_hash
+                        );
+                    }
+                } else {
+                    warn!("❌ [LOCAL_TX_HASH] Signing node not available to handle local transaction hash broadcast");
+                }
+            }
             ChannelMessage::ScheduledDKGStart => {
                 info!("🚀 Starting DKG at the exact agreed instant {}!", SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs());
                 let total = self.node_manager.get_total_nodes();
@@ -1264,6 +1298,21 @@ impl NetworkLayer {
                     }
                 } else {
                     warn!("❌ DKG node not initialized at scheduled start!");
+                }
+            }
+            ChannelMessage::QueryTransactionHash { intent_hash, response_tx } => {
+                info!("🔍 [QUERY] Received transaction hash query for intent: {}", intent_hash);
+                
+                let tx_hash = if let Some(signing_node) = &self.signing_node {
+                    signing_node.get_transaction_hash_for_intent(&intent_hash).await
+                } else {
+                    None
+                };
+                
+                if let Err(_) = response_tx.send(tx_hash.clone()) {
+                    warn!("❌ [QUERY] Failed to send transaction hash query response");
+                } else {
+                    info!("✅ [QUERY] Sent transaction hash query response: {:?}", tx_hash);
                 }
             }
         }
@@ -1288,5 +1337,14 @@ impl NetworkLayer {
             })
             .await?;
         Ok(())
+    }
+
+    /// Get transaction hash for an intent from the signing node
+    pub async fn get_transaction_hash_for_intent(&mut self, intent_hash: &str) -> Option<String> {
+        if let Some(signing_node) = &self.signing_node {
+            signing_node.get_transaction_hash_for_intent(intent_hash).await
+        } else {
+            None
+        }
     }
 }
