@@ -64,6 +64,7 @@ sha3 = "0.10"
 num-traits = "0.2.19"
 num-integer = "0.1.46"
 reqwest = { version = "0.11", features = ["json"] }
+rocksdb = "0.22"
 
 [build-dependencies]
 tonic-build = "0.13.0"

@@ -2,6 +2,7 @@ use anyhow::Result;
 use libp2p::identity::Keypair;
 use mpc_node::{
     consensus::{ConsensusNode, ConsensusResult},
+    database::DatabaseManager,
     signing::SigningNode,
     types::{p2p::SerializablePeerId, ChannelMessage},
     vrf::{VrfNodeSelector, VrfSelectedNodesBroadcast},
@@ -27,11 +28,16 @@ async fn main() -> Result<()> {
     // Create a channel for the signing node
     let (message_tx, _message_rx) = mpsc::channel::<ChannelMessage>(100);
 
+    // Use separate database for demo to avoid locking conflicts with main app
+    let db_path = "data/demo_rocksdb";
+    let db = DatabaseManager::new(db_path)?;
+
     // Create signing node (which includes VRF selector and consensus node)
     let mut signing_node = SigningNode::new(
         nodes[0].0.to_string(),
         3, // threshold
         message_tx,
+        db, // Pass database instance
     );
 
     // Set available nodes

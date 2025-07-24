@@ -33,11 +33,11 @@ const exampleIntents = {
         target_address: "0x5e3146991C52450bACf3c216B8C4Ab30C3795303",
         source_chain: "ethereum",
         target_chain: "ethereum",
-        amount: 100000000000000, // 1 ETH
+        amount: 2, // 1 ETH
         source_token: "ETH",
         target_token: "ETH",
         path: [],
-        transaction_hash: "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdet"
+        transaction_hash: "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
     },
 
     // Bitcoin transfer
@@ -46,7 +46,7 @@ const exampleIntents = {
         target_address: "tb1q2nd0utgnrseanclhq2tr7hqhqtuc389mmjm2fs",
         source_chain: "bitcoin",
         target_chain: "bitcoin",
-        amount: 701, 
+        amount: 800, 
         source_token: "BTC",
         target_token: "BTC",
         path: [],

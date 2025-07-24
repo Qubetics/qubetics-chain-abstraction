@@ -3,7 +3,7 @@ use mpc_node::node_management::{
     DefaultThresholdCalculator, NodeMembership, VrfNodeManager,
 };
 use mpc_node::{
-    commands::CommandProcessor, consensus::ConsensusNode, dkg::DKGNode, network::NetworkLayer,
+    commands::CommandProcessor, consensus::ConsensusNode, database::DatabaseManager, dkg::DKGNode, network::NetworkLayer,
     rpc_server, signing::SigningNode,
 };
 use rand::{thread_rng, Rng};
@@ -75,10 +75,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let mut network = NetworkLayer::new(node_manager).await?;
 
+    // Initialize database first - it needs to be shared across components
+    let db_path = "data/rocksdb";
+    let db = DatabaseManager::new(db_path).map_err(|e| {
+        info!("Failed to initialize database: {:?}", e);
+        e
+    })?;
+
     let signing_node = Arc::new(Mutex::new(SigningNode::new(
         network.get_local_peer_id().to_string(),
         threshold,
         network.get_msg_tx(),
+        db.clone(), // Pass the shared database instance
     )));
 
     // let signing_node_clone = signing_node.clone();
@@ -103,7 +111,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     tokio::spawn(async move {
         info!("🚀 Starting RPC server on port {}", rpc_port);
-        if let Err(e) = rpc_server::start_http_server(message_tx, rpc_port).await {
+        if let Err(e) = rpc_server::start_http_server(message_tx, db, rpc_port).await {
             info!("❌ RPC server failed: {:?}", e);
         }
     });
