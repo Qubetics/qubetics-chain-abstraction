@@ -45,6 +45,43 @@ async fn query_transaction_hash_from_signing_node(
     }
 }
 
+/// Query final node ID from signing node via message channel
+async fn query_final_node_from_signing_node(
+    intent_hash: &str,
+    message_tx: &tokio::sync::Mutex<mpsc::Sender<ChannelMessage>>,
+) -> Option<String> {
+    let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+    
+    let query_msg = ChannelMessage::QueryFinalNode {
+        intent_hash: intent_hash.to_string(),
+        response_tx,
+    };
+    
+    // Send the query
+    if let Ok(tx) = message_tx.try_lock() {
+        if let Err(e) = tx.send(query_msg).await {
+            warn!("Failed to send final node query: {:?}", e);
+            return None;
+        }
+    } else {
+        warn!("Failed to acquire message channel lock for final node query");
+        return None;
+    }
+    
+    // Wait for response with timeout
+    match tokio::time::timeout(std::time::Duration::from_millis(100), response_rx).await {
+        Ok(Ok(final_node)) => final_node,
+        Ok(Err(_)) => {
+            warn!("Final node query response channel closed");
+            None
+        }
+        Err(_) => {
+            warn!("Final node query timed out");
+            None
+        }
+    }
+}
+
 // Define the transaction types for the RPC server
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DummyTransaction {
@@ -361,9 +398,15 @@ async fn handle_submit_intent(
         // Query transaction hash from signing node using round-based lookup
         if let Some(tx_hash) = query_transaction_hash_from_signing_node(&intent_hash, &message_tx).await {
             info!("🎯 Transaction hash retrieved for intent {}: {}", intent_hash, tx_hash);
+            
+            // Also query the solver ID (final node ID)
+            let solver_id = query_final_node_from_signing_node(&intent_hash, &message_tx).await;
+            info!("🏆 Solver ID retrieved for intent {}: {:?}", intent_hash, solver_id);
+            
             let response = serde_json::json!({
                 "intent_hash": intent_hash.clone(),
                 "transaction_hash": tx_hash,
+                "solver_id": solver_id,
                 "status": "completed",
                 "message": "Intent processed and transaction broadcasted successfully"
             });
@@ -372,9 +415,14 @@ async fn handle_submit_intent(
             // Hash not yet available, check if we've timed out
             if start_time.elapsed() >= timeout_duration {
                 warn!("⏰ Timeout waiting for transaction hash for intent {}", intent_hash);
+                
+                // Still try to get the solver ID even on timeout
+                let solver_id = query_final_node_from_signing_node(&intent_hash, &message_tx).await;
+                
                 let response = serde_json::json!({
                     "intent_hash": intent_hash.clone(),
                     "transaction_hash": null,
+                    "solver_id": solver_id,
                     "status": "timeout",
                     "message": "Transaction processing timed out. Use the polling endpoint to check status.",
                     "polling_endpoint": format!("/intent/{}/transaction_hash", intent_hash)
@@ -414,6 +462,7 @@ async fn handle_list_intents(
                     intent,
                     status: status_str,
                     solver: solver_str,
+                    solver_id: None, // TODO: Add solver ID lookup if needed
                 };
                 intent_responses.push(response);
             }
@@ -459,6 +508,7 @@ async fn handle_get_intent(
                 intent,
                 status: status_str,
                 solver: solver_str,
+                solver_id: None, // TODO: Add solver ID lookup if needed
             };
             
             info!("✅ Found intent: {}", intent_hash);
@@ -481,6 +531,7 @@ pub struct IntentWithStatus {
     pub intent: DepositIntent,
     pub status: String,
     pub solver: String,
+    pub solver_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

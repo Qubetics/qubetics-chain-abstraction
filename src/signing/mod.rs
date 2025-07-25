@@ -349,6 +349,46 @@ impl SigningNode {
         }
     }
 
+    /// Get final node ID for an intent by finding its round first
+    pub async fn get_final_node_for_intent(&self, intent_hash: &str) -> Option<String> {
+        info!("🔍 [FINAL_NODE] Looking up final node for intent: {}", intent_hash);
+        
+        // First, find which round this intent belongs to
+        let round_for_intent = {
+            let intents_by_round = self.intents_by_round.read().await;
+            let mut found_round = None;
+            
+            for (round, intent) in intents_by_round.iter() {
+                let stored_intent_hash = format!(
+                    "0x{:x}",
+                    sha2::Sha256::digest(format!("{:?}", intent).as_bytes())
+                );
+                
+                if stored_intent_hash == intent_hash {
+                    found_round = Some(*round);
+                    info!("🎯 [FINAL_NODE] Found intent {} in round {}", intent_hash, round);
+                    break;
+                }
+            }
+            found_round
+        };
+        
+        // If we found the round, get the final node for that round
+        if let Some(round) = round_for_intent {
+            let final_nodes = self.final_nodes_by_round.read().await;
+            let final_node = final_nodes.get(&round).cloned();
+            if let Some(ref node) = final_node {
+                info!("✅ [FINAL_NODE] Found final node {} for intent {} (round {})", node, intent_hash, round);
+            } else {
+                info!("⏳ [FINAL_NODE] No final node yet for intent {} (round {})", intent_hash, round);
+            }
+            final_node
+        } else {
+            info!("❌ [FINAL_NODE] Intent {} not found in any round", intent_hash);
+            None
+        }
+    }
+
     /// Handle transaction hash broadcast - stores in memory and updates database
     pub async fn handle_transaction_hash_broadcast(&self, tx_hash_broadcast: crate::types::TransactionHashBroadcast) -> Result<()> {
         info!("📤 [TX_HASH] Processing transaction hash broadcast: {:?}", tx_hash_broadcast);

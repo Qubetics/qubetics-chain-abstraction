@@ -17,6 +17,15 @@ async function submitIntent(intent) {
 
         console.log('✅ Intent submitted successfully!');
         console.log('Response:', response.data);
+        
+        // Log specific response fields
+        if (response.data.solver_id) {
+            console.log('🏆 Solver ID:', response.data.solver_id);
+        }
+        if (response.data.transaction_hash) {
+            console.log('💿 Transaction hash:', response.data.transaction_hash);
+        }
+        
         return response.data;
     } catch (error) {
         console.error('❌ Failed to submit intent:', error.message);
@@ -36,7 +45,7 @@ const exampleIntents = {
         target_address: "0x5e3146991C52450bACf3c216B8C4Ab30C3795303",
         source_chain: "ethereum",
         target_chain: "ethereum",
-        amount: 200, // 1 ETH
+        amount: 2000, // 1 ETH
         source_token: "ETH",
         target_token: "ETH",
         path: [],

@@ -1315,6 +1315,21 @@ impl NetworkLayer {
                     info!("✅ [QUERY] Sent transaction hash query response: {:?}", tx_hash);
                 }
             }
+            ChannelMessage::QueryFinalNode { intent_hash, response_tx } => {
+                info!("🔍 [QUERY] Received final node query for intent: {}", intent_hash);
+                
+                let final_node = if let Some(signing_node) = &self.signing_node {
+                    signing_node.get_final_node_for_intent(&intent_hash).await
+                } else {
+                    None
+                };
+                
+                if let Err(_) = response_tx.send(final_node.clone()) {
+                    warn!("❌ [QUERY] Failed to send final node query response");
+                } else {
+                    info!("✅ [QUERY] Sent final node query response: {:?}", final_node);
+                }
+            }
         }
         Ok(())
     }

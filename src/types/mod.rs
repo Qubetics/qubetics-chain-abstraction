@@ -59,6 +59,10 @@ pub enum ChannelMessage {
         intent_hash: String,
         response_tx: tokio::sync::oneshot::Sender<Option<String>>,
     },
+    QueryFinalNode {
+        intent_hash: String,
+        response_tx: tokio::sync::oneshot::Sender<Option<String>>,
+    },
     ScheduledDKGStart,
 }
 
@@ -84,6 +88,9 @@ impl Clone for ChannelMessage {
             },
             ChannelMessage::QueryTransactionHash { .. } => {
                 panic!("QueryTransactionHash cannot be cloned due to oneshot::Sender")
+            },
+            ChannelMessage::QueryFinalNode { .. } => {
+                panic!("QueryFinalNode cannot be cloned due to oneshot::Sender")
             },
             ChannelMessage::ScheduledDKGStart => ChannelMessage::ScheduledDKGStart,
         }
