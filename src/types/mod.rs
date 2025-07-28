@@ -31,9 +31,18 @@ pub struct DepositIntent {
 pub struct TransactionHashBroadcast {
     pub intent_hash: String,
     pub transaction_hash: String,
-    pub chain_type: String, // "eth" or "btc"
+    pub chain_type: String, // "ticks" or "btc"
     pub round: u64,
     pub node_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IntentErrorBroadcast {
+    pub intent_hash: String,
+    pub error_code: String,
+    pub error_message: String,
+    pub node_id: String,
+    pub round: u64,
 }
 
 #[derive(Debug)]
@@ -54,6 +63,9 @@ pub enum ChannelMessage {
     },
     LocalTransactionHash {
         tx_hash_broadcast: TransactionHashBroadcast,
+    },
+    LocalIntentError {
+        error_broadcast: IntentErrorBroadcast,
     },
     QueryTransactionHash {
         intent_hash: String,
@@ -86,6 +98,9 @@ impl Clone for ChannelMessage {
             ChannelMessage::LocalTransactionHash { tx_hash_broadcast } => ChannelMessage::LocalTransactionHash {
                 tx_hash_broadcast: tx_hash_broadcast.clone(),
             },
+            ChannelMessage::LocalIntentError { error_broadcast } => ChannelMessage::LocalIntentError {
+                error_broadcast: error_broadcast.clone(),
+            },
             ChannelMessage::QueryTransactionHash { .. } => {
                 panic!("QueryTransactionHash cannot be cloned due to oneshot::Sender")
             },
@@ -115,5 +130,6 @@ pub enum GossipsubMessage {
     Transaction(crate::rpc_server::DummyTransaction),
     Intent(DepositIntent),
     TransactionHash(TransactionHashBroadcast),
+    IntentError(IntentErrorBroadcast),
     DKGCommand(crate::types::rpc::RPCRequest),
 }
