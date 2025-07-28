@@ -31,7 +31,7 @@ pub struct DepositIntent {
 pub struct TransactionHashBroadcast {
     pub intent_hash: String,
     pub transaction_hash: String,
-    pub chain_type: String, // "ticks" or "btc"
+    pub chain_type: String, // "tics" or "btc"
     pub round: u64,
     pub node_id: String,
 }

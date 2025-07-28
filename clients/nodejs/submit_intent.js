@@ -40,16 +40,29 @@ async function submitIntent(intent) {
 // Example intents
 const exampleIntents = {
     // Ethereum transfer
-    ethereum: {
-        source_address: "0xceb5057834CB4EdE0E59F9e91046B8cB96C72e9C",
-        target_address: "0x5e3146991C52450bACf3c216B8C4Ab30C3795303",
-        source_chain: "ethereum",
-        target_chain: "ethereum",
-        amount: 2000, // 1 ETH
-        source_token: "ETH",
-        target_token: "ETH",
+    qubetics: {
+        source_address: "tb1q2nd0utgnrseanclhq2tr7hqhqtuc389mmjm2fs",
+        target_address: "0x1bacaEcC83Ed515B77A8d39f24e46e05c8bBC920",
+        source_chain: "btc",
+        target_chain: "sepolia",
+        amount: 4200, // 1 ETH
+        source_token: "btc",
+        target_token: "usdc",
         path: [],
-        transaction_hash: "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdew"
+        transaction_hash: "0x1xxxxxxxcxabcxex12345678xxxxdef1234567asdrabcdkasgdk567890abcdew"
+
+     
+    },
+    sepolia: {
+        source_address: "tb1q2nd0utgnrseanclhq2tr7hqhqtuc389mmjm2fs",
+        target_address: "0x5e3146991C52450bACf3c216B8C4Ab30C3795303",
+        source_chain: "btc",
+        target_chain: "sepolia",
+        amount: 420, // 1 ETH
+        source_token: "btc",
+        target_token: "usdc",
+        path: [],
+        transaction_hash: "0x1x3456x8cxabcxex1234567890abcdef1234567890abcdef1234567890abcdew"
 
      
     },
@@ -58,7 +71,7 @@ const exampleIntents = {
     bitcoin: {
         source_address: "0xceb5057834CB4EdE0E59F9e91046B8cB96C72e9C",
         target_address: "tb1q2nd0utgnrseanclhq2tr7hqhqtuc389mmjm2fs",
-        source_chain: "eth",
+        source_chain: "tics",
         target_chain: "bitcoin",
         amount: 800, 
         source_token: "usdc",
@@ -84,7 +97,7 @@ const exampleIntents = {
 // Main function
 async function main() {
     const args = process.argv.slice(2);
-    const intentType = args[0] || 'ethereum';
+    const intentType = args[0] || 'qubetics';
 
     console.log('🚀 Intent Submission Tool');
     console.log('========================');

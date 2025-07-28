@@ -28,7 +28,7 @@ fn validate_intent(intent: &DepositIntent) -> Result<(), (String, String)> {
     }
 
     // Validate chain names
-    let supported_chains = ["ticks", "quberticks", "bitcoin", "btc"];
+    let supported_chains = ["tics", "qubetics", "bitcoin", "btc", "sepolia"];
     if !supported_chains.contains(&intent.source_chain.to_lowercase().as_str()) {
         return Err(("UNSUPPORTED_SOURCE_CHAIN".to_string(), 
                    format!("Source chain '{}' is not supported. Supported chains: {}", 
@@ -41,11 +41,11 @@ fn validate_intent(intent: &DepositIntent) -> Result<(), (String, String)> {
                           intent.target_chain, supported_chains.join(", "))));
     }
 
-    // Basic Quberticks address validation (if target is Quberticks)
-    if matches!(intent.target_chain.to_lowercase().as_str(), "ticks" | "quberticks") {
+    // Basic qubetics address validation (if target is qubetics)
+    if matches!(intent.target_chain.to_lowercase().as_str(), "tics" | "qubetics") {
         if !intent.target_address.starts_with("0x") || intent.target_address.len() != 42 {
-            return Err(("INVALID_TICKS_ADDRESS".to_string(), 
-                       "Quberticks address must start with '0x' and be 42 characters long".to_string()));
+            return Err(("INVALID_tics_ADDRESS".to_string(), 
+                       "qubetics address must start with '0x' and be 42 characters long".to_string()));
         }
     }
 

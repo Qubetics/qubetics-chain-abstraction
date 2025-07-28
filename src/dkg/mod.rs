@@ -527,10 +527,10 @@ impl DKGNode {
             callback(final_secret_share, final_public_key);
         }
 
-        // let quberticks_address = utils::get_quberticks_address_from_group_key(final_public_key);
+        // let qubetics_address = utils::get_qubetics_address_from_group_key(final_public_key);
         // let btc_address = utils::get_btc_address_from_group_key(final_public_key);
 
-        // info!("📬 Quberticks Address from Group Key: {}", quberticks_address);
+        // info!("📬 qubetics Address from Group Key: {}", qubetics_address);
         // info!("📬 Bitcoin Address from Group Key: {}", btc_address);
 
         Ok(())

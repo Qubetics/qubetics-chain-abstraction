@@ -288,7 +288,7 @@ impl SigningNode {
         self.public_key = Some(public_key);
 
         info!(
-            "🔐 [SIGNING] Node {} private key set from BLS scalar with proper Quberticks conversion",
+            "🔐 [SIGNING] Node {} private key set from BLS scalar with proper qubetics conversion",
             self.id
         );
     }
@@ -869,12 +869,12 @@ impl SigningNode {
                             hex::encode(&aggregated_secret_key)
                         );
 
-                                // Derive Quberticks address from aggregated private key
-        let quberticks_address =
-            self.derive_quberticks_address_from_private_key(&aggregated_secret_key);
+                                // Derive qubetics address from aggregated private key
+        let qubetics_address =
+            self.derive_qubetics_address_from_private_key(&aggregated_secret_key);
         info!(
-            "\x1b[32m🏦 [SIGNING] Derived Quberticks address: {}\x1b[0m",
-            quberticks_address
+            "\x1b[32m🏦 [SIGNING] Derived qubetics address: {}\x1b[0m",
+            qubetics_address
         );
 
                         // Derive Bitcoin testnet address from aggregated private key
@@ -1064,7 +1064,7 @@ impl SigningNode {
         Ok(result)
     }
 
-    async fn create_signature_from_private_key(&self, round: u64) -> Result<RecoverableSignature> {
+    async fn create_signature_from_private_key(&self, round: u64, chain_id: u64, chain_name: &str) -> Result<RecoverableSignature> {
         info!(
             "🔐 [SIGNING] Creating signature from node's private key for round {}",
             round
@@ -1085,11 +1085,15 @@ impl SigningNode {
                 .clone()
         };
 
-        // Fetch nonce from Qubertics chain
-        let nonce = self.fetch_nonce_from_qubertics_chain().await?;
+        // Fetch nonce from the specified chain
+        let nonce = match chain_name.to_lowercase().as_str() {
+            "qubetics" | "tics" => self.fetch_nonce_from_qubetics_chain().await?,
+            "sepolia" => self.fetch_nonce_from_sepolia_chain().await?,
+            _ => return Err(anyhow!("Unsupported chain: {}", chain_name)),
+        };
         info!(
-            "🔍 [QUBERTICS] Fetched nonce: {} for round {}",
-            nonce, round
+            "🔍 [{}] Fetched nonce: {} for round {}",
+            chain_name.to_uppercase(), nonce, round
         );
 
         // Get the stored transaction struct and update its nonce
@@ -1100,13 +1104,13 @@ impl SigningNode {
 
         if let Some(mut transaction) = original_transaction {
             info!(
-                "🔍 [QUBERTICS] Found stored transaction, updating nonce from {} to {}",
-                transaction.nonce, nonce
+                "🔍 [{}] Found stored transaction, updating nonce from {} to {}",
+                chain_name.to_uppercase(), transaction.nonce, nonce
             );
 
             // Update the nonce and chain ID
             transaction.nonce = nonce;
-            transaction.chain_id = 9029; // Qubertics chain ID
+            transaction.chain_id = chain_id;
 
 
 
@@ -1157,44 +1161,56 @@ impl SigningNode {
         Ok(signature)
     }
 
-    /// Fetch nonce from Qubertics chain
-    async fn fetch_nonce_from_qubertics_chain(&self) -> Result<u64> {
-        info!("🔍 [QUBERTICS] Fetching nonce from Qubertics chain");
+    /// Fetch nonce from any EVM chain
+    async fn fetch_nonce_from_chain(&self, rpc_url: &str, chain_name: &str) -> Result<u64> {
+        info!("🔍 [{}] Fetching nonce from {} chain", chain_name.to_uppercase(), chain_name);
 
-        // Get the Quberticks address for this node
+        // Get the address for this node (works for any EVM chain)
         let private_key = self.aggregated_private_key.as_ref()
             .ok_or_else(|| anyhow!("No aggregated private key available"))?;
-        let quberticks_address = self.derive_quberticks_address_from_private_key(&private_key.secret_bytes());
+        let address = self.derive_qubetics_address_from_private_key(&private_key.secret_bytes());
 
         info!(
-            "🔍 [QUBERTICS] Fetching nonce for address: {}",
-            quberticks_address
+            "🔍 [{}] Fetching nonce for address: {}",
+            chain_name.to_uppercase(), address
         );
 
-        // Make RPC call to Qubertics chain
+        // Make RPC call to the specified chain
         let nonce = self
-            .make_rpc_call_to_qubertics(
+            .make_rpc_call_to_chain(
                 "eth_getTransactionCount",
-                vec![quberticks_address, "latest".to_string()],
+                vec![address, "latest".to_string()],
+                rpc_url,
+                chain_name,
             )
             .await?;
 
         info!(
-            "🔍 [QUBERTICS] Retrieved nonce: {} from Qubertics chain",
-            nonce
+            "🔍 [{}] Retrieved nonce: {} from {} chain",
+            chain_name.to_uppercase(), nonce, chain_name
         );
 
         Ok(nonce)
     }
 
-    /// Make RPC call to Qubertics chain
-    async fn make_rpc_call_to_qubertics(&self, method: &str, params: Vec<String>) -> Result<u64> {
-        // Qubertics RPC endpoint - you can make this configurable
-        let rpc_url = std::env::var("QUBERTICS_RPC_URL")
+    /// Fetch nonce from qubetics chain (convenience method)
+    async fn fetch_nonce_from_qubetics_chain(&self) -> Result<u64> {
+        let rpc_url = std::env::var("qubetics_RPC_URL")
             .unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string());
+        self.fetch_nonce_from_chain(&rpc_url, "qubetics").await
+    }
 
-        info!("🌐 [QUBERTICS] Making RPC call to: {}", rpc_url);
-        info!("📋 [QUBERTICS] Method: {}, Params: {:?}", method, params);
+    /// Fetch nonce from Sepolia chain (convenience method)
+    async fn fetch_nonce_from_sepolia_chain(&self) -> Result<u64> {
+        let rpc_url = std::env::var("SEPOLIA_RPC_URL")
+            .unwrap_or_else(|_| "https://sepolia.infura.io/v3/4b0065cef2bd4678baf5dee5f30d17b8".to_string());
+        self.fetch_nonce_from_chain(&rpc_url, "sepolia").await
+    }
+    
+    /// Make RPC call to any EVM chain
+    async fn make_rpc_call_to_chain(&self, method: &str, params: Vec<String>, rpc_url: &str, chain_name: &str) -> Result<u64> {
+        info!("🌐 [{}] Making RPC call to: {}", chain_name.to_uppercase(), rpc_url);
+        info!("📋 [{}] Method: {}, Params: {:?}", chain_name.to_uppercase(), method, params);
 
         // Create the JSON-RPC request
         let request_body = serde_json::json!({
@@ -1205,7 +1221,8 @@ impl SigningNode {
         });
 
         info!(
-            "📤 [QUBERTICS] Request body: {}",
+            "📤 [{}] Request body: {}",
+            chain_name.to_uppercase(),
             serde_json::to_string_pretty(&request_body)?
         );
 
@@ -1214,11 +1231,11 @@ impl SigningNode {
         let mut last_error = None;
 
         for attempt in 1..=max_retries {
-            info!("🔄 [QUBERTICS] Attempt {}/{}", attempt, max_retries);
+            info!("🔄 [{}] Attempt {}/{}", chain_name.to_uppercase(), attempt, max_retries);
 
             let client = reqwest::Client::new();
             let response = client
-                .post(&rpc_url)
+                .post(rpc_url)
                 .header("Content-Type", "application/json")
                 .body(serde_json::to_string(&request_body)?)
                 .timeout(std::time::Duration::from_secs(30))
@@ -1228,19 +1245,19 @@ impl SigningNode {
             match response {
                 Ok(response) => {
                     // Process successful response
-                    return self.process_rpc_response(response).await;
+                    return self.process_rpc_response(response, chain_name).await;
                 }
                 Err(e) => {
                     let error_msg = e.to_string();
                     last_error = Some(e);
                     if attempt < max_retries {
                         info!(
-                            "⚠️ [QUBERTICS] Attempt {} failed: {}. Retrying...",
-                            attempt, error_msg
+                            "⚠️ [{}] Attempt {} failed: {}. Retrying...",
+                            chain_name.to_uppercase(), attempt, error_msg
                         );
                         tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
                     } else {
-                        info!("❌ [QUBERTICS] All {} attempts failed", max_retries);
+                        info!("❌ [{}] All {} attempts failed", chain_name.to_uppercase(), max_retries);
                     }
                 }
             }
@@ -1254,9 +1271,9 @@ impl SigningNode {
     }
 
     /// Process RPC response and extract nonce
-    async fn process_rpc_response(&self, response: reqwest::Response) -> Result<u64> {
+    async fn process_rpc_response(&self, response: reqwest::Response, chain_name: &str) -> Result<u64> {
         let status = response.status();
-        info!("📥 [QUBERTICS] Response status: {}", status);
+        info!("📥 [{}] Response status: {}", chain_name.to_uppercase(), status);
 
         if !status.is_success() {
             let error_text = response
@@ -1275,7 +1292,7 @@ impl SigningNode {
             .await
             .map_err(|e| anyhow!("Failed to read response body: {}", e))?;
 
-        info!("📥 [QUBERTICS] Response body: {}", response_text);
+        info!("📥 [{}] Response body: {}", chain_name.to_uppercase(), response_text);
 
         // Parse the JSON-RPC response
         let response_json: serde_json::Value = serde_json::from_str(&response_text)
@@ -1302,8 +1319,8 @@ impl SigningNode {
             .map_err(|e| anyhow!("Failed to parse nonce hex '{}': {}", nonce_hex, e))?;
 
         info!(
-            "✅ [QUBERTICS] Successfully parsed nonce: {} from hex: {}",
-            nonce, nonce_hex
+            "✅ [{}] Successfully parsed nonce: {} from hex: {}",
+            chain_name.to_uppercase(), nonce, nonce_hex
         );
 
         Ok(nonce)
@@ -1791,8 +1808,8 @@ impl SigningNode {
         &self.id
     }
 
-    /// Get Quberticks address from public key
-    pub fn get_quberticks_address(&self) -> Option<String> {
+    /// Get qubetics address from public key
+    pub fn get_qubetics_address(&self) -> Option<String> {
         if let Some(public_key) = &self.public_key {
             // Get the uncompressed public key (65 bytes)
             let public_key_bytes = public_key.serialize_uncompressed();
@@ -1801,11 +1818,11 @@ impl SigningNode {
             if public_key_bytes.len() >= 21 {
                 let address_bytes = &public_key_bytes[1..21];
 
-                // Convert to Quberticks address format (0x + hex)
+                // Convert to qubetics address format (0x + hex)
                 let address = format!("0x{}", hex::encode(address_bytes));
 
                 info!(
-                    "🏦 [SIGNING] Node {} Quberticks address: \x1b[32m{}\x1b[0m",
+                    "🏦 [SIGNING] Node {} qubetics address: \x1b[32m{}\x1b[0m",
                     self.id, address
                 );
                 Some(address)
@@ -1827,8 +1844,8 @@ impl SigningNode {
         }
     }
 
-    /// Derive Quberticks address from private key bytes
-    fn derive_quberticks_address_from_private_key(&self, private_key_bytes: &[u8]) -> String {
+    /// Derive qubetics address from private key bytes
+    fn derive_qubetics_address_from_private_key(&self, private_key_bytes: &[u8]) -> String {
         // Create secp256k1 context
         let secp = Secp256k1::new();
 
@@ -1839,13 +1856,13 @@ impl SigningNode {
         // Step 2: Derive secp256k1 public key
         let secp_pubkey = PublicKey::from_secret_key(&secp, &secret_key);
 
-        // Step 3: Quberticks address from uncompressed pubkey
-        let quberticks_address = {
+        // Step 3: qubetics address from uncompressed pubkey
+        let qubetics_address = {
             let uncompressed = secp_pubkey.serialize_uncompressed(); // 65 bytes, [0x04 || x || y]
             let hash = sha3::Keccak256::digest(&uncompressed[1..]); // skip 0x04
             format!("0x{}", hex::encode(&hash[12..])) // last 20 bytes
         };
-        quberticks_address
+        qubetics_address
     }
 
     /// Derive Bitcoin testnet address from private key bytes
@@ -1914,12 +1931,12 @@ impl SigningNode {
             info!("💾 [INTENT] Stored intent for round {}", current_round);
         }
 
-        // Create a message to sign (same for both Quberticks and BTC)
+        // Create a message to sign (same for both qubetics and BTC)
         let message_bytes = intent_hash.as_bytes().to_vec();
 
         info!("🔐 [INTENT] Starting signing process for round {}", current_round);
         
-        // Use the same signing flow for both Quberticks and BTC (just sharing secret shares)
+        // Use the same signing flow for both qubetics and BTC (just sharing secret shares)
         self.sign_message(message_bytes).await?;
 
         // Update status to broadcasted (signing process initiated)
@@ -1934,7 +1951,7 @@ impl SigningNode {
     }
 
 
-    /// Create signature and transaction based on stored intent (handles both Quberticks and BTC)
+    /// Create signature and transaction based on stored intent (handles both qubetics and BTC)
     async fn create_signature_and_transaction_from_intent(&self, round: u64) -> Result<()> {
         info!("🔐 [SIGNING] Creating signature and transaction for round {}", round);
 
@@ -1948,20 +1965,36 @@ impl SigningNode {
             info!("🎯 [SIGNING] Found intent for round {}: {:?}", round, intent);
             
             match intent.target_chain.to_lowercase().as_str() {
-                "ticks" | "quberticks" => {
+                "tics" | "qubetics" => {
 
                     match intent.target_token.to_lowercase().as_str() {
                         "usdc" => {
                             info!("💰 [SIGNING] Processing supported USDC token: {}", intent.target_token);
-                            self.create_and_broadcast_quberticks_transaction(round).await?;
+                            self.create_and_broadcast_qubetics_transaction(round).await?;
                         }
                         "usdt" => {
                             info!("💰 [SIGNING] Processing supported USDT token: {}", intent.target_token);
-                            self.create_and_broadcast_quberticks_transaction(round).await?;
+                            self.create_and_broadcast_qubetics_transaction(round).await?;
                         }
                         _ => {
-                           info!("🏦 [SIGNING] Processing Quberticks transaction for round {}", round);
-                            self.create_and_broadcast_quberticks_transaction(round).await?;
+                           info!("🏦 [SIGNING] Processing qubetics transaction for round {}", round);
+                            self.create_and_broadcast_qubetics_transaction(round).await?;
+                        }
+                    }
+                }
+                "sepolia" => {
+                    match intent.target_token.to_lowercase().as_str() {
+                        "usdc" => {
+                            info!("💰 [SIGNING] Processing supported USDC token on Sepolia: {}", intent.target_token);
+                            self.create_and_broadcast_sepolia_transaction(round).await?;
+                        }
+                        "usdt" => {
+                            info!("💰 [SIGNING] Processing supported USDT token on Sepolia: {}", intent.target_token);
+                            self.create_and_broadcast_sepolia_transaction(round).await?;
+                        }
+                        _ => {
+                           info!("🏦 [SIGNING] Processing Sepolia ETH transaction for round {}", round);
+                            self.create_and_broadcast_sepolia_transaction(round).await?;
                         }
                     }
                 }
@@ -1982,12 +2015,12 @@ impl SigningNode {
         Ok(())
     }
 
-    /// Create and broadcast Quberticks transaction
-    async fn create_and_broadcast_quberticks_transaction(&self, round: u64) -> Result<()> {
-        info!("🏦 [TICKS] Creating and broadcasting Quberticks transaction for round {}", round);
+    /// Create and broadcast qubetics transaction
+    async fn create_and_broadcast_qubetics_transaction(&self, round: u64) -> Result<()> {
+        info!("🏦 [tics] Creating and broadcasting qubetics transaction for round {}", round);
 
         
-        // For Quberticks transactions, we need to create the transaction first
+        // For qubetics transactions, we need to create the transaction first
         let intent = {
             let intents_by_round = self.intents_by_round.read().await;
             intents_by_round.get(&round).cloned()
@@ -2006,11 +2039,11 @@ impl SigningNode {
                     
                     crate::rpc_server::DummyTransaction {
                         to: usdc_contract.to_string(),
-                        value: intent.amount.to_string(), // No ETH value for contract call
+                        value: "0".to_string(), // No ETH value for contract call - token amount is in data field
                         nonce: 0, // Will be updated with actual nonce from chain
                         gas_limit: 100000, // Higher gas limit for contract calls
                         gas_price: "200000000".to_string(), // 20 gwei
-                        chain_id: 9029, // Qubertics chain ID
+                        chain_id: 9029, // qubetics chain ID
                         data: Some(transfer_data), // Contract call data
                     }
                 }
@@ -2024,11 +2057,11 @@ impl SigningNode {
                     
                     crate::rpc_server::DummyTransaction {
                         to: usdt_contract.to_string(),
-                        value: intent.amount.to_string(), // No ETH value for contract call
+                        value: "0".to_string(), // No ETH value for contract call - token amount is in data field
                         nonce: 0, // Will be updated with actual nonce from chain
                         gas_limit: 100000, // Higher gas limit for contract calls
                         gas_price: "200000000".to_string(), // 20 gwei
-                        chain_id: 9029, // Qubertics chain ID
+                        chain_id: 9029, // qubetics chain ID
                         data: Some(transfer_data), // Contract call data
                     }
                 }
@@ -2041,7 +2074,7 @@ impl SigningNode {
                         nonce: 0, // Will be updated with actual nonce from chain
                         gas_limit: 21000,
                         gas_price: "200000000".to_string(), // 20 gwei
-                        chain_id: 9029, // Qubertics chain ID
+                        chain_id: 9029, // qubetics chain ID
                         data: None, // No data for simple ETH transfer
                     }
                 }
@@ -2055,7 +2088,7 @@ impl SigningNode {
 
             // Convert transaction to bytes for signing using RLP encoding
             let tx_bytes = crate::utils::transaction::create_transaction_for_signing(&transaction);
-            info!("🏦 [TICKS] Transaction bytes for signing: 0x{}", hex::encode(&tx_bytes));
+            info!("🏦 [tics] Transaction bytes for signing: 0x{}", hex::encode(&tx_bytes));
 
             // Store the transaction message for this round
             {
@@ -2064,7 +2097,7 @@ impl SigningNode {
             }
 
             // Now create signature and broadcast
-            match self.create_signature_from_private_key(round).await {
+            match self.create_signature_from_private_key(round, 9029, "qubetics").await {
                 Ok(signature) => {
                     info!("✅ [SIGNING] Created signature from aggregated secret key for round {}", round);
                     let (recovery_id, signature_bytes) = signature.serialize_compact();
@@ -2144,14 +2177,252 @@ impl SigningNode {
                             if let Err(e) = self.broadcast_transaction_hash(
                                 intent_hash,
                                 tx_hash.clone(),
-                                "ticks".to_string(),
+                                "tics".to_string(),
                                 round
                             ).await {
                                 warn!("Failed to broadcast transaction hash: {}", e);
                             }
                         }
                         Err(e) => {
-                            error!("❌ [TICKS] Failed to broadcast Quberticks transaction: {}", e);
+                            error!("❌ [tics] Failed to broadcast qubetics transaction: {}", e);
+                            
+                            // Create intent hash for error storage
+                            let intent_hash = format!(
+                                "0x{:x}",
+                                sha2::Sha256::digest(format!("{:?}", intent).as_bytes())
+                            );
+
+                            // Store error information in database
+                            let (error_code, error_message) = match &e {
+                                TransactionError::InsufficientFunds => ("INSUFFICIENT_FUNDS", "Insufficient balance to cover gas and transaction value. Please add more funds to your wallet."),
+                                TransactionError::InvalidNonce => ("INVALID_NONCE", "Transaction nonce is incorrect. This usually resolves automatically on retry."),
+                                TransactionError::GasLimit => ("GAS_ERROR", "Gas limit too low or gas price too low. The transaction requires more gas."),
+                                TransactionError::InvalidAddress => ("INVALID_ADDRESS", "Invalid recipient address. Please check the target address."),
+                                TransactionError::DuplicateTransaction => ("DUPLICATE_TX", "Transaction with the same nonce already exists in the mempool."),
+                                TransactionError::NetworkError => ("NETWORK_ERROR", "Network connectivity issue. Please try again later."),
+                                TransactionError::RpcError(msg) => ("RPC_ERROR", msg.as_str()),
+                                TransactionError::Unknown(msg) => ("UNKNOWN_ERROR", msg.as_str()),
+                            };
+
+                            // Update status and error in database
+                            if let Err(db_err) = self.database.update_intent_status(&intent_hash, "failed") {
+                                warn!("Failed to update status to failed: {}", db_err);
+                            }
+
+                            if let Err(db_err) = self.database.update_intent_error(&intent_hash, error_code, error_message) {
+                                warn!("Failed to store error information: {}", db_err);
+                            }
+
+                            info!("💾 [DATABASE] Stored error information for intent {}: {} - {}", intent_hash, error_code, error_message);
+
+                            // Broadcast error information to all nodes so they can update their databases
+                            let error_broadcast = crate::types::IntentErrorBroadcast {
+                                intent_hash: intent_hash.clone(),
+                                error_code: error_code.to_string(),
+                                error_message: error_message.to_string(),
+                                node_id: self.id.clone(),
+                                round,
+                            };
+
+                            let error_msg = crate::types::GossipsubMessage::IntentError(error_broadcast);
+                            if let Ok(broadcast_data) = serde_json::to_vec(&error_msg) {
+                                if let Err(e) = self.broadcast("intent-errors", &broadcast_data).await {
+                                    warn!("Failed to broadcast intent error: {}", e);
+                                } else {
+                                    info!("📤 [ERROR_BROADCAST] Broadcasted error information for intent {}", intent_hash);
+                                }
+                            }
+                            
+                            return Err(anyhow!("Transaction broadcast failed: {}", e));
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!("❌ [SIGNING] Failed to create signature from aggregated private key: {}", e);
+                    return Err(e);
+                }
+            }
+        } else {
+            error!("❌ [SIGNING] No intent found for round {}", round);
+            return Err(anyhow!("No intent found for round {}", round));
+        }
+
+        Ok(())
+    }
+
+    /// Create and broadcast Sepolia transaction
+    async fn create_and_broadcast_sepolia_transaction(&self, round: u64) -> Result<()> {
+        info!("🔷 [SEPOLIA] Creating and broadcasting Sepolia transaction for round {}", round);
+
+        // For Sepolia transactions, we need to create the transaction first
+        let intent = {
+            let intents_by_round = self.intents_by_round.read().await;
+            intents_by_round.get(&round).cloned()
+        };
+
+        if let Some(intent) = intent {
+            // Create EVM transaction from intent
+            let mut transaction = match intent.target_token.to_lowercase().as_str() {
+                "usdc" => {
+                    info!("💰 [CONTRACT] Creating USDC contract call transaction on Sepolia");
+                    // USDC contract address on Sepolia testnet
+                    let usdc_contract = "0xCa3b5f92D660F2C661C69EB2eD038Cb321a634fF"; 
+                    
+                    // Create transfer function call data: transfer(address to, uint256 amount)
+                    let transfer_data = create_erc20_transfer_data(&intent.target_address, intent.amount)?;
+                    
+                    crate::rpc_server::DummyTransaction {
+                        to: usdc_contract.to_string(),
+                        value: "0".to_string(), // No ETH value for contract call - token amount is in data field
+                        nonce: 0, // Will be updated with actual nonce from chain
+                        gas_limit: 100000, // Higher gas limit for contract calls
+                        gas_price: "200000000".to_string(), // 20 gwei
+                        chain_id: 11155111, // Sepolia chain ID
+                        data: Some(transfer_data), // Contract call data
+                    }
+                }
+                "usdt" => {
+                    info!("💰 [CONTRACT] Creating USDT contract call transaction on Sepolia");
+                    // USDT contract address on Sepolia testnet
+                    let usdt_contract = "0xD64275A30816aD7A5Bbc5902060184a69DECB979"; 
+                   
+                    // Create transfer function call data: transfer(address to, uint256 amount)
+                    let transfer_data = create_erc20_transfer_data(&intent.target_address, intent.amount)?;
+                    
+                    crate::rpc_server::DummyTransaction {
+                        to: usdt_contract.to_string(),
+                        value: "0".to_string(), // No ETH value for contract call - token amount is in data field
+                        nonce: 0, // Will be updated with actual nonce from chain
+                        gas_limit: 100000, // Higher gas limit for contract calls
+                        gas_price: "200000000".to_string(), // 20 gwei
+                        chain_id: 11155111, // Sepolia chain ID
+                        data: Some(transfer_data), // Contract call data
+                    }
+                }
+                _ => {
+                    info!("💰 [ETH] Creating regular ETH transfer transaction on Sepolia");
+                    // Default ETH transfer transaction
+                    crate::rpc_server::DummyTransaction {
+                        to: intent.target_address.clone(),
+                        value: intent.amount.to_string(),
+                        nonce: 0, // Will be updated with actual nonce from chain
+                        gas_limit: 21000,
+                        gas_price: "200000000".to_string(), // 20 gwei
+                        chain_id: 11155111, // Sepolia chain ID
+                        data: None, // No data for simple ETH transfer
+                    }
+                }
+            };
+
+            // Store the transaction for this round
+            {
+                let mut transactions_by_round = self.transactions_by_round.write().await;
+                transactions_by_round.insert(round, transaction.clone());
+            }
+
+            // Convert transaction to bytes for signing using RLP encoding
+            let tx_bytes = crate::utils::transaction::create_transaction_for_signing(&transaction);
+            info!("🔷 [SEPOLIA] Transaction bytes for signing: 0x{}", hex::encode(&tx_bytes));
+
+            // Store the transaction message for this round
+            {
+                let mut transaction_messages_by_round = self.transaction_messages_by_round.write().await;
+                transaction_messages_by_round.insert(round, tx_bytes.clone());
+            }
+
+            // Now create signature and broadcast
+            match self.create_signature_from_private_key(round, 11155111, "sepolia").await {
+                Ok(signature) => {
+                    info!("✅ [SIGNING] Created signature from aggregated secret key for round {}", round);
+                    let (recovery_id, signature_bytes) = signature.serialize_compact();
+                    let v: u64 = recovery_id.to_i32() as u64 + 35 + 11155111 * 2; // Sepolia chain ID
+                    let r = &signature_bytes[0..32];
+                    let s = &signature_bytes[32..64];
+
+                    info!("🔐 [SIGNING] Final signature components for Sepolia:");
+                    info!("  v: {}", v);
+                    info!("  r: 0x{}", hex::encode(r));
+                    info!("  s: 0x{}", hex::encode(s));
+                    info!("  recovery_id: {}", recovery_id.to_i32());
+                    info!("  full_signature: 0x{}", hex::encode(signature_bytes));
+
+                    let original_transaction = {
+                        let transactions_by_round = self.transactions_by_round.read().await;
+                        transactions_by_round.get(&round).cloned()
+                    };
+
+                    transaction = original_transaction.unwrap();
+
+                    // Create the signed transaction RLP with actual signature values
+                    let signed_transaction_rlp =
+                        crate::utils::transaction::create_signed_transaction(
+                            &transaction,
+                            r,
+                            s,
+                            v,
+                        );
+
+                    let raw_transaction =
+                        format!("0x{}", hex::encode(&signed_transaction_rlp));
+                    info!("📡 [BROADCAST] Raw Sepolia transaction: {}", raw_transaction);
+
+                    // Use Sepolia RPC endpoint (you can make this configurable)
+                    let sepolia_rpc_url = std::env::var("SEPOLIA_RPC_URL")
+                        .unwrap_or_else(|_| "https://sepolia.infura.io/v3/4b0065cef2bd4678baf5dee5f30d17b8".to_string());
+
+                    match self
+                        .broadcast_transaction(
+                            &raw_transaction,
+                            &sepolia_rpc_url,
+                        )
+                        .await
+                    {
+                        Ok(tx_hash) => {
+                            println!("✅ Sepolia transaction sent successfully!");
+                            println!("Transaction Hash: {}", tx_hash);
+                            println!(
+                                "View on Sepolia Etherscan: https://sepolia.etherscan.io/tx/{}",
+                                tx_hash
+                            );
+
+                            // Store transaction hash for this round
+                            self.store_transaction_hash(round, tx_hash.clone()).await;
+
+                            // Create intent hash for broadcasting
+                            let intent_hash = format!(
+                                "0x{:x}",
+                                sha2::Sha256::digest(format!("{:?}", intent).as_bytes())
+                            );
+
+                            // Store transaction hash in database and update status to completed
+                            if let Err(e) = self.database.update_intent_transaction_hash(&intent_hash, &tx_hash) {
+                                warn!("Failed to store transaction hash in database: {}", e);
+                            } else {
+                                info!("💾 [DATABASE] Stored transaction hash {} for intent {}", tx_hash, intent_hash);
+                            }
+
+                            // Update status to completed
+                            if let Err(e) = self.database.update_intent_status(&intent_hash, "completed") {
+                                warn!("Failed to update status to completed: {}", e);
+                            }
+
+                            // Clear any previous error information
+                            if let Err(e) = self.database.clear_intent_error(&intent_hash) {
+                                warn!("Failed to clear error information: {}", e);
+                            }
+
+                            // Broadcast transaction hash to all nodes
+                            if let Err(e) = self.broadcast_transaction_hash(
+                                intent_hash,
+                                tx_hash.clone(),
+                                "sepolia".to_string(),
+                                round
+                            ).await {
+                                warn!("Failed to broadcast transaction hash: {}", e);
+                            }
+                        }
+                        Err(e) => {
+                            error!("❌ [SEPOLIA] Failed to broadcast Sepolia transaction: {}", e);
                             
                             // Create intent hash for error storage
                             let intent_hash = format!(
