@@ -49,20 +49,20 @@ const exampleIntents = {
         source_token: "ETH",
         target_token: "ETH",
         path: [],
-        transaction_hash: "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+        transaction_hash: "0x12345678x0axcdef1234xxx890abcdef12xxxxxx90abcdxxx234567890abcdef"
     },
 
     // Bitcoin transfer
     bitcoin: {
-        source_address: "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4",
+        source_address: "0xceb5057834CB4EdE0E59F9e91046B8cB96C72e9C",
         target_address: "tb1q2nd0utgnrseanclhq2tr7hqhqtuc389mmjm2fs",
-        source_chain: "bitcoin",
+        source_chain: "eth",
         target_chain: "bitcoin",
         amount: 800, 
-        source_token: "BTC",
+        source_token: "usdc",
         target_token: "BTC",
         path: [],
-        transaction_hash: "0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+        transaction_hash: "0xabcdef1234567890abcdxf1234567890abcdef1234567890abcdef1234567890"
     },
 
     // Cross-chain transfer
