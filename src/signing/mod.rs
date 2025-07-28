@@ -25,6 +25,32 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{mpsc, RwLock};
 use tracing::{error, info, warn};
 
+/// Create ERC20 transfer function call data
+/// transfer(address to, uint256 amount)
+fn create_erc20_transfer_data(to_address: &str, amount: u128) -> Result<String> {
+    // ERC20 transfer function selector: keccak256("transfer(address,uint256)")[0:4]
+    let function_selector = "a9059cbb";
+    
+    // Remove 0x prefix from address if present
+    let to_address_clean = to_address.strip_prefix("0x").unwrap_or(to_address);
+    
+    // Pad address to 32 bytes (64 hex characters)
+    let to_address_padded = format!("{:0>64}", to_address_clean);
+    
+    // Convert amount to 32-byte hex string
+    let amount_hex = format!("{:064x}", amount);
+    
+    // Combine: function_selector + padded_address + padded_amount
+    let data = format!("0x{}{}{}", function_selector, to_address_padded, amount_hex);
+    
+    info!("🔧 [ERC20] Created transfer data: {}", data);
+    info!("🔧 [ERC20] Function selector: 0x{}", function_selector);
+    info!("🔧 [ERC20] To address (padded): {}", to_address_padded);
+    info!("🔧 [ERC20] Amount (hex): {}", amount_hex);
+    
+    Ok(data)
+}
+
 #[derive(Debug, Clone)]
 pub enum TransactionError {
     InsufficientFunds,
@@ -1923,8 +1949,21 @@ impl SigningNode {
             
             match intent.target_chain.to_lowercase().as_str() {
                 "ticks" | "quberticks" => {
-                    info!("🏦 [SIGNING] Processing Quberticks transaction for round {}", round);
-                    self.create_and_broadcast_quberticks_transaction(round).await?;
+
+                    match intent.target_token.to_lowercase().as_str() {
+                        "usdc" => {
+                            info!("💰 [SIGNING] Processing supported USDC token: {}", intent.target_token);
+                            self.create_and_broadcast_quberticks_transaction(round).await?;
+                        }
+                        "usdt" => {
+                            info!("💰 [SIGNING] Processing supported USDT token: {}", intent.target_token);
+                            self.create_and_broadcast_quberticks_transaction(round).await?;
+                        }
+                        _ => {
+                           info!("🏦 [SIGNING] Processing Quberticks transaction for round {}", round);
+                            self.create_and_broadcast_quberticks_transaction(round).await?;
+                        }
+                    }
                 }
                 "bitcoin" | "btc" => {
                     info!("₿ [SIGNING] Processing Bitcoin transaction for round {}", round);
@@ -1946,6 +1985,7 @@ impl SigningNode {
     /// Create and broadcast Quberticks transaction
     async fn create_and_broadcast_quberticks_transaction(&self, round: u64) -> Result<()> {
         info!("🏦 [TICKS] Creating and broadcasting Quberticks transaction for round {}", round);
+
         
         // For Quberticks transactions, we need to create the transaction first
         let intent = {
@@ -1954,14 +1994,57 @@ impl SigningNode {
         };
 
         if let Some(intent) = intent {
-            // Create Quberticks transaction from intent
-            let mut transaction = crate::rpc_server::DummyTransaction {
-                to: intent.target_address.clone(),
-                value: intent.amount.to_string(),
-                nonce: 0, // Will be updated with actual nonce from chain
-                gas_limit: 21000,
-                gas_price: "200000000".to_string(), // 20 gwei
-                chain_id: 9029, // Qubertics chain ID
+            // Create EVM transaction from intent
+            let mut transaction = match intent.target_token.to_lowercase().as_str() {
+                "usdc" => {
+                    info!("💰 [CONTRACT] Creating USDC contract call transaction");
+                    // USDC contract address (example - replace with actual contract address)
+                    let usdc_contract = "0x2D0f893F337220BA8B78EFfa1a8e943b4c1Dd37D"; 
+                    
+                    // Create transfer function call data: transfer(address to, uint256 amount)
+                    let transfer_data = create_erc20_transfer_data(&intent.target_address, intent.amount)?;
+                    
+                    crate::rpc_server::DummyTransaction {
+                        to: usdc_contract.to_string(),
+                        value: intent.amount.to_string(), // No ETH value for contract call
+                        nonce: 0, // Will be updated with actual nonce from chain
+                        gas_limit: 100000, // Higher gas limit for contract calls
+                        gas_price: "200000000".to_string(), // 20 gwei
+                        chain_id: 9029, // Qubertics chain ID
+                        data: Some(transfer_data), // Contract call data
+                    }
+                }
+                "usdt" => {
+                    info!("💰 [CONTRACT] Creating USDT contract call transaction");
+                    // USDT contract address (example - replace with actual contract address)
+                    let usdt_contract = "0xbdAf7C5F508D1a74a8c6F963507DcA075Cb52CBB"; 
+                   
+                    // Create transfer function call data: transfer(address to, uint256 amount)
+                    let transfer_data = create_erc20_transfer_data(&intent.target_address, intent.amount)?;
+                    
+                    crate::rpc_server::DummyTransaction {
+                        to: usdt_contract.to_string(),
+                        value: intent.amount.to_string(), // No ETH value for contract call
+                        nonce: 0, // Will be updated with actual nonce from chain
+                        gas_limit: 100000, // Higher gas limit for contract calls
+                        gas_price: "200000000".to_string(), // 20 gwei
+                        chain_id: 9029, // Qubertics chain ID
+                        data: Some(transfer_data), // Contract call data
+                    }
+                }
+                _ => {
+                    info!("💰 [ETH] Creating regular ETH transfer transaction");
+                    // Default ETH transfer transaction
+                       crate::rpc_server::DummyTransaction {
+                        to: intent.target_address.clone(),
+                        value: intent.amount.to_string(),
+                        nonce: 0, // Will be updated with actual nonce from chain
+                        gas_limit: 21000,
+                        gas_price: "200000000".to_string(), // 20 gwei
+                        chain_id: 9029, // Qubertics chain ID
+                        data: None, // No data for simple ETH transfer
+                    }
+                }
             };
 
             // Store the transaction for this round

@@ -153,6 +153,8 @@ pub struct DummyTransaction {
     pub gas_price: String,
     #[serde(rename = "chainId")]
     pub chain_id: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
