@@ -1,7 +1,7 @@
 use crate::rpc_server::DummyTransaction;
 // use rlp::RlpStream;
 
-/// RLP encoder for Ethereum transaction signing (EIP-155)
+/// RLP encoder for Quberticks transaction signing (EIP-155)
 pub struct RlpEncoder {
     pub data: Vec<u8>,
 }

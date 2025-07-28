@@ -64,7 +64,9 @@ pub async fn create_and_sign_bitcoin_transaction(
         .expect("compressed pubkey → P2WPKH");
     info!("₿ [BTC] Derived sender address from aggregated private key: {}", change_addr);
 
-    let recipient = Address::from_str(&request.recipient_address)?;
+    // Parse recipient address (validation already done in RPC server)
+    let recipient = Address::from_str(&request.recipient_address)
+        .map_err(|e| anyhow!("Failed to parse Bitcoin address '{}': {}", request.recipient_address, e))?;
     let amount = request.amount;
     let fee = request.fee;
 

@@ -52,6 +52,35 @@ fn create_erc20_transfer_data(to_address: &str, amount: u128) -> Result<String> 
 }
 
 #[derive(Debug, Clone)]
+pub enum TransactionError {
+    InsufficientFunds,
+    InvalidNonce,
+    GasLimit,
+    InvalidAddress,
+    NetworkError,
+    DuplicateTransaction,
+    RpcError(String),
+    Unknown(String),
+}
+
+impl std::fmt::Display for TransactionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TransactionError::InsufficientFunds => write!(f, "Insufficient funds for gas and transaction value"),
+            TransactionError::InvalidNonce => write!(f, "Invalid nonce - transaction nonce is incorrect"),
+            TransactionError::GasLimit => write!(f, "Gas limit too low or gas price too low"),
+            TransactionError::InvalidAddress => write!(f, "Invalid recipient address"),
+            TransactionError::NetworkError => write!(f, "Network connectivity issue"),
+            TransactionError::DuplicateTransaction => write!(f, "Transaction with same nonce already exists"),
+            TransactionError::RpcError(msg) => write!(f, "RPC Error: {}", msg),
+            TransactionError::Unknown(msg) => write!(f, "Unknown error: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for TransactionError {}
+
+#[derive(Debug, Clone)]
 pub struct SecretKeyShare {
     pub secret_key: SecretKey, // The secret key directly
     pub signer_id: String,
@@ -259,7 +288,7 @@ impl SigningNode {
         self.public_key = Some(public_key);
 
         info!(
-            "🔐 [SIGNING] Node {} private key set from BLS scalar with proper Ethereum conversion",
+            "🔐 [SIGNING] Node {} private key set from BLS scalar with proper Quberticks conversion",
             self.id
         );
     }
@@ -307,7 +336,7 @@ impl SigningNode {
             "📤 [SIGNING] Node {} broadcasting to topic: {}",
             self.id, topic
         );
-        info!("📊 [SIGNING] Message size: {} bytes", data.len());
+
 
         self.message_tx
             .send(ChannelMessage::Broadcast {
@@ -327,7 +356,7 @@ impl SigningNode {
     pub async fn store_transaction_hash(&self, round: u64, tx_hash: String) {
         let mut tx_hashes = self.transaction_hashes_by_round.write().await;
         tx_hashes.insert(round, tx_hash.clone());
-        info!("💾 [SIGNING] Stored transaction hash {} for round {}", tx_hash, round);
+
     }
 
     /// Get transaction hash for a specific round
@@ -338,7 +367,7 @@ impl SigningNode {
 
     /// Get transaction hash for an intent by finding its round first
     pub async fn get_transaction_hash_for_intent(&self, intent_hash: &str) -> Option<String> {
-        info!("🔍 [TX_HASH] Looking up transaction hash for intent: {}", intent_hash);
+
         
         // First, find which round this intent belongs to
         let round_for_intent = {
@@ -353,7 +382,7 @@ impl SigningNode {
                 
                 if stored_intent_hash == intent_hash {
                     found_round = Some(*round);
-                    info!("🎯 [TX_HASH] Found intent {} in round {}", intent_hash, round);
+    
                     break;
                 }
             }
@@ -362,22 +391,15 @@ impl SigningNode {
         
         // If we found the round, get the transaction hash for that round
         if let Some(round) = round_for_intent {
-            let tx_hash = self.get_transaction_hash(round).await;
-            if let Some(ref hash) = tx_hash {
-                info!("✅ [TX_HASH] Found transaction hash {} for intent {} (round {})", hash, intent_hash, round);
-            } else {
-                info!("⏳ [TX_HASH] No transaction hash yet for intent {} (round {})", intent_hash, round);
-            }
-            tx_hash
+            self.get_transaction_hash(round).await
         } else {
-            info!("❌ [TX_HASH] Intent {} not found in any round", intent_hash);
             None
         }
     }
 
     /// Get final node ID for an intent by finding its round first
     pub async fn get_final_node_for_intent(&self, intent_hash: &str) -> Option<String> {
-        info!("🔍 [FINAL_NODE] Looking up final node for intent: {}", intent_hash);
+
         
         // First, find which round this intent belongs to
         let round_for_intent = {
@@ -392,7 +414,7 @@ impl SigningNode {
                 
                 if stored_intent_hash == intent_hash {
                     found_round = Some(*round);
-                    info!("🎯 [FINAL_NODE] Found intent {} in round {}", intent_hash, round);
+    
                     break;
                 }
             }
@@ -436,6 +458,43 @@ impl SigningNode {
         info!("✅ [TX_HASH] Successfully processed transaction hash broadcast for intent {} from node {}", 
             tx_hash_broadcast.intent_hash, 
             tx_hash_broadcast.node_id
+        );
+        
+        Ok(())
+    }
+
+    /// Handle intent error broadcast - updates database with error information
+    pub async fn handle_intent_error_broadcast(&self, error_broadcast: crate::types::IntentErrorBroadcast) -> Result<()> {
+        info!("❌ [INTENT_ERROR] Processing intent error broadcast: {:?}", error_broadcast);
+        
+        // Update database with error information
+        if let Err(e) = self.database.update_intent_error(
+            &error_broadcast.intent_hash,
+            &error_broadcast.error_code,
+            &error_broadcast.error_message
+        ) {
+            warn!("Failed to update database with error for intent {}: {}", error_broadcast.intent_hash, e);
+            return Err(anyhow::anyhow!("Database error update failed: {}", e));
+        } else {
+            info!("💾 [DATABASE] Updated error information for intent {} from node {}: {} - {}", 
+                error_broadcast.intent_hash, 
+                error_broadcast.node_id,
+                error_broadcast.error_code,
+                error_broadcast.error_message
+            );
+        }
+        
+        // Also update intent status to failed
+        if let Err(e) = self.database.update_intent_status(&error_broadcast.intent_hash, "failed") {
+            warn!("Failed to update intent status to failed for intent {}: {}", error_broadcast.intent_hash, e);
+            return Err(anyhow::anyhow!("Database status update failed: {}", e));
+        } else {
+            info!("💾 [DATABASE] Updated intent status to failed for intent {}", error_broadcast.intent_hash);
+        }
+        
+        info!("✅ [INTENT_ERROR] Successfully processed intent error broadcast for intent {} from node {}", 
+            error_broadcast.intent_hash, 
+            error_broadcast.node_id
         );
         
         Ok(())
@@ -508,7 +567,7 @@ impl SigningNode {
                 round,
                 selection_result.selected_nodes
             );
-            info!("available nodes for vrf are : {:?}", available_nodes);
+    
 
             // Broadcast the VRF-selected nodes to all peers
             if let Some(broadcast_msg) = vrf_selector.create_selected_nodes_broadcast(round) {
@@ -586,7 +645,7 @@ impl SigningNode {
         // 3) R = k·G
         let r = PublicKey::from_secret_key(&secp, &sec_nonce);
         let rser = r.serialize_uncompressed(); // [0x04 || X(32) || Y(32)]
-        info!("[SIGNING] R serialized: {:?}", rser);
+        
         if BigUint::from_bytes_be(&rser) == BigUint::from(0u32) {
             return Err(anyhow!("r is zero, need new nonce"));
         }
@@ -660,7 +719,7 @@ impl SigningNode {
             total_shares: self.threshold as u32 + 1,
         };
 
-        info!("🔐 [SIGNING] Created secret key share for node {}", self.id);
+
 
         Ok(secret_key_share)
     }
@@ -810,13 +869,13 @@ impl SigningNode {
                             hex::encode(&aggregated_secret_key)
                         );
 
-                        // Derive Ethereum address from aggregated private key
-                        let ethereum_address =
-                            self.derive_ethereum_address_from_private_key(&aggregated_secret_key);
-                        info!(
-                            "\x1b[32m🏦 [SIGNING] Derived Ethereum address: {}\x1b[0m",
-                            ethereum_address
-                        );
+                                // Derive Quberticks address from aggregated private key
+        let quberticks_address =
+            self.derive_quberticks_address_from_private_key(&aggregated_secret_key);
+        info!(
+            "\x1b[32m🏦 [SIGNING] Derived Quberticks address: {}\x1b[0m",
+            quberticks_address
+        );
 
                         // Derive Bitcoin testnet address from aggregated private key
                         let bitcoin_testnet_address = self
@@ -885,7 +944,7 @@ impl SigningNode {
         &self,
         raw_tx: &str,
         rpc_url: &str,
-    ) -> Result<String, Box<dyn std::error::Error>> {
+    ) -> Result<String, TransactionError> {
         let client = reqwest::Client::new();
 
         let request_body = json!({
@@ -900,16 +959,45 @@ impl SigningNode {
             .header("Content-Type", "application/json")
             .json(&request_body)
             .send()
-            .await?;
+            .await
+            .map_err(|e| {
+                error!("❌ [BROADCAST] Network error: {}", e);
+                TransactionError::NetworkError
+            })?;
 
-        let response_json: Value = response.json().await?;
+        let response_json: Value = response.json().await.map_err(|e| {
+            error!("❌ [BROADCAST] Failed to parse JSON response: {}", e);
+            TransactionError::NetworkError
+        })?;
 
         if let Some(result) = response_json.get("result") {
-            Ok(result.as_str().unwrap().to_string())
+            let tx_hash = result.as_str().unwrap_or("").to_string();
+            info!("✅ [BROADCAST] Transaction successful: {}", tx_hash);
+            Ok(tx_hash)
         } else if let Some(error) = response_json.get("error") {
-            Err(format!("RPC Error: {}", error).into())
+            let error_msg = error.to_string().to_lowercase();
+            info!("❌ [BROADCAST] RPC Error received: {}", error_msg);
+            
+            // Categorize the error based on common RPC error messages
+            let categorized_error = if error_msg.contains("insufficient funds") || error_msg.contains("not enough balance") {
+                TransactionError::InsufficientFunds
+            } else if error_msg.contains("nonce") && (error_msg.contains("too low") || error_msg.contains("too high") || error_msg.contains("invalid")) {
+                TransactionError::InvalidNonce
+            } else if error_msg.contains("gas") && (error_msg.contains("limit") || error_msg.contains("price") || error_msg.contains("underpriced")) {
+                TransactionError::GasLimit
+            } else if error_msg.contains("invalid") && error_msg.contains("address") {
+                TransactionError::InvalidAddress
+            } else if error_msg.contains("already known") || error_msg.contains("duplicate") || error_msg.contains("replacement transaction underpriced") {
+                TransactionError::DuplicateTransaction
         } else {
-            Err("Unknown error occurred".into())
+                TransactionError::RpcError(error.to_string())
+            };
+            
+            error!("❌ [BROADCAST] Categorized error: {:?}", categorized_error);
+            Err(categorized_error)
+        } else {
+            error!("❌ [BROADCAST] Unknown error - no result or error in response");
+            Err(TransactionError::Unknown("No result or error in RPC response".to_string()))
         }
     }
 
@@ -950,7 +1038,7 @@ impl SigningNode {
             ));
         }
 
-        info!("🔍 [SIGNING] Aggregating {} secret key shares", n_shares);
+
 
         // Simple addition of secret keys (modulo curve order)
         let curve_order = BigUint::from_bytes_be(&CURVE_ORDER);
@@ -972,7 +1060,7 @@ impl SigningNode {
             result = result[result.len() - 32..].to_vec();
         }
 
-        info!("✅ [SIGNING] Successfully aggregated secret key shares");
+
         Ok(result)
     }
 
@@ -1020,7 +1108,7 @@ impl SigningNode {
             transaction.nonce = nonce;
             transaction.chain_id = 9029; // Qubertics chain ID
 
-            info!("🔍 [QUBERTICS] Updated transaction: {:?}", transaction);
+
 
             // Convert the updated transaction to RLP bytes for signing
             let updated_rlp_bytes =
@@ -1073,21 +1161,21 @@ impl SigningNode {
     async fn fetch_nonce_from_qubertics_chain(&self) -> Result<u64> {
         info!("🔍 [QUBERTICS] Fetching nonce from Qubertics chain");
 
-        // Get the Ethereum address for this node
+        // Get the Quberticks address for this node
         let private_key = self.aggregated_private_key.as_ref()
             .ok_or_else(|| anyhow!("No aggregated private key available"))?;
-        let ethereum_address = self.derive_ethereum_address_from_private_key(&private_key.secret_bytes());
+        let quberticks_address = self.derive_quberticks_address_from_private_key(&private_key.secret_bytes());
 
         info!(
             "🔍 [QUBERTICS] Fetching nonce for address: {}",
-            ethereum_address
+            quberticks_address
         );
 
         // Make RPC call to Qubertics chain
         let nonce = self
             .make_rpc_call_to_qubertics(
                 "eth_getTransactionCount",
-                vec![ethereum_address, "latest".to_string()],
+                vec![quberticks_address, "latest".to_string()],
             )
             .await?;
 
@@ -1703,8 +1791,8 @@ impl SigningNode {
         &self.id
     }
 
-    /// Get Ethereum address from public key
-    pub fn get_ethereum_address(&self) -> Option<String> {
+    /// Get Quberticks address from public key
+    pub fn get_quberticks_address(&self) -> Option<String> {
         if let Some(public_key) = &self.public_key {
             // Get the uncompressed public key (65 bytes)
             let public_key_bytes = public_key.serialize_uncompressed();
@@ -1713,11 +1801,11 @@ impl SigningNode {
             if public_key_bytes.len() >= 21 {
                 let address_bytes = &public_key_bytes[1..21];
 
-                // Convert to Ethereum address format (0x + hex)
+                // Convert to Quberticks address format (0x + hex)
                 let address = format!("0x{}", hex::encode(address_bytes));
 
                 info!(
-                    "🏦 [SIGNING] Node {} Ethereum address: \x1b[32m{}\x1b[0m",
+                    "🏦 [SIGNING] Node {} Quberticks address: \x1b[32m{}\x1b[0m",
                     self.id, address
                 );
                 Some(address)
@@ -1739,8 +1827,8 @@ impl SigningNode {
         }
     }
 
-    /// Derive Ethereum address from private key bytes
-    fn derive_ethereum_address_from_private_key(&self, private_key_bytes: &[u8]) -> String {
+    /// Derive Quberticks address from private key bytes
+    fn derive_quberticks_address_from_private_key(&self, private_key_bytes: &[u8]) -> String {
         // Create secp256k1 context
         let secp = Secp256k1::new();
 
@@ -1751,13 +1839,13 @@ impl SigningNode {
         // Step 2: Derive secp256k1 public key
         let secp_pubkey = PublicKey::from_secret_key(&secp, &secret_key);
 
-        // Step 3: ETH address from uncompressed pubkey
-        let eth_address = {
+        // Step 3: Quberticks address from uncompressed pubkey
+        let quberticks_address = {
             let uncompressed = secp_pubkey.serialize_uncompressed(); // 65 bytes, [0x04 || x || y]
             let hash = sha3::Keccak256::digest(&uncompressed[1..]); // skip 0x04
-            format!("0x{}", hex::encode(&hash[12..])) // last 20 bytes in green
+            format!("0x{}", hex::encode(&hash[12..])) // last 20 bytes
         };
-        eth_address
+        quberticks_address
     }
 
     /// Derive Bitcoin testnet address from private key bytes
@@ -1826,12 +1914,12 @@ impl SigningNode {
             info!("💾 [INTENT] Stored intent for round {}", current_round);
         }
 
-        // Create a message to sign (same for both EVM and BTC)
+        // Create a message to sign (same for both Quberticks and BTC)
         let message_bytes = intent_hash.as_bytes().to_vec();
 
         info!("🔐 [INTENT] Starting signing process for round {}", current_round);
         
-        // Use the same signing flow for both EVM and BTC (just sharing secret shares)
+        // Use the same signing flow for both Quberticks and BTC (just sharing secret shares)
         self.sign_message(message_bytes).await?;
 
         // Update status to broadcasted (signing process initiated)
@@ -1846,7 +1934,7 @@ impl SigningNode {
     }
 
 
-    /// Create signature and transaction based on stored intent (handles both EVM and BTC)
+    /// Create signature and transaction based on stored intent (handles both Quberticks and BTC)
     async fn create_signature_and_transaction_from_intent(&self, round: u64) -> Result<()> {
         info!("🔐 [SIGNING] Creating signature and transaction for round {}", round);
 
@@ -1860,21 +1948,20 @@ impl SigningNode {
             info!("🎯 [SIGNING] Found intent for round {}: {:?}", round, intent);
             
             match intent.target_chain.to_lowercase().as_str() {
-                
-                "ethereum" | "evm" | "eth" => {
-                    info!("🏦 [SIGNING] Processing EVM transaction for round {}", round);
+                "ticks" | "quberticks" => {
 
                     match intent.target_token.to_lowercase().as_str() {
                         "usdc" => {
-                            info!("💰 [SIGNING] Processing supported EVM token: {}", intent.target_token);
-                            self.create_and_broadcast_evm_transaction(round).await?;
+                            info!("💰 [SIGNING] Processing supported USDC token: {}", intent.target_token);
+                            self.create_and_broadcast_quberticks_transaction(round).await?;
                         }
                         "usdt" => {
-                            info!("💰 [SIGNING] Processing supported EVM token: {}", intent.target_token);
-                            self.create_and_broadcast_evm_transaction(round).await?;
+                            info!("💰 [SIGNING] Processing supported USDT token: {}", intent.target_token);
+                            self.create_and_broadcast_quberticks_transaction(round).await?;
                         }
                         _ => {
-                            self.create_and_broadcast_evm_transaction(round).await?;
+                           info!("🏦 [SIGNING] Processing Quberticks transaction for round {}", round);
+                            self.create_and_broadcast_quberticks_transaction(round).await?;
                         }
                     }
                 }
@@ -1895,12 +1982,12 @@ impl SigningNode {
         Ok(())
     }
 
+    /// Create and broadcast Quberticks transaction
+    async fn create_and_broadcast_quberticks_transaction(&self, round: u64) -> Result<()> {
+        info!("🏦 [TICKS] Creating and broadcasting Quberticks transaction for round {}", round);
 
-    /// Create and broadcast EVM transaction
-    async fn create_and_broadcast_evm_transaction(&self, round: u64) -> Result<()> {
-        info!("🏦  [ETH] Creating and broadcasting EVM transaction for round {}", round);
         
-        // For EVM transactions, we need to create the transaction first
+        // For Quberticks transactions, we need to create the transaction first
         let intent = {
             let intents_by_round = self.intents_by_round.read().await;
             intents_by_round.get(&round).cloned()
@@ -1968,7 +2055,7 @@ impl SigningNode {
 
             // Convert transaction to bytes for signing using RLP encoding
             let tx_bytes = crate::utils::transaction::create_transaction_for_signing(&transaction);
-            info!("🏦 [ETH] Transaction bytes for signing: 0x{}", hex::encode(&tx_bytes));
+            info!("🏦 [TICKS] Transaction bytes for signing: 0x{}", hex::encode(&tx_bytes));
 
             // Store the transaction message for this round
             {
@@ -2036,31 +2123,84 @@ impl SigningNode {
                                 sha2::Sha256::digest(format!("{:?}", intent).as_bytes())
                             );
 
-                            // Store transaction hash in database
+                            // Store transaction hash in database and update status to completed
                             if let Err(e) = self.database.update_intent_transaction_hash(&intent_hash, &tx_hash) {
                                 warn!("Failed to store transaction hash in database: {}", e);
                             } else {
                                 info!("💾 [DATABASE] Stored transaction hash {} for intent {}", tx_hash, intent_hash);
                             }
 
+                            // Update status to completed
+                            if let Err(e) = self.database.update_intent_status(&intent_hash, "completed") {
+                                warn!("Failed to update status to completed: {}", e);
+                            }
+
+                            // Clear any previous error information
+                            if let Err(e) = self.database.clear_intent_error(&intent_hash) {
+                                warn!("Failed to clear error information: {}", e);
+                            }
+
                             // Broadcast transaction hash to all nodes
                             if let Err(e) = self.broadcast_transaction_hash(
                                 intent_hash,
                                 tx_hash.clone(),
-                                "eth".to_string(),
+                                "ticks".to_string(),
                                 round
                             ).await {
                                 warn!("Failed to broadcast transaction hash: {}", e);
                             }
                         }
                         Err(e) => {
-                            println!("❌ Failed to broadcast transaction: {}", e);
-                            println!("This might be due to:");
-                            println!("  - Insufficient balance for gas");
-                            println!("  - Network issues");
-                            println!("  - Invalid nonce");
-                            println!("  - RPC endpoint issues");
-                            return Err(anyhow!("Broadcast error: {}", e));
+                            error!("❌ [TICKS] Failed to broadcast Quberticks transaction: {}", e);
+                            
+                            // Create intent hash for error storage
+                            let intent_hash = format!(
+                                "0x{:x}",
+                                sha2::Sha256::digest(format!("{:?}", intent).as_bytes())
+                            );
+
+                            // Store error information in database
+                            let (error_code, error_message) = match &e {
+                                TransactionError::InsufficientFunds => ("INSUFFICIENT_FUNDS", "Insufficient balance to cover gas and transaction value. Please add more funds to your wallet."),
+                                TransactionError::InvalidNonce => ("INVALID_NONCE", "Transaction nonce is incorrect. This usually resolves automatically on retry."),
+                                TransactionError::GasLimit => ("GAS_ERROR", "Gas limit too low or gas price too low. The transaction requires more gas."),
+                                TransactionError::InvalidAddress => ("INVALID_ADDRESS", "Invalid recipient address. Please check the target address."),
+                                TransactionError::DuplicateTransaction => ("DUPLICATE_TX", "Transaction with the same nonce already exists in the mempool."),
+                                TransactionError::NetworkError => ("NETWORK_ERROR", "Network connectivity issue. Please try again later."),
+                                TransactionError::RpcError(msg) => ("RPC_ERROR", msg.as_str()),
+                                TransactionError::Unknown(msg) => ("UNKNOWN_ERROR", msg.as_str()),
+                            };
+
+                            // Update status and error in database
+                            if let Err(db_err) = self.database.update_intent_status(&intent_hash, "failed") {
+                                warn!("Failed to update status to failed: {}", db_err);
+                            }
+
+                            if let Err(db_err) = self.database.update_intent_error(&intent_hash, error_code, error_message) {
+                                warn!("Failed to store error information: {}", db_err);
+                            }
+
+                            info!("💾 [DATABASE] Stored error information for intent {}: {} - {}", intent_hash, error_code, error_message);
+
+                            // Broadcast error information to all nodes so they can update their databases
+                            let error_broadcast = crate::types::IntentErrorBroadcast {
+                                intent_hash: intent_hash.clone(),
+                                error_code: error_code.to_string(),
+                                error_message: error_message.to_string(),
+                                node_id: self.id.clone(),
+                                round,
+                            };
+
+                            let error_msg = crate::types::GossipsubMessage::IntentError(error_broadcast);
+                            if let Ok(broadcast_data) = serde_json::to_vec(&error_msg) {
+                                if let Err(e) = self.broadcast("intent-errors", &broadcast_data).await {
+                                    warn!("Failed to broadcast intent error: {}", e);
+                                } else {
+                                    info!("📤 [ERROR_BROADCAST] Broadcasted error information for intent {}", intent_hash);
+                                }
+                            }
+                            
+                            return Err(anyhow!("Transaction broadcast failed: {}", e));
                         }
                     }
                 }
@@ -2125,11 +2265,21 @@ impl SigningNode {
                     sha2::Sha256::digest(format!("{:?}", intent).as_bytes())
                 );
 
-                // Store transaction hash in database
+                // Store transaction hash in database and update status to completed
                 if let Err(e) = self.database.update_intent_transaction_hash(&intent_hash, &tx_hash) {
                     warn!("Failed to store transaction hash in database: {}", e);
                 } else {
                     info!("💾 [DATABASE] Stored transaction hash {} for intent {}", tx_hash, intent_hash);
+                }
+
+                // Update status to completed
+                if let Err(e) = self.database.update_intent_status(&intent_hash, "completed") {
+                    warn!("Failed to update status to completed: {}", e);
+                }
+
+                // Clear any previous error information
+                if let Err(e) = self.database.clear_intent_error(&intent_hash) {
+                    warn!("Failed to clear error information: {}", e);
                 }
 
                 // Broadcast transaction hash to all nodes
@@ -2144,6 +2294,67 @@ impl SigningNode {
             }
             Err(e) => {
                 error!("❌ [BTC] Failed to broadcast Bitcoin transaction: {}", e);
+                
+                // Create intent hash for error storage
+                let intent_hash = format!(
+                    "0x{:x}",
+                    sha2::Sha256::digest(format!("{:?}", intent).as_bytes())
+                );
+
+                // Store error information in database - Bitcoin errors are typically from the utils module
+                // So we'll categorize them as best we can
+                let error_message = e.to_string();
+                let error_lower = error_message.to_lowercase();
+                
+                let (error_code, user_message) = if error_lower.contains("no utxos found") {
+                    ("INSUFFICIENT_FUNDS", "No spendable Bitcoin found. Please fund the wallet address or wait for confirmations.")
+                } else if error_lower.contains("insufficient") {
+                    ("INSUFFICIENT_FUNDS", "Insufficient Bitcoin balance to cover transaction and fees.")
+                } else if error_lower.contains("fee") {
+                    ("LOW_FEE", "Transaction fee is too low for Bitcoin network.")
+                } else if error_lower.contains("invalid") && error_lower.contains("address") {
+                    ("INVALID_ADDRESS", "Invalid Bitcoin address provided.")
+                } else if error_lower.contains("failed to parse") && error_lower.contains("address") {
+                    ("INVALID_ADDRESS", "Invalid Bitcoin address format.")
+                } else if error_lower.contains("network") || error_lower.contains("connection") {
+                    ("NETWORK_ERROR", "Bitcoin network connectivity issue.")
+                } else if error_lower.contains("broadcast") {
+                    ("BROADCAST_ERROR", "Failed to broadcast Bitcoin transaction to network.")
+                } else {
+                    ("BTC_ERROR", error_message.as_str())
+                };
+                
+                info!("💾 [DATABASE] Stored error information for intent {}: {} - {}", intent_hash, error_code, user_message);
+
+                // Update status and error in database
+                if let Err(db_err) = self.database.update_intent_status(&intent_hash, "failed") {
+                    warn!("Failed to update status to failed: {}", db_err);
+                }
+
+                if let Err(db_err) = self.database.update_intent_error(&intent_hash, error_code, user_message) {
+                    warn!("Failed to store error information: {}", db_err);
+                }
+
+                info!("💾 [DATABASE] Stored error information for intent {}: {} - {}", intent_hash, error_code, user_message);
+
+                // Broadcast error information to all nodes so they can update their databases
+                let error_broadcast = crate::types::IntentErrorBroadcast {
+                    intent_hash: intent_hash.clone(),
+                    error_code: error_code.to_string(),
+                    error_message: user_message.to_string(),
+                    node_id: self.id.clone(),
+                    round,
+                };
+
+                let error_msg = crate::types::GossipsubMessage::IntentError(error_broadcast);
+                if let Ok(broadcast_data) = serde_json::to_vec(&error_msg) {
+                    if let Err(e) = self.broadcast("intent-errors", &broadcast_data).await {
+                        warn!("Failed to broadcast intent error: {}", e);
+                    } else {
+                        info!("📤 [ERROR_BROADCAST] Broadcasted error information for intent {}", intent_hash);
+                    }
+                }
+                
                 return Err(e);
             }
         }

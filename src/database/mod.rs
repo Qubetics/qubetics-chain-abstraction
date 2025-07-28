@@ -213,6 +213,84 @@ impl DatabaseManager {
         
         Ok(stats)
     }
+
+    /// Update the error information for an intent
+    pub fn update_intent_error(&self, intent_hash: &str, error_code: &str, error_message: &str) -> Result<()> {
+        let cf = self.db.cf_handle(ColumnFamilies::METADATA)
+            .ok_or_else(|| anyhow::anyhow!("Column family 'metadata' not found"))?;
+        
+        let error_code_key = format!("intent_error_code:{}", intent_hash);
+        let error_message_key = format!("intent_error_message:{}", intent_hash);
+        
+        self.db.put_cf(&cf, error_code_key.as_bytes(), error_code.as_bytes())?;
+        self.db.put_cf(&cf, error_message_key.as_bytes(), error_message.as_bytes())?;
+        
+        info!("Updated error for intent {} - Code: {}, Message: {}", intent_hash, error_code, error_message);
+        Ok(())
+    }
+
+    /// Get the error code for an intent
+    pub fn get_intent_error_code(&self, intent_hash: &str) -> Result<Option<String>> {
+        let cf = self.db.cf_handle(ColumnFamilies::METADATA)
+            .ok_or_else(|| anyhow::anyhow!("Column family 'metadata' not found"))?;
+        
+        let error_code_key = format!("intent_error_code:{}", intent_hash);
+        match self.db.get_cf(&cf, error_code_key.as_bytes())? {
+            Some(data) => {
+                let error_code = String::from_utf8(data)?;
+                Ok(Some(error_code))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Get the error message for an intent
+    pub fn get_intent_error_message(&self, intent_hash: &str) -> Result<Option<String>> {
+        let cf = self.db.cf_handle(ColumnFamilies::METADATA)
+            .ok_or_else(|| anyhow::anyhow!("Column family 'metadata' not found"))?;
+        
+        let error_message_key = format!("intent_error_message:{}", intent_hash);
+        match self.db.get_cf(&cf, error_message_key.as_bytes())? {
+            Some(data) => {
+                let error_message = String::from_utf8(data)?;
+                Ok(Some(error_message))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Clear error information for an intent (when retrying or fixing)
+    pub fn clear_intent_error(&self, intent_hash: &str) -> Result<()> {
+        let cf = self.db.cf_handle(ColumnFamilies::METADATA)
+            .ok_or_else(|| anyhow::anyhow!("Column family 'metadata' not found"))?;
+        
+        let error_code_key = format!("intent_error_code:{}", intent_hash);
+        let error_message_key = format!("intent_error_message:{}", intent_hash);
+        
+        // Delete both keys (ignore errors if keys don't exist)
+        let _ = self.db.delete_cf(&cf, error_code_key.as_bytes());
+        let _ = self.db.delete_cf(&cf, error_message_key.as_bytes());
+        
+        info!("Cleared error information for intent {}", intent_hash);
+        Ok(())
+    }
+
+    /// Check if an intent with the same parameters already exists (duplicate detection)
+    pub fn check_duplicate_intent(&self, intent: &DepositIntent) -> Result<Option<String>> {
+        let intents = self.list_intents()?;
+        
+        for (existing_hash, existing_intent) in intents {
+            // Primary check: transaction_hash from source chain should be unique
+            if !intent.transaction_hash.is_empty() && !existing_intent.transaction_hash.is_empty() {
+                if existing_intent.transaction_hash == intent.transaction_hash {
+                    info!("🔍 [DUPLICATE] Found duplicate intent with same source transaction hash: {}", intent.transaction_hash);
+                    return Ok(Some(existing_hash));
+                }
+            }
+        }
+        
+        Ok(None)
+    }
 }
 
 /// Database statistics structure
