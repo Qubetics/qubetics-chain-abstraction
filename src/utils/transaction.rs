@@ -1,7 +1,7 @@
 use crate::rpc_server::DummyTransaction;
 // use rlp::RlpStream;
 
-/// RLP encoder for Ethereum transaction signing (EIP-155)
+/// RLP encoder for qubetics transaction signing (EIP-155)
 pub struct RlpEncoder {
     pub data: Vec<u8>,
 }
@@ -46,7 +46,14 @@ impl RlpEncoder {
 
     fn encode_hex_string(&mut self, hex_str: &str) {
         let bytes = encode_hex_to_bytes(hex_str);
-        self.encode_bytes(&bytes);
+        // Handle the special case where the value is 0 - RLP encoding requires empty bytes for integer 0
+        if bytes.len() == 1 && bytes[0] == 0 {
+            println!("🔧 [RLP] Zero value detected ({}), encoding as empty bytes for canonical RLP", hex_str);
+            self.encode_bytes(&[]);
+        } else {
+            println!("🔧 [RLP] Non-zero value ({}), encoding {} bytes normally", hex_str, bytes.len());
+            self.encode_bytes(&bytes);
+        }
     }
 
     fn encode_address(&mut self, address: &str) {
@@ -131,9 +138,19 @@ pub fn create_transaction_for_signing(tx: &DummyTransaction) -> Vec<u8> {
     encoder.encode_hex_string(&tx.value);
     content.extend_from_slice(&encoder.finalize());
 
-    // Data (empty)
+    // Data field
     encoder = RlpEncoder::new();
-    encoder.encode_bytes(&[]);
+    if let Some(ref data) = tx.data {
+        if data.is_empty() {
+            encoder.encode_bytes(&[]);
+        } else {
+            let data_bytes = hex::decode(&data.strip_prefix("0x").unwrap_or(data))
+                .expect("Invalid data hex string");
+            encoder.encode_bytes(&data_bytes);
+        }
+    } else {
+        encoder.encode_bytes(&[]);
+    }
     content.extend_from_slice(&encoder.finalize());
 
     // Chain ID
@@ -188,9 +205,19 @@ pub fn create_signed_transaction(tx: &DummyTransaction, r: &[u8], s: &[u8], v: u
     encoder.encode_hex_string(&tx.value);
     content.extend_from_slice(&encoder.finalize());
 
-    // Data (empty)
+    // Data field
     encoder = RlpEncoder::new();
-    encoder.encode_bytes(&[]);
+    if let Some(ref data) = tx.data {
+        if data.is_empty() {
+            encoder.encode_bytes(&[]);
+        } else {
+            let data_bytes = hex::decode(&data.strip_prefix("0x").unwrap_or(data))
+                .expect("Invalid data hex string");
+            encoder.encode_bytes(&data_bytes);
+        }
+    } else {
+        encoder.encode_bytes(&[]);
+    }
     content.extend_from_slice(&encoder.finalize());
 
     // v

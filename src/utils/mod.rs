@@ -9,13 +9,13 @@ pub mod bigint;
 pub mod transaction;
 pub mod bitcoin_transaction;
 
-pub fn get_eth_address_from_group_key(pubkey: G1Projective) -> String {
+pub fn get_qubetics_address_from_group_key(pubkey: G1Projective) -> String {
     let affine = G1Affine::from(pubkey);
     let pubkey_bytes = affine.to_uncompressed(); // [u8; 96]
     let hash = keccak256(&pubkey_bytes);
-    let eth_address = &hash[12..];
-    println!("Generated Ethereum address: {:?}", eth_address);
-    format!("0x{}", hex::encode(eth_address))
+    let qubetics_address = &hash[12..];
+    println!("Generated qubetics address: {:?}", qubetics_address);
+    format!("0x{}", hex::encode(qubetics_address))
 }
 
 pub fn get_btc_address_from_group_key(pubkey: G1Projective) -> String {
