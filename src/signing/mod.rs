@@ -420,12 +420,8 @@ impl SigningNode {
             .modinv(&n)
             .ok_or_else(|| anyhow!("nonce not invertible"))?;
 
-        // 9) s = k⁻¹·(z + r·x) mod n, then low-S normalize
-        let s_full = (&k_inv * (&z + (&r * &x) % &n)) % &n;
-        let half_n = &n >> 1;
-        // let s = if s_full > half_n { &n - &s_full } else { s_full };
-        let was_high_s = s_full > half_n;
-        let s = if was_high_s { &n - &s_full } else { s_full };
+        // 9) s = k⁻¹·(z + r·x) mod n
+        let s = (&k_inv * (&z + (&r * &x) % &n)) % &n;
 
         // 10) Serialize r‖s into 64-byte array
         let mut sig_bytes = [0u8; 64];
@@ -434,15 +430,9 @@ impl SigningNode {
         sig_bytes[32 - r_be.len()..32].copy_from_slice(&r_be);
         sig_bytes[64 - s_be.len()..64].copy_from_slice(&s_be);
 
-        // // 11) Compute correct RecoveryId from R_y parity
-        // let y_parity = rser[64] & 1;
-        // let rid = RecoveryId::from_i32(y_parity as i32)
-        //     .map_err(|e| anyhow!("invalid recovery ID: {}", e))?;
-
-        // 11) Compute RecoveryId from R_y parity **and** low-S normalization
+        // 11) Compute RecoveryId from R_y parity
         let y_parity = (rser[64] & 1) as i32;
-        let rid_val = y_parity ^ (was_high_s as i32);
-        let rid: RecoveryId = RecoveryId::from_i32(rid_val)
+        let rid: RecoveryId = RecoveryId::from_i32(y_parity)
             .map_err(|e| anyhow!("invalid recovery ID: {}", e))?;
 
         // 12) Build the recoverable signature
@@ -669,13 +659,49 @@ impl SigningNode {
             .collect();
 
         // ─── 3) Reconstruct s via Lagrange at x=0 ───────────────────────────────────
-        let agg_s = self.lagrange_interpolate(&s_shares)?;
+        let mut agg_s = self.lagrange_interpolate(&s_shares)?;
 
-        // ─── 4) Rebuild the recoverable signature with the original recid ───────────
+        // ─── 3.5) Normalize aggregated s (enforce low-S) and adjust recovery ID ─────
+        
+        // Curve order n
+        let n = BigUint::parse_bytes(
+            b"FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141",
+            16,
+        ).unwrap();
+        
+        let s_bigint = BigUint::from_bytes_be(&agg_s);
+        let half_n = &n >> 1;
+        let was_high_s = s_bigint > half_n;
+        
+        let (normalized_s, adjusted_recid) = if was_high_s {
+            // Normalize s to n - s
+            let normalized_s_bigint = &n - &s_bigint;
+            let mut normalized_s_bytes = normalized_s_bigint.to_bytes_be();
+            
+            // Pad to 32 bytes if needed
+            if normalized_s_bytes.len() < 32 {
+                let mut padded = vec![0u8; 32 - normalized_s_bytes.len()];
+                padded.extend_from_slice(&normalized_s_bytes);
+                normalized_s_bytes = padded;
+            }
+            
+            // Adjust recovery ID by XORing with 1
+            let adjusted_recid = RecoveryId::from_i32(first_recid.to_i32() ^ 1)
+                .map_err(|e| anyhow!("invalid adjusted recovery ID: {}", e))?;
+            
+            (normalized_s_bytes, adjusted_recid)
+        } else {
+            (agg_s, first_recid)
+        };
+        
+        agg_s = normalized_s;
+        let final_recid = adjusted_recid;
+
+        // ─── 4) Rebuild the recoverable signature with the adjusted recid ───────────
         let mut sig_bytes = [0u8; 64];
         sig_bytes[0..32].copy_from_slice(&agg_r);
         sig_bytes[32..64].copy_from_slice(&agg_s);
-        let agg_sig = RecoverableSignature::from_compact(&sig_bytes, first_recid)?;
+        let agg_sig = RecoverableSignature::from_compact(&sig_bytes, final_recid)?;
 
         Ok(agg_sig)
     }
