@@ -558,10 +558,21 @@ impl SigningNode {
                 // Prepare signatures for aggregation
                 let signatures_to_aggregate: Vec<RecoverableSignature> = {
                     let signatures_by_round = self.signatures_by_round.read().await;
-                    signatures_by_round
-                        .get(&round)
-                        .unwrap()
-                        .iter()
+                    let round_signatures = signatures_by_round.get(&round).unwrap();
+                    
+                    // Sort signatures by signer_id (PeerId) to ensure consistent ordering across rounds
+                    let mut sorted_signatures: Vec<_> = round_signatures.iter().collect();
+                    sorted_signatures.sort_by(|a, b| a.0.cmp(b.0));
+                    
+                    info!(
+                        "🔄 [SIGNING] Sorted {} signatures by PeerId for round {} aggregation: {:?}",
+                        sorted_signatures.len(),
+                        round,
+                        sorted_signatures.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>()
+                    );
+                    
+                    sorted_signatures
+                        .into_iter()
                         .map(|(signer_id, ecdsa_sig)| {
                             RecoverableSignature::from_compact(
                                 &ecdsa_sig.signature,
@@ -1418,8 +1429,19 @@ impl SigningNode {
         let signatures_to_aggregate: Option<Result<Vec<RecoverableSignature>>> = {
             let signatures_by_round = self.signatures_by_round.read().await;
             signatures_by_round.get(&round).map(|round_signatures| {
-                round_signatures
-                    .iter()
+                // Sort signatures by signer_id (PeerId) to ensure consistent ordering across rounds
+                let mut sorted_signatures: Vec<_> = round_signatures.iter().collect();
+                sorted_signatures.sort_by(|a, b| a.0.cmp(b.0));
+                
+                info!(
+                    "🔄 [SIGNING] Sorted {} signatures by PeerId for round {} aggregation: {:?}",
+                    sorted_signatures.len(),
+                    round,
+                    sorted_signatures.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>()
+                );
+                
+                sorted_signatures
+                    .into_iter()
                     .map(|(signer_id, ecdsa_sig)| {
                         RecoverableSignature::from_compact(
                             &ecdsa_sig.signature,

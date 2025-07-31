@@ -1,5 +1,5 @@
-const crypto = require('crypto');
-const { createHash } = require('crypto');
+import crypto from 'crypto';
+import { createHash } from 'crypto';
 
 // Elliptic curve parameters for secp256k1 (used by Ethereum)
 const CURVE_ORDER = BigInt('0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141');
