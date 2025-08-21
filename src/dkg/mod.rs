@@ -169,31 +169,45 @@ impl DKGNode {
     }
 
     fn generate_shares(&self, polynomial: &[Scalar]) -> Result<Vec<KeyShare>> {
-        info!("📊 Generating shares for {} nodes", self.total_nodes);
+        info!("🔍 [DKG] === SECRET SHARE GENERATION ===");
+        info!("📊 [DKG] Node {} generating shares for {} nodes", self.id, self.total_nodes);
         info!(
-            "🔢 Node {} polynomial coefficients: {:?}",
+            "🔢 [DKG] Node {} polynomial coefficients: {:?}",
             self.id, polynomial
         );
 
         let mut shares = Vec::with_capacity(self.total_nodes);
 
+        info!("🔍 [DKG] Generating shares for each index:");
         for i in 1..=self.total_nodes {
             let x = Scalar::from(i as u64);
             let mut y = Scalar::zero();
 
+            info!("🔍 [DKG] Calculating share for index {} (x = {})", i, x);
+            
             for (j, coeff) in polynomial.iter().enumerate() {
-                y += *coeff * x.pow(&[j as u64, 0, 0, 0]);
+                let term = *coeff * x.pow(&[j as u64, 0, 0, 0]);
+                y += term;
+                info!("🔍 [DKG]   Term {}: coeff[{}] * x^{} = {:?} * {:?}^{} = {:?}", 
+                      j, j, j, coeff, x, j, term);
             }
+
+            info!("🔍 [DKG] Final share for index {}: y = {:?}", i, y);
 
             shares.push(KeyShare {
                 index: i,
                 value: SerializableScalar(y),
             });
-
-            info!("📋 Node {} generated share {}: {:?}", self.id, i, y);
         }
-        info!("✅ Generated {} shares", shares.len());
-        info!("Shares: {:?}", shares);
+        
+        info!("🔍 [DKG] === GENERATED SHARES SUMMARY ===");
+        for (i, share) in shares.iter().enumerate() {
+            info!("🔍 [DKG] Share {}: index={}, value={:?}", i+1, share.index, share.value.0);
+        }
+        info!("🔍 [DKG] === END GENERATED SHARES SUMMARY ===");
+        
+        info!("✅ [DKG] Node {} generated {} shares", self.id, shares.len());
+        info!("🔍 [DKG] === END SECRET SHARE GENERATION ===");
         Ok(shares)
     }
 
@@ -260,8 +274,22 @@ impl DKGNode {
 
         let node_index = self.get_node_index(node_manager.clone());
 
+        // Log all shares received from this node
+        info!("🔍 [DKG] === SHARE DISTRIBUTION RECEIVED ===");
+        info!("📥 [DKG] Node {} received {} shares from node {}", self.id, shares.len(), from);
+        
+        info!("🔍 [DKG] All shares received from node {}:", from);
+        for (i, share) in shares.iter().enumerate() {
+            info!(
+                "🔍 [DKG] Share {}: index={}, value={:?} (intended for node with index {})",
+                i + 1, share.index, share.value.0, share.index
+            );
+        }
+        
+        info!("🔍 [DKG] === END SHARE DISTRIBUTION RECEIVED ===");
+
         info!(
-            "🔍 Looking for share with index {} in {} shares from node {}",
+            "🔍 [DKG] Looking for share with index {} in {} shares from node {}",
             node_index,
             shares.len(),
             from
@@ -271,15 +299,33 @@ impl DKGNode {
             let my_share = shares.into_iter().find(|s| s.index == node_index);
             if let Some(share) = my_share {
                 info!(
-                    "✅ Found valid share for node {} from {}, share value: {:?}",
+                    "✅ [DKG] Found valid share for node {} from {}, share value: {:?}",
                     self.id, from, share.value.0
                 );
+                
                 // Store share by sender ID but also track the share index
+                info!("🔍 [DKG] === STORING SHARE ===");
+                info!("🔍 [DKG] Storing share from node {}: index={}, value={:?}", 
+                      from, share.index, share.value.0);
+                
                 self.shares.write().await.insert(from.clone(), share);
                 self.commitments
                     .write()
                     .await
                     .insert(from.clone(), raw_commitments);
+
+                // Log current state of all stored shares
+                let current_shares = self.shares.read().await;
+                info!("🔍 [DKG] Current total shares stored: {}", current_shares.len());
+                info!("🔍 [DKG] All stored shares:");
+                for (sender, stored_share) in current_shares.iter() {
+                    info!(
+                        "🔍 [DKG] Stored share from {}: index={}, value={:?}",
+                        sender, stored_share.index, stored_share.value.0
+                    );
+                }
+                drop(current_shares); // Release the read lock
+                info!("🔍 [DKG] === END STORING SHARE ===");
 
                 self.handle_share_validation(self.id.clone(), from.clone(), true,node_manager)
                     .await?;
@@ -295,7 +341,7 @@ impl DKGNode {
                 self.broadcast(MSG_TOPIC_DKG, &msg_bytes).await?;
             } else {
                 info!(
-                    "❌ Share for index {} not found in shares from {}",
+                    "❌ [DKG] Share for index {} not found in shares from {}",
                     node_index, from
                 );
                 let validation_msg = DKGMessage::ShareValidation {
@@ -309,7 +355,7 @@ impl DKGNode {
                 self.broadcast(MSG_TOPIC_DKG, &msg_bytes).await?;
             }
         } else {
-            info!("❌ Share verification failed for shares from {}", from);
+            info!("❌ [DKG] Share verification failed for shares from {}", from);
             let validation_msg = DKGMessage::ShareValidation {
                 from: self.id.clone(),
                 to: from,
@@ -331,15 +377,26 @@ impl DKGNode {
             .map(|p| p.to_string())
             .collect();
 
+        info!("🔍 [DKG] === NODE INDEX CALCULATION ===");
+        info!("🔍 [DKG] Current node ID: {}", self.id);
+        info!("🔍 [DKG] All active nodes (before sorting): {:?}", ids);
+
         ids.sort();
 
-        ids.iter()
+        info!("🔍 [DKG] All active nodes (after sorting): {:?}", ids);
+        
+        let index = ids.iter()
            .position(|id| id == &self.id)
            .map(|i| i + 1)
            .unwrap_or_else(|| {
                tracing::error!("DKGNode id {} not in NodeManager list", self.id);
                1
-           })
+           });
+        
+        info!("🔍 [DKG] Node {} assigned index: {}", self.id, index);
+        info!("🔍 [DKG] === END NODE INDEX CALCULATION ===");
+        
+        index
     }
 
     pub fn verify_share(
@@ -352,6 +409,10 @@ impl DKGNode {
             return false;
         }
 
+        info!("🔍 [DKG] === SHARE VERIFICATION ===");
+        info!("🔍 [DKG] Verifying share with index: {}", share_index);
+        info!("🔍 [DKG] Using x = Scalar::from({}) for verification", share_index);
+
         let x = Scalar::from(share_index as u64);
         let mut expected = G1Projective::identity();
 
@@ -360,7 +421,12 @@ impl DKGNode {
         }
 
         let actual = G1Projective::generator() * share.0;
-        expected == actual
+        let is_valid = expected == actual;
+        
+        info!("🔍 [DKG] Share verification result: {}", if is_valid { "✅ PASS" } else { "❌ FAIL" });
+        info!("🔍 [DKG] === END SHARE VERIFICATION ===");
+        
+        is_valid
     }
 
     pub fn verify_shares(&self, shares: &[KeyShare], commitments: &[G1Affine]) -> bool {
@@ -368,7 +434,13 @@ impl DKGNode {
             return false;
         }
 
+        info!("🔍 [DKG] === MULTIPLE SHARES VERIFICATION ===");
+        info!("🔍 [DKG] Verifying {} shares", shares.len());
+
         for share in shares {
+            info!("🔍 [DKG] Verifying share with index: {}", share.index);
+            info!("🔍 [DKG] Using x = Scalar::from({}) for verification", share.index);
+            
             let x = Scalar::from(share.index as u64);
             let mut expected = G1Projective::identity();
 
@@ -379,11 +451,15 @@ impl DKGNode {
             let actual = G1Projective::generator() * share.value.0;
             if expected != actual {
                 info!("❌ Share verification failed for index {}", share.index);
+                info!("🔍 [DKG] === END MULTIPLE SHARES VERIFICATION (FAILED) ===");
                 return false;
+            } else {
+                info!("✅ Share verification passed for index {}", share.index);
             }
         }
 
         info!("✅ All shares verified successfully");
+        info!("🔍 [DKG] === END MULTIPLE SHARES VERIFICATION (SUCCESS) ===");
         true
     }
 
@@ -411,7 +487,19 @@ impl DKGNode {
         let (shares_len, validations_len, valid_validations) = {
             let validations = self.validations.read().await;
             let shares = self.shares.read().await;
-            info!("🎉 validations: {:?}", validations);
+            
+            // Log all shares currently stored
+            info!("📊 [DKG] === SHARES STATUS CHECK ===");
+            info!("📊 [DKG] Total shares stored: {}", shares.len());
+            for (sender, share) in shares.iter() {
+                info!(
+                    "📊 [DKG] Share from {}: index={}, value={:?}",
+                    sender, share.index, share.value.0
+                );
+            }
+            info!("📊 [DKG] === END SHARES STATUS ===");
+            
+            info!("🎉 [DKG] Validations: {:?}", validations);
             let valid_validations: usize = validations
                 .values()
                 .map(|v| v.iter().filter(|&&valid| valid).count())
@@ -420,7 +508,7 @@ impl DKGNode {
         }; // lock guards dropped here
 
         info!(
-            "🔍 Checking DKG completion - shares: {}, validations: {}",
+            "🔍 [DKG] Checking DKG completion - shares: {}, validations: {}",
             shares_len, validations_len
         );
 
@@ -428,13 +516,13 @@ impl DKGNode {
             && shares_len >= self.threshold + 1
         {
             info!(
-                "required validations : {:?} and valid validations : {:?}",(self.threshold + 1) * (self.threshold + 1),valid_validations
+                "✅ [DKG] Required validations: {} and valid validations: {}",(self.threshold + 1) * (self.threshold + 1),valid_validations
             );
-            info!("🎉 DKG completion criteria met! Generating final keys...");
+            info!("🎉 [DKG] DKG completion criteria met! Generating final keys...");
             self.generate_group_key(node_manager).await?;
         } else {
             info!(
-                "⏳ DKG not yet complete - need {} validations and {} shares, have {} and {}",
+                "⏳ [DKG] DKG not yet complete - need {} validations and {} shares, have {} and {}",
                 (self.threshold + 1) * (self.threshold + 1),
                 self.threshold + 1,
                 valid_validations,
@@ -447,35 +535,60 @@ impl DKGNode {
     async fn generate_group_key(&mut self,node_manager: Box<dyn NodeMembership>) -> Result<()> {
         let shares = self.shares.read().await;
         let commitments = self.commitments.read().await;
-        info!("comm: {:?}", commitments);
-        info!("Commitments size: {}", commitments.len());
+        info!("🔐 [DKG] Commitments: {:?}", commitments);
+        info!("🔐 [DKG] Commitments size: {}", commitments.len());
 
         let node_index = self.get_node_index(node_manager);
         info!(
-            "🔍 Node {} calculating final secret share using shares for index {}",
+            "🔍 [DKG] Node {} calculating final secret share using shares for index {}",
             self.id, node_index
         );
 
         // Calculate final secret share (sum of all shares meant for THIS node's index)
         let mut final_secret_share = Scalar::zero();
-        info!("🔐 Calculating final secret share...");
-        info!("📊 Total shares received: {}", shares.len());
+        info!("🔐 [DKG] Calculating final secret share...");
+        info!("📊 [DKG] Total shares received: {}", shares.len());
+
+        // Log all shares before processing
+        info!("🔍 [DKG] === ALL SHARES BEFORE FINAL CALCULATION ===");
+        info!("🔍 [DKG] Node {} has {} total shares stored", self.id, shares.len());
+        for (from, share) in shares.iter() {
+            info!(
+                "🔍 [DKG] Share from {}: index={}, value={:?} (will be used if index matches our index {})",
+                from, share.index, share.value.0, node_index
+            );
+        }
+        info!("🔍 [DKG] === END ALL SHARES ===");
+
+        let mut used_shares = 0;
+        let mut skipped_shares = 0;
+
+        info!("🔍 [DKG] === FINAL SECRET SHARE CALCULATION ===");
+        info!("🔍 [DKG] Starting with final_secret_share = {:?}", final_secret_share);
 
         for (from, share) in shares.iter() {
             // Only use shares that are meant for this node's index
             if share.index == node_index {
                 info!(
-                    "✅ Using share from {} with index {} (matches our index {})",
-                    from, share.index, node_index
+                    "✅ [DKG] Using share from {} with index {} (matches our index {}) - value: {:?}",
+                    from, share.index, node_index, share.value.0
                 );
+                info!("🔍 [DKG] Adding {:?} to final_secret_share", share.value.0);
                 final_secret_share += share.value.0;
+                info!("🔍 [DKG] New final_secret_share = {:?}", final_secret_share);
+                used_shares += 1;
             } else {
                 info!(
-                    "❌ Skipping share from {} with index {} (doesn't match our index {})",
-                    from, share.index, node_index
+                    "❌ [DKG] Skipping share from {} with index {} (doesn't match our index {}) - value: {:?}",
+                    from, share.index, node_index, share.value.0
                 );
+                skipped_shares += 1;
             }
         }
+        
+        info!("🔍 [DKG] === END FINAL SECRET SHARE CALCULATION ===");
+
+        info!("📊 [DKG] Final calculation summary: used {} shares, skipped {} shares", used_shares, skipped_shares);
 
         let first_comms: Vec<G1Affine> = commitments
             .values()
@@ -509,19 +622,24 @@ impl DKGNode {
         self.status = DKGStatus::Completed;
 
         // Log the final results
-        info!("🎯 DKG COMPLETED for node {}!", self.id);
-        info!("🔐 Final secret share: {:?}", final_secret_share);
-        info!("🔑 Final public key: {:?}", final_public_key);
-        info!("📊 Total shares collected: {}", shares.len());
-        info!("✅ DKG status: {:?}", self.status);
+        info!("🎯 [DKG] DKG COMPLETED for node {}!", self.id);
+        info!("🔐 [DKG] Final secret share: {:?}", final_secret_share);
+        info!("🔑 [DKG] Final public key: {:?}", final_public_key);
+        info!("📊 [DKG] Total shares collected: {}", shares.len());
+        info!("✅ [DKG] DKG status: {:?}", self.status);
 
         // Log all collected shares for debugging
+        info!("🔍 [DKG] === FINAL SHARES SUMMARY ===");
+        info!("🔍 [DKG] Node {} final shares summary:", self.id);
         for (from, share) in shares.iter() {
+            let was_used = if share.index == node_index { "✅ USED" } else { "❌ SKIPPED" };
             info!(
-                "📋 Share from {}: index={}, value={:?}",
-                from, share.index, share.value.0
+                "🔍 [DKG] Share from {}: index={}, value={:?} - {}",
+                from, share.index, share.value.0, was_used
             );
         }
+        info!("🔍 [DKG] Final secret share: {:?}", final_secret_share);
+        info!("🔍 [DKG] === END FINAL SHARES SUMMARY ===");
 
         if let Some(callback) = self.completion_callback.take() {
             callback(final_secret_share, final_public_key);
@@ -566,5 +684,24 @@ impl DKGNode {
         );
 
         Ok(())
+    }
+
+    // Debug function to log all current shares
+    pub async fn log_all_shares(&self) {
+        let shares = self.shares.read().await;
+        info!("📊 [DKG] === CURRENT SHARES DEBUG ===");
+        info!("📊 [DKG] Node {} has {} shares stored", self.id, shares.len());
+        
+        if shares.is_empty() {
+            info!("📊 [DKG] No shares currently stored");
+        } else {
+            for (sender, share) in shares.iter() {
+                info!(
+                    "📊 [DKG] Share from {}: index={}, value={:?}",
+                    sender, share.index, share.value.0
+                );
+            }
+        }
+        info!("📊 [DKG] === END CURRENT SHARES DEBUG ===");
     }
 }
