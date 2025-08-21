@@ -1,4 +1,4 @@
-use crate::rpc_server::DummyTransaction;
+use crate::rpc_server::{DepositIntent, DummyTransaction};
 // use rlp::RlpStream;
 
 /// RLP encoder for Ethereum transaction signing (EIP-155)
@@ -158,6 +158,17 @@ fn encode_hex_to_bytes(hex_str: &str) -> Vec<u8> {
     hex::decode(&final_hex).expect("Invalid hex string")
 }
 
+/// Create a transaction from a deposit intent
+pub fn create_transaction_from_deposit_intent(intent: &DepositIntent) -> DummyTransaction {
+    DummyTransaction {
+        to: intent.target_address.clone(),
+        value: format!("0x{:x}", intent.amount),
+        nonce: 0,         // This should be fetched from the network or maintained per sender
+        gas_limit: 21000, // Standard transfer gas limit
+        gas_price: "0x4A817C800".to_string(), // 20 Gwei - this should be dynamic
+        chain_id: 1043,   // Default chain ID - this should match target_chain
+    }
+}
 
 pub fn create_transaction_for_signing(tx: &DummyTransaction) -> Vec<u8> {
     let mut content = Vec::new();
@@ -218,59 +229,58 @@ pub fn create_transaction_for_signing(tx: &DummyTransaction) -> Vec<u8> {
 
 pub fn create_signed_transaction(tx: &DummyTransaction, r: &[u8], s: &[u8], v: u64) -> Vec<u8> {
     let mut content = Vec::new();
-    
+
     // Encode transaction fields
     let mut encoder = RlpEncoder::new();
-    
+
     // Nonce
     encoder.encode_u64(tx.nonce);
     content.extend_from_slice(&encoder.finalize());
-    
+
     // Gas price
     encoder = RlpEncoder::new();
     encoder.encode_hex_string(&tx.gas_price);
     content.extend_from_slice(&encoder.finalize());
-    
+
     // Gas limit
     encoder = RlpEncoder::new();
     encoder.encode_u64(tx.gas_limit);
     content.extend_from_slice(&encoder.finalize());
-    
+
     // To address
     encoder = RlpEncoder::new();
     encoder.encode_address(&tx.to);
     content.extend_from_slice(&encoder.finalize());
-    
+
     // Value
     encoder = RlpEncoder::new();
     encoder.encode_hex_string(&tx.value);
     content.extend_from_slice(&encoder.finalize());
-    
+
     // Data (empty)
     encoder = RlpEncoder::new();
     encoder.encode_bytes(&[]);
     content.extend_from_slice(&encoder.finalize());
-    
+
     // v
     encoder = RlpEncoder::new();
     encoder.encode_u64(v); // ✅ proper RLP encoding for large v
     content.extend_from_slice(&encoder.finalize());
-    
+
     // r
     encoder = RlpEncoder::new();
     encoder.encode_bytes(r);
     content.extend_from_slice(&encoder.finalize());
-    
+
     // s
     encoder = RlpEncoder::new();
     encoder.encode_bytes(s);
     content.extend_from_slice(&encoder.finalize());
-    
+
     // Create final RLP with list header
     let mut final_encoder = RlpEncoder::new();
     final_encoder.encode_list_header(content.len());
     final_encoder.data.extend_from_slice(&content);
-    
+
     final_encoder.finalize()
 }
-

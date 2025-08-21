@@ -27,7 +27,11 @@ pub enum ChannelMessage {
     LocalTransaction {
         transaction: crate::rpc_server::DummyTransaction,
     },
-    ScheduledDKGStart
+    DepositIntent {
+        intent: crate::rpc_server::DepositIntent,
+        intent_id: String,
+    },
+    ScheduledDKGStart,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -44,7 +48,14 @@ pub enum GossipsubMessage {
     Consensus(crate::consensus::ConsensusMessage),
     VrfSelection(crate::vrf::VrfSelectionMessage),
     VrfSelectedNodes(crate::vrf::VrfSelectedNodesBroadcast),
-    PeerDiscovered { peer: PeerId, sequence: Option<u64> },
+    PeerDiscovered {
+        peer: PeerId,
+        sequence: Option<u64>,
+    },
     Transaction(crate::rpc_server::DummyTransaction),
+    DepositIntent {
+        intent: crate::rpc_server::DepositIntent,
+        intent_id: String,
+    },
     DKGCommand(crate::types::rpc::RPCRequest),
 }

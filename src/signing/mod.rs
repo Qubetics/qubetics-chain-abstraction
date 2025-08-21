@@ -1,9 +1,12 @@
 use crate::rpc_server::DummyTransaction;
+use anyhow::anyhow;
 use anyhow::Result;
 use bls12_381::Scalar;
 use ethereum_types::U64;
 use hex;
 use libp2p::PeerId;
+use num_bigint::BigUint;
+use num_traits::identities::One;
 use rand::rngs::OsRng;
 use secp256k1::{self, ecdsa::RecoverableSignature, Message, PublicKey, Secp256k1, SecretKey};
 use serde::{Deserialize, Serialize};
@@ -14,20 +17,13 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{mpsc, RwLock};
 use tracing::{error, info, warn};
-use num_traits::identities::One;
-use anyhow::anyhow;
-use num_bigint::BigUint;
 
 use num_bigint::{BigInt, ToBigInt};
-use secp256k1::{
-    ecdsa::RecoveryId,
-    constants::CURVE_ORDER,
-};
+use secp256k1::{constants::CURVE_ORDER, ecdsa::RecoveryId};
 
 use num_traits::Zero;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
-
 
 use crate::consensus::{ConsensusMessage, ConsensusNode, ConsensusResult};
 use crate::types::{p2p::SerializablePeerId, ChannelMessage};
@@ -103,8 +99,8 @@ pub struct SigningNode {
     vrf_selector: Option<VrfNodeSelector>, // VRF selector for node selection
     consensus_node: Option<ConsensusNode>, // Consensus node for final node selection
     available_nodes: Option<Vec<PeerId>>,  // Available nodes from node manager
-    curr_round: u64, // Current round for signing
-    next_round: u64, // Next round to be processed
+    curr_round: u64,                       // Current round for signing
+    next_round: u64,                       // Next round to be processed
 }
 
 impl SigningNode {
@@ -294,7 +290,7 @@ impl SigningNode {
         let round = self.next_round;
         self.curr_round = round; // Set current round to the next round
         self.next_round += 1; // Increment round for next signing operation
-        // Generate VRF proof for this signing operation
+                              // Generate VRF proof for this signing operation
         if let Some(vrf_selector) = &mut self.vrf_selector {
             let selection_result = vrf_selector.select_mpc_nodes(&available_nodes, 1, round);
             info!(
@@ -386,8 +382,8 @@ impl SigningNode {
 
         // 2) Fixed nonce k = 0x42…42
         let k_bytes = [0x42u8; 32];
-        let sec_nonce = SecretKey::from_slice(&k_bytes)
-            .map_err(|e| anyhow!("invalid nonce slice: {}", e))?;
+        let sec_nonce =
+            SecretKey::from_slice(&k_bytes).map_err(|e| anyhow!("invalid nonce slice: {}", e))?;
 
         // 3) R = k·G
         let r = PublicKey::from_secret_key(&secp, &sec_nonce);
@@ -396,7 +392,6 @@ impl SigningNode {
         if BigUint::from_bytes_be(&rser) == BigUint::from(0u32) {
             return Err(anyhow!("r is zero, need new nonce"));
         }
-
 
         // 4) r = X mod n
         let mut r_bytes = [0u8; 32];
@@ -434,8 +429,8 @@ impl SigningNode {
 
         // 11) Compute RecoveryId from R_y parity
         let y_parity = (rser[64] & 1) as i32;
-        let rid: RecoveryId = RecoveryId::from_i32(y_parity)
-            .map_err(|e| anyhow!("invalid recovery ID: {}", e))?;
+        let rid: RecoveryId =
+            RecoveryId::from_i32(y_parity).map_err(|e| anyhow!("invalid recovery ID: {}", e))?;
 
         // 12) Build the recoverable signature
         let rec_sig = RecoverableSignature::from_compact(&sig_bytes, rid)
@@ -452,9 +447,9 @@ impl SigningNode {
 
         match msg {
             SigningMessage::MessageToSign {
-                from:_from,
-                message:_message,
-                message_hash:_message_hash,
+                from: _from,
+                message: _message,
+                message_hash: _message_hash,
             } => {
                 // info!(
                 //     "📥 [SIGNING] Node {} received message to sign from {}",
@@ -525,7 +520,6 @@ impl SigningNode {
             self.id, from
         );
 
-
         let round_to_handle = {
             let final_nodes = self.final_nodes_by_round.read().await;
             let mut found_round = None;
@@ -552,7 +546,11 @@ impl SigningNode {
                     round,
                     round_signatures.len()
                 );
-                info!("threshold: {}, total: {}", self.threshold, round_signatures.len());
+                info!(
+                    "threshold: {}, total: {}",
+                    self.threshold,
+                    round_signatures.len()
+                );
                 round_signatures.len() >= self.threshold + 1
             };
 
@@ -561,40 +559,50 @@ impl SigningNode {
                 let signatures_to_aggregate: Vec<RecoverableSignature> = {
                     let signatures_by_round = self.signatures_by_round.read().await;
                     let round_signatures = signatures_by_round.get(&round).unwrap();
-                    
+
                     // Sort signatures by signer_id (PeerId) to ensure consistent ordering across rounds
                     let mut sorted_signatures: Vec<_> = round_signatures.iter().collect();
-                    
+
                     info!("🔍 [SIGNING] === SIGNATURE SORTING DEBUG ===");
-                    info!("🔍 [SIGNING] Original signature order: {:?}", 
-                          round_signatures.keys().collect::<Vec<_>>());
-                    
+                    info!(
+                        "🔍 [SIGNING] Original signature order: {:?}",
+                        round_signatures.keys().collect::<Vec<_>>()
+                    );
+
                     sorted_signatures.sort_by(|a, b| a.0.cmp(b.0));
-                    
-                    info!("🔍 [SIGNING] Sorted signature order: {:?}", 
-                          sorted_signatures.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>());
-                    
+
+                    info!(
+                        "🔍 [SIGNING] Sorted signature order: {:?}",
+                        sorted_signatures
+                            .iter()
+                            .map(|(id, _)| id.as_str())
+                            .collect::<Vec<_>>()
+                    );
+
                     info!(
                         "🔄 [SIGNING] Sorted {} signatures by PeerId for round {} aggregation: {:?}",
                         sorted_signatures.len(),
                         round,
                         sorted_signatures.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>()
                     );
-                    
+
                     info!("🔍 [SIGNING] === END SIGNATURE SORTING DEBUG ===");
-                    
+
                     // Create a mapping of peer ID to index for debugging
                     let mut peer_to_index_map = Vec::new();
-                    
+
                     let sigs_to_aggregate: Vec<RecoverableSignature> = sorted_signatures
                         .into_iter()
                         .enumerate()
                         .map(|(i, (signer_id, ecdsa_sig))| {
                             let index = i + 1;
                             peer_to_index_map.push((signer_id.clone(), index));
-                            
-                            info!("🔍 [SIGNING] Peer {} assigned index {} for aggregation", signer_id, index);
-                            
+
+                            info!(
+                                "🔍 [SIGNING] Peer {} assigned index {} for aggregation",
+                                signer_id, index
+                            );
+
                             RecoverableSignature::from_compact(
                                 &ecdsa_sig.signature,
                                 RecoveryId::from_i32(ecdsa_sig.recovery_id as i32)?,
@@ -604,10 +612,15 @@ impl SigningNode {
                             })
                         })
                         .collect::<Result<_>>()?;
-                    
-                    info!("🔍 [SIGNING] Final peer-to-index mapping: {:?}", 
-                          peer_to_index_map.iter().map(|(peer, idx)| format!("{}->{}", peer, idx)).collect::<Vec<_>>());
-                    
+
+                    info!(
+                        "🔍 [SIGNING] Final peer-to-index mapping: {:?}",
+                        peer_to_index_map
+                            .iter()
+                            .map(|(peer, idx)| format!("{}->{}", peer, idx))
+                            .collect::<Vec<_>>()
+                    );
+
                     sigs_to_aggregate
                 };
                 info!(
@@ -629,7 +642,7 @@ impl SigningNode {
                             round
                         );
 
-                        let (recid,signature_bytes) = aggregated_signature.serialize_compact();
+                        let (recid, signature_bytes) = aggregated_signature.serialize_compact();
                         let v: u64 = recid.to_i32() as u64 + 35 + 1043 * 2;
                         let r = &signature_bytes[0..32];
                         let s = &signature_bytes[32..64];
@@ -663,8 +676,7 @@ impl SigningNode {
         Ok(())
     }
 
-
-   pub async fn aggregate_signatures(
+    pub async fn aggregate_signatures(
         &self,
         signatures: Vec<RecoverableSignature>,
     ) -> Result<RecoverableSignature> {
@@ -687,8 +699,11 @@ impl SigningNode {
 
         // ─── 2) Build the (index, s_bytes) list ──────────────────────────────────────
         info!("🔍 [SIGNING] === SIGNATURE INDEX ASSIGNMENT ===");
-        info!("🔍 [SIGNING] Number of signatures to process: {}", signatures.len());
-        
+        info!(
+            "🔍 [SIGNING] Number of signatures to process: {}",
+            signatures.len()
+        );
+
         // TODO: This should use the same deterministic index calculation as DKG
         // Currently using positional index which may not match DKG indices
         let s_shares: Vec<(u32, Vec<u8>)> = signatures
@@ -697,51 +712,57 @@ impl SigningNode {
             .map(|(i, sig)| {
                 let (_recid, compact) = sig.serialize_compact();
                 let index = (i + 1) as u32;
-                info!("🔍 [SIGNING] Signature {} assigned positional index: {}", i, index);
+                info!(
+                    "🔍 [SIGNING] Signature {} assigned positional index: {}",
+                    i, index
+                );
                 (index, compact[32..64].to_vec())
             })
             .collect();
-        
-        info!("🔍 [SIGNING] Final s_shares with indices: {:?}", 
-              s_shares.iter().map(|(idx, _)| idx).collect::<Vec<_>>());
+
+        info!(
+            "🔍 [SIGNING] Final s_shares with indices: {:?}",
+            s_shares.iter().map(|(idx, _)| idx).collect::<Vec<_>>()
+        );
         info!("🔍 [SIGNING] === END SIGNATURE INDEX ASSIGNMENT ===");
 
         // ─── 3) Reconstruct s via Lagrange at x=0 ───────────────────────────────────
         let mut agg_s = self.lagrange_interpolate(&s_shares)?;
 
         // ─── 3.5) Normalize aggregated s (enforce low-S) and adjust recovery ID ─────
-        
+
         // Curve order n
         let n = BigUint::parse_bytes(
             b"FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141",
             16,
-        ).unwrap();
-        
+        )
+        .unwrap();
+
         let s_bigint = BigUint::from_bytes_be(&agg_s);
         let half_n = &n >> 1;
         let was_high_s = s_bigint > half_n;
-        
+
         let (normalized_s, adjusted_recid) = if was_high_s {
             // Normalize s to n - s
             let normalized_s_bigint = &n - &s_bigint;
             let mut normalized_s_bytes = normalized_s_bigint.to_bytes_be();
-            
+
             // Pad to 32 bytes if needed
             if normalized_s_bytes.len() < 32 {
                 let mut padded = vec![0u8; 32 - normalized_s_bytes.len()];
                 padded.extend_from_slice(&normalized_s_bytes);
                 normalized_s_bytes = padded;
             }
-            
+
             // Adjust recovery ID by XORing with 1
             let adjusted_recid = RecoveryId::from_i32(first_recid.to_i32() ^ 1)
                 .map_err(|e| anyhow!("invalid adjusted recovery ID: {}", e))?;
-            
+
             (normalized_s_bytes, adjusted_recid)
         } else {
             (agg_s, first_recid)
         };
-        
+
         agg_s = normalized_s;
         let final_recid = adjusted_recid;
 
@@ -753,7 +774,6 @@ impl SigningNode {
 
         Ok(agg_sig)
     }
-
 
     /// Shamir‐style Lagrange interpolation at x=0 over the field of order CURVE_ORDER.
     // fn lagrange_interpolate(
@@ -827,12 +847,7 @@ impl SigningNode {
     //     Ok(be)
     // }
 
-
-   
-    fn lagrange_interpolate(
-        &self,
-        shares: &[(u32, Vec<u8>)],
-    ) -> Result<Vec<u8>> {
+    fn lagrange_interpolate(&self, shares: &[(u32, Vec<u8>)]) -> Result<Vec<u8>> {
         if shares.len() < self.threshold {
             return Err(anyhow!(
                 "Not enough shares: got {}, need at least {}",
@@ -840,15 +855,15 @@ impl SigningNode {
                 self.threshold
             ));
         }
-    
+
         println!("=== Lagrange Interpolation Debug ===");
         println!("Threshold: {}, Got {} shares", self.threshold, shares.len());
 
         for (i, &(x, ref y_bytes)) in shares.iter().enumerate() {
             let y_val = BigUint::from_bytes_be(y_bytes);
-            println!("Share {}: x={}, y={}", i+1, x, y_val);
+            println!("Share {}: x={}, y={}", i + 1, x, y_val);
         }
-        
+
         // // 🔧 FIX 1: Select exactly threshold shares deterministically
         // let mut selected_shares = shares.to_vec();
         // selected_shares.sort_by_key(|(x, _)| *x);
@@ -860,74 +875,79 @@ impl SigningNode {
         selected_shares.shuffle(&mut rng);
         selected_shares.truncate(self.threshold);
 
-        println!("Randomly selected {} shares for interpolation:", selected_shares.len());
-        
-        println!("Selected {} shares for interpolation:", selected_shares.len());
+        println!(
+            "Randomly selected {} shares for interpolation:",
+            selected_shares.len()
+        );
+
+        println!(
+            "Selected {} shares for interpolation:",
+            selected_shares.len()
+        );
         for (i, &(x, ref y_bytes)) in selected_shares.iter().enumerate() {
             let y_val = BigUint::from_bytes_be(y_bytes);
-            println!("Share {}: x={}, y={}", i+1, x, y_val);
+            println!("Share {}: x={}, y={}", i + 1, x, y_val);
         }
-        
+
         let n = BigUint::from_bytes_be(&CURVE_ORDER);
         println!("Working modulo n = {}", n);
 
-               // Improved extended Euclidean algorithm for modular inverse
-       fn modinv(a: &BigUint, m: &BigUint) -> Option<BigUint> {
-        if *a == BigUint::zero() {
-            return None;
-        }
-        
-        let mut old_r = m.clone();
-        let mut r = a % m;  // BUG FIX: Ensure a is reduced mod m
-        let mut old_s = BigInt::zero();
-        let mut s = BigInt::one();
-        
-        while r != BigUint::zero() {
-            let quotient = &old_r / &r;
-            
-            let temp_r = r.clone();
-            r = &old_r - &quotient * &r;
-            old_r = temp_r;
-            
-            let temp_s = s.clone();
-            s = &old_s - &quotient.to_bigint().unwrap() * &s;
-            old_s = temp_s;
-        }
-        
-        if old_r != BigUint::one() {
-            return None; // Not invertible
-        }
-        
-        let m_int = m.to_bigint().unwrap();
-        let result = (old_s % &m_int + &m_int) % &m_int;
-        Some(result.to_biguint().unwrap())
-    }
+        // Improved extended Euclidean algorithm for modular inverse
+        fn modinv(a: &BigUint, m: &BigUint) -> Option<BigUint> {
+            if *a == BigUint::zero() {
+                return None;
+            }
 
+            let mut old_r = m.clone();
+            let mut r = a % m; // BUG FIX: Ensure a is reduced mod m
+            let mut old_s = BigInt::zero();
+            let mut s = BigInt::one();
 
-        
+            while r != BigUint::zero() {
+                let quotient = &old_r / &r;
+
+                let temp_r = r.clone();
+                r = &old_r - &quotient * &r;
+                old_r = temp_r;
+
+                let temp_s = s.clone();
+                s = &old_s - &quotient.to_bigint().unwrap() * &s;
+                old_s = temp_s;
+            }
+
+            if old_r != BigUint::one() {
+                return None; // Not invertible
+            }
+
+            let m_int = m.to_bigint().unwrap();
+            let result = (old_s % &m_int + &m_int) % &m_int;
+            Some(result.to_biguint().unwrap())
+        }
+
         let mut accum = BigUint::from(0u32);
         println!("\n=== Computing Lagrange Coefficients ===");
-    
+
         // 🔧 FIX 2: Use selected_shares in BOTH loops
         for (share_idx, &(xj, ref yj_bytes)) in selected_shares.iter().enumerate() {
             println!("\n--- Processing Share {} (x={}) ---", share_idx + 1, xj);
-            
+
             let mut num = BigUint::from(1u32);
             let mut den = BigUint::from(1u32);
-            
+
             println!("Computing λ_{} = ", xj);
             let mut debug_terms = Vec::new();
-            
+
             // 🔧 FIX 3: Inner loop uses SAME selected_shares, not all shares
-            for &(xm, _) in selected_shares.iter() {  // ← FIXED: Use selected_shares
+            for &(xm, _) in selected_shares.iter() {
+                // ← FIXED: Use selected_shares
                 if xm != xj {
                     let xm_u = BigUint::from(xm);
                     let xj_u = BigUint::from(xj);
-                    
+
                     // Numerator: -xₘ ≡ (n - xₘ) mod n
                     let neg_xm = (&n - &xm_u) % &n;
                     num = (num * &neg_xm) % &n;
-                    
+
                     // Denominator: (xⱼ - xₘ) mod n
                     let diff = if xj_u >= xm_u {
                         &xj_u - &xm_u
@@ -935,35 +955,40 @@ impl SigningNode {
                         &xj_u + &n - &xm_u
                     };
                     den = (den * diff.clone()) % &n;
-                    
-                    debug_terms.push(format!("(-{}/({}-{})) = ({}/{})", 
-                        xm, xj, xm, neg_xm, diff));
+
+                    debug_terms.push(format!("(-{}/({}-{})) = ({}/{})", xm, xj, xm, neg_xm, diff));
                 }
             }
-            
+
             println!("  = {}", debug_terms.join(" × "));
             println!("  numerator = {} (mod {})", num, n);
             println!("  denominator = {} (mod {})", den, n);
-    
+
             let den_inv = modinv(&den, &n)
                 .ok_or_else(|| anyhow!("Denominator not invertible for share x={}", xj))?;
-            
+
             println!("  denominator⁻¹ = {} (mod {})", den_inv, n);
-            
+
             let lambda = (num.clone() * den_inv.clone()) % &n;
-            println!("  λ_{} = {} × {} = {} (mod {})", xj, num, den_inv, lambda, n);
-    
+            println!(
+                "  λ_{} = {} × {} = {} (mod {})",
+                xj, num, den_inv, lambda, n
+            );
+
             let yj = BigUint::from_bytes_be(yj_bytes);
             let contribution = (&lambda * &yj) % &n;
-            println!("  Contribution: {} × {} = {} (mod {})", lambda, yj, contribution, n);
-            
+            println!(
+                "  Contribution: {} × {} = {} (mod {})",
+                lambda, yj, contribution, n
+            );
+
             accum = (accum + contribution) % &n;
             println!("  Running total: {} (mod {})", accum, n);
         }
-    
+
         println!("\n=== Final Result ===");
         println!("Reconstructed value: {} (mod {})", accum, n);
-    
+
         // Rest of your conversion logic stays the same
         let mut result = accum.to_bytes_be();
         match result.len().cmp(&32) {
@@ -977,23 +1002,20 @@ impl SigningNode {
             }
             std::cmp::Ordering::Equal => {}
         }
-        
+
         Ok(result)
     }
     /// From a slice of RecoveryIds, pick the one that appears most often.
-    fn get_most_common_recovery_id(
-        &self,
-        recid_ints: &[i32],
-    ) -> Result<RecoveryId> {
+    fn get_most_common_recovery_id(&self, recid_ints: &[i32]) -> Result<RecoveryId> {
         let mut counts = HashMap::new();
         for &v in recid_ints {
             *counts.entry(v).or_insert(0usize) += 1;
         }
-        let (&common, _) = counts.iter()
+        let (&common, _) = counts
+            .iter()
             .max_by_key(|&(_, &cnt)| cnt)
             .ok_or_else(|| anyhow!("No recovery IDs provided"))?;
-        RecoveryId::from_i32(common)
-            .map_err(|e| anyhow!("invalid recid {}: {}", common, e))
+        RecoveryId::from_i32(common).map_err(|e| anyhow!("invalid recid {}: {}", common, e))
     }
 
     async fn handle_signed_message(
@@ -1476,37 +1498,56 @@ impl SigningNode {
             signatures_by_round.get(&round).map(|round_signatures| {
                 // Sort signatures by signer_id (PeerId) to ensure consistent ordering across rounds
                 let mut sorted_signatures: Vec<_> = round_signatures.iter().collect();
-                
-                info!("🔍 [SIGNING] === SIGNATURE SORTING DEBUG (ROUND {}) ===", round);
-                info!("🔍 [SIGNING] Original signature order: {:?}", 
-                      round_signatures.keys().collect::<Vec<_>>());
-                
+
+                info!(
+                    "🔍 [SIGNING] === SIGNATURE SORTING DEBUG (ROUND {}) ===",
+                    round
+                );
+                info!(
+                    "🔍 [SIGNING] Original signature order: {:?}",
+                    round_signatures.keys().collect::<Vec<_>>()
+                );
+
                 sorted_signatures.sort_by(|a, b| a.0.cmp(b.0));
-                
-                info!("🔍 [SIGNING] Sorted signature order: {:?}", 
-                      sorted_signatures.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>());
-                
+
+                info!(
+                    "🔍 [SIGNING] Sorted signature order: {:?}",
+                    sorted_signatures
+                        .iter()
+                        .map(|(id, _)| id.as_str())
+                        .collect::<Vec<_>>()
+                );
+
                 info!(
                     "🔄 [SIGNING] Sorted {} signatures by PeerId for round {} aggregation: {:?}",
                     sorted_signatures.len(),
                     round,
-                    sorted_signatures.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>()
+                    sorted_signatures
+                        .iter()
+                        .map(|(id, _)| id.as_str())
+                        .collect::<Vec<_>>()
                 );
-                
-                info!("🔍 [SIGNING] === END SIGNATURE SORTING DEBUG (ROUND {}) ===", round);
-                
+
+                info!(
+                    "🔍 [SIGNING] === END SIGNATURE SORTING DEBUG (ROUND {}) ===",
+                    round
+                );
+
                 // Create a mapping of peer ID to index for debugging
                 let mut peer_to_index_map = Vec::new();
-                
+
                 let sigs_result: Result<Vec<RecoverableSignature>> = sorted_signatures
                     .into_iter()
                     .enumerate()
                     .map(|(i, (signer_id, ecdsa_sig))| {
                         let index = i + 1;
                         peer_to_index_map.push((signer_id.clone(), index));
-                        
-                        info!("🔍 [SIGNING] Peer {} assigned index {} for aggregation (round {})", signer_id, index, round);
-                        
+
+                        info!(
+                            "🔍 [SIGNING] Peer {} assigned index {} for aggregation (round {})",
+                            signer_id, index, round
+                        );
+
                         RecoverableSignature::from_compact(
                             &ecdsa_sig.signature,
                             RecoveryId::from_i32(ecdsa_sig.recovery_id as i32)?,
@@ -1514,10 +1555,16 @@ impl SigningNode {
                         .map_err(|_| anyhow::anyhow!("Invalid signature from signer {}", signer_id))
                     })
                     .collect();
-                
-                info!("🔍 [SIGNING] Final peer-to-index mapping for round {}: {:?}", 
-                      round, peer_to_index_map.iter().map(|(peer, idx)| format!("{}->{}", peer, idx)).collect::<Vec<_>>());
-                
+
+                info!(
+                    "🔍 [SIGNING] Final peer-to-index mapping for round {}: {:?}",
+                    round,
+                    peer_to_index_map
+                        .iter()
+                        .map(|(peer, idx)| format!("{}->{}", peer, idx))
+                        .collect::<Vec<_>>()
+                );
+
                 sigs_result
             })
         };
@@ -1539,7 +1586,8 @@ impl SigningNode {
                         );
 
                         // Log the aggregated signature details
-                        let (recovery_id,signature_bytes) = aggregated_signature.serialize_compact();
+                        let (recovery_id, signature_bytes) =
+                            aggregated_signature.serialize_compact();
                         let v: u64 = recovery_id.to_i32() as u64 + 35 + 1043 * 2;
                         let r = &signature_bytes[0..32];
                         let s = &signature_bytes[32..64];

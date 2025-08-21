@@ -339,6 +339,7 @@ impl NetworkLayer {
             "commands",
             "vrf-selection",
             "transactions",
+            "deposit-intents",
             "dkg-commands",
             "signatures-to-final-node",
         ];
@@ -1083,6 +1084,42 @@ impl NetworkLayer {
                     }
                 }
             }
+            GossipsubMessage::DepositIntent { intent, intent_id } => {
+                info!("📝 Received deposit intent via gossipsub: {:?} (ID: {})", intent, intent_id);
+                
+                // Create transaction from deposit intent
+                let transaction = crate::utils::transaction::create_transaction_from_deposit_intent(&intent);
+                info!("📝 [GOSSIPSUB] Created transaction from deposit intent: {:?}", transaction);
+                
+                if let Some(signing_node) = &mut self.signing_node {
+                    // Set available nodes from node manager before signing
+                    let available_nodes: Vec<PeerId> = self.node_manager.get_active_nodes().into_iter().collect();
+                    signing_node.set_available_nodes(available_nodes);
+                    
+                    // Generate BLS key pair if not already done
+                    if let Some(dkg_node) = &self.dkg_node {
+                        if let Some(secret_share) = dkg_node.get_final_secret_share().await {
+                            info!("🔐 [GOSSIPSUB] Got secret share from DKG for deposit intent: {:?}", secret_share);
+                            signing_node.set_private_key_from_bls_scalar(secret_share);
+                        } else {
+                            info!("⏳ [GOSSIPSUB] DKG not completed yet, no secret share available for deposit intent");
+                            return Ok(());
+                        }
+                    } else {
+                        info!("❌ [GOSSIPSUB] DKG node not available for deposit intent");
+                        return Ok(());
+                    }
+                    
+                    // Convert transaction to bytes for signing using RLP encoding
+                    let tx_bytes = crate::utils::transaction::create_transaction_for_signing(&transaction);
+                    info!("🔐 [GOSSIPSUB] Starting signing process for deposit intent: {:?}", hex::encode(tx_bytes.clone()));
+
+                    signing_node.sign_message(tx_bytes, &transaction).await?;
+                    info!("✅ [GOSSIPSUB] Deposit intent signing completed");
+                } else {
+                    warn!("❌ [GOSSIPSUB] Signing node not available for deposit intent processing");
+                }
+            }
 
             GossipsubMessage::PeerDiscovered { peer, sequence } => {
                 info!(
@@ -1214,6 +1251,63 @@ impl NetworkLayer {
                     .behaviour_mut()
                     .request_response
                     .send_request(&peer_id, request);
+            }
+            ChannelMessage::DepositIntent { intent, intent_id } => {
+                info!("📝 [NETWORK] Processing deposit intent locally: {:?}", intent);
+                
+                // Create transaction from deposit intent
+                let transaction = crate::utils::transaction::create_transaction_from_deposit_intent(&intent);
+                info!("📝 [NETWORK] Created transaction from deposit intent: {:?}", transaction);
+                
+                // Process locally first (this node will sign it)
+                if let Some(signing_node) = &mut self.signing_node {
+                    // Set available nodes from node manager before signing
+                    let available_nodes: Vec<PeerId> = self.node_manager.get_active_nodes().into_iter().collect();
+                    signing_node.set_available_nodes(available_nodes);
+                    
+                    if let Some(dkg_node) = &self.dkg_node {
+                        if let Some(secret_share) = dkg_node.get_final_secret_share().await {
+                            info!("🔐 [NETWORK] Got secret share from DKG for deposit intent: {:?}", secret_share);
+                            signing_node.set_private_key_from_bls_scalar(secret_share);
+                        } else {
+                            info!("⏳ [NETWORK] DKG not completed yet, no secret share available for deposit intent");
+                            return Ok(());
+                        }
+                    } else {
+                        info!("❌ [NETWORK] DKG node not available for deposit intent");
+                        return Ok(());
+                    }
+                    
+                    // Convert transaction to bytes for signing using RLP encoding
+                    let tx_bytes = crate::utils::transaction::create_transaction_for_signing(&transaction);
+                    info!("🔐 [LOCAL] Starting local signing process for deposit intent: {:?}", hex::encode(tx_bytes.clone()));
+                    signing_node.sign_message(tx_bytes, &transaction).await?;
+                    info!("✅ [LOCAL] Local deposit intent signing completed");
+                } else {
+                    warn!("❌ [LOCAL] Signing node not available for deposit intent processing");
+                }
+                
+                // Then broadcast the deposit intent to other nodes
+                let gossipsub_msg = GossipsubMessage::DepositIntent { 
+                    intent: intent.clone(),
+                    intent_id: intent_id.clone(),
+                };
+                let intent_data = serde_json::to_vec(&gossipsub_msg).map_err(|e| {
+                    warn!("Failed to serialize deposit intent: {}", e);
+                    anyhow::anyhow!("Serialization error: {}", e)
+                })?;
+
+                let swarm_mut = swarm.behaviour_mut();
+                let topic_hash = gossipsub::IdentTopic::new("deposit-intents".to_string());
+                
+                match swarm_mut.gossipsub.publish(topic_hash, intent_data) {
+                    Ok(_) => {
+                        info!("✅ [BROADCAST] Successfully published deposit intent to network: {}", intent_id);
+                    }
+                    Err(e) => {
+                        warn!("❌ [BROADCAST] Failed to publish deposit intent: {:?}", e);
+                    }
+                }
             }
             ChannelMessage::ScheduledDKGStart => {
                 info!("🚀 Starting DKG at the exact agreed instant {}!", SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs());

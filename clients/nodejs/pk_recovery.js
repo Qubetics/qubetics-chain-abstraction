@@ -21,7 +21,7 @@ async function main() {
     function computeEthereumAddress(publicKeyBuffer) {
         // Remove the 0x04 prefix if present (uncompressed key indicator)
         const pubKeyBytes = publicKeyBuffer.slice(1); // Remove first byte (0x04)
-        
+
         if (keccak256) {
             // Use proper Keccak-256 hash
             const hash = keccak256(pubKeyBytes);
@@ -68,11 +68,11 @@ async function main() {
     // const recoveryId = 27;
     //0 => 0x61E2f29899a5e1F6662E316077528Af6b4d9517D
     //1 => 0x080cfdf386e3627C959299266698DA2b48A77E15
-    
-    const msgHash = Buffer.from("650fa9ce0a02c5c585bc738b171505dd65efe025cded28dd08e3c90c1734a02d", "hex");
-    const rBuf = Buffer.from("24653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c", "hex"); 
-    const sBuf = Buffer.from("4c321606047899ab29ebb97c94563da575c37ac6b8e9f42130e0df34c2063c1a", "hex"); 
-    const recoveryId = 0;
+
+    const msgHash = Buffer.from("42aa79a24d067588d4ad2e88640bfe4c6359c5b752bb2a3295d7edfc11115c93", "hex");
+    const rBuf = Buffer.from("24653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c", "hex");
+    const sBuf = Buffer.from("25462cf4ca5e08a25df1d9b7b903cf0b8ae942f34239a206fec8a56e97531539", "hex");
+    const recoveryId = 1;
     //0 => 0x080cfdf386e3627C959299266698DA2b48A77E15
 
 
@@ -95,10 +95,10 @@ async function main() {
             msgHash,
             false
         );
-        
+
         const publicKeyHex = "0x" + Buffer.from(pubkey).toString("hex");
         console.log("\n✅ Recovered public key:", publicKeyHex);
-        
+
         // Compute Ethereum address using available method
         let address = null;
         if (computeAddress) {
@@ -109,23 +109,23 @@ async function main() {
                 console.log("❌ Ethers computeAddress failed:", e.message);
             }
         }
-        
+
         if (!address && keccak256) {
             address = computeEthereumAddress(Buffer.from(pubkey));
             if (address) {
                 console.log("🏦 Ethereum address (manual computation):", address);
             }
         }
-        
+
         if (!address) {
             console.log("❌ Could not compute Ethereum address. Install dependencies:");
             console.log("   npm install ethers");
             console.log("   npm install ethereum-cryptography");
         }
-        
+
         // Expected result for your SECOND dataset:
         console.log("\n📋 Expected public key starts with: 0x04...");
-        
+
     } catch (error) {
         console.error("❌ Recovery failed:", error.message);
     }

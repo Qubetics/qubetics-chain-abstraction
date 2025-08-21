@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use sha2::Digest;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
+use uuid::Uuid;
 use warp::Filter;
 
 use crate::types::{rpc::RPCRequest, ChannelMessage};
@@ -21,11 +22,33 @@ pub struct DummyTransaction {
     pub chain_id: u64,
 }
 
+// Define the deposit intent structure
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DepositIntent {
+    pub source_address: String,
+    pub target_address: String,
+    pub source_chain: String,
+    pub target_chain: String,
+    pub amount: u128,
+    pub source_token: String,
+    pub target_token: String,
+    pub path: Vec<u8>,
+    pub transaction_hash: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TransactionResponse {
     pub tx_hash: String,
     pub status: String,
     pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DepositIntentResponse {
+    pub intent_id: String,
+    pub status: String,
+    pub message: String,
+    pub raw_transaction: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -68,6 +91,13 @@ pub async fn start_http_server(message_tx: mpsc::Sender<ChannelMessage>, port: u
         .and(with_message_tx(message_tx.clone()))
         .and_then(handle_submit_transaction);
 
+    // POST /deposit_intent
+    let deposit_intent = warp::path("deposit_intent")
+        .and(warp::post())
+        .and(warp::body::json())
+        .and(with_message_tx(message_tx.clone()))
+        .and_then(handle_deposit_intent);
+
     // GET /status
     let get_status = warp::path("status")
         .and(warp::get())
@@ -80,7 +110,7 @@ pub async fn start_http_server(message_tx: mpsc::Sender<ChannelMessage>, port: u
         .and(with_message_tx(message_tx))
         .and_then(|message_tx| handle_start_dkg(message_tx));
 
-    let routes = submit_tx.or(get_status).or(start_dkg);
+    let routes = submit_tx.or(deposit_intent).or(get_status).or(start_dkg);
 
     info!("🌐 Starting HTTP RPC server on port {}", port);
     warp::serve(routes).run(([127, 0, 0, 1], port)).await;
@@ -145,6 +175,37 @@ async fn handle_submit_transaction(
         tx_hash,
         status: "submitted".to_string(),
         message: "Transaction submitted to P_2_P network".to_string(),
+    }))
+}
+
+async fn handle_deposit_intent(
+    intent: DepositIntent,
+    message_tx: std::sync::Arc<tokio::sync::Mutex<mpsc::Sender<ChannelMessage>>>,
+) -> Result<impl warp::Reply, warp::Rejection> {
+    info!("📝 HTTP: Received deposit intent: {:?}", intent);
+
+    let intent_id = format!("intent-{}", Uuid::new_v4());
+    let deposit_intent_msg = ChannelMessage::DepositIntent {
+        intent: intent.clone(),
+        intent_id: intent_id.clone(),
+    };
+
+    let tx_sender = message_tx.lock().await;
+    if let Err(e) = tx_sender.send(deposit_intent_msg).await {
+        warn!("Failed to send deposit intent to network: {:?}", e);
+        return Err(warp::reject::custom(TransactionError::NetworkError));
+    }
+
+    info!(
+        "✅ HTTP: Deposit intent submitted to network: {}",
+        intent_id
+    );
+
+    Ok(warp::reply::json(&DepositIntentResponse {
+        intent_id,
+        status: "submitted".to_string(),
+        message: "Deposit intent submitted to P_2_P network".to_string(),
+        raw_transaction: None,
     }))
 }
 
