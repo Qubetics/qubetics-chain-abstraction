@@ -325,7 +325,7 @@ impl VrfNodeSelector {
     }
 
     /// Handle received VRF selected nodes broadcast from another node
-    pub fn handle_selected_nodes_broadcast(&mut self, broadcast: VrfSelectedNodesBroadcast) {
+    pub fn handle_selected_nodes_broadcast(&mut self, broadcast: VrfSelectedNodesBroadcast, total_nodes: usize) {
         info!(
             "📥 [VRF] Received VRF selected nodes broadcast from node {} for round {}: {} nodes selected",
             broadcast.selector_node_id.0,
@@ -348,7 +348,7 @@ impl VrfNodeSelector {
         );
 
         // Check if we have enough selections to start consensus
-        let min_selections = 4; // Minimum 4 selections to start consensus
+        let min_selections = total_nodes; // Minimum 4 selections to start consensus
         if self.can_start_consensus(round, min_selections) {
             info!(
                 "🎯 [VRF] Enough selections collected for round {}, consensus can be started",

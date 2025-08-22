@@ -165,7 +165,7 @@ impl DKGNode {
             total_nodes, threshold
         );
         self.total_nodes = total_nodes;
-        self.threshold = total_nodes -1; 
+        self.threshold = threshold; 
     }
 
     fn generate_shares(&self, polynomial: &[Scalar]) -> Result<Vec<KeyShare>> {
@@ -512,19 +512,19 @@ impl DKGNode {
             shares_len, validations_len
         );
 
-        if valid_validations >= (self.threshold + 1) * (self.threshold + 1)
-            && shares_len >= self.threshold + 1
+        if valid_validations >= (node_manager.get_total_nodes()) * (node_manager.get_total_nodes())
+            && shares_len >= node_manager.get_total_nodes()
         {
             info!(
-                "✅ [DKG] Required validations: {} and valid validations: {}",(self.threshold + 1) * (self.threshold + 1),valid_validations
+                "✅ [DKG] Required validations: {} and valid validations: {}",(node_manager.get_total_nodes()) * (node_manager.get_total_nodes()),valid_validations
             );
             info!("🎉 [DKG] DKG completion criteria met! Generating final keys...");
             self.generate_group_key(node_manager).await?;
         } else {
             info!(
                 "⏳ [DKG] DKG not yet complete - need {} validations and {} shares, have {} and {}",
-                (self.threshold + 1) * (self.threshold + 1),
-                self.threshold + 1,
+                (node_manager.get_total_nodes()) * (node_manager.get_total_nodes()),
+                node_manager.get_total_nodes(),
                 valid_validations,
                 shares_len
             );

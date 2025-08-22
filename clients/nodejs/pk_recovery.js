@@ -69,10 +69,10 @@ async function main() {
     //0 => 0x61E2f29899a5e1F6662E316077528Af6b4d9517D
     //1 => 0x080cfdf386e3627C959299266698DA2b48A77E15
 
-    const msgHash = Buffer.from("42aa79a24d067588d4ad2e88640bfe4c6359c5b752bb2a3295d7edfc11115c93", "hex");
+    const msgHash = Buffer.from("5bc998e16d2a6f8df7558398812229fbce02f66098216af3f34283b18f0c88a2", "hex");
     const rBuf = Buffer.from("24653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c", "hex");
-    const sBuf = Buffer.from("25462cf4ca5e08a25df1d9b7b903cf0b8ae942f34239a206fec8a56e97531539", "hex");
-    const recoveryId = 1;
+    const sBuf = Buffer.from("09628f6cebffdc0d0338fbbc5cca925b5303b052023d7d6d918b5ba0e3367dc5", "hex");
+    const recoveryId = 0;
     //0 => 0x080cfdf386e3627C959299266698DA2b48A77E15
 
 

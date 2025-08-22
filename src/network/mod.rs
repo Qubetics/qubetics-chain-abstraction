@@ -1029,7 +1029,7 @@ impl NetworkLayer {
                 if let Some(signing_node) = &mut self.signing_node {
                     let selector_node_id = broadcast_msg.selector_node_id.clone();
                     let round = broadcast_msg.round;
-                    signing_node.handle_vrf_selected_nodes_broadcast(broadcast_msg);
+                    signing_node.handle_vrf_selected_nodes_broadcast(self.node_manager.get_total_nodes(),broadcast_msg);
                     info!(
                         "💾 [VRF] Stored VRF selected nodes from node {} for round {}",
                         selector_node_id.0, round
@@ -1317,10 +1317,10 @@ impl NetworkLayer {
                     dkg.update_node_params(total, threshold);
                     dkg.reset().await;
                     if let Some(signing_node) = &mut self.signing_node {
-                        signing_node.set_threshold(self.node_manager.get_total_nodes() - 1);
+                        signing_node.set_threshold(total/2 + 1);
                     }
                     self.node_manager
-                        .set_threshold(total - 1);
+                        .set_threshold(total/2 + 1);
                     info!("🔄 DKG parameters updated: total_nodes={}, threshold={}", total, threshold);
                     if let Err(e) = dkg.start_dkg(self.node_manager.clone()).await {
                         warn!("❌ Scheduled DKG start failed: {:?}", e);

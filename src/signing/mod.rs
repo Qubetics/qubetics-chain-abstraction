@@ -95,6 +95,7 @@ pub struct SigningNode {
     signatures: Arc<RwLock<HashMap<String, ECDSASignature>>>,
     signatures_by_round: Arc<RwLock<HashMap<u64, HashMap<String, ECDSASignature>>>>, // round -> node_id -> signature
     final_nodes_by_round: Arc<RwLock<HashMap<u64, String>>>, // round -> final_node_id
+    aggregated_rounds: Arc<RwLock<std::collections::HashSet<u64>>>, // Track rounds that have been aggregated
     message_tx: mpsc::Sender<ChannelMessage>,
     vrf_selector: Option<VrfNodeSelector>, // VRF selector for node selection
     consensus_node: Option<ConsensusNode>, // Consensus node for final node selection
@@ -124,6 +125,7 @@ impl SigningNode {
             signatures: Arc::new(RwLock::new(HashMap::new())),
             signatures_by_round: Arc::new(RwLock::new(HashMap::new())),
             final_nodes_by_round: Arc::new(RwLock::new(HashMap::new())),
+            aggregated_rounds: Arc::new(RwLock::new(std::collections::HashSet::new())),
             message_tx,
             vrf_selector: Some(VrfNodeSelector::new(peer_id)),
             consensus_node: Some(ConsensusNode::new()),
@@ -533,6 +535,20 @@ impl SigningNode {
         };
 
         if let Some(round) = round_to_handle {
+            // Check if this round has already been aggregated
+            let already_aggregated = {
+                let aggregated_rounds = self.aggregated_rounds.read().await;
+                aggregated_rounds.contains(&round)
+            };
+
+            if already_aggregated {
+                info!(
+                    "⏭️ [SIGNING] Round {} already aggregated, ignoring signature from {}",
+                    round, from
+                );
+                return Ok(());
+            }
+
             // Store signature by round
             let should_aggregate = {
                 let mut signatures_by_round = self.signatures_by_round.write().await;
@@ -547,14 +563,24 @@ impl SigningNode {
                     round_signatures.len()
                 );
                 info!(
-                    "threshold: {}, total: {}",
-                    self.threshold,
-                    round_signatures.len()
+                    "📊 [SIGNING] Threshold check: current signatures: {}, threshold: {}",
+                    round_signatures.len(),
+                    self.threshold
                 );
-                round_signatures.len() >= self.threshold + 1
+                round_signatures.len() >= self.threshold
             };
 
             if should_aggregate {
+                // Mark this round as aggregated to prevent future aggregations
+                {
+                    let mut aggregated_rounds = self.aggregated_rounds.write().await;
+                    aggregated_rounds.insert(round);
+                }
+                info!(
+                    "🎯 [SIGNING] Round {} marked as aggregated, starting aggregation process",
+                    round
+                );
+
                 // Prepare signatures for aggregation
                 let signatures_to_aggregate: Vec<RecoverableSignature> = {
                     let signatures_by_round = self.signatures_by_round.read().await;
@@ -681,9 +707,9 @@ impl SigningNode {
         signatures: Vec<RecoverableSignature>,
     ) -> Result<RecoverableSignature> {
         let n_shares = signatures.len();
-        if n_shares <= self.threshold {
+        if n_shares < self.threshold {
             return Err(anyhow!(
-                "Not enough signature shares: got {}, need {}",
+                "Not enough signature shares: got {}, need at least {}",
                 n_shares,
                 self.threshold
             ));
@@ -1140,14 +1166,15 @@ impl SigningNode {
     /// Handle VRF selected nodes broadcast from another node
     pub fn handle_vrf_selected_nodes_broadcast(
         &mut self,
+        total_nodes: usize,
         broadcast: crate::vrf::VrfSelectedNodesBroadcast,
     ) {
         if let Some(vrf_selector) = &mut self.vrf_selector {
             // Extract round before moving broadcast
             let round = broadcast.round;
-            let min_selections = 4; // Or set to your desired threshold
+            let min_selections = total_nodes; // Or set to your desired threshold
 
-            vrf_selector.handle_selected_nodes_broadcast(broadcast);
+            vrf_selector.handle_selected_nodes_broadcast(broadcast, total_nodes);
 
             // Check if consensus should be triggered after receiving this broadcast
             if vrf_selector.can_start_consensus(round, min_selections) {
@@ -1476,6 +1503,20 @@ impl SigningNode {
             self.id, from, round
         );
 
+        // Check if this round has already been aggregated
+        let already_aggregated = {
+            let aggregated_rounds = self.aggregated_rounds.read().await;
+            aggregated_rounds.contains(&round)
+        };
+
+        if already_aggregated {
+            info!(
+                "⏭️ [SIGNING] Round {} already aggregated, ignoring signature from {}",
+                round, from
+            );
+            return Ok(());
+        }
+
         // Store signature by round
         {
             let mut signatures_by_round = self.signatures_by_round.write().await;
@@ -1571,10 +1612,16 @@ impl SigningNode {
 
         if let Some(signatures_result) = signatures_to_aggregate {
             let signatures_vec = signatures_result?;
-            if signatures_vec.len() >= self.threshold + 1 {
+            if signatures_vec.len() >= self.threshold {
+                // Mark this round as aggregated to prevent future aggregations
+                {
+                    let mut aggregated_rounds = self.aggregated_rounds.write().await;
+                    aggregated_rounds.insert(round);
+                }
+
                 info!(
-                    "✅ [SIGNING] Enough signatures collected for round {}, starting aggregation",
-                    round
+                    "✅ [SIGNING] Threshold reached! {} signatures collected for round {}, starting aggregation",
+                    signatures_vec.len(), round
                 );
 
                 // Perform aggregation

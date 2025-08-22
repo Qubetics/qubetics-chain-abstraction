@@ -1,7 +1,7 @@
 use libp2p::PeerId;
 use std::any::Any;
 use std::collections::HashSet;
-use tracing:: info;
+use tracing::info;
 
 pub mod vrf_manager;
 pub use vrf_manager::VrfNodeManager;
@@ -33,9 +33,9 @@ pub trait NodeMembership {
 }
 
 impl Clone for Box<dyn NodeMembership> {
-     fn clone(&self) -> Box<dyn NodeMembership> {
-         self.clone_box()
-     }
+    fn clone(&self) -> Box<dyn NodeMembership> {
+        self.clone_box()
+    }
 }
 
 /// Trait for calculating threshold based on total nodes
@@ -44,7 +44,6 @@ pub trait ThresholdCalculator {
     fn calculate_threshold(&self, total_nodes: usize) -> usize;
 
     fn clone_box(&self) -> Box<dyn ThresholdCalculator>;
-
 }
 
 /// Default implementation of ThresholdCalculator
@@ -53,11 +52,11 @@ pub struct DefaultThresholdCalculator;
 
 impl ThresholdCalculator for DefaultThresholdCalculator {
     fn calculate_threshold(&self, _total_nodes: usize) -> usize {
-        1
+        _total_nodes/2 + 1
     }
 
     fn clone_box(&self) -> Box<dyn ThresholdCalculator> {
-       Box::new(self.clone())
+        Box::new(self.clone())
     }
 }
 
