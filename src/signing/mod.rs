@@ -562,12 +562,18 @@ impl SigningNode {
                     round,
                     round_signatures.len()
                 );
+                let total_nodes = self
+                    .available_nodes
+                    .as_ref()
+                    .map(|nodes| nodes.len())
+                    .unwrap_or(0);
                 info!(
-                    "📊 [SIGNING] Threshold check: current signatures: {}, threshold: {}",
+                    "📊 [SIGNING] Aggregation check: current signatures: {}, total_nodes: {}, threshold: {}",
                     round_signatures.len(),
+                    total_nodes,
                     self.threshold
                 );
-                round_signatures.len() >= self.threshold
+                round_signatures.len() >= total_nodes && total_nodes > 0
             };
 
             if should_aggregate {
@@ -686,6 +692,11 @@ impl SigningNode {
                     }
                 }
             } else {
+                let total_nodes = self
+                    .available_nodes
+                    .as_ref()
+                    .map(|nodes| nodes.len())
+                    .unwrap_or(0);
                 info!(
                     "⏳ [SIGNING] Waiting for more signatures: {}/{}",
                     self.signatures_by_round
@@ -694,7 +705,7 @@ impl SigningNode {
                         .get(&round)
                         .unwrap()
                         .len(),
-                    self.threshold
+                    total_nodes
                 );
             }
         }
@@ -899,12 +910,8 @@ impl SigningNode {
         let mut rng = thread_rng();
         let mut selected_shares = shares.to_vec();
         selected_shares.shuffle(&mut rng);
-        selected_shares.truncate(self.threshold);
+        // selected_shares.truncate(self.threshold);
 
-        println!(
-            "Randomly selected {} shares for interpolation:",
-            selected_shares.len()
-        );
 
         println!(
             "Selected {} shares for interpolation:",
@@ -1612,7 +1619,12 @@ impl SigningNode {
 
         if let Some(signatures_result) = signatures_to_aggregate {
             let signatures_vec = signatures_result?;
-            if signatures_vec.len() >= self.threshold {
+            let total_nodes = self
+                .available_nodes
+                .as_ref()
+                .map(|nodes| nodes.len())
+                .unwrap_or(0);
+            if signatures_vec.len() >= total_nodes && total_nodes > 0 {
                 // Mark this round as aggregated to prevent future aggregations
                 {
                     let mut aggregated_rounds = self.aggregated_rounds.write().await;
@@ -1620,8 +1632,8 @@ impl SigningNode {
                 }
 
                 info!(
-                    "✅ [SIGNING] Threshold reached! {} signatures collected for round {}, starting aggregation",
-                    signatures_vec.len(), round
+                    "✅ [SIGNING] All nodes participated! {} signatures collected for round {} (total_nodes: {}), starting aggregation",
+                    signatures_vec.len(), round, total_nodes
                 );
 
                 // Perform aggregation

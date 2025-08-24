@@ -1,7 +1,5 @@
 use libp2p::identity::Keypair;
-use mpc_node::node_management::{
-    DefaultThresholdCalculator, NodeMembership, VrfNodeManager,
-};
+use mpc_node::node_management::{DefaultThresholdCalculator, NodeMembership, VrfNodeManager};
 use mpc_node::{
     commands::CommandProcessor, consensus::ConsensusNode, dkg::DKGNode, network::NetworkLayer,
     rpc_server, signing::SigningNode,
@@ -15,8 +13,8 @@ use std::error::Error;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::info;
-use tracing::{level_filters::LevelFilter};
-use tracing_appender::{non_blocking};
+use tracing::level_filters::LevelFilter;
+use tracing_appender::non_blocking;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 #[tokio::main]
@@ -70,7 +68,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let total = node_manager.get_total_nodes();
     let threshold = node_manager.get_threshold();
-    
+
     info!("Initial node count: {}, threshold: {}", total, threshold);
 
     let mut network = NetworkLayer::new(node_manager).await?;
