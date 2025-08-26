@@ -4,7 +4,11 @@ use ecvrf::{keygen, prove, verify, VrfPk, VrfProof, VrfSk};
 use libp2p::PeerId;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use tokio::sync::{mpsc, RwLock};
+use std::sync::Arc;
 use tracing::{debug, info};
+
+use crate::types::ChannelMessage;
 
 /// VRF output containing proof and hash
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,6 +64,153 @@ pub struct VrfNodeSelector {
     results: HashMap<u64, NodeSelectionResult>,
     // Store received VRF selected nodes broadcasts from other nodes
     received_selections: HashMap<u64, HashMap<SerializablePeerId, VrfSelectedNodesBroadcast>>,
+}
+
+/// Independent VRF Service for chain-agnostic node selection
+#[derive(Clone)]
+pub struct VrfService {
+    selector: Arc<RwLock<VrfNodeSelector>>,
+    message_tx: mpsc::Sender<ChannelMessage>,
+    node_id: PeerId,
+    current_round: Arc<RwLock<u64>>,
+}
+
+impl VrfService {
+    /// Create a new VRF service
+    pub fn new(node_id: PeerId, message_tx: mpsc::Sender<ChannelMessage>) -> Self {
+        let selector = VrfNodeSelector::new(node_id);
+        
+        Self {
+            selector: Arc::new(RwLock::new(selector)),
+            message_tx,
+            node_id,
+            current_round: Arc::new(RwLock::new(0)),
+        }
+    }
+
+    /// Perform VRF node selection for any chain operation
+    pub async fn perform_node_selection(
+        &self,
+        available_nodes: &[PeerId],
+        threshold: usize,
+        round: u64,
+        operation_type: &str,
+    ) -> Result<NodeSelectionResult> {
+        info!(
+            "🎯 [VRF] Starting {} operation node selection for round {} with {} available nodes",
+            operation_type, round, available_nodes.len()
+        );
+
+        let mut selector = self.selector.write().await;
+        let selection_result = selector.select_mpc_nodes(available_nodes, threshold, round);
+        
+        info!(
+            "🎯 [VRF] Node {} selected {} nodes for {} operation round {}: {:?}",
+            self.node_id,
+            selection_result.selected_nodes.len(),
+            operation_type,
+            round,
+            selection_result.selected_nodes
+        );
+
+        // Broadcast the VRF-selected nodes to all peers
+        if let Some(broadcast_msg) = selector.create_selected_nodes_broadcast(round) {
+            let broadcast_data = serde_json::to_vec(
+                &crate::types::GossipsubMessage::VrfSelectedNodes(broadcast_msg),
+            )?;
+            
+            self.message_tx.send(ChannelMessage::Broadcast {
+                topic: "vrf-selection".to_string(),
+                data: broadcast_data,
+            }).await?;
+            
+            info!(
+                "📤 [VRF] Node {} broadcasted VRF-selected nodes for {} operation round {}",
+                self.node_id, operation_type, round
+            );
+        }
+
+        Ok(selection_result)
+    }
+
+    /// Check if current node is selected for a specific round
+    pub async fn is_node_selected(&self, round: u64) -> bool {
+        let selector = self.selector.read().await;
+        selector.is_selected(round)
+    }
+
+    /// Get all selected nodes for a round
+    pub async fn get_all_selected_nodes_for_round(&self, round: u64) -> Vec<SerializablePeerId> {
+        let selector = self.selector.read().await;
+        selector.get_all_selected_nodes_for_round(round)
+    }
+
+    /// Handle VRF broadcast from other nodes
+    pub async fn handle_vrf_broadcast(&self, broadcast: VrfSelectedNodesBroadcast, total_nodes: usize) {
+        let mut selector = self.selector.write().await;
+        let round = broadcast.round;
+        
+        selector.handle_selected_nodes_broadcast(broadcast, total_nodes);
+        
+        // Check if consensus can be started
+        let min_selections = total_nodes;
+        if selector.can_start_consensus(round, min_selections) {
+            info!(
+                "🎯 [VRF] Enough selections collected for round {}, consensus can be triggered",
+                round
+            );
+        }
+    }
+
+    /// Check if consensus can be started for a round
+    pub async fn can_start_consensus(&self, round: u64, min_selections: usize) -> bool {
+        let selector = self.selector.read().await;
+        selector.can_start_consensus(round, min_selections)
+    }
+
+    /// Get the next round number and increment it
+    pub async fn get_next_round(&self) -> u64 {
+        let mut current = self.current_round.write().await;
+        let round = *current;
+        *current += 1;
+        round
+    }
+
+    /// Get current round without incrementing
+    pub async fn get_current_round(&self) -> u64 {
+        let current = self.current_round.read().await;
+        *current
+    }
+
+    /// Get VRF public key
+    pub async fn get_public_key(&self) -> Vec<u8> {
+        let selector = self.selector.read().await;
+        selector.get_public_key()
+    }
+
+    /// Get VRF public key as hex
+    pub async fn get_public_key_hex(&self) -> String {
+        let selector = self.selector.read().await;
+        selector.get_public_key_hex()
+    }
+
+    /// Handle VRF messages
+    pub async fn handle_message(&self, msg: VrfSelectionMessage) -> Result<()> {
+        let mut selector = self.selector.write().await;
+        selector.handle_message(msg).await
+    }
+
+    /// Get all selected nodes with frequencies for consensus
+    pub async fn get_all_selected_nodes_with_frequencies(&self, round: u64) -> Vec<SerializablePeerId> {
+        let selector = self.selector.read().await;
+        selector.get_all_selected_nodes_with_frequencies(round)
+    }
+
+    /// Get selection result for a specific round
+    pub async fn get_selection_result(&self, round: u64) -> Option<NodeSelectionResult> {
+        let selector = self.selector.read().await;
+        selector.get_selection_result(round).cloned()
+    }
 }
 
 impl VrfNodeSelector {

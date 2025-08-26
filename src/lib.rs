@@ -16,7 +16,7 @@ pub mod types;
 pub mod utils;
 pub mod vrf;
 
-pub use chain::BlockchainClient;
+// pub use chain::BlockchainClient; // Removed - replaced with ChainHandler trait
 pub use commands::CommandProcessor;
 pub use consensus::ConsensusNode;
 pub use dkg::DKGNode;

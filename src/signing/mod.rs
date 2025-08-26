@@ -2,7 +2,7 @@ use crate::rpc_server::DummyTransaction;
 use anyhow::anyhow;
 use anyhow::Result;
 use bls12_381::Scalar;
-use ethereum_types::U64;
+// use ethereum_types::U64; // Removed unused import
 use hex;
 use libp2p::PeerId;
 use num_bigint::BigUint;
@@ -27,7 +27,8 @@ use rand::thread_rng;
 
 use crate::consensus::{ConsensusMessage, ConsensusNode, ConsensusResult};
 use crate::types::{p2p::SerializablePeerId, ChannelMessage};
-use crate::vrf::VrfNodeSelector;
+use crate::vrf::{VrfService, VrfSelectedNodesBroadcast};
+use crate::chain::{ChainHandler, ChainSignature, ChainHandlerFactory};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ECDSASignature {
@@ -97,11 +98,10 @@ pub struct SigningNode {
     final_nodes_by_round: Arc<RwLock<HashMap<u64, String>>>, // round -> final_node_id
     aggregated_rounds: Arc<RwLock<std::collections::HashSet<u64>>>, // Track rounds that have been aggregated
     message_tx: mpsc::Sender<ChannelMessage>,
-    vrf_selector: Option<VrfNodeSelector>, // VRF selector for node selection
+    vrf_service: Option<VrfService>, // VRF service for node selection
+    chain_handler: Arc<dyn ChainHandler>, // Chain-specific operations
     consensus_node: Option<ConsensusNode>, // Consensus node for final node selection
     available_nodes: Option<Vec<PeerId>>,  // Available nodes from node manager
-    curr_round: u64,                       // Current round for signing
-    next_round: u64,                       // Next round to be processed
 }
 
 impl SigningNode {
@@ -116,6 +116,10 @@ impl SigningNode {
             Self::derive_peer_id_from_string(&id)
         });
 
+        // Create default Ethereum chain handler (can be changed later)
+        let chain_handler = ChainHandlerFactory::create_ethereum_handler(1043);
+        let chain_handler: Arc<dyn ChainHandler> = chain_handler.into();
+
         Self {
             id,
             threshold,
@@ -126,12 +130,11 @@ impl SigningNode {
             signatures_by_round: Arc::new(RwLock::new(HashMap::new())),
             final_nodes_by_round: Arc::new(RwLock::new(HashMap::new())),
             aggregated_rounds: Arc::new(RwLock::new(std::collections::HashSet::new())),
-            message_tx,
-            vrf_selector: Some(VrfNodeSelector::new(peer_id)),
+            message_tx: message_tx.clone(),
+            vrf_service: Some(VrfService::new(peer_id, message_tx)),
+            chain_handler,
             consensus_node: Some(ConsensusNode::new()),
             available_nodes: None,
-            curr_round: 0,
-            next_round: 0,
         }
     }
 
@@ -265,7 +268,7 @@ impl SigningNode {
 
     pub async fn sign_message(
         &mut self,
-        message: Vec<u8>,
+        _message: Vec<u8>,
         transaction: &DummyTransaction,
     ) -> Result<()> {
         if self.private_key.is_none() {
@@ -276,72 +279,79 @@ impl SigningNode {
             return Err(anyhow::anyhow!("No private key available"));
         }
 
-        // let message_hash = self.hash_message(message);
+        info!(
+            "📝 [SIGNING] Node {} starting to sign transaction",
+            self.id
+        );
+
+        // Convert DummyTransaction to ChainTransaction for chain-agnostic handling
+        let chain_transaction = self.chain_handler.from_dummy_transaction(transaction)?;
+        
+        // Create transaction bytes using chain handler
+        let tx_bytes = self.chain_handler.create_transaction_bytes(&chain_transaction)?;
+        
+        // Hash the transaction bytes
         let mut hasher = sha3::Keccak256::new();
-        hasher.update(&message); // ← hash the real RLP bytes!
+        hasher.update(&tx_bytes);
         let tx_hash = hasher.finalize();
         println!("Tx hash: 0x{}", hex::encode(&tx_hash));
 
-        info!(
-            "📝 [SIGNING] Node {} starting to sign message: {:?}",
-            self.id, tx_hash
-        );
-
-        // Get available nodes before the mutable borrow
+        // Get available nodes and perform VRF selection
         let available_nodes = self.get_available_nodes_from_manager().await;
-        let round = self.next_round;
-        self.curr_round = round; // Set current round to the next round
-        self.next_round += 1; // Increment round for next signing operation
-                              // Generate VRF proof for this signing operation
-        if let Some(vrf_selector) = &mut self.vrf_selector {
-            let selection_result = vrf_selector.select_mpc_nodes(&available_nodes, 1, round);
+        
+        // Use VrfService for node selection (chain-agnostic)
+        if let Some(vrf_service) = &self.vrf_service {
+            let round = vrf_service.get_current_round().await;
+            let _selection_result = vrf_service.perform_node_selection(
+                &available_nodes, 
+                1, 
+                round, 
+                self.chain_handler.chain_type()
+            ).await?;
+            
             info!(
-                "🎯 [VRF] Node {} selected {} MPC nodes for signing round {}: {:?}",
-                self.id,
-                selection_result.selected_nodes.len(),
-                round,
-                selection_result.selected_nodes
+                "🎯 [VRF] Node {} completed VRF selection for {} signing round {}",
+                self.id, self.chain_handler.chain_type(), round
             );
-            info!("available nodes for vrf are : {:?}", available_nodes);
-
-            // Broadcast the VRF-selected nodes to all peers
-            if let Some(broadcast_msg) = vrf_selector.create_selected_nodes_broadcast(round) {
-                let broadcast_data = serde_json::to_vec(
-                    &crate::types::GossipsubMessage::VrfSelectedNodes(broadcast_msg),
-                )?;
-                self.broadcast("vrf-selection", &broadcast_data).await?;
-                info!(
-                    "📤 [VRF] Node {} broadcasted VRF-selected nodes for round {}",
-                    self.id, round
-                );
-            }
         }
 
-        // Create ECDSA signature
+        // Create ECDSA signature using secp256k1
         let msg = Message::from_slice(&tx_hash)?;
-
         let signature = self.create_ecdsa_signature(&msg, transaction)?;
-        // Extract signature components
         let (recovery_id, signature_bytes) = signature.serialize_compact();
-        let v: u64 = recovery_id.to_i32() as u64 + 35 + 1043 * 2; // ✅ use u64 to prevent overflow
-        let r = &signature_bytes[0..32];
-        let s = &signature_bytes[32..64];
+
+        // Use chain handler to create chain-specific signature
+        let chain_signature = self.chain_handler.create_signature(
+            &signature_bytes, 
+            recovery_id.to_i32() as u8, 
+            &chain_transaction
+        )?;
 
         info!(
-            "✍️ [SIGNING] Node {} created ECDSA signature: \x1b[34m{:?} {:?}\x1b[0m",
-            self.id,
-            signature.serialize_compact(),
-            self.private_key.clone()
+            "✍️ [SIGNING] Node {} created {} signature",
+            self.id, self.chain_handler.chain_type()
         );
-        println!("\nSignature Components:");
-        println!("  v: {}", v);
-        println!("  r: 0x{}", hex::encode(r));
-        println!("  s: 0x{}", hex::encode(s));
 
+        // Log signature components for Ethereum (for debugging)
+        if let ChainSignature::Ethereum(eth_sig) = &chain_signature {
+            println!("\n{} Signature Components:", self.chain_handler.chain_type());
+            println!("  v: {}", eth_sig.v);
+            println!("  r: 0x{}", hex::encode(&eth_sig.r));
+            println!("  s: 0x{}", hex::encode(&eth_sig.s));
+        }
+
+        // Convert to legacy ECDSASignature for compatibility
         let ecdsa_signature = ECDSASignature {
-            signature: signature.serialize_compact().1.to_vec(),
+            signature: signature_bytes.to_vec(),
             signer_id: self.id.clone(),
-            recovery_id: signature.serialize_compact().0.to_i32() as u8,
+            recovery_id: recovery_id.to_i32() as u8,
+        };
+
+        // Get current round from VRF service
+        let round = if let Some(vrf_service) = &self.vrf_service {
+            vrf_service.get_next_round().await
+        } else {
+            0
         };
 
         // Store signature by round
@@ -352,8 +362,8 @@ impl SigningNode {
                 .or_insert_with(HashMap::new);
             round_signatures.insert(self.id.clone(), ecdsa_signature.clone());
             info!(
-                "💾 [SIGNING] Node {} stored signature for round {}",
-                self.id, round
+                "💾 [SIGNING] Node {} stored signature for {} round {}",
+                self.id, self.chain_handler.chain_type(), round
             );
         }
 
@@ -524,9 +534,14 @@ impl SigningNode {
 
         let round_to_handle = {
             let final_nodes = self.final_nodes_by_round.read().await;
+            let current_round = if let Some(vrf_service) = &self.vrf_service {
+                vrf_service.get_current_round().await
+            } else {
+                0
+            };
             let mut found_round = None;
             for (round, final_node_id) in final_nodes.iter() {
-                if final_node_id == &self.id && self.curr_round == *round {
+                if final_node_id == &self.id && current_round == *round {
                     found_round = Some(*round);
                     break;
                 }
@@ -1121,35 +1136,47 @@ impl SigningNode {
     }
 
     /// Get VRF public key for this node
-    pub fn get_vrf_public_key(&self) -> Option<String> {
-        self.vrf_selector
-            .as_ref()
-            .map(|vrf| vrf.get_public_key_hex())
+    pub async fn get_vrf_public_key(&self) -> Option<String> {
+        if let Some(vrf_service) = &self.vrf_service {
+            Some(vrf_service.get_public_key_hex().await)
+        } else {
+            None
+        }
     }
 
     /// Get VRF public key as bytes
-    pub fn get_vrf_public_key_bytes(&self) -> Option<Vec<u8>> {
-        self.vrf_selector.as_ref().map(|vrf| vrf.get_public_key())
+    pub async fn get_vrf_public_key_bytes(&self) -> Option<Vec<u8>> {
+        if let Some(vrf_service) = &self.vrf_service {
+            Some(vrf_service.get_public_key().await)
+        } else {
+            None
+        }
     }
 
-    /// Generate VRF proof for a given input
-    pub fn generate_vrf_proof(&self, input: &[u8]) -> Option<crate::vrf::VrfOutput> {
-        self.vrf_selector
-            .as_ref()
-            .map(|vrf| vrf.generate_vrf_proof(input))
+    /// Check if this node is selected for MPC in a specific round
+    pub async fn is_selected_for_round(&self, round: u64) -> bool {
+        if let Some(vrf_service) = &self.vrf_service {
+            vrf_service.is_node_selected(round).await
+        } else {
+            false
+        }
     }
 
-    /// Verify VRF proof from another node
-    pub fn verify_vrf_proof(
-        &self,
-        node_public_key: &[u8],
-        input: &[u8],
-        output: &crate::vrf::VrfOutput,
-    ) -> bool {
-        self.vrf_selector
-            .as_ref()
-            .map(|vrf| vrf.verify_vrf_proof(node_public_key, input, output))
-            .unwrap_or(false)
+    /// Set the chain handler for this signing node
+    pub fn set_chain_handler(&mut self, chain_handler: Arc<dyn ChainHandler>) {
+        self.chain_handler = chain_handler;
+        info!("🔗 [SIGNING] Node {} switched to {} chain handler", 
+              self.id, self.chain_handler.chain_type());
+    }
+
+    /// Get the current chain type
+    pub fn get_chain_type(&self) -> &'static str {
+        self.chain_handler.chain_type()
+    }
+
+    /// Get chain parameters
+    pub fn get_chain_params(&self) -> std::collections::HashMap<String, String> {
+        self.chain_handler.get_chain_params()
     }
 
     /// Get available nodes as PeerIds derived from stored public keys
@@ -1174,25 +1201,27 @@ impl SigningNode {
     pub fn handle_vrf_selected_nodes_broadcast(
         &mut self,
         total_nodes: usize,
-        broadcast: crate::vrf::VrfSelectedNodesBroadcast,
+        broadcast: VrfSelectedNodesBroadcast,
     ) {
-        if let Some(vrf_selector) = &mut self.vrf_selector {
-            // Extract round before moving broadcast
+        if let Some(vrf_service) = &self.vrf_service {
             let round = broadcast.round;
-            let min_selections = total_nodes; // Or set to your desired threshold
+            let min_selections = total_nodes;
 
-            vrf_selector.handle_selected_nodes_broadcast(broadcast, total_nodes);
+            // Use async task to handle VRF broadcast
+            let vrf_service_clone = vrf_service.clone();
+            let mut signing_node_clone = self.clone();
+            
+            tokio::spawn(async move {
+                // Handle VRF broadcast via service
+                vrf_service_clone.handle_vrf_broadcast(broadcast, total_nodes).await;
 
-            // Check if consensus should be triggered after receiving this broadcast
-            if vrf_selector.can_start_consensus(round, min_selections) {
-                info!(
-                    "🎯 [VRF] Enough selections collected for round {}, triggering consensus check",
-                    round
-                );
+                // Check if consensus should be triggered after receiving this broadcast
+                if vrf_service_clone.can_start_consensus(round, min_selections).await {
+                    info!(
+                        "🎯 [VRF] Enough selections collected for round {}, triggering consensus check",
+                        round
+                    );
 
-                // Spawn a task to trigger consensus asynchronously
-                let mut signing_node_clone = self.clone();
-                tokio::spawn(async move {
                     if let Err(e) = signing_node_clone
                         .check_and_trigger_consensus(round, min_selections)
                         .await
@@ -1202,8 +1231,8 @@ impl SigningNode {
                             round, e
                         );
                     }
-                });
-            }
+                }
+            });
         }
     }
 
@@ -1213,7 +1242,7 @@ impl SigningNode {
         round: u64,
         min_selections: usize,
     ) -> Result<Option<ConsensusResult>> {
-        if self.can_start_consensus(round, min_selections) {
+        if self.can_start_consensus(round, min_selections).await {
             info!(
                 "🎯 [CONSENSUS] Consensus ready for round {}, starting...",
                 round
@@ -1232,11 +1261,11 @@ impl SigningNode {
         // Get the node ID first to avoid borrow checker issues
         let own_node_id = SerializablePeerId(PeerId::from_str(&self.id)?);
 
-        if let (Some(vrf_selector), Some(consensus_node)) =
-            (&self.vrf_selector, &mut self.consensus_node)
+        if let (Some(vrf_service), Some(consensus_node)) =
+            (&self.vrf_service, &mut self.consensus_node)
         {
             // Get all selected nodes with frequencies for this round
-            let all_selected_nodes = vrf_selector.get_all_selected_nodes_with_frequencies(round);
+            let all_selected_nodes = vrf_service.get_all_selected_nodes_with_frequencies(round).await;
 
             if all_selected_nodes.is_empty() {
                 info!(
@@ -1341,9 +1370,9 @@ impl SigningNode {
     }
 
     /// Check if consensus can be started for a round
-    pub fn can_start_consensus(&self, round: u64, min_selections: usize) -> bool {
-        if let Some(vrf_selector) = &self.vrf_selector {
-            vrf_selector.can_start_consensus(round, min_selections)
+    pub async fn can_start_consensus(&self, round: u64, min_selections: usize) -> bool {
+        if let Some(vrf_service) = &self.vrf_service {
+            vrf_service.can_start_consensus(round, min_selections).await
         } else {
             false
         }
@@ -1702,10 +1731,10 @@ impl SigningNode {
                     final_node_id, round
                 );
                 info!(
-                    "🔍 [SIGNING] Current round: {} Next round: {}",
-                    self.curr_round, self.next_round
+                    "🔍 [SIGNING] Checking if this node is the final node for round {}",
+                    round
                 );
-                if final_node_id == &self.id && *round == self.curr_round {
+                if final_node_id == &self.id {
                     Some(*round)
                 } else {
                     None

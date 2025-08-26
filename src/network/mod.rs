@@ -21,7 +21,7 @@ use tokio::task::JoinHandle;
 use tokio::sync::{mpsc};
 use tracing::{info, warn};
 
-use crate::{commands::CommandProcessor, node_management};
+use crate::commands::CommandProcessor;
 use crate::consensus::ConsensusNode;
 use crate::dkg::DKGNode;
 use crate::node_management::NodeMembership;
@@ -227,7 +227,7 @@ impl NetworkLayer {
         let mut bootstrap_timer = tokio::time::interval(Duration::from_secs(300));
         let mut discovery_timer = tokio::time::interval(Duration::from_secs(300));
         let mut dkg_status_timer = tokio::time::interval(Duration::from_secs(300));
-        let mut peerlist_logger = tokio::time::interval(Duration::from_secs(10));
+        let mut peerlist_logger = tokio::time::interval(Duration::from_secs(300));
 
 
         swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
@@ -1029,7 +1029,7 @@ impl NetworkLayer {
                 if let Some(signing_node) = &mut self.signing_node {
                     let selector_node_id = broadcast_msg.selector_node_id.clone();
                     let round = broadcast_msg.round;
-                    signing_node.handle_vrf_selected_nodes_broadcast(self.node_manager.get_total_nodes(),broadcast_msg);
+                    signing_node.handle_vrf_selected_nodes_broadcast(self.node_manager.get_total_nodes(), broadcast_msg);
                     info!(
                         "💾 [VRF] Stored VRF selected nodes from node {} for round {}",
                         selector_node_id.0, round
@@ -1087,35 +1087,104 @@ impl NetworkLayer {
             GossipsubMessage::DepositIntent { intent, intent_id } => {
                 info!("📝 Received deposit intent via gossipsub: {:?} (ID: {})", intent, intent_id);
                 
-                // Create transaction from deposit intent
-                let transaction = crate::utils::transaction::create_transaction_from_deposit_intent(&intent);
-                info!("📝 [GOSSIPSUB] Created transaction from deposit intent: {:?}", transaction);
+                // Determine chain type and set appropriate chain handler
+                let target_chain = &intent.target_chain.to_lowercase();
+                info!("🔗 [GOSSIPSUB] Processing deposit intent for chain: {}", target_chain);
                 
                 if let Some(signing_node) = &mut self.signing_node {
-                    // Set available nodes from node manager before signing
-                    let available_nodes: Vec<PeerId> = self.node_manager.get_active_nodes().into_iter().collect();
-                    signing_node.set_available_nodes(available_nodes);
-                    
-                    // Generate BLS key pair if not already done
-                    if let Some(dkg_node) = &self.dkg_node {
-                        if let Some(secret_share) = dkg_node.get_final_secret_share().await {
-                            info!("🔐 [GOSSIPSUB] Got secret share from DKG for deposit intent: {:?}", secret_share);
-                            signing_node.set_private_key_from_bls_scalar(secret_share);
-                        } else {
-                            info!("⏳ [GOSSIPSUB] DKG not completed yet, no secret share available for deposit intent");
-                            return Ok(());
+                    // Set appropriate chain handler based on target chain
+                    if crate::utils::transaction::is_evm_chain(target_chain) {
+                        // Get chain ID for EVM chains
+                        if let Some(chain_id) = crate::utils::transaction::get_chain_id_from_name(target_chain) {
+                            let chain_handler = crate::chain::ChainHandlerFactory::create_ethereum_handler(chain_id);
+                            signing_node.set_chain_handler(chain_handler.into());
+                            info!("🔗 [GOSSIPSUB] Set Ethereum chain handler for chain: {} (ID: {})", target_chain, chain_id);
                         }
+                    } else if target_chain == "bitcoin" || target_chain == "btc" {
+                        let chain_handler = crate::chain::ChainHandlerFactory::create_bitcoin_handler("mainnet".to_string());
+                        signing_node.set_chain_handler(chain_handler.into());
+                        info!("🔗 [GOSSIPSUB] Set Bitcoin chain handler");
                     } else {
-                        info!("❌ [GOSSIPSUB] DKG node not available for deposit intent");
-                        return Ok(());
+                        warn!("❌ [GOSSIPSUB] Unsupported chain: {}, using default Ethereum handler", target_chain);
                     }
                     
-                    // Convert transaction to bytes for signing using RLP encoding
-                    let tx_bytes = crate::utils::transaction::create_transaction_for_signing(&transaction);
-                    info!("🔐 [GOSSIPSUB] Starting signing process for deposit intent: {:?}", hex::encode(tx_bytes.clone()));
+                    // Create chain-specific transaction
+                    match crate::utils::transaction::create_chain_transaction_from_deposit_intent(&intent) {
+                        Ok(chain_transaction) => {
+                            info!("📝 [GOSSIPSUB] Created {} transaction from deposit intent", signing_node.get_chain_type());
+                            
+                            // Set available nodes from node manager before signing
+                            let available_nodes: Vec<PeerId> = self.node_manager.get_active_nodes().into_iter().collect();
+                            signing_node.set_available_nodes(available_nodes);
+                            
+                            // Generate BLS key pair if not already done
+                            if let Some(dkg_node) = &self.dkg_node {
+                                if let Some(secret_share) = dkg_node.get_final_secret_share().await {
+                                    info!("🔐 [GOSSIPSUB] Got secret share from DKG for deposit intent: {:?}", secret_share);
+                                    signing_node.set_private_key_from_bls_scalar(secret_share);
+                                } else {
+                                    info!("⏳ [GOSSIPSUB] DKG not completed yet, no secret share available for deposit intent");
+                                    return Ok(());
+                                }
+                            } else {
+                                info!("❌ [GOSSIPSUB] DKG node not available for deposit intent");
+                                return Ok(());
+                            }
+                            
+                            // Create transaction bytes using the chain handler
+                            let tx_bytes = match chain_transaction {
+                                crate::chain::ChainTransaction::Ethereum(ref eth_tx) => {
+                                    // Use the existing Ethereum transaction creation logic
+                                    let dummy_tx = crate::rpc_server::DummyTransaction {
+                                        to: eth_tx.to.clone(),
+                                        value: eth_tx.value.clone(),
+                                        nonce: eth_tx.nonce,
+                                        gas_limit: eth_tx.gas_limit,
+                                        gas_price: eth_tx.gas_price.clone(),
+                                        chain_id: eth_tx.chain_id,
+                                    };
+                                    crate::utils::transaction::create_transaction_for_signing(&dummy_tx)
+                                }
+                                crate::chain::ChainTransaction::Bitcoin(_) => {
+                                    // For Bitcoin, we'd implement Bitcoin transaction serialization here
+                                    // For now, return empty bytes as placeholder
+                                    warn!("Bitcoin transaction serialization not yet implemented");
+                                    vec![]
+                                }
+                            };
+                            info!("🔐 [GOSSIPSUB] Starting {} signing process for deposit intent: 0x{}", 
+                                  signing_node.get_chain_type(), hex::encode(tx_bytes.clone()));
 
-                    signing_node.sign_message(tx_bytes, &transaction).await?;
-                    info!("✅ [GOSSIPSUB] Deposit intent signing completed");
+                            // For backward compatibility, create a DummyTransaction for EVM chains
+                            let dummy_tx = if let crate::chain::ChainTransaction::Ethereum(ref eth_tx) = chain_transaction {
+                                crate::rpc_server::DummyTransaction {
+                                    to: eth_tx.to.clone(),
+                                    value: eth_tx.value.clone(),
+                                    nonce: eth_tx.nonce,
+                                    gas_limit: eth_tx.gas_limit,
+                                    gas_price: eth_tx.gas_price.clone(),
+                                    chain_id: eth_tx.chain_id,
+                                }
+                            } else {
+                                // For non-EVM chains, create a placeholder DummyTransaction
+                                crate::rpc_server::DummyTransaction {
+                                    to: format!("{}_TRANSACTION", target_chain.to_uppercase()),
+                                    value: "0".to_string(),
+                                    nonce: 0,
+                                    gas_limit: 0,
+                                    gas_price: "0".to_string(),
+                                    chain_id: 0,
+                                }
+                            };
+
+                            signing_node.sign_message(tx_bytes, &dummy_tx).await?;
+                            info!("✅ [GOSSIPSUB] {} deposit intent signing completed", signing_node.get_chain_type());
+                        }
+                        Err(e) => {
+                            warn!("❌ [GOSSIPSUB] Failed to create chain transaction: {}", e);
+                            return Ok(());
+                        }
+                    }
                 } else {
                     warn!("❌ [GOSSIPSUB] Signing node not available for deposit intent processing");
                 }
@@ -1255,34 +1324,103 @@ impl NetworkLayer {
             ChannelMessage::DepositIntent { intent, intent_id } => {
                 info!("📝 [NETWORK] Processing deposit intent locally: {:?}", intent);
                 
-                // Create transaction from deposit intent
-                let transaction = crate::utils::transaction::create_transaction_from_deposit_intent(&intent);
-                info!("📝 [NETWORK] Created transaction from deposit intent: {:?}", transaction);
+                // Determine chain type and set appropriate chain handler
+                let target_chain = &intent.target_chain.to_lowercase();
+                info!("🔗 [LOCAL] Processing deposit intent for chain: {}", target_chain);
                 
                 // Process locally first (this node will sign it)
                 if let Some(signing_node) = &mut self.signing_node {
-                    // Set available nodes from node manager before signing
-                    let available_nodes: Vec<PeerId> = self.node_manager.get_active_nodes().into_iter().collect();
-                    signing_node.set_available_nodes(available_nodes);
-                    
-                    if let Some(dkg_node) = &self.dkg_node {
-                        if let Some(secret_share) = dkg_node.get_final_secret_share().await {
-                            info!("🔐 [NETWORK] Got secret share from DKG for deposit intent: {:?}", secret_share);
-                            signing_node.set_private_key_from_bls_scalar(secret_share);
-                        } else {
-                            info!("⏳ [NETWORK] DKG not completed yet, no secret share available for deposit intent");
-                            return Ok(());
+                    // Set appropriate chain handler based on target chain
+                    if crate::utils::transaction::is_evm_chain(target_chain) {
+                        if let Some(chain_id) = crate::utils::transaction::get_chain_id_from_name(target_chain) {
+                            let chain_handler = crate::chain::ChainHandlerFactory::create_ethereum_handler(chain_id);
+                            signing_node.set_chain_handler(chain_handler.into());
+                            info!("🔗 [LOCAL] Set Ethereum chain handler for chain: {} (ID: {})", target_chain, chain_id);
                         }
+                    } else if target_chain == "bitcoin" || target_chain == "btc" {
+                        let chain_handler = crate::chain::ChainHandlerFactory::create_bitcoin_handler("mainnet".to_string());
+                        signing_node.set_chain_handler(chain_handler.into());
+                        info!("🔗 [LOCAL] Set Bitcoin chain handler");
                     } else {
-                        info!("❌ [NETWORK] DKG node not available for deposit intent");
-                        return Ok(());
+                        warn!("❌ [LOCAL] Unsupported chain: {}, using default Ethereum handler", target_chain);
                     }
                     
-                    // Convert transaction to bytes for signing using RLP encoding
-                    let tx_bytes = crate::utils::transaction::create_transaction_for_signing(&transaction);
-                    info!("🔐 [LOCAL] Starting local signing process for deposit intent: {:?}", hex::encode(tx_bytes.clone()));
-                    signing_node.sign_message(tx_bytes, &transaction).await?;
-                    info!("✅ [LOCAL] Local deposit intent signing completed");
+                    // Create chain-specific transaction
+                    match crate::utils::transaction::create_chain_transaction_from_deposit_intent(&intent) {
+                        Ok(chain_transaction) => {
+                            info!("📝 [LOCAL] Created {} transaction from deposit intent", signing_node.get_chain_type());
+                            
+                            // Set available nodes from node manager before signing
+                            let available_nodes: Vec<PeerId> = self.node_manager.get_active_nodes().into_iter().collect();
+                            signing_node.set_available_nodes(available_nodes);
+                            
+                            if let Some(dkg_node) = &self.dkg_node {
+                                if let Some(secret_share) = dkg_node.get_final_secret_share().await {
+                                    info!("🔐 [LOCAL] Got secret share from DKG for deposit intent: {:?}", secret_share);
+                                    signing_node.set_private_key_from_bls_scalar(secret_share);
+                                } else {
+                                    info!("⏳ [LOCAL] DKG not completed yet, no secret share available for deposit intent");
+                                    return Ok(());
+                                }
+                            } else {
+                                info!("❌ [LOCAL] DKG node not available for deposit intent");
+                                return Ok(());
+                            }
+                            
+                            // Create transaction bytes using the chain handler
+                            let tx_bytes = match chain_transaction {
+                                crate::chain::ChainTransaction::Ethereum(ref eth_tx) => {
+                                    // Use the existing Ethereum transaction creation logic
+                                    let dummy_tx = crate::rpc_server::DummyTransaction {
+                                        to: eth_tx.to.clone(),
+                                        value: eth_tx.value.clone(),
+                                        nonce: eth_tx.nonce,
+                                        gas_limit: eth_tx.gas_limit,
+                                        gas_price: eth_tx.gas_price.clone(),
+                                        chain_id: eth_tx.chain_id,
+                                    };
+                                    crate::utils::transaction::create_transaction_for_signing(&dummy_tx)
+                                }
+                                crate::chain::ChainTransaction::Bitcoin(_) => {
+                                    // For Bitcoin, we'd implement Bitcoin transaction serialization here
+                                    // For now, return empty bytes as placeholder
+                                    warn!("Bitcoin transaction serialization not yet implemented");
+                                    vec![]
+                                }
+                            };
+                            info!("🔐 [LOCAL] Starting {} signing process for deposit intent: 0x{}", 
+                                  signing_node.get_chain_type(), hex::encode(tx_bytes.clone()));
+                            
+                            // For backward compatibility, create a DummyTransaction for EVM chains
+                            let dummy_tx = if let crate::chain::ChainTransaction::Ethereum(ref eth_tx) = chain_transaction {
+                                crate::rpc_server::DummyTransaction {
+                                    to: eth_tx.to.clone(),
+                                    value: eth_tx.value.clone(),
+                                    nonce: eth_tx.nonce,
+                                    gas_limit: eth_tx.gas_limit,
+                                    gas_price: eth_tx.gas_price.clone(),
+                                    chain_id: eth_tx.chain_id,
+                                }
+                            } else {
+                                // For non-EVM chains, create a placeholder DummyTransaction
+                                crate::rpc_server::DummyTransaction {
+                                    to: format!("{}_TRANSACTION", target_chain.to_uppercase()),
+                                    value: "0".to_string(),
+                                    nonce: 0,
+                                    gas_limit: 0,
+                                    gas_price: "0".to_string(),
+                                    chain_id: 0,
+                                }
+                            };
+                            
+                            signing_node.sign_message(tx_bytes, &dummy_tx).await?;
+                            info!("✅ [LOCAL] {} deposit intent signing completed", signing_node.get_chain_type());
+                        }
+                        Err(e) => {
+                            warn!("❌ [LOCAL] Failed to create chain transaction: {}", e);
+                            return Ok(());
+                        }
+                    }
                 } else {
                     warn!("❌ [LOCAL] Signing node not available for deposit intent processing");
                 }
