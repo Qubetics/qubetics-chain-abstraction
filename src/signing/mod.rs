@@ -73,6 +73,7 @@ pub enum SigningMessage {
     ECDSASignature {
         from: String,
         signature: ECDSASignature,
+        round: u64,
         timestamp: u128,
     },
     SignedMessage {
@@ -355,6 +356,7 @@ impl SigningNode {
             SigningMessage::ECDSASignature {
                 from: self.id.clone(),
                 signature: ecdsa_signature,
+                round,
                 timestamp: SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis(),
             },
         ))?;
@@ -457,11 +459,12 @@ impl SigningNode {
             SigningMessage::ECDSASignature {
                 from,
                 signature,
+                round,
                 timestamp: _timestamp,
             } => {
                 info!(
-                    "📥 [SIGNING] Node {} received ECDSA signature from {}",
-                    self.id, from
+                    "📥 [SIGNING] Node {} received ECDSA signature from {} for round {}",
+                    self.id, from, round
                 );
                 self.handle_ecdsa_signature(from, signature).await?;
             }
@@ -1425,6 +1428,7 @@ impl SigningNode {
                 let signature_msg = SigningMessage::ECDSASignature {
                     from: self.id.clone(),
                     signature: our_signature.clone(),
+                    round,
                     timestamp: SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis(),
                 };
 
@@ -1774,39 +1778,33 @@ impl SigningNode {
         &mut self,
         from: String,
         signature: ECDSASignature,
+        round: u64,
     ) -> Result<()> {
         info!(
             "📥 [SIGNING] Final node {} received signature from {} on signatures-to-final-node topic",
             self.id, from
         );
 
-        // Get the round from the final nodes by round map
-        let round_to_handle = {
+        // Check if this node is the final node for the specific round
+        let is_final_node = {
             let final_nodes = self.final_nodes_by_round.read().await;
-            final_nodes.iter().find_map(|(round, final_node_id)| {
-                info!(
-                    "🔍 [SIGNING] Checking final node {} for round {}",
-                    final_node_id, round
-                );
-                info!(
-                    "🔍 [SIGNING] Checking if this node is the final node for round {}",
-                    round
-                );
-                if final_node_id == &self.id {
-                    Some(*round)
-                } else {
-                    None
-                }
-            })
+            final_nodes.get(&round).map(|node_id| node_id == &self.id).unwrap_or(false)
         };
 
-        if let Some(round) = round_to_handle {
+        if is_final_node {
+            info!(
+                "✅ [SIGNING] This node {} is the final node for round {}",
+                self.id, round
+            );
             return self
                 .handle_signature_for_round(from, signature, round)
                 .await;
         }
 
-        info!("⚠️ [SIGNING] Received signature but this node is not the final node for any round");
+        info!(
+            "⚠️ [SIGNING] Received signature for round {} but this node is not the final node for that round",
+            round
+        );
         Ok(())
     }
 

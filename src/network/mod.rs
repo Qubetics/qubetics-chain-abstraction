@@ -958,9 +958,9 @@ impl NetworkLayer {
                     if message.topic.to_string() == "signatures-to-final-node" {
                         info!("🎯 [NETWORK] Processing signature for final node topic");
                         match signing_msg {
-                            crate::signing::SigningMessage::ECDSASignature { from, signature ,timestamp:_timestamp} => {
-                                info!("📤 [NETWORK] Routing ECDSA signature to final node handler from: {}", from);
-                                signing_node.handle_signature_to_final_node(from, signature).await?;
+                            crate::signing::SigningMessage::ECDSASignature { from, signature, round, timestamp:_timestamp} => {
+                                info!("📤 [NETWORK] Routing ECDSA signature to final node handler from: {} for round: {}", from, round);
+                                signing_node.handle_signature_to_final_node(from, signature, round).await?;
                             }
                             _ => {
                                 info!("📤 [NETWORK] Routing other signing message to normal handler");
@@ -972,8 +972,8 @@ impl NetworkLayer {
                         info!("📤 [NETWORK] Processing normal signing message on topic: {}", message.topic);
                         // Handle normal signing messages
                         match &signing_msg {
-                            crate::signing::SigningMessage::ECDSASignature { from, signature ,timestamp:_timestamp} => {
-                                info!("📥 [NETWORK] Received ECDSA signature from {} on topic {}", from, message.topic);
+                            crate::signing::SigningMessage::ECDSASignature { from, signature, round, timestamp:_timestamp} => {
+                                info!("📥 [NETWORK] Received ECDSA signature from {} for round {} on topic {}", from, round, message.topic);
                                 info!("🔍 [NETWORK] Signature details - signer_id: {}", 
                                       signature.signer_id);
                             }
