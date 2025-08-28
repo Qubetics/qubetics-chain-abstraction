@@ -9,6 +9,7 @@ use tracing::info;
 #[tokio::main]
 async fn main() -> Result<()> {
     // Initialize logging
+    // TODO: make this configurable
     tracing_subscriber::fmt::init();
 
     info!("Starting Consensus Demo");
