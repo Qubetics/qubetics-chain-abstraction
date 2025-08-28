@@ -587,7 +587,7 @@ impl SigningNode {
                 );
 
                 // Prepare signatures for aggregation
-                let signatures_to_aggregate: Vec<RecoverableSignature> = {
+                let (signatures_to_aggregate, peer_to_dkg_index): (Vec<RecoverableSignature>, Vec<(String, u32)>) = {
                     let signatures_by_round = self.signatures_by_round.read().await;
                     let round_signatures = signatures_by_round.get(&round).unwrap();
 
@@ -622,18 +622,19 @@ impl SigningNode {
                     // Create a mapping of peer ID to index for debugging
                     let mut peer_to_index_map = Vec::new();
 
+                    // Calculate DKG indices for the signatures first
+                    let peer_to_dkg_index: Vec<(String, u32)> = sorted_signatures
+                        .iter()
+                        .map(|(signer_id, _)| {
+                            let dkg_index = self.calculate_dkg_index_for_peer_sync(signer_id);
+                            peer_to_index_map.push(((*signer_id).clone(), dkg_index));
+                            ((*signer_id).clone(), dkg_index)
+                        })
+                        .collect();
+
                     let sigs_to_aggregate: Vec<RecoverableSignature> = sorted_signatures
                         .into_iter()
-                        .enumerate()
-                        .map(|(i, (signer_id, ecdsa_sig))| {
-                            let index = i + 1;
-                            peer_to_index_map.push((signer_id.clone(), index));
-
-                            info!(
-                                "🔍 [SIGNING] Peer {} assigned index {} for aggregation",
-                                signer_id, index
-                            );
-
+                        .map(|(signer_id, ecdsa_sig)| {
                             RecoverableSignature::from_compact(
                                 &ecdsa_sig.signature,
                                 RecoveryId::from_i32(ecdsa_sig.recovery_id as i32)?,
@@ -652,7 +653,7 @@ impl SigningNode {
                             .collect::<Vec<_>>()
                     );
 
-                    sigs_to_aggregate
+                    (sigs_to_aggregate, peer_to_dkg_index)
                 };
                 info!(
                     "🔍 [SIGNING] Node {} preparing to aggregate {} signatures for round {} signatures are {:?}",
@@ -666,7 +667,7 @@ impl SigningNode {
                 );
 
                 // Aggregate signatures
-                match self.aggregate_signatures(signatures_to_aggregate).await {
+                match self.aggregate_signatures(signatures_to_aggregate, peer_to_dkg_index).await {
                     Ok(aggregated_signature) => {
                         info!(
                             "🎉 [SIGNING] Signature aggregation successful for round {}!",
@@ -715,6 +716,7 @@ impl SigningNode {
     pub async fn aggregate_signatures(
         &self,
         signatures: Vec<RecoverableSignature>,
+        peer_to_dkg_index: Vec<(String, u32)>,
     ) -> Result<RecoverableSignature> {
         let n_shares = signatures.len();
         if n_shares < self.threshold {
@@ -740,19 +742,26 @@ impl SigningNode {
             signatures.len()
         );
 
-        // TODO: This should use the same deterministic index calculation as DKG
-        // Currently using positional index which may not match DKG indices
+        // Log the DKG indices provided for aggregation
+        info!(
+            "🧮 [SIGNING] peer_to_dkg_index used for aggregation: {:?}",
+            peer_to_dkg_index
+                .iter()
+                .map(|(p, i)| format!("{}->{}", p, i))
+                .collect::<Vec<_>>()
+        );
+
+        // Use DKG indices for signature aggregation
         let s_shares: Vec<(u32, Vec<u8>)> = signatures
             .into_iter()
-            .enumerate()
-            .map(|(i, sig)| {
+            .zip(peer_to_dkg_index.iter())
+            .map(|(sig, (peer_id, dkg_index))| {
                 let (_recid, compact) = sig.serialize_compact();
-                let index = (i + 1) as u32;
                 info!(
-                    "🔍 [SIGNING] Signature {} assigned positional index: {}",
-                    i, index
+                    "🔍 [SIGNING] Peer {} using DKG index: {} for aggregation",
+                    peer_id, dkg_index
                 );
-                (index, compact[32..64].to_vec())
+                (*dkg_index, compact[32..64].to_vec())
             })
             .collect();
 
@@ -1637,20 +1646,85 @@ impl SigningNode {
                 .as_ref()
                 .map(|nodes| nodes.len())
                 .unwrap_or(0);
-            if signatures_vec.len() >= total_nodes && total_nodes > 0 {
-                // Mark this round as aggregated to prevent future aggregations
+            // Check if this round has already been aggregated
+            {
+                let aggregated_rounds = self.aggregated_rounds.read().await;
+                if aggregated_rounds.contains(&round) {
+                    info!(
+                        "⏭️ [SIGNING] Round {} already aggregated, skipping",
+                        round
+                    );
+                    return Ok(());
+                }
+            }
+
+            if signatures_vec.len() >= self.threshold {
+                // Mark this round as aggregated BEFORE processing to prevent race conditions
                 {
                     let mut aggregated_rounds = self.aggregated_rounds.write().await;
                     aggregated_rounds.insert(round);
                 }
 
                 info!(
-                    "✅ [SIGNING] All nodes participated! {} signatures collected for round {} (total_nodes: {}), starting aggregation",
-                    signatures_vec.len(), round, total_nodes
+                    "✅ [SIGNING] Threshold reached! {} signatures collected for round {} (threshold: {}), starting aggregation",
+                    signatures_vec.len(), round, self.threshold
+                );
+
+                // Take only threshold number of signatures for aggregation
+                let threshold_signatures = if signatures_vec.len() > self.threshold {
+                    let mut sigs = signatures_vec;
+                    sigs.truncate(self.threshold);
+                    sigs
+                } else {
+                    signatures_vec
+                };
+
+                info!(
+                    "🔢 [SIGNING] Using {} signatures for aggregation (threshold: {})",
+                    threshold_signatures.len(),
+                    self.threshold
+                );
+
+                // Calculate DKG indices for the selected signatures
+                let peer_to_dkg_index: Vec<(String, u32)> = {
+                    // Get the peer IDs in the same order as threshold_signatures
+                    let signatures_by_round = self.signatures_by_round.read().await;
+                    if let Some(round_signatures) = signatures_by_round.get(&round) {
+                        let mut sorted_signatures: Vec<_> = round_signatures.iter().collect();
+                        sorted_signatures.sort_by(|a, b| a.0.cmp(b.0));
+                        let sorted_peer_ids: Vec<String> = sorted_signatures
+                            .iter()
+                            .take(self.threshold)
+                            .map(|(id, _)| (*id).clone())
+                            .collect();
+                        info!(
+                            "🧩 [SIGNING] Selected peers (PeerId sorted) for this aggregation: {:?}",
+                            sorted_peer_ids
+                        );
+                        
+                        // Calculate DKG indices for each peer
+                        let mut dkg_indices = Vec::new();
+                        for peer_id in &sorted_peer_ids {
+                            let dkg_index = self.calculate_dkg_index_for_peer(peer_id).await;
+                            dkg_indices.push((peer_id.clone(), dkg_index));
+                        }
+                        
+                        dkg_indices
+                    } else {
+                        Vec::new()
+                    }
+                };
+
+                info!(
+                    "🔢 [SIGNING] DKG indices for threshold signatures: {:?}",
+                    peer_to_dkg_index
+                        .iter()
+                        .map(|(peer, idx)| format!("{}->{}", peer, idx))
+                        .collect::<Vec<_>>()
                 );
 
                 // Perform aggregation
-                match self.aggregate_signatures(signatures_vec).await {
+                match self.aggregate_signatures(threshold_signatures, peer_to_dkg_index).await {
                     Ok(aggregated_signature) => {
                         info!(
                             "🎉 [SIGNING] Signature aggregation completed successfully for round {}!",
@@ -1684,7 +1758,7 @@ impl SigningNode {
                 }
             } else {
                 info!(
-                    "⏳ [SIGNING] Waiting for more signatures for round {}: {}/{}",
+                    "⏳ [SIGNING] Waiting for more signatures for round {}: {}/{} (threshold)",
                     round,
                     signatures_vec.len(),
                     self.threshold
@@ -1861,6 +1935,44 @@ impl SigningNode {
             Some(format!("0x{}", hex::encode(secret_key_bytes)))
         } else {
             None
+        }
+    }
+
+    /// Calculate DKG index for a specific peer ID
+    pub async fn calculate_dkg_index_for_peer(&self, peer_id: &str) -> u32 {
+        if let Some(nodes) = &self.available_nodes {
+            let mut ids: Vec<String> = nodes.iter().map(|p| p.to_string()).collect();
+            ids.sort();
+            
+            let index = ids.iter()
+                .position(|id| id == peer_id)
+                .map(|i| i + 1)
+                .unwrap_or(1);
+            
+            info!("🔢 [SIGNING] Calculated DKG index {} for peer {}", index, peer_id);
+            index as u32
+        } else {
+            info!("⚠️ [SIGNING] No available nodes, using default DKG index 1 for peer {}", peer_id);
+            1
+        }
+    }
+
+    /// Calculate DKG index for a specific peer ID (synchronous version)
+    pub fn calculate_dkg_index_for_peer_sync(&self, peer_id: &str) -> u32 {
+        if let Some(nodes) = &self.available_nodes {
+            let mut ids: Vec<String> = nodes.iter().map(|p| p.to_string()).collect();
+            ids.sort();
+            
+            let index = ids.iter()
+                .position(|id| id == peer_id)
+                .map(|i| i + 1)
+                .unwrap_or(1);
+            
+            info!("🔢 [SIGNING] Calculated DKG index {} for peer {} (sync)", index, peer_id);
+            index as u32
+        } else {
+            info!("⚠️ [SIGNING] No available nodes, using default DKG index 1 for peer {} (sync)", peer_id);
+            1
         }
     }
 }
