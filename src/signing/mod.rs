@@ -909,7 +909,7 @@ impl SigningNode {
         let mut rng = thread_rng();
         let mut selected_shares = shares.to_vec();
         selected_shares.shuffle(&mut rng);
-        // selected_shares.truncate(self.threshold);
+        selected_shares.truncate(self.threshold);
 
 
         println!(
