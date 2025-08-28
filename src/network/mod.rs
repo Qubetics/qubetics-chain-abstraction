@@ -1049,7 +1049,7 @@ impl NetworkLayer {
                     if let Some(dkg_node) = &self.dkg_node {
                         if let Some(secret_share) = dkg_node.get_final_secret_share().await {
                             info!("🔐 [NETWORK] Got secret share from DKG: {:?}", secret_share);
-                            signing_node.set_private_key_from_bls_scalar(secret_share);
+                            signing_node.set_private_key_from_scalar(secret_share);
                         } else {
                             info!("⏳ [NETWORK] DKG not completed yet, no secret share available");
                             return Ok(());
@@ -1121,7 +1121,7 @@ impl NetworkLayer {
                             if let Some(dkg_node) = &self.dkg_node {
                                 if let Some(secret_share) = dkg_node.get_final_secret_share().await {
                                     info!("🔐 [GOSSIPSUB] Got secret share from DKG for deposit intent: {:?}", secret_share);
-                                    signing_node.set_private_key_from_bls_scalar(secret_share);
+                                    signing_node.set_private_key_from_scalar(secret_share);
                                 } else {
                                     info!("⏳ [GOSSIPSUB] DKG not completed yet, no secret share available for deposit intent");
                                     return Ok(());
@@ -1285,7 +1285,7 @@ impl NetworkLayer {
                     if let Some(dkg_node) = &self.dkg_node {
                         if let Some(secret_share) = dkg_node.get_final_secret_share().await {
                             info!("🔐 [NETWORK] Got secret share from DKG: {:?}", secret_share);
-                            signing_node.set_private_key_from_bls_scalar(secret_share);
+                            signing_node.set_private_key_from_scalar(secret_share);
                         } else {
                             info!("⏳ [NETWORK] DKG not completed yet, no secret share available");
                             return Ok(());
@@ -1357,7 +1357,7 @@ impl NetworkLayer {
                             if let Some(dkg_node) = &self.dkg_node {
                                 if let Some(secret_share) = dkg_node.get_final_secret_share().await {
                                     info!("🔐 [LOCAL] Got secret share from DKG for deposit intent: {:?}", secret_share);
-                                    signing_node.set_private_key_from_bls_scalar(secret_share);
+                                    signing_node.set_private_key_from_scalar(secret_share);
                                 } else {
                                     info!("⏳ [LOCAL] DKG not completed yet, no secret share available for deposit intent");
                                     return Ok(());

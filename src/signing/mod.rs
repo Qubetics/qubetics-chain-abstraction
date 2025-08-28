@@ -1,7 +1,7 @@
 use crate::rpc_server::DummyTransaction;
 use anyhow::anyhow;
 use anyhow::Result;
-use bls12_381::Scalar;
+use k256::Scalar;
 // use ethereum_types::U64; // Removed unused import
 use hex;
 use libp2p::PeerId;
@@ -178,16 +178,15 @@ impl SigningNode {
         info!("🔐 [SIGNING] Node {} private key set", self.id);
     }
 
-    pub fn set_private_key_from_bls_scalar(&mut self, bls_scalar: Scalar) {
-        // Convert BLS scalar to secp256k1 secret key using proper field conversion
-        let scalar_bytes = bls_scalar.to_bytes();
-        let secret_key = Self::derive_secp_secret(&bls_scalar);
+    pub fn set_private_key_from_scalar(&mut self, scalar: Scalar) {
+        let scalar_bytes = scalar.to_bytes();
+        let secret_key = Self::derive_secp_secret(&scalar);
 
         info!(
-            "🔐 [SIGNING] Node {} private key set from BLS scalar",
+            "🔐 [SIGNING] Node {} private key set from scalar",
             self.id
         );
-        info!("🔐 [SIGNING] BLS scalar bytes: {:?}", scalar_bytes);
+        info!("🔐 [SIGNING] scalar bytes: {:?}", scalar_bytes);
         // info!("🔐 [SIGNING] Derived key bytes: {:?}", final_key_bytes);
         info!(
             "🔐 OOKK [SIGNING] Final secret key: {:?}",
@@ -202,29 +201,14 @@ impl SigningNode {
         self.public_key = Some(public_key);
 
         info!(
-            "🔐 [SIGNING] Node {} private key set from BLS scalar with proper Ethereum conversion",
+            "🔐 [SIGNING] Node {} private key set from scalar with proper Ethereum conversion",
             self.id
         );
     }
 
-    pub fn derive_secp_secret(bls_scalar: &Scalar) -> SecretKey {
-        // 1) Get the 32‑byte LE from BLS
-        let mut le = bls_scalar.to_bytes();
-
-        // 2) Reverse to big‑endian so that from_bytes_be() sees the right integer
-        le.reverse();
-
-        // 4) Pad or trim to 32 bytes BE
-        let mut be32 = [0u8; 32];
-        let trimmed = if le.len() > 32 {
-            &le[le.len() - 32..]
-        } else {
-            &le
-        };
-        be32[32 - trimmed.len()..].copy_from_slice(trimmed);
-
-        // 5) Build the ECDSA SecretKey (expects BE)
-        SecretKey::from_slice(&be32).expect("valid secp256k1 scalar")
+    pub fn derive_secp_secret(scalar: &Scalar) -> SecretKey {
+        let be = scalar.to_bytes();
+        SecretKey::from_slice(be.as_slice()).expect("valid secp256k1 scalar")
     }
 
     pub fn add_public_key(&self, node_id: String, public_key: PublicKey) {
