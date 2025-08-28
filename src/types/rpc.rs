@@ -11,7 +11,7 @@ use tracing::info;
 use std::{io, pin::Pin, future::Future};
 use crate::dkg::DKGStatus;
 
-use super::{p2p::SerializablePeerId, PeerInfo, SerializableG1Affine, SerializableScalar};
+use super::{p2p::SerializablePeerId, PeerInfo, SerializablePoint, SerializableScalar};
 
 pub type MPCCodecRequest = <MPCCodec as libp2p::request_response::Codec>::Request;
 pub type MPCCodecResponse = <MPCCodec as libp2p::request_response::Codec>::Response;
@@ -41,12 +41,12 @@ pub enum RPCRequest {
         dealer_id: SerializablePeerId,
         receiver_id: SerializablePeerId,
         share: SerializableScalar,
-        commitments: Vec<SerializableG1Affine>,
+          commitments: Vec<SerializablePoint>,
     },
 
     BroadcastCommitments {
         dealer_id: SerializablePeerId,
-        commitments: Vec<SerializableG1Affine>,
+          commitments: Vec<SerializablePoint>,
     },
 
     SubmitComplaint {
@@ -77,14 +77,14 @@ pub enum RPCResponse {
     Verified,
     ShareAccepted,
     ComplaintAccepted,
-    FinishedADKG {
-        group_public_key: SerializableG1Affine,
-    },
+      FinishedADKG {
+          group_public_key: SerializablePoint,
+      },
     GotAVSSShare {
         dealer_id: SerializablePeerId,
         receiver_id: SerializablePeerId,
         share: SerializableScalar,
-        commitments: Vec<SerializableG1Affine>,
+          commitments: Vec<SerializablePoint>,
     }
 }
 

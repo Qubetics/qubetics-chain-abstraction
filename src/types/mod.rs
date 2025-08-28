@@ -1,8 +1,8 @@
 use libp2p::{Multiaddr, PeerId};
 use serde::{Deserialize, Serialize};
 
-mod bls;
-pub use bls::{SerializableG1Affine, SerializableScalar};
+mod secp;
+pub use secp::{SerializablePoint, SerializableScalar};
 
 pub mod dkg;
 pub mod p2p;

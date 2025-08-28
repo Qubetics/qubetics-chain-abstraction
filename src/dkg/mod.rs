@@ -1,6 +1,7 @@
 use crate::{utils, NodeMembership};
 use anyhow::Result;
-use bls12_381::{G1Affine, G1Projective, Scalar};
+use k256::{AffinePoint, ProjectivePoint, Scalar};
+use k256::elliptic_curve::group::Group;
 use ethers::core::k256::ecdsa::Error;
 use ff::Field;
 use rand::rngs::OsRng;
@@ -14,7 +15,7 @@ use tracing::info;
 
 use crate::types::dkg::MSG_TOPIC_DKG;
 use crate::types::{
-    ChannelMessage, GossipsubMessage, KeyShare, SerializableG1Affine, SerializableScalar,
+    ChannelMessage, GossipsubMessage, KeyShare, SerializablePoint, SerializableScalar,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -22,7 +23,7 @@ pub enum DKGMessage {
     ShareDistribution {
         from: String,
         shares: Vec<KeyShare>,
-        commitments: Vec<SerializableG1Affine>,
+        commitments: Vec<SerializablePoint>,
     },
     ShareValidation {
         from: String,
@@ -40,7 +41,7 @@ pub enum DKGStatus {
     Completed,
 }
 
-pub type DKGCompletionCallback = Box<dyn Fn(Scalar, G1Projective) + Send + Sync>;
+pub type DKGCompletionCallback = Box<dyn Fn(Scalar, ProjectivePoint) + Send + Sync>;
 
 pub struct DKGNode {
     id: String,
@@ -48,11 +49,11 @@ pub struct DKGNode {
     threshold: usize,
     total_nodes: usize,
     shares: RwLock<HashMap<String, KeyShare>>,
-    commitments: RwLock<HashMap<String, Vec<G1Affine>>>,
+    commitments: RwLock<HashMap<String, Vec<AffinePoint>>>,
     validations: RwLock<HashMap<String, Vec<bool>>>,
     message_tx: mpsc::Sender<ChannelMessage>,
     final_secret_share: RwLock<Option<Scalar>>,
-    final_public_key: RwLock<Option<G1Projective>>,
+    final_public_key: RwLock<Option<ProjectivePoint>>,
     completion_callback: Option<DKGCompletionCallback>,
     round: u64,
 }
@@ -153,7 +154,7 @@ impl DKGNode {
             coefficients.len(),
             coefficients
                 .iter()
-                .map(|c| c.to_string())
+                .map(|c| format!("{:?}", c))
                 .collect::<Vec<String>>()
         );
         Ok(coefficients)
@@ -181,12 +182,16 @@ impl DKGNode {
         info!("🔍 [DKG] Generating shares for each index:");
         for i in 1..=self.total_nodes {
             let x = Scalar::from(i as u64);
-            let mut y = Scalar::zero();
+            let mut y = Scalar::ZERO;
 
-            info!("🔍 [DKG] Calculating share for index {} (x = {})", i, x);
+            info!("🔍 [DKG] Calculating share for index {} (x = {:?})", i, x);
             
             for (j, coeff) in polynomial.iter().enumerate() {
-                let term = *coeff * x.pow(&[j as u64, 0, 0, 0]);
+                let mut x_pow = Scalar::ONE;
+                for _ in 0..j {
+                    x_pow *= x;
+                }
+                let term = *coeff * x_pow;
                 y += term;
                 info!("🔍 [DKG]   Term {}: coeff[{}] * x^{} = {:?} * {:?}^{} = {:?}", 
                       j, j, j, coeff, x, j, term);
@@ -211,10 +216,10 @@ impl DKGNode {
         Ok(shares)
     }
 
-    fn generate_commitments(&self, polynomial: &[Scalar]) -> Result<Vec<SerializableG1Affine>> {
-        let commitments: Vec<SerializableG1Affine> = polynomial
+    fn generate_commitments(&self, polynomial: &[Scalar]) -> Result<Vec<SerializablePoint>> {
+        let commitments: Vec<SerializablePoint> = polynomial
             .iter()
-            .map(|coeff| SerializableG1Affine(G1Affine::from(G1Projective::generator() * coeff)))
+            .map(|coeff| SerializablePoint(AffinePoint::from(ProjectivePoint::GENERATOR * *coeff)))
             .collect();
 
         info!("🔐 Generated {} commitments", commitments.len());
@@ -224,7 +229,7 @@ impl DKGNode {
     async fn broadcast_shares(
         &self,
         shares: Vec<KeyShare>,
-        commitments: Vec<SerializableG1Affine>,
+        commitments: Vec<SerializablePoint>,
     ) -> Result<()> {
         let dkg_msg = DKGMessage::ShareDistribution {
             from: self.id.clone(),
@@ -267,10 +272,10 @@ impl DKGNode {
         &mut self,
         from: String,
         shares: Vec<KeyShare>,
-        commitments: Vec<SerializableG1Affine>,
+        commitments: Vec<SerializablePoint>,
         node_manager: Box<dyn NodeMembership>,
     ) -> Result<()> {
-        let raw_commitments: Vec<G1Affine> = commitments.into_iter().map(|c| c.0).collect();
+        let raw_commitments: Vec<AffinePoint> = commitments.into_iter().map(|c| c.0).collect();
 
         let node_index = self.get_node_index(node_manager.clone());
 
@@ -403,7 +408,7 @@ impl DKGNode {
         &self,
         share: &SerializableScalar,
         share_index: usize,
-        commitments: &[SerializableG1Affine],
+        commitments: &[SerializablePoint],
     ) -> bool {
         if commitments.is_empty() {
             return false;
@@ -414,13 +419,17 @@ impl DKGNode {
         info!("🔍 [DKG] Using x = Scalar::from({}) for verification", share_index);
 
         let x = Scalar::from(share_index as u64);
-        let mut expected = G1Projective::identity();
+        let mut expected = ProjectivePoint::IDENTITY;
 
         for (j, commitment) in commitments.iter().enumerate() {
-            expected += G1Projective::from(commitment.0) * x.pow(&[j as u64, 0, 0, 0]);
+            let mut x_pow = Scalar::ONE;
+            for _ in 0..j {
+                x_pow *= x;
+            }
+            expected += ProjectivePoint::from(commitment.0) * x_pow;
         }
 
-        let actual = G1Projective::generator() * share.0;
+        let actual = ProjectivePoint::GENERATOR * share.0;
         let is_valid = expected == actual;
         
         info!("🔍 [DKG] Share verification result: {}", if is_valid { "✅ PASS" } else { "❌ FAIL" });
@@ -429,7 +438,7 @@ impl DKGNode {
         is_valid
     }
 
-    pub fn verify_shares(&self, shares: &[KeyShare], commitments: &[G1Affine]) -> bool {
+    pub fn verify_shares(&self, shares: &[KeyShare], commitments: &[AffinePoint]) -> bool {
         if shares.is_empty() || commitments.is_empty() {
             return false;
         }
@@ -442,13 +451,17 @@ impl DKGNode {
             info!("🔍 [DKG] Using x = Scalar::from({}) for verification", share.index);
             
             let x = Scalar::from(share.index as u64);
-            let mut expected = G1Projective::identity();
+            let mut expected = ProjectivePoint::IDENTITY;
 
             for (j, commitment) in commitments.iter().enumerate() {
-                expected += G1Projective::from(*commitment) * x.pow(&[j as u64, 0, 0, 0]);
+                let mut x_pow = Scalar::ONE;
+                for _ in 0..j {
+                    x_pow *= x;
+                }
+                expected += ProjectivePoint::from(*commitment) * x_pow;
             }
 
-            let actual = G1Projective::generator() * share.value.0;
+            let actual = ProjectivePoint::GENERATOR * share.value.0;
             if expected != actual {
                 info!("❌ Share verification failed for index {}", share.index);
                 info!("🔍 [DKG] === END MULTIPLE SHARES VERIFICATION (FAILED) ===");
@@ -545,7 +558,7 @@ impl DKGNode {
         );
 
         // Calculate final secret share (sum of all shares meant for THIS node's index)
-        let mut final_secret_share = Scalar::zero();
+        let mut final_secret_share = Scalar::ZERO;
         info!("🔐 [DKG] Calculating final secret share...");
         info!("📊 [DKG] Total shares received: {}", shares.len());
 
@@ -590,7 +603,7 @@ impl DKGNode {
 
         info!("📊 [DKG] Final calculation summary: used {} shares, skipped {} shares", used_shares, skipped_shares);
 
-        let first_comms: Vec<G1Affine> = commitments
+        let first_comms: Vec<AffinePoint> = commitments
             .values()
             .filter_map(|comms| comms.get(0).cloned())
             .collect();
@@ -598,18 +611,18 @@ impl DKGNode {
         // 2. Print out the array of first commitments
         println!("First commitments array: {:#?}", first_comms);
         // Calculate final public key (sum of all commitment constant terms)
-        let mut final_public_key = G1Projective::identity();
+        let mut final_public_key = ProjectivePoint::IDENTITY;
         let mut keys: Vec<_> = commitments.keys().collect();
         keys.sort();
         // for comms in commitments.values() {
         //     if !comms.is_empty() {
-        //         final_public_key += G1Projective::from(comms[0]);
+        //         final_public_key += ProjectivePoint::from(comms[0]);
         //     }
         // }
         for key in keys {
             if let Some(comms) = commitments.get(key) {
                 if !comms.is_empty() {
-                    final_public_key += G1Projective::from(comms[0]);
+                    final_public_key += ProjectivePoint::from(comms[0]);
                 }
             }
         }
@@ -658,7 +671,7 @@ impl DKGNode {
         self.final_secret_share.read().await.clone()
     }
 
-    pub async fn get_final_public_key(&self) -> Option<G1Projective> {
+    pub async fn get_final_public_key(&self) -> Option<ProjectivePoint> {
         self.final_public_key.read().await.clone()
     }
 
