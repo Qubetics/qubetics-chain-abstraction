@@ -6,10 +6,8 @@ pub mod consensus;
 #[allow(non_snake_case)]
 #[allow(unused_variables)]
 pub mod dkg;
-pub mod frost;
 pub mod network;
 pub mod node_management;
-pub mod protos;
 pub mod rpc_server;
 pub mod signing;
 pub mod types;
