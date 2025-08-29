@@ -3693,6 +3693,7 @@ dependencies = [
  "prost 0.13.5",
  "rand 0.8.5",
  "reqwest",
+ "ripemd",
  "rlp",
  "secp256k1 0.28.2",
  "serde",

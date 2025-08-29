@@ -1050,6 +1050,12 @@ impl NetworkLayer {
                         if let Some(secret_share) = dkg_node.get_final_secret_share().await {
                             info!("🔐 [NETWORK] Got secret share from DKG: {:?}", secret_share);
                             signing_node.set_private_key_from_scalar(secret_share);
+                            
+                            // ✅ Also set the DKG group public key
+                            if let Some(group_key) = dkg_node.get_final_public_key().await {
+                                signing_node.set_group_public_key(group_key);
+                                info!("🔑 [NETWORK] Set DKG group public key for signing node");
+                            }
                         } else {
                             info!("⏳ [NETWORK] DKG not completed yet, no secret share available");
                             return Ok(());
@@ -1101,7 +1107,23 @@ impl NetworkLayer {
                             info!("🔗 [GOSSIPSUB] Set Ethereum chain handler for chain: {} (ID: {})", target_chain, chain_id);
                         }
                     } else if target_chain == "bitcoin" || target_chain == "btc" {
-                        let chain_handler = crate::chain::ChainHandlerFactory::create_bitcoin_handler("testnet".to_string());
+                        let mut chain_handler = crate::chain::ChainHandlerFactory::create_bitcoin_handler("testnet".to_string());
+                        
+                        // ✅ CRITICAL: Set group public key in Bitcoin chain handler
+                        if let Some(dkg_node) = &self.dkg_node {
+                            if let Some(group_key) = dkg_node.get_final_public_key().await {
+                                let affine_point = group_key.to_affine();
+                                let encoded_point = k256::EncodedPoint::from(affine_point);
+                                let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
+                                
+                                // Cast to BitcoinChainHandler to set group key
+                                if let Some(btc_handler) = chain_handler.as_any_mut().downcast_mut::<crate::chain::BitcoinChainHandler>() {
+                                    btc_handler.set_group_public_key(compressed_bytes);
+                                    info!("🔑 [GOSSIPSUB] Set group public key in Bitcoin chain handler");
+                                }
+                            }
+                        }
+                        
                         signing_node.set_chain_handler(chain_handler.into());
                         info!("🔗 [GOSSIPSUB] Set Bitcoin chain handler");
                     } else {
@@ -1130,6 +1152,12 @@ impl NetworkLayer {
                                 if let Some(secret_share) = dkg_node.get_final_secret_share().await {
                                     info!("🔐 [GOSSIPSUB] Got secret share from DKG for deposit intent: {:?}", secret_share);
                                     signing_node.set_private_key_from_scalar(secret_share);
+                                    
+                                    // ✅ Also set the DKG group public key
+                                    if let Some(group_key) = dkg_node.get_final_public_key().await {
+                                        signing_node.set_group_public_key(group_key);
+                                        info!("🔑 [GOSSIPSUB] Set DKG group public key for deposit intent signing");
+                                    }
                                 } else {
                                     info!("⏳ [GOSSIPSUB] DKG not completed yet, no secret share available for deposit intent");
                                     return Ok(());
@@ -1150,9 +1178,9 @@ impl NetworkLayer {
 
                             // Handle Bitcoin and EVM differently - DummyTransaction is only for EVM!
                             match chain_transaction {
-                                crate::chain::ChainTransaction::Bitcoin(_) => {
-                                    // For Bitcoin, use direct signing with tx_bytes (no DummyTransaction needed)
-                                    signing_node.sign_bitcoin_transaction(tx_bytes.clone()).await?;
+                                crate::chain::ChainTransaction::Bitcoin(ref btc_tx) => {
+                                    // For Bitcoin, use direct signing with tx_bytes and original transaction
+                                    signing_node.sign_bitcoin_transaction(tx_bytes.clone(), Some(btc_tx.clone())).await?;
                                 }
                                 crate::chain::ChainTransaction::Ethereum(ref eth_tx) => {
                                     // For EVM chains, use your proven DummyTransaction logic
@@ -1275,6 +1303,12 @@ impl NetworkLayer {
                         if let Some(secret_share) = dkg_node.get_final_secret_share().await {
                             info!("🔐 [NETWORK] Got secret share from DKG: {:?}", secret_share);
                             signing_node.set_private_key_from_scalar(secret_share);
+                            
+                            // ✅ Also set the DKG group public key
+                            if let Some(group_key) = dkg_node.get_final_public_key().await {
+                                signing_node.set_group_public_key(group_key);
+                                info!("🔑 [NETWORK] Set DKG group public key for local transaction");
+                            }
                         } else {
                             info!("⏳ [NETWORK] DKG not completed yet, no secret share available");
                             return Ok(());
@@ -1327,7 +1361,23 @@ impl NetworkLayer {
                             info!("🔗 [LOCAL] Set Ethereum chain handler for chain: {} (ID: {})", target_chain, chain_id);
                         }
                     } else if target_chain == "bitcoin" || target_chain == "btc" {
-                        let chain_handler = crate::chain::ChainHandlerFactory::create_bitcoin_handler("mainnet".to_string());
+                        let mut chain_handler = crate::chain::ChainHandlerFactory::create_bitcoin_handler("mainnet".to_string());
+                        
+                        // ✅ CRITICAL: Set group public key in Bitcoin chain handler
+                        if let Some(dkg_node) = &self.dkg_node {
+                            if let Some(group_key) = dkg_node.get_final_public_key().await {
+                                let affine_point = group_key.to_affine();
+                                let encoded_point = k256::EncodedPoint::from(affine_point);
+                                let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
+                                
+                                // Cast to BitcoinChainHandler to set group key
+                                if let Some(btc_handler) = chain_handler.as_any_mut().downcast_mut::<crate::chain::BitcoinChainHandler>() {
+                                    btc_handler.set_group_public_key(compressed_bytes);
+                                    info!("🔑 [LOCAL] Set group public key in Bitcoin chain handler");
+                                }
+                            }
+                        }
+                        
                         signing_node.set_chain_handler(chain_handler.into());
                         info!("🔗 [LOCAL] Set Bitcoin chain handler");
                     } else {
@@ -1355,6 +1405,12 @@ impl NetworkLayer {
                                 if let Some(secret_share) = dkg_node.get_final_secret_share().await {
                                     info!("🔐 [LOCAL] Got secret share from DKG for deposit intent: {:?}", secret_share);
                                     signing_node.set_private_key_from_scalar(secret_share);
+                                    
+                                    // ✅ Also set the DKG group public key
+                                    if let Some(group_key) = dkg_node.get_final_public_key().await {
+                                        signing_node.set_group_public_key(group_key);
+                                        info!("🔑 [LOCAL] Set DKG group public key for local deposit intent");
+                                    }
                                 } else {
                                     info!("⏳ [LOCAL] DKG not completed yet, no secret share available for deposit intent");
                                     return Ok(());
@@ -1375,9 +1431,9 @@ impl NetworkLayer {
                             
                             // Handle Bitcoin and EVM differently - DummyTransaction is only for EVM!
                             match chain_transaction {
-                                crate::chain::ChainTransaction::Bitcoin(_) => {
-                                    // For Bitcoin, use direct signing with tx_bytes (no DummyTransaction needed)
-                                    signing_node.sign_bitcoin_transaction(tx_bytes.clone()).await?;
+                                crate::chain::ChainTransaction::Bitcoin(ref btc_tx) => {
+                                    // For Bitcoin, use direct signing with tx_bytes and original transaction
+                                    signing_node.sign_bitcoin_transaction(tx_bytes.clone(), Some(btc_tx.clone())).await?;
                                 }
                                 crate::chain::ChainTransaction::Ethereum(ref eth_tx) => {
                                     // For EVM chains, use your proven DummyTransaction logic

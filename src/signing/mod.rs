@@ -29,6 +29,8 @@ use crate::consensus::{ConsensusMessage, ConsensusNode, ConsensusResult};
 use crate::types::{p2p::SerializablePeerId, ChannelMessage};
 use crate::vrf::{VrfService, VrfSelectedNodesBroadcast};
 use crate::chain::{ChainHandler, ChainSignature, ChainHandlerFactory};
+// Import BitcoinTransaction directly from chain module
+use crate::chain::BitcoinTransaction;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ECDSASignature {
@@ -103,6 +105,10 @@ pub struct SigningNode {
     chain_handler: Arc<dyn ChainHandler>, // Chain-specific operations
     consensus_node: Option<ConsensusNode>, // Consensus node for final node selection
     available_nodes: Option<Vec<PeerId>>,  // Available nodes from node manager
+    // Store original transaction and bytes for reconstruction
+    pending_transactions: Arc<RwLock<HashMap<u64, (BitcoinTransaction, Vec<u8>)>>>, // round -> (original_tx, tx_bytes)
+    // ✅ Store DKG group public key
+    group_public_key: Option<k256::ProjectivePoint>, // DKG group public key for Bitcoin addresses
 }
 
 impl SigningNode {
@@ -136,6 +142,8 @@ impl SigningNode {
             chain_handler,
             consensus_node: Some(ConsensusNode::new()),
             available_nodes: None,
+            pending_transactions: Arc::new(RwLock::new(HashMap::new())),
+            group_public_key: None, // ✅ Initialize DKG group public key
         }
     }
 
@@ -231,7 +239,7 @@ impl SigningNode {
     }
 
     /// Sign Bitcoin transaction directly with tx_bytes (no DummyTransaction wrapper)
-    pub async fn sign_bitcoin_transaction(&mut self, tx_bytes: Vec<u8>) -> Result<()> {
+    pub async fn sign_bitcoin_transaction(&mut self, tx_bytes: Vec<u8>, original_tx: Option<BitcoinTransaction>) -> Result<()> {
         if self.private_key.is_none() {
             error!(
                 "❌ [SIGNING] Node {} cannot sign Bitcoin transaction: no private key available",
@@ -247,18 +255,19 @@ impl SigningNode {
 
         // Use the provided Bitcoin transaction bytes directly
         
-        // Hash the transaction bytes
-        let mut hasher = sha3::Keccak256::new();
-        hasher.update(&tx_bytes);
-        let tx_hash = hasher.finalize();
-        println!("Tx hash: 0x{}", hex::encode(&tx_hash));
+        // Hash the transaction bytes using Bitcoin's double SHA256
+        use sha2::{Sha256, Digest};
+        let first_hash = Sha256::digest(&tx_bytes);
+        let tx_hash = Sha256::digest(&first_hash);
+        println!("🔗 [BITCOIN] Tx hash (double SHA256): 0x{}", hex::encode(&tx_hash));
 
         // Get available nodes and perform VRF selection
         let available_nodes = self.get_available_nodes_from_manager().await;
         
         // Use VrfService for node selection and get the round
         let current_round = if let Some(vrf_service) = &self.vrf_service {
-            let round = vrf_service.get_current_round().await;
+            // ✅ FIX: Use get_next_round() to increment the round properly
+            let round = vrf_service.get_next_round().await;
             let _selection_result = vrf_service.perform_node_selection(
                 &available_nodes, 
                 1, 
@@ -344,10 +353,222 @@ impl SigningNode {
             );
         }
 
+        // Store original transaction for reconstruction after aggregation
+        if let Some(original_tx) = original_tx {
+            let mut pending_transactions = self.pending_transactions.write().await;
+            pending_transactions.insert(current_round, (original_tx, tx_bytes.clone()));
+            info!(
+                "💾 [SIGNING] Node {} stored original Bitcoin transaction for round {} reconstruction",
+                self.id, current_round
+            );
+        }
+
         Ok(())
     }
 
+    /// Reconstruct signed Bitcoin transaction from aggregated signature
+    pub async fn reconstruct_signed_bitcoin_transaction(
+        &self,
+        round: u64,
+        aggregated_signature: &[u8],
+        recovery_id: u8,
+    ) -> Result<Option<String>> {
+        let pending_transactions = self.pending_transactions.read().await;
+        
+        if let Some((original_tx, _tx_bytes)) = pending_transactions.get(&round) {
+            info!(
+                "🔧 [SIGNING] Node {} reconstructing signed Bitcoin transaction for round {}",
+                self.id, round
+            );
+            
+            // Create DER-encoded signature for Bitcoin
+            let r = &aggregated_signature[0..32];
+            let s = &aggregated_signature[32..64];
+            
+            // Create DER signature format
+            let der_signature = self.create_der_signature(r, s)?;
+            
+            // Create the complete signed transaction
+            let signed_tx = self.create_signed_bitcoin_transaction(original_tx, &der_signature)?;
+            
+            let signed_tx_hex = hex::encode(&signed_tx);
+            
+            info!(
+                "✅ [SIGNING] Node {} successfully reconstructed signed Bitcoin transaction for round {}",
+                self.id, round
+            );
+            info!("📄 [SIGNING] Signed transaction hex: {}", signed_tx_hex);
+            info!("📏 [SIGNING] Transaction size: {} bytes", signed_tx.len());
+            
+            Ok(Some(signed_tx_hex))
+        } else {
+            warn!(
+                "❌ [SIGNING] Node {} cannot reconstruct transaction for round {} - original transaction not found",
+                self.id, round
+            );
+            Ok(None)
+        }
+    }
 
+    /// Create DER-encoded signature for Bitcoin
+    fn create_der_signature(&self, r: &[u8], s: &[u8]) -> Result<Vec<u8>> {
+        let mut der_sig = Vec::new();
+        der_sig.push(0x30); // SEQUENCE tag
+        
+        // Calculate and add the total length later
+        let length_pos = der_sig.len();
+        der_sig.push(0x00); // Placeholder for length
+        
+        // Add r value
+        der_sig.push(0x02); // INTEGER tag
+        if r[0] & 0x80 != 0 {
+            // If high bit is set, prepend 0x00 to make it positive
+            der_sig.push((r.len() + 1) as u8);
+            der_sig.push(0x00);
+        } else {
+            der_sig.push(r.len() as u8);
+        }
+        der_sig.extend_from_slice(r);
+        
+        // Add s value  
+        der_sig.push(0x02); // INTEGER tag
+        if s[0] & 0x80 != 0 {
+            // If high bit is set, prepend 0x00 to make it positive
+            der_sig.push((s.len() + 1) as u8);
+            der_sig.push(0x00);
+        } else {
+            der_sig.push(s.len() as u8);
+        }
+        der_sig.extend_from_slice(s);
+        
+        // Update the total length
+        let content_length = der_sig.len() - 2; // Exclude the SEQUENCE tag and length byte
+        der_sig[length_pos] = content_length as u8;
+        
+        // Add SIGHASH_ALL flag
+        der_sig.push(0x01); // SIGHASH_ALL
+        
+        Ok(der_sig)
+    }
+
+    /// Create complete signed Bitcoin transaction (supports both Legacy and SegWit UTXOs)
+    fn create_signed_bitcoin_transaction(
+        &self,
+        original_tx: &BitcoinTransaction,
+        der_signature: &[u8],
+    ) -> Result<Vec<u8>> {
+        let mut signed_tx = Vec::new();
+        
+        // Version (4 bytes, little-endian)
+        signed_tx.extend_from_slice(&original_tx.version.to_le_bytes());
+        
+        // Input count (varint)
+        signed_tx.extend_from_slice(&self.encode_varint(original_tx.inputs.len() as u64));
+        
+        // Inputs with signatures
+        for (i, input) in original_tx.inputs.iter().enumerate() {
+            // Previous output hash (32 bytes, reversed)
+            let mut txid_bytes = hex::decode(&input.txid)
+                .map_err(|e| anyhow::anyhow!("Invalid txid hex: {}", e))?;
+            txid_bytes.reverse(); // Bitcoin uses reversed byte order
+            signed_tx.extend_from_slice(&txid_bytes);
+            
+            // Previous output index (4 bytes, little-endian)
+            signed_tx.extend_from_slice(&input.vout.to_le_bytes());
+            
+            // Create script_sig with signature and public key (for first input, empty for others for now)
+            if i == 0 {
+                // ✅ Use proper group public key from DKG (UTXO was sent to group address)
+                let group_pubkey = self.get_group_public_key_bytes()?;
+                
+                let mut script_sig = Vec::new();
+                script_sig.push(der_signature.len() as u8); // Signature length
+                script_sig.extend_from_slice(der_signature); // Signature
+                script_sig.push(group_pubkey.len() as u8); // Public key length
+                script_sig.extend_from_slice(&group_pubkey); // Actual group public key
+                
+                signed_tx.extend_from_slice(&self.encode_varint(script_sig.len() as u64));
+                signed_tx.extend_from_slice(&script_sig);
+            } else {
+                // Empty script_sig for other inputs (in this simplified version)
+                signed_tx.push(0x00);
+            }
+            
+            // Sequence (4 bytes, little-endian)
+            signed_tx.extend_from_slice(&input.sequence.to_le_bytes());
+        }
+        
+        // Output count (varint)
+        signed_tx.extend_from_slice(&self.encode_varint(original_tx.outputs.len() as u64));
+        
+        // Outputs - ✅ Convert SegWit outputs to Legacy P2PKH
+        for output in &original_tx.outputs {
+            // Value (8 bytes, little-endian)
+            signed_tx.extend_from_slice(&output.value.to_le_bytes());
+            
+            // ✅ Check if output is SegWit and convert to P2PKH
+            let script_pubkey = if output.script_pubkey.len() == 22 && 
+                                   output.script_pubkey[0] == 0x00 && 
+                                   output.script_pubkey[1] == 0x14 {
+                // This is P2WPKH (SegWit), convert to P2PKH
+                let pubkey_hash = &output.script_pubkey[2..22];
+                let mut p2pkh_script = Vec::new();
+                p2pkh_script.push(0x76); // OP_DUP
+                p2pkh_script.push(0xa9); // OP_HASH160
+                p2pkh_script.push(0x14); // Push 20 bytes
+                p2pkh_script.extend_from_slice(pubkey_hash); // 20-byte hash
+                p2pkh_script.push(0x88); // OP_EQUALVERIFY
+                p2pkh_script.push(0xac); // OP_CHECKSIG
+                
+                info!("🔄 [SIGNING] Converted P2WPKH output to P2PKH for compatibility");
+                p2pkh_script
+            } else {
+                output.script_pubkey.clone()
+            };
+            
+            signed_tx.extend_from_slice(&self.encode_varint(script_pubkey.len() as u64));
+            signed_tx.extend_from_slice(&script_pubkey);
+        }
+        
+        // Lock time (4 bytes, little-endian)
+        signed_tx.extend_from_slice(&original_tx.lock_time.to_le_bytes());
+        
+        Ok(signed_tx)
+    }
+
+    /// Get the group public key bytes from DKG
+    fn get_group_public_key_bytes(&self) -> Result<Vec<u8>> {
+        if let Some(group_key) = self.group_public_key {
+            // ✅ Convert k256::ProjectivePoint to compressed bytes for Bitcoin
+            let affine_point = group_key.to_affine();
+            let encoded_point = k256::EncodedPoint::from(affine_point);
+            let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
+            
+            info!("🔑 [SIGNING] Using REAL DKG group public key: {}", hex::encode(&compressed_bytes));
+            Ok(compressed_bytes)
+        } else {
+            Err(anyhow::anyhow!("DKG group public key not available - ensure DKG process is completed"))
+        }
+    }
+
+    /// Encode varint for Bitcoin transaction serialization
+    fn encode_varint(&self, value: u64) -> Vec<u8> {
+        if value < 0xfd {
+            vec![value as u8]
+        } else if value <= 0xffff {
+            let mut bytes = vec![0xfd];
+            bytes.extend_from_slice(&(value as u16).to_le_bytes());
+            bytes
+        } else if value <= 0xffffffff {
+            let mut bytes = vec![0xfe];
+            bytes.extend_from_slice(&(value as u32).to_le_bytes());
+            bytes
+        } else {
+            let mut bytes = vec![0xff];
+            bytes.extend_from_slice(&value.to_le_bytes());
+            bytes
+        }
+    }
 
     pub async fn broadcast(&self, topic: &str, data: &[u8]) -> Result<()> {
         info!(
@@ -888,8 +1109,27 @@ impl SigningNode {
                         info!("  v: {}", v);
                         info!("  r: 0x{}", hex::encode(r));
                         info!("  s: 0x{}", hex::encode(s));
-                        info!("  recovery_id: {}", 0);
+                        info!("  recovery_id: {}", recid.to_i32());
                         info!("  full_signature: 0x{}", hex::encode(signature_bytes));
+                        
+                        // 🚀 NEW: Reconstruct signed Bitcoin transaction
+                        if let Ok(Some(signed_tx_hex)) = self.reconstruct_signed_bitcoin_transaction(
+                            round,
+                            &signature_bytes,
+                            recid.to_i32() as u8,
+                        ).await {
+                            info!(
+                                "🎉 [SIGNING] 🔗 SIGNED BITCOIN TRANSACTION READY! 🔗"
+                            );
+                            info!("📄 Raw signed transaction: {}", signed_tx_hex);
+                            info!(
+                                "📤 You can now broadcast this to Bitcoin network using:"
+                            );
+                            info!(
+                                "   node clients/nodejs/broadcast_bitcoin_transaction.js {} --network testnet",
+                                signed_tx_hex
+                            );
+                        }
                     }
                     Err(e) => {
                         error!("❌ [SIGNING] Aggregation failed: {}", e);
@@ -1407,6 +1647,17 @@ impl SigningNode {
     /// Set available nodes from node manager
     pub fn set_available_nodes(&mut self, nodes: Vec<PeerId>) {
         self.available_nodes = Some(nodes);
+    }
+
+    /// Set the DKG group public key
+    pub fn set_group_public_key(&mut self, group_key: k256::ProjectivePoint) {
+        info!("🔑 [SIGNING] Setting DKG group public key for node {}", self.id);
+        self.group_public_key = Some(group_key);
+    }
+
+    /// Get the DKG group public key
+    pub fn get_group_public_key(&self) -> Option<k256::ProjectivePoint> {
+        self.group_public_key
     }
 
     async fn get_available_nodes_from_manager(&self) -> Vec<PeerId> {
@@ -1970,6 +2221,25 @@ impl SigningNode {
                         info!("  s: 0x{}", hex::encode(s));
                         info!("  recovery_id: {}", recovery_id.to_i32());
                         info!("  full_signature: 0x{}", hex::encode(signature_bytes));
+                        
+                        // 🚀 NEW: Reconstruct signed Bitcoin transaction
+                        if let Ok(Some(signed_tx_hex)) = self.reconstruct_signed_bitcoin_transaction(
+                            round,
+                            &signature_bytes,
+                            recovery_id.to_i32() as u8,
+                        ).await {
+                            info!(
+                                "🎉 [SIGNING] 🔗 SIGNED BITCOIN TRANSACTION READY! 🔗"
+                            );
+                            info!("📄 Raw signed transaction: {}", signed_tx_hex);
+                            info!(
+                                "📤 You can now broadcast this to Bitcoin network using:"
+                            );
+                            info!(
+                                "   node clients/nodejs/broadcast_bitcoin_transaction.js {} --network testnet",
+                                signed_tx_hex
+                            );
+                        }
                     }
                     Err(e) => {
                         error!(

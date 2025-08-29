@@ -23,7 +23,8 @@ pub fn get_btc_address_from_group_key(pubkey: ProjectivePoint) -> String {
     let secp_pubkey = SecpPublicKey::from_slice(ep.as_bytes()).unwrap();
     let compressed = CompressedPublicKey::from_slice(&secp_pubkey.serialize()).unwrap();
 
-    let btc_address = bitcoin::Address::p2wpkh(&compressed, Network::Testnet);
+    // ✅ Use Legacy P2PKH instead of SegWit to match our transaction format
+    let btc_address = bitcoin::Address::p2pkh(&compressed, Network::Testnet);
     println!("Generated Bitcoin address: {:?}", btc_address);
     btc_address.to_string()
 }

@@ -399,7 +399,7 @@ fn get_default_gas_price_for_chain(chain_name: &str) -> String {
     }
 }
 
-/// Create a Bitcoin script_pubkey for an address
+/// Create a Bitcoin script_pubkey for an address (with SegWit detection)
 fn create_bitcoin_script_pubkey(address: &str) -> Result<Vec<u8>> {
     use bitcoin::{Address, Network};
     use std::str::FromStr;
@@ -423,7 +423,19 @@ fn create_bitcoin_script_pubkey(address: &str) -> Result<Vec<u8>> {
     
     // Convert to script_pubkey
     let script_pubkey = checked_address.script_pubkey();
-    Ok(script_pubkey.to_bytes())
+    let script_bytes = script_pubkey.to_bytes();
+    
+    // ✅ Log if this is a SegWit address for debugging
+    if script_bytes.len() == 22 && script_bytes[0] == 0x00 && script_bytes[1] == 0x14 {
+        tracing::warn!(
+            "⚠️ [TRANSACTION] Address {} is SegWit (P2WPKH) - transaction will be converted to legacy format during signing",
+            address
+        );
+    } else if script_bytes.len() == 25 && script_bytes[0] == 0x76 && script_bytes[24] == 0xac {
+        tracing::info!("✅ [TRANSACTION] Address {} is Legacy P2PKH - fully compatible", address);
+    }
+    
+    Ok(script_bytes)
 }
 
 pub fn create_transaction_for_signing(tx: &DummyTransaction) -> Vec<u8> {

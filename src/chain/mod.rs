@@ -22,6 +22,33 @@ fn encode_varint(value: u64) -> Vec<u8> {
         bytes
     }
 }
+
+/// Create P2PKH script_pubkey for Bitcoin signing using the actual DKG group public key
+/// This should match the script of the UTXO being spent
+fn create_p2pkh_script_for_signing(group_public_key: &[u8]) -> Result<Vec<u8>> {
+    use sha2::{Sha256, Digest};
+    use ripemd::Ripemd160;
+    
+    if group_public_key.len() != 33 {
+        return Err(anyhow::anyhow!("Invalid group public key length: expected 33 bytes, got {}", group_public_key.len()));
+    }
+    
+    // ✅ Create actual pubkey hash from DKG group public key
+    // Bitcoin address derivation: SHA256(pubkey) -> RIPEMD160(hash) = pubkey_hash
+    let sha256_hash = Sha256::digest(group_public_key);
+    let pubkey_hash = Ripemd160::new().chain_update(&sha256_hash).finalize();
+    
+    // Create standard P2PKH script: OP_DUP OP_HASH160 <20-byte-pubkey-hash> OP_EQUALVERIFY OP_CHECKSIG
+    let mut script = Vec::new();
+    script.push(0x76); // OP_DUP
+    script.push(0xa9); // OP_HASH160
+    script.push(0x14); // Push 20 bytes
+    script.extend_from_slice(&pubkey_hash);
+    script.push(0x88); // OP_EQUALVERIFY
+    script.push(0xac); // OP_CHECKSIG
+    
+    Ok(script)
+}
 // use crate::signing::{ECDSASignature, SignedMessage}; // Removed unused imports
 
 /// Generic transaction interface for different blockchain types
@@ -115,6 +142,9 @@ pub trait ChainHandler: Send + Sync {
     
     /// Get chain-specific parameters (e.g., chain ID for Ethereum)
     fn get_chain_params(&self) -> HashMap<String, String>;
+    
+    /// Downcast to concrete type for type-specific operations
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
 }
 
 /// Ethereum chain handler implementation
@@ -217,16 +247,29 @@ impl ChainHandler for EthereumChainHandler {
         params.insert("signature_type".to_string(), "ECDSA".to_string());
         params
     }
+    
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
 }
 
-/// Bitcoin chain handler implementation (placeholder for future development)
+/// Bitcoin chain handler implementation
 pub struct BitcoinChainHandler {
     network: String, // mainnet, testnet, regtest
+    group_public_key: Option<Vec<u8>>, // DKG group public key for signing
 }
 
 impl BitcoinChainHandler {
     pub fn new(network: String) -> Self {
-        Self { network }
+        Self { 
+            network,
+            group_public_key: None,
+        }
+    }
+    
+    /// Set the DKG group public key for signing
+    pub fn set_group_public_key(&mut self, group_key: Vec<u8>) {
+        self.group_public_key = Some(group_key);
     }
 }
 
@@ -248,8 +291,8 @@ impl ChainHandler for BitcoinChainHandler {
                 let input_count = btc_tx.inputs.len() as u64;
                 tx_bytes.extend_from_slice(&encode_varint(input_count));
                 
-                // Inputs
-                for input in &btc_tx.inputs {
+                // Inputs - ✅ FIXED: Bitcoin signing format
+                for (i, input) in btc_tx.inputs.iter().enumerate() {
                     // Previous transaction hash (32 bytes, reversed)
                     let txid_bytes = hex::decode(&input.txid)
                         .map_err(|e| anyhow::anyhow!("Invalid txid hex: {}", e))?;
@@ -264,10 +307,22 @@ impl ChainHandler for BitcoinChainHandler {
                     // Vout (4 bytes, little endian)
                     tx_bytes.extend_from_slice(&input.vout.to_le_bytes());
                     
-                    // Script length and script
-                    let script_len = input.script_sig.len() as u64;
-                    tx_bytes.extend_from_slice(&encode_varint(script_len));
-                    tx_bytes.extend_from_slice(&input.script_sig);
+                    // ✅ CRITICAL FIX: For Bitcoin signing format
+                    if i == 0 {
+                        // For the first input (the one we're signing), use P2PKH script_pubkey
+                        // This is the script from the UTXO being spent
+                        // Format: OP_DUP OP_HASH160 <20-byte-pubkey-hash> OP_EQUALVERIFY OP_CHECKSIG
+                        if let Some(ref group_key) = self.group_public_key {
+                            let script_pubkey = create_p2pkh_script_for_signing(group_key)?;
+                            tx_bytes.extend_from_slice(&encode_varint(script_pubkey.len() as u64));
+                            tx_bytes.extend_from_slice(&script_pubkey);
+                        } else {
+                            return Err(anyhow::anyhow!("Group public key not set for Bitcoin signing"));
+                        }
+                    } else {
+                        // Other inputs get empty script during signing
+                        tx_bytes.push(0x00);
+                    }
                     
                     // Sequence (4 bytes, little endian)
                     tx_bytes.extend_from_slice(&input.sequence.to_le_bytes());
@@ -290,6 +345,9 @@ impl ChainHandler for BitcoinChainHandler {
                 
                 // Lock time (4 bytes, little endian)
                 tx_bytes.extend_from_slice(&btc_tx.lock_time.to_le_bytes());
+                
+                // ✅ CRITICAL: Append SIGHASH_ALL for Bitcoin signing
+                tx_bytes.extend_from_slice(&[0x01, 0x00, 0x00, 0x00]); // SIGHASH_ALL = 1
                 
                 Ok(tx_bytes)
             }
@@ -406,6 +464,10 @@ impl ChainHandler for BitcoinChainHandler {
         params.insert("network".to_string(), self.network.clone());
         params.insert("signature_type".to_string(), "ECDSA".to_string());
         params
+    }
+    
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
     }
 }
 
