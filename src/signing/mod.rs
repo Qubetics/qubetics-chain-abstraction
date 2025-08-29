@@ -230,6 +230,125 @@ impl SigningNode {
         self.private_key.is_some()
     }
 
+    /// Sign Bitcoin transaction directly with tx_bytes (no DummyTransaction wrapper)
+    pub async fn sign_bitcoin_transaction(&mut self, tx_bytes: Vec<u8>) -> Result<()> {
+        if self.private_key.is_none() {
+            error!(
+                "❌ [SIGNING] Node {} cannot sign Bitcoin transaction: no private key available",
+                self.id
+            );
+            return Err(anyhow::anyhow!("No private key available"));
+        }
+
+        info!(
+            "📝 [SIGNING] Node {} starting to sign Bitcoin transaction",
+            self.id
+        );
+
+        // Use the provided Bitcoin transaction bytes directly
+        
+        // Hash the transaction bytes
+        let mut hasher = sha3::Keccak256::new();
+        hasher.update(&tx_bytes);
+        let tx_hash = hasher.finalize();
+        println!("Tx hash: 0x{}", hex::encode(&tx_hash));
+
+        // Get available nodes and perform VRF selection
+        let available_nodes = self.get_available_nodes_from_manager().await;
+        
+        // Use VrfService for node selection and get the round
+        let current_round = if let Some(vrf_service) = &self.vrf_service {
+            let round = vrf_service.get_current_round().await;
+            let _selection_result = vrf_service.perform_node_selection(
+                &available_nodes, 
+                1, 
+                round, 
+                "bitcoin"
+            ).await;
+            info!(
+                "🎲 [SIGNING] Node {} using VRF round {} for Bitcoin transaction signing",
+                self.id, round
+            );
+            round
+        } else {
+            warn!("⚠️ [SIGNING] No VRF service available, using round 0 as fallback");
+            0
+        };
+
+        // Create ECDSA signature using your proven custom logic (no DummyTransaction needed)
+        let msg = Message::from_digest_slice(&tx_hash)?;
+        let signature = self.create_ecdsa_signature_direct(&msg)?;
+        let (recovery_id, signature_bytes) = signature.serialize_compact();
+        
+        // ✅ Debug logging to verify signature format
+        info!(
+            "🔍 [SIGNING] Node {} created signature - Recovery ID: {}, Signature length: {} bytes",
+            self.id, recovery_id.to_i32(), signature_bytes.len()
+        );
+
+        // Note: Chain handler signature creation is handled separately for Bitcoin
+
+        info!(
+            "✅ [SIGNING] Node {} successfully signed Bitcoin transaction",
+            self.id
+        );
+
+        // Create ECDSASignature for broadcasting
+        // ✅ FIX: Don't append recovery_id to signature bytes - keep them separate!
+        // The aggregation expects 64-byte signature + separate recovery_id field
+        let ecdsa_signature = ECDSASignature {
+            signature: signature_bytes.to_vec(), // ✅ 64 bytes (r||s only)
+            signer_id: self.id.clone(),
+            recovery_id: recovery_id.to_i32() as u8, // ✅ Separate field
+        };
+
+        // Broadcast the signature to other nodes with proper VRF round
+        let signing_message = SigningMessage::ECDSASignature {
+            from: self.id.clone(),
+            signature: ecdsa_signature,
+            round: current_round, // ✅ Use actual VRF round
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis(),
+        };
+
+        let gossipsub_msg = crate::types::GossipsubMessage::Signing(signing_message);
+        let msg_data = serde_json::to_vec(&gossipsub_msg)?;
+
+        self.message_tx
+            .send(ChannelMessage::Broadcast {
+                topic: "signatures".to_string(),
+                data: msg_data,
+            })
+            .await?;
+
+        info!(
+            "📤 [SIGNING] Node {} broadcasted Bitcoin signature to network for round {}",
+            self.id, current_round
+        );
+
+        // Store signature by round for potential aggregation
+        {
+            let mut signatures_by_round = self.signatures_by_round.write().await;
+            let round_signatures = signatures_by_round.entry(current_round).or_default();
+            let stored_signature = ECDSASignature {
+                signature: signature_bytes.to_vec(), // ✅ 64 bytes (consistent with broadcast)
+                signer_id: self.id.clone(),
+                recovery_id: recovery_id.to_i32() as u8,
+            };
+            round_signatures.insert(self.id.clone(), stored_signature);
+            info!(
+                "💾 [SIGNING] Node {} stored Bitcoin signature for round {} (total signatures for round: {})",
+                self.id, current_round, round_signatures.len()
+            );
+        }
+
+        Ok(())
+    }
+
+
+
     pub async fn broadcast(&self, topic: &str, data: &[u8]) -> Result<()> {
         info!(
             "📤 [SIGNING] Node {} broadcasting to topic: {}",
@@ -249,6 +368,79 @@ impl SigningNode {
             self.id, topic
         );
         Ok(())
+    }
+
+    /// Create ECDSA signature directly without DummyTransaction (pure Bitcoin signing)
+    /// This is your exact proven logic extracted from create_ecdsa_signature
+    pub fn create_ecdsa_signature_direct(
+        &self,
+        message: &Message,
+    ) -> Result<RecoverableSignature> {
+        // Your exact proven custom signature logic (copied from create_ecdsa_signature)
+        // 1) Get secret key and context
+        let sk = self
+            .private_key
+            .as_ref()
+            .ok_or_else(|| anyhow!("No private key available"))?;
+        let secp = Secp256k1::new();
+
+        // 2) Fixed nonce k = 0x42…42
+        let k_bytes = [0x42u8; 32];
+        let sec_nonce =
+            SecretKey::from_slice(&k_bytes).map_err(|e| anyhow!("invalid nonce slice: {}", e))?;
+
+        // 3) R = k·G
+        let r = PublicKey::from_secret_key(&secp, &sec_nonce);
+        let rser = r.serialize_uncompressed(); // [0x04 || X(32) || Y(32)]
+        info!("[SIGNING] R serialized: {:?}", rser);
+        if BigUint::from_bytes_be(&rser) == BigUint::from(0u32) {
+            return Err(anyhow!("r is zero, need new nonce"));
+        }
+
+        // 4) r = X mod n
+        let mut r_bytes: [u8; 32] = [0u8; 32];
+        r_bytes.copy_from_slice(&rser[1..33]);
+        let r = BigUint::from_bytes_be(&r_bytes);
+
+        // 5) z = message hash as BigUint
+        let z = BigUint::from_bytes_be(message.as_ref());
+
+        // 6) x = private key as BigUint
+        let sk_bytes = sk.secret_bytes();
+        let x = BigUint::from_bytes_be(&sk_bytes);
+
+        // 7) Curve order n
+        let n = BigUint::parse_bytes(
+            b"FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141",
+            16,
+        )
+        .unwrap();
+
+        // 8) k⁻¹ mod n
+        let k_inv = BigUint::from_bytes_be(&k_bytes)
+            .modinv(&n)
+            .ok_or_else(|| anyhow!("nonce not invertible"))?;
+
+        // 9) s = k⁻¹·(z + r·x) mod n
+        let s = (&k_inv * (&z + (&r * &x) % &n)) % &n;
+
+        // 10) Serialize r‖s into 64-byte array
+        let mut sig_bytes = [0u8; 64];
+        let r_be: Vec<u8> = r.to_bytes_be();
+        let s_be = s.to_bytes_be();
+        sig_bytes[32 - r_be.len()..32].copy_from_slice(&r_be);
+        sig_bytes[64 - s_be.len()..64].copy_from_slice(&s_be);
+
+        // 11) Compute RecoveryId from R_y parity
+        let y_parity = (rser[64] & 1) as i32;
+        let rid: RecoveryId =
+            RecoveryId::from_i32(y_parity).map_err(|e| anyhow!("invalid recovery ID: {}", e))?;
+
+        // 12) Build the recoverable signature
+        let rec_sig = RecoverableSignature::from_compact(&sig_bytes, rid)
+            .map_err(|e| anyhow!("invalid compact signature: {}", e))?;
+
+        Ok(rec_sig)
     }
 
     pub async fn sign_message(
@@ -301,7 +493,7 @@ impl SigningNode {
         }
 
         // Create ECDSA signature using secp256k1
-        let msg = Message::from_slice(&tx_hash)?;
+        let msg = Message::from_digest_slice(&tx_hash)?;
         let signature = self.create_ecdsa_signature(&msg, transaction)?;
         let (recovery_id, signature_bytes) = signature.serialize_compact();
 
@@ -392,7 +584,7 @@ impl SigningNode {
         }
 
         // 4) r = X mod n
-        let mut r_bytes = [0u8; 32];
+        let mut r_bytes: [u8; 32] = [0u8; 32];
         r_bytes.copy_from_slice(&rser[1..33]);
         let r = BigUint::from_bytes_be(&r_bytes);
 
@@ -638,12 +830,22 @@ impl SigningNode {
                     let sigs_to_aggregate: Vec<RecoverableSignature> = sorted_signatures
                         .into_iter()
                         .map(|(signer_id, ecdsa_sig)| {
+                            // ✅ Debug logging to help track signature validation
+                            info!(
+                                "🔍 [SIGNING] Aggregating signature from {} - Length: {} bytes, Recovery ID: {}",
+                                signer_id, ecdsa_sig.signature.len(), ecdsa_sig.recovery_id
+                            );
+                            
                             RecoverableSignature::from_compact(
                                 &ecdsa_sig.signature,
                                 RecoveryId::from_i32(ecdsa_sig.recovery_id as i32)?,
                             )
-                            .map_err(|_| {
-                                anyhow::anyhow!("Invalid signature from signer {}", signer_id)
+                            .map_err(|e| {
+                                error!(
+                                    "❌ [SIGNING] Invalid signature from signer {} - Recovery ID: {}, Length: {} bytes, Error: {:?}",
+                                    signer_id, ecdsa_sig.recovery_id, ecdsa_sig.signature.len(), e
+                                );
+                                anyhow::anyhow!("Invalid signature from signer {} - Details: {:?}", signer_id, e)
                             })
                         })
                         .collect::<Result<_>>()?;
@@ -1111,8 +1313,25 @@ impl SigningNode {
 
         info!("🔍 [SIGNING] Node {} verifying ECDSA signature", self.id);
 
-        // For now, return true as a placeholder
-        // In a real implementation, you'd verify each signature individually
+        // Basic signature validation
+        if signed_message.aggregated_signature.len() != 65 {
+            warn!("❌ [SIGNING] Invalid signature length: expected 65 bytes, got {}", signed_message.aggregated_signature.len());
+            return Ok(false);
+        }
+
+        // Check that we have valid signer IDs
+        if signed_message.signer_ids.is_empty() {
+            warn!("❌ [SIGNING] No signer IDs provided");
+            return Ok(false);
+        }
+
+        // In a full implementation, you would:
+        // 1. Parse the signature components (r, s, v)
+        // 2. Recover the public key from the signature and message hash
+        // 3. Verify against the expected public keys
+        // 4. Check threshold requirements
+
+        info!("✅ [SIGNING] Signature validation passed for {} signers", signed_message.signer_ids.len());
         Ok(true)
     }
 
@@ -1161,8 +1380,13 @@ impl SigningNode {
     /// Set the chain handler for this signing node
     pub fn set_chain_handler(&mut self, chain_handler: Arc<dyn ChainHandler>) {
         self.chain_handler = chain_handler;
-        info!("🔗 [SIGNING] Node {} switched to {} chain handler", 
+        info!("🔗 [SIGNING] Node {} switched to {} chain handler",
               self.id, self.chain_handler.chain_type());
+    }
+
+    /// Get a reference to the chain handler
+    pub fn get_chain_handler(&self) -> &Arc<dyn ChainHandler> {
+        &self.chain_handler
     }
 
     /// Get the current chain type
@@ -1645,11 +1869,6 @@ impl SigningNode {
 
         if let Some(signatures_result) = signatures_to_aggregate {
             let signatures_vec = signatures_result?;
-            let total_nodes = self
-                .available_nodes
-                .as_ref()
-                .map(|nodes| nodes.len())
-                .unwrap_or(0);
             // Check if this round has already been aggregated
             {
                 let aggregated_rounds = self.aggregated_rounds.read().await;

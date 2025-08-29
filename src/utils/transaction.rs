@@ -1,7 +1,25 @@
 use crate::rpc_server::{DepositIntent, DummyTransaction};
 use crate::chain::{ChainTransaction, EthereumTransaction, BitcoinTransaction, BitcoinInput, BitcoinOutput};
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 // use rlp::RlpStream;
+
+/// Bitcoin UTXO structure for fetching from external APIs
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BitcoinUtxo {
+    pub txid: String,
+    pub vout: u32,
+    pub value: u64,
+    pub status: UtxoStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UtxoStatus {
+    pub confirmed: bool,
+    pub block_height: Option<u64>,
+    pub block_hash: Option<String>,
+    pub block_time: Option<u64>,
+}
 
 /// RLP encoder for Ethereum transaction signing (EIP-155)
 pub struct RlpEncoder {
@@ -180,8 +198,98 @@ pub fn is_evm_chain(chain_name: &str) -> bool {
     get_chain_id_from_name(chain_name).is_some()
 }
 
+/// Fetch UTXOs for a Bitcoin address from Blockstream API
+pub async fn fetch_bitcoin_utxos(address: &str, is_testnet: bool) -> Result<Vec<BitcoinUtxo>> {
+    let base_url = if is_testnet {
+        "https://blockstream.info/testnet/api"
+    } else {
+        "https://blockstream.info/api"
+    };
+    
+    let url = format!("{}/address/{}/utxo", base_url, address);
+    
+    let client = reqwest::Client::new();
+    let response = client.get(&url).send().await?;
+    
+    if !response.status().is_success() {
+        return Err(anyhow::anyhow!(
+            "Failed to fetch UTXOs: HTTP {}",
+            response.status()
+        ));
+    }
+    
+    let utxos: Vec<BitcoinUtxo> = response.json().await?;
+    Ok(utxos)
+}
+
+/// Select and combine UTXOs to meet the required amount
+pub fn select_utxos_for_amount(
+    utxos: &[BitcoinUtxo],
+    required_amount: u64,
+    fee_estimate: u64,
+) -> Result<(Vec<BitcoinUtxo>, u64)> {
+    let total_needed = required_amount + fee_estimate;
+    let mut selected_utxos = Vec::new();
+    let mut total_value = 0u64;
+    
+    // Sort UTXOs by value (largest first) for efficient selection
+    let mut sorted_utxos = utxos.to_vec();
+    sorted_utxos.sort_by(|a, b| b.value.cmp(&a.value));
+    
+    // Only use confirmed UTXOs
+    let confirmed_utxos: Vec<_> = sorted_utxos
+        .into_iter()
+        .filter(|utxo| utxo.status.confirmed)
+        .collect();
+    
+    if confirmed_utxos.is_empty() {
+        return Err(anyhow::anyhow!("No confirmed UTXOs available"));
+    }
+    
+    // Select UTXOs until we have enough value
+    for utxo in confirmed_utxos {
+        selected_utxos.push(utxo);
+        total_value += selected_utxos.last().unwrap().value;
+        
+        if total_value >= total_needed {
+            break;
+        }
+    }
+    
+    if total_value < total_needed {
+        return Err(anyhow::anyhow!(
+            "Insufficient funds: have {} satoshis, need {} satoshis",
+            total_value,
+            total_needed
+        ));
+    }
+    
+    Ok((selected_utxos, total_value))
+}
+
+/// Calculate estimated Bitcoin transaction fee based on inputs and outputs
+pub fn calculate_bitcoin_fee(num_inputs: usize, num_outputs: usize) -> u64 {
+    // Simple fee calculation: 
+    // - Each input ~= 148 bytes (can vary with different script types)
+    // - Each output ~= 34 bytes
+    // - Base transaction ~= 10 bytes
+    let estimated_size = 10 + (num_inputs * 148) + (num_outputs * 34);
+    
+    // Use 1 sat/byte as default (you might want to make this configurable or fetch from API)
+    let fee_rate = 1usize; // satoshis per byte
+    
+    let calculated_fee = estimated_size * fee_rate;
+    
+    // Minimum fee of 1000 satoshis
+    std::cmp::max(calculated_fee as u64, 1000)
+}
+
 /// Create a chain-specific transaction from a deposit intent
-pub fn create_chain_transaction_from_deposit_intent(intent: &DepositIntent) -> Result<ChainTransaction> {
+/// For Bitcoin transactions, group_public_key is required to derive the Bitcoin address and fetch UTXOs
+pub async fn create_chain_transaction_from_deposit_intent(
+    intent: &DepositIntent,
+    group_public_key: Option<k256::ProjectivePoint>,
+) -> Result<ChainTransaction> {
     let target_chain = &intent.target_chain.to_lowercase();
     
     if is_evm_chain(target_chain) {
@@ -199,20 +307,71 @@ pub fn create_chain_transaction_from_deposit_intent(intent: &DepositIntent) -> R
             chain_id,
         };
         
-        Ok(ChainTransaction::Ethereum(ethereum_tx))
+        Ok(ChainTransaction::Ethereum(ethereum_tx))                     
     } else if target_chain == "bitcoin" || target_chain == "btc" {
-        // Create Bitcoin transaction (placeholder structure)
+        // Create Bitcoin transaction with proper UTXO fetching
+        let group_key = group_public_key
+            .ok_or_else(|| anyhow::anyhow!("Group public key required for Bitcoin transactions"))?;
+        
+        // Get Bitcoin address from group key
+        let btc_address = crate::utils::get_btc_address_from_group_key(group_key);
+        tracing::info!("Using Bitcoin address for UTXOs: {}", btc_address);
+        
+        // Determine if we're using testnet (you might want to make this configurable)
+        let is_testnet = btc_address.starts_with("tb1") || btc_address.starts_with("2") || btc_address.starts_with("m") || btc_address.starts_with("n");
+        
+        // Fetch UTXOs for the address
+        let utxos = fetch_bitcoin_utxos(&btc_address, is_testnet).await?;
+        tracing::info!("Fetched {} UTXOs for address {}", utxos.len(), btc_address);
+        
+        if utxos.is_empty() {
+            return Err(anyhow::anyhow!("No UTXOs found for Bitcoin address: {}", btc_address));
+        }
+        
+        // Convert amount from wei to satoshis (assuming 1:1 conversion for now, you might want to adjust this)
+        let amount_satoshis = (intent.amount / 10_000_000_000) as u64;
+        let estimated_fee = calculate_bitcoin_fee(utxos.len(), 2); // 2 outputs (recipient + change)
+        
+        // Select UTXOs that provide enough value
+        let (selected_utxos, total_input_value) = select_utxos_for_amount(&utxos, amount_satoshis, estimated_fee)?;
+        
+        tracing::info!(
+            "Selected {} UTXOs with total value {} satoshis for transaction of {} satoshis (fee: {})",
+            selected_utxos.len(),
+            total_input_value,
+            amount_satoshis,
+            estimated_fee
+        );
+        
+        // Create inputs from selected UTXOs
+        let inputs: Vec<BitcoinInput> = selected_utxos
+            .iter()
+            .map(|utxo| BitcoinInput {
+                txid: utxo.txid.clone(),
+                vout: utxo.vout,
+                script_sig: vec![], // Will be filled during signing
+                sequence: 0xfffffffe, // Enable RBF (Replace-By-Fee)
+            })
+            .collect();
+        
+        // Create outputs
+        let mut outputs = vec![BitcoinOutput {
+            value: amount_satoshis,
+            script_pubkey: create_bitcoin_script_pubkey(&intent.target_address)?,
+        }];
+        
+        // Add change output if necessary
+        let change_amount = total_input_value - amount_satoshis - estimated_fee;
+        if change_amount > 546 { // Bitcoin dust limit
+            outputs.push(BitcoinOutput {
+                value: change_amount,
+                script_pubkey: create_bitcoin_script_pubkey(&btc_address)?, // Send change back to source address
+            });
+        }
+        
         let bitcoin_tx = BitcoinTransaction {
-            inputs: vec![BitcoinInput {
-                txid: "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
-                vout: 0,
-                script_sig: vec![],
-                sequence: 0xfffffffe,
-            }],
-            outputs: vec![BitcoinOutput {
-                value: intent.amount as u64, // Convert from u128 to u64 (satoshis)
-                script_pubkey: create_bitcoin_script_pubkey(&intent.target_address)?,
-            }],
+            inputs,
+            outputs,
             version: 2,
             lock_time: 0,
         };
@@ -222,6 +381,8 @@ pub fn create_chain_transaction_from_deposit_intent(intent: &DepositIntent) -> R
         Err(anyhow::anyhow!("Unsupported target chain: {}", target_chain))
     }
 }
+
+
 
 /// Get default gas price for different EVM chains
 fn get_default_gas_price_for_chain(chain_name: &str) -> String {
@@ -238,67 +399,31 @@ fn get_default_gas_price_for_chain(chain_name: &str) -> String {
     }
 }
 
-/// Create a Bitcoin script_pubkey for an address (simplified)
+/// Create a Bitcoin script_pubkey for an address
 fn create_bitcoin_script_pubkey(address: &str) -> Result<Vec<u8>> {
-    // This is a placeholder implementation
-    // In a real implementation, you would parse the Bitcoin address
-    // and create the appropriate script_pubkey
-    if address.starts_with("bc1") || address.starts_with("tb1") {
-        // Bech32 address (P2WPKH or P2WSH)
-        // For now, return a placeholder script
-        Ok(vec![0x00, 0x14]) // OP_0 + 20 bytes (placeholder)
-    } else if address.starts_with("1") || address.starts_with("m") || address.starts_with("n") {
-        // Legacy P2PKH address
-        Ok(vec![0x76, 0xa9, 0x14]) // OP_DUP OP_HASH160 OP_PUSHDATA(20) (placeholder)
-    } else if address.starts_with("3") || address.starts_with("2") {
-        // P2SH address
-        Ok(vec![0xa9, 0x14]) // OP_HASH160 OP_PUSHDATA(20) (placeholder)
+    use bitcoin::{Address, Network};
+    use std::str::FromStr;
+    
+    // Parse the address and determine network
+    let parsed_address = Address::from_str(address)
+        .map_err(|e| anyhow::anyhow!("Invalid Bitcoin address '{}': {}", address, e))?;
+    
+    // Assume the correct network based on address format and require it
+    let network = if address.starts_with("bc1") || address.starts_with("1") || address.starts_with("3") {
+        Network::Bitcoin
+    } else if address.starts_with("tb1") || address.starts_with("m") || address.starts_with("n") || address.starts_with("2") {
+        Network::Testnet
     } else {
-        Err(anyhow::anyhow!("Invalid Bitcoin address format: {}", address))
-    }
-}
-
-/// Create a transaction from a deposit intent (backward compatibility)
-/// This function now delegates to the chain-specific version and converts to DummyTransaction for EVM chains
-pub fn create_transaction_from_deposit_intent(intent: &DepositIntent) -> DummyTransaction {
-    match create_chain_transaction_from_deposit_intent(intent) {
-        Ok(ChainTransaction::Ethereum(eth_tx)) => {
-            // Convert EthereumTransaction to DummyTransaction for backward compatibility
-            DummyTransaction {
-                to: eth_tx.to,
-                value: eth_tx.value,
-                nonce: eth_tx.nonce,
-                gas_limit: eth_tx.gas_limit,
-                gas_price: eth_tx.gas_price,
-                chain_id: eth_tx.chain_id,
-            }
-        }
-        Ok(ChainTransaction::Bitcoin(_)) => {
-            // For Bitcoin, we can't convert to DummyTransaction since it's EVM-specific
-            // Return a placeholder that will cause an error later
-            tracing::warn!("Bitcoin transaction cannot be converted to DummyTransaction");
-            DummyTransaction {
-                to: "BITCOIN_NOT_COMPATIBLE_WITH_EVM".to_string(),
-                value: "0".to_string(),
-                nonce: 0,
-                gas_limit: 0,
-                gas_price: "0".to_string(),
-                chain_id: 0,
-            }
-        }
-        Err(e) => {
-            tracing::warn!("Failed to create chain transaction: {}, falling back to default", e);
-            // Fallback to the old behavior for unknown chains
-            DummyTransaction {
-                to: intent.target_address.clone(),
-                value: format!("0x{:x}", intent.amount),
-                nonce: 0,
-                gas_limit: 21000,
-                gas_price: "0x4A817C800".to_string(),
-                chain_id: 1043, // Default to Qubetics
-            }
-        }
-    }
+        return Err(anyhow::anyhow!("Cannot determine network for address: {}", address));
+    };
+    
+    // Require the network to get a checked address
+    let checked_address = parsed_address.require_network(network)
+        .map_err(|e| anyhow::anyhow!("Address network mismatch for '{}': {}", address, e))?;
+    
+    // Convert to script_pubkey
+    let script_pubkey = checked_address.script_pubkey();
+    Ok(script_pubkey.to_bytes())
 }
 
 pub fn create_transaction_for_signing(tx: &DummyTransaction) -> Vec<u8> {

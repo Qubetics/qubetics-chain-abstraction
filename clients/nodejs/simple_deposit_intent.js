@@ -11,10 +11,10 @@ const SERVER_URL = 'http://localhost:8081';
 // Create a sample deposit intent
 const depositIntent = {
     source_address: "0x742d35Cc6634C0532925a3b8D5A42DCA0e23e4",
-    target_address: "0x123d35Ccf634C0532925a3b8D5A42DCA0e3424",
+    target_address: "0x742d35Cc6634C0532925a3b8D5A42DCA0e23e4",
     source_chain: "ethereum",
-    target_chain: "qubetics",
-    amount: 1000000000000000000, // 1 ETH in wei
+    target_chain: "ethereum",
+    amount: 5000000000000, // 1 ETH in wei
     source_token: "ETH",
     target_token: "TICS",
     path: [1, 2, 3, 4],

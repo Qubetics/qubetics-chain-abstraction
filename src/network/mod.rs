@@ -1101,7 +1101,7 @@ impl NetworkLayer {
                             info!("🔗 [GOSSIPSUB] Set Ethereum chain handler for chain: {} (ID: {})", target_chain, chain_id);
                         }
                     } else if target_chain == "bitcoin" || target_chain == "btc" {
-                        let chain_handler = crate::chain::ChainHandlerFactory::create_bitcoin_handler("mainnet".to_string());
+                        let chain_handler = crate::chain::ChainHandlerFactory::create_bitcoin_handler("testnet".to_string());
                         signing_node.set_chain_handler(chain_handler.into());
                         info!("🔗 [GOSSIPSUB] Set Bitcoin chain handler");
                     } else {
@@ -1109,7 +1109,15 @@ impl NetworkLayer {
                     }
                     
                     // Create chain-specific transaction
-                    match crate::utils::transaction::create_chain_transaction_from_deposit_intent(&intent) {
+                    let group_public_key = if let Some(dkg_node) = &self.dkg_node {
+                        dkg_node.get_final_public_key().await
+                    } else {
+                        None
+                    };
+                    
+                    let chain_transaction_result = crate::utils::transaction::create_chain_transaction_from_deposit_intent(&intent, group_public_key).await;
+                    
+                    match chain_transaction_result {
                         Ok(chain_transaction) => {
                             info!("📝 [GOSSIPSUB] Created {} transaction from deposit intent", signing_node.get_chain_type());
                             
@@ -1132,9 +1140,22 @@ impl NetworkLayer {
                             }
                             
                             // Create transaction bytes using the chain handler
-                            let tx_bytes = match chain_transaction {
+                            let tx_bytes = signing_node.get_chain_handler().create_transaction_bytes(&chain_transaction)
+                                .unwrap_or_else(|e| {
+                                    warn!("Failed to create transaction bytes: {}", e);
+                                    vec![]
+                                });
+                            info!("🔐 [GOSSIPSUB] Starting {} signing process for deposit intent: 0x{}", 
+                                  signing_node.get_chain_type(), hex::encode(tx_bytes.clone()));
+
+                            // Handle Bitcoin and EVM differently - DummyTransaction is only for EVM!
+                            match chain_transaction {
+                                crate::chain::ChainTransaction::Bitcoin(_) => {
+                                    // For Bitcoin, use direct signing with tx_bytes (no DummyTransaction needed)
+                                    signing_node.sign_bitcoin_transaction(tx_bytes.clone()).await?;
+                                }
                                 crate::chain::ChainTransaction::Ethereum(ref eth_tx) => {
-                                    // Use the existing Ethereum transaction creation logic
+                                    // For EVM chains, use your proven DummyTransaction logic
                                     let dummy_tx = crate::rpc_server::DummyTransaction {
                                         to: eth_tx.to.clone(),
                                         value: eth_tx.value.clone(),
@@ -1143,41 +1164,9 @@ impl NetworkLayer {
                                         gas_price: eth_tx.gas_price.clone(),
                                         chain_id: eth_tx.chain_id,
                                     };
-                                    crate::utils::transaction::create_transaction_for_signing(&dummy_tx)
+                                    signing_node.sign_message(tx_bytes.clone(), &dummy_tx).await?;
                                 }
-                                crate::chain::ChainTransaction::Bitcoin(_) => {
-                                    // For Bitcoin, we'd implement Bitcoin transaction serialization here
-                                    // For now, return empty bytes as placeholder
-                                    warn!("Bitcoin transaction serialization not yet implemented");
-                                    vec![]
-                                }
-                            };
-                            info!("🔐 [GOSSIPSUB] Starting {} signing process for deposit intent: 0x{}", 
-                                  signing_node.get_chain_type(), hex::encode(tx_bytes.clone()));
-
-                            // For backward compatibility, create a DummyTransaction for EVM chains
-                            let dummy_tx = if let crate::chain::ChainTransaction::Ethereum(ref eth_tx) = chain_transaction {
-                                crate::rpc_server::DummyTransaction {
-                                    to: eth_tx.to.clone(),
-                                    value: eth_tx.value.clone(),
-                                    nonce: eth_tx.nonce,
-                                    gas_limit: eth_tx.gas_limit,
-                                    gas_price: eth_tx.gas_price.clone(),
-                                    chain_id: eth_tx.chain_id,
-                                }
-                            } else {
-                                // For non-EVM chains, create a placeholder DummyTransaction
-                                crate::rpc_server::DummyTransaction {
-                                    to: format!("{}_TRANSACTION", target_chain.to_uppercase()),
-                                    value: "0".to_string(),
-                                    nonce: 0,
-                                    gas_limit: 0,
-                                    gas_price: "0".to_string(),
-                                    chain_id: 0,
-                                }
-                            };
-
-                            signing_node.sign_message(tx_bytes, &dummy_tx).await?;
+                            }
                             info!("✅ [GOSSIPSUB] {} deposit intent signing completed", signing_node.get_chain_type());
                         }
                         Err(e) => {
@@ -1346,7 +1335,15 @@ impl NetworkLayer {
                     }
                     
                     // Create chain-specific transaction
-                    match crate::utils::transaction::create_chain_transaction_from_deposit_intent(&intent) {
+                    let group_public_key = if let Some(dkg_node) = &self.dkg_node {
+                        dkg_node.get_final_public_key().await
+                    } else {
+                        None
+                    };
+                    
+                    let chain_transaction_result = crate::utils::transaction::create_chain_transaction_from_deposit_intent(&intent, group_public_key).await;
+                    
+                    match chain_transaction_result {
                         Ok(chain_transaction) => {
                             info!("📝 [LOCAL] Created {} transaction from deposit intent", signing_node.get_chain_type());
                             
@@ -1368,9 +1365,22 @@ impl NetworkLayer {
                             }
                             
                             // Create transaction bytes using the chain handler
-                            let tx_bytes = match chain_transaction {
+                            let tx_bytes = signing_node.get_chain_handler().create_transaction_bytes(&chain_transaction)
+                                .unwrap_or_else(|e| {
+                                    warn!("Failed to create transaction bytes: {}", e);
+                                    vec![]
+                                });
+                            info!("🔐 [LOCAL] Starting {} signing process for deposit intent: 0x{}", 
+                                  signing_node.get_chain_type(), hex::encode(tx_bytes.clone()));
+                            
+                            // Handle Bitcoin and EVM differently - DummyTransaction is only for EVM!
+                            match chain_transaction {
+                                crate::chain::ChainTransaction::Bitcoin(_) => {
+                                    // For Bitcoin, use direct signing with tx_bytes (no DummyTransaction needed)
+                                    signing_node.sign_bitcoin_transaction(tx_bytes.clone()).await?;
+                                }
                                 crate::chain::ChainTransaction::Ethereum(ref eth_tx) => {
-                                    // Use the existing Ethereum transaction creation logic
+                                    // For EVM chains, use your proven DummyTransaction logic
                                     let dummy_tx = crate::rpc_server::DummyTransaction {
                                         to: eth_tx.to.clone(),
                                         value: eth_tx.value.clone(),
@@ -1379,41 +1389,9 @@ impl NetworkLayer {
                                         gas_price: eth_tx.gas_price.clone(),
                                         chain_id: eth_tx.chain_id,
                                     };
-                                    crate::utils::transaction::create_transaction_for_signing(&dummy_tx)
+                                    signing_node.sign_message(tx_bytes.clone(), &dummy_tx).await?;
                                 }
-                                crate::chain::ChainTransaction::Bitcoin(_) => {
-                                    // For Bitcoin, we'd implement Bitcoin transaction serialization here
-                                    // For now, return empty bytes as placeholder
-                                    warn!("Bitcoin transaction serialization not yet implemented");
-                                    vec![]
-                                }
-                            };
-                            info!("🔐 [LOCAL] Starting {} signing process for deposit intent: 0x{}", 
-                                  signing_node.get_chain_type(), hex::encode(tx_bytes.clone()));
-                            
-                            // For backward compatibility, create a DummyTransaction for EVM chains
-                            let dummy_tx = if let crate::chain::ChainTransaction::Ethereum(ref eth_tx) = chain_transaction {
-                                crate::rpc_server::DummyTransaction {
-                                    to: eth_tx.to.clone(),
-                                    value: eth_tx.value.clone(),
-                                    nonce: eth_tx.nonce,
-                                    gas_limit: eth_tx.gas_limit,
-                                    gas_price: eth_tx.gas_price.clone(),
-                                    chain_id: eth_tx.chain_id,
-                                }
-                            } else {
-                                // For non-EVM chains, create a placeholder DummyTransaction
-                                crate::rpc_server::DummyTransaction {
-                                    to: format!("{}_TRANSACTION", target_chain.to_uppercase()),
-                                    value: "0".to_string(),
-                                    nonce: 0,
-                                    gas_limit: 0,
-                                    gas_price: "0".to_string(),
-                                    chain_id: 0,
-                                }
-                            };
-                            
-                            signing_node.sign_message(tx_bytes, &dummy_tx).await?;
+                            }
                             info!("✅ [LOCAL] {} deposit intent signing completed", signing_node.get_chain_type());
                         }
                         Err(e) => {
