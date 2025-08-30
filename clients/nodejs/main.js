@@ -12,10 +12,10 @@ const SERVER_URL = 'http://localhost:8081';
 function createBtcToTicsDepositIntent() {
     return {
         source_address: "tb1q2nd0utgnrseanclhq2tr7hqhqtuc389mmjm2fs",
-        target_address: "0x3c9CA0Efc5FAE7825ee69B95E78719a07C75FDE0",
+        target_address: "0x541Bc7A7Eb63769c079dc57eF1b9d9651Dd920Af",
         source_chain: "bitcoin",
         target_chain: "qubetics",
-        amount: 5000000000000,
+        amount: 4000000000000,
         source_token: "BTC",
         target_token: "ETH",
         path: [1, 2, 3, 4],

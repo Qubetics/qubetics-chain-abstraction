@@ -414,7 +414,7 @@ impl SigningNode {
             "id": 1
         });
 
-        info!("Fetching nonce for address {} on chain {}", address, chain_id);
+        info!("Fetching nonce for address {} on chain {} (pending)", address, chain_id);
 
         let response = client.post(rpc_url)
             .header("Content-Type", "application/json")
@@ -566,7 +566,7 @@ impl SigningNode {
                 // Calculate v value for Ethereum (EIP-155)
                 let v = recovery_id as u64 + 35 + chain_id * 2;
                                         // Fetch dynamic nonce from group public key's Ethereum address
-            let group_address = get_eth_address_from_group_key(self.group_public_key.unwrap());
+            let group_address: String = get_eth_address_from_group_key(self.group_public_key.unwrap());
             let dynamic_nonce = Self::fetch_ethereum_nonce(&group_address, chain_id).await?;
             
             info!("🔢 [SIGNING] Using dynamic nonce {} for group address {}", dynamic_nonce, group_address);
@@ -894,7 +894,7 @@ impl SigningNode {
         let tx_bytes = self.chain_handler.create_transaction_bytes(&chain_transaction)?;
         
         // Hash the transaction bytes
-        let mut hasher = sha3::Keccak256::new();
+        let mut hasher: sha2::digest::core_api::CoreWrapper<sha3::Keccak256Core> = sha3::Keccak256::new();
         hasher.update(&tx_bytes);
         let tx_hash = hasher.finalize();
         println!("Tx hash: 0x{}", hex::encode(&tx_hash));

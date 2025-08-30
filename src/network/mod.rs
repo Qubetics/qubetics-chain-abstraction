@@ -1064,7 +1064,8 @@ impl NetworkLayer {
                         info!("❌ [NETWORK] DKG node not available");
                         return Ok(());
                     }
-                    
+                    info!("transaction: {:?}", transaction);
+                    info!("transaction.nonce: {:?}", transaction.nonce);
                     // Convert transaction to bytes for signing using RLP encoding
                     let tx_bytes = crate::utils::transaction::create_transaction_for_signing(&transaction);
                     println!("→ RLP payload: 0x{}", hex::encode(&tx_bytes));
@@ -1192,6 +1193,9 @@ impl NetworkLayer {
                                         gas_price: eth_tx.gas_price.clone(),
                                         chain_id: eth_tx.chain_id,
                                     };
+
+                                    info!("dummy_tx: {:?}", dummy_tx);
+                                    info!("dummy_tx.nonce: {:?}", dummy_tx.nonce);
                                     signing_node.sign_message(tx_bytes.clone(), &dummy_tx).await?;
                                 }
                             }
