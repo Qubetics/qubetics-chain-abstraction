@@ -26,73 +26,6 @@ pub struct RlpEncoder {
     pub data: Vec<u8>,
 }
 
-// impl RlpEncoder {
-//     pub fn new() -> Self {
-//         Self { data: Vec::new() }
-//     }
-
-//     pub fn encode_u64(&mut self, value: u64) {
-//         if value == 0 {
-//             self.data.push(0x80);
-//         } else {
-//             let bytes = value.to_be_bytes();
-//             let start = bytes.iter().position(|&x| x != 0).unwrap_or(bytes.len() - 1);
-//             self.encode_bytes(&bytes[start..]);
-//         }
-//     }
-
-//     pub fn encode_hex_string(&mut self, hex_str: &str) {
-//         // Remove "0x" prefix if present
-//         let clean_hex = if hex_str.starts_with("0x") {
-//             &hex_str[2..]
-//         } else {
-//             hex_str
-//         };
-
-//         // Convert hex string to bytes
-//         let bytes = hex::decode(clean_hex).unwrap_or_else(|_| {
-//             // If hex decoding fails, try to parse as decimal string
-//             let value = clean_hex.parse::<u128>().unwrap_or(0);
-//             value.to_be_bytes().to_vec()
-//         });
-
-//         let mut stream = RlpStream::new();
-//         stream.append(&bytes);
-//         self.data.extend_from_slice(&stream.out());
-//     }
-
-//     pub fn encode_address(&mut self, address: &str) {
-//         // Remove "0x" prefix if present
-//         let clean_address = if address.starts_with("0x") {
-//             &address[2..]
-//         } else {
-//             address
-//         };
-
-//         // Convert hex address to bytes
-//         let bytes = hex::decode(clean_address).unwrap_or_else(|_| vec![0u8; 20]);
-
-//         let mut stream = RlpStream::new();
-//         stream.append(&bytes);
-//         self.data.extend_from_slice(&stream.out());
-//     }
-
-//     pub fn encode_bytes(&mut self, bytes: &[u8]) {
-//         let mut stream = RlpStream::new();
-//         stream.append(&bytes);
-//         self.data.extend_from_slice(&stream.out());
-//     }
-
-//     pub fn encode_list_header(&mut self, content_len: usize) {
-//         let mut stream = RlpStream::new();
-//         stream.begin_list(content_len);
-//         self.data.extend_from_slice(&stream.out());
-//     }
-
-//     pub fn finalize(self) -> Vec<u8> {
-//         self.data
-//     }
-// }
 impl RlpEncoder {
     fn new() -> Self {
         RlpEncoder { data: Vec::new() }
@@ -182,7 +115,7 @@ fn encode_hex_to_bytes(hex_str: &str) -> Vec<u8> {
 pub fn get_chain_id_from_name(chain_name: &str) -> Option<u64> {
     match chain_name.to_lowercase().as_str() {
         "ethereum" | "eth" => Some(1),
-        "qubetics" => Some(1043),
+        "qubetics" => Some(9029),
         "polygon" | "matic" => Some(137),
         "bsc" | "binance" => Some(56),
         "avalanche" | "avax" => Some(43114),

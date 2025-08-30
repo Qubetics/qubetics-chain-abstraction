@@ -10,7 +10,7 @@ use num_traits::identities::One;
 use rand::rngs::OsRng;
 use secp256k1::{self, ecdsa::RecoverableSignature, Message, PublicKey, Secp256k1, SecretKey};
 use serde::{Deserialize, Serialize};
-use sha2::Digest;
+use sha2::Digest as Sha2Digest;
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -28,9 +28,12 @@ use rand::thread_rng;
 use crate::consensus::{ConsensusMessage, ConsensusNode, ConsensusResult};
 use crate::types::{p2p::SerializablePeerId, ChannelMessage};
 use crate::vrf::{VrfService, VrfSelectedNodesBroadcast};
-use crate::chain::{ChainHandler, ChainSignature, ChainHandlerFactory};
+use crate::chain::{ChainHandler, ChainSignature, ChainHandlerFactory, ChainTransaction};
+use crate::utils::get_eth_address_from_group_key;
 // Import BitcoinTransaction directly from chain module
 use crate::chain::BitcoinTransaction;
+use k256::AffinePoint;
+use sha3::{Keccak256, Digest};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ECDSASignature {
@@ -106,7 +109,7 @@ pub struct SigningNode {
     consensus_node: Option<ConsensusNode>, // Consensus node for final node selection
     available_nodes: Option<Vec<PeerId>>,  // Available nodes from node manager
     // Store original transaction and bytes for reconstruction
-    pending_transactions: Arc<RwLock<HashMap<u64, (BitcoinTransaction, Vec<u8>)>>>, // round -> (original_tx, tx_bytes)
+    pending_transactions: Arc<RwLock<HashMap<u64, (ChainTransaction, Vec<u8>)>>>, // round -> (original_tx, tx_bytes)
     // ✅ Store DKG group public key
     group_public_key: Option<k256::ProjectivePoint>, // DKG group public key for Bitcoin addresses
 }
@@ -356,7 +359,7 @@ impl SigningNode {
         // Store original transaction for reconstruction after aggregation
         if let Some(original_tx) = original_tx {
             let mut pending_transactions = self.pending_transactions.write().await;
-            pending_transactions.insert(current_round, (original_tx, tx_bytes.clone()));
+            pending_transactions.insert(current_round, (ChainTransaction::Bitcoin(original_tx), tx_bytes.clone()));
             info!(
                 "💾 [SIGNING] Node {} stored original Bitcoin transaction for round {} reconstruction",
                 self.id, current_round
@@ -395,6 +398,93 @@ impl SigningNode {
         Ok(())
     }
 
+    /// Fetch nonce for an Ethereum address from the blockchain
+    async fn fetch_ethereum_nonce(address: &str, chain_id: u64) -> Result<u64> {
+        let rpc_url = match chain_id {
+            9029 => "https://rpc-testnet.qubetics.work", // Qubetics RPC URL
+            1 => "https://mainnet.infura.io/v3/YOUR_PROJECT_ID", // Ethereum mainnet
+            _ => return Err(anyhow!("Unsupported chain ID for nonce fetching: {}", chain_id)),
+        };
+
+        let client = reqwest::Client::new();
+        let payload = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "eth_getTransactionCount",
+            "params": [address, "latest"],
+            "id": 1
+        });
+
+        info!("Fetching nonce for address {} on chain {}", address, chain_id);
+
+        let response = client.post(rpc_url)
+            .header("Content-Type", "application/json")
+            .json(&payload)
+            .send()
+            .await?;
+
+        if response.status().is_success() {
+            let result: serde_json::Value = response.json().await?;
+            if let Some(error) = result.get("error") {
+                error!("❌ Failed to fetch nonce: {}", error);
+                return Err(anyhow!("Nonce fetch failed: {}", error));
+            }
+            if let Some(nonce_hex) = result.get("result") {
+                let nonce_str = nonce_hex.as_str().unwrap_or("0x0");
+                let nonce = u64::from_str_radix(nonce_str.strip_prefix("0x").unwrap_or(nonce_str), 16)?;
+                info!("✅ Fetched nonce {} for address {}", nonce, address);
+                Ok(nonce)
+            } else {
+                Err(anyhow!("No nonce result in response"))
+            }
+        } else {
+            let error_text = response.text().await?;
+            error!("❌ Failed to fetch nonce: {}", error_text);
+            Err(anyhow!("Nonce fetch failed: {}", error_text))
+        }
+    }
+
+    /// Broadcast Ethereum transaction to Qubetics chain
+    async fn broadcast_ethereum_transaction(raw_tx_hex: &str, chain_id: u64) -> Result<()> {
+        let rpc_url = match chain_id {
+            9029 => "https://rpc-testnet.qubetics.work", // Qubetics RPC URL
+            1 => "https://mainnet.infura.io/v3/YOUR_PROJECT_ID", // Ethereum mainnet
+            _ => return Err(anyhow!("Unsupported chain ID for broadcasting: {}", chain_id)),
+        };
+
+        let client = reqwest::Client::new();
+        let payload = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "eth_sendRawTransaction",
+            "params": [raw_tx_hex],
+            "id": 1
+        });
+
+        println!("Broadcasting Ethereum transaction to chain {}: {}", chain_id, rpc_url);
+
+        let response = client.post(rpc_url)
+            .header("Content-Type", "application/json")
+            .json(&payload)
+            .send()
+            .await?;
+
+        if response.status().is_success() {
+            let result: serde_json::Value = response.json().await?;
+            if let Some(error) = result.get("error") {
+                println!("❌ Failed to broadcast transaction: {}", error);
+                return Err(anyhow!("Broadcast failed: {}", error));
+            }
+            if let Some(tx_hash) = result.get("result") {
+                println!("✅ Qubetics transaction broadcasted successfully!");
+                println!("TX Hash: {}", tx_hash);
+            }
+        } else {
+            let error_text = response.text().await?;
+            println!("❌ Failed to broadcast transaction: {}", error_text);
+            return Err(anyhow!("Broadcast failed: {}", error_text));
+        }
+        Ok(())
+    }
+
     /// Reconstruct signed Bitcoin transaction from aggregated signature
     pub async fn reconstruct_signed_bitcoin_transaction(
         &self,
@@ -404,35 +494,121 @@ impl SigningNode {
     ) -> Result<Option<String>> {
         let pending_transactions = self.pending_transactions.read().await;
         
-        if let Some((original_tx, _tx_bytes)) = pending_transactions.get(&round) {
-            info!(
-                "🔧 [SIGNING] Node {} reconstructing signed Bitcoin transaction for round {}",
-                self.id, round
-            );
-            
-            // Create DER-encoded signature for Bitcoin
-            let r = &aggregated_signature[0..32];
-            let s = &aggregated_signature[32..64];
-            
-            // Create DER signature format
-            let der_signature = self.create_der_signature(r, s)?;
-            
-            // Create the complete signed transaction
-            let signed_tx = self.create_signed_bitcoin_transaction(original_tx, &der_signature)?;
-            
-            let signed_tx_hex = hex::encode(&signed_tx);
-            
-            info!(
-                "✅ [SIGNING] Node {} successfully reconstructed signed Bitcoin transaction for round {}",
-                self.id, round
-            );
-            info!("📄 [SIGNING] Signed transaction hex: {}", signed_tx_hex);
-            info!("📏 [SIGNING] Transaction size: {} bytes", signed_tx.len());
-            
-            Ok(Some(signed_tx_hex))
+        if let Some((chain_tx, _tx_bytes)) = pending_transactions.get(&round) {
+            if let ChainTransaction::Bitcoin(original_tx) = chain_tx {
+                info!(
+                    "🔧 [SIGNING] Node {} reconstructing signed Bitcoin transaction for round {}",
+                    self.id, round
+                );
+                
+                // Create DER-encoded signature for Bitcoin
+                let r = &aggregated_signature[0..32];
+                let s = &aggregated_signature[32..64];
+                
+                // Create DER signature format
+                let der_signature = self.create_der_signature(r, s)?;
+                
+                // Create the complete signed transaction
+                let signed_tx = self.create_signed_bitcoin_transaction(original_tx, &der_signature)?;
+                
+                let signed_tx_hex = hex::encode(&signed_tx);
+                
+                info!(
+                    "✅ [SIGNING] Node {} successfully reconstructed signed Bitcoin transaction for round {}",
+                    self.id, round
+                );
+                info!("📄 [SIGNING] Signed transaction hex: {}", signed_tx_hex);
+                info!("📏 [SIGNING] Transaction size: {} bytes", signed_tx.len());
+                
+                Ok(Some(signed_tx_hex))
+            } else {
+                warn!(
+                    "❌ [SIGNING] Node {} expected Bitcoin transaction for round {} but got different type",
+                    self.id, round
+                );
+                Ok(None)
+            }
         } else {
             warn!(
                 "❌ [SIGNING] Node {} cannot reconstruct transaction for round {} - original transaction not found",
+                self.id, round
+            );
+            Ok(None)
+        }
+    }
+
+    /// Reconstruct signed Ethereum transaction from aggregated signature
+    pub async fn reconstruct_signed_ethereum_transaction(
+        &self,
+        round: u64,
+        aggregated_signature: &[u8],
+        recovery_id: u8,
+    ) -> Result<Option<String>> {
+        let pending_transactions = self.pending_transactions.read().await;
+        
+        if let Some((chain_tx, _tx_bytes)) = pending_transactions.get(&round) {
+            if let ChainTransaction::Ethereum(original_tx) = chain_tx {
+                info!(
+                    "🔧 [SIGNING] Node {} reconstructing signed Ethereum transaction for round {}",
+                    self.id, round
+                );
+                
+                // Extract r and s from aggregated signature
+                let r = &aggregated_signature[0..32];
+                let s = &aggregated_signature[32..64];
+                
+                // Get chain ID from chain handler
+                let chain_id = self.chain_handler.get_chain_params()
+                    .get("chain_id")
+                    .and_then(|id| id.parse::<u64>().ok())
+                    .unwrap_or(1043); // Default to Qubetics chain ID
+                
+                // Calculate v value for Ethereum (EIP-155)
+                let v = recovery_id as u64 + 35 + chain_id * 2;
+                                        // Fetch dynamic nonce from group public key's Ethereum address
+            let group_address = get_eth_address_from_group_key(self.group_public_key.unwrap());
+            let dynamic_nonce = Self::fetch_ethereum_nonce(&group_address, chain_id).await?;
+            
+            info!("🔢 [SIGNING] Using dynamic nonce {} for group address {}", dynamic_nonce, group_address);
+            info!("💰 [SIGNING] Transaction cost: {} wei", original_tx.value);
+            info!("🔍 [SIGNING] Please ensure the group address {} has sufficient balance", group_address);
+                
+                // Create signed transaction using the utility function with dynamic nonce
+                let signed_tx = crate::utils::transaction::create_signed_transaction(
+                    &crate::rpc_server::DummyTransaction {
+                        to: original_tx.to.clone(),
+                        value: original_tx.value.clone(),
+                        nonce: dynamic_nonce,
+                        gas_limit: original_tx.gas_limit,
+                        gas_price: original_tx.gas_price.clone(),
+                        chain_id: original_tx.chain_id,
+                    },
+                    r,
+                    s,
+                    v,
+                );
+                    
+                let signed_tx_hex = format!("0x{}", hex::encode(&signed_tx));
+                
+                info!(
+                    "✅ [SIGNING] Node {} successfully reconstructed signed Ethereum transaction for round {}",
+                    self.id, round
+                );
+                info!("📄 [SIGNING] Signed transaction hex: {}", signed_tx_hex);
+                info!("📏 [SIGNING] Transaction size: {} bytes", signed_tx.len());
+                info!("🔗 [SIGNING] Chain ID: {}", chain_id);
+                
+                Ok(Some(signed_tx_hex))
+                } else {
+                warn!(
+                    "❌ [SIGNING] Node {} expected Ethereum transaction for round {} but got different type",
+                    self.id, round
+                );
+                Ok(None)
+            }
+        } else {
+            warn!(
+                "❌ [SIGNING] Node {} cannot reconstruct Ethereum transaction for round {} - original transaction not found",
                 self.id, round
             );
             Ok(None)
@@ -791,6 +967,25 @@ impl SigningNode {
             info!(
                 "💾 [SIGNING] Node {} stored signature for {} round {}",
                 self.id, self.chain_handler.chain_type(), round
+            );
+        }
+
+        // Store original transaction for reconstruction after aggregation
+        {
+            let mut pending_transactions = self.pending_transactions.write().await;
+            let chain_tx = ChainTransaction::Ethereum(crate::chain::EthereumTransaction {
+                to: transaction.to.clone(),
+                value: transaction.value.clone(),
+                gas_limit: transaction.gas_limit,
+                gas_price: transaction.gas_price.clone(),
+                nonce: transaction.nonce, // This will be replaced with dynamic nonce during reconstruction
+                data: None,
+                chain_id: transaction.chain_id,
+            });
+            pending_transactions.insert(round, (chain_tx, tx_bytes.clone()));
+            info!(
+                "💾 [SIGNING] Node {} stored original Ethereum transaction for round {} reconstruction (nonce will be fetched dynamically)",
+                self.id, round
             );
         }
 
@@ -2175,18 +2370,47 @@ impl SigningNode {
                         info!("  recovery_id: {}", recovery_id.to_i32());
                         info!("  full_signature: 0x{}", hex::encode(signature_bytes));
                         
-                        // 🚀 NEW: Reconstruct signed Bitcoin transaction
-                        if let Ok(Some(signed_tx_hex)) = self.reconstruct_signed_bitcoin_transaction(
-                            round,
-                            &signature_bytes,
-                            recovery_id.to_i32() as u8,
-                        ).await {
-                            info!(
-                                "🎉 [SIGNING] 🔗 SIGNED BITCOIN TRANSACTION READY! 🔗"
-                            );
-                            info!("📄 Raw signed transaction: {}", signed_tx_hex);
-                            info!("Broadcasting transaction to Bitcoin network...");
-                            Self::broadcast_transaction(&signed_tx_hex, false).await?;
+                        // 🚀 NEW: Reconstruct and broadcast signed transaction based on chain type
+                        let chain_type = self.chain_handler.chain_type();
+                        match chain_type {
+                            "bitcoin" => {
+                                if let Ok(Some(signed_tx_hex)) = self.reconstruct_signed_bitcoin_transaction(
+                                    round,
+                                    &signature_bytes,
+                                    recovery_id.to_i32() as u8,
+                                ).await {
+                                    info!(
+                                        "🎉 [SIGNING] 🔗 SIGNED BITCOIN TRANSACTION READY! 🔗"
+                                    );
+                                    info!("📄 Raw signed transaction: {}", signed_tx_hex);
+                                    info!("Broadcasting transaction to Bitcoin network...");
+                                    Self::broadcast_transaction(&signed_tx_hex, false).await?;
+                                }
+                            }
+                            "ethereum" => {
+                                if let Ok(Some(signed_tx_hex)) = self.reconstruct_signed_ethereum_transaction(
+                                    round,
+                                    &signature_bytes,
+                                    recovery_id.to_i32() as u8,
+                                ).await {
+                                    info!(
+                                        "🎉 [SIGNING] 🔗 SIGNED ETHEREUM TRANSACTION READY! 🔗"
+                                    );
+                                    info!("📄 Raw signed transaction: {}", signed_tx_hex);
+                                    
+                                    // Get chain ID for broadcasting
+                                    let chain_id = self.chain_handler.get_chain_params()
+                                        .get("chain_id")
+                                        .and_then(|id| id.parse::<u64>().ok())
+                                        .unwrap_or(9029); // Default to Qubetics
+                                    
+                                    info!("Broadcasting transaction to chain {} (Qubetics)...", chain_id);
+                                    Self::broadcast_ethereum_transaction(&signed_tx_hex, chain_id).await?;
+                                }
+                            }
+                            _ => {
+                                warn!("❌ [SIGNING] Unsupported chain type for transaction reconstruction: {}", chain_type);
+                            }
                         }
                     }
                     Err(e) => {
