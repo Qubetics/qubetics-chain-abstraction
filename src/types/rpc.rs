@@ -1,15 +1,17 @@
 // src/mpc_request_response.rs
 
+use crate::adkg_secp256k1::DKGStatus;
+use futures::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use libp2p::{
     request_response::{
-        cbor::Behaviour as CborReqRespBehaviour, Codec as  RequestResponseCodec, Config as RequestResponseConfig, ProtocolSupport
-    }, StreamProtocol,
+        cbor::Behaviour as CborReqRespBehaviour, Codec as RequestResponseCodec,
+        Config as RequestResponseConfig, ProtocolSupport,
+    },
+    StreamProtocol,
 };
 use serde::{Deserialize, Serialize};
-use futures::{AsyncRead, AsyncWrite, AsyncReadExt, AsyncWriteExt};
+use std::{future::Future, io, pin::Pin};
 use tracing::info;
-use std::{io, pin::Pin, future::Future};
-use crate::dkg::DKGStatus;
 
 use super::{p2p::SerializablePeerId, PeerInfo, SerializablePoint, SerializableScalar};
 
@@ -29,24 +31,29 @@ impl AsRef<str> for MPCProtocol {
 /// RPC request variants.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum RPCRequest {
-    ScheduleADKG { start_time: u64 },
+    ScheduleADKG {
+        start_time: u64,
+    },
     GetPeerList,
-    Custom { id: String, data: Vec<u8> },
+    Custom {
+        id: String,
+        data: Vec<u8>,
+    },
     GetDKGStatus,
     GetPeerInfo,
     Ping,
     StartDKG,
-    StartADKG, 
+    StartADKG,
     SendAVSSShare {
         dealer_id: SerializablePeerId,
         receiver_id: SerializablePeerId,
         share: SerializableScalar,
-          commitments: Vec<SerializablePoint>,
+        commitments: Vec<SerializablePoint>,
     },
 
     BroadcastCommitments {
         dealer_id: SerializablePeerId,
-          commitments: Vec<SerializablePoint>,
+        commitments: Vec<SerializablePoint>,
     },
 
     SubmitComplaint {
@@ -64,11 +71,20 @@ pub enum RPCRequest {
 /// RPC response variants.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum RPCResponse {
-    PeerList{peers : Vec<SerializablePeerId>},
-    Custom { id: String, data: Vec<u8> },
-    DKGStarted {peer_id: SerializablePeerId},
+    PeerList {
+        peers: Vec<SerializablePeerId>,
+    },
+    Custom {
+        id: String,
+        data: Vec<u8>,
+    },
+    DKGStarted {
+        peer_id: SerializablePeerId,
+    },
     DKGError(String),
-    DKGStatus {status: DKGStatus},
+    DKGStatus {
+        status: DKGStatus,
+    },
     Error(String),
     PeerInfo(PeerInfo),
     Pong,
@@ -77,15 +93,15 @@ pub enum RPCResponse {
     Verified,
     ShareAccepted,
     ComplaintAccepted,
-      FinishedADKG {
-          group_public_key: SerializablePoint,
-      },
+    FinishedADKG {
+        group_public_key: SerializablePoint,
+    },
     GotAVSSShare {
         dealer_id: SerializablePeerId,
         receiver_id: SerializablePeerId,
         share: SerializableScalar,
-          commitments: Vec<SerializablePoint>,
-    }
+        commitments: Vec<SerializablePoint>,
+    },
 }
 
 /// CBOR + serde codec for our MPC protocol.
@@ -107,14 +123,14 @@ impl RequestResponseCodec for MPCCodec {
         'life0: 'async_trait,
         'life1: 'async_trait,
         'life2: 'async_trait,
-        T: AsyncRead + Unpin + Send + 'async_trait,  // nonblocking read :contentReference[oaicite:4]{index=4}
+        T: AsyncRead + Unpin + Send + 'async_trait, // nonblocking read :contentReference[oaicite:4]{index=4}
         Self: 'async_trait,
     {
         info!("[MPC REQ-RESP] Read req");
         Box::pin(async move {
             let mut buf = Vec::new();
-            io.read_to_end(&mut buf).await?;      // collect the full request :contentReference[oaicite:5]{index=5}
-            serde_cbor::from_slice(&buf)          // decode CBOR
+            io.read_to_end(&mut buf).await?; // collect the full request :contentReference[oaicite:5]{index=5}
+            serde_cbor::from_slice(&buf) // decode CBOR
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
         })
     }
@@ -128,15 +144,14 @@ impl RequestResponseCodec for MPCCodec {
         'life0: 'async_trait,
         'life1: 'async_trait,
         'life2: 'async_trait,
-        T: AsyncRead + Unpin + Send + 'async_trait,  // nonblocking read :contentReference[oaicite:6]{index=6}
+        T: AsyncRead + Unpin + Send + 'async_trait, // nonblocking read :contentReference[oaicite:6]{index=6}
         Self: 'async_trait,
     {
         info!("[MPC REQ-RESP] Read resp");
         Box::pin(async move {
             let mut buf = Vec::new();
             io.read_to_end(&mut buf).await?;
-            serde_cbor::from_slice(&buf)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+            serde_cbor::from_slice(&buf).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
         })
     }
 
@@ -157,8 +172,8 @@ impl RequestResponseCodec for MPCCodec {
         Box::pin(async move {
             let data = serde_cbor::to_vec(&req)
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-            io.write_all(&data).await?;             // send bytes
-            io.flush().await                       // flush substream
+            io.write_all(&data).await?; // send bytes
+            io.flush().await // flush substream
         })
     }
     fn write_response<'life0, 'life1, 'life2, 'async_trait, T>(
@@ -187,7 +202,7 @@ impl RequestResponseCodec for MPCCodec {
 /// Build a libp2p request‑response behaviour using our MPCCodec + CBOR.
 ///
 /// You can then add this to your Swarm.
-/// 
+///
 pub fn build_mpc_behaviour() -> CborReqRespBehaviour<MPCCodecRequest, MPCCodecResponse> {
     let cfg = RequestResponseConfig::default();
     let proto = StreamProtocol::new(MPCProtocol.as_ref());

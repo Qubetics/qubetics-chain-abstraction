@@ -1,48 +1,126 @@
 import axios from 'axios';
-import { ethers } from 'ethers';
-const RPC_SERVER = 'http://localhost:8081';
+import crypto from 'crypto';
 
-console.log('🧪 Testing RPC Server at', RPC_SERVER);
-console.log('=====================================');
+/**
+ * Main deposit intent submission script
+ * Merges functionality from simple_deposit_intent.js and btc_simple_deposit_intent.js
+ * Allows users to choose between different deposit intent types
+ */
 
-async function testRPC() {
+const SERVER_URL = 'http://localhost:8081';
+
+function createBtcToTicsDepositIntent() {
+    return {
+        source_address: "tb1q2nd0utgnrseanclhq2tr7hqhqtuc389mmjm2fs",
+        target_address: "0x742d35Cc6634C0532925a3b8D5A42DCA0e2394",
+        source_chain: "bitcoin",
+        target_chain: "qubetics",
+        amount: 5000000000000, // 1 ETH in wei
+        source_token: "BTC",
+        target_token: "ETH",
+        path: [1, 2, 3, 4],
+        transaction_hash: "0x" + crypto.randomBytes(32).toString('hex')
+    };
+}
+
+function createTicsToBtcDepositIntent() {   
+    return {
+        source_address: "0x742d35Cc6634C0532925a3b8D5A42DCA0e23e4",
+        target_address: "tb1pu4zlkfqy9z3vjjpt8r0c5m59u9jq7495x0sndymp2qr9nql9udgqt9az2q",
+        source_chain: "qubetics",
+        target_chain: "bitcoin",
+        amount: 9110000000000,
+        source_token: "TICS",
+        target_token: "BTC",
+        path: [1, 2, 3, 4],
+        transaction_hash: "0x" + crypto.randomBytes(32).toString('hex')
+    };
+}
+
+// Function to submit deposit intent
+async function submitDepositIntent(depositIntent, intentType) {
+    console.log(`🚀 Submitting ${intentType} deposit intent to MPC network...`);
+    console.log('📋 Deposit Intent:');
+    console.log(JSON.stringify(depositIntent, null, 2));
+    console.log('\n' + '='.repeat(50));
+
     try {
-        // Test 1: Get node status
-        console.log('\n📊 Test 1: Get Node Status');
-        const statusResponse = await axios.get(`${RPC_SERVER}/status`);
-        console.log('✅ Status:', statusResponse.data);
-
-        // Test 2: Submit a transaction
-        console.log('\n📝 Test 2: Submit Transaction');
-        const transaction = {
-            to: "0xceb5057834CB4EdE0E59F9e91046B8cB96C72e9C",                      // Required
-            value: "0x2386f26fc50000",              // Amount to send in wei
-            nonce: 3,                                      // Must be correct for sender's account
-            gasLimit: 21000,                               // Minimum for ETH transfer   
-            gasPrice: "0x3b9aca00",    // Base fee + priority
-            chainId: 1043,
-        };
-
-        const txResponse = await axios.post(`${RPC_SERVER}/submit_transaction`, transaction, {
-            headers: { 'Content-Type': 'application/json' }
+        const response = await axios.post(`${SERVER_URL}/deposit_intent`, depositIntent, {
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            timeout: 30000 // 30 second timeout
         });
-        console.log('✅ Transaction submitted:', txResponse.data);
 
-        console.log('\n🎉 All tests completed successfully!');
+        console.log('✅ SUCCESS! Deposit intent submitted successfully');
+        console.log('📄 Server Response:');
+        console.log(JSON.stringify(response.data, null, 2));
+        console.log('\n🎉 Intent ID:', response.data.intent_id);
+        console.log('📊 Status:', response.data.status);
+        console.log('💬 Message:', response.data.message);
+
     } catch (error) {
-        console.error('❌ Test failed:', error.message);
+        console.error('❌ FAILED to submit deposit intent');
+        console.error('🔴 Error:', error.message);
+
         if (error.response) {
-            console.error('Response status:', error.response.status);
-            console.error('Response data:', error.response.data);
+            console.error('📄 Server Error Response:', error.response.data);
+            console.error('🔢 Status Code:', error.response.status);
+        } else if (error.request) {
+            console.error('🌐 Network Error: No response received from server');
+            console.error('💡 Make sure the MPC node is running on port 8081');
         }
+
         process.exit(1);
+    }
+
+    console.log('\n🏁 Done!');
+}
+
+// Main execution function
+async function main() {
+    const args = process.argv.slice(2);
+    const command = args[0];
+
+    console.log('🎯 Deposit Intent Submission Tool');
+    console.log('================================');
+
+    if (!command) {
+        console.log('Usage:');
+        console.log('  node main.js eth-eth    - Submit Ethereum → Ethereum deposit intent');
+        console.log('  node main.js eth-btc    - Submit Ethereum → Bitcoin deposit intent');
+        console.log('  node main.js both       - Submit both types of deposit intents');
+        console.log('');
+        console.log('Examples:');
+        console.log('  node main.js eth-eth');
+        console.log('  node main.js eth-btc');
+        console.log('  node main.js both');
+        process.exit(1);
+    }
+
+    switch (command.toLowerCase()) {
+        case 'btc-tics':
+            console.log('📝 Submitting Ethereum → Ethereum deposit intent...\n');
+            const ethToEthIntent = createBtcToTicsDepositIntent();
+            await submitDepositIntent(ethToEthIntent, 'Ethereum-to-Ethereum');
+            break;
+
+        case 'tics-btc':
+            console.log('📝 Submitting Ethereum → Bitcoin deposit intent...\n');
+            const ethToBtcIntent = createTicsToBtcDepositIntent();
+            await submitDepositIntent(ethToBtcIntent, 'Ethereum-to-Bitcoin');
+            break;
+
+        default:
+            console.error('❌ Invalid command:', command);
+            console.log('');
+            console.log('Valid commands:');
+            console.log('  eth-eth  - Submit Ethereum → Ethereum deposit intent');
+            console.log('  eth-btc  - Submit Ethereum → Bitcoin deposit intent');
+            console.log('  both     - Submit both types of deposit intents');
+            process.exit(1);
     }
 }
 
-testRPC(); 
-// const nodeHexValues = {
-//     1: '393192b21d043fcc3959702fdbea7820326b5d8347f32d2827d63fd7c65b8262',
-//     2: '0e826320ac95ce1e50718687a4cb78a1fe901162028e4a67aa20a7733db049d6',
-//     3: '66992ad5d609876f62d8c6ff7b2c89c0116b24164a63027f002de428db4cc459',
-//     4: '568e7fee802ad2e73f7bdb0278b57dd4e35f0e6a0a8f6a8544855414503a55e3',
-//   };
+// Run the main function
+main().catch(console.error); 

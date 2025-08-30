@@ -42,7 +42,7 @@ pub struct KeyShare {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum GossipsubMessage {
-    DKG(crate::dkg::DKGMessage),
+    DKG(crate::adkg_secp256k1::DKGMessage),
     Signing(crate::signing::SigningMessage),
     Command(crate::commands::Command),
     Consensus(crate::consensus::ConsensusMessage),

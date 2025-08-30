@@ -55,25 +55,12 @@ async function main() {
     console.log(`${keccak256 ? '✅' : '❌'} keccak256: ${keccak256 ? 'Available' : 'Missing - install ethereum-cryptography'}`);
     console.log(`${computeAddress ? '✅' : '❌'} ethers: ${computeAddress ? 'Available' : 'Missing - install ethers'}`);
 
-    // const msgHash = Buffer.from("3e540787c1d9af94eb31bb7f64bf140880121aa598b3c16f6aa13d62a6926fad", "hex");
-    // const rBuf = Buffer.from("24653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c", "hex"); // ✅ Fixed 
-    // const sBuf = Buffer.from("138ef152e521cb510c89b1087719eb4b1bbd8bbeeaf310972b621d791a0cc2ef", "hex"); // ✅ Fixed  
-    // const recoveryId = 0; // ✅ Your SECOND dataset uses rid = 1
-    //1 => 0x080cfdf386e3627C959299266698DA2b48A77E15
-    //0 => 0x649D0Fac24E36532693BA146B2D77F243D419c23
 
-    // const msgHash = Buffer.from("650fa9ce0a02c5c585bc738b171505dd65efe025cded28dd08e3c90c1734a02d", "hex");
-    // const rBuf = Buffer.from("24653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c", "hex"); 
-    // const sBuf = Buffer.from("13e04a89a0470bf22009d19909f9fb7e5de71fc23d2b793fc3c5d931f6a092ee", "hex"); 
-    // const recoveryId = 27;
-    //0 => 0x61E2f29899a5e1F6662E316077528Af6b4d9517D
-    //1 => 0x080cfdf386e3627C959299266698DA2b48A77E15
 
-    const msgHash = Buffer.from("eecb6e18c804def80ca720dd41de44f5586e66854e7ee46b46046abcf813b87e", "hex");
+    const msgHash = Buffer.from("4aa578dbef2675798dd59967547151aa704b52821778946fc42a1fcf08d968ac", "hex");
     const rBuf = Buffer.from("24653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c", "hex");
-    const sBuf = Buffer.from("7a0345d56de9701eba12b605a459df25391f954737063e752f9fed6cfad0cf08", "hex");
-    const recoveryId = 1;
-    //0 => 0x080cfdf386e3627C959299266698DA2b48A77E15
+    const sBuf = Buffer.from("578e43862a21eb5d4ae4409dba699129f622ac2b74b2cc4f5e8ead737ffdd0b3", "hex");
+    const recoveryId = 0;
 
 
     console.log("\n🔍 Input validation:");

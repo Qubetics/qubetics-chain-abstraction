@@ -23,11 +23,11 @@ use tracing::{info, warn};
 
 use crate::commands::CommandProcessor;
 use crate::consensus::ConsensusNode;
-use crate::dkg::DKGNode;
+use crate::adkg_secp256k1::DKGNode;
 use crate::node_management::NodeMembership;
 use crate::signing::SigningNode;
 use crate::{
-    dkg::DKGStatus,
+    adkg_secp256k1::DKGStatus,
     types::{
         dkg::{MSG_TOPIC_DKG, MSG_TOPIC_PEER_DISCOVERY},
         p2p::SerializablePeerId,

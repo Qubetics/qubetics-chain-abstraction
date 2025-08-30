@@ -1,8 +1,8 @@
 use libp2p::identity::Keypair;
 use mpc_node::node_management::{DefaultThresholdCalculator, NodeMembership, VrfNodeManager};
 use mpc_node::{
-    commands::CommandProcessor, consensus::ConsensusNode, dkg::DKGNode, network::NetworkLayer,
-    rpc_server, signing::SigningNode,
+    adkg_secp256k1::DKGNode, commands::CommandProcessor, consensus::ConsensusNode,
+    network::NetworkLayer, rpc_server, signing::SigningNode,
 };
 use rand::{thread_rng, Rng};
 #[allow(dead_code)]

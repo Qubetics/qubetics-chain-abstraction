@@ -366,6 +366,35 @@ impl SigningNode {
         Ok(())
     }
 
+    async fn broadcast_transaction(raw_tx_hex: &str, mainnet: bool) -> Result<()> {
+        let base_url = if mainnet {
+            "https://blockstream.info/api"
+        } else {
+            "https://blockstream.info/testnet/api"
+        };
+        let url = format!("{}/tx", base_url);
+        println!("Broadcasting transaction to: {}", url);
+
+        let client = reqwest::Client::new();
+        let response = client.post(&url)
+            .header("Content-Type", "text/plain")
+            .header("User-Agent", "sigg_gen_agg/0.1.0")
+            .body(raw_tx_hex.to_string())
+            .send()
+            .await?;
+
+        if response.status().is_success() {
+            let txid = response.text().await?;
+            println!("✅ Transaction broadcasted successfully!");
+            println!("TXID: {}", txid);
+        } else {
+            let error_text = response.text().await?;
+            println!("❌ Failed to broadcast transaction: {}", error_text);
+            return Err(anyhow!("Broadcast failed: {}", error_text));
+        }
+        Ok(())
+    }
+
     /// Reconstruct signed Bitcoin transaction from aggregated signature
     pub async fn reconstruct_signed_bitcoin_transaction(
         &self,
@@ -1122,13 +1151,8 @@ impl SigningNode {
                                 "🎉 [SIGNING] 🔗 SIGNED BITCOIN TRANSACTION READY! 🔗"
                             );
                             info!("📄 Raw signed transaction: {}", signed_tx_hex);
-                            info!(
-                                "📤 You can now broadcast this to Bitcoin network using:"
-                            );
-                            info!(
-                                "   node clients/nodejs/broadcast_bitcoin_transaction.js {} --network testnet",
-                                signed_tx_hex
-                            );
+                            // info!("Broadcasting transaction to Bitcoin network...");
+                            // Self::broadcast_transaction(&signed_tx_hex, false).await?;
                         }
                     }
                     Err(e) => {
@@ -1265,77 +1289,6 @@ impl SigningNode {
         Ok(agg_sig)
     }
 
-    /// Shamir‐style Lagrange interpolation at x=0 over the field of order CURVE_ORDER.
-    // fn lagrange_interpolate(
-    //     &self,
-    //     shares: &[(u32, Vec<u8>)],
-    // ) -> Result<Vec<u8>> {
-    //     // 1) Check count
-    //     if shares.len() <= self.threshold {
-    //         return Err(anyhow!(
-    //             "Not enough shares: got {}, need {}",
-    //             shares.len(),
-    //             self.threshold
-    //         ));
-    //     }
-
-    //     // 2) Prepare modulus and accumulator
-    //     let n = BigUint::from_bytes_be(&CURVE_ORDER);
-    //     // simple extended‐Euclid modinv
-    //     fn modinv(a: &BigUint, m: &BigUint) -> Option<BigUint> {
-    //         let mut mn = (m.clone(), a.clone());
-    //         let mut xy = (BigInt::zero(), BigInt::one());
-    //         while mn.1 != BigUint::zero() {
-    //             let q = &mn.0 / &mn.1;
-    //             mn = (mn.1.clone(), &mn.0 - &q * &mn.1);
-    //             xy = (xy.1.clone(), &xy.0 - &q.to_bigint().unwrap() * &xy.1);
-    //         }
-    //         if mn.0 != BigUint::one() {
-    //             return None;
-    //         }
-    //         let m_int = m.to_bigint().unwrap();
-    //         let res = (xy.0 % &m_int + &m_int) % &m_int;
-    //         Some(res.to_biguint().unwrap())
-    //     }
-
-    //     let mut accum = BigUint::from(0u32);
-
-    //     // 3) For each share j, compute λ_j and add λ_j * y_j
-    //     for &(xj, ref yj_bytes) in shares {
-    //         let mut num = BigUint::from(1u32);
-    //         let mut den = BigUint::from(1u32);
-
-    //         for &(xm, _) in shares {
-    //             if xm != xj {
-    //                 let xm_u = BigUint::from(xm);
-    //                 num = (num * (&n - &xm_u)) % &n;
-    //                 let xj_u = BigUint::from(xj);
-    //                 let diff = if xj_u >= xm_u {
-    //                     &xj_u - &xm_u
-    //                 } else {
-    //                     &xj_u + &n - &xm_u
-    //                 };
-    //                 den = (den * diff) % &n;
-    //             }
-    //         }
-
-    //         let den_inv = modinv(&den, &n)
-    //             .ok_or_else(|| anyhow!("Denominator not invertible"))?;
-    //         let lambda = (num * den_inv) % &n;
-
-    //         let yj = BigUint::from_bytes_be(yj_bytes);
-    //         accum = (accum + (&lambda * yj)) % &n;
-    //     }
-
-    //     // 4) Pad to 32-byte big-endian
-    //     let mut be = accum.to_bytes_be();
-    //     if be.len() < 32 {
-    //         let mut pad = vec![0u8; 32 - be.len()];
-    //         pad.extend_from_slice(&be);
-    //         be = pad;
-    //     }
-    //     Ok(be)
-    // }
 
     fn lagrange_interpolate(&self, shares: &[(u32, Vec<u8>)]) -> Result<Vec<u8>> {
         if shares.len() < self.threshold {
@@ -2232,13 +2185,8 @@ impl SigningNode {
                                 "🎉 [SIGNING] 🔗 SIGNED BITCOIN TRANSACTION READY! 🔗"
                             );
                             info!("📄 Raw signed transaction: {}", signed_tx_hex);
-                            info!(
-                                "📤 You can now broadcast this to Bitcoin network using:"
-                            );
-                            info!(
-                                "   node clients/nodejs/broadcast_bitcoin_transaction.js {} --network testnet",
-                                signed_tx_hex
-                            );
+                            info!("Broadcasting transaction to Bitcoin network...");
+                            Self::broadcast_transaction(&signed_tx_hex, false).await?;
                         }
                     }
                     Err(e) => {
@@ -2262,6 +2210,8 @@ impl SigningNode {
         Ok(())
     }
 
+    /// Broadcast transaction to Bitcoin network
+   
     /// Handle signature received on the signatures-to-final-node topic
     pub async fn handle_signature_to_final_node(
         &mut self,
