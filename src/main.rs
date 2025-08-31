@@ -96,14 +96,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
     network.set_consensus_node(consensus_node);
     network.set_command_processor(command_processor);
 
-    // Start RPC server in a separate task
-    let message_tx = network.get_msg_tx();
-    let rpc_port = 8081; // You can make this configurable
-
     // Create user registry with a default chain code
     // TODO: Replace with actual chain code from DKG or secure source
     let chain_code = [42u8; 32]; // Placeholder chain code
     let user_registry = UserRegistry::new(chain_code);
+
+    // Set user registry in network layer
+    network.set_user_registry(user_registry.clone());
 
     // Create shared state for DKG secret share access
     let dkg_shared_state = Arc::new(RwLock::new(rpc_server::DKGSharedState::new()));
@@ -123,9 +122,22 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }));
     }
 
+    // Start RPC server in a separate task
+    let message_tx = network.get_msg_tx();
+    let rpc_port = 8081; // You can make this configurable
+    let node_id = network.get_local_peer_id().to_string();
+
+    // Create user registry with a default chain code
+    // TODO: Replace with actual chain code from DKG or secure source
+    let chain_code = [42u8; 32]; // Placeholder chain code
+    let user_registry = UserRegistry::new(chain_code);
+
+    // Set user registry in network layer
+    network.set_user_registry(user_registry.clone());
+
     tokio::spawn(async move {
         info!("🚀 Starting RPC server on port {}", rpc_port);
-        if let Err(e) = rpc_server::start_http_server(message_tx, rpc_port, user_registry, dkg_shared_state).await {
+        if let Err(e) = rpc_server::start_http_server(message_tx, rpc_port, user_registry, dkg_shared_state, node_id).await {
             info!("❌ RPC server failed: {:?}", e);
         }
     });

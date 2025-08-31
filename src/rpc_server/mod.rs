@@ -146,10 +146,11 @@ impl MpcRpcService {
 
 // HTTP server implementation using warp
 pub async fn start_http_server(
-    message_tx: mpsc::Sender<ChannelMessage>, 
+    message_tx: mpsc::Sender<ChannelMessage>,
     port: u16,
     user_registry: UserRegistry,
     dkg_state: Arc<RwLock<DKGSharedState>>,
+    node_id: String,
 ) -> Result<()> {
     let message_tx = std::sync::Arc::new(tokio::sync::Mutex::new(message_tx));
     let user_registry = std::sync::Arc::new(user_registry);
@@ -175,6 +176,8 @@ pub async fn start_http_server(
         .and(warp::body::json())
         .and(with_user_registry(user_registry.clone()))
         .and(with_dkg_state(dkg_state.clone()))
+        .and(with_message_tx(message_tx.clone()))
+        .and(with_node_id(node_id.clone()))
         .and_then(handle_register_user);
 
     // GET /user_info/{ethereum_address}
@@ -234,6 +237,15 @@ fn with_dkg_state(
     Error = std::convert::Infallible,
 > + Clone {
     warp::any().map(move || dkg_state.clone())
+}
+
+fn with_node_id(
+    node_id: String,
+) -> impl Filter<
+    Extract = (String,),
+    Error = std::convert::Infallible,
+> + Clone {
+    warp::any().map(move || node_id.clone())
 }
 
 async fn handle_submit_transaction(
@@ -323,30 +335,40 @@ async fn handle_register_user(
     request: UserRegistrationRequest,
     user_registry: std::sync::Arc<UserRegistry>,
     dkg_state: std::sync::Arc<Arc<RwLock<DKGSharedState>>>,
+    message_tx: std::sync::Arc<tokio::sync::Mutex<mpsc::Sender<ChannelMessage>>>,
+    node_id: String,
 ) -> Result<impl warp::Reply, warp::Rejection> {
     info!("👤 HTTP: Received user registration request for address: {}", request.ethereum_address);
 
     // Register the user in the global registry
-    match user_registry.register_user(&request.ethereum_address).await {
+    let dkg_secret_share = get_actual_dkg_secret_share(dkg_state).await;
+    
+    match user_registry.register_user(&request.ethereum_address, dkg_secret_share.as_ref(), &node_id).await {
         Ok(registration) => {
             info!("✅ HTTP: User registration successful for address: {}", request.ethereum_address);
             
-            // Get the actual original secret share from DKG shared state
-            if let Some(original_secret_share) = get_actual_dkg_secret_share(dkg_state).await {
-                // Compute the tweaked secret share using the actual DKG secret share
-                // but don't return it in the response - keep it private
-                match user_registry.compute_tweaked_secret_share(&request.ethereum_address, &original_secret_share).await {
-                    Ok(_tweaked_share) => {
-                        info!("🔐 HTTP: Tweaked secret share computed and stored privately for address: {}", request.ethereum_address);
-                    }
-                    Err(e) => {
-                        warn!("⚠️ HTTP: Failed to compute tweaked secret share for address {}: {}", request.ethereum_address, e);
-                        // Continue with registration even if tweaked share computation fails
-                    }
-                }
+            // Log HMAC constant for verification of deterministic behavior
+            info!("🔐 HTTP: Raw HMAC constant for {}: 0x{}", request.ethereum_address, hex::encode(&registration.hmac_constant));
+            
+            // Log the status of tweaked share computation
+            if registration.tweaked_secret_share.is_some() {
+                info!("🔐 HTTP: Tweaked secret share computed and stored privately for address: {}", request.ethereum_address);
             } else {
-                warn!("⚠️ HTTP: Could not retrieve DKG secret share for tweaked share computation");
-                // Continue with registration even if DKG secret share is not available
+                info!("⚠️ HTTP: Tweaked secret share not computed - DKG secret share not available for address: {}", request.ethereum_address);
+            }
+            
+            // Now broadcast to other nodes via P2P network (same pattern as deposit intent)
+            let user_reg_msg = ChannelMessage::UserRegistration {
+                ethereum_address: request.ethereum_address.clone(),
+                node_id: node_id.to_string(),
+            };
+            
+            // Send via message channel to be picked up by network layer
+            let tx = message_tx.lock().await;
+            if let Err(e) = tx.send(user_reg_msg).await {
+                warn!("⚠️ Failed to send user registration message to network: {}", e);
+            } else {
+                info!("📡 User registration message sent to network layer for broadcasting");
             }
             
             // Return the HMAC constant as hex strings for the two addresses

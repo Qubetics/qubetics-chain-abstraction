@@ -31,6 +31,10 @@ pub enum ChannelMessage {
         intent: crate::rpc_server::DepositIntent,
         intent_id: String,
     },
+    UserRegistration {
+        ethereum_address: String,
+        node_id: String,
+    },
     ScheduledDKGStart,
 }
 
@@ -58,4 +62,9 @@ pub enum GossipsubMessage {
         intent_id: String,
     },
     DKGCommand(crate::types::rpc::RPCRequest),
+    UserRegistration {
+        ethereum_address: String,
+        timestamp: i64,
+        node_id: String,
+    },
 }

@@ -26,6 +26,7 @@ use crate::consensus::ConsensusNode;
 use crate::adkg_secp256k1::DKGNode;
 use crate::node_management::NodeMembership;
 use crate::signing::SigningNode;
+use crate::user_registry::UserRegistry;
 use crate::{
     adkg_secp256k1::DKGStatus,
     types::{
@@ -83,6 +84,7 @@ pub struct NetworkLayer {
     signing_node: Option<SigningNode>,
     consensus_node: Option<ConsensusNode>,
     command_processor: Option<CommandProcessor>,
+    user_registry: Option<UserRegistry>,
     node_manager: Box<dyn NodeMembership>,
     scheduled_dkg_task: Option<JoinHandle<()>>,
 }
@@ -103,6 +105,7 @@ impl NetworkLayer {
             signing_node: None,
             consensus_node: None,
             command_processor: None,
+            user_registry: None,
             node_manager,
             scheduled_dkg_task: None,
         })
@@ -124,12 +127,20 @@ impl NetworkLayer {
         self.command_processor = Some(processor);
     }
 
+    pub fn set_user_registry(&mut self, registry: UserRegistry) {
+        self.user_registry = Some(registry);
+    }
+
     pub fn get_dkg_node(&mut self) -> Option<&mut DKGNode> {
         self.dkg_node.as_mut()
     }
 
     pub fn get_signing_node(&mut self) -> Option<&mut SigningNode> {
         self.signing_node.as_mut()
+    }
+
+    pub fn get_user_registry(&mut self) -> Option<&mut UserRegistry> {
+        self.user_registry.as_mut()
     }
 
     pub fn get_msg_tx(&self) -> mpsc::Sender<ChannelMessage> {
@@ -142,6 +153,30 @@ impl NetworkLayer {
 
     pub fn get_local_peer_id<'a>(&'a self) -> &'a PeerId {
         &self.local_peer_id
+    }
+
+    /// Broadcast a user registration to all other nodes in the P2P network
+    pub async fn broadcast_user_registration(&self, ethereum_address: &str, node_id: &str) -> Result<()> {
+        let registration_msg = GossipsubMessage::UserRegistration {
+            ethereum_address: ethereum_address.to_string(),
+            timestamp: chrono::Utc::now().timestamp(),
+            node_id: node_id.to_string(),
+        };
+
+        let msg_bytes = serde_json::to_vec(&registration_msg)
+            .map_err(|e| anyhow::anyhow!("Failed to serialize user registration: {}", e))?;
+
+        // Send via the message channel to be broadcast by the swarm
+        self.message_tx
+            .send(ChannelMessage::Broadcast {
+                topic: "user-registrations".to_string(),
+                data: msg_bytes,
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to send user registration broadcast: {}", e))?;
+
+        info!("📡 Broadcasted user registration for {} from node {} to P2P network", ethereum_address, node_id);
+        Ok(())
     }
 
     pub async fn start(&mut self) -> Result<()> {
@@ -342,6 +377,7 @@ impl NetworkLayer {
             "deposit-intents",
             "dkg-commands",
             "signatures-to-final-node",
+            "user-registrations",
         ];
         for topic in topics {
             let topic_hash = gossipsub::IdentTopic::new(topic);
@@ -1091,6 +1127,41 @@ impl NetworkLayer {
                     }
                 }
             }
+            GossipsubMessage::UserRegistration { ethereum_address, timestamp, node_id } => {
+                info!("👤 Received user registration via gossipsub: {} from node {} at {}", ethereum_address, node_id, timestamp);
+                
+                // Process user registration locally (same pattern as deposit intent)
+                if let Some(user_registry) = &mut self.user_registry {
+                    // Get DKG secret share if available
+                    let dkg_secret_share = if let Some(dkg_node) = &self.dkg_node {
+                        dkg_node.get_final_secret_share().await
+                    } else {
+                        None
+                    };
+                    
+                    // Register the user locally
+                    match user_registry.register_user(&ethereum_address, dkg_secret_share.as_ref(), &node_id).await {
+                        Ok(registration) => {
+                            info!("✅ [GOSSIPSUB] Successfully registered user {} locally", ethereum_address);
+                            
+                            // Log HMAC constant for verification of deterministic behavior
+                            info!("🔐 [GOSSIPSUB] Raw HMAC constant for {}: 0x{}", ethereum_address, hex::encode(&registration.hmac_constant));
+                            
+                            // Log the status of tweaked share computation
+                            if registration.tweaked_secret_share.is_some() {
+                                info!("🔐 [GOSSIPSUB] Tweaked secret share computed and stored privately for address: {}", ethereum_address);
+                            } else {
+                                info!("⚠️ [GOSSIPSUB] Tweaked secret share not computed - DKG secret share not available for address: {}", ethereum_address);
+                            }
+                        }
+                        Err(e) => {
+                            warn!("❌ [GOSSIPSUB] Failed to register user {} locally: {}", ethereum_address, e);
+                        }
+                    }
+                } else {
+                    warn!("❌ [GOSSIPSUB] User registry not available to handle user registration");
+                }
+            }
             GossipsubMessage::DepositIntent { intent, intent_id } => {
                 info!("📝 Received deposit intent via gossipsub: {:?} (ID: {})", intent, intent_id);
                 
@@ -1449,41 +1520,50 @@ impl NetworkLayer {
                                         gas_price: eth_tx.gas_price.clone(),
                                         chain_id: eth_tx.chain_id,
                                     };
-                                    signing_node.sign_message(tx_bytes.clone(), &dummy_tx).await?;
+                                    let tx_bytes = crate::utils::transaction::create_transaction_for_signing(&dummy_tx);
+                                    println!("→ RLP payload: 0x{}", hex::encode(&tx_bytes));
+
+                                    signing_node.sign_message(tx_bytes, &dummy_tx).await?;
                                 }
                             }
-                            info!("✅ [LOCAL] {} deposit intent signing completed", signing_node.get_chain_type());
                         }
                         Err(e) => {
-                            warn!("❌ [LOCAL] Failed to create chain transaction: {}", e);
-                            return Ok(());
+                            warn!("❌ [LOCAL] Failed to create chain transaction from deposit intent: {}", e);
                         }
                     }
                 } else {
-                    warn!("❌ [LOCAL] Signing node not available for deposit intent processing");
+                    warn!("❌ [LOCAL] Signing node not available for deposit intent");
                 }
                 
-                // Then broadcast the deposit intent to other nodes
-                let gossipsub_msg = GossipsubMessage::DepositIntent { 
+                // Now broadcast to other nodes via gossipsub
+                let deposit_intent_msg = GossipsubMessage::DepositIntent {
                     intent: intent.clone(),
                     intent_id: intent_id.clone(),
                 };
-                let intent_data = serde_json::to_vec(&gossipsub_msg).map_err(|e| {
-                    warn!("Failed to serialize deposit intent: {}", e);
-                    anyhow::anyhow!("Serialization error: {}", e)
-                })?;
-
-                let swarm_mut = swarm.behaviour_mut();
-                let topic_hash = gossipsub::IdentTopic::new("deposit-intents".to_string());
+                let msg_bytes = serde_json::to_vec(&deposit_intent_msg)
+                    .map_err(|e| anyhow::anyhow!("Failed to serialize deposit intent: {}", e))?;
                 
-                match swarm_mut.gossipsub.publish(topic_hash, intent_data) {
-                    Ok(_) => {
-                        info!("✅ [BROADCAST] Successfully published deposit intent to network: {}", intent_id);
-                    }
-                    Err(e) => {
-                        warn!("❌ [BROADCAST] Failed to publish deposit intent: {:?}", e);
-                    }
-                }
+                // Broadcast to all peers via gossipsub
+                let topic = gossipsub::IdentTopic::new("deposit-intents");
+                swarm.behaviour_mut().gossipsub.publish(topic, msg_bytes)?;
+                info!("📡 [NETWORK] Broadcasted deposit intent to P2P network");
+            }
+            ChannelMessage::UserRegistration { ethereum_address, node_id } => {
+                info!("👤 [NETWORK] Broadcasting user registration: {} from node {}", ethereum_address, node_id);
+                
+                // Create and broadcast user registration message via gossipsub (same pattern as deposit intent)
+                let user_reg_msg = GossipsubMessage::UserRegistration {
+                    ethereum_address: ethereum_address.clone(),
+                    timestamp: chrono::Utc::now().timestamp(),
+                    node_id: node_id.clone(),
+                };
+                let msg_bytes = serde_json::to_vec(&user_reg_msg)
+                    .map_err(|e| anyhow::anyhow!("Failed to serialize user registration: {}", e))?;
+                
+                // Broadcast to all peers via gossipsub
+                let topic = gossipsub::IdentTopic::new("user-registrations");
+                swarm.behaviour_mut().gossipsub.publish(topic, msg_bytes)?;
+                info!("📡 [NETWORK] Broadcasted user registration to P2P network");
             }
             ChannelMessage::ScheduledDKGStart => {
                 info!("🚀 Starting DKG at the exact agreed instant {}!", SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs());
