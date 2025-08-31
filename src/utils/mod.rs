@@ -5,6 +5,7 @@ use k256::elliptic_curve::sec1::ToEncodedPoint;
 use ethers_core::utils::keccak256;
 pub mod bigint;
 pub mod transaction;
+pub mod hmac_helper;
 
 pub fn get_eth_address_from_group_key(pubkey: ProjectivePoint) -> String {
     let affine = AffinePoint::from(pubkey);

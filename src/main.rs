@@ -2,7 +2,7 @@ use libp2p::identity::Keypair;
 use mpc_node::node_management::{DefaultThresholdCalculator, NodeMembership, VrfNodeManager};
 use mpc_node::{
     adkg_secp256k1::DKGNode, commands::CommandProcessor, consensus::ConsensusNode,
-    network::NetworkLayer, rpc_server, signing::SigningNode,
+    network::NetworkLayer, rpc_server, signing::SigningNode, user_registry::UserRegistry,
 };
 use rand::{thread_rng, Rng};
 #[allow(dead_code)]
@@ -16,6 +16,7 @@ use tracing::info;
 use tracing::level_filters::LevelFilter;
 use tracing_appender::non_blocking;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+use tokio::sync::RwLock;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -99,9 +100,32 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let message_tx = network.get_msg_tx();
     let rpc_port = 8081; // You can make this configurable
 
+    // Create user registry with a default chain code
+    // TODO: Replace with actual chain code from DKG or secure source
+    let chain_code = [42u8; 32]; // Placeholder chain code
+    let user_registry = UserRegistry::new(chain_code);
+
+    // Create shared state for DKG secret share access
+    let dkg_shared_state = Arc::new(RwLock::new(rpc_server::DKGSharedState::new()));
+
+    // Set up DKG completion callback to update shared state
+    let dkg_shared_state_clone = dkg_shared_state.clone();
+    if let Some(dkg_node) = network.get_dkg_node() {
+        // Set completion callback to update shared state when DKG completes
+        dkg_node.set_completion_callback(Box::new(move |secret_share, _public_key| {
+            let dkg_state = dkg_shared_state_clone.clone();
+            // Use tokio::spawn to handle the async operation
+            tokio::spawn(async move {
+                let mut state = dkg_state.write().await;
+                state.set_secret_share(secret_share);
+                info!("🔐 DKG completion callback: Secret share stored in shared state");
+            });
+        }));
+    }
+
     tokio::spawn(async move {
         info!("🚀 Starting RPC server on port {}", rpc_port);
-        if let Err(e) = rpc_server::start_http_server(message_tx, rpc_port).await {
+        if let Err(e) = rpc_server::start_http_server(message_tx, rpc_port, user_registry, dkg_shared_state).await {
             info!("❌ RPC server failed: {:?}", e);
         }
     });

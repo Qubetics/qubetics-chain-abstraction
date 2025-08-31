@@ -11,6 +11,7 @@ pub mod node_management;
 pub mod rpc_server;
 pub mod signing;
 pub mod types;
+pub mod user_registry;
 pub mod utils;
 pub mod vrf;
 
