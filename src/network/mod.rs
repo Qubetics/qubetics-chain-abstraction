@@ -1145,16 +1145,6 @@ impl NetworkLayer {
                         Ok(registration) => {
                             info!("✅ [GOSSIPSUB] Successfully registered user {} locally", ethereum_address);
                             
-                            // Log HMAC constant for verification of deterministic behavior
-                            info!("🔐 [GOSSIPSUB] Raw HMAC constant for {}: 0x{}", ethereum_address, hex::encode(&registration.hmac_constant));
-                            
-                            // Log the status of tweaked share computation
-                            if registration.tweaked_secret_share.is_some() {
-                                info!("🔐 [GOSSIPSUB] Tweaked secret share computed and stored privately for address: {}", ethereum_address);
-                            } else {
-                                info!("⚠️ [GOSSIPSUB] Tweaked secret share not computed - DKG secret share not available for address: {}", ethereum_address);
-                            }
-
                             // Deterministically compute HMAC tweak and update commitments locally (primary path)
                             if let Some(dkg_node) = &self.dkg_node {
                                 if let Some(tweak_scalar) = k256::Scalar::from_repr_vartime(registration.hmac_constant.into()) {
@@ -1162,6 +1152,28 @@ impl NetworkLayer {
                                         warn!("❌ [GOSSIPSUB] Failed to apply commitments update for {}: {}", ethereum_address, e);
                                     } else {
                                         info!("✅ [GOSSIPSUB] Applied commitments update for user: {}", ethereum_address);
+                                        // Derive and store user-specific group key from updated commitments
+                                        match dkg_node.derive_user_specific_group_key_from_updated_commitments(&ethereum_address).await {
+                                            Ok(group_key) => {
+                                                if let Err(e) = user_registry.set_user_group_key(&ethereum_address, group_key).await {
+                                                    warn!("❌ [GOSSIPSUB] Failed to store user group key for {}: {}", ethereum_address, e);
+                                                } else {
+                                                    info!("🔑 [GOSSIPSUB] Stored user-specific group key and derived addresses for {}", ethereum_address);
+                                                    // Log the derived addresses
+                                                    if let Some(user) = user_registry.get_user_by_address(&ethereum_address).await {
+                                                        if let Some(eth_addr) = &user.derived_eth_address {
+                                                            info!("📬 [GOSSIPSUB] Derived ETH address for {}: {}", ethereum_address, eth_addr);
+                                                        }
+                                                        if let Some(btc_addr) = &user.derived_btc_address {
+                                                            info!("📬 [GOSSIPSUB] Derived BTC address for {}: {}", ethereum_address, btc_addr);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            Err(e) => {
+                                                warn!("❌ [GOSSIPSUB] Failed to derive user-specific group key for {}: {}", ethereum_address, e);
+                                            }
+                                        }
                                     }
                                 } else {
                                     warn!("❌ [GOSSIPSUB] Invalid HMAC tweak scalar for {}", ethereum_address);
@@ -1575,6 +1587,28 @@ impl NetworkLayer {
                                 warn!("❌ [NETWORK] Failed to update commitments locally for {}: {}", ethereum_address, e);
                             } else {
                                 info!("✅ [NETWORK] Updated commitments locally for user: {}", ethereum_address);
+                                // Derive and store user-specific group key from updated commitments
+                                match dkg_node.derive_user_specific_group_key_from_updated_commitments(&ethereum_address).await {
+                                    Ok(group_key) => {
+                                        if let Err(e) = user_registry.set_user_group_key(&ethereum_address, group_key).await {
+                                            warn!("❌ [NETWORK] Failed to store user group key for {}: {}", ethereum_address, e);
+                                        } else {
+                                            info!("🔑 [NETWORK] Stored user-specific group key and derived addresses for {}", ethereum_address);
+                                            // Log the derived addresses
+                                            if let Some(user) = user_registry.get_user_by_address(&ethereum_address).await {
+                                                if let Some(eth_addr) = &user.derived_eth_address {
+                                                    info!("📬 [NETWORK] Derived ETH address for {}: {}", ethereum_address, eth_addr);
+                                                }
+                                                if let Some(btc_addr) = &user.derived_btc_address {
+                                                    info!("📬 [NETWORK] Derived BTC address for {}: {}", ethereum_address, btc_addr);
+                                                }
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        warn!("❌ [NETWORK] Failed to derive user-specific group key for {}: {}", ethereum_address, e);
+                                    }
+                                }
                             }
                         } else {
                             warn!("❌ [NETWORK] Invalid HMAC tweak scalar for {}", ethereum_address);

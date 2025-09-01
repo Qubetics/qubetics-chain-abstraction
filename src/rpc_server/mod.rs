@@ -100,6 +100,8 @@ pub struct UserRegistrationResponse {
     pub message: String,
     pub address_1: String,
     pub address_2: String,
+    pub derived_eth_address: Option<String>,
+    pub derived_btc_address: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -345,16 +347,12 @@ async fn handle_register_user(
         Ok(registration) => {
             info!("✅ HTTP: User registration successful for address: {}", request.ethereum_address);
             
-            // Log HMAC constant for verification of deterministic behavior
-            info!("🔐 HTTP: Raw HMAC constant for {}: 0x{}", request.ethereum_address, hex::encode(&registration.hmac_constant));
-            
-            // Log the status of tweaked share computation
-            if registration.tweaked_secret_share.is_some() {
-                info!("🔐 HTTP: Tweaked secret share computed and stored privately for address: {}", request.ethereum_address);
-                
-                // Other nodes will update commitments upon receiving UserRegistration via gossipsub
-            } else {
-                info!("⚠️ HTTP: Tweaked secret share not computed - DKG secret share not available for address: {}", request.ethereum_address);
+            // Log derived addresses if available
+            if let Some(eth_addr) = &registration.derived_eth_address {
+                info!("📬 HTTP: Derived ETH address for {}: {}", request.ethereum_address, eth_addr);
+            }
+            if let Some(btc_addr) = &registration.derived_btc_address {
+                info!("📬 HTTP: Derived BTC address for {}: {}", request.ethereum_address, btc_addr);
             }
             
             // Now broadcast to other nodes via P2P network (same pattern as deposit intent)
@@ -374,11 +372,17 @@ async fn handle_register_user(
             // Return the HMAC constant as hex strings for the two addresses
             let hmac_hex = hex::encode(registration.hmac_constant);
             
+            // Get derived addresses if available
+            let derived_eth = registration.derived_eth_address.clone();
+            let derived_btc = registration.derived_btc_address.clone();
+            
             Ok(warp::reply::json(&UserRegistrationResponse {
                 status: "success".to_string(),
                 message: "User registered successfully".to_string(),
                 address_1: hmac_hex.clone(),
                 address_2: hmac_hex, // For now, returning the same HMAC constant for both addresses
+                derived_eth_address: derived_eth,
+                derived_btc_address: derived_btc,
             }))
         }
         Err(e) => {
@@ -419,6 +423,9 @@ async fn handle_get_user_info(
                 "ethereum_address": registration.ethereum_address,
                 "hmac_constant": hex::encode(registration.hmac_constant),
                 "has_tweaked_share": registration.tweaked_secret_share.is_some(),
+                "has_user_group_key": registration.user_group_key.is_some(),
+                "derived_eth_address": registration.derived_eth_address,
+                "derived_btc_address": registration.derived_btc_address,
                 "created_at": registration.created_at
             });
             

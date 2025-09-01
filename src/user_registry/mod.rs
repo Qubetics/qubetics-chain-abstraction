@@ -6,8 +6,9 @@ use uuid::Uuid;
 use chrono::{DateTime, Utc};
 use k256::Scalar;
 use ff::PrimeField;
+use k256::ProjectivePoint;
 
-use crate::types::SerializableScalar;
+use crate::types::{SerializableScalar, SerializablePoint};
 use crate::utils::hmac_helper::hmac256_from_addr;
 use tracing::info;
 use tracing::warn;
@@ -19,6 +20,9 @@ pub struct UserRegistration {
     pub ethereum_address: String,
     pub hmac_constant: [u8; 32],
     pub tweaked_secret_share: Option<SerializableScalar>,
+    pub user_group_key: Option<SerializablePoint>,
+    pub derived_eth_address: Option<String>,
+    pub derived_btc_address: Option<String>,
     pub created_at: DateTime<Utc>,
     pub registered_by_node: String,  // Track which node registered this user
 }
@@ -85,6 +89,9 @@ impl UserRegistry {
             ethereum_address: ethereum_address.to_string(),
             hmac_constant,
             tweaked_secret_share,
+            user_group_key: None,
+            derived_eth_address: None,
+            derived_btc_address: None,
             created_at: Utc::now(),
             registered_by_node: node_id.to_string(),
         };
@@ -184,6 +191,47 @@ impl UserRegistry {
         }
     }
 
+    /// Store the user-specific group public key derived from updated commitments
+    pub async fn set_user_group_key(&self, ethereum_address: &str, group_key: ProjectivePoint) -> Result<(), String> {
+        let affine = group_key.to_affine();
+        let serial = SerializablePoint(affine);
+        
+        // Derive ETH and BTC addresses from the group key
+        let derived_eth = crate::utils::get_eth_address_from_group_key(group_key);
+        let derived_btc = crate::utils::get_btc_address_from_group_key(group_key);
+        
+        // Log the derived addresses
+        info!("📬 [USER_REGISTRY] Derived ETH address for {}: {}", ethereum_address, derived_eth);
+        info!("📬 [USER_REGISTRY] Derived BTC address for {}: {}", ethereum_address, derived_btc);
+
+        // Lookup user id from address map for in-place mutation
+        let address_map = self.address_to_user.read().await;
+        if let Some(user_id) = address_map.get(ethereum_address) {
+            let mut users = self.users.write().await;
+            if let Some(user) = users.get_mut(user_id) {
+                user.user_group_key = Some(serial);
+                user.derived_eth_address = Some(derived_eth);
+                user.derived_btc_address = Some(derived_btc);
+                return Ok(());
+            }
+        }
+        Err("User not found".to_string())
+    }
+
+    /// Set derived addresses for a user
+    pub async fn set_derived_addresses(&self, ethereum_address: &str, eth_address: String, btc_address: String) -> Result<(), String> {
+        let address_map = self.address_to_user.read().await;
+        if let Some(user_id) = address_map.get(ethereum_address) {
+            let mut users = self.users.write().await;
+            if let Some(user) = users.get_mut(user_id) {
+                user.derived_eth_address = Some(eth_address);
+                user.derived_btc_address = Some(btc_address);
+                return Ok(());
+            }
+        }
+        Err("User not found".to_string())
+    }
+
     /// Get the chain code (for debugging/testing purposes)
     pub fn get_chain_code(&self) -> [u8; 32] {
         self.chain_code
@@ -215,6 +263,9 @@ mod tests {
         assert!(!registration.user_id.is_empty());
         assert_eq!(registration.hmac_constant.len(), 32);
         assert!(registration.tweaked_secret_share.is_none()); // No DKG share provided
+        assert!(registration.user_group_key.is_none()); // No group key provided
+        assert!(registration.derived_eth_address.is_none());
+        assert!(registration.derived_btc_address.is_none());
         assert_eq!(registration.registered_by_node, "test_node");
     }
 
@@ -234,6 +285,9 @@ mod tests {
         assert!(!registration.user_id.is_empty());
         assert_eq!(registration.hmac_constant.len(), 32);
         assert!(registration.tweaked_secret_share.is_some()); // DKG share provided, so tweaked share computed
+        assert!(registration.user_group_key.is_none()); // No group key provided
+        assert!(registration.derived_eth_address.is_none());
+        assert!(registration.derived_btc_address.is_none());
         assert_eq!(registration.registered_by_node, "test_node");
         
         // Verify the tweaked share is stored

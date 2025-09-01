@@ -4,13 +4,7 @@ import axios from 'axios';
 
 // Configuration
 const RPC_BASE_URL = 'http://localhost:8081';
-const TEST_ETH_ADDRESSES = [
-    '0x742d35Cc6634C0532925a3b8D4C9db96C4b4d8b6',
-    '0x1234567890123456789012345678901234567890',
-    '0xabcdefabcdefabcdefabcdefabcdefabcdefabcd',
-    '0x1111111111111111111111111111111111111111',
-    '0x2222222222222222222222222222222222222222'
-];
+const TEST_ETH_ADDRESS = '0x742d35Cc6634C0532925a3b8D4C9db96C4b4d8b6';
 
 // Colors for console output
 const colors = {
@@ -19,7 +13,8 @@ const colors = {
     red: '\x1b[31m',
     yellow: '\x1b[33m',
     blue: '\x1b[34m',
-    cyan: '\x1b[36m'
+    cyan: '\x1b[36m',
+    green: '\x1b[32m'
 };
 
 function log(message, color = 'reset') {
@@ -39,12 +34,14 @@ async function testRegisterUser(ethereumAddress) {
             timeout: 10000
         });
 
-        log(`✅ Registration successful!`, 'cyan');
+        log(`✅ Registration successful!`, 'green');
         log(`📊 Response:`, 'cyan');
         log(`   Status: ${response.data.status}`, 'cyan');
         log(`   Message: ${response.data.message}`, 'cyan');
         log(`   Address 1: ${response.data.address_1}`, 'cyan');
         log(`   Address 2: ${response.data.address_2}`, 'cyan');
+        log(`   Derived ETH Address: ${response.data.derived_eth_address || 'Not available'}`, 'cyan');
+        log(`   Derived BTC Address: ${response.data.derived_btc_address || 'Not available'}`, 'cyan');
         
         return {
             success: true,
@@ -86,12 +83,15 @@ async function testGetUserInfo(ethereumAddress) {
             timeout: 10000
         });
 
-        log(`✅ User info retrieved successfully!`, 'cyan');
+        log(`✅ User info retrieved successfully!`, 'green');
         log(`📊 User Info:`, 'cyan');
         log(`   User ID: ${response.data.user_id}`, 'cyan');
         log(`   Ethereum Address: ${response.data.ethereum_address}`, 'cyan');
         log(`   HMAC Constant: ${response.data.hmac_constant}`, 'cyan');
         log(`   Has Tweaked Share: ${response.data.has_tweaked_share}`, 'cyan');
+        log(`   Has User Group Key: ${response.data.has_user_group_key}`, 'cyan');
+        log(`   Derived ETH Address: ${response.data.derived_eth_address || 'Not available'}`, 'cyan');
+        log(`   Derived BTC Address: ${response.data.derived_btc_address || 'Not available'}`, 'cyan');
         log(`   Created At: ${response.data.created_at}`, 'cyan');
         
         return {
@@ -123,7 +123,7 @@ async function testDKGStatus() {
             timeout: 10000
         });
 
-        log(`✅ DKG status retrieved successfully!`, 'cyan');
+        log(`✅ DKG status retrieved successfully!`, 'green');
         log(`📊 DKG Status:`, 'cyan');
         log(`   Status: ${response.data.status}`, 'cyan');
         log(`   DKG Status: ${response.data.dkg_status || 'Unknown'}`, 'cyan');
@@ -144,80 +144,30 @@ async function testDKGStatus() {
     }
 }
 
-async function testStartDKG() {
-    try {
-        log(`\n🚀 Testing DKG start endpoint`, 'blue');
-        
-        const response = await axios.post(`${RPC_BASE_URL}/start_dkg`, {}, {
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            timeout: 10000
-        });
-
-        log(`✅ DKG start request sent successfully!`, 'cyan');
-        log(`📊 Response:`, 'cyan');
-        log(`   Status: ${response.data.status}`, 'cyan');
-        log(`   Message: ${response.data.message}`, 'cyan');
-        
-        return {
-            success: true,
-            data: response.data
-        };
-        
-    } catch (error) {
-        if (error.response) {
-            log(`❌ DKG start failed: ${error.response.data?.message || error.response.statusText}`, 'red');
-        } else {
-            log(`❌ Error starting DKG: ${error.message}`, 'red');
-        }
-        return {
-            success: false,
-            error: error.message
-        };
-    }
-}
-
 async function runTests() {
-    log(`\n${colors.bright}🧪 Starting RPC Endpoint Tests${colors.reset}`, 'bright');
+    log(`\n${colors.bright}🧪 Starting Single User Registration Test${colors.reset}`, 'bright');
     log(`📍 Testing against: ${RPC_BASE_URL}`, 'cyan');
     
     // Test DKG status first
-    log(`\n🔍 Checking DKG status before testing...`, 'blue');
+    log(`\n🔍 Checking DKG status...`, 'blue');
     await testDKGStatus();
     
-    // Test DKG start
-    log(`\n🚀 Starting DKG process...`, 'blue');
-    await testStartDKG();
+    // Test user registration with single address
+    log(`\n${colors.bright}👥 Testing User Registration${colors.reset}`, 'bright');
+    log(`\n🎯 Testing with address: ${TEST_ETH_ADDRESS}`, 'blue');
     
-    // Wait a bit for DKG to potentially start
-    log(`\n⏳ Waiting 5 seconds for DKG to potentially start...`, 'yellow');
-    await new Promise(resolve => setTimeout(resolve, 5000));
-    
-    // Test DKG status again
-    log(`\n🔍 Checking DKG status after start...`, 'blue');
-    await testDKGStatus();
-    
-    // Test user registration with ONLY ONE address
-    log(`\n${colors.bright}👥 Testing User Registration (Single Request)${colors.reset}`, 'bright');
-    
-    // Use only the first address
-    const address = TEST_ETH_ADDRESSES[0];
-    log(`\n🎯 Testing with single address: ${address}`, 'blue');
-    
-    const result = await testRegisterUser(address);
+    const result = await testRegisterUser(TEST_ETH_ADDRESS);
     
     if (result.success) {
         // Wait a bit before getting user info
-        log(`\n⏳ Waiting 2 seconds before checking user info...`, 'yellow');
-        await new Promise(resolve => setTimeout(resolve, 2000));
+        log(`\n⏳ Waiting 3 seconds before checking user info...`, 'yellow');
+        await new Promise(resolve => setTimeout(resolve, 3000));
         
         // Test getting user info
-        await testGetUserInfo(address);
+        await testGetUserInfo(TEST_ETH_ADDRESS);
     }
     
-    log(`\n${colors.bright}✅ Single user test completed!${colors.reset}`, 'bright');
-    log(`\n🛑 Script will now exit as requested.`, 'yellow');
+    log(`\n${colors.bright}✅ Test completed!${colors.reset}`, 'bright');
 }
 
 // Handle command line arguments
@@ -229,7 +179,7 @@ if (process.argv.includes('--help') || process.argv.includes('-h')) {
     log(`\n${colors.bright}Examples:${colors.reset}`, 'bright');
     log(`  node test_register_user.js`, 'cyan');
     log(`\n${colors.bright}Note:${colors.reset}`, 'bright');
-    log(`  This script now tests only ONE user registration and then exits.`, 'yellow');
+    log(`  This script tests user registration and displays derived ETH/BTC addresses.`, 'yellow');
     process.exit(0);
 }
 
