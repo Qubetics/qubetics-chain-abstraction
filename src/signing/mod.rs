@@ -32,6 +32,7 @@ use crate::chain::{ChainHandler, ChainSignature, ChainHandlerFactory, ChainTrans
 use crate::utils::get_eth_address_from_group_key;
 // Import BitcoinTransaction directly from chain module
 use crate::chain::{BitcoinTransaction, BitcoinInput};
+use crate::utils::transaction::DetectedAddressType;
 
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -731,15 +732,39 @@ impl SigningNode {
                     self.id, round
                 );
                 
-                // Create DER-encoded signature for Bitcoin
-                let r = &aggregated_signature[0..32];
-                let s = &aggregated_signature[32..64];
-                
-                // Create DER signature format
-                let der_signature = self.create_der_signature(r, s)?;
-                
+                // Determine address type from first input
+                let address_type = if let Some(input) = original_tx.inputs.first() {
+                    if let Some(witness_utxo) = &input.witness_utxo {
+                        match witness_utxo.script_pubkey.len() {
+                            22 if witness_utxo.script_pubkey[0] == 0x00 && witness_utxo.script_pubkey[1] == 0x14 => DetectedAddressType::P2WPKH,
+                            34 if witness_utxo.script_pubkey[0] == 0x00 && witness_utxo.script_pubkey[1] == 0x20 => DetectedAddressType::P2WSH,
+                            34 if witness_utxo.script_pubkey[0] == 0x51 && witness_utxo.script_pubkey[1] == 0x20 => DetectedAddressType::P2TR,
+                            _ => DetectedAddressType::P2WPKH,
+                        }
+                    } else {
+                        DetectedAddressType::P2PKH
+                    }
+                } else {
+                    DetectedAddressType::P2PKH
+                };
+
+                // Prepare signature bytes depending on address type
+                let signature = match address_type {
+                    DetectedAddressType::P2TR => {
+                        let mut sig = aggregated_signature.to_vec();
+                        // Append SIGHASH_ALL for Taproot
+                        sig.push(0x01);
+                        sig
+                    },
+                    _ => {
+                        let r = &aggregated_signature[0..32];
+                        let s = &aggregated_signature[32..64];
+                        self.create_der_signature(r, s)?
+                    }
+                };
+
                 // Create the complete signed transaction
-                let signed_tx = self.create_signed_bitcoin_transaction(original_tx, &der_signature)?;
+                let signed_tx = self.create_signed_bitcoin_transaction(original_tx, &signature)?;
                 
                 let signed_tx_hex = hex::encode(&signed_tx);
                 
@@ -890,7 +915,7 @@ impl SigningNode {
     fn create_signed_bitcoin_transaction(
         &self,
         original_tx: &BitcoinTransaction,
-        der_signature: &[u8],
+        signature: &[u8],
     ) -> Result<Vec<u8>> {
         let mut signed_tx = Vec::new();
         
@@ -922,7 +947,7 @@ impl SigningNode {
             
             // Create script_sig based on address type
             let script_sig = if i == 0 {
-                self.create_script_sig_for_input(input, der_signature)?
+                self.create_script_sig_for_input(input, signature)?
             } else {
                 vec![] // Empty for other inputs for now
             };
@@ -954,7 +979,7 @@ impl SigningNode {
                 for (i, _witness_input) in witness.inputs.iter().enumerate() {
                     if i == 0 {
                         // Create witness stack for the first input
-                        let witness_stack = self.create_witness_stack_for_input(&original_tx.inputs[i], der_signature)?;
+                        let witness_stack = self.create_witness_stack_for_input(&original_tx.inputs[i], signature)?;
                         signed_tx.extend_from_slice(&self.encode_varint(witness_stack.len() as u64));
                         for item in witness_stack {
                             signed_tx.extend_from_slice(&self.encode_varint(item.len() as u64));
@@ -975,7 +1000,7 @@ impl SigningNode {
     }
 
     /// Create script_sig for different input types
-    fn create_script_sig_for_input(&self, input: &BitcoinInput, der_signature: &[u8]) -> Result<Vec<u8>> {
+    fn create_script_sig_for_input(&self, input: &BitcoinInput, signature: &[u8]) -> Result<Vec<u8>> {
         if let Some(witness_utxo) = &input.witness_utxo {
             // For SegWit inputs, script_sig is usually empty or contains redeem script
             match witness_utxo.script_pubkey.len() {
@@ -1002,8 +1027,8 @@ impl SigningNode {
             let mut script_sig = Vec::new();
             
             // Push signature (DER format)
-            script_sig.push(der_signature.len() as u8);
-            script_sig.extend_from_slice(der_signature);
+            script_sig.push(signature.len() as u8);
+            script_sig.extend_from_slice(signature);
             
             // Push public key
             script_sig.push(group_key_bytes.len() as u8);
@@ -1014,28 +1039,28 @@ impl SigningNode {
     }
 
     /// Create witness stack for SegWit inputs
-    fn create_witness_stack_for_input(&self, input: &BitcoinInput, der_signature: &[u8]) -> Result<Vec<Vec<u8>>> {
+    fn create_witness_stack_for_input(&self, input: &BitcoinInput, signature: &[u8]) -> Result<Vec<Vec<u8>>> {
         if let Some(witness_utxo) = &input.witness_utxo {
             match witness_utxo.script_pubkey.len() {
                 22 if witness_utxo.script_pubkey[0] == 0x00 && witness_utxo.script_pubkey[1] == 0x14 => {
                     // P2WPKH: [signature, pubkey]
                     let group_key_bytes = self.get_group_public_key_bytes()?;
-                    Ok(vec![der_signature.to_vec(), group_key_bytes])
+                    Ok(vec![signature.to_vec(), group_key_bytes])
                 },
                 34 if witness_utxo.script_pubkey[0] == 0x00 && witness_utxo.script_pubkey[1] == 0x20 => {
                     // P2WSH: [signature, script, ...]
                     let group_key_bytes = self.get_group_public_key_bytes()?;
-                    Ok(vec![der_signature.to_vec(), group_key_bytes])
+                    Ok(vec![signature.to_vec(), group_key_bytes])
                 },
                 34 if witness_utxo.script_pubkey[0] == 0x51 && witness_utxo.script_pubkey[1] == 0x20 => {
                     // P2TR: [signature] (Schnorr signature)
                     // Note: This is simplified - real P2TR uses Schnorr signatures
-                    Ok(vec![der_signature.to_vec()])
+                    Ok(vec![signature.to_vec()])
                 },
                 _ => {
                     // P2SH-wrapped SegWit
                     let group_key_bytes = self.get_group_public_key_bytes()?;
-                    Ok(vec![der_signature.to_vec(), group_key_bytes])
+                    Ok(vec![signature.to_vec(), group_key_bytes])
                 }
             }
         } else {
