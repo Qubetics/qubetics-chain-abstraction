@@ -26,10 +26,10 @@ function createBtcToTicsDepositIntent() {
 function createTicsToBtcDepositIntent() {   
     return {
         source_address: "0x742d35Cc6634C0532925a3b8D5A42DCA0e23e4",
-        target_address: "tb1q2nd0utgnrseanclhq2tr7hqhqtuc389mmjm2fs",
+        target_address: "tb1psxlq6k8fqdtp5gpj5g4uhf8ed0luyv9n9k2ray63rym20tqeywtqpw2zl7",
         source_chain: "qubetics",
         target_chain: "bitcoin",
-        amount: 600,
+        amount: 601,
         source_token: "TICS",
         target_token: "BTC",
         path: [1, 2, 3, 4],

@@ -70,13 +70,14 @@ pub struct EthereumTransaction {
     pub chain_id: u64,
 }
 
-/// Bitcoin transaction structure (placeholder for future implementation)
+/// Bitcoin transaction structure with full SegWit support
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BitcoinTransaction {
     pub inputs: Vec<BitcoinInput>,
     pub outputs: Vec<BitcoinOutput>,
     pub version: u32,
     pub lock_time: u32,
+    pub witness: Option<BitcoinWitness>, // SegWit witness data
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -85,10 +86,29 @@ pub struct BitcoinInput {
     pub vout: u32,
     pub script_sig: Vec<u8>,
     pub sequence: u32,
+    pub witness_utxo: Option<BitcoinWitnessUtxo>, // For SegWit inputs
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BitcoinOutput {
+    pub value: u64,
+    pub script_pubkey: Vec<u8>,
+}
+
+/// SegWit witness data
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BitcoinWitness {
+    pub inputs: Vec<BitcoinWitnessInput>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BitcoinWitnessInput {
+    pub stack: Vec<Vec<u8>>, // Witness stack items
+}
+
+/// Witness UTXO information for SegWit inputs
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BitcoinWitnessUtxo {
     pub value: u64,
     pub script_pubkey: Vec<u8>,
 }
@@ -450,6 +470,7 @@ impl ChainHandler for BitcoinChainHandler {
             outputs: vec![], // Empty outputs - this won't be valid
             version: 2,
             lock_time: 0,
+            witness: None, // No witness data for placeholder
         };
         
         // Log the original dummy transaction details for debugging
