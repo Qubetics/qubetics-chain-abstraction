@@ -1138,7 +1138,7 @@ impl NetworkLayer {
                         None
                     };
                     
-                    let chain_transaction_result = crate::utils::transaction::create_chain_transaction_from_deposit_intent(&intent, group_public_key).await;
+                    let chain_transaction_result: std::result::Result<crate::chain::ChainTransaction, anyhow::Error> = crate::utils::transaction::create_chain_transaction_from_deposit_intent(&intent, group_public_key).await;
                     
                     match chain_transaction_result {
                         Ok(chain_transaction) => {

@@ -15,7 +15,7 @@ function createBtcToTicsDepositIntent() {
         target_address: "0x541Bc7A7Eb63769c079dc57eF1b9d9651Dd920Af",
         source_chain: "bitcoin",
         target_chain: "qubetics",
-        amount: 4000000000000,
+        amount: 9000000000000,
         source_token: "BTC",
         target_token: "ETH",
         path: [1, 2, 3, 4],
@@ -26,10 +26,10 @@ function createBtcToTicsDepositIntent() {
 function createTicsToBtcDepositIntent() {   
     return {
         source_address: "0x742d35Cc6634C0532925a3b8D5A42DCA0e23e4",
-        target_address: "tb1pu4zlkfqy9z3vjjpt8r0c5m59u9jq7495x0sndymp2qr9nql9udgqt9az2q",
+        target_address: "tb1q2nd0utgnrseanclhq2tr7hqhqtuc389mmjm2fs",
         source_chain: "qubetics",
         target_chain: "bitcoin",
-        amount: 9110000000000,
+        amount: 600,
         source_token: "TICS",
         target_token: "BTC",
         path: [1, 2, 3, 4],
