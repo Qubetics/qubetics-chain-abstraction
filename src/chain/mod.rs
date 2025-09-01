@@ -301,77 +301,161 @@ impl ChainHandler for BitcoinChainHandler {
     fn create_transaction_bytes(&self, transaction: &ChainTransaction) -> Result<Vec<u8>> {
         match transaction {
             ChainTransaction::Bitcoin(btc_tx) => {
-                // Serialize Bitcoin transaction
-                let mut tx_bytes = Vec::new();
-                
-                // Version (4 bytes, little endian)
-                tx_bytes.extend_from_slice(&btc_tx.version.to_le_bytes());
-                
-                // Input count (variable length integer)
-                let input_count = btc_tx.inputs.len() as u64;
-                tx_bytes.extend_from_slice(&encode_varint(input_count));
-                
-                // Inputs - ✅ FIXED: Bitcoin signing format
-                for (i, input) in btc_tx.inputs.iter().enumerate() {
-                    // Previous transaction hash (32 bytes, reversed)
-                    let txid_bytes = hex::decode(&input.txid)
-                        .map_err(|e| anyhow::anyhow!("Invalid txid hex: {}", e))?;
-                    if txid_bytes.len() != 32 {
-                        return Err(anyhow::anyhow!("Invalid txid length: expected 32 bytes"));
+                // Currently we only sign the first input
+                let first_input = btc_tx
+                    .inputs
+                    .first()
+                    .ok_or_else(|| anyhow::anyhow!("Bitcoin transaction has no inputs"))?;
+
+                let sighash_all: u32 = 1; // SIGHASH_ALL
+
+                // If this is a SegWit input, we must use BIP143 transaction digest
+                if let Some(witness_utxo) = &first_input.witness_utxo {
+                    use sha2::{Digest, Sha256};
+
+                    // Helper to compute double SHA256
+                    let dbl_sha256 = |data: &[u8]| -> Vec<u8> {
+                        let hash1 = Sha256::digest(data);
+                        let hash2 = Sha256::digest(&hash1);
+                        hash2.to_vec()
+                    };
+
+                    // hashPrevouts: hash of all input outpoints
+                    let mut prevouts = Vec::new();
+                    for inp in &btc_tx.inputs {
+                        let mut txid = hex::decode(&inp.txid)
+                            .map_err(|e| anyhow::anyhow!("Invalid txid hex: {}", e))?;
+                        txid.reverse();
+                        prevouts.extend_from_slice(&txid);
+                        prevouts.extend_from_slice(&inp.vout.to_le_bytes());
                     }
-                    // Bitcoin uses little-endian for txid in serialization
-                    let mut reversed_txid = txid_bytes;
-                    reversed_txid.reverse();
-                    tx_bytes.extend_from_slice(&reversed_txid);
-                    
-                    // Vout (4 bytes, little endian)
-                    tx_bytes.extend_from_slice(&input.vout.to_le_bytes());
-                    
-                    // ✅ CRITICAL FIX: For Bitcoin signing format
-                    if i == 0 {
-                        // For the first input (the one we're signing), use P2PKH script_pubkey
-                        // This is the script from the UTXO being spent
-                        // Format: OP_DUP OP_HASH160 <20-byte-pubkey-hash> OP_EQUALVERIFY OP_CHECKSIG
-                        if let Some(ref group_key) = self.group_public_key {
-                            let script_pubkey = create_p2pkh_script_for_signing(group_key)?;
-                            tx_bytes.extend_from_slice(&encode_varint(script_pubkey.len() as u64));
-                            tx_bytes.extend_from_slice(&script_pubkey);
-                        } else {
-                            return Err(anyhow::anyhow!("Group public key not set for Bitcoin signing"));
-                        }
+                    let hash_prevouts = dbl_sha256(&prevouts);
+
+                    // hashSequence: hash of all input sequences
+                    let mut sequences = Vec::new();
+                    for inp in &btc_tx.inputs {
+                        sequences.extend_from_slice(&inp.sequence.to_le_bytes());
+                    }
+                    let hash_sequence = dbl_sha256(&sequences);
+
+                    // hashOutputs: hash of all outputs
+                    let mut outs = Vec::new();
+                    for out in &btc_tx.outputs {
+                        outs.extend_from_slice(&out.value.to_le_bytes());
+                        outs.extend_from_slice(&encode_varint(out.script_pubkey.len() as u64));
+                        outs.extend_from_slice(&out.script_pubkey);
+                    }
+                    let hash_outputs = dbl_sha256(&outs);
+
+                    // scriptCode: depends on witness_utxo type
+                    let script_code = if witness_utxo.script_pubkey.len() == 22
+                        && witness_utxo.script_pubkey[0] == 0x00
+                        && witness_utxo.script_pubkey[1] == 0x14
+                    {
+                        // P2WPKH -> convert to P2PKH script
+                        let pubkey_hash = &witness_utxo.script_pubkey[2..];
+                        let mut script = Vec::new();
+                        script.push(0x76); // OP_DUP
+                        script.push(0xa9); // OP_HASH160
+                        script.push(0x14); // push 20 bytes
+                        script.extend_from_slice(pubkey_hash);
+                        script.push(0x88); // OP_EQUALVERIFY
+                        script.push(0xac); // OP_CHECKSIG
+                        script
                     } else {
-                        // Other inputs get empty script during signing
-                        tx_bytes.push(0x00);
+                        // For other SegWit types, use the witness UTXO's script_pubkey directly
+                        witness_utxo.script_pubkey.clone()
+                    };
+
+                    // Build preimage according to BIP143
+                    let mut preimage = Vec::new();
+                    preimage.extend_from_slice(&btc_tx.version.to_le_bytes());
+                    preimage.extend_from_slice(&hash_prevouts);
+                    preimage.extend_from_slice(&hash_sequence);
+
+                    // outpoint being signed
+                    let mut txid = hex::decode(&first_input.txid)
+                        .map_err(|e| anyhow::anyhow!("Invalid txid hex: {}", e))?;
+                    txid.reverse();
+                    preimage.extend_from_slice(&txid);
+                    preimage.extend_from_slice(&first_input.vout.to_le_bytes());
+
+                    // scriptCode
+                    preimage.extend_from_slice(&encode_varint(script_code.len() as u64));
+                    preimage.extend_from_slice(&script_code);
+
+                    // value of the previous output
+                    preimage.extend_from_slice(&witness_utxo.value.to_le_bytes());
+
+                    // sequence of this input
+                    preimage.extend_from_slice(&first_input.sequence.to_le_bytes());
+
+                    // hashOutputs
+                    preimage.extend_from_slice(&hash_outputs);
+
+                    // lock time
+                    preimage.extend_from_slice(&btc_tx.lock_time.to_le_bytes());
+
+                    // hash type
+                    preimage.extend_from_slice(&sighash_all.to_le_bytes());
+
+                    Ok(preimage)
+                } else {
+                    // Legacy signing format (non-SegWit)
+                    let mut tx_bytes = Vec::new();
+
+                    // Version
+                    tx_bytes.extend_from_slice(&btc_tx.version.to_le_bytes());
+
+                    // Input count
+                    tx_bytes.extend_from_slice(&encode_varint(btc_tx.inputs.len() as u64));
+
+                    for (i, input) in btc_tx.inputs.iter().enumerate() {
+                        // Previous tx hash
+                        let mut txid = hex::decode(&input.txid)
+                            .map_err(|e| anyhow::anyhow!("Invalid txid hex: {}", e))?;
+                        txid.reverse();
+                        tx_bytes.extend_from_slice(&txid);
+
+                        // Vout
+                        tx_bytes.extend_from_slice(&input.vout.to_le_bytes());
+
+                        if i == 0 {
+                            if let Some(ref group_key) = self.group_public_key {
+                                let script_pubkey = create_p2pkh_script_for_signing(group_key)?;
+                                tx_bytes.extend_from_slice(&encode_varint(script_pubkey.len() as u64));
+                                tx_bytes.extend_from_slice(&script_pubkey);
+                            } else {
+                                return Err(anyhow::anyhow!(
+                                    "Group public key not set for Bitcoin signing"
+                                ));
+                            }
+                        } else {
+                            tx_bytes.push(0x00);
+                        }
+
+                        // Sequence
+                        tx_bytes.extend_from_slice(&input.sequence.to_le_bytes());
                     }
-                    
-                    // Sequence (4 bytes, little endian)
-                    tx_bytes.extend_from_slice(&input.sequence.to_le_bytes());
+
+                    // Outputs
+                    tx_bytes.extend_from_slice(&encode_varint(btc_tx.outputs.len() as u64));
+                    for out in &btc_tx.outputs {
+                        tx_bytes.extend_from_slice(&out.value.to_le_bytes());
+                        tx_bytes.extend_from_slice(&encode_varint(out.script_pubkey.len() as u64));
+                        tx_bytes.extend_from_slice(&out.script_pubkey);
+                    }
+
+                    // Lock time
+                    tx_bytes.extend_from_slice(&btc_tx.lock_time.to_le_bytes());
+
+                    // Append SIGHASH_ALL
+                    tx_bytes.extend_from_slice(&sighash_all.to_le_bytes());
+
+                    Ok(tx_bytes)
                 }
-                
-                // Output count
-                let output_count = btc_tx.outputs.len() as u64;
-                tx_bytes.extend_from_slice(&encode_varint(output_count));
-                
-                // Outputs
-                for output in &btc_tx.outputs {
-                    // Value (8 bytes, little endian)
-                    tx_bytes.extend_from_slice(&output.value.to_le_bytes());
-                    
-                    // Script length and script
-                    let script_len = output.script_pubkey.len() as u64;
-                    tx_bytes.extend_from_slice(&encode_varint(script_len));
-                    tx_bytes.extend_from_slice(&output.script_pubkey);
-                }
-                
-                // Lock time (4 bytes, little endian)
-                tx_bytes.extend_from_slice(&btc_tx.lock_time.to_le_bytes());
-                
-                // ✅ CRITICAL: Append SIGHASH_ALL for Bitcoin signing
-                tx_bytes.extend_from_slice(&[0x01, 0x00, 0x00, 0x00]); // SIGHASH_ALL = 1
-                
-                Ok(tx_bytes)
             }
-            _ => Err(anyhow::anyhow!("Invalid transaction type for Bitcoin handler"))
+            _ => Err(anyhow::anyhow!("Invalid transaction type for Bitcoin handler")),
         }
     }
     
