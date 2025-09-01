@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use sha2::Digest as _;
+use sha3::Keccak256;
 use tokio::sync::RwLock;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -46,51 +48,54 @@ impl UserRegistry {
         }
     }
 
-    /// Register a new user and compute their HMAC constant
-    pub async fn register_user(&self, ethereum_address: &str, dkg_secret_share: Option<&Scalar>, node_id: &str) -> Result<UserRegistration, String> {
-        // Check if user already exists
-        let address_lookup = self.address_to_user.read().await;
-        if address_lookup.contains_key(ethereum_address) {
-            return Err("User already registered".to_string());
-        }
-        drop(address_lookup);
+    /// Register a new user and compute their HMAC constant (canonicalized to EIP-55)
+    pub async fn register_user(
+        &self,
+        ethereum_address: &str,
+        dkg_secret_share: Option<&Scalar>,
+        node_id: &str,
+    ) -> Result<UserRegistration, String> {
+        // 1) Canonicalize to EIP-55 once
+        let addr_cs = match checksum_from_any(ethereum_address) {
+            Ok(a) => a,
+            Err(e) => return Err(format!("invalid ethereum_address: {e}")),
+        };
 
-        // Generate unique user ID
+        // 2) Dedup on canonical key
+        {
+            let address_lookup = self.address_to_user.read().await;
+            if address_lookup.contains_key(&addr_cs) {
+                return Err("User already registered".to_string());
+            }
+        }
+
+        // 3) New user id
         let user_id = Uuid::new_v4().to_string();
-        
-        // Compute HMAC-SHA256 constant for this user's address
-        let hmac_constant = hmac256_from_addr(ethereum_address, &self.chain_code)?;
-        
-        // Log HMAC computation details for verification
-        info!("🔐 [USER_REGISTRY] Computing HMAC for address: {}", ethereum_address);
+
+        // 4) HMAC over the canonical address (deterministic regardless of caller casing)
+        let hmac_constant = hmac256_from_addr(&addr_cs, &self.chain_code)
+            .map_err(|e| e.to_string())?;
+
+        info!("🔐 [USER_REGISTRY] Computing HMAC for address (EIP-55): {}", addr_cs);
         info!("🔐 [USER_REGISTRY] Chain code: 0x{}", hex::encode(&self.chain_code));
         info!("🔐 [USER_REGISTRY] Raw HMAC constant (32 bytes): 0x{}", hex::encode(&hmac_constant));
 
-        // Compute tweaked secret share if DKG secret share is available
+        // 5) Optional tweaked share: s_i' = s_i + t   with t = Scalar(hmac) reduced mod n
         let mut tweaked_secret_share = None;
         if let Some(secret_share) = dkg_secret_share {
-            // Convert HMAC constant to secp256k1 scalar
+            // SAFER: reduce 32 bytes mod n; never panic
             let hmac_scalar = Scalar::from_repr(hmac_constant.into()).unwrap();
-            
-            // Log only the HMAC scalar conversion (not the DKG shares)
-            info!("🔐 [USER_REGISTRY] HMAC constant converted to scalar: {:?}", hmac_scalar);
-            
-            // Compute tweaked secret share: s_i' = s_i + t mod n
-            // where n is the secp256k1 curve order
-            let tweaked_scalar = secret_share + hmac_scalar;
-            
-            // Log the tweaked secret share (this is what this solver node will use for this user)
-            info!("🔑 [USER_REGISTRY] Computed tweaked secret share for {}: s_i' = s_i + t (stored privately)", ethereum_address);
-            info!("🔐 [USER_REGISTRY] Tweaked secret share value: {:?}", tweaked_scalar);
-            
-            // Convert to SerializableScalar for storage
+            info!("🔐 [USER_REGISTRY] HMAC constant converted to scalar (reduced): {:?}", hmac_scalar);
+
+            let tweaked_scalar = *secret_share + hmac_scalar;
+            info!("🔑 [USER_REGISTRY] Computed tweaked secret share for {}: s_i' = s_i + t (stored privately)", addr_cs);
             tweaked_secret_share = Some(SerializableScalar(tweaked_scalar));
         }
 
-        // Create user registration with computed tweaked secret share
+        // 6) Persist normalized address in the record
         let registration = UserRegistration {
             user_id: user_id.clone(),
-            ethereum_address: ethereum_address.to_string(),
+            ethereum_address: addr_cs.clone(),   // store canonical EIP-55
             hmac_constant,
             tweaked_secret_share,
             user_group_key: None,
@@ -100,15 +105,16 @@ impl UserRegistry {
             registered_by_node: node_id.to_string(),
         };
 
-        // Store the registration
+        // 7) Store user and canonical index
         {
             let mut users = self.users.write().await;
             users.insert(user_id.clone(), registration.clone());
         }
-        
         {
             let mut address_map = self.address_to_user.write().await;
-            address_map.insert(ethereum_address.to_string(), user_id);
+            address_map.insert(addr_cs, user_id);
+            // OPTIONAL one-time migration aid:
+            // address_map.insert(addr_cs.to_ascii_lowercase(), user_id.clone());
         }
 
         Ok(registration)
@@ -147,11 +153,16 @@ impl UserRegistry {
         users.get(user_id).cloned()
     }
 
-    /// Get user registration by ethereum address
     pub async fn get_user_by_address(&self, ethereum_address: &str) -> Option<UserRegistration> {
+        // normalize query to EIP-55
+        let key = match checksum_from_any(ethereum_address) {
+            Ok(cs) => cs,
+            Err(_) => return None,
+        };
+    
         let address_map = self.address_to_user.read().await;
-        if let Some(user_id) = address_map.get(ethereum_address) {
-            let user_id = user_id.clone(); // Clone before dropping the lock
+        if let Some(user_id) = address_map.get(&key) {
+            let user_id = user_id.clone();
             drop(address_map);
             let users = self.users.read().await;
             users.get(&user_id).cloned()
@@ -222,6 +233,31 @@ impl UserRegistry {
     }
 }
 
+pub fn to_checksum_address(addr20: &[u8]) -> String {
+    let hex_lower = hex::encode(addr20);                    // 40 lowercase hex chars
+    let hash = Keccak256::digest(hex_lower.as_bytes());
+
+    let mut out = String::with_capacity(42);
+    out.push_str("0x");
+    for (i, ch) in hex_lower.chars().enumerate() {
+        if ch.is_ascii_hexdigit() && ch.is_ascii_lowercase() && ch >= 'a' {
+            let byte = hash[i / 2];
+            let nibble = if i % 2 == 0 { (byte >> 4) & 0x0f } else { byte & 0x0f };
+            out.push(if nibble >= 8 { ch.to_ascii_uppercase() } else { ch });
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+pub fn checksum_from_any(s: &str) -> anyhow::Result<String> {
+    let no0x = s.trim().strip_prefix("0x").unwrap_or(s.trim());
+    if no0x.len() != 40 { anyhow::bail!("bad address length"); }
+    let bytes = hex::decode(no0x)?;
+    if bytes.len() != 20 { anyhow::bail!("bad address bytes"); }
+    Ok(to_checksum_address(&bytes))
+}
 #[cfg(test)]
 mod tests {
     use super::*;

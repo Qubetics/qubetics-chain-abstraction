@@ -1,5 +1,5 @@
 use crate::types::{ChannelMessage, rpc::RPCRequest};
-use crate::user_registry::UserRegistry;
+use crate::user_registry::{checksum_from_any, to_checksum_address, UserRegistry};
 use ff::PrimeField;
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
@@ -8,6 +8,13 @@ use tokio::sync::{mpsc, RwLock};
 use uuid::Uuid;
 use warp::Filter;
 use tracing::{info, warn};
+use secp256k1::{
+    ecdsa::{RecoverableSignature, RecoveryId},
+    Message, PublicKey, Secp256k1,
+};
+use sha3::{Digest as KeccakDigest, Keccak256};
+
+
 
 // Shared state for DKG secret share
 #[derive(Debug, Clone)]
@@ -95,6 +102,13 @@ pub struct UserRegistrationRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserMpcDepositRequest {
+    pub signature: String,
+    pub amount: u128,
+    pub msg: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserRegistrationResponse {
     pub status: String,
     pub message: String,
@@ -112,6 +126,14 @@ pub struct DKGStatusResponse {
     pub message: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserMpcDepositVerifyResponse {
+    pub status: String,
+    pub signer_address: String,
+    pub is_registered: bool,
+    pub amount: u128,
+    pub used_personal_sign_prefix: bool,
+}
 // gRPC service definition
 #[derive(Default)]
 pub struct MpcRpcService {
@@ -180,6 +202,13 @@ pub async fn start_http_server(
         .and(with_node_id(node_id.clone()))
         .and_then(handle_register_user);
 
+    // POST /user_mpc_deposit
+    let user_mpc_deposit = warp::path("user_mpc_deposit")
+    .and(warp::post())
+    .and(warp::body::json())
+    .and(with_user_registry(user_registry.clone()))
+    .and_then(handle_user_mpc_deposit);
+
     // GET /user_info/{ethereum_address}
     let get_user_info = warp::path("user_info")
         .and(warp::path::param())
@@ -205,7 +234,7 @@ pub async fn start_http_server(
         .and(with_message_tx(message_tx))
         .and_then(|message_tx| handle_start_dkg(message_tx));
 
-    let routes = submit_tx.or(deposit_intent).or(register_user).or(get_user_info).or(get_status).or(get_dkg_status).or(start_dkg);
+    let routes = submit_tx.or(deposit_intent).or(register_user).or(get_user_info).or(get_status).or(get_dkg_status).or(start_dkg) .or(user_mpc_deposit);
 
     info!("🌐 Starting HTTP RPC server on port {}", port);
     warp::serve(routes).run(([127, 0, 0, 1], port)).await;
@@ -400,6 +429,50 @@ async fn handle_register_user(
     }
 }
 
+async fn handle_user_mpc_deposit(
+    req: UserMpcDepositRequest,
+    user_registry: std::sync::Arc<UserRegistry>,
+) -> Result<impl warp::Reply, warp::Rejection> {
+    info!("🧾 HTTP: user_mpc_deposit: amount={}, msg_len={}, sig_len={}", req.amount, req.msg.len(), req.signature.len());
+
+    // 1) normalize signature (expects r||s||v 65 bytes in hex)
+    let (compact, v) = match normalize_eth_signature(&req.signature) {
+        Ok(t) => t,
+        Err(e) => {
+            warn!("❌ Bad signature: {}", e);
+            return Err(warp::reject::custom(TransactionError::SerializationError));
+        }
+    };
+
+    // 2) try personal_sign first, then raw keccak(msg)
+    let (signer, used_personal) = match recover_eth_address_secp(&req.msg, &compact, v, true) {
+        Ok(addr) => (addr, true),
+        Err(e1) => {
+            warn!("⚠️ personal_sign recovery failed: {}", e1);
+            match recover_eth_address_secp(&req.msg, &compact, v, false) {
+                Ok(addr) => (addr, false),
+                Err(e2) => {
+                    warn!("❌ raw keccak recovery failed: {}", e2);
+                    return Err(warp::reject::custom(TransactionError::SerializationError));
+                }
+            }
+        }
+    };
+
+    // 3) lookup in registry
+    let is_registered = user_registry.get_user_by_address(&signer).await.is_some();
+    info!("🔎 signer={} registered={}", signer, is_registered);
+
+    let resp = UserMpcDepositVerifyResponse {
+        status: "ok".to_string(),
+        signer_address: signer,
+        is_registered,
+        amount: req.amount,
+        used_personal_sign_prefix: used_personal,
+    };
+    Ok(warp::reply::json(&resp))
+}
+
 // Helper function to get the actual DKG secret share from shared state
 async fn get_actual_dkg_secret_share(dkg_state: std::sync::Arc<Arc<RwLock<DKGSharedState>>>) -> Option<k256::Scalar> {
     // Access the DKG shared state
@@ -414,20 +487,93 @@ async fn get_actual_dkg_secret_share(dkg_state: std::sync::Arc<Arc<RwLock<DKGSha
     }
 }
 
+fn normalize_eth_signature(sig_hex: &str) -> anyhow::Result<([u8; 64], u8)> {
+    let s = sig_hex.strip_prefix("0x").unwrap_or(sig_hex);
+    let bytes = hex::decode(s)
+        .map_err(|e| anyhow::anyhow!("hex decode signature: {}", e))?;
+    if bytes.len() != 65 {
+        return Err(anyhow::anyhow!("signature must be 65 bytes r||s||v, got {}", bytes.len()));
+    }
+
+    let mut compact = [0u8; 64];
+    compact.copy_from_slice(&bytes[0..64]);
+
+    let mut v = bytes[64];
+    // Normalize v to {0,1}
+    v = if v >= 35 {
+        ((v - 35) % 2) // EIP-155 parity
+    } else if v >= 27 {
+        v - 27 // 27/28 -> 0/1
+    } else {
+        v // already 0/1?
+    };
+    if v > 1 {
+        return Err(anyhow::anyhow!("invalid recovery id v={}", v));
+    }
+    Ok((compact, v))
+}
+
+fn recover_eth_address_secp(
+    msg: &str,
+    compact: &[u8; 64],
+    v: u8,
+    use_personal_prefix: bool,
+) -> anyhow::Result<String> {
+    let rid = RecoveryId::from_i32(v as i32)
+        .map_err(|e| anyhow::anyhow!("recovery id: {}", e))?;
+    let rsig = RecoverableSignature::from_compact(compact, rid)
+        .map_err(|e| anyhow::anyhow!("recoverable sig: {}", e))?;
+
+    // Hash message
+    let hash = if use_personal_prefix {
+        // EIP-191 "\x19Ethereum Signed Message:\n{len}{msg}"
+        let prefix = format!("\x19Ethereum Signed Message:\n{}", msg.len());
+        let mut h = Keccak256::new();
+        h.update(prefix.as_bytes());
+        h.update(msg.as_bytes());
+        h.finalize()
+    } else {
+        Keccak256::digest(msg.as_bytes())
+    };
+
+    let secp = Secp256k1::new();
+    let m = Message::from_slice(&hash)
+        .map_err(|e| anyhow::anyhow!("message: {}", e))?;
+    let pk: PublicKey = secp
+        .recover_ecdsa(&m, &rsig)
+        .map_err(|e| anyhow::anyhow!("recover pk: {}", e))?;
+
+    // ETH address = keccak(uncompressed_pubkey[1..])[12..]
+    let uncompressed = pk.serialize_uncompressed(); // 65 bytes: 0x04 || X || Y
+    let keccak = Keccak256::digest(&uncompressed[1..]);
+    let mut addr20 = [0u8; 20];
+    addr20.copy_from_slice(&keccak[12..]);          // last 20 bytes
+    Ok(to_checksum_address(&addr20))  
+}
+
+
 async fn handle_get_user_info(
     ethereum_address: String,
     user_registry: std::sync::Arc<UserRegistry>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
-    info!("🔍 HTTP: Looking up user info for address: {}", ethereum_address);
+    // Normalize to canonical EIP-55 once
+    let addr_cs = match checksum_from_any(&ethereum_address) {
+        Ok(a) => a,
+        Err(e) => {
+            warn!("❌ HTTP: Invalid ethereum_address '{}': {}", ethereum_address, e);
+            return Err(warp::reject::custom(TransactionError::SerializationError));
+        }
+    };
 
-    match user_registry.get_user_by_address(&ethereum_address).await {
+    info!("🔍 HTTP: Looking up user info for (normalized): {}", addr_cs);
+
+    match user_registry.get_user_by_address(&addr_cs).await {
         Some(registration) => {
-            info!("✅ HTTP: Found user info for address: {}", ethereum_address);
-            
-            // Create a response that includes the tweaked secret share status but not the actual value
+            info!("✅ HTTP: Found user info for {}", addr_cs);
+
             let response = serde_json::json!({
                 "user_id": registration.user_id,
-                "ethereum_address": registration.ethereum_address,
+                "ethereum_address": registration.ethereum_address, // already canonical in storage
                 "hmac_constant": hex::encode(registration.hmac_constant),
                 "has_tweaked_share": registration.tweaked_secret_share.is_some(),
                 "has_user_group_key": registration.user_group_key.is_some(),
@@ -435,11 +581,11 @@ async fn handle_get_user_info(
                 "derived_btc_address": registration.derived_btc_address,
                 "created_at": registration.created_at
             });
-            
+
             Ok(warp::reply::json(&response))
         }
         None => {
-            info!("❌ HTTP: User not found for address: {}", ethereum_address);
+            info!("❌ HTTP: User not found for {}", addr_cs);
             Err(warp::reject::not_found())
         }
     }
