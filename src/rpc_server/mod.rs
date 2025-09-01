@@ -347,6 +347,13 @@ async fn handle_register_user(
         Ok(registration) => {
             info!("✅ HTTP: User registration successful for address: {}", request.ethereum_address);
             
+            // Log tweaked secret share status
+            if registration.tweaked_secret_share.is_some() {
+                info!("🔑 HTTP: Computed and stored tweaked secret share for user: {}", request.ethereum_address);
+            } else {
+                info!("⚠️ HTTP: No tweaked secret share computed (DKG secret share not available) for user: {}", request.ethereum_address);
+            }
+            
             // Log derived addresses if available
             if let Some(eth_addr) = &registration.derived_eth_address {
                 info!("📬 HTTP: Derived ETH address for {}: {}", request.ethereum_address, eth_addr);

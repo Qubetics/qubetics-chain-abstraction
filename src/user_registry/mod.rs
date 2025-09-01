@@ -79,6 +79,10 @@ impl UserRegistry {
             // where n is the secp256k1 curve order
             let tweaked_scalar = secret_share + hmac_scalar;
             
+            // Log the tweaked secret share (this is what this solver node will use for this user)
+            info!("🔑 [USER_REGISTRY] Computed tweaked secret share for {}: s_i' = s_i + t (stored privately)", ethereum_address);
+            info!("🔐 [USER_REGISTRY] Tweaked secret share value: {:?}", tweaked_scalar);
+            
             // Convert to SerializableScalar for storage
             tweaked_secret_share = Some(SerializableScalar(tweaked_scalar));
         }
@@ -168,26 +172,6 @@ impl UserRegistry {
             Some(registration.hmac_constant)
         } else {
             None
-        }
-    }
-
-    /// Update DKG commitments array with HMAC tweak to preserve mathematical relationship
-    /// This should be called after successful user registration to update the DKG system
-    /// The mathematical relationship C0' = C0 + t*G is preserved for all solvers
-    pub async fn update_dkg_commitments_with_tweak(&self, dkg_node: &mut crate::adkg_secp256k1::DKGNode, ethereum_address: &str, hmac_tweak: &k256::Scalar) -> Result<(), String> {
-        info!("🔐 [USER_REGISTRY] Updating DKG commitments array with HMAC tweak for user: {}", ethereum_address);
-        
-        // Update the complete commitments array using the HMAC tweak
-        match dkg_node.update_commitments_with_tweak(ethereum_address, hmac_tweak).await {
-            Ok(()) => {
-                info!("✅ [USER_REGISTRY] Successfully updated DKG commitments array with HMAC tweak for user: {}", ethereum_address);
-                info!("🔐 [USER_REGISTRY] Mathematical relationship preserved: C0' = C0 + t*G, C1' = C1, C2' = C2, ...");
-                Ok(())
-            }
-            Err(e) => {
-                warn!("❌ [USER_REGISTRY] Failed to update DKG commitments array with HMAC tweak for user {}: {}", ethereum_address, e);
-                Err(format!("Failed to update DKG commitments array: {}", e))
-            }
         }
     }
 

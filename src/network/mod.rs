@@ -1145,15 +1145,17 @@ impl NetworkLayer {
                         Ok(registration) => {
                             info!("✅ [GOSSIPSUB] Successfully registered user {} locally", ethereum_address);
                             
+                            // Log tweaked secret share status
+                            if registration.tweaked_secret_share.is_some() {
+                                info!("🔑 [GOSSIPSUB] Computed and stored tweaked secret share for user: {}", ethereum_address);
+                            } else {
+                                info!("⚠️ [GOSSIPSUB] No tweaked secret share computed (DKG secret share not available) for user: {}", ethereum_address);
+                            }
+
                             // Deterministically compute HMAC tweak and update commitments locally (primary path)
                             if let Some(dkg_node) = &self.dkg_node {
                                 if let Some(tweak_scalar) = k256::Scalar::from_repr_vartime(registration.hmac_constant.into()) {
-                                    if let Err(e) = dkg_node.update_commitments_with_tweak(&ethereum_address, &tweak_scalar).await {
-                                        warn!("❌ [GOSSIPSUB] Failed to apply commitments update for {}: {}", ethereum_address, e);
-                                    } else {
-                                        info!("✅ [GOSSIPSUB] Applied commitments update for user: {}", ethereum_address);
-                                        // Derive and store user-specific group key from updated commitments
-                                        match dkg_node.derive_user_specific_group_key_from_updated_commitments(&ethereum_address).await {
+                                        match dkg_node.derive_user_specific_group_key_from_commitments(tweak_scalar).await {
                                             Ok(group_key) => {
                                                 if let Err(e) = user_registry.set_user_group_key(&ethereum_address, group_key).await {
                                                     warn!("❌ [GOSSIPSUB] Failed to store user group key for {}: {}", ethereum_address, e);
@@ -1178,9 +1180,6 @@ impl NetworkLayer {
                                 } else {
                                     warn!("❌ [GOSSIPSUB] Invalid HMAC tweak scalar for {}", ethereum_address);
                                 }
-                            } else {
-                                warn!("❌ [GOSSIPSUB] DKG node not initialized to apply commitments update for {}", ethereum_address);
-                            }
                         }
                         Err(e) => {
                             warn!("❌ [GOSSIPSUB] Failed to register user {} locally: {}", ethereum_address, e);
@@ -1582,13 +1581,8 @@ impl NetworkLayer {
                 // Directly update commitments locally using the stored HMAC constant
                 if let (Some(user_registry), Some(dkg_node)) = (&self.user_registry, &self.dkg_node) {
                     if let Some(reg) = user_registry.get_user_by_address(&ethereum_address).await {
-                        if let Some(tweak_scalar) = Option::from(k256::Scalar::from_repr(reg.hmac_constant.into())) {
-                            if let Err(e) = dkg_node.update_commitments_with_tweak(&ethereum_address, &tweak_scalar).await {
-                                warn!("❌ [NETWORK] Failed to update commitments locally for {}: {}", ethereum_address, e);
-                            } else {
-                                info!("✅ [NETWORK] Updated commitments locally for user: {}", ethereum_address);
-                                // Derive and store user-specific group key from updated commitments
-                                match dkg_node.derive_user_specific_group_key_from_updated_commitments(&ethereum_address).await {
+                        if let Some(tweak_scalar) = k256::Scalar::from_repr_vartime(reg.hmac_constant.into()) {                                // Derive and store user-specific group key from updated commitments
+                                match dkg_node.derive_user_specific_group_key_from_commitments(tweak_scalar).await {
                                     Ok(group_key) => {
                                         if let Err(e) = user_registry.set_user_group_key(&ethereum_address, group_key).await {
                                             warn!("❌ [NETWORK] Failed to store user group key for {}: {}", ethereum_address, e);
@@ -1613,9 +1607,6 @@ impl NetworkLayer {
                         } else {
                             warn!("❌ [NETWORK] Invalid HMAC tweak scalar for {}", ethereum_address);
                         }
-                    } else {
-                        warn!("❌ [NETWORK] User {} not found in registry for local commitments update", ethereum_address);
-                    }
                 } else {
                     warn!("❌ [NETWORK] Missing user_registry or dkg_node; cannot update commitments locally for {}", ethereum_address);
                 }
