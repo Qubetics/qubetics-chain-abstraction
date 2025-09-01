@@ -1,15 +1,13 @@
-use anyhow::Result;
+use crate::types::{ChannelMessage, rpc::RPCRequest};
+use crate::user_registry::UserRegistry;
+use ff::PrimeField;
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
-use tokio::sync::mpsc;
-use tracing::{info, warn};
+use std::sync::Arc;
+use tokio::sync::{mpsc, RwLock};
 use uuid::Uuid;
 use warp::Filter;
-use std::sync::Arc;
-use tokio::sync::RwLock;
-
-use crate::types::{rpc::RPCRequest, ChannelMessage};
-use crate::user_registry::UserRegistry;
+use tracing::{info, warn};
 
 // Shared state for DKG secret share
 #[derive(Debug, Clone)]
@@ -151,7 +149,7 @@ pub async fn start_http_server(
     user_registry: UserRegistry,
     dkg_state: Arc<RwLock<DKGSharedState>>,
     node_id: String,
-) -> Result<()> {
+) -> Result<(), warp::Rejection> {
     let message_tx = std::sync::Arc::new(tokio::sync::Mutex::new(message_tx));
     let user_registry = std::sync::Arc::new(user_registry);
     let dkg_state = std::sync::Arc::new(dkg_state);
@@ -353,6 +351,8 @@ async fn handle_register_user(
             // Log the status of tweaked share computation
             if registration.tweaked_secret_share.is_some() {
                 info!("🔐 HTTP: Tweaked secret share computed and stored privately for address: {}", request.ethereum_address);
+                
+                // Other nodes will update commitments upon receiving UserRegistration via gossipsub
             } else {
                 info!("⚠️ HTTP: Tweaked secret share not computed - DKG secret share not available for address: {}", request.ethereum_address);
             }

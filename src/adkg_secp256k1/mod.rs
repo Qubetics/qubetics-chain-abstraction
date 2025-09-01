@@ -12,6 +12,7 @@ use std::{any, usize};
 use tokio::sync::mpsc;
 use tokio::sync::RwLock;
 use tracing::info;
+use tracing::warn;
 
 use crate::types::dkg::MSG_TOPIC_DKG;
 use crate::types::{
@@ -50,6 +51,8 @@ pub struct DKGNode {
     total_nodes: usize,
     shares: RwLock<HashMap<String, KeyShare>>,
     commitments: RwLock<HashMap<String, Vec<AffinePoint>>>,
+    // Store updated commitments per user AND per solver: ethereum_address -> (solver_id -> updated_commitments)
+    updated_commitments_per_user: RwLock<HashMap<String, HashMap<String, Vec<AffinePoint>>>>,
     validations: RwLock<HashMap<String, Vec<bool>>>,
     message_tx: mpsc::Sender<ChannelMessage>,
     final_secret_share: RwLock<Option<Scalar>>,
@@ -72,6 +75,7 @@ impl DKGNode {
             total_nodes,
             shares: RwLock::new(HashMap::new()),
             commitments: RwLock::new(HashMap::new()),
+            updated_commitments_per_user: RwLock::new(HashMap::new()),
             validations: RwLock::new(HashMap::new()),
             message_tx,
             final_secret_share: RwLock::new(None),
@@ -85,13 +89,14 @@ impl DKGNode {
         // 1) clear all the in-flight maps
         self.shares.write().await.clear();
         self.commitments.write().await.clear();
+        self.updated_commitments_per_user.write().await.clear();
         self.validations.write().await.clear();
 
         // 2) wipe out any previously computed key material
         *self.final_secret_share.write().await = None;
         *self.final_public_key.write().await   = None;
 
-        // 3) go back to the “New” status
+        // 3) go back to the "New" status
         self.status = DKGStatus::New;
         self.round += 1;
     }
@@ -115,6 +120,206 @@ impl DKGNode {
         self.status.clone()
     }
 
+    /// Update commitments array using HMAC tweak while preserving mathematical relationship
+    /// This implements the mathematical relationship:
+    /// C0' = C0 + t*G (constant term updated)
+    /// C1' = C1 (slope unchanged)
+    /// C2' = C2 (higher terms unchanged)
+    /// Verification: s_i'*G = (s_i + t)*G = s_i*G + t*G = C0' + i*C1 + i^2*C2 + ...
+    pub async fn update_commitments_with_tweak(&self, ethereum_address: &str, hmac_tweak: &Scalar) -> Result<()> {
+        info!("🔐 [DKG] Updating commitments array with HMAC tweak for user: {}", ethereum_address);
+        
+        // Get the original commitments from all solvers
+        let commitments = self.commitments.read().await;
+        if commitments.is_empty() {
+            warn!("❌ [DKG] No commitments available for update");
+            return Err(anyhow::anyhow!("No commitments available"));
+        }
+        
+        // Process commitments from each solver and store per solver
+        for (solver_id, solver_commitments) in commitments.iter() {
+            info!("🔐 [DKG] Processing commitments from solver: {} for user: {}", solver_id, ethereum_address);
+            
+            if solver_commitments.is_empty() {
+                continue;
+            }
+            
+            // Create updated commitments array for this specific solver
+            let mut updated_commitments = Vec::new();
+            
+            // Update constant term commitment: C0' = C0 + t*G
+            let c0 = solver_commitments[0];
+            let c0_prime = AffinePoint::from(ProjectivePoint::from(c0) + ProjectivePoint::GENERATOR * *hmac_tweak);
+            updated_commitments.push(c0_prime);
+            
+            info!("🔐 [DKG] Solver {}: C0' = C0 + t*G = {:?} + {:?}*G = {:?}", 
+                  solver_id, c0, hmac_tweak, c0_prime);
+            
+            // Higher order commitments unchanged: C1' = C1, C2' = C2, ...
+            for (i, commitment) in solver_commitments.iter().skip(1).enumerate() {
+                updated_commitments.push(*commitment);
+                info!("🔐 [DKG] Solver {}: C{}' = C{} = {:?}", solver_id, i+1, i+1, commitment);
+            }
+            
+            // Store the updated commitments for this specific solver and user
+            {
+                let mut updated_comms = self.updated_commitments_per_user.write().await;
+                updated_comms
+                    .entry(ethereum_address.to_string())
+                    .or_insert_with(HashMap::new)
+                    .insert(solver_id.clone(), updated_commitments);
+            }
+            
+            info!("🔐 [DKG] Stored updated commitments for solver: {} and user: {}", solver_id, ethereum_address);
+        }
+        
+        info!("🔐 [DKG] Successfully updated commitments arrays for user: {} across all solvers", ethereum_address);
+        info!("🔐 [DKG] Mathematical relationship preserved: C0' = C0 + t*G, C1' = C1, C2' = C2, ...");
+        
+        Ok(())
+    }
+
+    /// Get the updated commitments array for a specific user and solver
+    pub async fn get_updated_commitments_for_user_and_solver(&self, ethereum_address: &str, solver_id: &str) -> Option<Vec<AffinePoint>> {
+        let updated_comms = self.updated_commitments_per_user.read().await;
+        updated_comms
+            .get(ethereum_address)
+            .and_then(|solver_comms| solver_comms.get(solver_id).cloned())
+    }
+
+    /// Get all updated commitments for a specific user (across all solvers)
+    pub async fn get_all_updated_commitments_for_user(&self, ethereum_address: &str) -> Option<HashMap<String, Vec<AffinePoint>>> {
+        let updated_comms = self.updated_commitments_per_user.read().await;
+        updated_comms.get(ethereum_address).cloned()
+    }
+
+    /// Get all users with updated commitments
+    pub async fn get_users_with_updated_commitments(&self) -> Vec<String> {
+        let updated_comms = self.updated_commitments_per_user.read().await;
+        updated_comms.keys().cloned().collect()
+    }
+
+    /// Get all solvers with updated commitments for a specific user
+    pub async fn get_solvers_with_updated_commitments_for_user(&self, ethereum_address: &str) -> Vec<String> {
+        let updated_comms = self.updated_commitments_per_user.read().await;
+        updated_comms
+            .get(ethereum_address)
+            .map(|solver_comms| solver_comms.keys().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// Get a summary of all updated commitments for debugging
+    pub async fn get_updated_commitments_summary(&self) -> String {
+        let updated_comms = self.updated_commitments_per_user.read().await;
+        
+        if updated_comms.is_empty() {
+            return "No updated commitments available".to_string();
+        }
+        
+        let mut summary = String::new();
+        summary.push_str(&format!("Updated Commitments Summary ({} users):\n", updated_comms.len()));
+        
+        let mut user_keys: Vec<_> = updated_comms.keys().collect();
+        user_keys.sort();
+        
+        for ethereum_address in user_keys {
+            if let Some(user_solver_commitments) = updated_comms.get(ethereum_address) {
+                summary.push_str(&format!("  User {}: {} solvers\n", ethereum_address, user_solver_commitments.len()));
+                
+                let mut solver_keys: Vec<_> = user_solver_commitments.keys().collect();
+                solver_keys.sort();
+                
+                for solver_id in solver_keys {
+                    if let Some(solver_commitments) = user_solver_commitments.get(solver_id) {
+                        summary.push_str(&format!("    Solver {}: {} commitments\n", solver_id, solver_commitments.len()));
+                        
+                        if !solver_commitments.is_empty() {
+                            let c0_prime = solver_commitments[0];
+                            summary.push_str(&format!("      C0': {:?}\n", c0_prime));
+                        }
+                    }
+                }
+            }
+        }
+        
+        summary
+    }
+
+    /// Derive NEW group key from updated commitments for a specific user
+    /// This calculates a user-specific group key from commitments that have been updated with HMAC tweaks
+    /// The result is DIFFERENT from the original DKG group key
+    pub async fn derive_user_specific_group_key_from_updated_commitments(&self, ethereum_address: &str) -> Result<ProjectivePoint> {
+        info!("🔐 [DKG] Deriving NEW user-specific group key from updated commitments for user: {}", ethereum_address);
+        
+        let updated_comms = self.updated_commitments_per_user.read().await;
+        
+        if let Some(user_solver_commitments) = updated_comms.get(ethereum_address) {
+            if user_solver_commitments.is_empty() {
+                return Err(anyhow::anyhow!("No updated commitments available for user: {}", ethereum_address));
+            }
+            
+            info!("🔐 [DKG] Found {} solvers with updated commitments for user: {}", 
+                  user_solver_commitments.len(), ethereum_address);
+            
+            let mut new_group_key = ProjectivePoint::IDENTITY;
+            let mut solver_keys: Vec<_> = user_solver_commitments.keys().collect();
+            solver_keys.sort(); // Ensure deterministic ordering
+            
+            for solver_id in solver_keys {
+                if let Some(solver_commitments) = user_solver_commitments.get(solver_id) {
+                    if !solver_commitments.is_empty() {
+                        // Get the updated C0' commitment (constant term after HMAC tweak)
+                        let c0_prime = solver_commitments[0];
+                        info!("🔐 [DKG] Solver {}: C0' = {:?} (updated with HMAC tweak)", solver_id, c0_prime);
+                        
+                        // Add to new group key: P_new = Σ(C0'ᵢ) where C0'ᵢ = C0ᵢ + tᵢ*G
+                        new_group_key += ProjectivePoint::from(c0_prime);
+                        info!("🔐 [DKG] Added solver {} C0' to new group key, current sum: {:?}", solver_id, new_group_key);
+                    } else {
+                        warn!("⚠️ [DKG] Solver {} has empty commitments array", solver_id);
+                    }
+                }
+            }
+            
+            info!("🔑 [DKG] NEW user-specific group key derived from updated commitments: {:?}", new_group_key);
+            
+            // Compare with original group key to show the difference
+            {
+                let guard = self.final_public_key.read().await;
+                if let Some(original_group_key) = guard.as_ref() {
+                    let difference = new_group_key - *original_group_key;
+                    info!("🔄 [DKG] Difference from original group key: {:?}", difference);
+                    info!("🔐 [DKG] Original: {:?} → New: {:?}", original_group_key, new_group_key);
+                }
+            }
+            
+            Ok(new_group_key)
+            
+        } else {
+            Err(anyhow::anyhow!("No updated commitments found for user: {}", ethereum_address))
+        }
+    }
+
+    /// Generate blockchain addresses from the NEW user-specific group key
+    /// This uses the group key derived from updated commitments, not the original DKG group key
+    pub async fn derive_user_addresses_from_updated_commitments(&self, ethereum_address: &str) -> Result<(String, String)> {
+        info!("🔐 [DKG] Deriving addresses from NEW user-specific group key for user: {}", ethereum_address);
+        
+        // Derive the NEW group key from updated commitments
+        let new_group_key = self.derive_user_specific_group_key_from_updated_commitments(ethereum_address).await?;
+        
+        // Generate addresses from this NEW group key
+        let eth_address = utils::get_eth_address_from_group_key(new_group_key);
+        let btc_address = utils::get_btc_address_from_group_key(new_group_key);
+        
+        info!("📬 [DKG] Derived addresses from NEW group key for user {}:", ethereum_address);
+        info!("   New Group Key: {:?}", new_group_key);
+        info!("   Ethereum: {}", eth_address);
+        info!("   Bitcoin: {}", btc_address);
+        
+        Ok((eth_address, btc_address))
+    }
+    
     pub async fn start_dkg(&mut self,node_manager: Box<dyn NodeMembership>) -> Result<()> {
         info!(
             "🚀 Starting DKG for node {} with threshold {} and total nodes {}",
@@ -716,5 +921,55 @@ impl DKGNode {
             }
         }
         info!("📊 [DKG] === END CURRENT SHARES DEBUG ===");
+    }
+
+    /// Verify that tweaked shares satisfy the mathematical relationship
+    /// s_i'*G = (s_i + t)*G = s_i*G + t*G = C0' + i*C1 + i^2*C2 + ...
+    pub async fn verify_tweaked_shares(&self, ethereum_address: &str, solver_id: &str, tweaked_shares: &[KeyShare], hmac_tweak: &Scalar) -> bool {
+        info!("🔐 [DKG] Verifying tweaked shares for user: {} from solver: {} with mathematical relationship", ethereum_address, solver_id);
+        
+        let updated_commitments = self.get_updated_commitments_for_user_and_solver(ethereum_address, solver_id).await;
+        if updated_commitments.is_none() {
+            warn!("❌ [DKG] No updated commitments available for user: {} from solver: {}", ethereum_address, solver_id);
+            return false;
+        }
+        
+        let commitments = updated_commitments.unwrap();
+        info!("🔐 [DKG] Using {} updated commitments from solver: {} for verification", commitments.len(), solver_id);
+        
+        for share in tweaked_shares {
+            let i = Scalar::from(share.index as u64);
+            let mut expected_point = ProjectivePoint::IDENTITY;
+            
+            // Compute C0' + i*C1 + i^2*C2 + ... + i^(t-1)*C(t-1)
+            for (j, commitment) in commitments.iter().enumerate() {
+                let mut i_pow = Scalar::ONE;
+                for _ in 0..j {
+                    i_pow *= i;
+                }
+                let term = ProjectivePoint::from(*commitment) * i_pow;
+                expected_point += term;
+                
+                info!("🔐 [DKG] Share {}: Term {}: C{}' * i^{} = {:?} * {:?}^{} = {:?}", 
+                      share.index, j, j, j, commitment, i, j, term);
+            }
+            
+            // Compute actual tweaked share point: s_i'*G
+            let actual_point = ProjectivePoint::GENERATOR * share.value.0;
+            
+            // Verify: s_i'*G = C0' + i*C1 + i^2*C2 + ...
+            if actual_point != expected_point {
+                warn!("❌ [DKG] Verification failed for share {}: expected != actual", share.index);
+                warn!("❌ [DKG] Expected: {:?}", expected_point);
+                warn!("❌ [DKG] Actual: {:?}", actual_point);
+                return false;
+            }
+            
+            info!("✅ [DKG] Share {} verification passed: s_{}'*G = C0' + {}*C1 + {}*C2 + ...", 
+                  share.index, share.index, share.index, share.index);
+        }
+        
+        info!("✅ [DKG] All tweaked shares verified successfully for user: {} from solver: {}", ethereum_address, solver_id);
+        true
     }
 }

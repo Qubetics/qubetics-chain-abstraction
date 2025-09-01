@@ -164,6 +164,26 @@ impl UserRegistry {
         }
     }
 
+    /// Update DKG commitments array with HMAC tweak to preserve mathematical relationship
+    /// This should be called after successful user registration to update the DKG system
+    /// The mathematical relationship C0' = C0 + t*G is preserved for all solvers
+    pub async fn update_dkg_commitments_with_tweak(&self, dkg_node: &mut crate::adkg_secp256k1::DKGNode, ethereum_address: &str, hmac_tweak: &k256::Scalar) -> Result<(), String> {
+        info!("🔐 [USER_REGISTRY] Updating DKG commitments array with HMAC tweak for user: {}", ethereum_address);
+        
+        // Update the complete commitments array using the HMAC tweak
+        match dkg_node.update_commitments_with_tweak(ethereum_address, hmac_tweak).await {
+            Ok(()) => {
+                info!("✅ [USER_REGISTRY] Successfully updated DKG commitments array with HMAC tweak for user: {}", ethereum_address);
+                info!("🔐 [USER_REGISTRY] Mathematical relationship preserved: C0' = C0 + t*G, C1' = C1, C2' = C2, ...");
+                Ok(())
+            }
+            Err(e) => {
+                warn!("❌ [USER_REGISTRY] Failed to update DKG commitments array with HMAC tweak for user {}: {}", ethereum_address, e);
+                Err(format!("Failed to update DKG commitments array: {}", e))
+            }
+        }
+    }
+
     /// Get the chain code (for debugging/testing purposes)
     pub fn get_chain_code(&self) -> [u8; 32] {
         self.chain_code

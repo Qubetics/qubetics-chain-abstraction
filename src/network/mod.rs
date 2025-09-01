@@ -20,6 +20,7 @@ use tokio::io;
 use tokio::task::JoinHandle;
 use tokio::sync::{mpsc};
 use tracing::{info, warn};
+use ff::PrimeField;
 
 use crate::commands::CommandProcessor;
 use crate::consensus::ConsensusNode;
@@ -1153,6 +1154,21 @@ impl NetworkLayer {
                             } else {
                                 info!("⚠️ [GOSSIPSUB] Tweaked secret share not computed - DKG secret share not available for address: {}", ethereum_address);
                             }
+
+                            // Deterministically compute HMAC tweak and update commitments locally (primary path)
+                            if let Some(dkg_node) = &self.dkg_node {
+                                if let Some(tweak_scalar) = k256::Scalar::from_repr_vartime(registration.hmac_constant.into()) {
+                                    if let Err(e) = dkg_node.update_commitments_with_tweak(&ethereum_address, &tweak_scalar).await {
+                                        warn!("❌ [GOSSIPSUB] Failed to apply commitments update for {}: {}", ethereum_address, e);
+                                    } else {
+                                        info!("✅ [GOSSIPSUB] Applied commitments update for user: {}", ethereum_address);
+                                    }
+                                } else {
+                                    warn!("❌ [GOSSIPSUB] Invalid HMAC tweak scalar for {}", ethereum_address);
+                                }
+                            } else {
+                                warn!("❌ [GOSSIPSUB] DKG node not initialized to apply commitments update for {}", ethereum_address);
+                            }
                         }
                         Err(e) => {
                             warn!("❌ [GOSSIPSUB] Failed to register user {} locally: {}", ethereum_address, e);
@@ -1551,6 +1567,25 @@ impl NetworkLayer {
             ChannelMessage::UserRegistration { ethereum_address, node_id } => {
                 info!("👤 [NETWORK] Broadcasting user registration: {} from node {}", ethereum_address, node_id);
                 
+                // Directly update commitments locally using the stored HMAC constant
+                if let (Some(user_registry), Some(dkg_node)) = (&self.user_registry, &self.dkg_node) {
+                    if let Some(reg) = user_registry.get_user_by_address(&ethereum_address).await {
+                        if let Some(tweak_scalar) = Option::from(k256::Scalar::from_repr(reg.hmac_constant.into())) {
+                            if let Err(e) = dkg_node.update_commitments_with_tweak(&ethereum_address, &tweak_scalar).await {
+                                warn!("❌ [NETWORK] Failed to update commitments locally for {}: {}", ethereum_address, e);
+                            } else {
+                                info!("✅ [NETWORK] Updated commitments locally for user: {}", ethereum_address);
+                            }
+                        } else {
+                            warn!("❌ [NETWORK] Invalid HMAC tweak scalar for {}", ethereum_address);
+                        }
+                    } else {
+                        warn!("❌ [NETWORK] User {} not found in registry for local commitments update", ethereum_address);
+                    }
+                } else {
+                    warn!("❌ [NETWORK] Missing user_registry or dkg_node; cannot update commitments locally for {}", ethereum_address);
+                }
+
                 // Create and broadcast user registration message via gossipsub (same pattern as deposit intent)
                 let user_reg_msg = GossipsubMessage::UserRegistration {
                     ethereum_address: ethereum_address.clone(),
