@@ -1,4 +1,5 @@
 use libp2p::identity::Keypair;
+use std::sync::Arc;
 use mpc_node::node_management::{DefaultThresholdCalculator, NodeMembership, VrfNodeManager};
 use mpc_node::{
     adkg_secp256k1::DKGNode, commands::CommandProcessor, consensus::ConsensusNode,
@@ -10,7 +11,6 @@ use rand::{thread_rng, Rng};
 #[allow(non_snake_case)]
 #[allow(unused_variables)]
 use std::error::Error;
-use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::info;
 use tracing::level_filters::LevelFilter;
@@ -99,9 +99,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Create user registry with a default chain code
     // TODO: Replace with actual chain code from DKG or secure source
     let chain_code = [42u8; 32]; // Placeholder chain code
-    let user_registry = UserRegistry::new(chain_code);
+    let user_registry = Arc::new(UserRegistry::new(chain_code));
+    info!("🏗️ [MAIN] Created Arc<UserRegistry> - Arc pointer: {:p}", Arc::as_ptr(&user_registry));
 
     // Set user registry in network layer
+    info!("🔗 [MAIN] Setting user registry in network layer - Arc pointer: {:p}", Arc::as_ptr(&user_registry));
     network.set_user_registry(user_registry.clone());
 
     // Create shared state for DKG secret share access
@@ -129,7 +131,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     tokio::spawn(async move {
         info!("🚀 Starting RPC server on port {}", rpc_port);
-        if let Err(e) = rpc_server::start_http_server(message_tx, rpc_port, user_registry, dkg_shared_state, node_id).await {
+        info!("🔗 [MAIN] Passing user registry to RPC server - Arc pointer: {:p}", Arc::as_ptr(&user_registry));
+        if let Err(e) = rpc_server::start_http_server(message_tx, rpc_port, user_registry.clone(), dkg_shared_state, node_id).await {
             info!("❌ RPC server failed: {:?}", e);
         }
     });

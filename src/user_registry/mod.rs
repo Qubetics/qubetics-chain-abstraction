@@ -46,27 +46,52 @@ pub struct IntentRegistry {
 }
 
 /// User registry for managing user registrations and intent tracking
-#[derive(Clone)]
 pub struct UserRegistry {
     users: Arc<RwLock<HashMap<String, UserRegistration>>>,
     chain_code: [u8; 32],
     intent_registry: Arc<RwLock<IntentRegistry>>, // Global intent registry
 }
 
+impl Clone for UserRegistry {
+    fn clone(&self) -> Self {
+        info!("🔄 [USER_REGISTRY] Clone called - Original Users Arc: {:p}, Intents Arc: {:p}", 
+              Arc::as_ptr(&self.users), Arc::as_ptr(&self.intent_registry));
+        
+        let cloned = Self {
+            users: Arc::clone(&self.users),
+            chain_code: self.chain_code,
+            intent_registry: Arc::clone(&self.intent_registry),
+        };
+        
+        info!("🔄 [USER_REGISTRY] Clone created - New Users Arc: {:p}, Intents Arc: {:p} (should be same as original)", 
+              Arc::as_ptr(&cloned.users), Arc::as_ptr(&cloned.intent_registry));
+        
+        cloned
+    }
+}
+
 impl UserRegistry {
     /// Create a new user registry
     pub fn new(chain_code: [u8; 32]) -> Self {
-        Self {
+        let registry = Self {
             users: Arc::new(RwLock::new(HashMap::new())),
             chain_code,
             intent_registry: Arc::new(RwLock::new(IntentRegistry {
                 intents: HashMap::new(),
             })),
-        }
+        };
+        
+        info!("🏗️ [USER_REGISTRY] Created new UserRegistry instance - Users Arc: {:p}, Intents Arc: {:p}", 
+              Arc::as_ptr(&registry.users), Arc::as_ptr(&registry.intent_registry));
+        
+        registry
     }
 
     /// Register a new user
     pub async fn register_user(&self, ethereum_address: &str, dkg_secret_share: Option<&Scalar>, node_id: &str) -> Result<UserRegistration, String> {
+        info!("👤 [USER_REGISTRY] register_user called - Registry Users Arc: {:p}, Intents Arc: {:p}, Address: {}, Node: {}", 
+              Arc::as_ptr(&self.users), Arc::as_ptr(&self.intent_registry), ethereum_address, node_id);
+        
         // 1) Normalize to canonical EIP-55
         let addr_cs = match checksum_from_any(ethereum_address) {
             Ok(a) => a,
@@ -123,8 +148,16 @@ impl UserRegistry {
 
     /// Get user registration by ethereum address
     pub async fn get_user_by_address(&self, ethereum_address: &str) -> Option<UserRegistration> {
+        info!("🔍 [USER_REGISTRY] get_user_by_address called - Registry Users Arc: {:p}, Intents Arc: {:p}, Address: {}", 
+              Arc::as_ptr(&self.users), Arc::as_ptr(&self.intent_registry), ethereum_address);
+        
         let users = self.users.read().await;
-        users.get(ethereum_address).cloned()
+        let result = users.get(ethereum_address).cloned();
+        
+        info!("🔍 [USER_REGISTRY] get_user_by_address result - Address: {}, Found: {}", 
+              ethereum_address, result.is_some());
+        
+        result
     }
 
     /// Get all registered users
@@ -182,10 +215,13 @@ impl UserRegistry {
 
     /// Store intent hash mapping and the actual intent
     pub async fn store_intent_hash(&self, intent_hash: Vec<u8>, user_address: &str, deposit_intent: &DepositIntent) -> Result<(), String> {
+        let intent_hash_hex = hex::encode(&intent_hash);
+        info!("🔐 [USER_REGISTRY] store_intent_hash called - Registry Users Arc: {:p}, Intents Arc: {:p}, Hash: {}, User: {}", 
+              Arc::as_ptr(&self.users), Arc::as_ptr(&self.intent_registry), intent_hash_hex, user_address);
+        
         let mut users = self.users.write().await;
         if let Some(user) = users.values_mut().find(|u| u.ethereum_address == user_address) {
             // Convert intent hash to hex string for storage
-            let intent_hash_hex = hex::encode(&intent_hash);
             
             // Store intent status in user registry
             user.intent_hashes.insert(intent_hash_hex.clone(), IntentStatus::Pending);

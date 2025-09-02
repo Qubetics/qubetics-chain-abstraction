@@ -1,5 +1,6 @@
 use anyhow::Result;
 use futures::StreamExt;
+use std::sync::Arc;
 use libp2p::{
     core::ConnectedPoint, gossipsub::{self, Message, TopicHash}, identity::Keypair, kad::{self, store::MemoryStore, BucketInserts, Event as KademliaEvent}, multiaddr::Protocol, noise, request_response::{
         cbor::Behaviour as CborReqRespBehaviour, Event as ReqRespEvent, Message as ReqRespMessage,
@@ -128,8 +129,11 @@ impl NetworkLayer {
         self.command_processor = Some(processor);
     }
 
-    pub fn set_user_registry(&mut self, registry: UserRegistry) {
-        self.user_registry = Some(registry);
+    pub fn set_user_registry(&mut self, registry: Arc<UserRegistry>) {
+        info!("🔗 [NETWORK] Received user registry - Arc pointer: {:p}", Arc::as_ptr(&registry));
+        info!("🔗 [NETWORK] About to clone UserRegistry from Arc");
+        self.user_registry = Some((*registry).clone());
+        info!("🔗 [NETWORK] UserRegistry clone stored in network layer");
     }
 
     pub fn get_dkg_node(&mut self) -> Option<&mut DKGNode> {
@@ -379,6 +383,7 @@ impl NetworkLayer {
             "dkg-commands",
             "signatures-to-final-node",
             "user-registrations",
+            "intent-broadcast",
         ];
         for topic in topics {
             let topic_hash = gossipsub::IdentTopic::new(topic);
@@ -1187,6 +1192,82 @@ impl NetworkLayer {
                     }
                 } else {
                     warn!("❌ [GOSSIPSUB] User registry not available to handle user registration");
+                }
+            }
+            GossipsubMessage::IntentBroadcast { intent, signature, intent_hash } => {
+                info!("📡 Received intent broadcast via gossipsub - Intent hash: {}", intent_hash);
+                info!("🔍 Intent details: {:?}", intent);
+                
+                // Derive public address from signature and message on this node
+                if let Some(user_registry) = &mut self.user_registry {
+                    // Serialize the intent to get the message bytes that were signed
+                    match serde_json::to_string(&intent) {
+                        Ok(intent_json) => {
+                            let intent_bytes = intent_json.as_bytes();
+                            
+                            // Try to recover the signer address from the signature
+                            match crate::rpc_server::normalize_eth_signature(&signature) {
+                                Ok((compact, v)) => {
+                                    // Try personal_sign first, then raw keccak
+                                    let recovery_result = crate::rpc_server::recover_eth_address_secp(
+                                        intent_bytes,
+                                        &compact,
+                                        v,
+                                        true // use_personal_prefix
+                                    ).or_else(|_| {
+                                        crate::rpc_server::recover_eth_address_secp(
+                                            intent_bytes,
+                                            &compact,
+                                            v,
+                                            false // raw keccak
+                                        )
+                                    });
+                                    
+                                    match recovery_result {
+                                        Ok(signer_address) => {
+                                            info!("✅ Successfully derived signer address: {}", signer_address);
+                                            
+                                            // Check if user exists in our registry
+                                            match user_registry.get_user_by_address(&signer_address).await {
+                                                Some(_user) => {
+                                                    info!("👤 User {} found in local registry", signer_address);
+                                                    
+                                                    // Store the intent hash and intent in our registry
+                                                    match user_registry.store_intent_hash(
+                                                        hex::decode(&intent_hash).unwrap_or_default(),
+                                                        &signer_address,
+                                                        &intent
+                                                    ).await {
+                                                        Ok(_) => {
+                                                            info!("✅ Successfully stored broadcasted intent for user {}", signer_address);
+                                                        }
+                                                        Err(e) => {
+                                                            warn!("❌ Failed to store broadcasted intent: {}", e);
+                                                        }
+                                                    }
+                                                }
+                                                None => {
+                                                    warn!("❌ User {} not found in local registry - cannot process broadcasted intent", signer_address);
+                                                    warn!("💡 User must be registered through proper registration flow before submitting intents");
+                                                }
+                                            }
+                                        }
+                                        Err(e) => {
+                                            warn!("❌ Failed to recover signer address from intent broadcast: {}", e);
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    warn!("❌ Failed to normalize signature from intent broadcast: {}", e);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            warn!("❌ Failed to serialize intent from broadcast: {}", e);
+                        }
+                    }
+                } else {
+                    warn!("❌ User registry not available to handle intent broadcast");
                 }
             }
             GossipsubMessage::DepositIntent { intent, intent_id } => {

@@ -165,12 +165,14 @@ impl MpcRpcService {
 pub async fn start_http_server(
     message_tx: mpsc::Sender<ChannelMessage>,
     port: u16,
-    user_registry: UserRegistry,
+    user_registry: Arc<UserRegistry>,
     dkg_state: Arc<RwLock<DKGSharedState>>,
     node_id: String,
 ) -> Result<(), warp::Rejection> {
+    info!("🔗 [RPC_SERVER] Received user registry - Arc pointer: {:p}", Arc::as_ptr(&user_registry));
+    
     let message_tx = std::sync::Arc::new(tokio::sync::Mutex::new(message_tx));
-    let user_registry = std::sync::Arc::new(user_registry);
+    // user_registry is already Arc<UserRegistry>, no need to wrap again
     let dkg_state = std::sync::Arc::new(dkg_state);
 
     // POST /submit_transaction
@@ -202,6 +204,7 @@ pub async fn start_http_server(
     .and(warp::post())
     .and(warp::body::json())
     .and(with_user_registry(user_registry.clone()))
+    .and(with_message_tx(message_tx.clone()))
     .and_then(handle_user_mpc_deposit);
 
     // GET /user_info/{ethereum_address}
@@ -449,6 +452,7 @@ async fn handle_register_user(
 async fn handle_user_mpc_deposit(
     req: UserMpcDepositRequest,
     user_registry: std::sync::Arc<UserRegistry>,
+    message_tx: std::sync::Arc<tokio::sync::Mutex<mpsc::Sender<ChannelMessage>>>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
     info!("🧾 HTTP: user_mpc_deposit: amount={}, sig_len={}", req.msg.amount, req.signature.len());
 
@@ -535,6 +539,27 @@ async fn handle_user_mpc_deposit(
     
     info!("✅ Intent hash stored successfully for user: {}", signer);
     
+    // Broadcast intent to other nodes
+    let intent_hash_hex = hex::encode(&intent_hash);
+    let broadcast_message = ChannelMessage::Broadcast {
+        topic: "intent-broadcast".to_string(),
+        data: serde_json::to_vec(&crate::types::GossipsubMessage::IntentBroadcast {
+            intent: req.msg.clone(),
+            signature: req.signature.clone(),
+            intent_hash: intent_hash_hex.clone(),
+        }).unwrap_or_default(),
+    };
+    
+    // Send broadcast message
+    let tx = message_tx.lock().await;
+    if let Err(e) = tx.send(broadcast_message).await {
+        warn!("❌ Failed to broadcast intent to other nodes: {}", e);
+        // Don't fail the request if broadcasting fails
+    } else {
+        info!("📡 Successfully broadcasted intent {} to other nodes", intent_hash_hex);
+    }
+    drop(tx);
+    
     // Return success response
     Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
         status: "ok".to_string(),
@@ -559,7 +584,7 @@ async fn get_actual_dkg_secret_share(dkg_state: std::sync::Arc<Arc<RwLock<DKGSha
     }
 }
 
-fn normalize_eth_signature(sig_hex: &str) -> anyhow::Result<([u8; 64], u8)> {
+pub fn normalize_eth_signature(sig_hex: &str) -> anyhow::Result<([u8; 64], u8)> {
     let s = sig_hex.strip_prefix("0x").unwrap_or(sig_hex);
     let bytes = hex::decode(s)
         .map_err(|e| anyhow::anyhow!("hex decode signature: {}", e))?;
@@ -585,7 +610,7 @@ fn normalize_eth_signature(sig_hex: &str) -> anyhow::Result<([u8; 64], u8)> {
     Ok((compact, v))
 }
 
-fn recover_eth_address_secp(
+pub fn recover_eth_address_secp(
     msg: &[u8],
     compact: &[u8; 64],
     v: u8,

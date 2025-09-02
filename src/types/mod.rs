@@ -67,4 +67,9 @@ pub enum GossipsubMessage {
         timestamp: i64,
         node_id: String,
     },
+    IntentBroadcast {
+        intent: crate::rpc_server::DepositIntent,
+        signature: String,
+        intent_hash: String,
+    },
 }
