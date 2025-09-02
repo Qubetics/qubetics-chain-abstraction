@@ -1610,29 +1610,28 @@ impl NetworkLayer {
                     }
                     
                     // Get derived addresses and appropriate group key if user_eth_address is provided
-                    let (derived_eth_addr, derived_btc_addr, group_public_key) = if let Some(eth_addr) = &user_eth_address {
+                    let (derived_eth_addr, derived_btc_addr) = if let Some(eth_addr) = &user_eth_address {
                         if let Some(user_registry) = &self.user_registry {
                             if let Some(user) = user_registry.get_user_by_address(eth_addr).await {
                                 // For user deposits, use user's group key
-                                let user_group_key = user.user_group_key.as_ref()
-                                    .map(|key| key.0.into()); // Convert AffinePoint to ProjectivePoint
-                                (user.derived_eth_address.clone(), user.derived_btc_address.clone(), user_group_key)
+                                (user.derived_eth_address.clone(), user.derived_btc_address.clone())
                             } else {
                                 warn!("❌ [LOCAL] User {} not found in registry", eth_addr);
-                                (None, None, None)
+                                (None, None)
                             }
                         } else {
                             warn!("❌ [LOCAL] User registry not available");
-                            (None, None, None)
+                            (None, None)
                         }
                     } else {
                         // For network withdrawals, use network's DKG group key
-                        let network_group_key = if let Some(dkg_node) = &self.dkg_node {
-                            dkg_node.get_final_public_key().await
-                        } else {
-                            None
-                        };
-                        (None, None, network_group_key)
+                        (None, None)
+                    };
+
+                    let group_public_key = if let Some(dkg_node) = &self.dkg_node {
+                        dkg_node.get_final_public_key().await
+                    } else {
+                        None
                     };
                     
                     let chain_transaction_result = crate::utils::transaction::create_chain_transaction_from_deposit_intent(&intent, group_public_key, user_eth_address.as_ref(), derived_eth_addr.as_ref(), derived_btc_addr.as_ref()).await;

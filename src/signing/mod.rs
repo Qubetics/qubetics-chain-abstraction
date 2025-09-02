@@ -2392,7 +2392,9 @@ impl SigningNode {
                                     );
                                     info!("📄 Raw signed transaction: {}", signed_tx_hex);
                                     info!("Broadcasting transaction to Bitcoin network...");
-                                    Self::broadcast_transaction(&signed_tx_hex, false).await?;
+                                    if let Err(e) = Self::broadcast_transaction(&signed_tx_hex, false).await {
+                                        error!("❌ [SIGNING] Failed to broadcast Bitcoin transaction: {}", e);
+                                    }
                                 }
                             }
                             "ethereum" => {
@@ -2413,7 +2415,9 @@ impl SigningNode {
                                         .unwrap_or(9029); // Default to Qubetics
                                     
                                     info!("Broadcasting transaction to chain {} (Qubetics)...", chain_id);
-                                    Self::broadcast_ethereum_transaction(&signed_tx_hex, chain_id).await?;
+                                    if let Err(e) = Self::broadcast_ethereum_transaction(&signed_tx_hex, chain_id).await {
+                                        error!("❌ [SIGNING] Failed to broadcast Ethereum transaction: {}", e);
+                                    }
                                 }
                             }
                             _ => {

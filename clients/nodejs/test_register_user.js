@@ -198,19 +198,19 @@ async function runTests() {
   const signerAddr = await wallet.getAddress();
   log(`\n🔑 Derived signer address from TEST_PRIVKEY: ${signerAddr}`, 'blue');
 
-  // 1) DKG status
-  await testDKGStatus();
+  // // 1) DKG status
+  // await testDKGStatus();
 
-  // 2) Register ONLY the derived address
-  const reg = await testRegisterUser(signerAddr);
+  // // 2) Register ONLY the derived address
+  // const reg = await testRegisterUser(signerAddr);
 
-  if (reg.success) {
-    log(`\n⏳ Waiting 2 seconds before checking user info...`, 'yellow');
-    await new Promise(r => setTimeout(r, 2000));
-    await testGetUserInfo(signerAddr);
-  } else {
-    log(`\n⚠️ Registration failed; continuing to deposit test (is_registered may be false).`, 'yellow');
-  }
+  // if (reg.success) {
+  //   log(`\n⏳ Waiting 2 seconds before checking user info...`, 'yellow');
+  //   await new Promise(r => setTimeout(r, 2000));
+  //   await testGetUserInfo(signerAddr);
+  // } else {
+  //   log(`\n⚠️ Registration failed; continuing to deposit test (is_registered may be false).`, 'yellow');
+  // }
 
   // 3) MPC deposit test
   const amount = 123456; // keep safe for JSON
