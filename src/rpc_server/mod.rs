@@ -71,12 +71,16 @@ pub struct DepositIntent {
     pub timestamp: u64, // Unix timestamp in seconds
 }
 
+
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TransactionResponse {
     pub tx_hash: String,
     pub status: String,
     pub message: String,
 }
+
+
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DepositIntentResponse {
@@ -183,11 +187,11 @@ pub async fn start_http_server(
         .and_then(handle_submit_transaction);
 
     // POST /deposit_intent
-    let deposit_intent = warp::path("deposit_intent")
-        .and(warp::post())
-        .and(warp::body::json())
-        .and(with_message_tx(message_tx.clone()))
-        .and_then(handle_deposit_intent);
+    // let deposit_intent = warp::path("deposit_intent")
+    //     .and(warp::post())
+    //     .and(warp::body::json())
+    //     .and(with_message_tx(message_tx.clone()))
+    //     .and_then(handle_deposit_intent_wrapper);
 
     // POST /register_user
     let register_user = warp::path("register_user")
@@ -232,7 +236,7 @@ pub async fn start_http_server(
         .and(with_message_tx(message_tx))
         .and_then(|message_tx| handle_start_dkg(message_tx));
 
-    let routes = submit_tx.or(deposit_intent).or(register_user).or(get_user_info).or(get_status).or(get_dkg_status).or(start_dkg) .or(user_mpc_deposit);
+    let routes = submit_tx.or(register_user).or(get_user_info).or(get_status).or(get_dkg_status).or(start_dkg) .or(user_mpc_deposit);
 
     info!("🌐 Starting HTTP RPC server on port {}", port);
     warp::serve(routes).run(([127, 0, 0, 1], port)).await;
@@ -327,16 +331,34 @@ async fn handle_submit_transaction(
     }))
 }
 
-async fn handle_deposit_intent(
+// async fn handle_deposit_intent_wrapper(
+//     request_json: serde_json::Value,
+//     message_tx: std::sync::Arc<tokio::sync::Mutex<mpsc::Sender<ChannelMessage>>>,
+// ) -> Result<impl warp::Reply, warp::Rejection> {
+//     // Extract DepositIntent and user_eth_address from the JSON
+//     let intent: DepositIntent = serde_json::from_value(request_json.clone())
+//         .map_err(|_| warp::reject::custom(TransactionError::InvalidRequest))?;
+    
+//     let user_eth_address: Option<String> = request_json.get("user_eth_address")
+//         .and_then(|v| v.as_str())
+//         .map(|s| s.to_string());
+    
+//     handle_deposit_intent(intent, user_eth_address, message_tx).await
+// }
+
+pub async fn handle_deposit_intent(
     intent: DepositIntent,
+    user_eth_address: Option<String>,
     message_tx: std::sync::Arc<tokio::sync::Mutex<mpsc::Sender<ChannelMessage>>>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
-    info!("📝 HTTP: Received deposit intent: {:?}", intent);
+    info!("📝 HTTP: Received deposit intent request: {:?}", intent);
+    info!("📝 HTTP: User eth address for signing: {:?}", user_eth_address);
 
     let intent_id = format!("intent-{}", Uuid::new_v4());
     let deposit_intent_msg = ChannelMessage::DepositIntent {
         intent: intent.clone(),
         intent_id: intent_id.clone(),
+        user_eth_address: user_eth_address.clone(),
     };
 
     let tx_sender = message_tx.lock().await;
@@ -456,12 +478,16 @@ async fn handle_user_mpc_deposit(
 ) -> Result<impl warp::Reply, warp::Rejection> {
     info!("🧾 HTTP: user_mpc_deposit: amount={}, sig_len={}", req.msg.amount, req.signature.len());
 
-    // Calculate intent hash
+    // Serialize the DepositIntent to match the client's JSON.stringify() format
+    // Use compact JSON serialization (no spaces) to match JavaScript's JSON.stringify()
     let intent_json = serde_json::to_string(&req.msg).unwrap();
     let intent_bytes = intent_json.as_bytes();
     let intent_hash = Keccak256::digest(intent_bytes);
     
     info!("🔐 Processing MPC deposit - Intent hash: {:?}, Amount: {}", intent_hash, req.msg.amount);
+    info!("📝 Server JSON serialization: {}", intent_json);
+    info!("📏 JSON length: {}, First 100 chars: {}", intent_json.len(), 
+    if intent_json.len() > 100 { &intent_json[0..100] } else { &intent_json });
     
     // Normalize signature (expects r||s||v 65 bytes in hex)
     let (compact, v) = match normalize_eth_signature(&req.signature) {
@@ -560,6 +586,8 @@ async fn handle_user_mpc_deposit(
     }
     drop(tx);
     
+    handle_deposit_intent(req.msg.clone(), Some(signer.clone()), message_tx).await?;
+
     // Return success response
     Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
         status: "ok".to_string(),
@@ -761,6 +789,7 @@ async fn handle_start_dkg(
 pub enum TransactionError {
     SerializationError,
     NetworkError,
+    InvalidRequest,
 }
 
 impl warp::reject::Reject for TransactionError {}

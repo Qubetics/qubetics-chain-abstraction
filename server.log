@@ -1,0 +1,538 @@
+[2m2025-09-02T19:07:12.581456Z[0m [32m INFO[0m [2mmpc_node[0m[2m:[0m Initial node count: 0, threshold: 1
+[2m2025-09-02T19:07:12.581492Z[0m [32m INFO[0m [2mmpc_node[0m[2m:[0m Initial node count: 0, threshold: 1
+[2m2025-09-02T19:07:12.581634Z[0m [32m INFO[0m [2mmpc_node::user_registry[0m[2m:[0m 🏗️ [USER_REGISTRY] Created new UserRegistry instance - Users Arc: 0x5615a8eba880, Intents Arc: 0x5615a8eba900
+[2m2025-09-02T19:07:12.581640Z[0m [32m INFO[0m [2mmpc_node::user_registry[0m[2m:[0m 🏗️ [USER_REGISTRY] Created new UserRegistry instance - Users Arc: 0x5615a8eba880, Intents Arc: 0x5615a8eba900
+[2m2025-09-02T19:07:12.581649Z[0m [32m INFO[0m [2mmpc_node[0m[2m:[0m 🏗️ [MAIN] Created Arc<UserRegistry> - Arc pointer: 0x5615a8eb96e0
+[2m2025-09-02T19:07:12.581653Z[0m [32m INFO[0m [2mmpc_node[0m[2m:[0m 🏗️ [MAIN] Created Arc<UserRegistry> - Arc pointer: 0x5615a8eb96e0
+[2m2025-09-02T19:07:12.581658Z[0m [32m INFO[0m [2mmpc_node[0m[2m:[0m 🔗 [MAIN] Setting user registry in network layer - Arc pointer: 0x5615a8eb96e0
+[2m2025-09-02T19:07:12.581661Z[0m [32m INFO[0m [2mmpc_node[0m[2m:[0m 🔗 [MAIN] Setting user registry in network layer - Arc pointer: 0x5615a8eb96e0
+[2m2025-09-02T19:07:12.581666Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 🔗 [NETWORK] Received user registry - Arc pointer: 0x5615a8eb96e0
+[2m2025-09-02T19:07:12.581670Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 🔗 [NETWORK] Received user registry - Arc pointer: 0x5615a8eb96e0
+[2m2025-09-02T19:07:12.581674Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 🔗 [NETWORK] About to clone UserRegistry from Arc
+[2m2025-09-02T19:07:12.581678Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 🔗 [NETWORK] About to clone UserRegistry from Arc
+[2m2025-09-02T19:07:12.581683Z[0m [32m INFO[0m [2mmpc_node::user_registry[0m[2m:[0m 🔄 [USER_REGISTRY] Clone called - Original Users Arc: 0x5615a8eba880, Intents Arc: 0x5615a8eba900
+[2m2025-09-02T19:07:12.581686Z[0m [32m INFO[0m [2mmpc_node::user_registry[0m[2m:[0m 🔄 [USER_REGISTRY] Clone called - Original Users Arc: 0x5615a8eba880, Intents Arc: 0x5615a8eba900
+[2m2025-09-02T19:07:12.581694Z[0m [32m INFO[0m [2mmpc_node::user_registry[0m[2m:[0m 🔄 [USER_REGISTRY] Clone created - New Users Arc: 0x5615a8eba880, Intents Arc: 0x5615a8eba900 (should be same as original)
+[2m2025-09-02T19:07:12.581697Z[0m [32m INFO[0m [2mmpc_node::user_registry[0m[2m:[0m 🔄 [USER_REGISTRY] Clone created - New Users Arc: 0x5615a8eba880, Intents Arc: 0x5615a8eba900 (should be same as original)
+[2m2025-09-02T19:07:12.581702Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 🔗 [NETWORK] UserRegistry clone stored in network layer
+[2m2025-09-02T19:07:12.581705Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 🔗 [NETWORK] UserRegistry clone stored in network layer
+[2m2025-09-02T19:07:12.581711Z[0m [32m INFO[0m [2mmpc_node::adkg_secp256k1[0m[2m:[0m 🔗 [DKG] Node 12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt set completion callback
+[2m2025-09-02T19:07:12.581714Z[0m [32m INFO[0m [2mmpc_node::adkg_secp256k1[0m[2m:[0m 🔗 [DKG] Node 12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt set completion callback
+[2m2025-09-02T19:07:12.581766Z[0m [32m INFO[0m [2mmpc_node[0m[2m:[0m 🚀 Starting RPC server on port 8081
+[2m2025-09-02T19:07:12.581776Z[0m [32m INFO[0m [2mmpc_node[0m[2m:[0m 🚀 Starting RPC server on port 8081
+[2m2025-09-02T19:07:12.581783Z[0m [32m INFO[0m [2mmpc_node[0m[2m:[0m 🔗 [MAIN] Passing user registry to RPC server - Arc pointer: 0x5615a8eb96e0
+[2m2025-09-02T19:07:12.581787Z[0m [32m INFO[0m [2mmpc_node[0m[2m:[0m 🔗 [MAIN] Passing user registry to RPC server - Arc pointer: 0x5615a8eb96e0
+[2m2025-09-02T19:07:12.581794Z[0m [32m INFO[0m [2mmpc_node::rpc_server[0m[2m:[0m 🔗 [RPC_SERVER] Received user registry - Arc pointer: 0x5615a8eb96e0
+[2m2025-09-02T19:07:12.581797Z[0m [32m INFO[0m [2mmpc_node::rpc_server[0m[2m:[0m 🔗 [RPC_SERVER] Received user registry - Arc pointer: 0x5615a8eb96e0
+[2m2025-09-02T19:07:12.581810Z[0m [32m INFO[0m [2mmpc_node::rpc_server[0m[2m:[0m 🌐 Starting HTTP RPC server on port 8081
+[2m2025-09-02T19:07:12.581813Z[0m [32m INFO[0m [2mmpc_node::rpc_server[0m[2m:[0m 🌐 Starting HTTP RPC server on port 8081
+[2m2025-09-02T19:07:12.581886Z[0m [32m INFO[0m [1mServer::run[0m[1m{[0m[3maddr[0m[2m=[0m127.0.0.1:8081[1m}[0m[2m:[0m [2mwarp::server[0m[2m:[0m listening on http://127.0.0.1:8081
+[2m2025-09-02T19:07:12.581893Z[0m [32m INFO[0m [1mServer::run[0m[1m{[0m[3maddr[0m[2m=[0m127.0.0.1:8081[1m}[0m[2m:[0m [2mwarp::server[0m[2m:[0m listening on http://127.0.0.1:8081
+[2m2025-09-02T19:07:12.582467Z[0m [32m INFO[0m [2mlibp2p_swarm[0m[2m:[0m [3mlocal_peer_id[0m[2m=[0m12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.582480Z[0m [32m INFO[0m [2mlibp2p_swarm[0m[2m:[0m [3mlocal_peer_id[0m[2m=[0m12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.582494Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 🔔 Attempting to subscribe to topic: topic-dkg
+[2m2025-09-02T19:07:12.582497Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 🔔 Attempting to subscribe to topic: topic-dkg
+[2m2025-09-02T19:07:12.582505Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 🔔 Topic hash: TopicHash { hash: "topic-dkg" }
+[2m2025-09-02T19:07:12.582508Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 🔔 Topic hash: TopicHash { hash: "topic-dkg" }
+[2m2025-09-02T19:07:12.582542Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m ✅ Successfully subscribed to topic: topic-dkg
+[2m2025-09-02T19:07:12.582546Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m ✅ Successfully subscribed to topic: topic-dkg
+[2m2025-09-02T19:07:12.582552Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 🔔 Attempting to subscribe to topic: peer-discovery
+[2m2025-09-02T19:07:12.582556Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 🔔 Attempting to subscribe to topic: peer-discovery
+[2m2025-09-02T19:07:12.582559Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 🔔 Topic hash: TopicHash { hash: "peer-discovery" }
+[2m2025-09-02T19:07:12.582560Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 🔔 Topic hash: TopicHash { hash: "peer-discovery" }
+[2m2025-09-02T19:07:12.582564Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m ✅ Successfully subscribed to topic: peer-discovery
+[2m2025-09-02T19:07:12.582566Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m ✅ Successfully subscribed to topic: peer-discovery
+[2m2025-09-02T19:07:12.582569Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 🔔 Attempting to subscribe to topic: signing
+[2m2025-09-02T19:07:12.582571Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 🔔 Attempting to subscribe to topic: signing
+[2m2025-09-02T19:07:12.582574Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 🔔 Topic hash: TopicHash { hash: "signing" }
+[2m2025-09-02T19:07:12.582576Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 🔔 Topic hash: TopicHash { hash: "signing" }
+[2m2025-09-02T19:07:12.582579Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m ✅ Successfully subscribed to topic: signing
+[2m2025-09-02T19:07:12.582581Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m ✅ Successfully subscribed to topic: signing
+[2m2025-09-02T19:07:12.582584Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 🔔 Attempting to subscribe to topic: consensus
+[2m2025-09-02T19:07:12.582586Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 🔔 Attempting to subscribe to topic: consensus
+[2m2025-09-02T19:07:12.582588Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 🔔 Topic hash: TopicHash { hash: "consensus" }
+[2m2025-09-02T19:07:12.582590Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 🔔 Topic hash: TopicHash { hash: "consensus" }
+[2m2025-09-02T19:07:12.582594Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m ✅ Successfully subscribed to topic: consensus
+[2m2025-09-02T19:07:12.582600Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m ✅ Successfully subscribed to topic: consensus
+[2m2025-09-02T19:07:12.582604Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 🔔 Attempting to subscribe to topic: commands
+[2m2025-09-02T19:07:12.582606Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 🔔 Attempting to subscribe to topic: commands
+[2m2025-09-02T19:07:12.582609Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 🔔 Topic hash: TopicHash { hash: "commands" }
+[2m2025-09-02T19:07:12.582611Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 🔔 Topic hash: TopicHash { hash: "commands" }
+[2m2025-09-02T19:07:12.582614Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m ✅ Successfully subscribed to topic: commands
+[2m2025-09-02T19:07:12.582616Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m ✅ Successfully subscribed to topic: commands
+[2m2025-09-02T19:07:12.582618Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 🔔 Attempting to subscribe to topic: vrf-selection
+[2m2025-09-02T19:07:12.582620Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 🔔 Attempting to subscribe to topic: vrf-selection
+[2m2025-09-02T19:07:12.582623Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 🔔 Topic hash: TopicHash { hash: "vrf-selection" }
+[2m2025-09-02T19:07:12.582625Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 🔔 Topic hash: TopicHash { hash: "vrf-selection" }
+[2m2025-09-02T19:07:12.582628Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m ✅ Successfully subscribed to topic: vrf-selection
+[2m2025-09-02T19:07:12.582630Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m ✅ Successfully subscribed to topic: vrf-selection
+[2m2025-09-02T19:07:12.582633Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 🔔 Attempting to subscribe to topic: transactions
+[2m2025-09-02T19:07:12.582634Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 🔔 Attempting to subscribe to topic: transactions
+[2m2025-09-02T19:07:12.582637Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 🔔 Topic hash: TopicHash { hash: "transactions" }
+[2m2025-09-02T19:07:12.582639Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 🔔 Topic hash: TopicHash { hash: "transactions" }
+[2m2025-09-02T19:07:12.582642Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m ✅ Successfully subscribed to topic: transactions
+[2m2025-09-02T19:07:12.582644Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m ✅ Successfully subscribed to topic: transactions
+[2m2025-09-02T19:07:12.582647Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 🔔 Attempting to subscribe to topic: deposit-intents
+[2m2025-09-02T19:07:12.582649Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 🔔 Attempting to subscribe to topic: deposit-intents
+[2m2025-09-02T19:07:12.582652Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 🔔 Topic hash: TopicHash { hash: "deposit-intents" }
+[2m2025-09-02T19:07:12.582654Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 🔔 Topic hash: TopicHash { hash: "deposit-intents" }
+[2m2025-09-02T19:07:12.582657Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m ✅ Successfully subscribed to topic: deposit-intents
+[2m2025-09-02T19:07:12.582659Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m ✅ Successfully subscribed to topic: deposit-intents
+[2m2025-09-02T19:07:12.582663Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 🔔 Attempting to subscribe to topic: dkg-commands
+[2m2025-09-02T19:07:12.582665Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 🔔 Attempting to subscribe to topic: dkg-commands
+[2m2025-09-02T19:07:12.582670Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 🔔 Topic hash: TopicHash { hash: "dkg-commands" }
+[2m2025-09-02T19:07:12.582672Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 🔔 Topic hash: TopicHash { hash: "dkg-commands" }
+[2m2025-09-02T19:07:12.582675Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m ✅ Successfully subscribed to topic: dkg-commands
+[2m2025-09-02T19:07:12.582679Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m ✅ Successfully subscribed to topic: dkg-commands
+[2m2025-09-02T19:07:12.582682Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 🔔 Attempting to subscribe to topic: signatures-to-final-node
+[2m2025-09-02T19:07:12.582684Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 🔔 Attempting to subscribe to topic: signatures-to-final-node
+[2m2025-09-02T19:07:12.582687Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 🔔 Topic hash: TopicHash { hash: "signatures-to-final-node" }
+[2m2025-09-02T19:07:12.582689Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 🔔 Topic hash: TopicHash { hash: "signatures-to-final-node" }
+[2m2025-09-02T19:07:12.582692Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m ✅ Successfully subscribed to topic: signatures-to-final-node
+[2m2025-09-02T19:07:12.582694Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m ✅ Successfully subscribed to topic: signatures-to-final-node
+[2m2025-09-02T19:07:12.582696Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 🔔 Attempting to subscribe to topic: user-registrations
+[2m2025-09-02T19:07:12.582698Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 🔔 Attempting to subscribe to topic: user-registrations
+[2m2025-09-02T19:07:12.582701Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 🔔 Topic hash: TopicHash { hash: "user-registrations" }
+[2m2025-09-02T19:07:12.582703Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 🔔 Topic hash: TopicHash { hash: "user-registrations" }
+[2m2025-09-02T19:07:12.582706Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m ✅ Successfully subscribed to topic: user-registrations
+[2m2025-09-02T19:07:12.582708Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m ✅ Successfully subscribed to topic: user-registrations
+[2m2025-09-02T19:07:12.582711Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 🔔 Attempting to subscribe to topic: intent-broadcast
+[2m2025-09-02T19:07:12.582713Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 🔔 Attempting to subscribe to topic: intent-broadcast
+[2m2025-09-02T19:07:12.582716Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 🔔 Topic hash: TopicHash { hash: "intent-broadcast" }
+[2m2025-09-02T19:07:12.582718Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 🔔 Topic hash: TopicHash { hash: "intent-broadcast" }
+[2m2025-09-02T19:07:12.582721Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m ✅ Successfully subscribed to topic: intent-broadcast
+[2m2025-09-02T19:07:12.582723Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m ✅ Successfully subscribed to topic: intent-broadcast
+[2m2025-09-02T19:07:12.582727Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📊 Current gossipsub peer count: 0
+[2m2025-09-02T19:07:12.582729Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📊 Current gossipsub peer count: 0
+Starting Kademlia bootstrap...
+[2m2025-09-02T19:07:12.582743Z[0m [32m INFO[0m [2mmpc_node::node_management::vrf_manager[0m[2m:[0m [34m➕ Added node 12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt to VRF node manager[0m
+[2m2025-09-02T19:07:12.582749Z[0m [32m INFO[0m [2mmpc_node::node_management::vrf_manager[0m[2m:[0m [34m➕ Added node 12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt to VRF node manager[0m
+[2m2025-09-02T19:07:12.582800Z[0m [33m WARN[0m [2mmpc_node::network[0m[2m:[0m Failed to start bootstrap: NoKnownPeers
+[2m2025-09-02T19:07:12.582803Z[0m [33m WARN[0m [2mmpc_node::network[0m[2m:[0m Failed to start bootstrap: NoKnownPeers
+Local Peer ID: 12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+Performing periodic bootstrap...
+[2m2025-09-02T19:07:12.583084Z[0m [33m WARN[0m [2mmpc_node::network[0m[2m:[0m Periodic bootstrap failed: NoKnownPeers
+[2m2025-09-02T19:07:12.583089Z[0m [33m WARN[0m [2mmpc_node::network[0m[2m:[0m Periodic bootstrap failed: NoKnownPeers
+[2m2025-09-02T19:07:12.583201Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 🕒 PeerList snapshot (1 peers): {PeerId("12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt")}
+[2m2025-09-02T19:07:12.583208Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 🕒 PeerList snapshot (1 peers): {PeerId("12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt")}
+[2m2025-09-02T19:07:12.583217Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📊 DKG Status Check - Current status: New
+[2m2025-09-02T19:07:12.583220Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📊 DKG Status Check - Current status: New
+[2m2025-09-02T19:07:12.583295Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.583300Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.583319Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(1), address: /ip4/127.0.0.1/tcp/46799 }
+[2m2025-09-02T19:07:12.583322Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(1), address: /ip4/127.0.0.1/tcp/46799 }
+[2m2025-09-02T19:07:12.583326Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/127.0.0.1/tcp/46799
+[2m2025-09-02T19:07:12.583328Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/127.0.0.1/tcp/46799
+[2m2025-09-02T19:07:12.583341Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/127.0.0.1/tcp/46799/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.583345Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/127.0.0.1/tcp/46799/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.583351Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/127.0.0.1/tcp/46799/mpc/1.0.0
+[2m2025-09-02T19:07:12.583354Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/127.0.0.1/tcp/46799/mpc/1.0.0
+[2m2025-09-02T19:07:12.583361Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 🔄 Performing periodic peer discovery...
+[2m2025-09-02T19:07:12.583363Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 🔄 Performing periodic peer discovery...
+[2m2025-09-02T19:07:12.583369Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📊 Current node manager state - Total: 1, Active nodes: {PeerId("12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt")}
+[2m2025-09-02T19:07:12.583373Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📊 Current node manager state - Total: 1, Active nodes: {PeerId("12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt")}
+[2m2025-09-02T19:07:12.583379Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 Gossipsub connected peers: 0
+[2m2025-09-02T19:07:12.583382Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 Gossipsub connected peers: 0
+[2m2025-09-02T19:07:12.583392Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 🌐 Kademlia routing table entries: 0
+[2m2025-09-02T19:07:12.583396Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 🌐 Kademlia routing table entries: 0
+[2m2025-09-02T19:07:12.583493Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.583500Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.583519Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] Behaviour(Kademlia(OutboundQueryProgressed { id: QueryId(1), result: GetClosestPeers(Ok(GetClosestPeersOk { key: [0, 32, 230, 51, 115, 215, 151, 161, 101, 75, 117, 80, 231, 211, 240, 129, 47, 23, 170, 119, 11, 45, 194, 75, 82, 180, 110, 86, 94, 88, 247, 21, 210, 244], peers: [] })), stats: QueryStats { requests: 0, success: 0, failure: 0, start: Some(Instant { tv_sec: 74946, tv_nsec: 400660847 }), end: Some(Instant { tv_sec: 74946, tv_nsec: 400660847 }) }, step: ProgressStep { count: 1, last: true } }))
+[2m2025-09-02T19:07:12.583531Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] Behaviour(Kademlia(OutboundQueryProgressed { id: QueryId(1), result: GetClosestPeers(Ok(GetClosestPeersOk { key: [0, 32, 230, 51, 115, 215, 151, 161, 101, 75, 117, 80, 231, 211, 240, 129, 47, 23, 170, 119, 11, 45, 194, 75, 82, 180, 110, 86, 94, 88, 247, 21, 210, 244], peers: [] })), stats: QueryStats { requests: 0, success: 0, failure: 0, start: Some(Instant { tv_sec: 74946, tv_nsec: 400660847 }), end: Some(Instant { tv_sec: 74946, tv_nsec: 400660847 }) }, step: ProgressStep { count: 1, last: true } }))
+[2m2025-09-02T19:07:12.583546Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m -----------OutboundQueryProgressed----------: QueryId(1), GetClosestPeers(Ok(GetClosestPeersOk { key: [0, 32, 230, 51, 115, 215, 151, 161, 101, 75, 117, 80, 231, 211, 240, 129, 47, 23, 170, 119, 11, 45, 194, 75, 82, 180, 110, 86, 94, 88, 247, 21, 210, 244], peers: [] })), QueryStats { requests: 0, success: 0, failure: 0, start: Some(Instant { tv_sec: 74946, tv_nsec: 400660847 }), end: Some(Instant { tv_sec: 74946, tv_nsec: 400660847 }) }, ProgressStep { count: 1, last: true }
+[2m2025-09-02T19:07:12.583552Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m -----------OutboundQueryProgressed----------: QueryId(1), GetClosestPeers(Ok(GetClosestPeersOk { key: [0, 32, 230, 51, 115, 215, 151, 161, 101, 75, 117, 80, 231, 211, 240, 129, 47, 23, 170, 119, 11, 45, 194, 75, 82, 180, 110, 86, 94, 88, 247, 21, 210, 244], peers: [] })), QueryStats { requests: 0, success: 0, failure: 0, start: Some(Instant { tv_sec: 74946, tv_nsec: 400660847 }), end: Some(Instant { tv_sec: 74946, tv_nsec: 400660847 }) }, ProgressStep { count: 1, last: true }
+[2m2025-09-02T19:07:12.583591Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.583595Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.583603Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] Behaviour(Kademlia(OutboundQueryProgressed { id: QueryId(0), result: GetClosestPeers(Ok(GetClosestPeersOk { key: [0, 36, 8, 1, 18, 32, 168, 52, 20, 69, 153, 75, 130, 163, 57, 81, 213, 185, 154, 115, 133, 248, 196, 231, 210, 219, 122, 239, 178, 110, 131, 202, 178, 45, 16, 95, 244, 21], peers: [] })), stats: QueryStats { requests: 0, success: 0, failure: 0, start: Some(Instant { tv_sec: 74946, tv_nsec: 400742329 }), end: Some(Instant { tv_sec: 74946, tv_nsec: 400742329 }) }, step: ProgressStep { count: 1, last: true } }))
+[2m2025-09-02T19:07:12.583608Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] Behaviour(Kademlia(OutboundQueryProgressed { id: QueryId(0), result: GetClosestPeers(Ok(GetClosestPeersOk { key: [0, 36, 8, 1, 18, 32, 168, 52, 20, 69, 153, 75, 130, 163, 57, 81, 213, 185, 154, 115, 133, 248, 196, 231, 210, 219, 122, 239, 178, 110, 131, 202, 178, 45, 16, 95, 244, 21], peers: [] })), stats: QueryStats { requests: 0, success: 0, failure: 0, start: Some(Instant { tv_sec: 74946, tv_nsec: 400742329 }), end: Some(Instant { tv_sec: 74946, tv_nsec: 400742329 }) }, step: ProgressStep { count: 1, last: true } }))
+[2m2025-09-02T19:07:12.583616Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m -----------OutboundQueryProgressed----------: QueryId(0), GetClosestPeers(Ok(GetClosestPeersOk { key: [0, 36, 8, 1, 18, 32, 168, 52, 20, 69, 153, 75, 130, 163, 57, 81, 213, 185, 154, 115, 133, 248, 196, 231, 210, 219, 122, 239, 178, 110, 131, 202, 178, 45, 16, 95, 244, 21], peers: [] })), QueryStats { requests: 0, success: 0, failure: 0, start: Some(Instant { tv_sec: 74946, tv_nsec: 400742329 }), end: Some(Instant { tv_sec: 74946, tv_nsec: 400742329 }) }, ProgressStep { count: 1, last: true }
+[2m2025-09-02T19:07:12.583621Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m -----------OutboundQueryProgressed----------: QueryId(0), GetClosestPeers(Ok(GetClosestPeersOk { key: [0, 36, 8, 1, 18, 32, 168, 52, 20, 69, 153, 75, 130, 163, 57, 81, 213, 185, 154, 115, 133, 248, 196, 231, 210, 219, 122, 239, 178, 110, 131, 202, 178, 45, 16, 95, 244, 21], peers: [] })), QueryStats { requests: 0, success: 0, failure: 0, start: Some(Instant { tv_sec: 74946, tv_nsec: 400742329 }), end: Some(Instant { tv_sec: 74946, tv_nsec: 400742329 }) }, ProgressStep { count: 1, last: true }
+[2m2025-09-02T19:07:12.583647Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.583652Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.583658Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(1), address: /ip4/172.16.13.46/tcp/46799 }
+[2m2025-09-02T19:07:12.583662Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(1), address: /ip4/172.16.13.46/tcp/46799 }
+[2m2025-09-02T19:07:12.583671Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.16.13.46/tcp/46799
+[2m2025-09-02T19:07:12.583675Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.16.13.46/tcp/46799
+[2m2025-09-02T19:07:12.583686Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.16.13.46/tcp/46799/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.583691Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.16.13.46/tcp/46799/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.583700Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.16.13.46/tcp/46799/mpc/1.0.0
+[2m2025-09-02T19:07:12.583703Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.16.13.46/tcp/46799/mpc/1.0.0
+[2m2025-09-02T19:07:12.583717Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.583721Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.583724Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(1), address: /ip4/172.28.0.1/tcp/46799 }
+[2m2025-09-02T19:07:12.583726Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(1), address: /ip4/172.28.0.1/tcp/46799 }
+[2m2025-09-02T19:07:12.583730Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.28.0.1/tcp/46799
+[2m2025-09-02T19:07:12.583732Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.28.0.1/tcp/46799
+[2m2025-09-02T19:07:12.583738Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.28.0.1/tcp/46799/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.583741Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.28.0.1/tcp/46799/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.583745Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.28.0.1/tcp/46799/mpc/1.0.0
+[2m2025-09-02T19:07:12.583748Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.28.0.1/tcp/46799/mpc/1.0.0
+[2m2025-09-02T19:07:12.583758Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.583763Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.583767Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(1), address: /ip4/172.25.0.1/tcp/46799 }
+[2m2025-09-02T19:07:12.583769Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(1), address: /ip4/172.25.0.1/tcp/46799 }
+[2m2025-09-02T19:07:12.583772Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.25.0.1/tcp/46799
+[2m2025-09-02T19:07:12.583775Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.25.0.1/tcp/46799
+[2m2025-09-02T19:07:12.583784Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.25.0.1/tcp/46799/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.583789Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.25.0.1/tcp/46799/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.583794Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.25.0.1/tcp/46799/mpc/1.0.0
+[2m2025-09-02T19:07:12.583796Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.25.0.1/tcp/46799/mpc/1.0.0
+[2m2025-09-02T19:07:12.583803Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.583807Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.583810Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(1), address: /ip4/192.168.0.1/tcp/46799 }
+[2m2025-09-02T19:07:12.583813Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(1), address: /ip4/192.168.0.1/tcp/46799 }
+[2m2025-09-02T19:07:12.583817Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/192.168.0.1/tcp/46799
+[2m2025-09-02T19:07:12.583819Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/192.168.0.1/tcp/46799
+[2m2025-09-02T19:07:12.583824Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/192.168.0.1/tcp/46799/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.583827Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/192.168.0.1/tcp/46799/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.583831Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/192.168.0.1/tcp/46799/mpc/1.0.0
+[2m2025-09-02T19:07:12.583833Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/192.168.0.1/tcp/46799/mpc/1.0.0
+[2m2025-09-02T19:07:12.583842Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.583845Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.583849Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(1), address: /ip4/172.21.0.1/tcp/46799 }
+[2m2025-09-02T19:07:12.583851Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(1), address: /ip4/172.21.0.1/tcp/46799 }
+[2m2025-09-02T19:07:12.583855Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.21.0.1/tcp/46799
+[2m2025-09-02T19:07:12.583857Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.21.0.1/tcp/46799
+[2m2025-09-02T19:07:12.583862Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.21.0.1/tcp/46799/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.583865Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.21.0.1/tcp/46799/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.583869Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.21.0.1/tcp/46799/mpc/1.0.0
+[2m2025-09-02T19:07:12.583872Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.21.0.1/tcp/46799/mpc/1.0.0
+[2m2025-09-02T19:07:12.583880Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.583884Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.583888Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(1), address: /ip4/172.18.0.1/tcp/46799 }
+[2m2025-09-02T19:07:12.583895Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(1), address: /ip4/172.18.0.1/tcp/46799 }
+[2m2025-09-02T19:07:12.583901Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.18.0.1/tcp/46799
+[2m2025-09-02T19:07:12.583905Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.18.0.1/tcp/46799
+[2m2025-09-02T19:07:12.583911Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.18.0.1/tcp/46799/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.583915Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.18.0.1/tcp/46799/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.583923Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.18.0.1/tcp/46799/mpc/1.0.0
+[2m2025-09-02T19:07:12.583926Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.18.0.1/tcp/46799/mpc/1.0.0
+[2m2025-09-02T19:07:12.583939Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.583943Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.583948Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(1), address: /ip4/172.29.0.1/tcp/46799 }
+[2m2025-09-02T19:07:12.583952Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(1), address: /ip4/172.29.0.1/tcp/46799 }
+[2m2025-09-02T19:07:12.583957Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.29.0.1/tcp/46799
+[2m2025-09-02T19:07:12.583960Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.29.0.1/tcp/46799
+[2m2025-09-02T19:07:12.583967Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.29.0.1/tcp/46799/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.583971Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.29.0.1/tcp/46799/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.583979Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.29.0.1/tcp/46799/mpc/1.0.0
+[2m2025-09-02T19:07:12.583983Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.29.0.1/tcp/46799/mpc/1.0.0
+[2m2025-09-02T19:07:12.583993Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.583997Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.584002Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(1), address: /ip4/172.23.0.1/tcp/46799 }
+[2m2025-09-02T19:07:12.584005Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(1), address: /ip4/172.23.0.1/tcp/46799 }
+[2m2025-09-02T19:07:12.584011Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.23.0.1/tcp/46799
+[2m2025-09-02T19:07:12.584014Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.23.0.1/tcp/46799
+[2m2025-09-02T19:07:12.584021Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.23.0.1/tcp/46799/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.584026Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.23.0.1/tcp/46799/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.584033Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.23.0.1/tcp/46799/mpc/1.0.0
+[2m2025-09-02T19:07:12.584036Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.23.0.1/tcp/46799/mpc/1.0.0
+[2m2025-09-02T19:07:12.584056Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.584062Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.584067Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(1), address: /ip4/172.30.0.1/tcp/46799 }
+[2m2025-09-02T19:07:12.584071Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(1), address: /ip4/172.30.0.1/tcp/46799 }
+[2m2025-09-02T19:07:12.584077Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.30.0.1/tcp/46799
+[2m2025-09-02T19:07:12.584080Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.30.0.1/tcp/46799
+[2m2025-09-02T19:07:12.584088Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.30.0.1/tcp/46799/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.584092Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.30.0.1/tcp/46799/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.584099Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.30.0.1/tcp/46799/mpc/1.0.0
+[2m2025-09-02T19:07:12.584102Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.30.0.1/tcp/46799/mpc/1.0.0
+[2m2025-09-02T19:07:12.584112Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.584117Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.584122Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(1), address: /ip4/172.19.0.1/tcp/46799 }
+[2m2025-09-02T19:07:12.584126Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(1), address: /ip4/172.19.0.1/tcp/46799 }
+[2m2025-09-02T19:07:12.584132Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.19.0.1/tcp/46799
+[2m2025-09-02T19:07:12.584135Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.19.0.1/tcp/46799
+[2m2025-09-02T19:07:12.584141Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.19.0.1/tcp/46799/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.584144Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.19.0.1/tcp/46799/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.584148Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.19.0.1/tcp/46799/mpc/1.0.0
+[2m2025-09-02T19:07:12.584150Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.19.0.1/tcp/46799/mpc/1.0.0
+[2m2025-09-02T19:07:12.584158Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.584161Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.584164Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(1), address: /ip4/172.22.0.1/tcp/46799 }
+[2m2025-09-02T19:07:12.584166Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(1), address: /ip4/172.22.0.1/tcp/46799 }
+[2m2025-09-02T19:07:12.584170Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.22.0.1/tcp/46799
+[2m2025-09-02T19:07:12.584172Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.22.0.1/tcp/46799
+[2m2025-09-02T19:07:12.584176Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.22.0.1/tcp/46799/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.584179Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.22.0.1/tcp/46799/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.584186Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.22.0.1/tcp/46799/mpc/1.0.0
+[2m2025-09-02T19:07:12.584188Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.22.0.1/tcp/46799/mpc/1.0.0
+[2m2025-09-02T19:07:12.584195Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.584199Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.584202Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(1), address: /ip4/172.20.0.1/tcp/46799 }
+[2m2025-09-02T19:07:12.584204Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(1), address: /ip4/172.20.0.1/tcp/46799 }
+[2m2025-09-02T19:07:12.584207Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.20.0.1/tcp/46799
+[2m2025-09-02T19:07:12.584209Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.20.0.1/tcp/46799
+[2m2025-09-02T19:07:12.584214Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.20.0.1/tcp/46799/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.584217Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.20.0.1/tcp/46799/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.584220Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.20.0.1/tcp/46799/mpc/1.0.0
+[2m2025-09-02T19:07:12.584222Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.20.0.1/tcp/46799/mpc/1.0.0
+[2m2025-09-02T19:07:12.584229Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.584232Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.584236Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(1), address: /ip4/172.27.0.1/tcp/46799 }
+[2m2025-09-02T19:07:12.584238Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(1), address: /ip4/172.27.0.1/tcp/46799 }
+[2m2025-09-02T19:07:12.584241Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.27.0.1/tcp/46799
+[2m2025-09-02T19:07:12.584243Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.27.0.1/tcp/46799
+[2m2025-09-02T19:07:12.584248Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.27.0.1/tcp/46799/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.584251Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.27.0.1/tcp/46799/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.584255Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.27.0.1/tcp/46799/mpc/1.0.0
+[2m2025-09-02T19:07:12.584257Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.27.0.1/tcp/46799/mpc/1.0.0
+[2m2025-09-02T19:07:12.584269Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.584273Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.584276Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(1), address: /ip4/172.26.0.1/tcp/46799 }
+[2m2025-09-02T19:07:12.584279Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(1), address: /ip4/172.26.0.1/tcp/46799 }
+[2m2025-09-02T19:07:12.584282Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.26.0.1/tcp/46799
+[2m2025-09-02T19:07:12.584287Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.26.0.1/tcp/46799
+[2m2025-09-02T19:07:12.584292Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.26.0.1/tcp/46799/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.584295Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.26.0.1/tcp/46799/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.584299Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.26.0.1/tcp/46799/mpc/1.0.0
+[2m2025-09-02T19:07:12.584302Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.26.0.1/tcp/46799/mpc/1.0.0
+[2m2025-09-02T19:07:12.584310Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.584313Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.584316Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(1), address: /ip4/172.31.0.1/tcp/46799 }
+[2m2025-09-02T19:07:12.584318Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(1), address: /ip4/172.31.0.1/tcp/46799 }
+[2m2025-09-02T19:07:12.584322Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.31.0.1/tcp/46799
+[2m2025-09-02T19:07:12.584324Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.31.0.1/tcp/46799
+[2m2025-09-02T19:07:12.584329Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.31.0.1/tcp/46799/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.584332Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.31.0.1/tcp/46799/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.584336Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.31.0.1/tcp/46799/mpc/1.0.0
+[2m2025-09-02T19:07:12.584337Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.31.0.1/tcp/46799/mpc/1.0.0
+[2m2025-09-02T19:07:12.584344Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.584347Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.584351Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(1), address: /ip4/172.24.0.1/tcp/46799 }
+[2m2025-09-02T19:07:12.584353Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(1), address: /ip4/172.24.0.1/tcp/46799 }
+[2m2025-09-02T19:07:12.584357Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.24.0.1/tcp/46799
+[2m2025-09-02T19:07:12.584359Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.24.0.1/tcp/46799
+[2m2025-09-02T19:07:12.584363Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.24.0.1/tcp/46799/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.584366Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.24.0.1/tcp/46799/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.584370Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.24.0.1/tcp/46799/mpc/1.0.0
+[2m2025-09-02T19:07:12.584372Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.24.0.1/tcp/46799/mpc/1.0.0
+[2m2025-09-02T19:07:12.584379Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.584382Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.584388Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(1), address: /ip4/172.17.0.1/tcp/46799 }
+[2m2025-09-02T19:07:12.584390Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(1), address: /ip4/172.17.0.1/tcp/46799 }
+[2m2025-09-02T19:07:12.584393Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.17.0.1/tcp/46799
+[2m2025-09-02T19:07:12.584395Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.17.0.1/tcp/46799
+[2m2025-09-02T19:07:12.584400Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.17.0.1/tcp/46799/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.584402Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.17.0.1/tcp/46799/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.584406Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.17.0.1/tcp/46799/mpc/1.0.0
+[2m2025-09-02T19:07:12.584408Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.17.0.1/tcp/46799/mpc/1.0.0
+[2m2025-09-02T19:07:12.584471Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.584478Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.584484Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(2), address: /ip4/127.0.0.1/udp/36668/quic-v1 }
+[2m2025-09-02T19:07:12.584488Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(2), address: /ip4/127.0.0.1/udp/36668/quic-v1 }
+[2m2025-09-02T19:07:12.584492Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/127.0.0.1/udp/36668/quic-v1
+[2m2025-09-02T19:07:12.584494Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/127.0.0.1/udp/36668/quic-v1
+[2m2025-09-02T19:07:12.584499Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/127.0.0.1/udp/36668/quic-v1/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.584502Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/127.0.0.1/udp/36668/quic-v1/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.584506Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/127.0.0.1/udp/36668/quic-v1/mpc/1.0.0
+[2m2025-09-02T19:07:12.584508Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/127.0.0.1/udp/36668/quic-v1/mpc/1.0.0
+[2m2025-09-02T19:07:12.584519Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.584523Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.584526Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(2), address: /ip4/172.16.13.46/udp/36668/quic-v1 }
+[2m2025-09-02T19:07:12.584528Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(2), address: /ip4/172.16.13.46/udp/36668/quic-v1 }
+[2m2025-09-02T19:07:12.584532Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.16.13.46/udp/36668/quic-v1
+[2m2025-09-02T19:07:12.584534Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.16.13.46/udp/36668/quic-v1
+[2m2025-09-02T19:07:12.584539Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.16.13.46/udp/36668/quic-v1/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.584542Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.16.13.46/udp/36668/quic-v1/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.584549Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.16.13.46/udp/36668/quic-v1/mpc/1.0.0
+[2m2025-09-02T19:07:12.584551Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.16.13.46/udp/36668/quic-v1/mpc/1.0.0
+[2m2025-09-02T19:07:12.584565Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.584569Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.584574Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(2), address: /ip4/172.28.0.1/udp/36668/quic-v1 }
+[2m2025-09-02T19:07:12.584577Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(2), address: /ip4/172.28.0.1/udp/36668/quic-v1 }
+[2m2025-09-02T19:07:12.584581Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.28.0.1/udp/36668/quic-v1
+[2m2025-09-02T19:07:12.584583Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.28.0.1/udp/36668/quic-v1
+[2m2025-09-02T19:07:12.584588Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.28.0.1/udp/36668/quic-v1/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.584591Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.28.0.1/udp/36668/quic-v1/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.584595Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.28.0.1/udp/36668/quic-v1/mpc/1.0.0
+[2m2025-09-02T19:07:12.584597Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.28.0.1/udp/36668/quic-v1/mpc/1.0.0
+[2m2025-09-02T19:07:12.584605Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.584608Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.584613Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(2), address: /ip4/172.25.0.1/udp/36668/quic-v1 }
+[2m2025-09-02T19:07:12.584617Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(2), address: /ip4/172.25.0.1/udp/36668/quic-v1 }
+[2m2025-09-02T19:07:12.584620Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.25.0.1/udp/36668/quic-v1
+[2m2025-09-02T19:07:12.584622Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.25.0.1/udp/36668/quic-v1
+[2m2025-09-02T19:07:12.584627Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.25.0.1/udp/36668/quic-v1/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.584629Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.25.0.1/udp/36668/quic-v1/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.584633Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.25.0.1/udp/36668/quic-v1/mpc/1.0.0
+[2m2025-09-02T19:07:12.584635Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.25.0.1/udp/36668/quic-v1/mpc/1.0.0
+[2m2025-09-02T19:07:12.584643Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.584646Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.584650Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(2), address: /ip4/192.168.0.1/udp/36668/quic-v1 }
+[2m2025-09-02T19:07:12.584652Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(2), address: /ip4/192.168.0.1/udp/36668/quic-v1 }
+[2m2025-09-02T19:07:12.584656Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/192.168.0.1/udp/36668/quic-v1
+[2m2025-09-02T19:07:12.584660Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/192.168.0.1/udp/36668/quic-v1
+[2m2025-09-02T19:07:12.584665Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/192.168.0.1/udp/36668/quic-v1/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.584668Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/192.168.0.1/udp/36668/quic-v1/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.584672Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/192.168.0.1/udp/36668/quic-v1/mpc/1.0.0
+[2m2025-09-02T19:07:12.584674Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/192.168.0.1/udp/36668/quic-v1/mpc/1.0.0
+[2m2025-09-02T19:07:12.584681Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.584685Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.584691Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(2), address: /ip4/172.21.0.1/udp/36668/quic-v1 }
+[2m2025-09-02T19:07:12.584695Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(2), address: /ip4/172.21.0.1/udp/36668/quic-v1 }
+[2m2025-09-02T19:07:12.584698Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.21.0.1/udp/36668/quic-v1
+[2m2025-09-02T19:07:12.584701Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.21.0.1/udp/36668/quic-v1
+[2m2025-09-02T19:07:12.584705Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.21.0.1/udp/36668/quic-v1/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.584708Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.21.0.1/udp/36668/quic-v1/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.584712Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.21.0.1/udp/36668/quic-v1/mpc/1.0.0
+[2m2025-09-02T19:07:12.584714Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.21.0.1/udp/36668/quic-v1/mpc/1.0.0
+[2m2025-09-02T19:07:12.584721Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.584724Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.584728Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(2), address: /ip4/172.18.0.1/udp/36668/quic-v1 }
+[2m2025-09-02T19:07:12.584730Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(2), address: /ip4/172.18.0.1/udp/36668/quic-v1 }
+[2m2025-09-02T19:07:12.584733Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.18.0.1/udp/36668/quic-v1
+[2m2025-09-02T19:07:12.584735Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.18.0.1/udp/36668/quic-v1
+[2m2025-09-02T19:07:12.584740Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.18.0.1/udp/36668/quic-v1/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.584743Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.18.0.1/udp/36668/quic-v1/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.584747Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.18.0.1/udp/36668/quic-v1/mpc/1.0.0
+[2m2025-09-02T19:07:12.584749Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.18.0.1/udp/36668/quic-v1/mpc/1.0.0
+[2m2025-09-02T19:07:12.584757Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.584763Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.584769Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(2), address: /ip4/172.29.0.1/udp/36668/quic-v1 }
+[2m2025-09-02T19:07:12.584772Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(2), address: /ip4/172.29.0.1/udp/36668/quic-v1 }
+[2m2025-09-02T19:07:12.584775Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.29.0.1/udp/36668/quic-v1
+[2m2025-09-02T19:07:12.584777Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.29.0.1/udp/36668/quic-v1
+[2m2025-09-02T19:07:12.584782Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.29.0.1/udp/36668/quic-v1/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.584785Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.29.0.1/udp/36668/quic-v1/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.584789Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.29.0.1/udp/36668/quic-v1/mpc/1.0.0
+[2m2025-09-02T19:07:12.584791Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.29.0.1/udp/36668/quic-v1/mpc/1.0.0
+[2m2025-09-02T19:07:12.584798Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.584801Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.584807Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(2), address: /ip4/172.23.0.1/udp/36668/quic-v1 }
+[2m2025-09-02T19:07:12.584810Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(2), address: /ip4/172.23.0.1/udp/36668/quic-v1 }
+[2m2025-09-02T19:07:12.584814Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.23.0.1/udp/36668/quic-v1
+[2m2025-09-02T19:07:12.584816Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.23.0.1/udp/36668/quic-v1
+[2m2025-09-02T19:07:12.584820Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.23.0.1/udp/36668/quic-v1/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.584823Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.23.0.1/udp/36668/quic-v1/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.584827Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.23.0.1/udp/36668/quic-v1/mpc/1.0.0
+[2m2025-09-02T19:07:12.584829Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.23.0.1/udp/36668/quic-v1/mpc/1.0.0
+[2m2025-09-02T19:07:12.584836Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.584840Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.584843Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(2), address: /ip4/172.30.0.1/udp/36668/quic-v1 }
+[2m2025-09-02T19:07:12.584845Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(2), address: /ip4/172.30.0.1/udp/36668/quic-v1 }
+[2m2025-09-02T19:07:12.584849Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.30.0.1/udp/36668/quic-v1
+[2m2025-09-02T19:07:12.584851Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.30.0.1/udp/36668/quic-v1
+[2m2025-09-02T19:07:12.584856Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.30.0.1/udp/36668/quic-v1/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.584864Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.30.0.1/udp/36668/quic-v1/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.584871Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.30.0.1/udp/36668/quic-v1/mpc/1.0.0
+[2m2025-09-02T19:07:12.584874Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.30.0.1/udp/36668/quic-v1/mpc/1.0.0
+[2m2025-09-02T19:07:12.584882Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.584885Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.584889Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(2), address: /ip4/172.19.0.1/udp/36668/quic-v1 }
+[2m2025-09-02T19:07:12.584891Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(2), address: /ip4/172.19.0.1/udp/36668/quic-v1 }
+[2m2025-09-02T19:07:12.584894Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.19.0.1/udp/36668/quic-v1
+[2m2025-09-02T19:07:12.584897Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.19.0.1/udp/36668/quic-v1
+[2m2025-09-02T19:07:12.584901Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.19.0.1/udp/36668/quic-v1/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.584904Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.19.0.1/udp/36668/quic-v1/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.584910Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.19.0.1/udp/36668/quic-v1/mpc/1.0.0
+[2m2025-09-02T19:07:12.584913Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.19.0.1/udp/36668/quic-v1/mpc/1.0.0
+[2m2025-09-02T19:07:12.584921Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.584925Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.584930Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(2), address: /ip4/172.22.0.1/udp/36668/quic-v1 }
+[2m2025-09-02T19:07:12.584933Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(2), address: /ip4/172.22.0.1/udp/36668/quic-v1 }
+[2m2025-09-02T19:07:12.584937Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.22.0.1/udp/36668/quic-v1
+[2m2025-09-02T19:07:12.584939Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.22.0.1/udp/36668/quic-v1
+[2m2025-09-02T19:07:12.584943Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.22.0.1/udp/36668/quic-v1/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.584946Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.22.0.1/udp/36668/quic-v1/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.584950Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.22.0.1/udp/36668/quic-v1/mpc/1.0.0
+[2m2025-09-02T19:07:12.584952Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.22.0.1/udp/36668/quic-v1/mpc/1.0.0
+[2m2025-09-02T19:07:12.584959Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.584963Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.584968Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(2), address: /ip4/172.20.0.1/udp/36668/quic-v1 }
+[2m2025-09-02T19:07:12.584973Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(2), address: /ip4/172.20.0.1/udp/36668/quic-v1 }
+[2m2025-09-02T19:07:12.584976Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.20.0.1/udp/36668/quic-v1
+[2m2025-09-02T19:07:12.584978Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.20.0.1/udp/36668/quic-v1
+[2m2025-09-02T19:07:12.584982Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.20.0.1/udp/36668/quic-v1/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.584985Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.20.0.1/udp/36668/quic-v1/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.584991Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.20.0.1/udp/36668/quic-v1/mpc/1.0.0
+[2m2025-09-02T19:07:12.584994Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.20.0.1/udp/36668/quic-v1/mpc/1.0.0
+[2m2025-09-02T19:07:12.585002Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.585005Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.585009Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(2), address: /ip4/172.27.0.1/udp/36668/quic-v1 }
+[2m2025-09-02T19:07:12.585011Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(2), address: /ip4/172.27.0.1/udp/36668/quic-v1 }
+[2m2025-09-02T19:07:12.585015Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.27.0.1/udp/36668/quic-v1
+[2m2025-09-02T19:07:12.585017Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.27.0.1/udp/36668/quic-v1
+[2m2025-09-02T19:07:12.585021Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.27.0.1/udp/36668/quic-v1/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.585023Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.27.0.1/udp/36668/quic-v1/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.585027Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.27.0.1/udp/36668/quic-v1/mpc/1.0.0
+[2m2025-09-02T19:07:12.585029Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.27.0.1/udp/36668/quic-v1/mpc/1.0.0
+[2m2025-09-02T19:07:12.585037Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.585041Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.585044Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(2), address: /ip4/172.26.0.1/udp/36668/quic-v1 }
+[2m2025-09-02T19:07:12.585046Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(2), address: /ip4/172.26.0.1/udp/36668/quic-v1 }
+[2m2025-09-02T19:07:12.585050Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.26.0.1/udp/36668/quic-v1
+[2m2025-09-02T19:07:12.585052Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.26.0.1/udp/36668/quic-v1
+[2m2025-09-02T19:07:12.585056Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.26.0.1/udp/36668/quic-v1/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.585059Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.26.0.1/udp/36668/quic-v1/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.585063Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.26.0.1/udp/36668/quic-v1/mpc/1.0.0
+[2m2025-09-02T19:07:12.585067Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.26.0.1/udp/36668/quic-v1/mpc/1.0.0
+[2m2025-09-02T19:07:12.585074Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.585077Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.585080Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(2), address: /ip4/172.31.0.1/udp/36668/quic-v1 }
+[2m2025-09-02T19:07:12.585082Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(2), address: /ip4/172.31.0.1/udp/36668/quic-v1 }
+[2m2025-09-02T19:07:12.585086Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.31.0.1/udp/36668/quic-v1
+[2m2025-09-02T19:07:12.585088Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.31.0.1/udp/36668/quic-v1
+[2m2025-09-02T19:07:12.585092Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.31.0.1/udp/36668/quic-v1/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.585095Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.31.0.1/udp/36668/quic-v1/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.585099Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.31.0.1/udp/36668/quic-v1/mpc/1.0.0
+[2m2025-09-02T19:07:12.585101Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.31.0.1/udp/36668/quic-v1/mpc/1.0.0
+[2m2025-09-02T19:07:12.585108Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.585112Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.585115Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(2), address: /ip4/172.24.0.1/udp/36668/quic-v1 }
+[2m2025-09-02T19:07:12.585117Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(2), address: /ip4/172.24.0.1/udp/36668/quic-v1 }
+[2m2025-09-02T19:07:12.585121Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.24.0.1/udp/36668/quic-v1
+[2m2025-09-02T19:07:12.585123Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.24.0.1/udp/36668/quic-v1
+[2m2025-09-02T19:07:12.585128Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.24.0.1/udp/36668/quic-v1/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.585131Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.24.0.1/udp/36668/quic-v1/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.585135Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.24.0.1/udp/36668/quic-v1/mpc/1.0.0
+[2m2025-09-02T19:07:12.585137Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.24.0.1/udp/36668/quic-v1/mpc/1.0.0
+[2m2025-09-02T19:07:12.585145Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.585149Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM] some
+[2m2025-09-02T19:07:12.585152Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(2), address: /ip4/172.17.0.1/udp/36668/quic-v1 }
+[2m2025-09-02T19:07:12.585154Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [SWARM EVENT] NewListenAddr { listener_id: ListenerId(2), address: /ip4/172.17.0.1/udp/36668/quic-v1 }
+[2m2025-09-02T19:07:12.585158Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.17.0.1/udp/36668/quic-v1
+[2m2025-09-02T19:07:12.585161Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening on /ip4/172.17.0.1/udp/36668/quic-v1
+[2m2025-09-02T19:07:12.585167Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.17.0.1/udp/36668/quic-v1/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.585170Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 📡 multiaddress   : /ip4/172.17.0.1/udp/36668/quic-v1/p2p/12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:12.585174Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.17.0.1/udp/36668/quic-v1/mpc/1.0.0
+[2m2025-09-02T19:07:12.585176Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m Listening for RPC connections on /ip4/172.17.0.1/udp/36668/quic-v1/mpc/1.0.0
+[2m2025-09-02T19:07:13.085330Z[0m [33m WARN[0m [2mlibp2p_kad::behaviour[0m[2m:[0m Failed to trigger bootstrap: No known peers.
+[2m2025-09-02T19:07:13.085385Z[0m [33m WARN[0m [2mlibp2p_kad::behaviour[0m[2m:[0m Failed to trigger bootstrap: No known peers.
+[2m2025-09-02T19:07:20.151912Z[0m [32m INFO[0m [2mmpc_node::rpc_server[0m[2m:[0m 🔍 HTTP: Checking DKG status
+[2m2025-09-02T19:07:20.152059Z[0m [32m INFO[0m [2mmpc_node::rpc_server[0m[2m:[0m 🔍 HTTP: Checking DKG status
+[2m2025-09-02T19:07:20.152099Z[0m [32m INFO[0m [2mmpc_node::rpc_server[0m[2m:[0m ✅ HTTP: DKG status retrieved - completed: false, secret_share_available: false
+[2m2025-09-02T19:07:20.152109Z[0m [32m INFO[0m [2mmpc_node::rpc_server[0m[2m:[0m ✅ HTTP: DKG status retrieved - completed: false, secret_share_available: false
+[2m2025-09-02T19:07:20.162966Z[0m [32m INFO[0m [2mmpc_node::rpc_server[0m[2m:[0m 👤 HTTP: Received user registration request for address: 0xc6dA53bCa90753699cd19521Dd559964490C6822
+[2m2025-09-02T19:07:20.163062Z[0m [32m INFO[0m [2mmpc_node::rpc_server[0m[2m:[0m 👤 HTTP: Received user registration request for address: 0xc6dA53bCa90753699cd19521Dd559964490C6822
+[2m2025-09-02T19:07:20.163087Z[0m [33m WARN[0m [2mmpc_node::rpc_server[0m[2m:[0m DKG is not completed yet, cannot retrieve secret share
+[2m2025-09-02T19:07:20.163093Z[0m [33m WARN[0m [2mmpc_node::rpc_server[0m[2m:[0m DKG is not completed yet, cannot retrieve secret share
+[2m2025-09-02T19:07:20.163111Z[0m [32m INFO[0m [2mmpc_node::user_registry[0m[2m:[0m 👤 [USER_REGISTRY] register_user called - Registry Users Arc: 0x5615a8eba880, Intents Arc: 0x5615a8eba900, Address: 0xc6dA53bCa90753699cd19521Dd559964490C6822, Node: 12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:20.163116Z[0m [32m INFO[0m [2mmpc_node::user_registry[0m[2m:[0m 👤 [USER_REGISTRY] register_user called - Registry Users Arc: 0x5615a8eba880, Intents Arc: 0x5615a8eba900, Address: 0xc6dA53bCa90753699cd19521Dd559964490C6822, Node: 12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:20.163188Z[0m [32m INFO[0m [2mmpc_node::user_registry[0m[2m:[0m ✅ Registered user 0xc6dA53bCa90753699cd19521Dd559964490C6822 with ID f2c3cc73-e8aa-4a7a-830e-7e1d1dda22fc
+[2m2025-09-02T19:07:20.163194Z[0m [32m INFO[0m [2mmpc_node::user_registry[0m[2m:[0m ✅ Registered user 0xc6dA53bCa90753699cd19521Dd559964490C6822 with ID f2c3cc73-e8aa-4a7a-830e-7e1d1dda22fc
+[2m2025-09-02T19:07:20.163209Z[0m [32m INFO[0m [2mmpc_node::rpc_server[0m[2m:[0m ✅ HTTP: User registration successful for address: 0xc6dA53bCa90753699cd19521Dd559964490C6822
+[2m2025-09-02T19:07:20.163216Z[0m [32m INFO[0m [2mmpc_node::rpc_server[0m[2m:[0m ✅ HTTP: User registration successful for address: 0xc6dA53bCa90753699cd19521Dd559964490C6822
+[2m2025-09-02T19:07:20.163224Z[0m [32m INFO[0m [2mmpc_node::rpc_server[0m[2m:[0m ⚠️ HTTP: No tweaked secret share computed (DKG secret share not available) for user: 0xc6dA53bCa90753699cd19521Dd559964490C6822
+[2m2025-09-02T19:07:20.163228Z[0m [32m INFO[0m [2mmpc_node::rpc_server[0m[2m:[0m ⚠️ HTTP: No tweaked secret share computed (DKG secret share not available) for user: 0xc6dA53bCa90753699cd19521Dd559964490C6822
+[2m2025-09-02T19:07:20.163301Z[0m [32m INFO[0m [2mmpc_node::rpc_server[0m[2m:[0m 📡 User registration message sent to network layer for broadcasting
+[2m2025-09-02T19:07:20.163308Z[0m [32m INFO[0m [2mmpc_node::rpc_server[0m[2m:[0m 📡 User registration message sent to network layer for broadcasting
+[2m2025-09-02T19:07:20.163319Z[0m [32m INFO[0m [2mmpc_node::rpc_server[0m[2m:[0m ⏳ Waiting for derived addresses to be populated...
+[2m2025-09-02T19:07:20.163325Z[0m [32m INFO[0m [2mmpc_node::rpc_server[0m[2m:[0m ⏳ Waiting for derived addresses to be populated...
+[2m2025-09-02T19:07:20.163340Z[0m [32m INFO[0m [2mmpc_node::user_registry[0m[2m:[0m 🔍 [USER_REGISTRY] get_user_by_address called - Registry Users Arc: 0x5615a8eba880, Intents Arc: 0x5615a8eba900, Address: 0xc6dA53bCa90753699cd19521Dd559964490C6822
+[2m2025-09-02T19:07:20.163344Z[0m [32m INFO[0m [2mmpc_node::user_registry[0m[2m:[0m 🔍 [USER_REGISTRY] get_user_by_address called - Registry Users Arc: 0x5615a8eba880, Intents Arc: 0x5615a8eba900, Address: 0xc6dA53bCa90753699cd19521Dd559964490C6822
+[2m2025-09-02T19:07:20.163358Z[0m [32m INFO[0m [2mmpc_node::user_registry[0m[2m:[0m 🔍 [USER_REGISTRY] get_user_by_address result - Address: 0xc6dA53bCa90753699cd19521Dd559964490C6822, Found: true
+[2m2025-09-02T19:07:20.163364Z[0m [32m INFO[0m [2mmpc_node::user_registry[0m[2m:[0m 🔍 [USER_REGISTRY] get_user_by_address result - Address: 0xc6dA53bCa90753699cd19521Dd559964490C6822, Found: true
+[2m2025-09-02T19:07:20.163375Z[0m [32m INFO[0m [2mmpc_node::rpc_server[0m[2m:[0m ⏳ Attempt 1/10: Derived addresses not ready yet, waiting 1 second...
+[2m2025-09-02T19:07:20.163380Z[0m [32m INFO[0m [2mmpc_node::rpc_server[0m[2m:[0m ⏳ Attempt 1/10: Derived addresses not ready yet, waiting 1 second...
+[2m2025-09-02T19:07:20.163447Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [handle_channel_message()] UserRegistration { ethereum_address: "0xc6dA53bCa90753699cd19521Dd559964490C6822", node_id: "12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt" }
+[2m2025-09-02T19:07:20.163459Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m [handle_channel_message()] UserRegistration { ethereum_address: "0xc6dA53bCa90753699cd19521Dd559964490C6822", node_id: "12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt" }
+[2m2025-09-02T19:07:20.163473Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 👤 [NETWORK] Broadcasting user registration: 0xc6dA53bCa90753699cd19521Dd559964490C6822 from node 12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:20.163478Z[0m [32m INFO[0m [2mmpc_node::network[0m[2m:[0m 👤 [NETWORK] Broadcasting user registration: 0xc6dA53bCa90753699cd19521Dd559964490C6822 from node 12D3KooWM8xin91hEqKqnfAALEe6v9fzM7nYSWsU1cx8VZVT17zt
+[2m2025-09-02T19:07:20.163493Z[0m [32m INFO[0m [2mmpc_node::user_registry[0m[2m:[0m 🔍 [USER_REGISTRY] get_user_by_address called - Registry Users Arc: 0x5615a8eba880, Intents Arc: 0x5615a8eba900, Address: 0xc6dA53bCa90753699cd19521Dd559964490C6822
+[2m2025-09-02T19:07:20.163499Z[0m [32m INFO[0m [2mmpc_node::user_registry[0m[2m:[0m 🔍 [USER_REGISTRY] get_user_by_address called - Registry Users Arc: 0x5615a8eba880, Intents Arc: 0x5615a8eba900, Address: 0xc6dA53bCa90753699cd19521Dd559964490C6822
+[2m2025-09-02T19:07:20.163520Z[0m [32m INFO[0m [2mmpc_node::user_registry[0m[2m:[0m 🔍 [USER_REGISTRY] get_user_by_address result - Address: 0xc6dA53bCa90753699cd19521Dd559964490C6822, Found: true
+[2m2025-09-02T19:07:20.163524Z[0m [32m INFO[0m [2mmpc_node::user_registry[0m[2m:[0m 🔍 [USER_REGISTRY] get_user_by_address result - Address: 0xc6dA53bCa90753699cd19521Dd559964490C6822, Found: true
+[2m2025-09-02T19:07:20.163567Z[0m [33m WARN[0m [2mmpc_node::network[0m[2m:[0m ❌ [NETWORK] Failed to derive user-specific group key for 0xc6dA53bCa90753699cd19521Dd559964490C6822: No commitments available (map is empty)
+[2m2025-09-02T19:07:20.163580Z[0m [33m WARN[0m [2mmpc_node::network[0m[2m:[0m ❌ [NETWORK] Failed to derive user-specific group key for 0xc6dA53bCa90753699cd19521Dd559964490C6822: No commitments available (map is empty)
+Error: InsufficientPeers

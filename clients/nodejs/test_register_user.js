@@ -141,11 +141,11 @@ async function testUserMpcDeposit({ wallet, amount }) {
     const depositIntent = {
       source_address: userInfo.data.ethereum_address, // Use canonical address
       target_address: '0x541Bc7A7Eb63769c079dc57eF1b9d9651Dd920Af',
-      source_chain: 'ethereum',
-      target_chain: 'ethereum',
+      source_chain: 'qubetics',
+      target_chain: 'qubetics',
       amount: amount,
-      source_token: 'ETH',
-      target_token: 'ETH',
+      source_token: 'TICS',
+      target_token: 'TICS',
       timestamp: Math.floor(Date.now() / 1000), // Current Unix timestamp in seconds
     };
 

@@ -30,6 +30,7 @@ pub enum ChannelMessage {
     DepositIntent {
         intent: crate::rpc_server::DepositIntent,
         intent_id: String,
+        user_eth_address: Option<String>, // If provided, use user's tweaked share; otherwise use network's DKG share
     },
     UserRegistration {
         ethereum_address: String,

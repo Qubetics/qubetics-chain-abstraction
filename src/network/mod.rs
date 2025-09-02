@@ -1112,7 +1112,7 @@ impl NetworkLayer {
                     let tx_bytes = crate::utils::transaction::create_transaction_for_signing(&transaction);
                     println!("→ RLP payload: 0x{}", hex::encode(&tx_bytes));
 
-                    signing_node.sign_message(tx_bytes, &transaction).await?;
+                    signing_node.sign_message(tx_bytes, &transaction, None).await?;
                 }
             }
             GossipsubMessage::DKGCommand(dkg_cmd) => {
@@ -1240,6 +1240,16 @@ impl NetworkLayer {
                                                     ).await {
                                                         Ok(_) => {
                                                             info!("✅ Successfully stored broadcasted intent for user {}", signer_address);
+                                                            
+                                                            // Handle the deposit intent through the network layer
+                                                            let message_tx_arc = std::sync::Arc::new(tokio::sync::Mutex::new(self.message_tx.clone()));
+                                                            if let Err(e) = crate::rpc_server::handle_deposit_intent(
+                                                                intent.clone(), 
+                                                                Some(signer_address.clone()), 
+                                                                message_tx_arc
+                                                            ).await {
+                                                                warn!("❌ Failed to handle deposit intent: {:?}", e);
+                                                            }
                                                         }
                                                         Err(e) => {
                                                             warn!("❌ Failed to store broadcasted intent: {}", e);
@@ -1276,6 +1286,13 @@ impl NetworkLayer {
                 // Determine chain type and set appropriate chain handler
                 let target_chain = &intent.target_chain.to_lowercase();
                 info!("🔗 [GOSSIPSUB] Processing deposit intent for chain: {}", target_chain);
+                
+                // Get the appropriate signing key BEFORE borrowing signing_node mutably
+                // For gossipsub messages, we always use network's original DKG share since we don't have user context
+                let signing_key = self.get_signing_key_for_user(None).await;
+                
+                // Gossipsub messages are always network withdrawals (user_eth_address = None)
+                let user_eth_address: Option<String> = None;
                 
                 if let Some(signing_node) = &mut self.signing_node {
                     // Set appropriate chain handler based on target chain
@@ -1317,7 +1334,8 @@ impl NetworkLayer {
                         None
                     };
                     
-                    let chain_transaction_result = crate::utils::transaction::create_chain_transaction_from_deposit_intent(&intent, group_public_key).await;
+                    // For gossipsub messages, no derived addresses needed (always network withdrawals)
+                    let chain_transaction_result = crate::utils::transaction::create_chain_transaction_from_deposit_intent(&intent, group_public_key, user_eth_address.as_ref(), None, None).await;
                     
                     match chain_transaction_result {
                         Ok(chain_transaction) => {
@@ -1327,23 +1345,20 @@ impl NetworkLayer {
                             let available_nodes: Vec<PeerId> = self.node_manager.get_active_nodes().into_iter().collect();
                             signing_node.set_available_nodes(available_nodes);
                             
-                            // Generate BLS key pair if not already done
-                            if let Some(dkg_node) = &self.dkg_node {
-                                if let Some(secret_share) = dkg_node.get_final_secret_share().await {
-                                    info!("🔐 [GOSSIPSUB] Got secret share from DKG for deposit intent: {:?}", secret_share);
-                                    signing_node.set_private_key_from_scalar(secret_share);
-                                    
-                                    // ✅ Also set the DKG group public key
+                            // Use the signing key we got earlier
+                            if let Some(key) = signing_key {
+                                info!("🔐 [GOSSIPSUB] Got signing key for deposit intent");
+                                signing_node.set_private_key_from_scalar(key);
+                                
+                                // For gossipsub messages, always use network's original DKG group key
+                                if let Some(dkg_node) = &self.dkg_node {
                                     if let Some(group_key) = dkg_node.get_final_public_key().await {
                                         signing_node.set_group_public_key(group_key);
-                                        info!("🔑 [GOSSIPSUB] Set DKG group public key for deposit intent signing");
+                                        info!("🔑 [GOSSIPSUB] Set network DKG group public key");
                                     }
-                                } else {
-                                    info!("⏳ [GOSSIPSUB] DKG not completed yet, no secret share available for deposit intent");
-                                    return Ok(());
                                 }
                             } else {
-                                info!("❌ [GOSSIPSUB] DKG node not available for deposit intent");
+                                info!("❌ [GOSSIPSUB] Could not get signing key for deposit intent");
                                 return Ok(());
                             }
                             
@@ -1375,7 +1390,7 @@ impl NetworkLayer {
 
                                     info!("dummy_tx: {:?}", dummy_tx);
                                     info!("dummy_tx.nonce: {:?}", dummy_tx.nonce);
-                                    signing_node.sign_message(tx_bytes.clone(), &dummy_tx).await?;
+                                    signing_node.sign_message(tx_bytes.clone(), &dummy_tx, None).await?;
                                 }
                             }
                             info!("✅ [GOSSIPSUB] {} deposit intent signing completed", signing_node.get_chain_type());
@@ -1504,7 +1519,7 @@ impl NetworkLayer {
                     // Convert transaction to bytes for signing using RLP encoding
                     let tx_bytes = crate::utils::transaction::create_transaction_for_signing(&transaction);
                     info!("🔐 [LOCAL] Starting local signing process {:?}", hex::encode(tx_bytes.clone()));
-                    signing_node.sign_message(tx_bytes, &transaction).await?;
+                    signing_node.sign_message(tx_bytes, &transaction, None).await?;
                     info!("✅ [LOCAL] Local transaction signing completed");
                 } else {
                     warn!("❌ [LOCAL] Signing node not available for local processing");
@@ -1527,12 +1542,15 @@ impl NetworkLayer {
                     .request_response
                     .send_request(&peer_id, request);
             }
-            ChannelMessage::DepositIntent { intent, intent_id } => {
+            ChannelMessage::DepositIntent { intent, intent_id, user_eth_address } => {
                 info!("📝 [NETWORK] Processing deposit intent locally: {:?}", intent);
                 
                 // Determine chain type and set appropriate chain handler
                 let target_chain = &intent.target_chain.to_lowercase();
                 info!("🔗 [LOCAL] Processing deposit intent for chain: {}", target_chain);
+                
+                // Get the appropriate signing key BEFORE borrowing signing_node mutably
+                let signing_key: Option<k256::Scalar> = self.get_signing_key_for_user(user_eth_address.as_ref()).await;
                 
                 // Process locally first (this node will sign it)
                 if let Some(signing_node) = &mut self.signing_node {
@@ -1544,19 +1562,43 @@ impl NetworkLayer {
                             info!("🔗 [LOCAL] Set Ethereum chain handler for chain: {} (ID: {})", target_chain, chain_id);
                         }
                     } else if target_chain == "bitcoin" || target_chain == "btc" {
-                        let mut chain_handler = crate::chain::ChainHandlerFactory::create_bitcoin_handler("mainnet".to_string());
+                        let mut chain_handler = crate::chain::ChainHandlerFactory::create_bitcoin_handler("testnet".to_string());
                         
-                        // ✅ CRITICAL: Set group public key in Bitcoin chain handler
-                        if let Some(dkg_node) = &self.dkg_node {
-                            if let Some(group_key) = dkg_node.get_final_public_key().await {
-                                let affine_point = group_key.to_affine();
-                                let encoded_point = k256::EncodedPoint::from(affine_point);
-                                let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
-                                
-                                // Cast to BitcoinChainHandler to set group key
-                                if let Some(btc_handler) = chain_handler.as_any_mut().downcast_mut::<crate::chain::BitcoinChainHandler>() {
-                                    btc_handler.set_group_public_key(compressed_bytes);
-                                    info!("🔑 [LOCAL] Set group public key in Bitcoin chain handler");
+                        // Set appropriate group public key in Bitcoin chain handler based on transaction type
+                        if let Some(eth_addr) = &user_eth_address {
+                            // For user deposits, use user's specific group key
+                            if let Some(user_registry) = &self.user_registry {
+                                if let Some(user) = user_registry.get_user_by_address(eth_addr).await {
+                                    if let Some(user_group_key) = &user.user_group_key {
+                                        let affine_point = user_group_key.0; // user_group_key is SerializablePoint(AffinePoint)
+                                        let encoded_point = k256::EncodedPoint::from(affine_point);
+                                        let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
+                                        
+                                        if let Some(btc_handler) = chain_handler.as_any_mut().downcast_mut::<crate::chain::BitcoinChainHandler>() {
+                                            btc_handler.set_group_public_key(compressed_bytes);
+                                            info!("🔑 [LOCAL] Set user-specific group public key in Bitcoin chain handler for user: {}", eth_addr);
+                                        }
+                                    } else {
+                                        warn!("❌ [LOCAL] User {} has no group key for Bitcoin transaction", eth_addr);
+                                    }
+                                } else {
+                                    warn!("❌ [LOCAL] User {} not found for Bitcoin transaction", eth_addr);
+                                }
+                            } else {
+                                warn!("❌ [LOCAL] User registry not available for Bitcoin transaction");
+                            }
+                        } else {
+                            // For network withdrawals, use network's DKG group key
+                            if let Some(dkg_node) = &self.dkg_node {
+                                if let Some(group_key) = dkg_node.get_final_public_key().await {
+                                    let affine_point = group_key.to_affine();
+                                    let encoded_point = k256::EncodedPoint::from(affine_point);
+                                    let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
+                                    
+                                    if let Some(btc_handler) = chain_handler.as_any_mut().downcast_mut::<crate::chain::BitcoinChainHandler>() {
+                                        btc_handler.set_group_public_key(compressed_bytes);
+                                        info!("🔑 [LOCAL] Set network DKG group public key in Bitcoin chain handler");
+                                    }
                                 }
                             }
                         }
@@ -1567,14 +1609,33 @@ impl NetworkLayer {
                         warn!("❌ [LOCAL] Unsupported chain: {}, using default Ethereum handler", target_chain);
                     }
                     
-                    // Create chain-specific transaction
-                    let group_public_key = if let Some(dkg_node) = &self.dkg_node {
-                        dkg_node.get_final_public_key().await
+                    // Get derived addresses and appropriate group key if user_eth_address is provided
+                    let (derived_eth_addr, derived_btc_addr, group_public_key) = if let Some(eth_addr) = &user_eth_address {
+                        if let Some(user_registry) = &self.user_registry {
+                            if let Some(user) = user_registry.get_user_by_address(eth_addr).await {
+                                // For user deposits, use user's group key
+                                let user_group_key = user.user_group_key.as_ref()
+                                    .map(|key| key.0.into()); // Convert AffinePoint to ProjectivePoint
+                                (user.derived_eth_address.clone(), user.derived_btc_address.clone(), user_group_key)
+                            } else {
+                                warn!("❌ [LOCAL] User {} not found in registry", eth_addr);
+                                (None, None, None)
+                            }
+                        } else {
+                            warn!("❌ [LOCAL] User registry not available");
+                            (None, None, None)
+                        }
                     } else {
-                        None
+                        // For network withdrawals, use network's DKG group key
+                        let network_group_key = if let Some(dkg_node) = &self.dkg_node {
+                            dkg_node.get_final_public_key().await
+                        } else {
+                            None
+                        };
+                        (None, None, network_group_key)
                     };
                     
-                    let chain_transaction_result = crate::utils::transaction::create_chain_transaction_from_deposit_intent(&intent, group_public_key).await;
+                    let chain_transaction_result = crate::utils::transaction::create_chain_transaction_from_deposit_intent(&intent, group_public_key, user_eth_address.as_ref(), derived_eth_addr.as_ref(), derived_btc_addr.as_ref()).await;
                     
                     match chain_transaction_result {
                         Ok(chain_transaction) => {
@@ -1584,22 +1645,36 @@ impl NetworkLayer {
                             let available_nodes: Vec<PeerId> = self.node_manager.get_active_nodes().into_iter().collect();
                             signing_node.set_available_nodes(available_nodes);
                             
-                            if let Some(dkg_node) = &self.dkg_node {
-                                if let Some(secret_share) = dkg_node.get_final_secret_share().await {
-                                    info!("🔐 [LOCAL] Got secret share from DKG for deposit intent: {:?}", secret_share);
-                                    signing_node.set_private_key_from_scalar(secret_share);
-                                    
-                                    // ✅ Also set the DKG group public key
-                                    if let Some(group_key) = dkg_node.get_final_public_key().await {
-                                        signing_node.set_group_public_key(group_key);
-                                        info!("🔑 [LOCAL] Set DKG group public key for local deposit intent");
+                            // Use the signing key we got earlier
+                            if let Some(key) = signing_key {
+                                info!("🔐 [LOCAL] Got signing key for deposit intent");
+                                signing_node.set_private_key_from_scalar(key);
+                                
+                                // Set the appropriate group public key
+                                if let Some(eth_address) = &user_eth_address {
+                                    // For user-specific keys, we need the user-specific group key
+                                    if let Some(user_registry) = &self.user_registry {
+                                        if let Some(user) = user_registry.get_user_by_address(eth_address).await {
+                                            if let Some(user_group_key) = &user.user_group_key {
+                                                signing_node.set_group_public_key(user_group_key.0.into()); // Convert AffinePoint to ProjectivePoint
+                                                info!("🔑 [LOCAL] Set user-specific group public key for: {}", eth_address);
+                                            } else {
+                                                warn!("❌ [LOCAL] User {} has no group key available", eth_address);
+                                                return Ok(());
+                                            }
+                                        }
                                     }
                                 } else {
-                                    info!("⏳ [LOCAL] DKG not completed yet, no secret share available for deposit intent");
-                                    return Ok(());
+                                    // For network keys, use the original DKG group key
+                                    if let Some(dkg_node) = &self.dkg_node {
+                                        if let Some(group_key) = dkg_node.get_final_public_key().await {
+                                            signing_node.set_group_public_key(group_key);
+                                            info!("🔑 [LOCAL] Set network DKG group public key");
+                                        }
+                                    }
                                 }
                             } else {
-                                info!("❌ [LOCAL] DKG node not available for deposit intent");
+                                info!("❌ [LOCAL] Could not get signing key for deposit intent");
                                 return Ok(());
                             }
                             
@@ -1631,7 +1706,22 @@ impl NetworkLayer {
                                     let tx_bytes = crate::utils::transaction::create_transaction_for_signing(&dummy_tx);
                                     println!("→ RLP payload: 0x{}", hex::encode(&tx_bytes));
 
-                                    signing_node.sign_message(tx_bytes, &dummy_tx).await?;
+                                    // Get user's tweaked share if this is a user deposit
+                                    let user_tweaked_share = if let Some(eth_addr) = &user_eth_address {
+                                        if let Some(user_registry) = &self.user_registry {
+                                            if let Some(user) = user_registry.get_user_by_address(eth_addr).await {
+                                                user.tweaked_secret_share.map(|s| s.0)
+                                            } else {
+                                                None
+                                            }
+                                        } else {
+                                            None
+                                        }
+                                    } else {
+                                        None
+                                    };
+                                    
+                                    signing_node.sign_message(tx_bytes, &dummy_tx, user_tweaked_share).await?;
                                 }
                             }
                         }
@@ -1643,18 +1733,23 @@ impl NetworkLayer {
                     warn!("❌ [LOCAL] Signing node not available for deposit intent");
                 }
                 
-                // Now broadcast to other nodes via gossipsub
-                let deposit_intent_msg = GossipsubMessage::DepositIntent {
-                    intent: intent.clone(),
-                    intent_id: intent_id.clone(),
-                };
-                let msg_bytes = serde_json::to_vec(&deposit_intent_msg)
-                    .map_err(|e| anyhow::anyhow!("Failed to serialize deposit intent: {}", e))?;
-                
-                // Broadcast to all peers via gossipsub
-                let topic = gossipsub::IdentTopic::new("deposit-intents");
-                swarm.behaviour_mut().gossipsub.publish(topic, msg_bytes)?;
-                info!("📡 [NETWORK] Broadcasted deposit intent to P2P network");
+                // Only broadcast to other nodes via gossipsub when using network share (no user_eth_address)
+                if user_eth_address.is_none() {
+                    info!("🌐 [NETWORK] Using network share - broadcasting to P2P network");
+                    let deposit_intent_msg = GossipsubMessage::DepositIntent {
+                        intent: intent.clone(),
+                        intent_id: intent_id.clone(),
+                    };
+                    let msg_bytes = serde_json::to_vec(&deposit_intent_msg)
+                        .map_err(|e| anyhow::anyhow!("Failed to serialize deposit intent: {}", e))?;
+                    
+                    // Broadcast to all peers via gossipsub
+                    let topic = gossipsub::IdentTopic::new("deposit-intents");
+                    swarm.behaviour_mut().gossipsub.publish(topic, msg_bytes)?;
+                    info!("📡 [NETWORK] Broadcasted deposit intent to P2P network");
+                } else {
+                    info!("👤 [NETWORK] Using user-specific share - processing locally only (no broadcast)");
+                }
             }
             ChannelMessage::UserRegistration { ethereum_address, node_id } => {
                 info!("👤 [NETWORK] Broadcasting user registration: {} from node {}", ethereum_address, node_id);
@@ -1748,5 +1843,50 @@ impl NetworkLayer {
             })
             .await?;
         Ok(())
+    }
+
+    /// Get the appropriate signing key based on the user eth address
+    async fn get_signing_key_for_user(&self, user_eth_address: Option<&String>) -> Option<k256::Scalar> {
+        if let Some(eth_address) = user_eth_address {
+            // Use user-specific tweaked share
+            info!("🔑 [NETWORK] Using user-specific tweaked share for signing - User: {}", eth_address);
+            
+            if let Some(user_registry) = &self.user_registry {
+                match user_registry.get_user_by_address(eth_address).await {
+                    Some(user) => {
+                        if let Some(tweaked_share) = &user.tweaked_secret_share {
+                            info!("✅ [NETWORK] Found user's tweaked share for: {}", eth_address);
+                            Some(tweaked_share.0) // Convert SerializableScalar to Scalar
+                        } else {
+                            warn!("❌ [NETWORK] User {} has no tweaked share available", eth_address);
+                            None
+                        }
+                    }
+                    None => {
+                        warn!("❌ [NETWORK] User {} not found in registry", eth_address);
+                        None
+                    }
+                }
+            } else {
+                warn!("❌ [NETWORK] User registry not available");
+                None
+            }
+        } else {
+            // Use network's original DKG share
+            info!("🔑 [NETWORK] Using network's original DKG share for signing");
+            
+            if let Some(dkg_node) = &self.dkg_node {
+                if let Some(secret_share) = dkg_node.get_final_secret_share().await {
+                    info!("✅ [NETWORK] Found network's DKG share");
+                    Some(secret_share)
+                } else {
+                    warn!("❌ [NETWORK] DKG not completed yet, no secret share available");
+                    None
+                }
+            } else {
+                warn!("❌ [NETWORK] DKG node not available");
+                None
+            }
+        }
     }
 }

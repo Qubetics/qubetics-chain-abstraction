@@ -276,9 +276,16 @@ async fn fetch_ethereum_nonce(address: &str, chain_id: u64) -> Result<u64> {
 
 /// Create a chain-specific transaction from a deposit intent
 /// For Bitcoin transactions, group_public_key is required to derive the Bitcoin address and fetch UTXOs
+/// user_eth_address determines the fund flow:
+/// - Some(address): User deposit - FROM derived address TO network address
+/// - None: Network withdrawal - FROM network address TO target address
+/// derived_eth_addr and derived_btc_addr are the actual addresses that hold user funds
 pub async fn create_chain_transaction_from_deposit_intent(
     intent: &DepositIntent,
     group_public_key: Option<k256::ProjectivePoint>,
+    user_eth_address: Option<&String>,
+    derived_eth_addr: Option<&String>,
+    derived_btc_addr: Option<&String>,
 ) -> Result<ChainTransaction> {
     let target_chain = &intent.target_chain.to_lowercase();
 
@@ -288,12 +295,27 @@ pub async fn create_chain_transaction_from_deposit_intent(
             .ok_or_else(|| anyhow::anyhow!("Unknown EVM chain: {}", target_chain))?;
         let group_address: String = get_eth_address_from_group_key(group_public_key.unwrap());
 
+        // Determine source and target based on user_eth_address
+        let (from_address, to_address) = if let Some(_user_addr) = user_eth_address {
+            // User deposit: FROM derived ethereum address TO network address
+            if let Some(derived_addr) = derived_eth_addr {
+                tracing::info!("💰 [TRANSACTION] User deposit: {} -> {}", derived_addr, group_address);
+                (derived_addr.clone(), group_address)
+            } else {
+                return Err(anyhow::anyhow!("User deposit requires derived_eth_address"));
+            }
+        } else {
+            // Network withdrawal: FROM network address TO target address
+            tracing::info!("💰 [TRANSACTION] Network withdrawal: {} -> {}", group_address, intent.target_address);
+            (group_address.clone(), intent.target_address.clone())
+        };
+
         let ethereum_tx = EthereumTransaction {
-            to: intent.target_address.clone(),
+            to: to_address,
             value: format!("0x{:x}", intent.amount),
             gas_limit: 21000, 
             gas_price: get_default_gas_price_for_chain(target_chain),
-            nonce: fetch_ethereum_nonce(&group_address, chain_id).await?,
+            nonce: fetch_ethereum_nonce(&from_address, chain_id).await?,
             data: None, 
             chain_id,
         };
@@ -305,23 +327,39 @@ pub async fn create_chain_transaction_from_deposit_intent(
             .ok_or_else(|| anyhow::anyhow!("Group public key required for Bitcoin transactions"))?;
 
         // Get Bitcoin address from group key
-        let btc_address = crate::utils::get_btc_address_from_group_key(group_key);
-        tracing::info!("Using Bitcoin address for UTXOs: {}", btc_address);
+        let btc_network_address = crate::utils::get_btc_address_from_group_key(group_key);
+        
+        // Determine source and target based on user_eth_address
+        let (from_address, to_address) = if let Some(_user_addr) = user_eth_address {
+            // User deposit: FROM derived bitcoin address TO network bitcoin address
+            if let Some(derived_btc_addr) = derived_btc_addr {
+                tracing::info!("💰 [TRANSACTION] Bitcoin user deposit: {} -> {}", derived_btc_addr, btc_network_address);
+                (derived_btc_addr.clone(), btc_network_address)
+            } else {
+                return Err(anyhow::anyhow!("User deposit requires derived_btc_address"));
+            }
+        } else {
+            // Network withdrawal: FROM network bitcoin address TO target address
+            tracing::info!("💰 [TRANSACTION] Bitcoin network withdrawal: {} -> {}", btc_network_address, intent.target_address);
+            (btc_network_address.clone(), intent.target_address.clone())
+        };
+
+        tracing::info!("Using Bitcoin source address for UTXOs: {}", from_address);
 
         // Determine if we're using testnet (you might want to make this configurable)
-        let is_testnet = btc_address.starts_with("tb1")
-            || btc_address.starts_with("2")
-            || btc_address.starts_with("m")
-            || btc_address.starts_with("n");
+        let is_testnet = from_address.starts_with("tb1")
+            || from_address.starts_with("2")
+            || from_address.starts_with("m")
+            || from_address.starts_with("n");
 
-        // Fetch UTXOs for the address
-        let utxos = fetch_bitcoin_utxos(&btc_address, is_testnet).await?;
-        tracing::info!("Fetched {} UTXOs for address {}", utxos.len(), btc_address);
+        // Fetch UTXOs for the source address
+        let utxos = fetch_bitcoin_utxos(&from_address, is_testnet).await?;
+        tracing::info!("Fetched {} UTXOs for address {}", utxos.len(), from_address);
 
         if utxos.is_empty() {
             return Err(anyhow::anyhow!(
                 "No UTXOs found for Bitcoin address: {}",
-                btc_address
+                from_address
             ));
         }
 
@@ -355,7 +393,7 @@ pub async fn create_chain_transaction_from_deposit_intent(
         // Create outputs
         let mut outputs = vec![BitcoinOutput {
             value: amount_satoshis,
-            script_pubkey: create_bitcoin_script_pubkey(&intent.target_address)?,
+            script_pubkey: create_bitcoin_script_pubkey(&to_address)?,
         }];
 
         // Add change output if necessary
@@ -364,7 +402,7 @@ pub async fn create_chain_transaction_from_deposit_intent(
             // Bitcoin dust limit
             outputs.push(BitcoinOutput {
                 value: change_amount,
-                script_pubkey: create_bitcoin_script_pubkey(&btc_address)?, // Send change back to source address
+                script_pubkey: create_bitcoin_script_pubkey(&from_address)?, // Send change back to source address
             });
         }
 

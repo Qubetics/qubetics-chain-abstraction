@@ -873,14 +873,24 @@ impl SigningNode {
         &mut self,
         _message: Vec<u8>,
         transaction: &DummyTransaction,
+        user_tweaked_share: Option<k256::Scalar>,
     ) -> Result<()> {
-        if self.private_key.is_none() {
-            error!(
-                "❌ [SIGNING] Node {} cannot sign: no private key available",
-                self.id
-            );
-            return Err(anyhow::anyhow!("No private key available"));
-        }
+        // Determine which key to use for signing
+        let signing_key = if let Some(tweaked_share) = user_tweaked_share {
+            // Use user's tweaked share for user deposits
+            info!("🔑 [SIGNING] Using user-specific tweaked share for signing");
+            Self::derive_secp_secret(&tweaked_share)
+        } else {
+            // Use network DKG share for network withdrawals
+            info!("🔑 [SIGNING] Using network DKG share for signing");
+            match self.private_key {
+                Some(key) => key,
+                None => {
+                    error!("❌ [SIGNING] Node {} cannot sign: no private key available", self.id);
+                    return Err(anyhow::anyhow!("No private key available"));
+                }
+            }
+        };
 
         info!(
             "📝 [SIGNING] Node {} starting to sign transaction",
@@ -920,7 +930,7 @@ impl SigningNode {
 
         // Create ECDSA signature using secp256k1
         let msg = Message::from_digest_slice(&tx_hash)?;
-        let signature = self.create_ecdsa_signature(&msg, transaction)?;
+        let signature = self.create_ecdsa_signature_with_key(&msg, transaction, &signing_key)?;
         let (recovery_id, signature_bytes) = signature.serialize_compact();
 
         // Use chain handler to create chain-specific signature
@@ -1003,16 +1013,14 @@ impl SigningNode {
         Ok(())
     }
 
-    pub fn create_ecdsa_signature(
+    pub fn create_ecdsa_signature_with_key(
         &self,
         message: &Message,
         _transaction: &DummyTransaction,
+        signing_key: &SecretKey,
     ) -> Result<RecoverableSignature> {
-        // 1) Get secret key and context
-        let sk = self
-            .private_key
-            .as_ref()
-            .ok_or_else(|| anyhow!("No private key available"))?;
+        // 1) Use provided signing key and context
+        let sk = signing_key;
         let secp = Secp256k1::new();
 
         // 2) Fixed nonce k = 0x42…42
