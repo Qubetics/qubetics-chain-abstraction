@@ -287,60 +287,83 @@ pub async fn create_chain_transaction_from_deposit_intent(
     derived_eth_addr: Option<&String>,
     derived_btc_addr: Option<&String>,
 ) -> Result<ChainTransaction> {
-    let target_chain = &intent.target_chain.to_lowercase();
+    // Determine chain type based on transaction type:
+    // - If user_eth_address exists (user deposit): use source_chain (user is depositing FROM this chain)
+    // - If no user_eth_address (network withdrawal): use target_chain (network is withdrawing TO this chain)
+    let chain_to_use = if user_eth_address.is_some() {
+        &intent.source_chain.to_lowercase()
+    } else {
+        &intent.target_chain.to_lowercase()
+    };
 
-    if is_evm_chain(target_chain) {
+    if is_evm_chain(chain_to_use) {
         // Create Ethereum-compatible transaction
-        let chain_id = get_chain_id_from_name(target_chain)
-            .ok_or_else(|| anyhow::anyhow!("Unknown EVM chain: {}", target_chain))?;
+        let chain_id = get_chain_id_from_name(chain_to_use)
+            .ok_or_else(|| anyhow::anyhow!("Unknown EVM chain: {}", chain_to_use))?;
         let group_address: String = get_eth_address_from_group_key(group_public_key.unwrap());
 
         // Determine source and target based on user_eth_address
         let (from_address, to_address) = if let Some(_user_addr) = user_eth_address {
             // User deposit: FROM derived ethereum address TO network address
             if let Some(derived_addr) = derived_eth_addr {
-                tracing::info!("💰 [TRANSACTION] User deposit: {} -> {}", derived_addr, group_address);
+                tracing::info!(
+                    "💰 [TRANSACTION] User deposit: {} -> {}",
+                    derived_addr,
+                    group_address
+                );
                 (derived_addr.clone(), group_address)
             } else {
                 return Err(anyhow::anyhow!("User deposit requires derived_eth_address"));
             }
         } else {
             // Network withdrawal: FROM network address TO target address
-            tracing::info!("💰 [TRANSACTION] Network withdrawal: {} -> {}", group_address, intent.target_address);
+            tracing::info!(
+                "💰 [TRANSACTION] Network withdrawal: {} -> {}",
+                group_address,
+                intent.target_address
+            );
             (group_address.clone(), intent.target_address.clone())
         };
 
         let ethereum_tx = EthereumTransaction {
             to: to_address,
             value: format!("0x{:x}", intent.amount),
-            gas_limit: 21000, 
-            gas_price: get_default_gas_price_for_chain(target_chain),
+            gas_limit: 21000,
+            gas_price: get_default_gas_price_for_chain(chain_to_use),
             nonce: fetch_ethereum_nonce(&from_address, chain_id).await?,
-            data: None, 
+            data: None,
             chain_id,
         };
 
         Ok(ChainTransaction::Ethereum(ethereum_tx))
-    } else if target_chain == "bitcoin" || target_chain == "btc" {
+    } else if chain_to_use == "bitcoin" || chain_to_use == "btc" {
         // Create Bitcoin transaction with proper UTXO fetching
         let group_key = group_public_key
             .ok_or_else(|| anyhow::anyhow!("Group public key required for Bitcoin transactions"))?;
 
         // Get Bitcoin address from group key
         let btc_network_address = crate::utils::get_btc_address_from_group_key(group_key);
-        
+
         // Determine source and target based on user_eth_address
         let (from_address, to_address) = if let Some(_user_addr) = user_eth_address {
             // User deposit: FROM derived bitcoin address TO network bitcoin address
             if let Some(derived_btc_addr) = derived_btc_addr {
-                tracing::info!("💰 [TRANSACTION] Bitcoin user deposit: {} -> {}", derived_btc_addr, btc_network_address);
+                tracing::info!(
+                    "💰 [TRANSACTION] Bitcoin user deposit: {} -> {}",
+                    derived_btc_addr,
+                    btc_network_address
+                );
                 (derived_btc_addr.clone(), btc_network_address)
             } else {
                 return Err(anyhow::anyhow!("User deposit requires derived_btc_address"));
             }
         } else {
             // Network withdrawal: FROM network bitcoin address TO target address
-            tracing::info!("💰 [TRANSACTION] Bitcoin network withdrawal: {} -> {}", btc_network_address, intent.target_address);
+            tracing::info!(
+                "💰 [TRANSACTION] Bitcoin network withdrawal: {} -> {}",
+                btc_network_address,
+                intent.target_address
+            );
             (btc_network_address.clone(), intent.target_address.clone())
         };
 
@@ -415,10 +438,7 @@ pub async fn create_chain_transaction_from_deposit_intent(
 
         Ok(ChainTransaction::Bitcoin(bitcoin_tx))
     } else {
-        Err(anyhow::anyhow!(
-            "Unsupported target chain: {}",
-            target_chain
-        ))
+        Err(anyhow::anyhow!("Unsupported chain: {}", chain_to_use))
     }
 }
 

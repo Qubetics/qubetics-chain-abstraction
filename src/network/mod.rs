@@ -1283,9 +1283,10 @@ impl NetworkLayer {
             GossipsubMessage::DepositIntent { intent, intent_id } => {
                 info!("📝 Received deposit intent via gossipsub: {:?} (ID: {})", intent, intent_id);
                 
-                // Determine chain type and set appropriate chain handler
-                let target_chain = &intent.target_chain.to_lowercase();
-                info!("🔗 [GOSSIPSUB] Processing deposit intent for chain: {}", target_chain);
+                // For gossipsub messages (network withdrawals), always use target_chain
+                // since these are network-initiated withdrawals TO the target chain
+                let chain_to_use = &intent.target_chain.to_lowercase();
+                info!("🔗 [GOSSIPSUB] Processing network withdrawal to chain: {}", chain_to_use);
                 
                 // Get the appropriate signing key BEFORE borrowing signing_node mutably
                 // For gossipsub messages, we always use network's original DKG share since we don't have user context
@@ -1296,14 +1297,14 @@ impl NetworkLayer {
                 
                 if let Some(signing_node) = &mut self.signing_node {
                     // Set appropriate chain handler based on target chain
-                    if crate::utils::transaction::is_evm_chain(target_chain) {
+                    if crate::utils::transaction::is_evm_chain(chain_to_use) {
                         // Get chain ID for EVM chains
-                        if let Some(chain_id) = crate::utils::transaction::get_chain_id_from_name(target_chain) {
+                        if let Some(chain_id) = crate::utils::transaction::get_chain_id_from_name(chain_to_use) {
                             let chain_handler = crate::chain::ChainHandlerFactory::create_ethereum_handler(chain_id);
                             signing_node.set_chain_handler(chain_handler.into());
-                            info!("🔗 [GOSSIPSUB] Set Ethereum chain handler for chain: {} (ID: {})", target_chain, chain_id);
+                            info!("🔗 [GOSSIPSUB] Set Ethereum chain handler for chain: {} (ID: {})", chain_to_use, chain_id);
                         }
-                    } else if target_chain == "bitcoin" || target_chain == "btc" {
+                    } else if chain_to_use == "bitcoin" || chain_to_use == "btc" {
                         let mut chain_handler = crate::chain::ChainHandlerFactory::create_bitcoin_handler("testnet".to_string());
                         
                         // ✅ CRITICAL: Set group public key in Bitcoin chain handler
@@ -1324,7 +1325,7 @@ impl NetworkLayer {
                         signing_node.set_chain_handler(chain_handler.into());
                         info!("🔗 [GOSSIPSUB] Set Bitcoin chain handler");
                     } else {
-                        warn!("❌ [GOSSIPSUB] Unsupported chain: {}, using default Ethereum handler", target_chain);
+                        warn!("❌ [GOSSIPSUB] Unsupported chain: {}, using default Ethereum handler", chain_to_use);
                     }
                     
                     // Create chain-specific transaction
@@ -1545,23 +1546,30 @@ impl NetworkLayer {
             ChannelMessage::DepositIntent { intent, intent_id, user_eth_address } => {
                 info!("📝 [NETWORK] Processing deposit intent locally: {:?}", intent);
                 
-                // Determine chain type and set appropriate chain handler
-                let target_chain = &intent.target_chain.to_lowercase();
-                info!("🔗 [LOCAL] Processing deposit intent for chain: {}", target_chain);
+                // Determine chain type based on transaction type:
+                // - If user_eth_address exists (user deposit): use source_chain (user is depositing FROM this chain)
+                // - If no user_eth_address (network withdrawal): use target_chain (network is withdrawing TO this chain)
+                let chain_to_use = if user_eth_address.is_some() {
+                    &intent.source_chain.to_lowercase()
+                } else {
+                    &intent.target_chain.to_lowercase()
+                };
+                info!("🔗 [LOCAL] Processing deposit intent for chain: {} (user_deposit: {})", 
+                      chain_to_use, user_eth_address.is_some());
                 
                 // Get the appropriate signing key BEFORE borrowing signing_node mutably
                 let signing_key: Option<k256::Scalar> = self.get_signing_key_for_user(user_eth_address.as_ref()).await;
                 
                 // Process locally first (this node will sign it)
                 if let Some(signing_node) = &mut self.signing_node {
-                    // Set appropriate chain handler based on target chain
-                    if crate::utils::transaction::is_evm_chain(target_chain) {
-                        if let Some(chain_id) = crate::utils::transaction::get_chain_id_from_name(target_chain) {
+                    // Set appropriate chain handler based on the determined chain
+                    if crate::utils::transaction::is_evm_chain(chain_to_use) {
+                        if let Some(chain_id) = crate::utils::transaction::get_chain_id_from_name(chain_to_use) {
                             let chain_handler = crate::chain::ChainHandlerFactory::create_ethereum_handler(chain_id);
                             signing_node.set_chain_handler(chain_handler.into());
-                            info!("🔗 [LOCAL] Set Ethereum chain handler for chain: {} (ID: {})", target_chain, chain_id);
+                            info!("🔗 [LOCAL] Set Ethereum chain handler for chain: {} (ID: {})", chain_to_use, chain_id);
                         }
-                    } else if target_chain == "bitcoin" || target_chain == "btc" {
+                    } else if chain_to_use == "bitcoin" || chain_to_use == "btc" {
                         let mut chain_handler = crate::chain::ChainHandlerFactory::create_bitcoin_handler("testnet".to_string());
                         
                         // Set appropriate group public key in Bitcoin chain handler based on transaction type
@@ -1606,7 +1614,7 @@ impl NetworkLayer {
                         signing_node.set_chain_handler(chain_handler.into());
                         info!("🔗 [LOCAL] Set Bitcoin chain handler");
                     } else {
-                        warn!("❌ [LOCAL] Unsupported chain: {}, using default Ethereum handler", target_chain);
+                        warn!("❌ [LOCAL] Unsupported chain: {}, using default Ethereum handler", chain_to_use);
                     }
                     
                     // Get derived addresses and appropriate group key if user_eth_address is provided
