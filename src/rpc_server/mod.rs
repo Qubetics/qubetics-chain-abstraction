@@ -1,13 +1,12 @@
 use crate::types::{ChannelMessage, rpc::RPCRequest};
 use crate::user_registry::{checksum_from_any, to_checksum_address, UserRegistry};
-use ff::PrimeField;
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 use uuid::Uuid;
 use warp::Filter;
-use tracing::{info, warn};
+use tracing::{info, warn, error};
 use secp256k1::{
     ecdsa::{RecoverableSignature, RecoveryId},
     Message, PublicKey, Secp256k1,
@@ -69,8 +68,7 @@ pub struct DepositIntent {
     pub amount: u128,
     pub source_token: String,
     pub target_token: String,
-    pub path: Vec<u8>,
-    pub transaction_hash: String,
+    pub timestamp: u64, // Unix timestamp in seconds
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -104,16 +102,13 @@ pub struct UserRegistrationRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserMpcDepositRequest {
     pub signature: String,
-    pub amount: u128,
-    pub msg: String,
+    pub msg: DepositIntent,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserRegistrationResponse {
     pub status: String,
     pub message: String,
-    pub address_1: String,
-    pub address_2: String,
     pub derived_eth_address: Option<String>,
     pub derived_btc_address: Option<String>,
 }
@@ -383,14 +378,6 @@ async fn handle_register_user(
                 info!("⚠️ HTTP: No tweaked secret share computed (DKG secret share not available) for user: {}", request.ethereum_address);
             }
             
-            // Log derived addresses if available
-            if let Some(eth_addr) = &registration.derived_eth_address {
-                info!("📬 HTTP: Derived ETH address for {}: {}", request.ethereum_address, eth_addr);
-            }
-            if let Some(btc_addr) = &registration.derived_btc_address {
-                info!("📬 HTTP: Derived BTC address for {}: {}", request.ethereum_address, btc_addr);
-            }
-            
             // Now broadcast to other nodes via P2P network (same pattern as deposit intent)
             let user_reg_msg = ChannelMessage::UserRegistration {
                 ethereum_address: request.ethereum_address.clone(),
@@ -405,18 +392,48 @@ async fn handle_register_user(
                 info!("📡 User registration message sent to network layer for broadcasting");
             }
             
-            // Return the HMAC constant as hex strings for the two addresses
-            let hmac_hex = hex::encode(registration.hmac_constant);
+            // Wait for derived addresses to be populated (they are computed asynchronously in network layer)
+            info!("⏳ Waiting for derived addresses to be populated...");
+            let mut attempts = 0;
+            let max_attempts = 10; // Wait up to 10 seconds
             
+            let mut final_registration = registration.clone();
+            while attempts < max_attempts {
+                // Check if derived addresses are now available
+                if let Some(updated_user) = user_registry.get_user_by_address(&request.ethereum_address).await {
+                    if updated_user.derived_eth_address.is_some() && updated_user.derived_btc_address.is_some() {
+                        final_registration = updated_user;
+                        info!("✅ Derived addresses are now available!");
+                        break;
+                    }
+                }
+                
+                attempts += 1;
+                if attempts < max_attempts {
+                    info!("⏳ Attempt {}/{}: Derived addresses not ready yet, waiting 1 second...", attempts, max_attempts);
+                    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                }
+            }
+            
+            if attempts >= max_attempts {
+                warn!("⚠️ Derived addresses not available after {} attempts, proceeding with response", max_attempts);
+            }
+            
+            // Log derived addresses if available
+            if let Some(eth_addr) = &final_registration.derived_eth_address {
+                info!("📬 HTTP: Derived ETH address for {}: {}", request.ethereum_address, eth_addr);
+            }
+            if let Some(btc_addr) = &final_registration.derived_btc_address {
+                info!("📬 HTTP: Derived BTC address for {}: {}", request.ethereum_address, btc_addr);
+            }
+                        
             // Get derived addresses if available
-            let derived_eth = registration.derived_eth_address.clone();
-            let derived_btc = registration.derived_btc_address.clone();
+            let derived_eth = final_registration.derived_eth_address.clone();
+            let derived_btc = final_registration.derived_btc_address.clone();
             
             Ok(warp::reply::json(&UserRegistrationResponse {
                 status: "success".to_string(),
                 message: "User registered successfully".to_string(),
-                address_1: hmac_hex.clone(),
-                address_2: hmac_hex, // For now, returning the same HMAC constant for both addresses
                 derived_eth_address: derived_eth,
                 derived_btc_address: derived_btc,
             }))
@@ -433,44 +450,99 @@ async fn handle_user_mpc_deposit(
     req: UserMpcDepositRequest,
     user_registry: std::sync::Arc<UserRegistry>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
-    info!("🧾 HTTP: user_mpc_deposit: amount={}, msg_len={}, sig_len={}", req.amount, req.msg.len(), req.signature.len());
+    info!("🧾 HTTP: user_mpc_deposit: amount={}, sig_len={}", req.msg.amount, req.signature.len());
 
-    // 1) normalize signature (expects r||s||v 65 bytes in hex)
+    // Calculate intent hash
+    let intent_json = serde_json::to_string(&req.msg).unwrap();
+    let intent_bytes = intent_json.as_bytes();
+    let intent_hash = Keccak256::digest(intent_bytes);
+    
+    info!("🔐 Processing MPC deposit - Intent hash: {:?}, Amount: {}", intent_hash, req.msg.amount);
+    
+    // Normalize signature (expects r||s||v 65 bytes in hex)
     let (compact, v) = match normalize_eth_signature(&req.signature) {
         Ok(t) => t,
         Err(e) => {
-            warn!("❌ Bad signature: {}", e);
-            return Err(warp::reject::custom(TransactionError::SerializationError));
+            warn!("❌ Failed to normalize signature: {}", e);
+            return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+                status: "error".to_string(),
+                signer_address: "".to_string(),
+                is_registered: false,
+                amount: 0,
+                used_personal_sign_prefix: false,
+            }));
         }
     };
-
-    // 2) try personal_sign first, then raw keccak(msg)
-    let (signer, used_personal) = match recover_eth_address_secp(&req.msg, &compact, v, true) {
+    
+    // Try personal_sign first, then raw keccak(msg)
+    let (signer, used_personal) = match recover_eth_address_secp(
+        intent_bytes,
+        &compact,
+        v,
+        true
+    ) {
         Ok(addr) => (addr, true),
         Err(e1) => {
             warn!("⚠️ personal_sign recovery failed: {}", e1);
-            match recover_eth_address_secp(&req.msg, &compact, v, false) {
+            match recover_eth_address_secp(
+                intent_bytes,
+                &compact,
+                v,
+                false
+            ) {
                 Ok(addr) => (addr, false),
                 Err(e2) => {
-                    warn!("❌ raw keccak recovery failed: {}", e2);
-                    return Err(warp::reject::custom(TransactionError::SerializationError));
+                    error!("❌ Both signature recovery methods failed: personal_sign={}, raw={}", e1, e2);
+                    return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+                        status: "error".to_string(),
+                        signer_address: "".to_string(),
+                        is_registered: false,
+                        amount: 0,
+                        used_personal_sign_prefix: false,
+                    }));
                 }
             }
         }
     };
-
-    // 3) lookup in registry
+    
+    info!("✅ Recovered signer address: {}", signer);
+    
+    // Check if user is registered
     let is_registered = user_registry.get_user_by_address(&signer).await.is_some();
-    info!("🔎 signer={} registered={}", signer, is_registered);
-
-    let resp = UserMpcDepositVerifyResponse {
+    
+    if !is_registered {
+        warn!("⚠️ Unregistered user attempting MPC deposit: {}", signer);
+        return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+            status: "error".to_string(),
+            signer_address: signer,
+            is_registered: false,
+            amount: 0,
+            used_personal_sign_prefix: used_personal,
+        }));
+    }
+    
+    // Store intent hash in user registry
+    if let Err(e) = user_registry.store_intent_hash(intent_hash.to_vec(), &signer, &req.msg).await {
+        error!("❌ Failed to store intent hash: {}", e);
+        return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+            status: "error".to_string(),
+            signer_address: signer.clone(),
+            is_registered: true,
+            amount: 0,
+            used_personal_sign_prefix: used_personal,
+        }));
+    }
+    
+    info!("✅ Intent hash stored successfully for user: {}", signer);
+    
+    // Return success response
+    Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
         status: "ok".to_string(),
         signer_address: signer,
-        is_registered,
-        amount: req.amount,
+        is_registered: true,
+        amount: req.msg.amount,
         used_personal_sign_prefix: used_personal,
-    };
-    Ok(warp::reply::json(&resp))
+    }))
 }
 
 // Helper function to get the actual DKG secret share from shared state
@@ -514,7 +586,7 @@ fn normalize_eth_signature(sig_hex: &str) -> anyhow::Result<([u8; 64], u8)> {
 }
 
 fn recover_eth_address_secp(
-    msg: &str,
+    msg: &[u8],
     compact: &[u8; 64],
     v: u8,
     use_personal_prefix: bool,
@@ -530,14 +602,14 @@ fn recover_eth_address_secp(
         let prefix = format!("\x19Ethereum Signed Message:\n{}", msg.len());
         let mut h = Keccak256::new();
         h.update(prefix.as_bytes());
-        h.update(msg.as_bytes());
+        h.update(msg);
         h.finalize()
     } else {
-        Keccak256::digest(msg.as_bytes())
+        Keccak256::digest(msg)
     };
 
     let secp = Secp256k1::new();
-    let m = Message::from_slice(&hash)
+    let m = Message::from_digest_slice(&hash)
         .map_err(|e| anyhow::anyhow!("message: {}", e))?;
     let pk: PublicKey = secp
         .recover_ecdsa(&m, &rsig)

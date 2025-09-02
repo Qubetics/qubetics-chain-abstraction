@@ -124,12 +124,34 @@ async function testDKGStatus() {
 // =========================
 // New: user_mpc_deposit test
 // =========================
-async function testUserMpcDeposit({ wallet, amount, msg }) {
+// Update testUserMpcDeposit to fetch user info
+async function testUserMpcDeposit({ wallet, amount }) {
   try {
     const signerAddr = await wallet.getAddress();
     log(`\n🔐 Testing user_mpc_deposit for signer: ${signerAddr}`, 'blue');
-    log(`📝 Message: "${msg}"`, 'cyan');
     log(`💰 Amount: ${amount}`, 'cyan');
+
+    // Fetch user info to get the canonical Ethereum address
+    const userInfo = await testGetUserInfo(signerAddr);
+    if (!userInfo.success) {
+      throw new Error('Failed to fetch user info');
+    }
+
+    // Construct DepositIntent
+    const depositIntent = {
+      source_address: userInfo.data.ethereum_address, // Use canonical address
+      target_address: '0x541Bc7A7Eb63769c079dc57eF1b9d9651Dd920Af',
+      source_chain: 'ethereum',
+      target_chain: 'ethereum',
+      amount: amount,
+      source_token: 'ETH',
+      target_token: 'ETH',
+      timestamp: Math.floor(Date.now() / 1000), // Current Unix timestamp in seconds
+    };
+
+    // Serialize DepositIntent for signing
+    const msg = JSON.stringify(depositIntent);
+    log(`📝 Message: ${msg}`, 'cyan');
 
     // EIP-191 personal_sign
     const signature = await wallet.signMessage(msg);
@@ -137,7 +159,7 @@ async function testUserMpcDeposit({ wallet, amount, msg }) {
 
     const response = await axios.post(
       `${RPC_BASE_URL}/user_mpc_deposit`,
-      { signature, amount, msg },
+      { signature, msg: depositIntent },
       { headers: { 'Content-Type': 'application/json' }, timeout: 10000 }
     );
 
@@ -192,8 +214,7 @@ async function runTests() {
 
   // 3) MPC deposit test
   const amount = 123456; // keep safe for JSON
-  const msg = `MPC-DEPOSIT|ts=${Date.now()}|amt=${amount}`;
-  await testUserMpcDeposit({ wallet, amount, msg });
+  await testUserMpcDeposit({ wallet, amount });
 
   log(`\n${colors.bright}✅ Test completed!${colors.reset}`, 'bright');
 }
