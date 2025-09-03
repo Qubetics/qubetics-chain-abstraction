@@ -728,7 +728,7 @@ impl SigningNode {
     }
 
      /// Reconstruct signed Bitcoin transaction from aggregated signature
-     pub async fn reconstruct_signed_bitcoin_transaction(
+    pub async fn reconstruct_signed_bitcoin_transaction(
         &self,
         round: u64,
         aggregated_signature: &[u8],

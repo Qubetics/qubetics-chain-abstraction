@@ -387,7 +387,7 @@ pub async fn create_chain_transaction_from_deposit_intent(
         }
 
         // Convert amount from wei to satoshis (assuming 1:1 conversion for now, you might want to adjust this)
-        let amount_satoshis = (intent.amount / 10_000_000_000) as u64;
+        let amount_satoshis = (intent.amount) as u64;
         let estimated_fee = calculate_bitcoin_fee(utxos.len(), 2); // 2 outputs (recipient + change)
 
         // Select UTXOs that provide enough value
