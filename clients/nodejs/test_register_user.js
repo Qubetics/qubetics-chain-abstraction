@@ -144,8 +144,8 @@ async function testUserMpcDeposit({ wallet, amount }) {
       source_chain: 'qubetics',
       target_chain: 'bitcoin',
       amount: 10,
-      source_token: 'TICS',
-      target_token: 'BTC',
+      source_token: 'BTC',
+      target_token: 'TICS',
       timestamp: Math.floor(Date.now() / 1000), // Current Unix timestamp in seconds
     };
 
@@ -213,7 +213,7 @@ async function runTests() {
   }
 
   // 3) MPC deposit test
-  const amount = 2000; // keep safe for JSON
+  const amount = 1000; // keep safe for JSON
   await testUserMpcDeposit({ wallet, amount });
 
   log(`\n${colors.bright}✅ Test completed!${colors.reset}`, 'bright');

@@ -283,16 +283,10 @@ impl DatabaseUserRegistry {
     }
 
     /// Compute tweaked share from DKG share and HMAC constant
-    fn compute_tweaked_share(&self, dkg_share: &Scalar, hmac_constant: &[u8; 32]) -> SerializableScalar {
-        let mut hasher = Keccak256::new();
-        hasher.update(dkg_share.to_repr());
-        hasher.update(hmac_constant);
-        let hash = hasher.finalize();
-        
-        let tweak = Scalar::from_repr_vartime(hash.into()).unwrap_or(Scalar::ZERO);
-        let tweaked_share = dkg_share + tweak;
-        
-        SerializableScalar(tweaked_share)
+    fn compute_tweaked_share(&self, share: &Scalar, hmac_constant: &[u8; 32]) -> SerializableScalar {
+        let hmac_scalar = Scalar::from_repr((*hmac_constant).into()).unwrap();
+        let tweaked_scalar = *share + hmac_scalar;
+        SerializableScalar(tweaked_scalar)
     }
 
     /// Get the chain code

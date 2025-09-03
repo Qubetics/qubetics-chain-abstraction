@@ -26,7 +26,7 @@ impl UserStorage {
         info!("  🆔 User ID: {}", user.user_id);
         info!("  🏗️  Registered by node: {}", user.registered_by_node);
         info!("  📅 Created at: {}", user.created_at);
-        info!("  🔑 Has tweaked secret share: {}", user.tweaked_secret_share.is_some());
+        info!("  🔑 Has tweaked secret share: {:?}", user.tweaked_secret_share);
         info!("  🔑 Has user group key: {}", user.user_group_key.is_some());
         info!("  🏠 Has derived ETH address: {}", user.derived_eth_address.is_some());
         info!("  🪙 Has derived BTC address: {}", user.derived_btc_address.is_some());

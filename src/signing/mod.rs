@@ -34,10 +34,9 @@ use crate::vrf::{VrfService, VrfSelectedNodesBroadcast};
 use crate::chain::{ChainHandler, ChainSignature, ChainHandlerFactory, ChainTransaction};
 use crate::utils::get_eth_address_from_group_key;
 // Import BitcoinTransaction directly from chain module
-use crate::chain::BitcoinTransaction;
+use crate::chain::{BitcoinTransaction, BitcoinInput};
 use crate::user_registry::DatabaseUserRegistry;
-use k256::AffinePoint;
-use sha3::{Keccak256, Digest};
+use crate::utils::transaction::DetectedAddressType;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ECDSASignature {
@@ -118,6 +117,8 @@ pub struct SigningNode {
     group_public_key: Option<k256::ProjectivePoint>, // DKG group public key for Bitcoin addresses
     // User registry for storing transaction IDs
     user_registry: Option<Arc<DatabaseUserRegistry>>,
+    // Dynamic broadcast configuration
+    broadcast_config: BroadcastConfig,
 }
 
 impl SigningNode {
@@ -154,7 +155,14 @@ impl SigningNode {
             pending_transactions: Arc::new(RwLock::new(HashMap::new())),
             group_public_key: None, // ✅ Initialize DKG group public key
             user_registry: None, // Will be set later via set_user_registry
+            broadcast_config: BroadcastConfig::from_env(), // Load configuration from environment
         }
+    }
+
+
+    /// Print the current broadcast configuration
+    pub fn print_broadcast_config(&self) {
+        self.broadcast_config.print_config();
     }
 
     /// Derive a deterministic PeerId from a string ID
@@ -229,6 +237,230 @@ impl SigningNode {
         let be = scalar.to_bytes();
         SecretKey::from_slice(be.as_slice()).expect("valid secp256k1 scalar")
     }
+
+    // Configuration methods
+    pub fn set_broadcast_config(&mut self, config: BroadcastConfig) {
+        self.broadcast_config = config;
+    }
+    
+    pub fn get_broadcast_config(&self) -> &BroadcastConfig {
+        &self.broadcast_config
+    }
+    
+    pub fn update_chain_config(&mut self, chain_type: &str, config: ChainBroadcastConfig) {
+        self.broadcast_config.chain_configs.insert(chain_type.to_string(), config);
+    }
+    
+    pub fn enable_chain(&mut self, chain_type: &str, enabled: bool) {
+        if let Some(chain_config) = self.broadcast_config.chain_configs.get_mut(chain_type) {
+            chain_config.enabled = enabled;
+        }
+    }
+    
+    // Dynamic broadcast method with retry logic
+    pub async fn dynamic_broadcast_transaction(
+        &self,
+        raw_tx_hex: &str,
+        chain_type: &str,
+    ) -> Result<()> {
+        let config = &self.broadcast_config;
+        
+        // Check if chain is enabled
+        if !config.is_chain_enabled(chain_type) {
+            warn!("⚠️ [SIGNING] Chain {} is disabled, skipping broadcast", chain_type);
+            return Ok(());
+        }
+        
+        // Get chain-specific configuration
+        let chain_config = config.get_chain_config(chain_type)
+            .ok_or_else(|| anyhow!("No configuration found for chain {}", chain_type))?;
+        
+        info!("🚀 [BROADCAST] Sending {} transaction to {}", chain_type, chain_config.rpc_url);
+        
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            
+            let broadcast_result = match chain_type {
+                "ethereum" => {
+                    self.broadcast_ethereum_transaction_with_config(raw_tx_hex, chain_config).await
+                }
+                "bitcoin" => {
+                    self.broadcast_bitcoin_transaction_with_config(raw_tx_hex, chain_config).await
+                }
+                _ => Err(anyhow!("Unsupported chain type: {}", chain_type))
+            };
+            
+            match broadcast_result {
+                Ok(_) => {
+                    info!("✅ [BROADCAST] Transaction sent successfully");
+                    return Ok(());
+                }
+                Err(e) => {
+                    let error_msg = e.to_string();
+                        if attempt < config.max_retries {
+                        error!("❌ [BROADCAST] Attempt {}: {}", attempt, error_msg);
+                        warn!("🔄 [BROADCAST] Retrying in {}ms (attempt {}/{})", config.retry_delay_ms, attempt + 1, config.max_retries);
+                        
+                        tokio::time::sleep(tokio::time::Duration::from_millis(config.retry_delay_ms)).await;
+                        continue;
+                    } else {
+                        // Max retries reached
+                        if config.continue_on_failure {
+                            error!("❌ [BROADCAST] {}", error_msg);
+                            
+                            // Return success so the node doesn't stop
+                            return Ok(());
+                        } else {
+                            // Return error to stop the node
+                            return Err(anyhow!("{}", error_msg));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    // Enhanced broadcast methods with configuration
+    async fn broadcast_ethereum_transaction_with_config(
+        &self,
+        raw_tx_hex: &str,
+        config: &ChainBroadcastConfig,
+    ) -> Result<()> {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(config.timeout_seconds))
+            .build()?;
+            
+        let payload = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "eth_sendRawTransaction",
+            "params": [raw_tx_hex],
+            "id": 1
+        });
+
+        // Sending to RPC endpoint
+
+        let mut request = client.post(&config.rpc_url)
+            .header("Content-Type", "application/json")
+            .json(&payload);
+            
+        // Add custom headers
+        for (key, value) in &config.custom_headers {
+            request = request.header(key, value);
+        }
+
+        let response = request.send().await?;
+
+        if response.status().is_success() {
+            let result: serde_json::Value = response.json().await?;
+            if let Some(error) = result.get("error") {
+                return Err(anyhow!("Broadcast failed: {}", error));
+            }
+            if let Some(tx_hash) = result.get("result") {
+                info!("✅ [BROADCAST] TX Hash: {}", tx_hash);
+            }
+        } else {
+            let error_text = response.text().await?;
+            return Err(anyhow!("Broadcast failed: {}", error_text));
+        }
+        Ok(())
+    }
+    
+    async fn broadcast_bitcoin_transaction_with_config(
+        &self,
+        raw_tx_hex: &str,
+        config: &ChainBroadcastConfig,
+    ) -> Result<()> {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(config.timeout_seconds))
+            .build()?;
+            
+        // Check if this is a BlockCypher API endpoint
+        if config.rpc_url.contains("blockcypher.com") {
+            // BlockCypher API format
+            let payload = serde_json::json!({
+                "tx": raw_tx_hex
+            });
+
+            let mut request = client.post(&config.rpc_url)
+                .header("Content-Type", "application/json")
+                .header("User-Agent", "mpc-node/1.0.0")
+                .json(&payload);
+                
+            // Add custom headers
+            for (key, value) in &config.custom_headers {
+                request = request.header(key, value);
+            }
+
+            let response = request.send().await?;
+
+            if response.status().is_success() {
+                let response_text = response.text().await?;
+                if let Ok(json_response) = serde_json::from_str::<serde_json::Value>(&response_text) {
+                    if let Some(tx_hash) = json_response.get("hash") {
+                        info!("✅ [BROADCAST] TXID: {}", tx_hash);
+                    } else if let Some(error) = json_response.get("error") {
+                        return Err(anyhow!("BlockCypher API error: {}", error));
+                    } else {
+                        info!("✅ [BROADCAST] Response: {}", response_text);
+                    }
+                } else {
+                    info!("✅ [BROADCAST] Response: {}", response_text);
+                }
+            } else {
+                let error_text = response.text().await?;
+                return Err(anyhow!("BlockCypher API failed: {}", error_text));
+            }
+        } else {
+            // Standard Bitcoin RPC format
+            let payload = serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "sendrawtransaction",
+                "params": [raw_tx_hex],
+                "id": 1
+            });
+
+            let mut request = client.post(&config.rpc_url)
+                .header("Content-Type", "application/json")
+                .header("User-Agent", "mpc-node/1.0.0")
+                .json(&payload);
+                
+            // Add custom headers
+            for (key, value) in &config.custom_headers {
+                request = request.header(key, value);
+            }
+
+            let response = request.send().await?;
+
+            if response.status().is_success() {
+                let response_text = response.text().await?;
+                // Parse JSON response to get txid
+                if let Ok(json_response) = serde_json::from_str::<serde_json::Value>(&response_text) {
+                    if let Some(result) = json_response.get("result") {
+                        info!("✅ [BROADCAST] TXID: {}", result);
+                    } else if let Some(error) = json_response.get("error") {
+                        return Err(anyhow!("sendrawtransaction RPC error: {}", error));
+                    } else {
+                        info!("✅ [BROADCAST] Response: {}", response_text);
+                    }
+                } else {
+                    info!("✅ [BROADCAST] Response: {}", response_text);
+                }
+            } else {
+                let error_text = response.text().await?;
+                // Check for common RPC endpoint issues
+                if error_text.contains("too many redirects") {
+                    return Err(anyhow!("RPC endpoint error: {} - This appears to be a REST API, not a JSON-RPC endpoint. Please configure a proper Bitcoin RPC URL (e.g., http://localhost:18332 for testnet)", error_text));
+                } else if error_text.contains("connection refused") {
+                    return Err(anyhow!("RPC endpoint error: {} - Cannot connect to Bitcoin RPC. Make sure Bitcoin Core is running and RPC is enabled", error_text));
+                } else {
+                    return Err(anyhow!("Broadcast failed: {}", error_text));
+                }
+            }
+        }
+        Ok(())
+    }
+
 
     pub fn add_public_key(&self, node_id: String, public_key: PublicKey) {
         let node_id_clone = node_id.clone();
@@ -495,31 +727,55 @@ impl SigningNode {
         Ok(None)
     }
 
-    /// Reconstruct signed Bitcoin transaction from aggregated signature
-    pub async fn reconstruct_signed_bitcoin_transaction(
+     /// Reconstruct signed Bitcoin transaction from aggregated signature
+     pub async fn reconstruct_signed_bitcoin_transaction(
         &self,
         round: u64,
         aggregated_signature: &[u8],
-        recovery_id: u8,
+        _recovery_id: u8,
     ) -> Result<Option<String>> {
         let pending_transactions = self.pending_transactions.read().await;
         
-        if let Some((chain_tx, _tx_bytes, _intent_hash)) = pending_transactions.get(&round) {
+        if let Some((chain_tx, _tx_bytes,_)) = pending_transactions.get(&round) {
             if let ChainTransaction::Bitcoin(original_tx) = chain_tx {
                 info!(
                     "🔧 [SIGNING] Node {} reconstructing signed Bitcoin transaction for round {}",
                     self.id, round
                 );
                 
-                // Create DER-encoded signature for Bitcoin
-                let r = &aggregated_signature[0..32];
-                let s = &aggregated_signature[32..64];
-                
-                // Create DER signature format
-                let der_signature = self.create_der_signature(r, s)?;
-                
+                // Determine address type from first input
+                let address_type = if let Some(input) = original_tx.inputs.first() {
+                    if let Some(witness_utxo) = &input.witness_utxo {
+                        match witness_utxo.script_pubkey.len() {
+                            22 if witness_utxo.script_pubkey[0] == 0x00 && witness_utxo.script_pubkey[1] == 0x14 => DetectedAddressType::P2WPKH,
+                            34 if witness_utxo.script_pubkey[0] == 0x00 && witness_utxo.script_pubkey[1] == 0x20 => DetectedAddressType::P2WSH,
+                            34 if witness_utxo.script_pubkey[0] == 0x51 && witness_utxo.script_pubkey[1] == 0x20 => DetectedAddressType::P2TR,
+                            _ => DetectedAddressType::P2WPKH,
+                        }
+                    } else {
+                        DetectedAddressType::P2PKH
+                    }
+                } else {
+                    DetectedAddressType::P2PKH
+                };
+
+                // Prepare signature bytes depending on address type
+                let signature = match address_type {
+                    DetectedAddressType::P2TR => {
+                        let mut sig = aggregated_signature.to_vec();
+                        // Append SIGHASH_ALL for Taproot
+                        sig.push(0x01);
+                        sig
+                    },
+                    _ => {
+                        let r = &aggregated_signature[0..32];
+                        let s = &aggregated_signature[32..64];
+                        self.create_der_signature(r, s)?
+                    }
+                };
+
                 // Create the complete signed transaction
-                let signed_tx = self.create_signed_bitcoin_transaction(original_tx, &der_signature)?;
+                let signed_tx = self.create_signed_bitcoin_transaction(original_tx, &signature)?;
                 
                 let signed_tx_hex = hex::encode(&signed_tx);
                 
@@ -546,7 +802,7 @@ impl SigningNode {
             Ok(None)
         }
     }
-
+    
     /// Reconstruct signed Ethereum transaction from aggregated signature
     pub async fn reconstruct_signed_ethereum_transaction(
         &self,
@@ -666,16 +922,24 @@ impl SigningNode {
         Ok(der_sig)
     }
 
-    /// Create complete signed Bitcoin transaction (supports both Legacy and SegWit UTXOs)
     fn create_signed_bitcoin_transaction(
         &self,
         original_tx: &BitcoinTransaction,
-        der_signature: &[u8],
+        signature: &[u8],
     ) -> Result<Vec<u8>> {
         let mut signed_tx = Vec::new();
         
         // Version (4 bytes, little-endian)
         signed_tx.extend_from_slice(&original_tx.version.to_le_bytes());
+        
+        // Check if this is a SegWit transaction
+        let is_segwit = original_tx.witness.is_some();
+        
+        if is_segwit {
+            // SegWit marker and flag
+            signed_tx.push(0x00); // SegWit marker
+            signed_tx.push(0x01); // SegWit flag
+        }
         
         // Input count (varint)
         signed_tx.extend_from_slice(&self.encode_varint(original_tx.inputs.len() as u64));
@@ -691,23 +955,16 @@ impl SigningNode {
             // Previous output index (4 bytes, little-endian)
             signed_tx.extend_from_slice(&input.vout.to_le_bytes());
             
-            // Create script_sig with signature and public key (for first input, empty for others for now)
-            if i == 0 {
-                // ✅ Use proper group public key from DKG (UTXO was sent to group address)
-                let group_pubkey = self.get_group_public_key_bytes()?;
-                
-                let mut script_sig = Vec::new();
-                script_sig.push(der_signature.len() as u8); // Signature length
-                script_sig.extend_from_slice(der_signature); // Signature
-                script_sig.push(group_pubkey.len() as u8); // Public key length
-                script_sig.extend_from_slice(&group_pubkey); // Actual group public key
-                
-                signed_tx.extend_from_slice(&self.encode_varint(script_sig.len() as u64));
-                signed_tx.extend_from_slice(&script_sig);
+            // Create script_sig based on address type
+            let script_sig = if i == 0 {
+                self.create_script_sig_for_input(input, signature)?
             } else {
-                // Empty script_sig for other inputs (in this simplified version)
-                signed_tx.push(0x00);
-            }
+                vec![] // Empty for other inputs for now
+            };
+            
+            // Script sig length and content
+            signed_tx.extend_from_slice(&self.encode_varint(script_sig.len() as u64));
+            signed_tx.extend_from_slice(&script_sig);
             
             // Sequence (4 bytes, little-endian)
             signed_tx.extend_from_slice(&input.sequence.to_le_bytes());
@@ -716,39 +973,111 @@ impl SigningNode {
         // Output count (varint)
         signed_tx.extend_from_slice(&self.encode_varint(original_tx.outputs.len() as u64));
         
-        // Outputs - ✅ Convert SegWit outputs to Legacy P2PKH
+        // Outputs - preserve original script_pubkey format
         for output in &original_tx.outputs {
             // Value (8 bytes, little-endian)
             signed_tx.extend_from_slice(&output.value.to_le_bytes());
             
-            // ✅ Check if output is SegWit and convert to P2PKH
-            let script_pubkey = if output.script_pubkey.len() == 22 && 
-                                   output.script_pubkey[0] == 0x00 && 
-                                   output.script_pubkey[1] == 0x14 {
-                // This is P2WPKH (SegWit), convert to P2PKH
-                let pubkey_hash = &output.script_pubkey[2..22];
-                let mut p2pkh_script = Vec::new();
-                p2pkh_script.push(0x76); // OP_DUP
-                p2pkh_script.push(0xa9); // OP_HASH160
-                p2pkh_script.push(0x14); // Push 20 bytes
-                p2pkh_script.extend_from_slice(pubkey_hash); // 20-byte hash
-                p2pkh_script.push(0x88); // OP_EQUALVERIFY
-                p2pkh_script.push(0xac); // OP_CHECKSIG
-                
-                info!("🔄 [SIGNING] Converted P2WPKH output to P2PKH for compatibility");
-                p2pkh_script
-            } else {
-                output.script_pubkey.clone()
-            };
-            
-            signed_tx.extend_from_slice(&self.encode_varint(script_pubkey.len() as u64));
-            signed_tx.extend_from_slice(&script_pubkey);
+            // Script pubkey length and content
+            signed_tx.extend_from_slice(&self.encode_varint(output.script_pubkey.len() as u64));
+            signed_tx.extend_from_slice(&output.script_pubkey);
+        }
+        
+        // Witness data for SegWit transactions
+        if is_segwit {
+            if let Some(witness) = &original_tx.witness {
+                for (i, _witness_input) in witness.inputs.iter().enumerate() {
+                    if i == 0 {
+                        // Create witness stack for the first input
+                        let witness_stack = self.create_witness_stack_for_input(&original_tx.inputs[i], signature)?;
+                        signed_tx.extend_from_slice(&self.encode_varint(witness_stack.len() as u64));
+                        for item in witness_stack {
+                            signed_tx.extend_from_slice(&self.encode_varint(item.len() as u64));
+                            signed_tx.extend_from_slice(&item);
+                        }
+                    } else {
+                        // Empty witness for other inputs
+                        signed_tx.extend_from_slice(&self.encode_varint(0));
+                    }
+                }
+            }
         }
         
         // Lock time (4 bytes, little-endian)
         signed_tx.extend_from_slice(&original_tx.lock_time.to_le_bytes());
         
         Ok(signed_tx)
+    }
+
+
+    /// Create script_sig for different input types
+    fn create_script_sig_for_input(&self, input: &BitcoinInput, signature: &[u8]) -> Result<Vec<u8>> {
+        if let Some(witness_utxo) = &input.witness_utxo {
+            // For SegWit inputs, script_sig is usually empty or contains redeem script
+            match witness_utxo.script_pubkey.len() {
+                22 if witness_utxo.script_pubkey[0] == 0x00 && witness_utxo.script_pubkey[1] == 0x14 => {
+                    // P2WPKH - empty script_sig
+                    Ok(vec![])
+                },
+                34 if witness_utxo.script_pubkey[0] == 0x00 && witness_utxo.script_pubkey[1] == 0x20 => {
+                    // P2WSH - empty script_sig
+                    Ok(vec![])
+                },
+                34 if witness_utxo.script_pubkey[0] == 0x51 && witness_utxo.script_pubkey[1] == 0x20 => {
+                    // P2TR - empty script_sig
+                    Ok(vec![])
+                },
+                _ => {
+                    // P2SH-wrapped SegWit - need redeem script
+                    Ok(vec![])
+                }
+            }
+        } else {
+            // Legacy P2PKH - create standard script_sig
+            let group_key_bytes = self.get_group_public_key_bytes()?;
+            let mut script_sig = Vec::new();
+            
+            // Push signature (DER format)
+            script_sig.push(signature.len() as u8);
+            script_sig.extend_from_slice(signature);
+            
+            // Push public key
+            script_sig.push(group_key_bytes.len() as u8);
+            script_sig.extend_from_slice(&group_key_bytes);
+            
+            Ok(script_sig)
+        }
+    }
+
+    /// Create witness stack for SegWit inputs
+    fn create_witness_stack_for_input(&self, input: &BitcoinInput, signature: &[u8]) -> Result<Vec<Vec<u8>>> {
+        if let Some(witness_utxo) = &input.witness_utxo {
+            match witness_utxo.script_pubkey.len() {
+                22 if witness_utxo.script_pubkey[0] == 0x00 && witness_utxo.script_pubkey[1] == 0x14 => {
+                    // P2WPKH: [signature, pubkey]
+                    let group_key_bytes = self.get_group_public_key_bytes()?;
+                    Ok(vec![signature.to_vec(), group_key_bytes])
+                },
+                34 if witness_utxo.script_pubkey[0] == 0x00 && witness_utxo.script_pubkey[1] == 0x20 => {
+                    // P2WSH: [signature, script, ...]
+                    let group_key_bytes = self.get_group_public_key_bytes()?;
+                    Ok(vec![signature.to_vec(), group_key_bytes])
+                },
+                34 if witness_utxo.script_pubkey[0] == 0x51 && witness_utxo.script_pubkey[1] == 0x20 => {
+                    // P2TR: [signature] (Schnorr signature)
+                    // Note: This is simplified - real P2TR uses Schnorr signatures
+                    Ok(vec![signature.to_vec()])
+                },
+                _ => {
+                    // P2SH-wrapped SegWit
+                    let group_key_bytes = self.get_group_public_key_bytes()?;
+                    Ok(vec![signature.to_vec(), group_key_bytes])
+                }
+            }
+        } else {
+            // Legacy input - no witness
+            Ok(vec![])
+        }
     }
 
     /// Get the group public key bytes from DKG
@@ -886,6 +1215,7 @@ impl SigningNode {
         user_tweaked_share: Option<k256::Scalar>,
     ) -> Result<()> {
         // Determine which key to use for signing
+        info!("🔑 [SIGNING] user_tweaked_share: {:?}\n", user_tweaked_share);
         let signing_key = if let Some(tweaked_share) = user_tweaked_share {
             // Use user's tweaked share for user deposits
             info!("🔑 [SIGNING] Using user-specific tweaked share for signing");
@@ -2716,6 +3046,153 @@ impl SigningNode {
         } else {
             info!("⚠️ [SIGNING] No available nodes, using default DKG index 1 for peer {} (sync)", peer_id);
             1
+        }
+    }
+}
+
+// Dynamic configuration structures for flexible broadcast behavior
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BroadcastConfig {
+    /// Whether to continue running when broadcast fails
+    pub continue_on_failure: bool,
+    /// Maximum retry attempts for failed broadcasts
+    pub max_retries: u32,
+    /// Delay between retry attempts (in milliseconds)
+    pub retry_delay_ms: u64,
+    /// Whether to log broadcast failures as warnings instead of errors
+    pub log_failures_as_warnings: bool,
+    /// Chain-specific configurations
+    pub chain_configs: HashMap<String, ChainBroadcastConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChainBroadcastConfig {
+    /// Whether this chain is enabled for broadcasting
+    pub enabled: bool,
+    /// RPC endpoint for this chain
+    pub rpc_url: String,
+    /// Chain ID
+    pub chain_id: u64,
+    /// Whether to use testnet
+    pub testnet: bool,
+    /// Custom headers for RPC requests
+    pub custom_headers: HashMap<String, String>,
+    /// Timeout for RPC requests (in seconds)
+    pub timeout_seconds: u64,
+}
+
+impl Default for BroadcastConfig {
+    fn default() -> Self {
+        let mut chain_configs = HashMap::new();
+        
+        // Default Ethereum configuration
+        chain_configs.insert("ethereum".to_string(), ChainBroadcastConfig {
+            enabled: true,
+            rpc_url: "https://rpc-testnet.qubetics.work".to_string(),
+            chain_id: 9029,
+            testnet: true,
+            custom_headers: HashMap::new(),
+            timeout_seconds: 30,
+        });
+        
+        // Default Bitcoin configuration - using public Bitcoin RPC service
+        chain_configs.insert("bitcoin".to_string(), ChainBroadcastConfig {
+            enabled: true, // Enabled with public API
+            rpc_url: "https://api.blockcypher.com/v1/btc/test3/txs/push".to_string(), // Public Bitcoin testnet API
+            chain_id: 0,
+            testnet: true,
+            custom_headers: HashMap::new(),
+            timeout_seconds: 30,
+        });
+        
+        Self {
+            continue_on_failure: true,
+            max_retries: 3,
+            retry_delay_ms: 1000,
+            log_failures_as_warnings: true,
+            chain_configs,
+        }
+    }
+}
+
+impl Default for ChainBroadcastConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            rpc_url: String::new(),
+            chain_id: 0,
+            testnet: true,
+            custom_headers: HashMap::new(),
+            timeout_seconds: 30,
+        }
+    }
+}
+
+// Configuration loading from environment variables
+impl BroadcastConfig {
+    pub fn from_env() -> Self {
+        let mut config = Self::default();
+        
+        // Load from environment variables
+        if let Ok(val) = std::env::var("MPC_CONTINUE_ON_BROADCAST_FAILURE") {
+            config.continue_on_failure = val.parse().unwrap_or(true);
+        }
+        
+        if let Ok(val) = std::env::var("MPC_MAX_BROADCAST_RETRIES") {
+            config.max_retries = val.parse().unwrap_or(3);
+        }
+        
+        if let Ok(val) = std::env::var("MPC_RETRY_DELAY_MS") {
+            config.retry_delay_ms = val.parse().unwrap_or(1000);
+        }
+        
+        if let Ok(val) = std::env::var("MPC_LOG_FAILURES_AS_WARNINGS") {
+            config.log_failures_as_warnings = val.parse().unwrap_or(true);
+        }
+        
+        // Load chain-specific configurations
+        if let Ok(rpc_url) = std::env::var("MPC_ETHEREUM_RPC_URL") {
+            if let Some(eth_config) = config.chain_configs.get_mut("ethereum") {
+                eth_config.rpc_url = rpc_url;
+            }
+        }
+        
+        if let Ok(chain_id) = std::env::var("MPC_ETHEREUM_CHAIN_ID") {
+            if let Some(eth_config) = config.chain_configs.get_mut("ethereum") {
+                eth_config.chain_id = chain_id.parse().unwrap_or(9029);
+            }
+        }
+        
+        if let Ok(rpc_url) = std::env::var("MPC_BITCOIN_RPC_URL") {
+            if let Some(btc_config) = config.chain_configs.get_mut("bitcoin") {
+                btc_config.rpc_url = rpc_url;
+            }
+        }
+        
+        config
+    }
+    
+    pub fn get_chain_config(&self, chain_type: &str) -> Option<&ChainBroadcastConfig> {
+        self.chain_configs.get(chain_type)
+    }
+    
+    pub fn is_chain_enabled(&self, chain_type: &str) -> bool {
+        self.chain_configs
+            .get(chain_type)
+            .map(|config| config.enabled)
+            .unwrap_or(false)
+    }
+    
+    pub fn print_config(&self) {
+        info!("🔧 [CONFIG] Broadcast Configuration:");
+        info!("   Continue on failure: {}", self.continue_on_failure);
+        info!("   Max retries: {}", self.max_retries);
+        info!("   Retry delay: {}ms", self.retry_delay_ms);
+        info!("   Log failures as warnings: {}", self.log_failures_as_warnings);
+        
+        for (chain, config) in &self.chain_configs {
+            info!("   Chain {}: enabled={}, rpc={}, chain_id={}", 
+                  chain, config.enabled, config.rpc_url, config.chain_id);
         }
     }
 }

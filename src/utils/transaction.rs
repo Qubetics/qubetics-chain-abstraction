@@ -1,5 +1,5 @@
 use crate::chain::{
-    BitcoinInput, BitcoinOutput, BitcoinTransaction, ChainTransaction, EthereumTransaction,
+    BitcoinInput, BitcoinOutput, BitcoinTransaction, ChainTransaction, EthereumTransaction,BitcoinWitness, BitcoinWitnessInput, BitcoinWitnessUtxo
 };
 use crate::rpc_server::{DepositIntent, DummyTransaction};
 use crate::utils::get_eth_address_from_group_key;
@@ -404,14 +404,29 @@ pub async fn create_chain_transaction_from_deposit_intent(
 
         // Create inputs from selected UTXOs
         let inputs: Vec<BitcoinInput> = selected_utxos
-            .iter()
-            .map(|utxo| BitcoinInput {
+        .iter()
+        .map(|utxo| {
+            let address_type = detect_bitcoin_address_type(&from_address);
+            let witness_utxo = match address_type {
+                DetectedAddressType::P2WPKH | DetectedAddressType::P2WSH | DetectedAddressType::P2TR => {
+                    // For SegWit inputs, we need witness UTXO information
+                    Some(BitcoinWitnessUtxo {
+                        value: utxo.value,
+                        script_pubkey: create_bitcoin_script_pubkey(&from_address).unwrap_or_default(),
+                    })
+                },
+                _ => None, // Legacy inputs don't need witness UTXO
+            };
+
+            BitcoinInput {
                 txid: utxo.txid.clone(),
                 vout: utxo.vout,
                 script_sig: vec![],   // Will be filled during signing
                 sequence: 0xfffffffe, // Enable RBF (Replace-By-Fee)
-            })
-            .collect();
+                witness_utxo,
+            }
+        })
+        .collect();
 
         // Create outputs
         let mut outputs = vec![BitcoinOutput {
@@ -429,11 +444,25 @@ pub async fn create_chain_transaction_from_deposit_intent(
             });
         }
 
+        // Determine if we need witness data based on input address types
+        let needs_witness = inputs.iter().any(|input| input.witness_utxo.is_some());
+        let witness = if needs_witness {
+            Some(BitcoinWitness {
+                inputs: inputs.iter().map(|_| BitcoinWitnessInput {
+                    stack: vec![], // Will be filled during signing
+                }).collect(),
+            })
+        } else {
+            None
+        };
+
+
         let bitcoin_tx = BitcoinTransaction {
             inputs,
             outputs,
             version: 2,
             lock_time: 0,
+            witness,
         };
 
         Ok(ChainTransaction::Bitcoin(bitcoin_tx))
@@ -457,7 +486,43 @@ fn get_default_gas_price_for_chain(chain_name: &str) -> String {
     }
 }
 
-/// Create a Bitcoin script_pubkey for an address (with SegWit detection)
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum DetectedAddressType {
+    P2PKH,  // Legacy (1...)
+    P2SH,   // Script Hash (3...)
+    P2WPKH, // Native SegWit v0 (bc1...)
+    P2WSH,  // Native SegWit v0 script hash (bc1...)
+    P2TR,   // Taproot (bc1p...)
+    Unknown,
+}
+
+/// Detect Bitcoin address type from address string
+fn detect_bitcoin_address_type(address: &str) -> DetectedAddressType {
+    if address.starts_with("bc1p") || address.starts_with("tb1p") {
+        DetectedAddressType::P2TR
+    } else if address.starts_with("bc1") || address.starts_with("tb1") {
+        // Differentiate between P2WPKH and P2WSH based on address length
+        // P2WPKH: 42 characters (bc1q... or tb1q...)
+        // P2WSH: 62 characters (bc1q... or tb1q... but longer)
+        if address.len() == 42 {
+            DetectedAddressType::P2WPKH
+        } else if address.len() == 62 {
+            DetectedAddressType::P2WSH
+        } else {
+            // Fallback to P2WPKH for unknown lengths
+            DetectedAddressType::P2WPKH
+        }
+    } else if address.starts_with("3") || address.starts_with("2") {
+        DetectedAddressType::P2SH
+    } else if address.starts_with("1") || address.starts_with("m") || address.starts_with("n") {
+        DetectedAddressType::P2PKH
+    } else {
+        DetectedAddressType::Unknown
+    }
+}
+
+
+/// Create a Bitcoin script_pubkey for an address (supports all address types)
 fn create_bitcoin_script_pubkey(address: &str) -> Result<Vec<u8>> {
     use bitcoin::{Address, Network};
     use std::str::FromStr;
@@ -492,17 +557,45 @@ fn create_bitcoin_script_pubkey(address: &str) -> Result<Vec<u8>> {
     let script_pubkey = checked_address.script_pubkey();
     let script_bytes = script_pubkey.to_bytes();
 
-    // ✅ Log if this is a SegWit address for debugging
-    if script_bytes.len() == 22 && script_bytes[0] == 0x00 && script_bytes[1] == 0x14 {
-        tracing::warn!(
-            "⚠️ [TRANSACTION] Address {} is SegWit (P2WPKH) - transaction will be converted to legacy format during signing",
-            address
-        );
-    } else if script_bytes.len() == 25 && script_bytes[0] == 0x76 && script_bytes[24] == 0xac {
-        tracing::info!(
-            "✅ [TRANSACTION] Address {} is Legacy P2PKH - fully compatible",
-            address
-        );
+    // Log address type for debugging
+    let detected_type = detect_bitcoin_address_type(address);
+    match detected_type {
+        DetectedAddressType::P2PKH => {
+            tracing::info!(
+                "✅ [TRANSACTION] Address {} is Legacy P2PKH - fully compatible",
+                address
+            );
+        },
+        DetectedAddressType::P2SH => {
+            tracing::info!(
+                "✅ [TRANSACTION] Address {} is P2SH - compatible with proper script handling",
+                address
+            );
+        },
+        DetectedAddressType::P2WPKH => {
+            tracing::info!(
+                "✅ [TRANSACTION] Address {} is P2WPKH (Native SegWit) - requires witness data",
+                address
+            );
+        },
+        DetectedAddressType::P2WSH => {
+            tracing::info!(
+                "✅ [TRANSACTION] Address {} is P2WSH (Native SegWit Script) - requires witness data",
+                address
+            );
+        },
+        DetectedAddressType::P2TR => {
+            tracing::info!(
+                "✅ [TRANSACTION] Address {} is P2TR (Taproot) - requires Schnorr signatures",
+                address
+            );
+        },
+        DetectedAddressType::Unknown => {
+            tracing::warn!(
+                "⚠️ [TRANSACTION] Address {} has unknown type - proceeding with caution",
+                address
+            );
+        },
     }
 
     Ok(script_bytes)
