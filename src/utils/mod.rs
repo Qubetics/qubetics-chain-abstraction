@@ -3,6 +3,8 @@ use bitcoin::{key::CompressedPublicKey, Network};
 use k256::{ProjectivePoint, AffinePoint};
 use k256::elliptic_curve::sec1::ToEncodedPoint;
 use ethers_core::utils::keccak256;
+use sha3::{Digest, Keccak256};
+use crate::rpc_server::DepositIntent;
 pub mod bigint;
 pub mod transaction;
 pub mod hmac_helper;
@@ -37,6 +39,16 @@ pub fn get_eth_address_from_group_key(pubkey: ProjectivePoint) -> String {
 
 pub fn get_btc_address_from_group_key(pubkey: ProjectivePoint) -> String {
     get_btc_address_from_group_key_with_type(pubkey, BitcoinAddressType::default()).unwrap_or_else(|_| "Error generating address".to_string())
+}
+
+/// Calculate intent hash from DepositIntent using the same method as in RPC server
+pub fn calculate_intent_hash(intent: &DepositIntent) -> String {
+    // Serialize the DepositIntent to match the client's JSON.stringify() format
+    // Use compact JSON serialization (no spaces) to match JavaScript's JSON.stringify()
+    let intent_json = serde_json::to_string(intent).unwrap();
+    let intent_bytes = intent_json.as_bytes();
+    let intent_hash = Keccak256::digest(intent_bytes);
+    hex::encode(intent_hash)
 }
 
 pub fn get_btc_address_from_group_key_with_type(pubkey: ProjectivePoint, address_type: BitcoinAddressType) -> Result<String> {

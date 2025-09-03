@@ -43,6 +43,7 @@ pub struct ECDSASignature {
     pub signature: Vec<u8>, // 65-byte recoverable signature
     pub signer_id: String,
     pub recovery_id: u8,
+    pub user_eth_address: Option<String>, // Track if this is user-to-network or network-to-target
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -83,6 +84,7 @@ pub enum SigningMessage {
         signature: ECDSASignature,
         round: u64,
         timestamp: u128,
+        user_eth_address: Option<String>, // Track if this is user-to-network or network-to-target
     },
     SignedMessage {
         from: String,
@@ -481,7 +483,10 @@ impl SigningNode {
     }
 
     /// Sign Bitcoin transaction directly with tx_bytes (no DummyTransaction wrapper)
-    pub async fn sign_bitcoin_transaction(&mut self, tx_bytes: Vec<u8>, original_tx: Option<BitcoinTransaction>) -> Result<()> {
+    pub async fn sign_bitcoin_transaction(&mut self, tx_bytes: Vec<u8>, original_tx: Option<BitcoinTransaction>, user_eth_address: Option<String>, intent_hash: Option<String>) -> Result<()> {
+        // Clone user_eth_address early to avoid borrow checker issues
+        let user_eth_address_clone = user_eth_address.clone();
+        
         if self.private_key.is_none() {
             error!(
                 "❌ [SIGNING] Node {} cannot sign Bitcoin transaction: no private key available",
@@ -547,32 +552,34 @@ impl SigningNode {
         // Create ECDSASignature for broadcasting
         // ✅ FIX: Don't append recovery_id to signature bytes - keep them separate!
         // The aggregation expects 64-byte signature + separate recovery_id field
-        let ecdsa_signature = ECDSASignature {
-            signature: signature_bytes.to_vec(), // ✅ 64 bytes (r||s only)
-            signer_id: self.id.clone(),
-            recovery_id: recovery_id.to_i32() as u8, // ✅ Separate field
-        };
+        // let ecdsa_signature = ECDSASignature {
+        //     signature: signature_bytes.to_vec(), // ✅ 64 bytes (r||s only)
+        //     signer_id: self.id.clone(),
+        //     recovery_id: recovery_id.to_i32() as u8, // ✅ Separate field
+        //     user_eth_address: user_eth_address_clone.clone(), // Clone to avoid borrow checker issues
+        // };
 
         // Broadcast the signature to other nodes with proper VRF round
-        let signing_message = SigningMessage::ECDSASignature {
-            from: self.id.clone(),
-            signature: ecdsa_signature,
-            round: current_round, // ✅ Use actual VRF round
-            timestamp: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_millis(),
-        };
+        // let signing_message = SigningMessage::ECDSASignature {
+        //     from: self.id.clone(),
+        //     signature: ecdsa_signature,
+        //     round: current_round, // ✅ Use actual VRF round
+        //     timestamp: std::time::SystemTime::now()
+        //         .duration_since(std::time::UNIX_EPOCH)
+        //         .unwrap()
+        //         .as_millis(),
+        //     user_eth_address: user_eth_address_clone.clone(), // Pass user_eth_address for tracking
+        // };
 
-        let gossipsub_msg = crate::types::GossipsubMessage::Signing(signing_message);
-        let msg_data = serde_json::to_vec(&gossipsub_msg)?;
+        // let gossipsub_msg = crate::types::GossipsubMessage::Signing(signing_message);
+        // let msg_data = serde_json::to_vec(&gossipsub_msg)?;
 
-        self.message_tx
-            .send(ChannelMessage::Broadcast {
-                topic: "signatures".to_string(),
-                data: msg_data,
-            })
-            .await?;
+        // self.message_tx
+        //     .send(ChannelMessage::Broadcast {
+        //         topic: "signatures".to_string(),
+        //         data: msg_data,
+        //     })
+        //     .await?;
 
         info!(
             "📤 [SIGNING] Node {} broadcasted Bitcoin signature to network for round {}",
@@ -587,6 +594,7 @@ impl SigningNode {
                 signature: signature_bytes.to_vec(), // ✅ 64 bytes (consistent with broadcast)
                 signer_id: self.id.clone(),
                 recovery_id: recovery_id.to_i32() as u8,
+                user_eth_address: user_eth_address_clone.clone(), // Clone to avoid borrow checker issues
             };
             round_signatures.insert(self.id.clone(), stored_signature);
             info!(
@@ -598,10 +606,10 @@ impl SigningNode {
         // Store original transaction for reconstruction after aggregation
         if let Some(original_tx) = original_tx {
             let mut pending_transactions = self.pending_transactions.write().await;
-            pending_transactions.insert(current_round, (ChainTransaction::Bitcoin(original_tx), tx_bytes.clone(), None)); // TODO: Add intent hash
+            pending_transactions.insert(current_round, (ChainTransaction::Bitcoin(original_tx), tx_bytes.clone(), intent_hash.clone()));
             info!(
-                "💾 [SIGNING] Node {} stored original Bitcoin transaction for round {} reconstruction",
-                self.id, current_round
+                "💾 [SIGNING] Node {} stored original Bitcoin transaction for round {} reconstruction (intent_hash: {:?})",
+                self.id, current_round, intent_hash
             );
         }
 
@@ -1213,6 +1221,8 @@ impl SigningNode {
         _message: Vec<u8>,
         transaction: &DummyTransaction,
         user_tweaked_share: Option<k256::Scalar>,
+        user_eth_address: Option<String>,
+        intent_hash: Option<String>,
     ) -> Result<()> {
         // Determine which key to use for signing
         info!("🔑 [SIGNING] user_tweaked_share: {:?}\n", user_tweaked_share);
@@ -1298,6 +1308,7 @@ impl SigningNode {
             signature: signature_bytes.to_vec(),
             signer_id: self.id.clone(),
             recovery_id: recovery_id.to_i32() as u8,
+            user_eth_address: user_eth_address.clone(), // Clone to avoid borrow checker issues
         };
 
         // Get current round from VRF service
@@ -1332,23 +1343,24 @@ impl SigningNode {
                 data: None,
                 chain_id: transaction.chain_id,
             });
-            pending_transactions.insert(round, (chain_tx, tx_bytes.clone(), None)); // TODO: Add intent hash
+            pending_transactions.insert(round, (chain_tx, tx_bytes.clone(), intent_hash.clone()));
             info!(
-                "💾 [SIGNING] Node {} stored original Ethereum transaction for round {} reconstruction (nonce will be fetched dynamically)",
-                self.id, round
+                "💾 [SIGNING] Node {} stored original Ethereum transaction for round {} reconstruction (nonce will be fetched dynamically, intent_hash: {:?})",
+                self.id, round, intent_hash
             );
         }
 
-        let msg = serde_json::to_vec(&crate::types::GossipsubMessage::Signing(
-            SigningMessage::ECDSASignature {
-                from: self.id.clone(),
-                signature: ecdsa_signature,
-                round,
-                timestamp: SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis(),
-            },
-        ))?;
+        // let msg = serde_json::to_vec(&crate::types::GossipsubMessage::Signing(
+        //     SigningMessage::ECDSASignature {
+        //         from: self.id.clone(),
+        //         signature: ecdsa_signature,
+        //         round,
+        //         timestamp: SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis(),
+        //         user_eth_address: user_eth_address.clone(), // No user_eth_address for Ethereum
+        //     },
+        // ))?;
 
-        self.broadcast("signing", &msg).await?;
+        // self.broadcast("signing", &msg).await?;
         info!("📤 [SIGNING] Node {} broadcasted ECDSA signature", self.id);
         Ok(())
     }
@@ -1446,10 +1458,12 @@ impl SigningNode {
                 signature,
                 round,
                 timestamp: _timestamp,
+                user_eth_address,
             } => {
+                let tx_type = if user_eth_address.is_some() { "user-to-network" } else { "network-to-target" };
                 info!(
-                    "📥 [SIGNING] Node {} received ECDSA signature from {} for round {}",
-                    self.id, from, round
+                    "📥 [SIGNING] Node {} received {} ECDSA signature from {} for round {} (user_eth_address: {:?})",
+                    self.id, tx_type, from, round, user_eth_address
                 );
                 self.handle_ecdsa_signature(from, signature).await?;
             }
@@ -2162,11 +2176,11 @@ impl SigningNode {
     }
 
     /// Store transaction ID for a round if intent hash is available
-    async fn store_transaction_id_for_round(&self, round: u64, tx_id: &str) {
+    async fn store_transaction_id_for_round(&self, round: u64, tx_id: &str, user_eth_address: Option<String>) {
         // Get intent hash from pending transactions
         let intent_hash = {
             let pending_transactions = self.pending_transactions.read().await;
-            if let Some((_, _, intent_hash)) = pending_transactions.get(&round) {
+            if let Some((_tx, _tx_bytes, intent_hash)) = pending_transactions.get(&round) {
                 intent_hash.clone()
             } else {
                 None
@@ -2175,15 +2189,28 @@ impl SigningNode {
 
         match (intent_hash, &self.user_registry) {
             (Some(intent_hash), Some(user_registry)) => {
-                // TODO: Determine transaction type based on context
-                // For now, we'll assume all transactions are user_to_network
-                // This logic can be improved by checking transaction details
-                match user_registry.store_user_to_network_tx_id(&intent_hash, tx_id).await {
-                    Ok(()) => {
-                        info!("💾 [SIGNING] Stored transaction ID {} for intent {} (round {})", tx_id, intent_hash, round);
-                    },
-                    Err(e) => {
-                        error!("❌ [SIGNING] Failed to store transaction ID for intent {}: {}", intent_hash, e);
+                // Determine transaction type based on user_eth_address
+                // - If user_eth_address exists: this is a user-to-network transaction
+                // - If user_eth_address is None: this is a network-to-target transaction
+                if let Some(eth_addr) = user_eth_address {
+                    // User-to-network transaction
+                    match user_registry.store_user_to_network_tx_id(&intent_hash, tx_id).await {
+                        Ok(()) => {
+                            info!("💾 [SIGNING] Stored user-to-network transaction ID {} for intent {} (round {}) for user {}", tx_id, intent_hash, round, eth_addr);
+                        },
+                        Err(e) => {
+                            error!("❌ [SIGNING] Failed to store user-to-network transaction ID for intent {}: {}", intent_hash, e);
+                        }
+                    }
+                } else {
+                    // Network-to-target transaction
+                    match user_registry.store_network_to_target_tx_id(&intent_hash, tx_id).await {
+                        Ok(()) => {
+                            info!("💾 [SIGNING] Stored network-to-target transaction ID {} for intent {} (round {})", tx_id, intent_hash, round);
+                        },
+                        Err(e) => {
+                            error!("❌ [SIGNING] Failed to store network-to-target transaction ID for intent {}: {}", intent_hash, e);
+                        }
                     }
                 }
             },
@@ -2191,7 +2218,7 @@ impl SigningNode {
                 info!("ℹ️ [SIGNING] No intent hash available for round {}, skipping transaction ID storage", round);
             },
             (_, None) => {
-                info!("ℹ️ [SIGNING] No user registry available, skipping transaction ID storage");
+                info!("ℹ️ [NETWORK] No user registry available, skipping transaction ID storage");
             }
         }
     }
@@ -2441,6 +2468,7 @@ impl SigningNode {
                     signature: our_signature.clone(),
                     round,
                     timestamp: SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis(),
+                    user_eth_address: our_signature.user_eth_address.clone(), // Use user_eth_address from stored signature
                 };
 
                 // Wrap in GossipsubMessage::Signing for proper message handling
@@ -2776,7 +2804,7 @@ impl SigningNode {
                                         Ok(Some(txid)) => {
                                             info!("✅ [SIGNING] Bitcoin transaction broadcasted successfully: {}", txid);
                                             // Store transaction ID if we have intent hash and user registry
-                                            self.store_transaction_id_for_round(round, &txid).await;
+                                            self.store_transaction_id_for_round(round, &txid, signature.user_eth_address.clone()).await;
                                         },
                                         Ok(None) => {
                                             warn!("⚠️ [SIGNING] Bitcoin transaction broadcasted but no txid returned");
@@ -2809,7 +2837,7 @@ impl SigningNode {
                                         Ok(Some(tx_hash)) => {
                                             info!("✅ [SIGNING] Ethereum transaction broadcasted successfully: {}", tx_hash);
                                             // Store transaction ID if we have intent hash and user registry
-                                            self.store_transaction_id_for_round(round, &tx_hash).await;
+                                            self.store_transaction_id_for_round(round, &tx_hash, signature.user_eth_address.clone()).await;
                                         },
                                         Ok(None) => {
                                             warn!("⚠️ [SIGNING] Ethereum transaction broadcasted but no tx_hash returned");
@@ -2901,6 +2929,7 @@ impl SigningNode {
             signer_id: "test_signer".to_string(),
             // message_hash: vec![10, 20, 30, 40], // Dummy hash
             recovery_id: 0,
+            user_eth_address: None, // No user_eth_address for test
         };
 
         // Test the handle_ecdsa_signature function directly
@@ -3184,7 +3213,7 @@ impl BroadcastConfig {
     }
     
     pub fn print_config(&self) {
-        info!("🔧 [CONFIG] Broadcast Configuration:");
+        info!("�� [CONFIG] Broadcast Configuration:");
         info!("   Continue on failure: {}", self.continue_on_failure);
         info!("   Max retries: {}", self.max_retries);
         info!("   Retry delay: {}ms", self.retry_delay_ms);

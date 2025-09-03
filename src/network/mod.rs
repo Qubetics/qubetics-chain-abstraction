@@ -134,6 +134,14 @@ impl NetworkLayer {
         info!("🔗 [NETWORK] About to clone DatabaseUserRegistry from Arc");
         self.user_registry = Some((*registry).clone());
         info!("🔗 [NETWORK] DatabaseUserRegistry clone stored in network layer");
+        
+        // Also set the user registry on the signing node for transaction ID storage
+        if let Some(signing_node) = &mut self.signing_node {
+            signing_node.set_user_registry(registry.clone());
+            info!("📋 [NETWORK] Set user registry on signing node for transaction ID storage");
+        } else {
+            info!("⚠️ [NETWORK] Signing node not available when setting user registry");
+        }
     }
 
     pub fn get_dkg_node(&mut self) -> Option<&mut DKGNode> {
@@ -305,7 +313,6 @@ impl NetworkLayer {
                         peers
                     );
                 }
-                
                  _ = bootstrap_timer.tick() => {
                     // Periodic bootstrap to discover new peers
                     println!("Performing periodic bootstrap...");
@@ -438,7 +445,7 @@ impl NetworkLayer {
         let tx = self.message_tx.clone();
         let handle = tokio::spawn(async move {
             tokio::time::sleep(Duration::from_secs(delay)).await;
-            // send the one “start now” message back into your main loop
+            // send the one "start now" message back into your main loop
             let _ = tx.send(ChannelMessage::ScheduledDKGStart).await;
         });
 
@@ -472,7 +479,7 @@ impl NetworkLayer {
                 let remote_addr = endpoint.get_remote_address();
                 info!("📍 Remote address: {:?}", remote_addr);
 
-                // Determine whether they dialed us (we’re the listener) or we dialed them
+                // Determine whether they dialed us (we're the listener) or we dialed them
                 let is_listener = matches!(endpoint, ConnectedPoint::Listener { .. });
                 let is_dialer   = matches!(endpoint, ConnectedPoint::Dialer   { .. });
 
@@ -616,7 +623,7 @@ impl NetworkLayer {
                                     .map(SerializablePeerId)
                                     .collect();
 
-                                // Log how many peers we’re returning (and list them if you like)
+                                // Log how many peers we're returning (and list them if you like)
                                 info!(
                                     "📋 Sending PeerList response to {}: {} entries: {:?}",
                                     peer,
@@ -1000,8 +1007,8 @@ impl NetworkLayer {
                     if message.topic.to_string() == "signatures-to-final-node" {
                         info!("🎯 [NETWORK] Processing signature for final node topic");
                         match signing_msg {
-                            crate::signing::SigningMessage::ECDSASignature { from, signature, round, timestamp:_timestamp} => {
-                                info!("📤 [NETWORK] Routing ECDSA signature to final node handler from: {} for round: {}", from, round);
+                            crate::signing::SigningMessage::ECDSASignature { from, signature, round, timestamp:_timestamp, user_eth_address } => {
+                                info!("📤 [NETWORK] Routing ECDSA signature to final node handler from: {} for round: {} (user_eth_address: {:?})", from, round, user_eth_address);
                                 signing_node.handle_signature_to_final_node(from, signature, round).await?;
                             }
                             _ => {
@@ -1014,8 +1021,9 @@ impl NetworkLayer {
                         info!("📤 [NETWORK] Processing normal signing message on topic: {}", message.topic);
                         // Handle normal signing messages
                         match &signing_msg {
-                            crate::signing::SigningMessage::ECDSASignature { from, signature, round, timestamp:_timestamp} => {
-                                info!("📥 [NETWORK] Received ECDSA signature from {} for round {} on topic {}", from, round, message.topic);
+                            crate::signing::SigningMessage::ECDSASignature { from, signature, round, timestamp:_timestamp, user_eth_address } => {
+                                let tx_type = if user_eth_address.is_some() { "user-to-network" } else { "network-to-target" };
+                                info!("📥 [NETWORK] Received {} ECDSA signature from {} for round {} on topic {} (user_eth_address: {:?})", tx_type, from, round, message.topic, user_eth_address);
                                 info!("🔍 [NETWORK] Signature details - signer_id: {}", 
                                       signature.signer_id);
                             }
@@ -1112,7 +1120,7 @@ impl NetworkLayer {
                     let tx_bytes = crate::utils::transaction::create_transaction_for_signing(&transaction);
                     println!("→ RLP payload: 0x{}", hex::encode(&tx_bytes));
 
-                    signing_node.sign_message(tx_bytes, &transaction, None).await?;
+                    signing_node.sign_message(tx_bytes, &transaction, None, None, None).await?;
                 }
             }
             GossipsubMessage::DKGCommand(dkg_cmd) => {
@@ -1283,6 +1291,10 @@ impl NetworkLayer {
             GossipsubMessage::DepositIntent { intent, intent_id } => {
                 info!("📝 Received deposit intent via gossipsub: {:?} (ID: {})", intent, intent_id);
                 
+                // Calculate intent hash for transaction ID storage
+                let intent_hash = crate::utils::calculate_intent_hash(&intent);
+                info!("🔐 [GOSSIPSUB] Calculated intent hash: {}", intent_hash);
+                
                 // For gossipsub messages (network withdrawals), always use target_chain
                 // since these are network-initiated withdrawals TO the target chain
                 let chain_to_use = &intent.target_chain.to_lowercase();
@@ -1376,7 +1388,7 @@ impl NetworkLayer {
                             match chain_transaction {
                                 crate::chain::ChainTransaction::Bitcoin(ref btc_tx) => {
                                     // For Bitcoin, use direct signing with tx_bytes and original transaction
-                                    signing_node.sign_bitcoin_transaction(tx_bytes.clone(), Some(btc_tx.clone())).await?;
+                                    signing_node.sign_bitcoin_transaction(tx_bytes.clone(), Some(btc_tx.clone()), user_eth_address.clone(), Some(intent_hash.clone())).await?;
                                 }
                                 crate::chain::ChainTransaction::Ethereum(ref eth_tx) => {
                                     // For EVM chains, use your proven DummyTransaction logic
@@ -1391,7 +1403,7 @@ impl NetworkLayer {
 
                                     info!("dummy_tx: {:?}", dummy_tx);
                                     info!("dummy_tx.nonce: {:?}", dummy_tx.nonce);
-                                    signing_node.sign_message(tx_bytes.clone(), &dummy_tx, None).await?;
+                                    signing_node.sign_message(tx_bytes, &dummy_tx, None, None, Some(intent_hash.clone())).await?;
                                 }
                             }
                             info!("✅ [GOSSIPSUB] {} deposit intent signing completed", signing_node.get_chain_type());
@@ -1520,7 +1532,7 @@ impl NetworkLayer {
                     // Convert transaction to bytes for signing using RLP encoding
                     let tx_bytes = crate::utils::transaction::create_transaction_for_signing(&transaction);
                     info!("🔐 [LOCAL] Starting local signing process {:?}", hex::encode(tx_bytes.clone()));
-                    signing_node.sign_message(tx_bytes, &transaction, None).await?;
+                    signing_node.sign_message(tx_bytes, &transaction, None, None, None).await?;
                     info!("✅ [LOCAL] Local transaction signing completed");
                 } else {
                     warn!("❌ [LOCAL] Signing node not available for local processing");
@@ -1545,6 +1557,10 @@ impl NetworkLayer {
             }
             ChannelMessage::DepositIntent { intent, intent_id, user_eth_address } => {
                 info!("📝 [NETWORK] Processing deposit intent locally: {:?}", intent);
+                
+                // Calculate intent hash for transaction ID storage
+                let intent_hash = crate::utils::calculate_intent_hash(&intent);
+                info!("🔐 [LOCAL] Calculated intent hash: {}", intent_hash);
                 
                 // Determine chain type based on transaction type:
                 // - If user_eth_address exists (user deposit): use source_chain (user is depositing FROM this chain)
@@ -1698,7 +1714,7 @@ impl NetworkLayer {
                             match chain_transaction {
                                 crate::chain::ChainTransaction::Bitcoin(ref btc_tx) => {
                                     // For Bitcoin, use direct signing with tx_bytes and original transaction
-                                    signing_node.sign_bitcoin_transaction(tx_bytes.clone(), Some(btc_tx.clone())).await?;
+                                    signing_node.sign_bitcoin_transaction( tx_bytes.clone(), Some(btc_tx.clone()), user_eth_address.clone(), Some(intent_hash.clone()) ).await?;
                                 }
                                 crate::chain::ChainTransaction::Ethereum(ref eth_tx) => {
                                     // For EVM chains, use your proven DummyTransaction logic
@@ -1728,7 +1744,7 @@ impl NetworkLayer {
                                         None
                                     };
                                     
-                                    signing_node.sign_message(tx_bytes, &dummy_tx, user_tweaked_share).await?;
+                                    signing_node.sign_message(tx_bytes, &dummy_tx, user_tweaked_share, user_eth_address.clone(), Some(intent_hash.clone())).await?;
                                 }
                             }
                         }

@@ -125,16 +125,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // Legacy user registry removed - now using database-backed registry
 
-    // Set database user registry in network layer
+    // Set database user registry in network layer (this will also set it on the signing node)
     info!("🔗 [MAIN] Setting database user registry in network layer - Arc pointer: {:p}", Arc::as_ptr(&db_user_registry));
     network.set_user_registry(db_user_registry.clone());
-
-    // Set user registry on signing node for transaction ID storage
-    {
-        let mut signing_node_guard = signing_node.lock().await;
-        signing_node_guard.set_user_registry(db_user_registry.clone());
-        info!("📋 [MAIN] Set user registry on legacy signing node");
-    }
 
     // Create shared state for DKG secret share access
     let dkg_shared_state = Arc::new(RwLock::new(rpc_server::DKGSharedState::new()));
