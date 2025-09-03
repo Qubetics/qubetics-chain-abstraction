@@ -4,6 +4,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tracing::{debug, info};
 
+pub mod db_consensus;
+pub use db_consensus::DatabaseConsensusNode;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConsensusResult {
     pub final_node: SerializablePeerId,

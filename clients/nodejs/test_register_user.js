@@ -143,7 +143,7 @@ async function testUserMpcDeposit({ wallet, amount }) {
       target_address: '0x541Bc7A7Eb63769c079dc57eF1b9d9651Dd920Af',
       source_chain: 'qubetics',
       target_chain: 'bitcoin',
-      amount: amount,
+      amount: 10,
       source_token: 'TICS',
       target_token: 'BTC',
       timestamp: Math.floor(Date.now() / 1000), // Current Unix timestamp in seconds

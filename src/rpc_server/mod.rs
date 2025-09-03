@@ -1,5 +1,5 @@
 use crate::types::{ChannelMessage, rpc::RPCRequest};
-use crate::user_registry::{checksum_from_any, to_checksum_address, UserRegistry};
+use crate::user_registry::{checksum_from_any, to_checksum_address, DatabaseUserRegistry};
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
 use std::sync::Arc;
@@ -133,11 +133,13 @@ pub struct UserMpcDepositVerifyResponse {
     pub amount: u128,
     pub used_personal_sign_prefix: bool,
 }
+
+
 // gRPC service definition
 #[derive(Default)]
 pub struct MpcRpcService {
     message_tx: Option<mpsc::Sender<ChannelMessage>>,
-    user_registry: Option<UserRegistry>,
+    user_registry: Option<DatabaseUserRegistry>,
 }
 
 impl MpcRpcService {
@@ -148,7 +150,7 @@ impl MpcRpcService {
         }
     }
 
-    pub fn with_user_registry(mut self, user_registry: UserRegistry) -> Self {
+    pub fn with_user_registry(mut self, user_registry: DatabaseUserRegistry) -> Self {
         self.user_registry = Some(user_registry);
         self
     }
@@ -157,7 +159,7 @@ impl MpcRpcService {
         self.message_tx.clone()
     }
 
-    pub fn get_user_registry(&self) -> Option<&UserRegistry> {
+    pub fn get_user_registry(&self) -> Option<&DatabaseUserRegistry> {
         self.user_registry.as_ref()
     }
 }
@@ -169,14 +171,14 @@ impl MpcRpcService {
 pub async fn start_http_server(
     message_tx: mpsc::Sender<ChannelMessage>,
     port: u16,
-    user_registry: Arc<UserRegistry>,
+    user_registry: Arc<DatabaseUserRegistry>,
     dkg_state: Arc<RwLock<DKGSharedState>>,
     node_id: String,
 ) -> Result<(), warp::Rejection> {
     info!("🔗 [RPC_SERVER] Received user registry - Arc pointer: {:p}", Arc::as_ptr(&user_registry));
     
     let message_tx = std::sync::Arc::new(tokio::sync::Mutex::new(message_tx));
-    // user_registry is already Arc<UserRegistry>, no need to wrap again
+    // user_registry is already Arc<DatabaseUserRegistry>, no need to wrap again
     let dkg_state = std::sync::Arc::new(dkg_state);
 
     // POST /submit_transaction
@@ -236,7 +238,7 @@ pub async fn start_http_server(
         .and(with_message_tx(message_tx))
         .and_then(|message_tx| handle_start_dkg(message_tx));
 
-    let routes = submit_tx.or(register_user).or(get_user_info).or(get_status).or(get_dkg_status).or(start_dkg) .or(user_mpc_deposit);
+    let routes = submit_tx.or(register_user).or(get_user_info).or(get_status).or(get_dkg_status).or(start_dkg).or(user_mpc_deposit);
 
     info!("🌐 Starting HTTP RPC server on port {}", port);
     warp::serve(routes).run(([127, 0, 0, 1], port)).await;
@@ -253,9 +255,9 @@ fn with_message_tx(
 }
 
 fn with_user_registry(
-    user_registry: std::sync::Arc<UserRegistry>,
+    user_registry: std::sync::Arc<DatabaseUserRegistry>,
 ) -> impl Filter<
-    Extract = (std::sync::Arc<UserRegistry>,),
+    Extract = (std::sync::Arc<DatabaseUserRegistry>,),
     Error = std::convert::Infallible,
 > + Clone {
     warp::any().map(move || user_registry.clone())
@@ -382,7 +384,7 @@ pub async fn handle_deposit_intent(
 
 async fn handle_register_user(
     request: UserRegistrationRequest,
-    user_registry: std::sync::Arc<UserRegistry>,
+    user_registry: std::sync::Arc<DatabaseUserRegistry>,
     dkg_state: std::sync::Arc<Arc<RwLock<DKGSharedState>>>,
     message_tx: std::sync::Arc<tokio::sync::Mutex<mpsc::Sender<ChannelMessage>>>,
     node_id: String,
@@ -473,7 +475,7 @@ async fn handle_register_user(
 
 async fn handle_user_mpc_deposit(
     req: UserMpcDepositRequest,
-    user_registry: std::sync::Arc<UserRegistry>,
+    user_registry: std::sync::Arc<DatabaseUserRegistry>,
     message_tx: std::sync::Arc<tokio::sync::Mutex<mpsc::Sender<ChannelMessage>>>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
     info!("🧾 HTTP: user_mpc_deposit: amount={}, sig_len={}", req.msg.amount, req.signature.len());
@@ -679,7 +681,7 @@ pub fn recover_eth_address_secp(
 
 async fn handle_get_user_info(
     ethereum_address: String,
-    user_registry: std::sync::Arc<UserRegistry>,
+    user_registry: std::sync::Arc<DatabaseUserRegistry>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
     // Normalize to canonical EIP-55 once
     let addr_cs = match checksum_from_any(&ethereum_address) {
@@ -784,6 +786,8 @@ async fn handle_start_dkg(
         message: "DKG start request sent to P2P network".to_string(),
     }))
 }
+
+
 
 #[derive(Debug)]
 pub enum TransactionError {

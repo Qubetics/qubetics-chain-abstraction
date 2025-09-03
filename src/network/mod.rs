@@ -28,7 +28,7 @@ use crate::consensus::ConsensusNode;
 use crate::adkg_secp256k1::DKGNode;
 use crate::node_management::NodeMembership;
 use crate::signing::SigningNode;
-use crate::user_registry::UserRegistry;
+use crate::user_registry::DatabaseUserRegistry;
 use crate::{
     adkg_secp256k1::DKGStatus,
     types::{
@@ -86,7 +86,7 @@ pub struct NetworkLayer {
     signing_node: Option<SigningNode>,
     consensus_node: Option<ConsensusNode>,
     command_processor: Option<CommandProcessor>,
-    user_registry: Option<UserRegistry>,
+    user_registry: Option<DatabaseUserRegistry>,
     node_manager: Box<dyn NodeMembership>,
     scheduled_dkg_task: Option<JoinHandle<()>>,
 }
@@ -129,11 +129,11 @@ impl NetworkLayer {
         self.command_processor = Some(processor);
     }
 
-    pub fn set_user_registry(&mut self, registry: Arc<UserRegistry>) {
-        info!("🔗 [NETWORK] Received user registry - Arc pointer: {:p}", Arc::as_ptr(&registry));
-        info!("🔗 [NETWORK] About to clone UserRegistry from Arc");
+    pub fn set_user_registry(&mut self, registry: Arc<DatabaseUserRegistry>) {
+        info!("🔗 [NETWORK] Received database user registry - Arc pointer: {:p}", Arc::as_ptr(&registry));
+        info!("🔗 [NETWORK] About to clone DatabaseUserRegistry from Arc");
         self.user_registry = Some((*registry).clone());
-        info!("🔗 [NETWORK] UserRegistry clone stored in network layer");
+        info!("🔗 [NETWORK] DatabaseUserRegistry clone stored in network layer");
     }
 
     pub fn get_dkg_node(&mut self) -> Option<&mut DKGNode> {
@@ -144,7 +144,7 @@ impl NetworkLayer {
         self.signing_node.as_mut()
     }
 
-    pub fn get_user_registry(&mut self) -> Option<&mut UserRegistry> {
+    pub fn get_user_registry(&mut self) -> Option<&mut DatabaseUserRegistry> {
         self.user_registry.as_mut()
     }
 

@@ -15,6 +15,9 @@ use crate::utils::hmac_helper::hmac256_from_addr;
 use tracing::info;
 use crate::rpc_server::DepositIntent;
 
+pub mod db_registry;
+pub use db_registry::DatabaseUserRegistry;
+
 /// Intent status enumeration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum IntentStatus {
@@ -22,6 +25,23 @@ pub enum IntentStatus {
     Processing,
     Solved,
     Rejected,
+}
+
+/// Transaction IDs associated with an intent hash
+/// Each intent has two transactions:
+/// 1. user_aggregated_address -> network_aggregated_address
+/// 2. network_aggregated_address -> user_target_address
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IntentTransactionIds {
+    pub intent_hash: String,
+    /// Transaction ID for user_aggregated_address -> network_aggregated_address
+    pub user_to_network_tx_id: Option<String>,
+    /// Transaction ID for network_aggregated_address -> user_target_address  
+    pub network_to_target_tx_id: Option<String>,
+    /// Timestamp when first transaction was recorded
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    /// Timestamp when last transaction was updated
+    pub updated_at: chrono::DateTime<chrono::Utc>,
 }
 
 /// User registration data structure

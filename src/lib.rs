@@ -6,6 +6,7 @@ pub mod adkg_secp256k1;
 pub mod chain;
 pub mod commands;
 pub mod consensus;
+pub mod database;
 pub mod network;
 pub mod node_management;
 pub mod rpc_server;
@@ -17,13 +18,15 @@ pub mod vrf;
 
 pub use adkg_secp256k1::DKGNode;
 pub use commands::CommandProcessor;
-pub use consensus::ConsensusNode;
+pub use consensus::{ConsensusNode, DatabaseConsensusNode};
+pub use database::{Database, DatabaseConfig, UserStorage, IntentStorage, SigningStorage, ConsensusStorage};
 pub use network::NetworkLayer;
 pub use node_management::{
     BasicNodeManager, DefaultThresholdCalculator, NodeMembership, ThresholdCalculator,
     VrfNodeManager,
 };
-pub use signing::{ECDSASignature, SigningMessage, SigningNode};
+pub use signing::{ECDSASignature, SigningMessage, SigningNode, DatabaseSigningNode};
+pub use user_registry::{UserRegistry, DatabaseUserRegistry};
 pub use vrf::{
     NodeSelectionResult, VrfNodeSelector, VrfOutput, VrfSelectedNodesBroadcast, VrfSelectionMessage,
 };

@@ -18,6 +18,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{mpsc, RwLock};
 use tracing::{error, info, warn};
 
+pub mod db_signing;
+pub use db_signing::DatabaseSigningNode;
+
 use num_bigint::{BigInt, ToBigInt};
 use secp256k1::{constants::CURVE_ORDER, ecdsa::RecoveryId};
 
@@ -32,6 +35,7 @@ use crate::chain::{ChainHandler, ChainSignature, ChainHandlerFactory, ChainTrans
 use crate::utils::get_eth_address_from_group_key;
 // Import BitcoinTransaction directly from chain module
 use crate::chain::BitcoinTransaction;
+use crate::user_registry::DatabaseUserRegistry;
 use k256::AffinePoint;
 use sha3::{Keccak256, Digest};
 
@@ -109,9 +113,11 @@ pub struct SigningNode {
     consensus_node: Option<ConsensusNode>, // Consensus node for final node selection
     available_nodes: Option<Vec<PeerId>>,  // Available nodes from node manager
     // Store original transaction and bytes for reconstruction
-    pending_transactions: Arc<RwLock<HashMap<u64, (ChainTransaction, Vec<u8>)>>>, // round -> (original_tx, tx_bytes)
+    pending_transactions: Arc<RwLock<HashMap<u64, (ChainTransaction, Vec<u8>, Option<String>)>>>, // round -> (original_tx, tx_bytes, intent_hash)
     // ✅ Store DKG group public key
     group_public_key: Option<k256::ProjectivePoint>, // DKG group public key for Bitcoin addresses
+    // User registry for storing transaction IDs
+    user_registry: Option<Arc<DatabaseUserRegistry>>,
 }
 
 impl SigningNode {
@@ -147,6 +153,7 @@ impl SigningNode {
             available_nodes: None,
             pending_transactions: Arc::new(RwLock::new(HashMap::new())),
             group_public_key: None, // ✅ Initialize DKG group public key
+            user_registry: None, // Will be set later via set_user_registry
         }
     }
 
@@ -359,7 +366,7 @@ impl SigningNode {
         // Store original transaction for reconstruction after aggregation
         if let Some(original_tx) = original_tx {
             let mut pending_transactions = self.pending_transactions.write().await;
-            pending_transactions.insert(current_round, (ChainTransaction::Bitcoin(original_tx), tx_bytes.clone()));
+            pending_transactions.insert(current_round, (ChainTransaction::Bitcoin(original_tx), tx_bytes.clone(), None)); // TODO: Add intent hash
             info!(
                 "💾 [SIGNING] Node {} stored original Bitcoin transaction for round {} reconstruction",
                 self.id, current_round
@@ -369,7 +376,7 @@ impl SigningNode {
         Ok(())
     }
 
-    async fn broadcast_transaction(raw_tx_hex: &str, mainnet: bool) -> Result<()> {
+    async fn broadcast_transaction(raw_tx_hex: &str, mainnet: bool) -> Result<Option<String>> {
         let base_url = if mainnet {
             "https://blockstream.info/api"
         } else {
@@ -390,12 +397,12 @@ impl SigningNode {
             let txid = response.text().await?;
             println!("✅ Transaction broadcasted successfully!");
             println!("TXID: {}", txid);
+            Ok(Some(txid.trim().to_string()))
         } else {
             let error_text = response.text().await?;
             println!("❌ Failed to broadcast transaction: {}", error_text);
-            return Err(anyhow!("Broadcast failed: {}", error_text));
+            Err(anyhow!("Broadcast failed: {}", error_text))
         }
-        Ok(())
     }
 
     /// Fetch nonce for an Ethereum address from the blockchain
@@ -444,7 +451,7 @@ impl SigningNode {
     }
 
     /// Broadcast Ethereum transaction to Qubetics chain
-    async fn broadcast_ethereum_transaction(raw_tx_hex: &str, chain_id: u64) -> Result<()> {
+    async fn broadcast_ethereum_transaction(raw_tx_hex: &str, chain_id: u64) -> Result<Option<String>> {
         let rpc_url = match chain_id {
             9029 => "https://rpc-testnet.qubetics.work", // Qubetics RPC URL
             1 => "https://mainnet.infura.io/v3/YOUR_PROJECT_ID", // Ethereum mainnet
@@ -476,13 +483,16 @@ impl SigningNode {
             if let Some(tx_hash) = result.get("result") {
                 println!("✅ Qubetics transaction broadcasted successfully!");
                 println!("TX Hash: {}", tx_hash);
+                if let Some(tx_hash_str) = tx_hash.as_str() {
+                    return Ok(Some(tx_hash_str.to_string()));
+                }
             }
         } else {
             let error_text = response.text().await?;
             println!("❌ Failed to broadcast transaction: {}", error_text);
             return Err(anyhow!("Broadcast failed: {}", error_text));
         }
-        Ok(())
+        Ok(None)
     }
 
     /// Reconstruct signed Bitcoin transaction from aggregated signature
@@ -494,7 +504,7 @@ impl SigningNode {
     ) -> Result<Option<String>> {
         let pending_transactions = self.pending_transactions.read().await;
         
-        if let Some((chain_tx, _tx_bytes)) = pending_transactions.get(&round) {
+        if let Some((chain_tx, _tx_bytes, _intent_hash)) = pending_transactions.get(&round) {
             if let ChainTransaction::Bitcoin(original_tx) = chain_tx {
                 info!(
                     "🔧 [SIGNING] Node {} reconstructing signed Bitcoin transaction for round {}",
@@ -546,7 +556,7 @@ impl SigningNode {
     ) -> Result<Option<String>> {
         let pending_transactions = self.pending_transactions.read().await;
         
-        if let Some((chain_tx, _tx_bytes)) = pending_transactions.get(&round) {
+        if let Some((chain_tx, _tx_bytes, _intent_hash)) = pending_transactions.get(&round) {
             if let ChainTransaction::Ethereum(original_tx) = chain_tx {
                 info!(
                     "🔧 [SIGNING] Node {} reconstructing signed Ethereum transaction for round {}",
@@ -992,7 +1002,7 @@ impl SigningNode {
                 data: None,
                 chain_id: transaction.chain_id,
             });
-            pending_transactions.insert(round, (chain_tx, tx_bytes.clone()));
+            pending_transactions.insert(round, (chain_tx, tx_bytes.clone(), None)); // TODO: Add intent hash
             info!(
                 "💾 [SIGNING] Node {} stored original Ethereum transaction for round {} reconstruction (nonce will be fetched dynamically)",
                 self.id, round
@@ -1816,6 +1826,46 @@ impl SigningNode {
         self.group_public_key
     }
 
+    pub fn set_user_registry(&mut self, user_registry: Arc<DatabaseUserRegistry>) {
+        self.user_registry = Some(user_registry);
+        info!("📋 [SIGNING] Node {} user registry set", self.id);
+    }
+
+    /// Store transaction ID for a round if intent hash is available
+    async fn store_transaction_id_for_round(&self, round: u64, tx_id: &str) {
+        // Get intent hash from pending transactions
+        let intent_hash = {
+            let pending_transactions = self.pending_transactions.read().await;
+            if let Some((_, _, intent_hash)) = pending_transactions.get(&round) {
+                intent_hash.clone()
+            } else {
+                None
+            }
+        };
+
+        match (intent_hash, &self.user_registry) {
+            (Some(intent_hash), Some(user_registry)) => {
+                // TODO: Determine transaction type based on context
+                // For now, we'll assume all transactions are user_to_network
+                // This logic can be improved by checking transaction details
+                match user_registry.store_user_to_network_tx_id(&intent_hash, tx_id).await {
+                    Ok(()) => {
+                        info!("💾 [SIGNING] Stored transaction ID {} for intent {} (round {})", tx_id, intent_hash, round);
+                    },
+                    Err(e) => {
+                        error!("❌ [SIGNING] Failed to store transaction ID for intent {}: {}", intent_hash, e);
+                    }
+                }
+            },
+            (None, _) => {
+                info!("ℹ️ [SIGNING] No intent hash available for round {}, skipping transaction ID storage", round);
+            },
+            (_, None) => {
+                info!("ℹ️ [SIGNING] No user registry available, skipping transaction ID storage");
+            }
+        }
+    }
+
     async fn get_available_nodes_from_manager(&self) -> Vec<PeerId> {
         if let Some(ref nodes) = self.available_nodes {
             nodes.clone()
@@ -2392,8 +2442,18 @@ impl SigningNode {
                                     );
                                     info!("📄 Raw signed transaction: {}", signed_tx_hex);
                                     info!("Broadcasting transaction to Bitcoin network...");
-                                    if let Err(e) = Self::broadcast_transaction(&signed_tx_hex, false).await {
-                                        error!("❌ [SIGNING] Failed to broadcast Bitcoin transaction: {}", e);
+                                    match Self::broadcast_transaction(&signed_tx_hex, false).await {
+                                        Ok(Some(txid)) => {
+                                            info!("✅ [SIGNING] Bitcoin transaction broadcasted successfully: {}", txid);
+                                            // Store transaction ID if we have intent hash and user registry
+                                            self.store_transaction_id_for_round(round, &txid).await;
+                                        },
+                                        Ok(None) => {
+                                            warn!("⚠️ [SIGNING] Bitcoin transaction broadcasted but no txid returned");
+                                        },
+                                        Err(e) => {
+                                            error!("❌ [SIGNING] Failed to broadcast Bitcoin transaction: {}", e);
+                                        }
                                     }
                                 }
                             }
@@ -2415,8 +2475,18 @@ impl SigningNode {
                                         .unwrap_or(9029); // Default to Qubetics
                                     
                                     info!("Broadcasting transaction to chain {} (Qubetics)...", chain_id);
-                                    if let Err(e) = Self::broadcast_ethereum_transaction(&signed_tx_hex, chain_id).await {
-                                        error!("❌ [SIGNING] Failed to broadcast Ethereum transaction: {}", e);
+                                    match Self::broadcast_ethereum_transaction(&signed_tx_hex, chain_id).await {
+                                        Ok(Some(tx_hash)) => {
+                                            info!("✅ [SIGNING] Ethereum transaction broadcasted successfully: {}", tx_hash);
+                                            // Store transaction ID if we have intent hash and user registry
+                                            self.store_transaction_id_for_round(round, &tx_hash).await;
+                                        },
+                                        Ok(None) => {
+                                            warn!("⚠️ [SIGNING] Ethereum transaction broadcasted but no tx_hash returned");
+                                        },
+                                        Err(e) => {
+                                            error!("❌ [SIGNING] Failed to broadcast Ethereum transaction: {}", e);
+                                        }
                                     }
                                 }
                             }
