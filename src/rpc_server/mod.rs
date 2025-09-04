@@ -1,19 +1,18 @@
-use crate::types::{ChannelMessage, rpc::RPCRequest};
+use crate::types::{rpc::RPCRequest, ChannelMessage};
 use crate::user_registry::{checksum_from_any, to_checksum_address, DatabaseUserRegistry};
-use serde::{Deserialize, Serialize};
-use sha2::Digest;
-use std::sync::Arc;
-use tokio::sync::{mpsc, RwLock};
-use uuid::Uuid;
-use warp::Filter;
-use tracing::{info, warn, error};
 use secp256k1::{
     ecdsa::{RecoverableSignature, RecoveryId},
     Message, PublicKey, Secp256k1,
 };
+use serde::{Deserialize, Serialize};
+use sha2::Digest;
 use sha3::{Digest as KeccakDigest, Keccak256};
-
-
+use std::sync::Arc;
+use std::time::Instant;
+use tokio::sync::{mpsc, RwLock};
+use tracing::{error, info, warn};
+use uuid::Uuid;
+use warp::Filter;
 
 // Shared state for DKG secret share
 #[derive(Debug, Clone)]
@@ -29,16 +28,16 @@ impl DKGSharedState {
             is_completed: false,
         }
     }
-    
+
     pub fn set_secret_share(&mut self, secret_share: k256::Scalar) {
         self.secret_share = Some(secret_share);
         self.is_completed = true;
     }
-    
+
     pub fn get_secret_share(&self) -> Option<k256::Scalar> {
         self.secret_share
     }
-    
+
     pub fn is_completed(&self) -> bool {
         self.is_completed
     }
@@ -71,16 +70,12 @@ pub struct DepositIntent {
     pub timestamp: u64, // Unix timestamp in seconds
 }
 
-
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TransactionResponse {
     pub tx_hash: String,
     pub status: String,
     pub message: String,
 }
-
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DepositIntentResponse {
@@ -96,6 +91,16 @@ pub struct NodeStatus {
     pub connected_peers: usize,
     pub dkg_status: String,
     pub is_ready: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HeartbeatResponse {
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UptimeResponse {
+    pub uptime_seconds: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -133,7 +138,6 @@ pub struct UserMpcDepositVerifyResponse {
     pub amount: u128,
     pub used_personal_sign_prefix: bool,
 }
-
 
 // gRPC service definition
 #[derive(Default)]
@@ -174,12 +178,17 @@ pub async fn start_http_server(
     user_registry: Arc<DatabaseUserRegistry>,
     dkg_state: Arc<RwLock<DKGSharedState>>,
     node_id: String,
+    start_time: Instant,
 ) -> Result<(), warp::Rejection> {
-    info!("🔗 [RPC_SERVER] Received user registry - Arc pointer: {:p}", Arc::as_ptr(&user_registry));
-    
+    info!(
+        "🔗 [RPC_SERVER] Received user registry - Arc pointer: {:p}",
+        Arc::as_ptr(&user_registry)
+    );
+
     let message_tx = std::sync::Arc::new(tokio::sync::Mutex::new(message_tx));
     // user_registry is already Arc<DatabaseUserRegistry>, no need to wrap again
     let dkg_state = std::sync::Arc::new(dkg_state);
+    let start_time = std::sync::Arc::new(start_time);
 
     // POST /submit_transaction
     let submit_tx = warp::path("submit_transaction")
@@ -207,11 +216,11 @@ pub async fn start_http_server(
 
     // POST /user_mpc_deposit
     let user_mpc_deposit = warp::path("user_mpc_deposit")
-    .and(warp::post())
-    .and(warp::body::json())
-    .and(with_user_registry(user_registry.clone()))
-    .and(with_message_tx(message_tx.clone()))
-    .and_then(handle_user_mpc_deposit);
+        .and(warp::post())
+        .and(warp::body::json())
+        .and(with_user_registry(user_registry.clone()))
+        .and(with_message_tx(message_tx.clone()))
+        .and_then(handle_user_mpc_deposit);
 
     // GET /user_info/{ethereum_address}
     let get_user_info = warp::path("user_info")
@@ -232,13 +241,32 @@ pub async fn start_http_server(
         .and(with_dkg_state(dkg_state.clone()))
         .and_then(handle_get_dkg_status);
 
+    // GET /heartbeat
+    let heartbeat = warp::path("heartbeat")
+        .and(warp::get())
+        .and_then(handle_heartbeat);
+
+    // GET /uptime
+    let uptime = warp::path("uptime")
+        .and(warp::get())
+        .and(with_start_time(start_time.clone()))
+        .and_then(handle_get_uptime);
+
     // POST /start_dkg
     let start_dkg = warp::path("start_dkg")
         .and(warp::post())
         .and(with_message_tx(message_tx))
         .and_then(|message_tx| handle_start_dkg(message_tx));
 
-    let routes = submit_tx.or(register_user).or(get_user_info).or(get_status).or(get_dkg_status).or(start_dkg).or(user_mpc_deposit);
+    let routes = submit_tx
+        .or(register_user)
+        .or(get_user_info)
+        .or(get_status)
+        .or(get_dkg_status)
+        .or(start_dkg)
+        .or(user_mpc_deposit)
+        .or(heartbeat)
+        .or(uptime);
 
     info!("🌐 Starting HTTP RPC server on port {}", port);
     warp::serve(routes).run(([127, 0, 0, 1], port)).await;
@@ -256,10 +284,8 @@ fn with_message_tx(
 
 fn with_user_registry(
     user_registry: std::sync::Arc<DatabaseUserRegistry>,
-) -> impl Filter<
-    Extract = (std::sync::Arc<DatabaseUserRegistry>,),
-    Error = std::convert::Infallible,
-> + Clone {
+) -> impl Filter<Extract = (std::sync::Arc<DatabaseUserRegistry>,), Error = std::convert::Infallible>
+       + Clone {
     warp::any().map(move || user_registry.clone())
 }
 
@@ -274,11 +300,15 @@ fn with_dkg_state(
 
 fn with_node_id(
     node_id: String,
-) -> impl Filter<
-    Extract = (String,),
-    Error = std::convert::Infallible,
-> + Clone {
+) -> impl Filter<Extract = (String,), Error = std::convert::Infallible> + Clone {
     warp::any().map(move || node_id.clone())
+}
+
+fn with_start_time(
+    start_time: std::sync::Arc<std::time::Instant>,
+) -> impl Filter<Extract = (std::sync::Arc<std::time::Instant>,), Error = std::convert::Infallible> + Clone
+{
+    warp::any().map(move || start_time.clone())
 }
 
 async fn handle_submit_transaction(
@@ -340,11 +370,11 @@ async fn handle_submit_transaction(
 //     // Extract DepositIntent and user_eth_address from the JSON
 //     let intent: DepositIntent = serde_json::from_value(request_json.clone())
 //         .map_err(|_| warp::reject::custom(TransactionError::InvalidRequest))?;
-    
+
 //     let user_eth_address: Option<String> = request_json.get("user_eth_address")
 //         .and_then(|v| v.as_str())
 //         .map(|s| s.to_string());
-    
+
 //     handle_deposit_intent(intent, user_eth_address, message_tx).await
 // }
 
@@ -354,7 +384,10 @@ pub async fn handle_deposit_intent(
     message_tx: std::sync::Arc<tokio::sync::Mutex<mpsc::Sender<ChannelMessage>>>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
     info!("📝 HTTP: Received deposit intent request: {:?}", intent);
-    info!("📝 HTTP: User eth address for signing: {:?}", user_eth_address);
+    info!(
+        "📝 HTTP: User eth address for signing: {:?}",
+        user_eth_address
+    );
 
     let intent_id = format!("intent-{}", Uuid::new_v4());
     let deposit_intent_msg = ChannelMessage::DepositIntent {
@@ -389,75 +422,108 @@ async fn handle_register_user(
     message_tx: std::sync::Arc<tokio::sync::Mutex<mpsc::Sender<ChannelMessage>>>,
     node_id: String,
 ) -> Result<impl warp::Reply, warp::Rejection> {
-    info!("👤 HTTP: Received user registration request for address: {}", request.ethereum_address);
+    info!(
+        "👤 HTTP: Received user registration request for address: {}",
+        request.ethereum_address
+    );
 
     // Register the user in the global registry
     let dkg_secret_share = get_actual_dkg_secret_share(dkg_state).await;
-    
-    match user_registry.register_user(&request.ethereum_address, dkg_secret_share.as_ref(), &node_id).await {
+
+    match user_registry
+        .register_user(
+            &request.ethereum_address,
+            dkg_secret_share.as_ref(),
+            &node_id,
+        )
+        .await
+    {
         Ok(registration) => {
-            info!("✅ HTTP: User registration successful for address: {}", request.ethereum_address);
-            
+            info!(
+                "✅ HTTP: User registration successful for address: {}",
+                request.ethereum_address
+            );
+
             // Log tweaked secret share status
             if registration.tweaked_secret_share.is_some() {
-                info!("🔑 HTTP: Computed and stored tweaked secret share for user: {}", request.ethereum_address);
+                info!(
+                    "🔑 HTTP: Computed and stored tweaked secret share for user: {}",
+                    request.ethereum_address
+                );
             } else {
                 info!("⚠️ HTTP: No tweaked secret share computed (DKG secret share not available) for user: {}", request.ethereum_address);
             }
-            
+
             // Now broadcast to other nodes via P2P network (same pattern as deposit intent)
             let user_reg_msg = ChannelMessage::UserRegistration {
                 ethereum_address: request.ethereum_address.clone(),
                 node_id: node_id.to_string(),
             };
-            
+
             // Send via message channel to be picked up by network layer
             let tx = message_tx.lock().await;
             if let Err(e) = tx.send(user_reg_msg).await {
-                warn!("⚠️ Failed to send user registration message to network: {}", e);
+                warn!(
+                    "⚠️ Failed to send user registration message to network: {}",
+                    e
+                );
             } else {
                 info!("📡 User registration message sent to network layer for broadcasting");
             }
-            
+
             // Wait for derived addresses to be populated (they are computed asynchronously in network layer)
             info!("⏳ Waiting for derived addresses to be populated...");
             let mut attempts = 0;
             let max_attempts = 10; // Wait up to 10 seconds
-            
+
             let mut final_registration = registration.clone();
             while attempts < max_attempts {
                 // Check if derived addresses are now available
-                if let Some(updated_user) = user_registry.get_user_by_address(&request.ethereum_address).await {
-                    if updated_user.derived_eth_address.is_some() && updated_user.derived_btc_address.is_some() {
+                if let Some(updated_user) = user_registry
+                    .get_user_by_address(&request.ethereum_address)
+                    .await
+                {
+                    if updated_user.derived_eth_address.is_some()
+                        && updated_user.derived_btc_address.is_some()
+                    {
                         final_registration = updated_user;
                         info!("✅ Derived addresses are now available!");
                         break;
                     }
                 }
-                
+
                 attempts += 1;
                 if attempts < max_attempts {
-                    info!("⏳ Attempt {}/{}: Derived addresses not ready yet, waiting 1 second...", attempts, max_attempts);
+                    info!(
+                        "⏳ Attempt {}/{}: Derived addresses not ready yet, waiting 1 second...",
+                        attempts, max_attempts
+                    );
                     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                 }
             }
-            
+
             if attempts >= max_attempts {
                 warn!("⚠️ Derived addresses not available after {} attempts, proceeding with response", max_attempts);
             }
-            
+
             // Log derived addresses if available
             if let Some(eth_addr) = &final_registration.derived_eth_address {
-                info!("📬 HTTP: Derived ETH address for {}: {}", request.ethereum_address, eth_addr);
+                info!(
+                    "📬 HTTP: Derived ETH address for {}: {}",
+                    request.ethereum_address, eth_addr
+                );
             }
             if let Some(btc_addr) = &final_registration.derived_btc_address {
-                info!("📬 HTTP: Derived BTC address for {}: {}", request.ethereum_address, btc_addr);
+                info!(
+                    "📬 HTTP: Derived BTC address for {}: {}",
+                    request.ethereum_address, btc_addr
+                );
             }
-                        
+
             // Get derived addresses if available
             let derived_eth = final_registration.derived_eth_address.clone();
             let derived_btc = final_registration.derived_btc_address.clone();
-            
+
             Ok(warp::reply::json(&UserRegistrationResponse {
                 status: "success".to_string(),
                 message: "User registered successfully".to_string(),
@@ -466,8 +532,11 @@ async fn handle_register_user(
             }))
         }
         Err(e) => {
-            warn!("❌ HTTP: User registration failed for address {}: {}", request.ethereum_address, e);
-            
+            warn!(
+                "❌ HTTP: User registration failed for address {}: {}",
+                request.ethereum_address, e
+            );
+
             Err(warp::reject::custom(TransactionError::NetworkError))
         }
     }
@@ -478,19 +547,33 @@ async fn handle_user_mpc_deposit(
     user_registry: std::sync::Arc<DatabaseUserRegistry>,
     message_tx: std::sync::Arc<tokio::sync::Mutex<mpsc::Sender<ChannelMessage>>>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
-    info!("🧾 HTTP: user_mpc_deposit: amount={}, sig_len={}", req.msg.amount, req.signature.len());
+    info!(
+        "🧾 HTTP: user_mpc_deposit: amount={}, sig_len={}",
+        req.msg.amount,
+        req.signature.len()
+    );
 
     // Serialize the DepositIntent to match the client's JSON.stringify() format
     // Use compact JSON serialization (no spaces) to match JavaScript's JSON.stringify()
     let intent_json = serde_json::to_string(&req.msg).unwrap();
     let intent_bytes = intent_json.as_bytes();
     let intent_hash = Keccak256::digest(intent_bytes);
-    
-    info!("🔐 Processing MPC deposit - Intent hash: {:?}, Amount: {}", intent_hash, req.msg.amount);
+
+    info!(
+        "🔐 Processing MPC deposit - Intent hash: {:?}, Amount: {}",
+        intent_hash, req.msg.amount
+    );
     info!("📝 Server JSON serialization: {}", intent_json);
-    info!("📏 JSON length: {}, First 100 chars: {}", intent_json.len(), 
-    if intent_json.len() > 100 { &intent_json[0..100] } else { &intent_json });
-    
+    info!(
+        "📏 JSON length: {}, First 100 chars: {}",
+        intent_json.len(),
+        if intent_json.len() > 100 {
+            &intent_json[0..100]
+        } else {
+            &intent_json
+        }
+    );
+
     // Normalize signature (expects r||s||v 65 bytes in hex)
     let (compact, v) = match normalize_eth_signature(&req.signature) {
         Ok(t) => t,
@@ -505,26 +588,19 @@ async fn handle_user_mpc_deposit(
             }));
         }
     };
-    
+
     // Try personal_sign first, then raw keccak(msg)
-    let (signer, used_personal) = match recover_eth_address_secp(
-        intent_bytes,
-        &compact,
-        v,
-        true
-    ) {
+    let (signer, used_personal) = match recover_eth_address_secp(intent_bytes, &compact, v, true) {
         Ok(addr) => (addr, true),
         Err(e1) => {
             warn!("⚠️ personal_sign recovery failed: {}", e1);
-            match recover_eth_address_secp(
-                intent_bytes,
-                &compact,
-                v,
-                false
-            ) {
+            match recover_eth_address_secp(intent_bytes, &compact, v, false) {
                 Ok(addr) => (addr, false),
                 Err(e2) => {
-                    error!("❌ Both signature recovery methods failed: personal_sign={}, raw={}", e1, e2);
+                    error!(
+                        "❌ Both signature recovery methods failed: personal_sign={}, raw={}",
+                        e1, e2
+                    );
                     return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
                         status: "error".to_string(),
                         signer_address: "".to_string(),
@@ -536,12 +612,12 @@ async fn handle_user_mpc_deposit(
             }
         }
     };
-    
+
     info!("✅ Recovered signer address: {}", signer);
-    
+
     // Check if user is registered
     let is_registered = user_registry.get_user_by_address(&signer).await.is_some();
-    
+
     if !is_registered {
         warn!("⚠️ Unregistered user attempting MPC deposit: {}", signer);
         return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
@@ -552,9 +628,12 @@ async fn handle_user_mpc_deposit(
             used_personal_sign_prefix: used_personal,
         }));
     }
-    
+
     // Store intent hash in user registry
-    if let Err(e) = user_registry.store_intent_hash(intent_hash.to_vec(), &signer, &req.msg).await {
+    if let Err(e) = user_registry
+        .store_intent_hash(intent_hash.to_vec(), &signer, &req.msg)
+        .await
+    {
         error!("❌ Failed to store intent hash: {}", e);
         return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
             status: "error".to_string(),
@@ -564,9 +643,9 @@ async fn handle_user_mpc_deposit(
             used_personal_sign_prefix: used_personal,
         }));
     }
-    
+
     info!("✅ Intent hash stored successfully for user: {}", signer);
-    
+
     // Broadcast intent to other nodes
     let intent_hash_hex = hex::encode(&intent_hash);
     let broadcast_message = ChannelMessage::Broadcast {
@@ -575,19 +654,23 @@ async fn handle_user_mpc_deposit(
             intent: req.msg.clone(),
             signature: req.signature.clone(),
             intent_hash: intent_hash_hex.clone(),
-        }).unwrap_or_default(),
+        })
+        .unwrap_or_default(),
     };
-    
+
     // Send broadcast message
     let tx = message_tx.lock().await;
     if let Err(e) = tx.send(broadcast_message).await {
         warn!("❌ Failed to broadcast intent to other nodes: {}", e);
         // Don't fail the request if broadcasting fails
     } else {
-        info!("📡 Successfully broadcasted intent {} to other nodes", intent_hash_hex);
+        info!(
+            "📡 Successfully broadcasted intent {} to other nodes",
+            intent_hash_hex
+        );
     }
     drop(tx);
-    
+
     handle_deposit_intent(req.msg.clone(), Some(signer.clone()), message_tx).await?;
 
     // Return success response
@@ -601,10 +684,12 @@ async fn handle_user_mpc_deposit(
 }
 
 // Helper function to get the actual DKG secret share from shared state
-async fn get_actual_dkg_secret_share(dkg_state: std::sync::Arc<Arc<RwLock<DKGSharedState>>>) -> Option<k256::Scalar> {
+async fn get_actual_dkg_secret_share(
+    dkg_state: std::sync::Arc<Arc<RwLock<DKGSharedState>>>,
+) -> Option<k256::Scalar> {
     // Access the DKG shared state
     let dkg_state_guard = dkg_state.read().await;
-    
+
     // Check if DKG is completed and get the secret share
     if dkg_state_guard.is_completed() {
         dkg_state_guard.get_secret_share()
@@ -616,10 +701,12 @@ async fn get_actual_dkg_secret_share(dkg_state: std::sync::Arc<Arc<RwLock<DKGSha
 
 pub fn normalize_eth_signature(sig_hex: &str) -> anyhow::Result<([u8; 64], u8)> {
     let s = sig_hex.strip_prefix("0x").unwrap_or(sig_hex);
-    let bytes = hex::decode(s)
-        .map_err(|e| anyhow::anyhow!("hex decode signature: {}", e))?;
+    let bytes = hex::decode(s).map_err(|e| anyhow::anyhow!("hex decode signature: {}", e))?;
     if bytes.len() != 65 {
-        return Err(anyhow::anyhow!("signature must be 65 bytes r||s||v, got {}", bytes.len()));
+        return Err(anyhow::anyhow!(
+            "signature must be 65 bytes r||s||v, got {}",
+            bytes.len()
+        ));
     }
 
     let mut compact = [0u8; 64];
@@ -646,8 +733,7 @@ pub fn recover_eth_address_secp(
     v: u8,
     use_personal_prefix: bool,
 ) -> anyhow::Result<String> {
-    let rid = RecoveryId::from_i32(v as i32)
-        .map_err(|e| anyhow::anyhow!("recovery id: {}", e))?;
+    let rid = RecoveryId::from_i32(v as i32).map_err(|e| anyhow::anyhow!("recovery id: {}", e))?;
     let rsig = RecoverableSignature::from_compact(compact, rid)
         .map_err(|e| anyhow::anyhow!("recoverable sig: {}", e))?;
 
@@ -664,8 +750,7 @@ pub fn recover_eth_address_secp(
     };
 
     let secp = Secp256k1::new();
-    let m = Message::from_digest_slice(&hash)
-        .map_err(|e| anyhow::anyhow!("message: {}", e))?;
+    let m = Message::from_digest_slice(&hash).map_err(|e| anyhow::anyhow!("message: {}", e))?;
     let pk: PublicKey = secp
         .recover_ecdsa(&m, &rsig)
         .map_err(|e| anyhow::anyhow!("recover pk: {}", e))?;
@@ -674,10 +759,9 @@ pub fn recover_eth_address_secp(
     let uncompressed = pk.serialize_uncompressed(); // 65 bytes: 0x04 || X || Y
     let keccak = Keccak256::digest(&uncompressed[1..]);
     let mut addr20 = [0u8; 20];
-    addr20.copy_from_slice(&keccak[12..]);          // last 20 bytes
-    Ok(to_checksum_address(&addr20))  
+    addr20.copy_from_slice(&keccak[12..]); // last 20 bytes
+    Ok(to_checksum_address(&addr20))
 }
-
 
 async fn handle_get_user_info(
     ethereum_address: String,
@@ -687,12 +771,18 @@ async fn handle_get_user_info(
     let addr_cs = match checksum_from_any(&ethereum_address) {
         Ok(a) => a,
         Err(e) => {
-            warn!("❌ HTTP: Invalid ethereum_address '{}': {}", ethereum_address, e);
+            warn!(
+                "❌ HTTP: Invalid ethereum_address '{}': {}",
+                ethereum_address, e
+            );
             return Err(warp::reject::custom(TransactionError::SerializationError));
         }
     };
 
-    info!("🔍 HTTP: Looking up user info for (normalized): {}", addr_cs);
+    info!(
+        "🔍 HTTP: Looking up user info for (normalized): {}",
+        addr_cs
+    );
 
     match user_registry.get_user_by_address(&addr_cs).await {
         Some(registration) => {
@@ -730,21 +820,43 @@ async fn handle_get_status(
     }))
 }
 
+async fn handle_heartbeat() -> Result<impl warp::Reply, warp::Rejection> {
+    Ok(warp::reply::json(&HeartbeatResponse {
+        status: "alive".to_string(),
+    }))
+}
+
+async fn handle_get_uptime(
+    start_time: std::sync::Arc<std::time::Instant>,
+) -> Result<impl warp::Reply, warp::Rejection> {
+    let uptime = start_time.elapsed().as_secs();
+    Ok(warp::reply::json(&UptimeResponse {
+        uptime_seconds: uptime,
+    }))
+}
+
 async fn handle_get_dkg_status(
     dkg_state: std::sync::Arc<Arc<RwLock<DKGSharedState>>>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
     info!("🔍 HTTP: Checking DKG status");
 
     let dkg_state_guard = dkg_state.read().await;
-    
+
     let is_completed = dkg_state_guard.is_completed();
     let secret_share_available = dkg_state_guard.get_secret_share().is_some();
-    
-    info!("✅ HTTP: DKG status retrieved - completed: {}, secret_share_available: {}", is_completed, secret_share_available);
-    
+
+    info!(
+        "✅ HTTP: DKG status retrieved - completed: {}, secret_share_available: {}",
+        is_completed, secret_share_available
+    );
+
     Ok(warp::reply::json(&DKGStatusResponse {
         status: "success".to_string(),
-        dkg_status: Some(if is_completed { "Completed".to_string() } else { "NotStarted".to_string() }),
+        dkg_status: Some(if is_completed {
+            "Completed".to_string()
+        } else {
+            "NotStarted".to_string()
+        }),
         secret_share_available,
         message: if is_completed {
             "DKG completed successfully".to_string()
@@ -786,8 +898,6 @@ async fn handle_start_dkg(
         message: "DKG start request sent to P2P network".to_string(),
     }))
 }
-
-
 
 #[derive(Debug)]
 pub enum TransactionError {
