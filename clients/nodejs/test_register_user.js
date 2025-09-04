@@ -9,7 +9,7 @@ import { Wallet } from 'ethers';
 const RPC_BASE_URL = 'http://localhost:8081';
 
 // 👉 Private key you provided (hex, no 0x prefix needed)
-const TEST_PRIVKEY = '2f1765e04f0a5c394eb3b07ee38bf210008473f6e679a4f901f554905f7f3f89';
+const TEST_PRIVKEY = 'b61b1415e8b5e5a3144c0d7b8c556b23baed0366586931011c9d858ecf39bd37';
 
 // =========================
 // Colors for console output
@@ -124,6 +124,12 @@ async function testDKGStatus() {
 // =========================
 // New: user_mpc_deposit test
 // =========================
+// This test will show different response types:
+// - success: Transaction completed with tx_id
+// - submitted: Transaction submitted and being processed
+// - processing: Transaction still being processed
+// - error: Transaction failed with actual blockchain error message
+// - timeout: Transaction processing timed out
 // Update testUserMpcDeposit to fetch user info
 async function testUserMpcDeposit({ wallet, amount }) {
   try {
@@ -143,7 +149,7 @@ async function testUserMpcDeposit({ wallet, amount }) {
       target_address: '0x541Bc7A7Eb63769c079dc57eF1b9d9651Dd920Af',
       source_chain: 'qubetics',
       target_chain: 'bitcoin',
-      amount: 1200,
+      amount: amount, // Use the passed amount parameter
       source_token: 'TICS',
       target_token: 'BTC',
       timestamp: Math.floor(Date.now() / 1000), // Current Unix timestamp in seconds
@@ -163,23 +169,85 @@ async function testUserMpcDeposit({ wallet, amount }) {
       { headers: { 'Content-Type': 'application/json' }, timeout: 10000 }
     );
 
-    log(`✅ user_mpc_deposit verified`, 'green');
-    log(`📊 Response:`, 'cyan');
+    // Check response status to determine success or error
+    const isSuccess = response.data.status === 'success';
+    const isSubmitted = response.data.status === 'submitted';
+    const isProcessing = response.data.status === 'processing';
+    const isError = response.data.status === 'error';
+    const isTimeout = response.data.status === 'timeout';
+
+    if (isSuccess) {
+      log(`✅ user_mpc_deposit SUCCESS - Transaction completed!`, 'green');
+    } else if (isSubmitted) {
+      log(`📤 user_mpc_deposit SUBMITTED - Transaction is being processed`, 'yellow');
+    } else if (isProcessing) {
+      log(`⏳ user_mpc_deposit PROCESSING - Transaction is still being processed`, 'yellow');
+    } else if (isError) {
+      log(`❌ user_mpc_deposit ERROR - Transaction failed`, 'red');
+    } else if (isTimeout) {
+      log(`⏰ user_mpc_deposit TIMEOUT - Transaction processing timed out`, 'yellow');
+    } else {
+      log(`❓ user_mpc_deposit UNKNOWN STATUS: ${response.data.status}`, 'yellow');
+    }
+
+    log(`📊 Response Details:`, 'cyan');
     log(`   Status: ${response.data.status}`, 'cyan');
     log(`   Signer Address (recovered): ${response.data.signer_address}`, 'cyan');
     log(`   Is Registered: ${response.data.is_registered}`, 'cyan');
     log(`   Used personal_sign prefix: ${response.data.used_personal_sign_prefix}`, 'cyan');
-    log(`   Echo Amount: ${response.data.amount}`, 'cyan');
+    log(`   Amount: ${response.data.amount}`, 'cyan');
+    
+    // Show transaction ID if available
+    if (response.data.tx_id) {
+      log(`   🎯 Transaction ID: ${response.data.tx_id}`, 'green');
+    } else {
+      log(`   🎯 Transaction ID: Not available yet`, 'yellow');
+    }
+    
+    // Show error message if present
+    if (response.data.error_message) {
+      if (isError) {
+        log(`   💥 Error Message: ${response.data.error_message}`, 'red');
+      } else {
+        log(`   ℹ️  Message: ${response.data.error_message}`, 'yellow');
+      }
+    }
 
     return { success: true, data: response.data };
   } catch (error) {
     if (error.response) {
-      log(`❌ user_mpc_deposit failed with status ${error.response.status}:`, 'red');
-      log(`   Error: ${error.response.data?.message || error.response.statusText}`, 'red');
+      log(`❌ user_mpc_deposit failed with HTTP status ${error.response.status}:`, 'red');
+      
+      // Check if we got a structured response with our new format
+      if (error.response.data && error.response.data.status) {
+        const errorData = error.response.data;
+        log(`   Response Status: ${errorData.status}`, 'red');
+        log(`   Signer Address: ${errorData.signer_address || 'Unknown'}`, 'red');
+        log(`   Is Registered: ${errorData.is_registered || 'Unknown'}`, 'red');
+        
+        if (errorData.tx_id) {
+          log(`   Transaction ID: ${errorData.tx_id}`, 'red');
+        }
+        
+        if (errorData.error_message) {
+          log(`   🔥 Chain Error: ${errorData.error_message}`, 'red');
+        }
+      } else {
+        // Fallback for generic HTTP errors
+        log(`   Error: ${error.response.data?.message || error.response.statusText}`, 'red');
+      }
+      
+      // Always show full response for debugging
       if (error.response.data) {
         log(`   Full Error Response:`, 'red');
         console.log(JSON.stringify(error.response.data, null, 2));
       }
+    } else if (error.code === 'ECONNREFUSED') {
+      log(`❌ Connection refused - Is the RPC server running on port 8081?`, 'red');
+    } else if (error.code === 'ENOTFOUND') {
+      log(`❌ Server not found - Check if the RPC server is accessible`, 'red');
+    } else if (error.code === 'ETIMEDOUT') {
+      log(`❌ Request timed out - Server might be overloaded`, 'red');
     } else {
       log(`❌ user_mpc_deposit error: ${error.message}`, 'red');
     }
@@ -212,9 +280,15 @@ async function runTests() {
     log(`\n⚠️ Registration failed; continuing to deposit test (is_registered may be false).`, 'yellow');
   }
 
-  // 3) MPC deposit test
+  // 3) MPC deposit test with normal amount
+  log(`\n🧪 Test 1: Normal deposit amount`, 'blue');
   const amount = 1000; // keep safe for JSON
   await testUserMpcDeposit({ wallet, amount });
+
+  // 4) MPC deposit test with potentially problematic amount (might trigger errors)
+  log(`\n🧪 Test 2: Large deposit amount (might trigger errors)`, 'blue');
+  const largeAmount = 999999999; // Large amount that might cause insufficient funds
+  await testUserMpcDeposit({ wallet, amount: largeAmount });
 
   log(`\n${colors.bright}✅ Test completed!${colors.reset}`, 'bright');
 }

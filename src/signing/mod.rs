@@ -1688,20 +1688,46 @@ impl SigningNode {
 
                         let (recid, signature_bytes) = aggregated_signature.serialize_compact();
                         let v: u64 = recid.to_i32() as u64 + 35 + 1043 * 2;
-                        let r = &signature_bytes[0..32];
-                        let s = &signature_bytes[32..64];
+                        
+                        // Normalize signature components to remove leading zeros (canonical form)
+                        let r_bytes = &signature_bytes[0..32];
+                        let s_bytes = &signature_bytes[32..64];
+                        
+                        // Convert to BigUint to remove leading zeros, then back to 32-byte arrays
+                        let r_biguint = num_bigint::BigUint::from_bytes_be(r_bytes);
+                        let s_biguint = num_bigint::BigUint::from_bytes_be(s_bytes);
+                        
+                        let mut r = [0u8; 32];
+                        let mut s = [0u8; 32];
+                        
+                        let r_canonical = r_biguint.to_bytes_be();
+                        let s_canonical = s_biguint.to_bytes_be();
+                        
+                        // Copy to right-aligned 32-byte arrays (big-endian)
+                        if r_canonical.len() <= 32 {
+                            r[32 - r_canonical.len()..].copy_from_slice(&r_canonical);
+                        }
+                        if s_canonical.len() <= 32 {
+                            s[32 - s_canonical.len()..].copy_from_slice(&s_canonical);
+                        }
 
                         info!("🔐 [SIGNING] Aggregated signature components:");
                         info!("  v: {}", v);
-                        info!("  r: 0x{}", hex::encode(r));
-                        info!("  s: 0x{}", hex::encode(s));
+                        info!("  r (canonical): 0x{}", hex::encode(&r));
+                        info!("  s (canonical): 0x{}", hex::encode(&s));
                         info!("  recovery_id: {}", recid.to_i32());
-                        info!("  full_signature: 0x{}", hex::encode(signature_bytes));
+                        info!("  original_signature: 0x{}", hex::encode(signature_bytes));
+                        info!("  r_canonical_len: {}, s_canonical_len: {}", r_canonical.len(), s_canonical.len());
                         
                         // 🚀 NEW: Reconstruct signed Bitcoin transaction
+                        // Create canonical signature bytes from normalized r and s components
+                        let mut canonical_signature_bytes = [0u8; 64];
+                        canonical_signature_bytes[0..32].copy_from_slice(&r);
+                        canonical_signature_bytes[32..64].copy_from_slice(&s);
+                        
                         if let Ok(Some(signed_tx_hex)) = self.reconstruct_signed_bitcoin_transaction(
                             round,
-                            &signature_bytes,
+                            &canonical_signature_bytes,
                             recid.to_i32() as u8,
                         ).await {
                             info!(
@@ -2175,6 +2201,42 @@ impl SigningNode {
         info!("📋 [SIGNING] Node {} user registry set", self.id);
     }
 
+    /// Store transaction error for a round if intent hash is available and broadcast to other nodes
+    async fn store_transaction_error_for_round(&self, round: u64, error_message: &str) {
+        // Get intent hash from pending transactions
+        let intent_hash = {
+            let pending_transactions = self.pending_transactions.read().await;
+            if let Some((_tx, _tx_bytes, intent_hash)) = pending_transactions.get(&round) {
+                intent_hash.clone()
+            } else {
+                None
+            }
+        };
+
+        match (intent_hash, &self.user_registry) {
+            (Some(intent_hash), Some(user_registry)) => {
+                // Store error locally
+                match user_registry.store_transaction_error(&intent_hash, error_message).await {
+                    Ok(()) => {
+                        info!("💥 [SIGNING] Stored transaction error for intent {} (round {}): {}", intent_hash, round, error_message);
+                        
+                        // Broadcast error to other nodes for synchronization
+                        self.broadcast_transaction_error(&intent_hash, error_message, "user_to_network").await;
+                    },
+                    Err(e) => {
+                        error!("❌ [SIGNING] Failed to store transaction error for intent {}: {}", intent_hash, e);
+                    }
+                }
+            },
+            (None, _) => {
+                info!("ℹ️ [SIGNING] No intent hash available for round {}, skipping error storage", round);
+            },
+            (_, None) => {
+                warn!("⚠️ [SIGNING] No user registry available, cannot store transaction error for round {}", round);
+            }
+        }
+    }
+
     /// Store transaction ID for a round if intent hash is available and broadcast to other nodes
     async fn store_transaction_id_for_round(&self, round: u64, tx_id: &str, user_eth_address: Option<String>) {
         // Get intent hash from pending transactions
@@ -2250,6 +2312,27 @@ impl SigningNode {
             error!("❌ [SIGNING] Failed to broadcast transaction ID to other nodes: {}", e);
         } else {
             info!("📡 [SIGNING] Broadcasted transaction ID {} for intent {} (type: {}) to other nodes", tx_id, intent_hash, transaction_type);
+        }
+    }
+
+    /// Broadcast transaction error to other nodes for synchronization
+    async fn broadcast_transaction_error(&self, intent_hash: &str, error_message: &str, transaction_type: &str) {
+        let broadcast_message = crate::types::GossipsubMessage::TransactionErrorBroadcast {
+            intent_hash: intent_hash.to_string(),
+            error_message: error_message.to_string(),
+            transaction_type: transaction_type.to_string(),
+            node_id: self.id.clone(),
+        };
+
+        let channel_message = crate::types::ChannelMessage::Broadcast {
+            topic: "transaction-error-sync".to_string(),
+            data: serde_json::to_vec(&broadcast_message).unwrap_or_default(),
+        };
+
+        if let Err(e) = self.message_tx.send(channel_message).await {
+            error!("❌ [SIGNING] Failed to broadcast transaction error to other nodes: {}", e);
+        } else {
+            info!("📡 [SIGNING] Broadcasted transaction error for intent {} (type: {}) to other nodes: {}", intent_hash, transaction_type, error_message);
         }
     }
 
@@ -2803,18 +2886,39 @@ impl SigningNode {
                         let (recovery_id, signature_bytes) =
                             aggregated_signature.serialize_compact();
                         let v: u64 = recovery_id.to_i32() as u64 + 35 + 1043 * 2;
-                        let r = &signature_bytes[0..32];
-                        let s = &signature_bytes[32..64];
+                        
+                        // Normalize signature components to remove leading zeros (canonical form)
+                        let r_bytes = &signature_bytes[0..32];
+                        let s_bytes = &signature_bytes[32..64];
+                        
+                        // Convert to BigUint to remove leading zeros, then back to 32-byte arrays
+                        let r_biguint = num_bigint::BigUint::from_bytes_be(r_bytes);
+                        let s_biguint = num_bigint::BigUint::from_bytes_be(s_bytes);
+                        
+                        let mut r = [0u8; 32];
+                        let mut s = [0u8; 32];
+                        
+                        let r_canonical = r_biguint.to_bytes_be();
+                        let s_canonical = s_biguint.to_bytes_be();
+                        
+                        // Copy to right-aligned 32-byte arrays (big-endian)
+                        if r_canonical.len() <= 32 {
+                            r[32 - r_canonical.len()..].copy_from_slice(&r_canonical);
+                        }
+                        if s_canonical.len() <= 32 {
+                            s[32 - s_canonical.len()..].copy_from_slice(&s_canonical);
+                        }
 
                         info!(
                             "🔐 [SIGNING] Aggregated signature components for round {}:",
                             round
                         );
                         info!("  v: {}", v);
-                        info!("  r: 0x{}", hex::encode(r));
-                        info!("  s: 0x{}", hex::encode(s));
+                        info!("  r (canonical): 0x{}", hex::encode(&r));
+                        info!("  s (canonical): 0x{}", hex::encode(&s));
                         info!("  recovery_id: {}", recovery_id.to_i32());
-                        info!("  full_signature: 0x{}", hex::encode(signature_bytes));
+                        info!("  original_signature: 0x{}", hex::encode(signature_bytes));
+                        info!("  r_canonical_len: {}, s_canonical_len: {}", r_canonical.len(), s_canonical.len());
                         
                         // 🚀 NEW: Reconstruct and broadcast signed transaction based on chain type
                         let chain_type = self.chain_handler.chain_type();
@@ -2841,14 +2945,21 @@ impl SigningNode {
                                         },
                                         Err(e) => {
                                             error!("❌ [SIGNING] Failed to broadcast Bitcoin transaction: {}", e);
+                                            // Store the error message for the user to see
+                                            self.store_transaction_error_for_round(round, &e.to_string()).await;
                                         }
                                     }
                                 }
                             }
                             "ethereum" => {
+                                // Create canonical signature bytes from normalized r and s components
+                                let mut canonical_signature_bytes = [0u8; 64];
+                                canonical_signature_bytes[0..32].copy_from_slice(&r);
+                                canonical_signature_bytes[32..64].copy_from_slice(&s);
+                                
                                 if let Ok(Some(signed_tx_hex)) = self.reconstruct_signed_ethereum_transaction(
                                     round,
-                                    &signature_bytes,
+                                    &canonical_signature_bytes,
                                     recovery_id.to_i32() as u8,
                                 ).await {
                                     info!(
@@ -2874,6 +2985,8 @@ impl SigningNode {
                                         },
                                         Err(e) => {
                                             error!("❌ [SIGNING] Failed to broadcast Ethereum transaction: {}", e);
+                                            // Store the error message for the user to see
+                                            self.store_transaction_error_for_round(round, &e.to_string()).await;
                                         }
                                     }
                                 }

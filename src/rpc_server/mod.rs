@@ -6,7 +6,7 @@ use secp256k1::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
-use sha3::{Digest as KeccakDigest, Keccak256};
+use sha3::{Keccak256};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::{mpsc, RwLock};
@@ -137,6 +137,8 @@ pub struct UserMpcDepositVerifyResponse {
     pub is_registered: bool,
     pub amount: u128,
     pub used_personal_sign_prefix: bool,
+    pub tx_id: Option<String>,
+    pub error_message: Option<String>,
 }
 
 // gRPC service definition
@@ -542,6 +544,22 @@ async fn handle_register_user(
     }
 }
 
+// Helper function to get transaction ID from intent hash
+async fn get_transaction_id_for_intent(
+    user_registry: &DatabaseUserRegistry,
+    intent_hash: &[u8],
+) -> Option<String> {
+    let intent_hash_hex = hex::encode(intent_hash);
+    match user_registry.get_intent_transaction_ids(&intent_hash_hex).await {
+        Some(tx_ids) => {
+            // Return user_to_network_tx_id if available (first transaction)
+            tx_ids.user_to_network_tx_id.clone()
+        }
+        None => None,
+    }
+}
+
+
 async fn handle_user_mpc_deposit(
     req: UserMpcDepositRequest,
     user_registry: std::sync::Arc<DatabaseUserRegistry>,
@@ -585,6 +603,8 @@ async fn handle_user_mpc_deposit(
                 is_registered: false,
                 amount: 0,
                 used_personal_sign_prefix: false,
+                tx_id: None,
+                error_message: Some(format!("Invalid signature format: {}", e)),
             }));
         }
     };
@@ -607,6 +627,8 @@ async fn handle_user_mpc_deposit(
                         is_registered: false,
                         amount: 0,
                         used_personal_sign_prefix: false,
+                        tx_id: None,
+                        error_message: Some(format!("Failed to recover signature: personal_sign={}, raw={}", e1, e2)),
                     }));
                 }
             }
@@ -626,6 +648,8 @@ async fn handle_user_mpc_deposit(
             is_registered: false,
             amount: 0,
             used_personal_sign_prefix: used_personal,
+            tx_id: None,
+            error_message: Some("User is not registered. Please register first before making deposits.".to_string()),
         }));
     }
 
@@ -641,6 +665,8 @@ async fn handle_user_mpc_deposit(
             is_registered: true,
             amount: 0,
             used_personal_sign_prefix: used_personal,
+            tx_id: None,
+            error_message: Some(format!("Failed to process deposit intent: {}", e)),
         }));
     }
 
@@ -671,16 +697,96 @@ async fn handle_user_mpc_deposit(
     }
     drop(tx);
 
-    handle_deposit_intent(req.msg.clone(), Some(signer.clone()), message_tx).await?;
+    // Process the deposit intent
+    match handle_deposit_intent(req.msg.clone(), Some(signer.clone()), message_tx).await {
+        Ok(_) => {
+            info!("✅ Deposit intent processed successfully for user: {}", signer);
+        }
+        Err(e) => {
+            error!("❌ Failed to process deposit intent: {:?}", e);
+            
+            // Just return the raw error message as it is
+            let error_message = format!("{:?}", e);
 
-    // Return success response
-    Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
-        status: "ok".to_string(),
-        signer_address: signer,
-        is_registered: true,
-        amount: req.msg.amount,
-        used_personal_sign_prefix: used_personal,
-    }))
+            return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+                status: "error".to_string(),
+                signer_address: signer.clone(),
+                is_registered: true,
+                amount: req.msg.amount,
+                used_personal_sign_prefix: used_personal,
+                tx_id: None,
+                error_message: Some(error_message),
+            }));
+        }
+    }
+
+    // Wait for the actual transaction result (success with TX ID or chain error)
+    let intent_hash_hex = hex::encode(&intent_hash);
+    info!("✅ Deposit intent submitted successfully. Intent hash: {}", intent_hash_hex);
+    info!("⏳ Waiting for transaction to be processed by the network...");
+    
+    let mut tx_id = None;
+    let mut chain_error = None;
+    let mut attempts = 0;
+    const MAX_ATTEMPTS: u8 = 15; // Wait up to 15 seconds for the actual result
+
+    while attempts < MAX_ATTEMPTS {
+        // Check if we got a transaction ID (success case)
+        tx_id = get_transaction_id_for_intent(&user_registry, &intent_hash).await;
+        if tx_id.is_some() {
+            info!("✅ Transaction completed successfully with ID: {:?}", tx_id);
+            break;
+        }
+        
+        // Check if we got an error message from the broadcast process
+        if let Some(tx_ids) = user_registry.get_intent_transaction_ids(&intent_hash_hex).await {
+            if let Some(error_msg) = tx_ids.error_message {
+                info!("❌ Found chain error for intent {}: {}", intent_hash_hex, error_msg);
+                chain_error = Some(error_msg);
+                break;
+            }
+        }
+        
+        attempts += 1;
+        if attempts < MAX_ATTEMPTS {
+            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+        }
+    }
+
+    if let Some(tx_id) = tx_id {
+        // Success - got transaction ID
+        Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+            status: "success".to_string(),
+            signer_address: signer,
+            is_registered: true,
+            amount: req.msg.amount,
+            used_personal_sign_prefix: used_personal,
+            tx_id: Some(tx_id),
+            error_message: None,
+        }))
+    } else if let Some(error_msg) = chain_error {
+        // Chain error occurred - return the actual error from blockchain
+        Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+            status: "error".to_string(),
+            signer_address: signer,
+            is_registered: true,
+            amount: req.msg.amount,
+            used_personal_sign_prefix: used_personal,
+            tx_id: None,
+            error_message: Some(error_msg), // This is the actual chain error!
+        }))
+    } else {
+        // No transaction ID and no error after waiting - still processing or timeout
+        Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+            status: "timeout".to_string(),
+            signer_address: signer,
+            is_registered: true,
+            amount: req.msg.amount,
+            used_personal_sign_prefix: used_personal,
+            tx_id: None,
+            error_message: Some(format!("Transaction processing timeout. Intent hash: {}. The transaction may still be processing or may have failed. Please check the status later.", intent_hash_hex)),
+        }))
+    }
 }
 
 // Helper function to get the actual DKG secret share from shared state
@@ -715,7 +821,7 @@ pub fn normalize_eth_signature(sig_hex: &str) -> anyhow::Result<([u8; 64], u8)> 
     let mut v = bytes[64];
     // Normalize v to {0,1}
     v = if v >= 35 {
-        ((v - 35) % 2) // EIP-155 parity
+        (v - 35) % 2 // EIP-155 parity
     } else if v >= 27 {
         v - 27 // 27/28 -> 0/1
     } else {

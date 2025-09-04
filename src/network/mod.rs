@@ -392,6 +392,8 @@ impl NetworkLayer {
             "user-registrations",
             "intent-broadcast",
             "transaction-id-sync",
+            "consensus-result",
+            "transaction-error-sync",
         ];
         for topic in topics {
             let topic_hash = gossipsub::IdentTopic::new(topic);
@@ -1320,6 +1322,26 @@ impl NetworkLayer {
                     }
                 } else {
                     warn!("❌ [NETWORK] No user registry available to store synchronized transaction ID");
+                }
+            }
+            GossipsubMessage::TransactionErrorBroadcast { intent_hash, error_message, transaction_type, node_id } => {
+                info!("📡 [NETWORK] Received transaction error broadcast from node {}", node_id);
+                info!("🔗 [NETWORK] Intent hash: {}", intent_hash);
+                info!("💥 [NETWORK] Error message: {}", error_message);
+                info!("🔄 [NETWORK] Transaction type: {}", transaction_type);
+
+                // Store the error message in our local user registry
+                if let Some(user_registry) = &self.user_registry {
+                    match user_registry.store_transaction_error(&intent_hash, &error_message).await {
+                        Ok(()) => {
+                            info!("✅ [NETWORK] Successfully synchronized transaction error for intent {}: {}", intent_hash, error_message);
+                        },
+                        Err(e) => {
+                            error!("❌ [NETWORK] Failed to store synchronized transaction error: {}", e);
+                        }
+                    }
+                } else {
+                    warn!("❌ [NETWORK] No user registry available to store synchronized transaction error");
                 }
             }
             GossipsubMessage::DepositIntent { intent, intent_id } => {

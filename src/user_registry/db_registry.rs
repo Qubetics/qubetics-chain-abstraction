@@ -378,6 +378,26 @@ impl DatabaseUserRegistry {
         Ok(())
     }
 
+    /// Store transaction error message
+    pub async fn store_transaction_error(&self, intent_hash: &str, error_message: &str) -> Result<(), String> {
+        info!("💥 [DB_USER_REGISTRY] Processing transaction error storage:");
+        info!("  🔗 Intent hash: {}", intent_hash);
+        info!("  ❌ Error message: {}", error_message);
+        
+        match self.intent_storage.store_transaction_error(intent_hash, error_message).await {
+            Ok(()) => {
+                info!("✅ [DB_USER_REGISTRY] Successfully stored transaction error");
+                info!("  🎯 Intent: {}", intent_hash);
+                info!("  ❌ Error: {}", error_message);
+                Ok(())
+            },
+            Err(e) => {
+                error!("❌ [DB_USER_REGISTRY] Failed to store transaction error: {}", e);
+                Err(format!("Database error: {}", e))
+            }
+        }
+    }
+
     /// Get transaction IDs for an intent hash
     pub async fn get_intent_transaction_ids(&self, intent_hash: &str) -> Option<IntentTransactionIds> {
         match self.intent_storage.get_intent_transaction_ids(intent_hash).await {

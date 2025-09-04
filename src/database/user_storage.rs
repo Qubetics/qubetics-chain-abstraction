@@ -310,6 +310,7 @@ impl IntentStorage {
                     intent_hash: intent_hash.to_string(),
                     user_to_network_tx_id: None,
                     network_to_target_tx_id: None,
+                    error_message: None,
                     created_at: Utc::now(),
                     updated_at: Utc::now(),
                 }
@@ -391,6 +392,35 @@ impl IntentStorage {
     /// Store network_to_target transaction ID  
     pub async fn store_network_to_target_tx_id(&self, intent_hash: &str, tx_id: &str) -> Result<()> {
         self.store_intent_transaction_ids(intent_hash, None, Some(tx_id.to_string())).await
+    }
+
+    /// Store error message for a failed transaction
+    pub async fn store_transaction_error(&self, intent_hash: &str, error_message: &str) -> Result<()> {
+        info!("💥 [INTENT_STORAGE] Storing transaction error for intent {}: {}", intent_hash, error_message);
+        
+        // Get existing transaction IDs or create new
+        let mut tx_ids = match self.get_intent_transaction_ids(intent_hash).await? {
+            Some(existing) => existing,
+            None => IntentTransactionIds {
+                intent_hash: intent_hash.to_string(),
+                user_to_network_tx_id: None,
+                network_to_target_tx_id: None,
+                error_message: None,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+            }
+        };
+        
+        // Update error message and timestamp
+        tx_ids.error_message = Some(error_message.to_string());
+        tx_ids.updated_at = Utc::now();
+        
+        // Store updated transaction IDs
+        let key = key_utils::intent_transaction_ids_key(intent_hash);
+        self.db.put_string(&key, &tx_ids)?;
+        
+        info!("✅ [INTENT_STORAGE] Error message stored for intent {}", intent_hash);
+        Ok(())
     }
 
     /// Get all intents with their transaction IDs
