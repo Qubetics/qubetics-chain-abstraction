@@ -20,7 +20,7 @@ use std::{
 use tokio::io;
 use tokio::task::JoinHandle;
 use tokio::sync::{mpsc};
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 use ff::PrimeField;
 
 use crate::commands::CommandProcessor;
@@ -391,6 +391,7 @@ impl NetworkLayer {
             "signatures-to-final-node",
             "user-registrations",
             "intent-broadcast",
+            "transaction-id-sync",
         ];
         for topic in topics {
             let topic_hash = gossipsub::IdentTopic::new(topic);
@@ -1286,6 +1287,39 @@ impl NetworkLayer {
                     }
                 } else {
                     warn!("❌ User registry not available to handle intent broadcast");
+                }
+            }
+            GossipsubMessage::TransactionIdBroadcast { intent_hash, transaction_id, transaction_type, node_id } => {
+                info!("📡 [NETWORK] Received transaction ID broadcast from node {}", node_id);
+                info!("🔗 [NETWORK] Intent hash: {}", intent_hash);
+                info!("💳 [NETWORK] Transaction ID: {}", transaction_id);
+                info!("🔄 [NETWORK] Transaction type: {}", transaction_type);
+
+                // Store the transaction ID in our local user registry
+                if let Some(user_registry) = &self.user_registry {
+                    let storage_result = match transaction_type.as_str() {
+                        "user_to_network" => {
+                            user_registry.store_user_to_network_tx_id(&intent_hash, &transaction_id).await
+                        },
+                        "network_to_target" => {
+                            user_registry.store_network_to_target_tx_id(&intent_hash, &transaction_id).await
+                        },
+                        _ => {
+                            warn!("❌ [NETWORK] Unknown transaction type: {}", transaction_type);
+                            return Ok(());
+                        }
+                    };
+
+                    match storage_result {
+                        Ok(()) => {
+                            info!("✅ [NETWORK] Successfully synchronized transaction ID {} for intent {} (type: {})", transaction_id, intent_hash, transaction_type);
+                        },
+                        Err(e) => {
+                            error!("❌ [NETWORK] Failed to store synchronized transaction ID: {}", e);
+                        }
+                    }
+                } else {
+                    warn!("❌ [NETWORK] No user registry available to store synchronized transaction ID");
                 }
             }
             GossipsubMessage::DepositIntent { intent, intent_id } => {

@@ -2175,7 +2175,7 @@ impl SigningNode {
         info!("📋 [SIGNING] Node {} user registry set", self.id);
     }
 
-    /// Store transaction ID for a round if intent hash is available
+    /// Store transaction ID for a round if intent hash is available and broadcast to other nodes
     async fn store_transaction_id_for_round(&self, round: u64, tx_id: &str, user_eth_address: Option<String>) {
         // Get intent hash from pending transactions
         let intent_hash = {
@@ -2192,9 +2192,10 @@ impl SigningNode {
                 // Determine transaction type based on user_eth_address
                 // - If user_eth_address exists: this is a user-to-network transaction
                 // - If user_eth_address is None: this is a network-to-target transaction
-                if let Some(eth_addr) = user_eth_address {
+                let (transaction_type, storage_result) = if let Some(eth_addr) = &user_eth_address {
                     // User-to-network transaction
-                    match user_registry.store_user_to_network_tx_id(&intent_hash, tx_id).await {
+                    let result = user_registry.store_user_to_network_tx_id(&intent_hash, tx_id).await;
+                    match &result {
                         Ok(()) => {
                             info!("💾 [SIGNING] Stored user-to-network transaction ID {} for intent {} (round {}) for user {}", tx_id, intent_hash, round, eth_addr);
                         },
@@ -2202,9 +2203,11 @@ impl SigningNode {
                             error!("❌ [SIGNING] Failed to store user-to-network transaction ID for intent {}: {}", intent_hash, e);
                         }
                     }
+                    ("user_to_network", result)
                 } else {
                     // Network-to-target transaction
-                    match user_registry.store_network_to_target_tx_id(&intent_hash, tx_id).await {
+                    let result = user_registry.store_network_to_target_tx_id(&intent_hash, tx_id).await;
+                    match &result {
                         Ok(()) => {
                             info!("💾 [SIGNING] Stored network-to-target transaction ID {} for intent {} (round {})", tx_id, intent_hash, round);
                         },
@@ -2212,6 +2215,12 @@ impl SigningNode {
                             error!("❌ [SIGNING] Failed to store network-to-target transaction ID for intent {}: {}", intent_hash, e);
                         }
                     }
+                    ("network_to_target", result)
+                };
+
+                // If storage was successful, broadcast transaction ID to other nodes
+                if storage_result.is_ok() {
+                    self.broadcast_transaction_id(&intent_hash, tx_id, transaction_type).await;
                 }
             },
             (None, _) => {
@@ -2220,6 +2229,27 @@ impl SigningNode {
             (_, None) => {
                 info!("ℹ️ [NETWORK] No user registry available, skipping transaction ID storage");
             }
+        }
+    }
+
+    /// Broadcast transaction ID to other nodes for synchronization
+    async fn broadcast_transaction_id(&self, intent_hash: &str, tx_id: &str, transaction_type: &str) {
+        let broadcast_message = crate::types::GossipsubMessage::TransactionIdBroadcast {
+            intent_hash: intent_hash.to_string(),
+            transaction_id: tx_id.to_string(),
+            transaction_type: transaction_type.to_string(),
+            node_id: self.id.clone(),
+        };
+
+        let channel_message = crate::types::ChannelMessage::Broadcast {
+            topic: "transaction-id-sync".to_string(),
+            data: serde_json::to_vec(&broadcast_message).unwrap_or_default(),
+        };
+
+        if let Err(e) = self.message_tx.send(channel_message).await {
+            error!("❌ [SIGNING] Failed to broadcast transaction ID to other nodes: {}", e);
+        } else {
+            info!("📡 [SIGNING] Broadcasted transaction ID {} for intent {} (type: {}) to other nodes", tx_id, intent_hash, transaction_type);
         }
     }
 

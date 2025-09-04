@@ -73,4 +73,10 @@ pub enum GossipsubMessage {
         signature: String,
         intent_hash: String,
     },
+    TransactionIdBroadcast {
+        intent_hash: String,
+        transaction_id: String,
+        transaction_type: String, // "user_to_network" or "network_to_target"
+        node_id: String, // Node that broadcasted the transaction
+    },
 }
