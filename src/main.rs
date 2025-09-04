@@ -1,13 +1,14 @@
 use libp2p::identity::Keypair;
-use std::sync::Arc;
 use mpc_node::node_management::{DefaultThresholdCalculator, NodeMembership, VrfNodeManager};
 use mpc_node::{
-    adkg_secp256k1::DKGNode, commands::CommandProcessor, 
+    adkg_secp256k1::DKGNode,
+    commands::CommandProcessor,
     consensus::{ConsensusNode, DatabaseConsensusNode},
-    network::NetworkLayer, rpc_server, 
-    signing::{SigningNode, DatabaseSigningNode}, 
-    user_registry::DatabaseUserRegistry,
     database::{Database, DatabaseConfig},
+    network::NetworkLayer,
+    rpc_server,
+    signing::{DatabaseSigningNode, SigningNode},
+    user_registry::DatabaseUserRegistry,
 };
 use rand::{thread_rng, Rng};
 #[allow(dead_code)]
@@ -15,15 +16,18 @@ use rand::{thread_rng, Rng};
 #[allow(non_snake_case)]
 #[allow(unused_variables)]
 use std::error::Error;
+use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 use tracing::info;
 use tracing::level_filters::LevelFilter;
 use tracing_appender::non_blocking;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
-use tokio::sync::RwLock;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    let node_start_time = Instant::now();
     let rand_num: u32 = thread_rng().gen_range(1000..9999);
     let file_appender = tracing_appender::rolling::never("logs", format!("mpcn-{}.log", rand_num));
     let (writer, _guard) = non_blocking(file_appender);
@@ -78,7 +82,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // Initialize database
     let db_config = DatabaseConfig {
-        path: format!("./data/rocksdb-{}", local_peer_id.to_string().chars().take(8).collect::<String>()),
+        path: format!(
+            "./data/rocksdb-{}",
+            local_peer_id
+                .to_string()
+                .chars()
+                .take(8)
+                .collect::<String>()
+        ),
         create_if_missing: true,
         max_open_files: 1000,
     };
@@ -126,7 +137,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Legacy user registry removed - now using database-backed registry
 
     // Set database user registry in network layer (this will also set it on the signing node)
-    info!("🔗 [MAIN] Setting database user registry in network layer - Arc pointer: {:p}", Arc::as_ptr(&db_user_registry));
+    info!(
+        "🔗 [MAIN] Setting database user registry in network layer - Arc pointer: {:p}",
+        Arc::as_ptr(&db_user_registry)
+    );
     network.set_user_registry(db_user_registry.clone());
 
     // Create shared state for DKG secret share access
@@ -152,10 +166,23 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let rpc_port = 8081; // You can make this configurable
     let node_id = network.get_local_peer_id().to_string();
 
+    let start_time = node_start_time;
     tokio::spawn(async move {
         info!("🚀 Starting RPC server on port {}", rpc_port);
-        info!("🔗 [MAIN] Passing database user registry to RPC server - Arc pointer: {:p}", Arc::as_ptr(&db_user_registry));
-        if let Err(e) = rpc_server::start_http_server(message_tx, rpc_port, db_user_registry.clone(), dkg_shared_state, node_id).await {
+        info!(
+            "🔗 [MAIN] Passing database user registry to RPC server - Arc pointer: {:p}",
+            Arc::as_ptr(&db_user_registry)
+        );
+        if let Err(e) = rpc_server::start_http_server(
+            message_tx,
+            rpc_port,
+            db_user_registry.clone(),
+            dkg_shared_state,
+            node_id,
+            start_time,
+        )
+        .await
+        {
             info!("❌ RPC server failed: {:?}", e);
         }
     });
@@ -165,8 +192,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
     info!("  📝 DatabaseSigningNode: Available");
     info!("  🗳️ DatabaseConsensusNode: Available");
     info!("  👥 DatabaseUserRegistry: Available");
-    info!("  🗄️ Database path: {}", 
-          format!("./data/rocksdb-{}", local_peer_id.to_string().chars().take(8).collect::<String>()));
+    info!(
+        "  🗄️ Database path: {}",
+        format!(
+            "./data/rocksdb-{}",
+            local_peer_id
+                .to_string()
+                .chars()
+                .take(8)
+                .collect::<String>()
+        )
+    );
 
     // Start the network
     network.start().await?;
