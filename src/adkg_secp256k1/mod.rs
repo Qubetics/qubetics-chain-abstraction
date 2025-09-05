@@ -716,6 +716,23 @@ impl DKGNode {
         info!("📬 Ethereum Address from Group Key: {}", eth_address);
         info!("📬 Bitcoin Address from Group Key: {}", btc_address);
 
+        // Generate additional Ethereum addresses with different derivation paths
+        let derivation_paths = [
+            "m/44'/60'/0'/0/1",
+        ];
+
+        info!("📬 Generating additional Ethereum addresses with different derivation paths:");
+        for path in &derivation_paths {
+            match utils::get_eth_address_from_group_key_with_path(final_public_key, path) {
+                Ok(derived_address) => {
+                    info!("📬 Ethereum Address ({}): {}", path, derived_address);
+                },
+                Err(e) => {
+                    warn!("⚠️ Failed to derive Ethereum address for path {}: {}", path, e);
+                }
+            }
+        }
+
         Ok(())
     }
 

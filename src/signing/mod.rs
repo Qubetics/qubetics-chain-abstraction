@@ -839,13 +839,46 @@ impl SigningNode {
                 
                 // Calculate v value for Ethereum (EIP-155)
                 let v = recovery_id as u64 + 35 + chain_id * 2;
-                                        // Fetch dynamic nonce from group public key's Ethereum address
-            let group_address: String = get_eth_address_from_group_key(self.group_public_key.unwrap());
-            let dynamic_nonce = Self::fetch_ethereum_nonce(&group_address, chain_id).await?;
-            
-            info!("🔢 [SIGNING] Using dynamic nonce {} for group address {}", dynamic_nonce, group_address);
-            info!("💰 [SIGNING] Transaction cost: {} wei", original_tx.value);
-            info!("🔍 [SIGNING] Please ensure the group address {} has sufficient balance", group_address);
+                
+                // Determine if this is a user transaction by checking signatures for this round
+                let user_eth_address = {
+                    let signatures_by_round = self.signatures_by_round.read().await;
+                    if let Some(round_signatures) = signatures_by_round.get(&round) {
+                        // Get user_eth_address from any signature in this round (all should have the same value)
+                        round_signatures.values().next().and_then(|sig| sig.user_eth_address.clone())
+                    } else {
+                        None
+                    }
+                };
+                
+                // Determine which address to use for nonce fetching
+                let (nonce_address, dynamic_nonce) = if let Some(user_addr) = &user_eth_address {
+                    // This is a user transaction - fetch nonce from user's derived address
+                    if let Some(user_registry) = &self.user_registry {
+                        if let Some(user) = user_registry.get_user_by_address(user_addr).await {
+                            if let Some(derived_eth_addr) = &user.derived_eth_address {
+                                let nonce = Self::fetch_ethereum_nonce(derived_eth_addr, chain_id).await?;
+                                info!("🔢 [SIGNING] User transaction: fetching nonce {} from user's derived address {}", nonce, derived_eth_addr);
+                                (derived_eth_addr.clone(), nonce)
+                            } else {
+                                return Err(anyhow::anyhow!("User {} has no derived Ethereum address", user_addr));
+                            }
+                        } else {
+                            return Err(anyhow::anyhow!("User {} not found in registry", user_addr));
+                        }
+                    } else {
+                        return Err(anyhow::anyhow!("User registry not available for user transaction"));
+                    }
+                } else {
+                    // This is a network transaction - fetch nonce from group address
+                    let group_address = get_eth_address_from_group_key(self.group_public_key.unwrap());
+                    let nonce = Self::fetch_ethereum_nonce(&group_address, chain_id).await?;
+                    info!("🔢 [SIGNING] Network transaction: fetching nonce {} from group address {}", nonce, group_address);
+                    (group_address, nonce)
+                };
+                
+                info!("💰 [SIGNING] Transaction cost: {} wei", original_tx.value);
+                info!("🔍 [SIGNING] Please ensure the address {} has sufficient balance", nonce_address);
                 
                 // Create signed transaction using the utility function with dynamic nonce
                 let signed_tx = crate::utils::transaction::create_signed_transaction(

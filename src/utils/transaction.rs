@@ -2,7 +2,7 @@ use crate::chain::{
     BitcoinInput, BitcoinOutput, BitcoinTransaction, ChainTransaction, EthereumTransaction,BitcoinWitness, BitcoinWitnessInput, BitcoinWitnessUtxo
 };
 use crate::rpc_server::{DepositIntent, DummyTransaction};
-use crate::utils::get_eth_address_from_group_key;
+use crate::utils::{get_eth_address_from_group_key, get_eth_address_from_group_key_with_path};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use tracing::info;
@@ -113,6 +113,20 @@ fn encode_hex_to_bytes(hex_str: &str) -> Vec<u8> {
     }
 
     hex::decode(&final_hex).expect("Invalid hex string")
+}
+
+/// Strip leading zeros from byte array for RLP compliance
+/// RLP encoding requires that integers have no leading zero bytes
+fn strip_leading_zeros(bytes: &[u8]) -> Vec<u8> {
+    // Find the first non-zero byte
+    let start = bytes.iter().position(|&x| x != 0).unwrap_or(bytes.len());
+    
+    // If all bytes are zero, return a single zero byte
+    if start == bytes.len() {
+        vec![0]
+    } else {
+        bytes[start..].to_vec()
+    }
 }
 
 /// Chain mapping to convert string names to chain IDs
@@ -300,7 +314,13 @@ pub async fn create_chain_transaction_from_deposit_intent(
         // Create Ethereum-compatible transaction
         let chain_id = get_chain_id_from_name(chain_to_use)
             .ok_or_else(|| anyhow::anyhow!("Unknown EVM chain: {}", chain_to_use))?;
-        let group_address: String = get_eth_address_from_group_key(group_public_key.unwrap());
+        let vault_address = if let Err(e) = get_eth_address_from_group_key_with_path(group_public_key.unwrap(),"m/44'/60'/0'/0/1") {
+            return Err(anyhow::anyhow!("Failed to derive Ethereum address: {}", e));
+        }else {
+            get_eth_address_from_group_key_with_path(group_public_key.unwrap(),"m/44'/60'/0'/0/1").unwrap()
+        };
+
+        let network_address = get_eth_address_from_group_key(group_public_key.unwrap());
 
         // Determine source and target based on user_eth_address
         let (from_address, to_address) = if let Some(_user_addr) = user_eth_address {
@@ -309,9 +329,9 @@ pub async fn create_chain_transaction_from_deposit_intent(
                 tracing::info!(
                     "💰 [TRANSACTION] User deposit: {} -> {}",
                     derived_addr,
-                    group_address
+                    vault_address
                 );
-                (derived_addr.clone(), group_address)
+                (derived_addr.clone(), vault_address)
             } else {
                 return Err(anyhow::anyhow!("User deposit requires derived_eth_address"));
             }
@@ -319,10 +339,10 @@ pub async fn create_chain_transaction_from_deposit_intent(
             // Network withdrawal: FROM network address TO target address
             tracing::info!(
                 "💰 [TRANSACTION] Network withdrawal: {} -> {}",
-                group_address,
+                network_address,
                 intent.target_address
             );
-            (group_address.clone(), intent.target_address.clone())
+            (network_address.clone(), intent.target_address.clone())
         };
 
         let ethereum_tx = EthereumTransaction {
@@ -698,14 +718,16 @@ pub fn create_signed_transaction(tx: &DummyTransaction, r: &[u8], s: &[u8], v: u
     encoder.encode_u64(v); // ✅ proper RLP encoding for large v
     content.extend_from_slice(&encoder.finalize());
 
-    // r
+    // r - strip leading zeros for RLP compliance
     encoder = RlpEncoder::new();
-    encoder.encode_bytes(r);
+    let r_trimmed = strip_leading_zeros(r);
+    encoder.encode_bytes(&r_trimmed);
     content.extend_from_slice(&encoder.finalize());
 
-    // s
+    // s - strip leading zeros for RLP compliance  
     encoder = RlpEncoder::new();
-    encoder.encode_bytes(s);
+    let s_trimmed = strip_leading_zeros(s);
+    encoder.encode_bytes(&s_trimmed);
     content.extend_from_slice(&encoder.finalize());
 
     // Create final RLP with list header

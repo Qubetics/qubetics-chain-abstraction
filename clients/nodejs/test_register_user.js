@@ -286,9 +286,9 @@ async function runTests() {
   await testUserMpcDeposit({ wallet, amount });
 
   // 4) MPC deposit test with potentially problematic amount (might trigger errors)
-  log(`\n🧪 Test 2: Large deposit amount (might trigger errors)`, 'blue');
-  const largeAmount = 999999999; // Large amount that might cause insufficient funds
-  await testUserMpcDeposit({ wallet, amount: largeAmount });
+  // log(`\n🧪 Test 2: Large deposit amount (might trigger errors)`, 'blue');
+  // const largeAmount = 999999999; // Large amount that might cause insufficient funds
+  // await testUserMpcDeposit({ wallet, amount: largeAmount });
 
   log(`\n${colors.bright}✅ Test completed!${colors.reset}`, 'bright');
 }

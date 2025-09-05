@@ -1,39 +1,18 @@
-use crate::rpc_server::DummyTransaction;
-use anyhow::anyhow;
 use anyhow::Result;
-use k256::Scalar;
-use hex;
 use libp2p::PeerId;
-use num_bigint::BigUint;
-use num_traits::identities::One;
-use rand::rngs::OsRng;
-use secp256k1::{self, ecdsa::RecoverableSignature, Message, PublicKey, Secp256k1, SecretKey};
-use serde::{Deserialize, Serialize};
-use sha2::Digest as Sha2Digest;
+use secp256k1::{self, PublicKey, Secp256k1, SecretKey};
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{mpsc, RwLock};
-use tracing::{error, info, warn};
+use tracing::info;
 
-use num_bigint::{BigInt, ToBigInt};
-use secp256k1::{constants::CURVE_ORDER, ecdsa::RecoveryId};
-
-use num_traits::Zero;
-use rand::seq::SliceRandom;
-use rand::thread_rng;
-
-use crate::consensus::{ConsensusMessage, ConsensusNode, ConsensusResult};
-use crate::types::{p2p::SerializablePeerId, ChannelMessage};
-use crate::vrf::{VrfService, VrfSelectedNodesBroadcast};
-use crate::chain::{ChainHandler, ChainSignature, ChainHandlerFactory, ChainTransaction};
-use crate::utils::get_eth_address_from_group_key;
-use crate::chain::BitcoinTransaction;
+use crate::consensus::ConsensusNode;
+use crate::types::ChannelMessage;
+use crate::vrf::VrfService;
+use crate::chain::{ChainHandler, ChainHandlerFactory, ChainTransaction};
 use crate::database::{SigningStorage, ConsensusStorage, Database};
-use super::{ECDSASignature, SigningMessage, SignedMessage};
-use k256::AffinePoint;
-use sha3::{Keccak256, Digest};
+use super::ECDSASignature;
 
 /// Database-backed signing node that stores state in RocksDB
 #[derive(Clone)]
