@@ -19,7 +19,6 @@ use std::error::Error;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::Mutex;
-use tokio::sync::RwLock;
 use tracing::info;
 use tracing::level_filters::LevelFilter;
 use tracing_appender::non_blocking;
@@ -113,12 +112,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
         network.get_msg_tx(),
     )));
 
+    let dkg_storage = DkgStorage::new(database.clone());
     let dkg_node = DKGNode::new(
         network.get_local_peer_id().to_string(),
         threshold,
         total,
         network.get_msg_tx(),
-        DkgStorage::new(database.clone()),
+        dkg_storage.clone(),
     );
 
     let db_consensus_node = DatabaseConsensusNode::new(database.clone());
@@ -144,24 +144,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
     );
     network.set_user_registry(db_user_registry.clone());
 
-    // Create shared state for DKG secret share access
-    let dkg_shared_state = Arc::new(RwLock::new(rpc_server::DKGSharedState::new()));
-
-    // Set up DKG completion callback to update shared state
-    let dkg_shared_state_clone = dkg_shared_state.clone();
-    if let Some(dkg_node) = network.get_dkg_node() {
-        // Set completion callback to update shared state when DKG completes
-        dkg_node.set_completion_callback(Box::new(move |secret_share, _public_key| {
-            let dkg_state = dkg_shared_state_clone.clone();
-            // Use tokio::spawn to handle the async operation
-            tokio::spawn(async move {
-                let mut state = dkg_state.write().await;
-                state.set_secret_share(secret_share);
-                info!("🔐 DKG completion callback: Secret share stored in shared state");
-            });
-        }));
-    }
-
     // Start RPC server in a separate task
     let message_tx = network.get_msg_tx();
     let rpc_port = 8081; // You can make this configurable
@@ -178,7 +160,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             message_tx,
             rpc_port,
             db_user_registry.clone(),
-            dkg_shared_state,
+            dkg_storage,
             node_id,
             start_time,
         )
