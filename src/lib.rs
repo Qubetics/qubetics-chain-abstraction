@@ -20,7 +20,7 @@ pub use adkg_secp256k1::DKGNode;
 pub use commands::CommandProcessor;
 pub use consensus::{ConsensusNode, DatabaseConsensusNode};
 pub use database::{
-    ConsensusStorage, Database, DatabaseConfig, IntentStorage, SigningStorage,
+    ConsensusStorage, DkgStorage, Database, DatabaseConfig, IntentStorage, SigningStorage,
     TransactionStatusStorage, UserStorage,
 };
 pub use network::NetworkLayer;
