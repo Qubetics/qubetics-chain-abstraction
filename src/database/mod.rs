@@ -8,10 +8,12 @@ use tracing::{debug, error, info};
 pub mod consensus_storage;
 pub mod signing_storage;
 pub mod user_storage;
+pub mod dkg_storage;
 
 pub use consensus_storage::{ConsensusStats, ConsensusStorage};
 pub use signing_storage::SigningStorage;
 pub use user_storage::{IntentStorage, TransactionStatusStorage, UserStorage};
+pub use dkg_storage::DkgStorage;
 
 /// Database configuration
 #[derive(Debug, Clone)]
@@ -388,6 +390,11 @@ pub mod keys {
     pub const CONSENSUS_ROUND: &str = "consensus:";
     pub const CONSENSUS_RESULT: &str = "consensus_result:";
     pub const SELECTED_NODES: &str = "selected_nodes:";
+    pub const DKG_SHARE: &str = "dkg_share:";
+    pub const DKG_COMMITMENT: &str = "dkg_commitment:";
+    pub const DKG_VALIDATION: &str = "dkg_validation:";
+    pub const DKG_FINAL_SECRET: &str = "dkg_final_secret";
+    pub const DKG_FINAL_PUBLIC: &str = "dkg_final_public";
 }
 
 /// Utility functions for key generation

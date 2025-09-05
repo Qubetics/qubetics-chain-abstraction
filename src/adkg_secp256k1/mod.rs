@@ -10,7 +10,6 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use std::{any, usize};
 use tokio::sync::mpsc;
-use tokio::sync::RwLock;
 use tracing::info;
 use tracing::warn;
 
@@ -18,6 +17,7 @@ use crate::types::dkg::MSG_TOPIC_DKG;
 use crate::types::{
     ChannelMessage, GossipsubMessage, KeyShare, SerializablePoint, SerializableScalar,
 };
+use crate::database::DkgStorage;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DKGMessage {
@@ -49,13 +49,8 @@ pub struct DKGNode {
     status: DKGStatus,
     threshold: usize,
     total_nodes: usize,
-    shares: RwLock<HashMap<String, KeyShare>>,
-    commitments: RwLock<HashMap<String, Vec<AffinePoint>>>,
-    // Store updated commitments per user AND per solver: ethereum_address -> (solver_id -> updated_commitments)
-    validations: RwLock<HashMap<String, Vec<bool>>>,
+    storage: DkgStorage,
     message_tx: mpsc::Sender<ChannelMessage>,
-    final_secret_share: RwLock<Option<Scalar>>,
-    final_public_key: RwLock<Option<ProjectivePoint>>,
     completion_callback: Option<DKGCompletionCallback>,
     round: u64,
 }
@@ -66,34 +61,37 @@ impl DKGNode {
         threshold: usize,
         total_nodes: usize,
         message_tx: mpsc::Sender<ChannelMessage>,
+        storage: DkgStorage,
     ) -> Self {
         Self {
             id,
             status: DKGStatus::New,
             threshold,
             total_nodes,
-            shares: RwLock::new(HashMap::new()),
-            commitments: RwLock::new(HashMap::new()),
-            validations: RwLock::new(HashMap::new()),
+            storage,
             message_tx,
-            final_secret_share: RwLock::new(None),
-            final_public_key: RwLock::new(None),
             completion_callback: None,
             round: 0,
         }
     }
 
     pub async fn reset(&mut self) {
-        // 1) clear all the in-flight maps
-        self.shares.write().await.clear();
-        self.commitments.write().await.clear();
-        self.validations.write().await.clear();
+        if let Err(e) = self.storage.clear_shares().await {
+            warn!("Failed to clear shares: {}", e);
+        }
+        if let Err(e) = self.storage.clear_commitments().await {
+            warn!("Failed to clear commitments: {}", e);
+        }
+        if let Err(e) = self.storage.clear_validations().await {
+            warn!("Failed to clear validations: {}", e);
+        }
+        if let Err(e) = self.storage.delete_final_secret().await {
+            warn!("Failed to delete final secret: {}", e);
+        }
+        if let Err(e) = self.storage.delete_final_public().await {
+            warn!("Failed to delete final public key: {}", e);
+        }
 
-        // 2) wipe out any previously computed key material
-        *self.final_secret_share.write().await = None;
-        *self.final_public_key.write().await   = None;
-
-        // 3) go back to the "New" status
         self.status = DKGStatus::New;
         self.round += 1;
     }
@@ -124,9 +122,9 @@ impl DKGNode {
         &self,
         tweak_scalar: Scalar,
     ) -> Result<ProjectivePoint> {
-        let commitments = self.commitments.read().await;
+        let commitments = self.storage.get_all_commitments().await?;
         if commitments.is_empty() {
-            return Err(anyhow!("No commitments available (map is empty)"));
+            return Err(anyhow!("No commitments available (database is empty)"));
         }
 
         let mut solver_ids: Vec<String> = commitments.keys().cloned().collect();
@@ -145,7 +143,6 @@ impl DKGNode {
                 }
             }
         }
-        drop(commitments);
 
         if added == 0 {
             return Err(anyhow!("No C0 found in any solver commitments; cannot derive base group key"));
@@ -158,8 +155,8 @@ impl DKGNode {
         let p_user = p_base + tweak_point;
 
         // Optional diff vs stored
-        if let Some(stored) = self.final_public_key.read().await.as_ref() {
-            let delta = p_user + (-*stored);
+        if let Some(stored) = self.storage.get_final_public().await? {
+            let delta = p_user + (-stored);
             info!("🔄 [DKG] Δ vs stored final_public_key: {:?}", delta);
         }
 
@@ -184,7 +181,7 @@ impl DKGNode {
         {
             let my_shares = shares.clone();
             let my_commitments = commitments.clone();
-            // This will verify, store in `self.shares`/`self.commitments`
+            // This will verify, store in database
             // and even send you a local “validation” message if you want.
             self.handle_share_distribution(self.id.clone(), my_shares, my_commitments,node_manager)
                 .await?;
@@ -365,14 +362,13 @@ impl DKGNode {
                 info!("🔍 [DKG] Storing share from node {}: index={}, value={:?}", 
                       from, share.index, share.value.0);
                 
-                self.shares.write().await.insert(from.clone(), share);
-                self.commitments
-                    .write()
-                    .await
-                    .insert(from.clone(), raw_commitments);
+                self.storage.store_share(&from, &share).await?;
+                self.storage
+                    .store_commitments(&from, &raw_commitments)
+                    .await?;
 
                 // Log current state of all stored shares
-                let current_shares = self.shares.read().await;
+                let current_shares = self.storage.get_all_shares().await?;
                 info!("🔍 [DKG] Current total shares stored: {}", current_shares.len());
                 info!("🔍 [DKG] All stored shares:");
                 for (sender, stored_share) in current_shares.iter() {
@@ -381,7 +377,6 @@ impl DKGNode {
                         sender, stored_share.index, stored_share.value.0
                     );
                 }
-                drop(current_shares); // Release the read lock
                 info!("🔍 [DKG] === END STORING SHARE ===");
 
                 self.handle_share_validation(self.id.clone(), from.clone(), true,node_manager)
@@ -535,24 +530,17 @@ impl DKGNode {
         is_valid: bool,
         node_manager: Box<dyn NodeMembership>,
     ) -> Result<()> {
-        {
-            let mut validations = self.validations.write().await;
-            validations
-                .entry(to.clone())
-                .or_insert_with(Vec::new)
-                .push(is_valid);
-
-            info!("📊 Validation from {} to {}: {}", from, to, is_valid);
-        } // validations lock guard dropped here
+        self.storage.add_validation(&to, is_valid).await?;
+        info!("📊 Validation from {} to {}: {}", from, to, is_valid);
         self.check_completion(node_manager).await?;
         Ok(())
     }
 
     async fn check_completion(&mut self,node_manager: Box<dyn NodeMembership>) -> Result<()> {
         let (shares_len, validations_len, valid_validations) = {
-            let validations = self.validations.read().await;
-            let shares = self.shares.read().await;
-            
+            let validations = self.storage.get_all_validations().await?;
+            let shares = self.storage.get_all_shares().await?;
+
             // Log all shares currently stored
             info!("📊 [DKG] === SHARES STATUS CHECK ===");
             info!("📊 [DKG] Total shares stored: {}", shares.len());
@@ -563,14 +551,14 @@ impl DKGNode {
                 );
             }
             info!("📊 [DKG] === END SHARES STATUS ===");
-            
+
             info!("🎉 [DKG] Validations: {:?}", validations);
             let valid_validations: usize = validations
                 .values()
                 .map(|v| v.iter().filter(|&&valid| valid).count())
                 .sum();
             (shares.len(), validations.len(), valid_validations)
-        }; // lock guards dropped here
+        };
 
         info!(
             "🔍 [DKG] Checking DKG completion - shares: {}, validations: {}",
@@ -598,8 +586,8 @@ impl DKGNode {
     }
 
     async fn generate_group_key(&mut self,node_manager: Box<dyn NodeMembership>) -> Result<()> {
-        let shares = self.shares.read().await;
-        let commitments = self.commitments.read().await;
+        let shares = self.storage.get_all_shares().await?;
+        let commitments = self.storage.get_all_commitments().await?;
         info!("🔐 [DKG] Commitments: {:?}", commitments);
         info!("🔐 [DKG] Commitments size: {}", commitments.len());
 
@@ -680,8 +668,8 @@ impl DKGNode {
         }
 
         // Store the results
-        *self.final_secret_share.write().await = Some(final_secret_share);
-        *self.final_public_key.write().await = Some(final_public_key);
+        self.storage.set_final_secret(final_secret_share).await?;
+        self.storage.set_final_public(final_public_key).await?;
 
         // Update status
         self.status = DKGStatus::Completed;
@@ -737,11 +725,17 @@ impl DKGNode {
     }
 
     pub async fn get_final_secret_share(&self) -> Option<Scalar> {
-        self.final_secret_share.read().await.clone()
+        match self.storage.get_final_secret().await {
+            Ok(v) => v,
+            Err(_) => None,
+        }
     }
 
     pub async fn get_final_public_key(&self) -> Option<ProjectivePoint> {
-        self.final_public_key.read().await.clone()
+        match self.storage.get_final_public().await {
+            Ok(v) => v,
+            Err(_) => None,
+        }
     }
 
     pub async fn is_completed(&self) -> bool {
@@ -770,20 +764,25 @@ impl DKGNode {
 
     // Debug function to log all current shares
     pub async fn log_all_shares(&self) {
-        let shares = self.shares.read().await;
-        info!("📊 [DKG] === CURRENT SHARES DEBUG ===");
-        info!("📊 [DKG] Node {} has {} shares stored", self.id, shares.len());
-        
-        if shares.is_empty() {
-            info!("📊 [DKG] No shares currently stored");
-        } else {
-            for (sender, share) in shares.iter() {
-                info!(
-                    "📊 [DKG] Share from {}: index={}, value={:?}",
-                    sender, share.index, share.value.0
-                );
+        match self.storage.get_all_shares().await {
+            Ok(shares) => {
+                info!("📊 [DKG] === CURRENT SHARES DEBUG ===");
+                info!("📊 [DKG] Node {} has {} shares stored", self.id, shares.len());
+                if shares.is_empty() {
+                    info!("📊 [DKG] No shares currently stored");
+                } else {
+                    for (sender, share) in shares.iter() {
+                        info!(
+                            "📊 [DKG] Share from {}: index={}, value={:?}",
+                            sender, share.index, share.value.0
+                        );
+                    }
+                }
+                info!("📊 [DKG] === END CURRENT SHARES DEBUG ===");
+            }
+            Err(e) => {
+                warn!("Failed to load shares for logging: {}", e);
             }
         }
-        info!("📊 [DKG] === END CURRENT SHARES DEBUG ===");
     }
 }

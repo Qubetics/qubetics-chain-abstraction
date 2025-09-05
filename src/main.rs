@@ -4,7 +4,7 @@ use mpc_node::{
     adkg_secp256k1::DKGNode,
     commands::CommandProcessor,
     consensus::{ConsensusNode, DatabaseConsensusNode},
-    database::{Database, DatabaseConfig},
+    database::{Database, DatabaseConfig, DkgStorage},
     network::NetworkLayer,
     rpc_server,
     signing::{DatabaseSigningNode, SigningNode},
@@ -118,6 +118,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         threshold,
         total,
         network.get_msg_tx(),
+        DkgStorage::new(database.clone()),
     );
 
     let db_consensus_node = DatabaseConsensusNode::new(database.clone());
