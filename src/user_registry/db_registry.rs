@@ -663,6 +663,21 @@ impl DatabaseUserRegistry {
         }
     }
 
+    pub async fn store_transaction_status(
+        &self,
+        tx_hash: &str,
+        status: TransactionStatus,
+    ) -> Result<(), String> {
+        self.tx_status_storage
+            .store_status(tx_hash, status.clone())
+            .await
+            .map_err(|e| e.to_string())?;
+        info!(
+            "✅ Stored transaction status for {}: {:?}",
+            tx_hash, status
+        );
+        Ok(())
+    }
     /// Update the status of a transaction hash
     pub async fn update_transaction_status(
         &self,

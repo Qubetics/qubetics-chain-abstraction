@@ -1,5 +1,5 @@
 use crate::types::{rpc::RPCRequest, ChannelMessage};
-use crate::user_registry::{checksum_from_any, to_checksum_address, DatabaseUserRegistry};
+use crate::user_registry::{checksum_from_any, to_checksum_address, DatabaseUserRegistry, TransactionStatus};
 use secp256k1::{
     ecdsa::{RecoverableSignature, RecoveryId},
     Message, PublicKey, Secp256k1,
@@ -735,6 +735,15 @@ async fn handle_user_mpc_deposit(
         tx_id = get_transaction_id_for_intent(&user_registry, &intent_hash).await;
         if tx_id.is_some() {
             info!("✅ Transaction completed successfully with ID: {:?}", tx_id);
+            
+            // Store the transaction ID with pending status in the database
+            if let Some(ref tx_id_str) = tx_id {
+                if let Err(e) = user_registry.store_transaction_status(tx_id_str, TransactionStatus::Pending).await {
+                    error!("❌ Failed to store transaction status for {}: {}", tx_id_str, e);
+                } else {
+                    info!("�� Stored transaction ID {} with pending status", tx_id_str);
+                }
+            }
             break;
         }
         
