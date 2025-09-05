@@ -115,6 +115,153 @@ pub struct UserMpcDepositVerifyResponse {
     pub error_message: Option<String>,
 }
 
+// Enhanced error types for better error handling
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ErrorResponse {
+    pub status: String,
+    pub error_code: String,
+    pub message: String,
+    pub details: Option<String>,
+}
+
+// User info response with proper error handling
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserInfoResponse {
+    pub status: String,
+    pub user_id: Option<String>,
+    pub ethereum_address: Option<String>,
+    pub hmac_constant: Option<String>,
+    pub has_tweaked_share: Option<bool>,
+    pub has_user_group_key: Option<bool>,
+    pub derived_eth_address: Option<String>,
+    pub derived_btc_address: Option<String>,
+    pub created_at: Option<String>,
+    pub error: Option<ErrorResponse>,
+}
+
+// Enhanced user registration response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnhancedUserRegistrationResponse {
+    pub status: String,
+    pub message: String,
+    pub derived_eth_address: Option<String>,
+    pub derived_btc_address: Option<String>,
+    pub error: Option<ErrorResponse>,
+}
+
+#[derive(Debug)]
+pub enum RpcError {
+    // Input validation errors
+    InvalidAddress(String),
+    MissingFields(String),
+    InvalidRequest(String),
+    
+    // Database/storage errors
+    DatabaseError(String),
+    UserNotFound(String),
+    RegistrationFailed(String),
+    
+    // Network/system errors
+    NetworkError(String),
+    DkgNotReady(String),
+    Timeout(String),
+    
+    // General errors
+    InternalError(String),
+    SerializationError(String),
+}
+
+impl RpcError {
+    pub fn to_error_response(&self) -> ErrorResponse {
+        match self {
+            RpcError::InvalidAddress(msg) => ErrorResponse {
+                status: "error".to_string(),
+                error_code: "INVALID_ADDRESS".to_string(),
+                message: "Invalid Ethereum address format".to_string(),
+                details: Some(msg.clone()),
+            },
+            RpcError::MissingFields(msg) => ErrorResponse {
+                status: "error".to_string(),
+                error_code: "MISSING_FIELDS".to_string(),
+                message: "Required fields are missing".to_string(),
+                details: Some(msg.clone()),
+            },
+            RpcError::InvalidRequest(msg) => ErrorResponse {
+                status: "error".to_string(),
+                error_code: "INVALID_REQUEST".to_string(),
+                message: "Invalid request format".to_string(),
+                details: Some(msg.clone()),
+            },
+            RpcError::DatabaseError(msg) => ErrorResponse {
+                status: "error".to_string(),
+                error_code: "DATABASE_ERROR".to_string(),
+                message: "Database operation failed".to_string(),
+                details: Some(msg.clone()),
+            },
+            RpcError::UserNotFound(msg) => ErrorResponse {
+                status: "error".to_string(),
+                error_code: "USER_NOT_FOUND".to_string(),
+                message: "User not found".to_string(),
+                details: Some(msg.clone()),
+            },
+            RpcError::RegistrationFailed(msg) => ErrorResponse {
+                status: "error".to_string(),
+                error_code: "REGISTRATION_FAILED".to_string(),
+                message: "User registration failed".to_string(),
+                details: Some(msg.clone()),
+            },
+            RpcError::NetworkError(msg) => ErrorResponse {
+                status: "error".to_string(),
+                error_code: "NETWORK_ERROR".to_string(),
+                message: "Network operation failed".to_string(),
+                details: Some(msg.clone()),
+            },
+            RpcError::DkgNotReady(msg) => ErrorResponse {
+                status: "error".to_string(),
+                error_code: "DKG_NOT_READY".to_string(),
+                message: "DKG is not ready".to_string(),
+                details: Some(msg.clone()),
+            },
+            RpcError::Timeout(msg) => ErrorResponse {
+                status: "error".to_string(),
+                error_code: "TIMEOUT".to_string(),
+                message: "Operation timed out".to_string(),
+                details: Some(msg.clone()),
+            },
+            RpcError::InternalError(msg) => ErrorResponse {
+                status: "error".to_string(),
+                error_code: "INTERNAL_ERROR".to_string(),
+                message: "Internal server error".to_string(),
+                details: Some(msg.clone()),
+            },
+            RpcError::SerializationError(msg) => ErrorResponse {
+                status: "error".to_string(),
+                error_code: "SERIALIZATION_ERROR".to_string(),
+                message: "Data serialization failed".to_string(),
+                details: Some(msg.clone()),
+            },
+        }
+    }
+}
+
+impl warp::reject::Reject for RpcError {}
+
+// Input validation helper
+fn validate_ethereum_address(address: &str) -> Result<String, RpcError> {
+    if address.trim().is_empty() {
+        return Err(RpcError::InvalidAddress("Address cannot be empty".to_string()));
+    }
+    
+    if !address.starts_with("0x") && address.len() != 42 {
+        return Err(RpcError::InvalidAddress("Address must be 42 characters and start with 0x".to_string()));
+    }
+    
+    match checksum_from_any(address) {
+        Ok(normalized) => Ok(normalized),
+        Err(e) => Err(RpcError::InvalidAddress(format!("Invalid address format: {}", e))),
+    }
+}
+
 // gRPC service definition
 #[derive(Default)]
 pub struct MpcRpcService {
@@ -396,122 +543,149 @@ async fn handle_register_user(
     message_tx: std::sync::Arc<tokio::sync::Mutex<mpsc::Sender<ChannelMessage>>>,
     node_id: String,
 ) -> Result<impl warp::Reply, warp::Rejection> {
-    info!(
-        "👤 HTTP: Received user registration request for address: {}",
-        request.ethereum_address
-    );
+    info!("👤 HTTP: Received user registration request for address: {}", request.ethereum_address);
 
-    // Register the user in the global registry
+    // Input validation
+    let addr_cs = match validate_ethereum_address(&request.ethereum_address) {
+        Ok(normalized) => normalized,
+        Err(e) => {
+            error!("❌ HTTP: Address validation failed for '{}': {:?}", request.ethereum_address, e);
+            let error_response = EnhancedUserRegistrationResponse {
+                status: "error".to_string(),
+                message: "Invalid Ethereum address".to_string(),
+                derived_eth_address: None,
+                derived_btc_address: None,
+                error: Some(e.to_error_response()),
+            };
+            return Ok(warp::reply::json(&error_response));
+        }
+    };
+
+    // Check if user is already registered
+    if let Some(_existing_user) = user_registry.get_user_by_address(&addr_cs).await {
+        info!("⚠️ HTTP: User already registered: {}", addr_cs);
+        let error_response = EnhancedUserRegistrationResponse {
+            status: "error".to_string(),
+            message: "User is already registered".to_string(),
+            derived_eth_address: None,
+            derived_btc_address: None,
+            error: Some(RpcError::InvalidRequest("User is already registered".to_string()).to_error_response()),
+        };
+        return Ok(warp::reply::json(&error_response));
+    }
+
+    // Check DKG status
     let dkg_secret_share = get_actual_dkg_secret_share(dkg_storage).await;
+    if dkg_secret_share.is_none() {
+        warn!("⚠️ HTTP: DKG not ready for user registration");
+        let error_response = EnhancedUserRegistrationResponse {
+            status: "error".to_string(),
+            message: "DKG system is not ready. Please try again later.".to_string(),
+            derived_eth_address: None,
+            derived_btc_address: None,
+            error: Some(RpcError::DkgNotReady("DKG secret share not available".to_string()).to_error_response()),
+        };
+        return Ok(warp::reply::json(&error_response));
+    }
 
+    // Attempt user registration
     match user_registry
-        .register_user(
-            &request.ethereum_address,
-            dkg_secret_share.as_ref(),
-            &node_id,
-        )
+        .register_user(&addr_cs, dkg_secret_share.as_ref(), &node_id)
         .await
     {
         Ok(registration) => {
-            info!(
-                "✅ HTTP: User registration successful for address: {}",
-                request.ethereum_address
-            );
+            info!("✅ HTTP: User registration successful for address: {}", addr_cs);
 
             // Log tweaked secret share status
             if registration.tweaked_secret_share.is_some() {
-                info!(
-                    "🔑 HTTP: Computed and stored tweaked secret share for user: {}",
-                    request.ethereum_address
-                );
+                info!("🔑 HTTP: Computed and stored tweaked secret share for user: {}", addr_cs);
             } else {
-                info!("⚠️ HTTP: No tweaked secret share computed (DKG secret share not available) for user: {}", request.ethereum_address);
+                warn!("⚠️ HTTP: No tweaked secret share computed for user: {}", addr_cs);
             }
 
-            // Now broadcast to other nodes via P2P network (same pattern as deposit intent)
+            // Broadcast to other nodes via P2P network
             let user_reg_msg = ChannelMessage::UserRegistration {
-                ethereum_address: request.ethereum_address.clone(),
+                ethereum_address: addr_cs.clone(),
                 node_id: node_id.to_string(),
             };
 
             // Send via message channel to be picked up by network layer
-            let tx = message_tx.lock().await;
-            if let Err(e) = tx.send(user_reg_msg).await {
-                warn!(
-                    "⚠️ Failed to send user registration message to network: {}",
-                    e
-                );
+            if let Ok(tx) = message_tx.try_lock() {
+                if let Err(e) = tx.send(user_reg_msg).await {
+                    error!("❌ Failed to send user registration message to network: {}", e);
+                    // Don't fail registration if broadcasting fails
+                    warn!("⚠️ User registered locally but network broadcast failed");
+                } else {
+                    info!("📡 User registration message sent to network layer for broadcasting");
+                }
             } else {
-                info!("📡 User registration message sent to network layer for broadcasting");
+                warn!("⚠️ Could not acquire message channel lock for network broadcast");
             }
 
-            // Wait for derived addresses to be populated (they are computed asynchronously in network layer)
+            // Wait for derived addresses to be populated
             info!("⏳ Waiting for derived addresses to be populated...");
             let mut attempts = 0;
-            let max_attempts = 10; // Wait up to 10 seconds
+            const MAX_ATTEMPTS: u8 = 10; // Wait up to 10 seconds
 
             let mut final_registration = registration.clone();
-            while attempts < max_attempts {
+            while attempts < MAX_ATTEMPTS {
                 // Check if derived addresses are now available
-                if let Some(updated_user) = user_registry
-                    .get_user_by_address(&request.ethereum_address)
-                    .await
-                {
-                    if updated_user.derived_eth_address.is_some()
-                        && updated_user.derived_btc_address.is_some()
-                    {
-                        final_registration = updated_user;
-                        info!("✅ Derived addresses are now available!");
+                match user_registry.get_user_by_address(&addr_cs).await {
+                    Some(updated_user) => {
+                        if updated_user.derived_eth_address.is_some() && updated_user.derived_btc_address.is_some() {
+                            final_registration = updated_user;
+                            info!("✅ Derived addresses are now available!");
+                            break;
+                        }
+                    }
+                    None => {
+                        error!("❌ User disappeared from registry during address derivation");
                         break;
                     }
                 }
 
                 attempts += 1;
-                if attempts < max_attempts {
-                    info!(
-                        "⏳ Attempt {}/{}: Derived addresses not ready yet, waiting 1 second...",
-                        attempts, max_attempts
-                    );
+                if attempts < MAX_ATTEMPTS {
+                    info!("⏳ Attempt {}/{}: Derived addresses not ready yet, waiting 1 second...", attempts, MAX_ATTEMPTS);
                     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                 }
             }
 
-            if attempts >= max_attempts {
-                warn!("⚠️ Derived addresses not available after {} attempts, proceeding with response", max_attempts);
+            if attempts >= MAX_ATTEMPTS {
+                warn!("⚠️ Derived addresses not available after {} attempts", MAX_ATTEMPTS);
             }
 
             // Log derived addresses if available
             if let Some(eth_addr) = &final_registration.derived_eth_address {
-                info!(
-                    "📬 HTTP: Derived ETH address for {}: {}",
-                    request.ethereum_address, eth_addr
-                );
+                info!("📬 HTTP: Derived ETH address for {}: {}", addr_cs, eth_addr);
             }
             if let Some(btc_addr) = &final_registration.derived_btc_address {
-                info!(
-                    "📬 HTTP: Derived BTC address for {}: {}",
-                    request.ethereum_address, btc_addr
-                );
+                info!("📬 HTTP: Derived BTC address for {}: {}", addr_cs, btc_addr);
             }
 
-            // Get derived addresses if available
-            let derived_eth = final_registration.derived_eth_address.clone();
-            let derived_btc = final_registration.derived_btc_address.clone();
-
-            Ok(warp::reply::json(&UserRegistrationResponse {
+            // Successful response
+            let response = EnhancedUserRegistrationResponse {
                 status: "success".to_string(),
                 message: "User registered successfully".to_string(),
-                derived_eth_address: derived_eth,
-                derived_btc_address: derived_btc,
-            }))
+                derived_eth_address: final_registration.derived_eth_address,
+                derived_btc_address: final_registration.derived_btc_address,
+                error: None,
+            };
+
+            Ok(warp::reply::json(&response))
         }
         Err(e) => {
-            warn!(
-                "❌ HTTP: User registration failed for address {}: {}",
-                request.ethereum_address, e
-            );
+            error!("❌ HTTP: User registration failed for address {}: {}", addr_cs, e);
 
-            Err(warp::reject::custom(TransactionError::NetworkError))
+            let error_response = EnhancedUserRegistrationResponse {
+                status: "error".to_string(),
+                message: "User registration failed".to_string(),
+                derived_eth_address: None,
+                derived_btc_address: None,
+                error: Some(RpcError::RegistrationFailed(e.to_string()).to_error_response()),
+            };
+
+            Ok(warp::reply::json(&error_response))
         }
     }
 }
@@ -880,43 +1054,70 @@ async fn handle_get_user_info(
     ethereum_address: String,
     user_registry: std::sync::Arc<DatabaseUserRegistry>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
-    // Normalize to canonical EIP-55 once
-    let addr_cs = match checksum_from_any(&ethereum_address) {
-        Ok(a) => a,
+    info!("🔍 HTTP: Received user info request for address: {}", ethereum_address);
+
+    // Input validation
+    let addr_cs = match validate_ethereum_address(&ethereum_address) {
+        Ok(normalized) => normalized,
         Err(e) => {
-            warn!(
-                "❌ HTTP: Invalid ethereum_address '{}': {}",
-                ethereum_address, e
-            );
-            return Err(warp::reject::custom(TransactionError::SerializationError));
+            error!("❌ HTTP: Address validation failed for '{}': {:?}", ethereum_address, e);
+            let error_response = UserInfoResponse {
+                status: "error".to_string(),
+                user_id: None,
+                ethereum_address: None,
+                hmac_constant: None,
+                has_tweaked_share: None,
+                has_user_group_key: None,
+                derived_eth_address: None,
+                derived_btc_address: None,
+                created_at: None,
+                error: Some(e.to_error_response()),
+            };
+            return Ok(warp::reply::json(&error_response));
         }
     };
 
-    info!(
-        "🔍 HTTP: Looking up user info for (normalized): {}",
-        addr_cs
-    );
+    info!("🔍 HTTP: Looking up user info for (normalized): {}", addr_cs);
 
+    // Database operation with error handling
     match user_registry.get_user_by_address(&addr_cs).await {
         Some(registration) => {
             info!("✅ HTTP: Found user info for {}", addr_cs);
 
-            let response = serde_json::json!({
-                "user_id": registration.user_id,
-                "ethereum_address": registration.ethereum_address, // already canonical in storage
-                "hmac_constant": hex::encode(registration.hmac_constant),
-                "has_tweaked_share": registration.tweaked_secret_share.is_some(),
-                "has_user_group_key": registration.user_group_key.is_some(),
-                "derived_eth_address": registration.derived_eth_address,
-                "derived_btc_address": registration.derived_btc_address,
-                "created_at": registration.created_at
-            });
+            // Successful response
+            let response = UserInfoResponse {
+                status: "success".to_string(),
+                user_id: Some(registration.user_id),
+                ethereum_address: Some(registration.ethereum_address),
+                hmac_constant: Some(hex::encode(registration.hmac_constant)),
+                has_tweaked_share: Some(registration.tweaked_secret_share.is_some()),
+                has_user_group_key: Some(registration.user_group_key.is_some()),
+                derived_eth_address: registration.derived_eth_address,
+                derived_btc_address: registration.derived_btc_address,
+                created_at: Some(registration.created_at.to_rfc3339()),
+                error: None,
+            };
 
             Ok(warp::reply::json(&response))
         }
         None => {
             info!("❌ HTTP: User not found for {}", addr_cs);
-            Err(warp::reject::not_found())
+            
+            // User not found response
+            let error_response = UserInfoResponse {
+                status: "error".to_string(),
+                user_id: None,
+                ethereum_address: None,
+                hmac_constant: None,
+                has_tweaked_share: None,
+                has_user_group_key: None,
+                derived_eth_address: None,
+                derived_btc_address: None,
+                created_at: None,
+                error: Some(RpcError::UserNotFound(format!("User with address {} not found", addr_cs)).to_error_response()),
+            };
+            
+            Ok(warp::reply::json(&error_response))
         }
     }
 }

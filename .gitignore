@@ -1,3 +1,5 @@
 /target
 /logs
 node_modules
+# RocksDB data
+/data/rocksdb-*/
