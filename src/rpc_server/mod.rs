@@ -1,47 +1,21 @@
+use crate::database::DkgStorage;
 use crate::types::{rpc::RPCRequest, ChannelMessage};
-use crate::user_registry::{checksum_from_any, to_checksum_address, DatabaseUserRegistry, TransactionStatus};
+use crate::user_registry::{
+    checksum_from_any, to_checksum_address, DatabaseUserRegistry, TransactionStatus,
+};
 use secp256k1::{
     ecdsa::{RecoverableSignature, RecoveryId},
     Message, PublicKey, Secp256k1,
 };
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
-use sha3::{Keccak256};
+use sha3::Keccak256;
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 use uuid::Uuid;
 use warp::Filter;
-
-// Shared state for DKG secret share
-#[derive(Debug, Clone)]
-pub struct DKGSharedState {
-    pub secret_share: Option<k256::Scalar>,
-    pub is_completed: bool,
-}
-
-impl DKGSharedState {
-    pub fn new() -> Self {
-        Self {
-            secret_share: None,
-            is_completed: false,
-        }
-    }
-
-    pub fn set_secret_share(&mut self, secret_share: k256::Scalar) {
-        self.secret_share = Some(secret_share);
-        self.is_completed = true;
-    }
-
-    pub fn get_secret_share(&self) -> Option<k256::Scalar> {
-        self.secret_share
-    }
-
-    pub fn is_completed(&self) -> bool {
-        self.is_completed
-    }
-}
 
 // Define the transaction types for the RPC server
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -178,7 +152,7 @@ pub async fn start_http_server(
     message_tx: mpsc::Sender<ChannelMessage>,
     port: u16,
     user_registry: Arc<DatabaseUserRegistry>,
-    dkg_state: Arc<RwLock<DKGSharedState>>,
+    dkg_storage: DkgStorage,
     node_id: String,
     start_time: Instant,
 ) -> Result<(), warp::Rejection> {
@@ -189,7 +163,7 @@ pub async fn start_http_server(
 
     let message_tx = std::sync::Arc::new(tokio::sync::Mutex::new(message_tx));
     // user_registry is already Arc<DatabaseUserRegistry>, no need to wrap again
-    let dkg_state = std::sync::Arc::new(dkg_state);
+    let dkg_storage = std::sync::Arc::new(dkg_storage);
     let start_time = std::sync::Arc::new(start_time);
 
     // POST /submit_transaction
@@ -211,7 +185,7 @@ pub async fn start_http_server(
         .and(warp::post())
         .and(warp::body::json())
         .and(with_user_registry(user_registry.clone()))
-        .and(with_dkg_state(dkg_state.clone()))
+        .and(with_dkg_storage(dkg_storage.clone()))
         .and(with_message_tx(message_tx.clone()))
         .and(with_node_id(node_id.clone()))
         .and_then(handle_register_user);
@@ -240,7 +214,7 @@ pub async fn start_http_server(
     // GET /dkg_status
     let get_dkg_status = warp::path("dkg_status")
         .and(warp::get())
-        .and(with_dkg_state(dkg_state.clone()))
+        .and(with_dkg_storage(dkg_storage.clone()))
         .and_then(handle_get_dkg_status);
 
     // GET /heartbeat
@@ -291,13 +265,11 @@ fn with_user_registry(
     warp::any().map(move || user_registry.clone())
 }
 
-fn with_dkg_state(
-    dkg_state: std::sync::Arc<Arc<RwLock<DKGSharedState>>>,
-) -> impl Filter<
-    Extract = (std::sync::Arc<Arc<RwLock<DKGSharedState>>>,),
-    Error = std::convert::Infallible,
-> + Clone {
-    warp::any().map(move || dkg_state.clone())
+fn with_dkg_storage(
+    dkg_storage: std::sync::Arc<DkgStorage>,
+) -> impl Filter<Extract = (std::sync::Arc<DkgStorage>,), Error = std::convert::Infallible> + Clone
+{
+    warp::any().map(move || dkg_storage.clone())
 }
 
 fn with_node_id(
@@ -420,7 +392,7 @@ pub async fn handle_deposit_intent(
 async fn handle_register_user(
     request: UserRegistrationRequest,
     user_registry: std::sync::Arc<DatabaseUserRegistry>,
-    dkg_state: std::sync::Arc<Arc<RwLock<DKGSharedState>>>,
+    dkg_storage: std::sync::Arc<DkgStorage>,
     message_tx: std::sync::Arc<tokio::sync::Mutex<mpsc::Sender<ChannelMessage>>>,
     node_id: String,
 ) -> Result<impl warp::Reply, warp::Rejection> {
@@ -430,7 +402,7 @@ async fn handle_register_user(
     );
 
     // Register the user in the global registry
-    let dkg_secret_share = get_actual_dkg_secret_share(dkg_state).await;
+    let dkg_secret_share = get_actual_dkg_secret_share(dkg_storage).await;
 
     match user_registry
         .register_user(
@@ -550,7 +522,10 @@ async fn get_transaction_id_for_intent(
     intent_hash: &[u8],
 ) -> Option<String> {
     let intent_hash_hex = hex::encode(intent_hash);
-    match user_registry.get_intent_transaction_ids(&intent_hash_hex).await {
+    match user_registry
+        .get_intent_transaction_ids(&intent_hash_hex)
+        .await
+    {
         Some(tx_ids) => {
             // Return user_to_network_tx_id if available (first transaction)
             tx_ids.user_to_network_tx_id.clone()
@@ -558,7 +533,6 @@ async fn get_transaction_id_for_intent(
         None => None,
     }
 }
-
 
 async fn handle_user_mpc_deposit(
     req: UserMpcDepositRequest,
@@ -628,7 +602,10 @@ async fn handle_user_mpc_deposit(
                         amount: 0,
                         used_personal_sign_prefix: false,
                         tx_id: None,
-                        error_message: Some(format!("Failed to recover signature: personal_sign={}, raw={}", e1, e2)),
+                        error_message: Some(format!(
+                            "Failed to recover signature: personal_sign={}, raw={}",
+                            e1, e2
+                        )),
                     }));
                 }
             }
@@ -649,7 +626,9 @@ async fn handle_user_mpc_deposit(
             amount: 0,
             used_personal_sign_prefix: used_personal,
             tx_id: None,
-            error_message: Some("User is not registered. Please register first before making deposits.".to_string()),
+            error_message: Some(
+                "User is not registered. Please register first before making deposits.".to_string(),
+            ),
         }));
     }
 
@@ -700,11 +679,14 @@ async fn handle_user_mpc_deposit(
     // Process the deposit intent
     match handle_deposit_intent(req.msg.clone(), Some(signer.clone()), message_tx).await {
         Ok(_) => {
-            info!("✅ Deposit intent processed successfully for user: {}", signer);
+            info!(
+                "✅ Deposit intent processed successfully for user: {}",
+                signer
+            );
         }
         Err(e) => {
             error!("❌ Failed to process deposit intent: {:?}", e);
-            
+
             // Just return the raw error message as it is
             let error_message = format!("{:?}", e);
 
@@ -722,9 +704,12 @@ async fn handle_user_mpc_deposit(
 
     // Wait for the actual transaction result (success with TX ID or chain error)
     let intent_hash_hex = hex::encode(&intent_hash);
-    info!("✅ Deposit intent submitted successfully. Intent hash: {}", intent_hash_hex);
+    info!(
+        "✅ Deposit intent submitted successfully. Intent hash: {}",
+        intent_hash_hex
+    );
     info!("⏳ Waiting for transaction to be processed by the network...");
-    
+
     let mut tx_id = None;
     let mut chain_error = None;
     let mut attempts = 0;
@@ -735,27 +720,39 @@ async fn handle_user_mpc_deposit(
         tx_id = get_transaction_id_for_intent(&user_registry, &intent_hash).await;
         if tx_id.is_some() {
             info!("✅ Transaction completed successfully with ID: {:?}", tx_id);
-            
+
             // Store the transaction ID with pending status in the database
             if let Some(ref tx_id_str) = tx_id {
-                if let Err(e) = user_registry.store_transaction_status(tx_id_str, TransactionStatus::Pending).await {
-                    error!("❌ Failed to store transaction status for {}: {}", tx_id_str, e);
+                if let Err(e) = user_registry
+                    .store_transaction_status(tx_id_str, TransactionStatus::Pending)
+                    .await
+                {
+                    error!(
+                        "❌ Failed to store transaction status for {}: {}",
+                        tx_id_str, e
+                    );
                 } else {
                     info!("�� Stored transaction ID {} with pending status", tx_id_str);
                 }
             }
             break;
         }
-        
+
         // Check if we got an error message from the broadcast process
-        if let Some(tx_ids) = user_registry.get_intent_transaction_ids(&intent_hash_hex).await {
+        if let Some(tx_ids) = user_registry
+            .get_intent_transaction_ids(&intent_hash_hex)
+            .await
+        {
             if let Some(error_msg) = tx_ids.error_message {
-                info!("❌ Found chain error for intent {}: {}", intent_hash_hex, error_msg);
+                info!(
+                    "❌ Found chain error for intent {}: {}",
+                    intent_hash_hex, error_msg
+                );
                 chain_error = Some(error_msg);
                 break;
             }
         }
-        
+
         attempts += 1;
         if attempts < MAX_ATTEMPTS {
             tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
@@ -800,17 +797,18 @@ async fn handle_user_mpc_deposit(
 
 // Helper function to get the actual DKG secret share from shared state
 async fn get_actual_dkg_secret_share(
-    dkg_state: std::sync::Arc<Arc<RwLock<DKGSharedState>>>,
+    dkg_storage: std::sync::Arc<DkgStorage>,
 ) -> Option<k256::Scalar> {
-    // Access the DKG shared state
-    let dkg_state_guard = dkg_state.read().await;
-
-    // Check if DKG is completed and get the secret share
-    if dkg_state_guard.is_completed() {
-        dkg_state_guard.get_secret_share()
-    } else {
-        warn!("DKG is not completed yet, cannot retrieve secret share");
-        None
+    match dkg_storage.get_final_secret().await {
+        Ok(Some(secret)) => Some(secret),
+        Ok(None) => {
+            warn!("DKG is not completed yet, cannot retrieve secret share");
+            None
+        }
+        Err(e) => {
+            warn!("Failed to retrieve DKG secret share: {}", e);
+            None
+        }
     }
 }
 
@@ -951,14 +949,19 @@ async fn handle_get_uptime(
 }
 
 async fn handle_get_dkg_status(
-    dkg_state: std::sync::Arc<Arc<RwLock<DKGSharedState>>>,
+    dkg_storage: std::sync::Arc<DkgStorage>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
     info!("🔍 HTTP: Checking DKG status");
 
-    let dkg_state_guard = dkg_state.read().await;
-
-    let is_completed = dkg_state_guard.is_completed();
-    let secret_share_available = dkg_state_guard.get_secret_share().is_some();
+    let secret_share_available = match dkg_storage.get_final_secret().await {
+        Ok(Some(_)) => true,
+        Ok(None) => false,
+        Err(e) => {
+            warn!("Failed to read DKG secret share: {}", e);
+            false
+        }
+    };
+    let is_completed = secret_share_available;
 
     info!(
         "✅ HTTP: DKG status retrieved - completed: {}, secret_share_available: {}",
