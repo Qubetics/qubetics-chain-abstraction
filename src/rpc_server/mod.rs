@@ -91,6 +91,9 @@ pub struct UserRegistrationRequest {
 pub struct UserMpcDepositRequest {
     pub signature: String,
     pub msg: DepositIntent,
+    // Optional transaction ID and status for updating existing deposits
+    pub tx_id: Option<String>,
+    pub status: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -118,12 +121,6 @@ pub struct UserMpcDepositVerifyResponse {
     pub used_personal_sign_prefix: bool,
     pub tx_id: Option<String>,
     pub error_message: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TransactionStatusUpdateRequest {
-    pub tx_hash: String,
-    pub status: String,
 }
 
 // gRPC service definition
@@ -209,13 +206,6 @@ pub async fn start_http_server(
         .and(with_message_tx(message_tx.clone()))
         .and_then(handle_user_mpc_deposit);
 
-    // POST /update_tx_status
-    let update_tx_status = warp::path("update_tx_status")
-        .and(warp::post())
-        .and(warp::body::json())
-        .and(with_user_registry(user_registry.clone()))
-        .and_then(handle_update_tx_status);
-
     // GET /user_info/{ethereum_address}
     let get_user_info = warp::path("user_info")
         .and(warp::path::param())
@@ -266,7 +256,6 @@ pub async fn start_http_server(
         .or(get_dkg_status)
         .or(start_dkg)
         .or(user_mpc_deposit)
-        .or(update_tx_status)
         .or(heartbeat)
         .or(uptime);
 
@@ -610,6 +599,35 @@ async fn handle_user_mpc_deposit(
         req.signature.len()
     );
 
+    // If transaction ID and status are provided, update the database accordingly
+    if let (Some(ref tx_id), Some(ref status_str)) = (&req.tx_id, &req.status) {
+        info!(
+            "🔄 HTTP: updating tx status for tx_id={} to {}",
+            tx_id, status_str
+        );
+
+        let status_enum = match status_str.to_lowercase().as_str() {
+            "pending" => Some(TransactionStatus::Pending),
+            "rejected" => Some(TransactionStatus::Rejected),
+            "confirmed" => Some(TransactionStatus::Confirmed),
+            other => {
+                warn!("❌ Invalid transaction status received: {}", other);
+                None
+            }
+        };
+
+        if let Some(status_enum) = status_enum {
+            if let Err(e) = user_registry
+                .update_transaction_status(tx_id, status_enum.clone())
+                .await
+            {
+                error!("Failed to update transaction status: {}", e);
+            } else {
+                info!("✅ Updated transaction status for {}: {:?}", tx_id, status_enum);
+            }
+        }
+    }
+
     // Serialize the DepositIntent to match the client's JSON.stringify() format
     // Use compact JSON serialization (no spaces) to match JavaScript's JSON.stringify()
     let intent_json = serde_json::to_string(&req.msg).unwrap();
@@ -912,52 +930,6 @@ pub fn recover_eth_address_secp(
     Ok(to_checksum_address(&addr20))
 }
 
-async fn handle_update_tx_status(
-    req: TransactionStatusUpdateRequest,
-    user_registry: std::sync::Arc<DatabaseUserRegistry>,
-) -> Result<impl warp::Reply, warp::Rejection> {
-    info!(
-        "🔄 HTTP: update_tx_status: tx_hash={}, status={}",
-        req.tx_hash, req.status
-    );
-
-    let status_enum = match req.status.to_lowercase().as_str() {
-        "pending" => TransactionStatus::Pending,
-        "rejected" => TransactionStatus::Rejected,
-        "confirmed" => TransactionStatus::Confirmed,
-        other => {
-            warn!("❌ Invalid transaction status received: {}", other);
-            return Ok(warp::reply::json(&TransactionResponse {
-                tx_hash: req.tx_hash,
-                status: "error".to_string(),
-                message: format!("Invalid status: {}", other),
-            }));
-        }
-    };
-
-    let tx_hash = req.tx_hash.clone();
-    match user_registry
-        .update_transaction_status(&tx_hash, status_enum.clone())
-        .await
-    {
-        Ok(()) => {
-            let status_str = format!("{:?}", status_enum).to_lowercase();
-            Ok(warp::reply::json(&TransactionResponse {
-                tx_hash,
-                status: status_str,
-                message: "Transaction status updated".to_string(),
-            }))
-        }
-        Err(e) => {
-            error!("Failed to update transaction status: {}", e);
-            Ok(warp::reply::json(&TransactionResponse {
-                tx_hash,
-                status: "error".to_string(),
-                message: format!("Failed to update status: {}", e),
-            }))
-        }
-    }
-}
 
 async fn handle_get_user_info(
     ethereum_address: String,
