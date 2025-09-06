@@ -711,16 +711,28 @@ async fn get_transaction_id_for_intent(
     intent_hash: &[u8],
 ) -> Option<String> {
     let intent_hash_hex = hex::encode(intent_hash);
-    match user_registry
+
+    // Fetch any recorded transaction IDs for this intent hash
+    if let Some(tx_ids) = user_registry
         .get_intent_transaction_ids(&intent_hash_hex)
         .await
     {
-        Some(tx_ids) => {
-            // Return user_to_network_tx_id if available (first transaction)
-            tx_ids.user_to_network_tx_id.clone()
+        // Candidate transaction IDs associated with this intent
+        let candidates = [
+            tx_ids.user_to_network_tx_id.clone(),
+            tx_ids.network_to_target_tx_id.clone(),
+        ];
+
+        // Return the first transaction ID that has an entry in the
+        // txid -> status mapping
+        for tx_id in candidates.iter().flatten() {
+            if user_registry.get_transaction_status(tx_id).await.is_some() {
+                return Some(tx_id.clone());
+            }
         }
-        None => None,
     }
+
+    None
 }
 
 /// Wait for a transaction ID or chain error associated with the given intent hash.
