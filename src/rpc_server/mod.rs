@@ -119,7 +119,8 @@ pub struct UserMpcDepositVerifyResponse {
     pub is_registered: bool,
     pub amount: u128,
     pub used_personal_sign_prefix: bool,
-    pub tx_id: Option<String>,
+    pub user_to_network_tx_id: Option<String>,
+    pub network_to_target_tx_id: Option<String>,
     pub error_message: Option<String>,
 }
 
@@ -163,17 +164,17 @@ pub enum RpcError {
     InvalidAddress(String),
     MissingFields(String),
     InvalidRequest(String),
-    
+
     // Database/storage errors
     DatabaseError(String),
     UserNotFound(String),
     RegistrationFailed(String),
-    
+
     // Network/system errors
     NetworkError(String),
     DkgNotReady(String),
     Timeout(String),
-    
+
     // General errors
     InternalError(String),
     SerializationError(String),
@@ -257,16 +258,23 @@ impl warp::reject::Reject for RpcError {}
 // Input validation helper
 fn validate_ethereum_address(address: &str) -> Result<String, RpcError> {
     if address.trim().is_empty() {
-        return Err(RpcError::InvalidAddress("Address cannot be empty".to_string()));
+        return Err(RpcError::InvalidAddress(
+            "Address cannot be empty".to_string(),
+        ));
     }
-    
+
     if !address.starts_with("0x") && address.len() != 42 {
-        return Err(RpcError::InvalidAddress("Address must be 42 characters and start with 0x".to_string()));
+        return Err(RpcError::InvalidAddress(
+            "Address must be 42 characters and start with 0x".to_string(),
+        ));
     }
-    
+
     match checksum_from_any(address) {
         Ok(normalized) => Ok(normalized),
-        Err(e) => Err(RpcError::InvalidAddress(format!("Invalid address format: {}", e))),
+        Err(e) => Err(RpcError::InvalidAddress(format!(
+            "Invalid address format: {}",
+            e
+        ))),
     }
 }
 
@@ -558,13 +566,19 @@ async fn handle_register_user(
     message_tx: std::sync::Arc<tokio::sync::Mutex<mpsc::Sender<ChannelMessage>>>,
     node_id: String,
 ) -> Result<impl warp::Reply, warp::Rejection> {
-    info!("👤 HTTP: Received user registration request for address: {}", request.ethereum_address);
+    info!(
+        "👤 HTTP: Received user registration request for address: {}",
+        request.ethereum_address
+    );
 
     // Input validation
     let addr_cs = match validate_ethereum_address(&request.ethereum_address) {
         Ok(normalized) => normalized,
         Err(e) => {
-            error!("❌ HTTP: Address validation failed for '{}': {:?}", request.ethereum_address, e);
+            error!(
+                "❌ HTTP: Address validation failed for '{}': {:?}",
+                request.ethereum_address, e
+            );
             let error_response = EnhancedUserRegistrationResponse {
                 status: "error".to_string(),
                 message: "Invalid Ethereum address".to_string(),
@@ -584,7 +598,10 @@ async fn handle_register_user(
             message: "User is already registered".to_string(),
             derived_eth_address: None,
             derived_btc_address: None,
-            error: Some(RpcError::InvalidRequest("User is already registered".to_string()).to_error_response()),
+            error: Some(
+                RpcError::InvalidRequest("User is already registered".to_string())
+                    .to_error_response(),
+            ),
         };
         return Ok(warp::reply::json(&error_response));
     }
@@ -598,7 +615,10 @@ async fn handle_register_user(
             message: "DKG system is not ready. Please try again later.".to_string(),
             derived_eth_address: None,
             derived_btc_address: None,
-            error: Some(RpcError::DkgNotReady("DKG secret share not available".to_string()).to_error_response()),
+            error: Some(
+                RpcError::DkgNotReady("DKG secret share not available".to_string())
+                    .to_error_response(),
+            ),
         };
         return Ok(warp::reply::json(&error_response));
     }
@@ -609,13 +629,22 @@ async fn handle_register_user(
         .await
     {
         Ok(registration) => {
-            info!("✅ HTTP: User registration successful for address: {}", addr_cs);
+            info!(
+                "✅ HTTP: User registration successful for address: {}",
+                addr_cs
+            );
 
             // Log tweaked secret share status
             if registration.tweaked_secret_share.is_some() {
-                info!("🔑 HTTP: Computed and stored tweaked secret share for user: {}", addr_cs);
+                info!(
+                    "🔑 HTTP: Computed and stored tweaked secret share for user: {}",
+                    addr_cs
+                );
             } else {
-                warn!("⚠️ HTTP: No tweaked secret share computed for user: {}", addr_cs);
+                warn!(
+                    "⚠️ HTTP: No tweaked secret share computed for user: {}",
+                    addr_cs
+                );
             }
 
             // Broadcast to other nodes via P2P network
@@ -627,7 +656,10 @@ async fn handle_register_user(
             // Send via message channel to be picked up by network layer
             if let Ok(tx) = message_tx.try_lock() {
                 if let Err(e) = tx.send(user_reg_msg).await {
-                    error!("❌ Failed to send user registration message to network: {}", e);
+                    error!(
+                        "❌ Failed to send user registration message to network: {}",
+                        e
+                    );
                     // Don't fail registration if broadcasting fails
                     warn!("⚠️ User registered locally but network broadcast failed");
                 } else {
@@ -647,7 +679,9 @@ async fn handle_register_user(
                 // Check if derived addresses are now available
                 match user_registry.get_user_by_address(&addr_cs).await {
                     Some(updated_user) => {
-                        if updated_user.derived_eth_address.is_some() && updated_user.derived_btc_address.is_some() {
+                        if updated_user.derived_eth_address.is_some()
+                            && updated_user.derived_btc_address.is_some()
+                        {
                             final_registration = updated_user;
                             info!("✅ Derived addresses are now available!");
                             break;
@@ -661,13 +695,19 @@ async fn handle_register_user(
 
                 attempts += 1;
                 if attempts < MAX_ATTEMPTS {
-                    info!("⏳ Attempt {}/{}: Derived addresses not ready yet, waiting 1 second...", attempts, MAX_ATTEMPTS);
+                    info!(
+                        "⏳ Attempt {}/{}: Derived addresses not ready yet, waiting 1 second...",
+                        attempts, MAX_ATTEMPTS
+                    );
                     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                 }
             }
 
             if attempts >= MAX_ATTEMPTS {
-                warn!("⚠️ Derived addresses not available after {} attempts", MAX_ATTEMPTS);
+                warn!(
+                    "⚠️ Derived addresses not available after {} attempts",
+                    MAX_ATTEMPTS
+                );
             }
 
             // Log derived addresses if available
@@ -690,7 +730,10 @@ async fn handle_register_user(
             Ok(warp::reply::json(&response))
         }
         Err(e) => {
-            error!("❌ HTTP: User registration failed for address {}: {}", addr_cs, e);
+            error!(
+                "❌ HTTP: User registration failed for address {}: {}",
+                addr_cs, e
+            );
 
             let error_response = EnhancedUserRegistrationResponse {
                 status: "error".to_string(),
@@ -709,7 +752,7 @@ async fn handle_register_user(
 async fn get_transaction_id_for_intent(
     user_registry: &DatabaseUserRegistry,
     intent_hash: &[u8],
-) -> Option<String> {
+) -> (Option<String>, Option<String>) {
     let intent_hash_hex = hex::encode(intent_hash);
 
     // Fetch any recorded transaction IDs for this intent hash
@@ -717,22 +760,25 @@ async fn get_transaction_id_for_intent(
         .get_intent_transaction_ids(&intent_hash_hex)
         .await
     {
-        // Candidate transaction IDs associated with this intent
-        let candidates = [
-            tx_ids.user_to_network_tx_id.clone(),
-            tx_ids.network_to_target_tx_id.clone(),
-        ];
-
-        // Return the first transaction ID that has an entry in the
-        // txid -> status mapping
-        for tx_id in candidates.iter().flatten() {
+        // Check each candidate transaction id individually
+        let mut user_to_network_tx_id = None;
+        if let Some(ref tx_id) = tx_ids.user_to_network_tx_id {
             if user_registry.get_transaction_status(tx_id).await.is_some() {
-                return Some(tx_id.clone());
+                user_to_network_tx_id = Some(tx_id.clone());
             }
         }
+
+        let mut network_to_target_tx_id = None;
+        if let Some(ref tx_id) = tx_ids.network_to_target_tx_id {
+            if user_registry.get_transaction_status(tx_id).await.is_some() {
+                network_to_target_tx_id = Some(tx_id.clone());
+            }
+        }
+
+        return (user_to_network_tx_id, network_to_target_tx_id);
     }
 
-    None
+    (None, None)
 }
 
 /// Wait for a transaction ID or chain error associated with the given intent hash.
@@ -742,16 +788,17 @@ async fn wait_for_transaction_result(
     user_registry: &DatabaseUserRegistry,
     intent_hash: &[u8],
     timeout_secs: u64,
-) -> (Option<String>, Option<String>) {
+) -> (Option<String>, Option<String>, Option<String>) {
     let start = std::time::Instant::now();
     let intent_hash_hex = hex::encode(intent_hash);
     let poll_interval = tokio::time::Duration::from_millis(250);
     let timeout = tokio::time::Duration::from_secs(timeout_secs);
 
     loop {
-        // Check for transaction id
-        if let Some(tx_id) = get_transaction_id_for_intent(user_registry, intent_hash).await {
-            return (Some(tx_id), None);
+        // Check for transaction ids
+        let (u2n_tx, n2t_tx) = get_transaction_id_for_intent(user_registry, intent_hash).await;
+        if u2n_tx.is_some() || n2t_tx.is_some() {
+            return (u2n_tx, n2t_tx, None);
         }
 
         // Check for any recorded chain error
@@ -760,7 +807,7 @@ async fn wait_for_transaction_result(
             .await
         {
             if let Some(error_msg) = tx_ids.error_message {
-                return (None, Some(error_msg));
+                return (None, None, Some(error_msg));
             }
         }
 
@@ -771,7 +818,7 @@ async fn wait_for_transaction_result(
         tokio::time::sleep(poll_interval).await;
     }
 
-    (None, None)
+    (None, None, None)
 }
 
 async fn handle_user_mpc_deposit(
@@ -809,7 +856,10 @@ async fn handle_user_mpc_deposit(
             {
                 error!("Failed to update transaction status: {}", e);
             } else {
-                info!("✅ Updated transaction status for {}: {:?}", tx_id, status_enum);
+                info!(
+                    "✅ Updated transaction status for {}: {:?}",
+                    tx_id, status_enum
+                );
             }
         }
     }
@@ -846,7 +896,8 @@ async fn handle_user_mpc_deposit(
                 is_registered: false,
                 amount: 0,
                 used_personal_sign_prefix: false,
-                tx_id: None,
+                user_to_network_tx_id: None,
+                network_to_target_tx_id: None,
                 error_message: Some(format!("Invalid signature format: {}", e)),
             }));
         }
@@ -870,7 +921,8 @@ async fn handle_user_mpc_deposit(
                         is_registered: false,
                         amount: 0,
                         used_personal_sign_prefix: false,
-                        tx_id: None,
+                        user_to_network_tx_id: None,
+                        network_to_target_tx_id: None,
                         error_message: Some(format!(
                             "Failed to recover signature: personal_sign={}, raw={}",
                             e1, e2
@@ -894,7 +946,8 @@ async fn handle_user_mpc_deposit(
             is_registered: false,
             amount: 0,
             used_personal_sign_prefix: used_personal,
-            tx_id: None,
+            user_to_network_tx_id: None,
+            network_to_target_tx_id: None,
             error_message: Some(
                 "User is not registered. Please register first before making deposits.".to_string(),
             ),
@@ -913,7 +966,8 @@ async fn handle_user_mpc_deposit(
             is_registered: true,
             amount: 0,
             used_personal_sign_prefix: used_personal,
-            tx_id: None,
+            user_to_network_tx_id: None,
+            network_to_target_tx_id: None,
             error_message: Some(format!("Failed to process deposit intent: {}", e)),
         }));
     }
@@ -951,7 +1005,7 @@ async fn handle_user_mpc_deposit(
     } else {
         Some(signer.clone())
     };
-    
+
     // Process the deposit intent
     match handle_deposit_intent(req.msg.clone(), user_eth_address, message_tx).await {
         Ok(_) => {
@@ -972,7 +1026,8 @@ async fn handle_user_mpc_deposit(
                 is_registered: true,
                 amount: req.msg.amount,
                 used_personal_sign_prefix: used_personal,
-                tx_id: None,
+                user_to_network_tx_id: None,
+                network_to_target_tx_id: None,
                 error_message: Some(error_message),
             }));
         }
@@ -988,22 +1043,33 @@ async fn handle_user_mpc_deposit(
 
     // Poll the database frequently for up to 10 seconds so that we can
     // return a response as soon as the transaction is available.
-    let (tx_id, chain_error) = wait_for_transaction_result(&user_registry, &intent_hash, 10).await;
+    let (u2n_tx_id, n2t_tx_id, chain_error) =
+        wait_for_transaction_result(&user_registry, &intent_hash, 10).await;
 
-    // Log the transaction ID if one was recorded
-    if let Some(ref tx_id_str) = tx_id {
-        info!("✅ Transaction completed successfully with ID: {:?}", tx_id_str);
+    // Log the transaction IDs if recorded
+    if let Some(ref tx_id_str) = u2n_tx_id {
+        info!(
+            "✅ User->Network transaction completed with ID: {:?}",
+            tx_id_str
+        );
+    }
+    if let Some(ref tx_id_str) = n2t_tx_id {
+        info!(
+            "✅ Network->Target transaction completed with ID: {:?}",
+            tx_id_str
+        );
     }
 
-    if let Some(tx_id) = tx_id {
-        // Success - got transaction ID
+    if u2n_tx_id.is_some() || n2t_tx_id.is_some() {
+        // At least one transaction succeeded
         Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
             status: "success".to_string(),
             signer_address: signer,
             is_registered: true,
             amount: req.msg.amount,
             used_personal_sign_prefix: used_personal,
-            tx_id: Some(tx_id),
+            user_to_network_tx_id: u2n_tx_id,
+            network_to_target_tx_id: n2t_tx_id,
             error_message: None,
         }))
     } else if let Some(error_msg) = chain_error {
@@ -1014,7 +1080,8 @@ async fn handle_user_mpc_deposit(
             is_registered: true,
             amount: req.msg.amount,
             used_personal_sign_prefix: used_personal,
-            tx_id: None,
+            user_to_network_tx_id: None,
+            network_to_target_tx_id: None,
             error_message: Some(error_msg), // This is the actual chain error!
         }))
     } else {
@@ -1025,8 +1092,12 @@ async fn handle_user_mpc_deposit(
             is_registered: true,
             amount: req.msg.amount,
             used_personal_sign_prefix: used_personal,
-            tx_id: None,
-            error_message: Some(format!("Transaction processing timeout. Intent hash: {}. The transaction may still be processing or may have failed. Please check the status later.", intent_hash_hex)),
+            user_to_network_tx_id: None,
+            network_to_target_tx_id: None,
+            error_message: Some(format!(
+                "Transaction processing timeout. Intent hash: {}. The transaction may still be processing or may have failed. Please check the status later.",
+                intent_hash_hex
+            )),
         }))
     }
 }
@@ -1112,18 +1183,23 @@ pub fn recover_eth_address_secp(
     Ok(to_checksum_address(&addr20))
 }
 
-
 async fn handle_get_user_info(
     ethereum_address: String,
     user_registry: std::sync::Arc<DatabaseUserRegistry>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
-    info!("🔍 HTTP: Received user info request for address: {}", ethereum_address);
+    info!(
+        "🔍 HTTP: Received user info request for address: {}",
+        ethereum_address
+    );
 
     // Input validation
     let addr_cs = match validate_ethereum_address(&ethereum_address) {
         Ok(normalized) => normalized,
         Err(e) => {
-            error!("❌ HTTP: Address validation failed for '{}': {:?}", ethereum_address, e);
+            error!(
+                "❌ HTTP: Address validation failed for '{}': {:?}",
+                ethereum_address, e
+            );
             let error_response = UserInfoResponse {
                 status: "error".to_string(),
                 user_id: None,
@@ -1140,7 +1216,10 @@ async fn handle_get_user_info(
         }
     };
 
-    info!("🔍 HTTP: Looking up user info for (normalized): {}", addr_cs);
+    info!(
+        "🔍 HTTP: Looking up user info for (normalized): {}",
+        addr_cs
+    );
 
     // Database operation with error handling
     match user_registry.get_user_by_address(&addr_cs).await {
@@ -1165,7 +1244,7 @@ async fn handle_get_user_info(
         }
         None => {
             info!("❌ HTTP: User not found for {}", addr_cs);
-            
+
             // User not found response
             let error_response = UserInfoResponse {
                 status: "error".to_string(),
@@ -1177,9 +1256,12 @@ async fn handle_get_user_info(
                 derived_eth_address: None,
                 derived_btc_address: None,
                 created_at: None,
-                error: Some(RpcError::UserNotFound(format!("User with address {} not found", addr_cs)).to_error_response()),
+                error: Some(
+                    RpcError::UserNotFound(format!("User with address {} not found", addr_cs))
+                        .to_error_response(),
+                ),
             };
-            
+
             Ok(warp::reply::json(&error_response))
         }
     }
