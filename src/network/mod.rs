@@ -28,7 +28,7 @@ use crate::consensus::ConsensusNode;
 use crate::adkg_secp256k1::DKGNode;
 use crate::node_management::NodeMembership;
 use crate::signing::SigningNode;
-use crate::user_registry::DatabaseUserRegistry;
+use crate::user_registry::{DatabaseUserRegistry, TransactionStatus};
 use crate::{
     adkg_secp256k1::DKGStatus,
     types::{
@@ -1314,7 +1314,19 @@ impl NetworkLayer {
 
                     match storage_result {
                         Ok(()) => {
-                            info!("✅ [NETWORK] Successfully synchronized transaction ID {} for intent {} (type: {})", transaction_id, intent_hash, transaction_type);
+                            if let Err(e) = user_registry
+                                .store_transaction_status(&transaction_id, TransactionStatus::Pending)
+                                .await
+                            {
+                                error!(
+                                    "❌ [NETWORK] Failed to store transaction status for broadcast tx {}: {}",
+                                    transaction_id, e
+                                );
+                            }
+                            info!(
+                                "✅ [NETWORK] Successfully synchronized transaction ID {} for intent {} (type: {})",
+                                transaction_id, intent_hash, transaction_type
+                            );
                         },
                         Err(e) => {
                             error!("❌ [NETWORK] Failed to store synchronized transaction ID: {}", e);

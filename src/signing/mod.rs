@@ -35,7 +35,7 @@ use crate::chain::{ChainHandler, ChainSignature, ChainHandlerFactory, ChainTrans
 use crate::utils::get_eth_address_from_group_key;
 // Import BitcoinTransaction directly from chain module
 use crate::chain::{BitcoinTransaction, BitcoinInput};
-use crate::user_registry::DatabaseUserRegistry;
+use crate::user_registry::{DatabaseUserRegistry, TransactionStatus};
 use crate::utils::transaction::DetectedAddressType;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2313,8 +2313,17 @@ impl SigningNode {
                     ("network_to_target", result)
                 };
 
-                // If storage was successful, broadcast transaction ID to other nodes
+                // If storage was successful, record transaction status and broadcast to other nodes
                 if storage_result.is_ok() {
+                    if let Err(e) = user_registry
+                        .store_transaction_status(tx_id, TransactionStatus::Pending)
+                        .await
+                    {
+                        error!(
+                            "❌ [SIGNING] Failed to store transaction status for tx {}: {}",
+                            tx_id, e
+                        );
+                    }
                     self.broadcast_transaction_id(&intent_hash, tx_id, transaction_type).await;
                 }
             },
