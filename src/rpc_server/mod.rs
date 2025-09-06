@@ -91,6 +91,9 @@ pub struct UserRegistrationRequest {
 pub struct UserMpcDepositRequest {
     pub signature: String,
     pub msg: DepositIntent,
+    // Optional transaction ID and status for updating existing deposits
+    pub tx_id: Option<String>,
+    pub status: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -770,6 +773,35 @@ async fn handle_user_mpc_deposit(
         req.signature.len()
     );
 
+    // If transaction ID and status are provided, update the database accordingly
+    if let (Some(ref tx_id), Some(ref status_str)) = (&req.tx_id, &req.status) {
+        info!(
+            "🔄 HTTP: updating tx status for tx_id={} to {}",
+            tx_id, status_str
+        );
+
+        let status_enum = match status_str.to_lowercase().as_str() {
+            "pending" => Some(TransactionStatus::Pending),
+            "rejected" => Some(TransactionStatus::Rejected),
+            "confirmed" => Some(TransactionStatus::Confirmed),
+            other => {
+                warn!("❌ Invalid transaction status received: {}", other);
+                None
+            }
+        };
+
+        if let Some(status_enum) = status_enum {
+            if let Err(e) = user_registry
+                .update_transaction_status(tx_id, status_enum.clone())
+                .await
+            {
+                error!("Failed to update transaction status: {}", e);
+            } else {
+                info!("✅ Updated transaction status for {}: {:?}", tx_id, status_enum);
+            }
+        }
+    }
+
     // Serialize the DepositIntent to match the client's JSON.stringify() format
     // Use compact JSON serialization (no spaces) to match JavaScript's JSON.stringify()
     let intent_json = serde_json::to_string(&req.msg).unwrap();
@@ -937,8 +969,7 @@ async fn handle_user_mpc_deposit(
 
     // Poll the database frequently for up to 10 seconds so that we can
     // return a response as soon as the transaction is available.
-    let (tx_id, chain_error) =
-        wait_for_transaction_result(&user_registry, &intent_hash, 10).await;
+    let (tx_id, chain_error) = wait_for_transaction_result(&user_registry, &intent_hash, 10).await;
 
     // Store the transaction ID with pending status in the database if we got one
     if let Some(ref tx_id_str) = tx_id {
@@ -1072,6 +1103,7 @@ pub fn recover_eth_address_secp(
     addr20.copy_from_slice(&keccak[12..]); // last 20 bytes
     Ok(to_checksum_address(&addr20))
 }
+
 
 async fn handle_get_user_info(
     ethereum_address: String,
