@@ -455,11 +455,6 @@ impl DatabaseUserRegistry {
                 info!("✅ [DB_USER_REGISTRY] Successfully stored user_to_network_tx_id");
                 info!("  🎯 Intent: {}", intent_hash);
                 info!("  📤 TX ID: {}", tx_id);
-                self.tx_status_storage
-                    .store_status(tx_id, TransactionStatus::Pending)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                info!("  🕒 TX Status set to Pending");
                 Ok(())
             }
             Err(e) => {
@@ -492,11 +487,6 @@ impl DatabaseUserRegistry {
                 info!("✅ [DB_USER_REGISTRY] Successfully stored network_to_target_tx_id");
                 info!("  🎯 Intent: {}", intent_hash);
                 info!("  📥 TX ID: {}", tx_id);
-                self.tx_status_storage
-                    .store_status(tx_id, TransactionStatus::Pending)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                info!("  🕒 TX Status set to Pending");
                 Ok(())
             }
             Err(e) => {
@@ -519,25 +509,11 @@ impl DatabaseUserRegistry {
         self.intent_storage
             .store_intent_transaction_ids(
                 intent_hash,
-                user_to_network_tx_id.clone(),
-                network_to_target_tx_id.clone(),
+                user_to_network_tx_id,
+                network_to_target_tx_id,
             )
             .await
             .map_err(|e| e.to_string())?;
-
-        if let Some(tx_id) = &user_to_network_tx_id {
-            self.tx_status_storage
-                .store_status(tx_id, TransactionStatus::Pending)
-                .await
-                .map_err(|e| e.to_string())?;
-        }
-
-        if let Some(tx_id) = &network_to_target_tx_id {
-            self.tx_status_storage
-                .store_status(tx_id, TransactionStatus::Pending)
-                .await
-                .map_err(|e| e.to_string())?;
-        }
 
         info!(
             "✅ [DB_USER_REGISTRY] Updated transaction IDs for intent: {}",

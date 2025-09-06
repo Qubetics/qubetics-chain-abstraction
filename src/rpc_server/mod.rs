@@ -978,20 +978,9 @@ async fn handle_user_mpc_deposit(
     // return a response as soon as the transaction is available.
     let (tx_id, chain_error) = wait_for_transaction_result(&user_registry, &intent_hash, 10).await;
 
-    // Store the transaction ID with pending status in the database if we got one
+    // Log the transaction ID if one was recorded
     if let Some(ref tx_id_str) = tx_id {
-        info!("✅ Transaction completed successfully with ID: {:?}", tx_id);
-        if let Err(e) = user_registry
-            .store_transaction_status(tx_id_str, TransactionStatus::Pending)
-            .await
-        {
-            error!(
-                "❌ Failed to store transaction status for {}: {}",
-                tx_id_str, e
-            );
-        } else {
-            info!("�� Stored transaction ID {} with pending status", tx_id_str);
-        }
+        info!("✅ Transaction completed successfully with ID: {:?}", tx_id_str);
     }
 
     if let Some(tx_id) = tx_id {
