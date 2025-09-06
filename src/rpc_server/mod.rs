@@ -68,6 +68,11 @@ pub struct NodeStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NodeIdResponse {
+    pub node_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HeartbeatResponse {
     pub status: String,
 }
@@ -205,6 +210,12 @@ pub async fn start_http_server(
         .and(with_user_registry(user_registry.clone()))
         .and_then(handle_get_user_info);
 
+    // GET /node_id
+    let get_node_id = warp::path("node_id")
+        .and(warp::get())
+        .and(with_node_id(node_id.clone()))
+        .and_then(handle_get_node_id);
+
     // GET /status
     let get_status = warp::path("status")
         .and(warp::get())
@@ -237,6 +248,7 @@ pub async fn start_http_server(
     let routes = submit_tx
         .or(register_user)
         .or(get_user_info)
+        .or(get_node_id)
         .or(get_status)
         .or(get_dkg_status)
         .or(start_dkg)
@@ -930,6 +942,10 @@ async fn handle_get_user_info(
             Err(warp::reject::not_found())
         }
     }
+}
+
+async fn handle_get_node_id(node_id: String) -> Result<impl warp::Reply, warp::Rejection> {
+    Ok(warp::reply::json(&NodeIdResponse { node_id }))
 }
 
 async fn handle_get_status(
