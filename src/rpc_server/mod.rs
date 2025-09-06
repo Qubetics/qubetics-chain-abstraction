@@ -534,6 +534,45 @@ async fn get_transaction_id_for_intent(
     }
 }
 
+/// Wait for a transaction ID or chain error associated with the given intent hash.
+/// Polls the database frequently to return as soon as possible and times out
+/// after the provided number of seconds.
+async fn wait_for_transaction_result(
+    user_registry: &DatabaseUserRegistry,
+    intent_hash: &[u8],
+    timeout_secs: u64,
+) -> (Option<String>, Option<String>) {
+    let start = std::time::Instant::now();
+    let intent_hash_hex = hex::encode(intent_hash);
+    let poll_interval = tokio::time::Duration::from_millis(250);
+    let timeout = tokio::time::Duration::from_secs(timeout_secs);
+
+    loop {
+        // Check for transaction id
+        if let Some(tx_id) = get_transaction_id_for_intent(user_registry, intent_hash).await {
+            return (Some(tx_id), None);
+        }
+
+        // Check for any recorded chain error
+        if let Some(tx_ids) = user_registry
+            .get_intent_transaction_ids(&intent_hash_hex)
+            .await
+        {
+            if let Some(error_msg) = tx_ids.error_message {
+                return (None, Some(error_msg));
+            }
+        }
+
+        if start.elapsed() >= timeout {
+            break;
+        }
+
+        tokio::time::sleep(poll_interval).await;
+    }
+
+    (None, None)
+}
+
 async fn handle_user_mpc_deposit(
     req: UserMpcDepositRequest,
     user_registry: std::sync::Arc<DatabaseUserRegistry>,
@@ -710,52 +749,24 @@ async fn handle_user_mpc_deposit(
     );
     info!("⏳ Waiting for transaction to be processed by the network...");
 
-    let mut tx_id = None;
-    let mut chain_error = None;
-    let mut attempts = 0;
-    const MAX_ATTEMPTS: u8 = 15; // Wait up to 15 seconds for the actual result
+    // Poll the database frequently for up to 10 seconds so that we can
+    // return a response as soon as the transaction is available.
+    let (tx_id, chain_error) =
+        wait_for_transaction_result(&user_registry, &intent_hash, 10).await;
 
-    while attempts < MAX_ATTEMPTS {
-        // Check if we got a transaction ID (success case)
-        tx_id = get_transaction_id_for_intent(&user_registry, &intent_hash).await;
-        if tx_id.is_some() {
-            info!("✅ Transaction completed successfully with ID: {:?}", tx_id);
-
-            // Store the transaction ID with pending status in the database
-            if let Some(ref tx_id_str) = tx_id {
-                if let Err(e) = user_registry
-                    .store_transaction_status(tx_id_str, TransactionStatus::Pending)
-                    .await
-                {
-                    error!(
-                        "❌ Failed to store transaction status for {}: {}",
-                        tx_id_str, e
-                    );
-                } else {
-                    info!("�� Stored transaction ID {} with pending status", tx_id_str);
-                }
-            }
-            break;
-        }
-
-        // Check if we got an error message from the broadcast process
-        if let Some(tx_ids) = user_registry
-            .get_intent_transaction_ids(&intent_hash_hex)
+    // Store the transaction ID with pending status in the database if we got one
+    if let Some(ref tx_id_str) = tx_id {
+        info!("✅ Transaction completed successfully with ID: {:?}", tx_id);
+        if let Err(e) = user_registry
+            .store_transaction_status(tx_id_str, TransactionStatus::Pending)
             .await
         {
-            if let Some(error_msg) = tx_ids.error_message {
-                info!(
-                    "❌ Found chain error for intent {}: {}",
-                    intent_hash_hex, error_msg
-                );
-                chain_error = Some(error_msg);
-                break;
-            }
-        }
-
-        attempts += 1;
-        if attempts < MAX_ATTEMPTS {
-            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+            error!(
+                "❌ Failed to store transaction status for {}: {}",
+                tx_id_str, e
+            );
+        } else {
+            info!("�� Stored transaction ID {} with pending status", tx_id_str);
         }
     }
 
