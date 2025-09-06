@@ -134,7 +134,7 @@ async function testDKGStatus() {
 async function testUserMpcDeposit({ wallet, amount }) {
   try {
     const signerAddr = await wallet.getAddress();
-    log(`\n🔐 Testing user_mpc_deposit for signer: ${signerAddr}`, 'blue');
+    log(`\n🔐 Testing user_mpc_deposit WITHOUT tx_id for signer: ${signerAddr}`, 'blue');
     log(`💰 Amount: ${amount}`, 'cyan');
 
     // Fetch user info to get the canonical Ethereum address
@@ -146,13 +146,13 @@ async function testUserMpcDeposit({ wallet, amount }) {
     // Construct DepositIntent
     const depositIntent = {
       source_address: userInfo.data.derived_eth_address, // Use canonical address
-      target_address: '0x541Bc7A7Eb63769c079dc57eF1b9d9651Dd920Af',
+      target_address: '0xc6dA53bCa90753699cd19521Dd559964490C6822',
       source_chain: 'qubetics',
-      target_chain: 'bitcoin',
+      target_chain: 'qubetics',
       amount: amount, // Use the passed amount parameter
       source_token: 'TICS',
-      target_token: 'BTC',
-      timestamp: Math.floor(Date.now() / 1000), // Current Unix timestamp in seconds
+      target_token: 'TICS',
+      timestamp: 22222, // Current Unix timestamp in seconds
     };
 
     // Serialize DepositIntent for signing
@@ -256,6 +256,140 @@ async function testUserMpcDeposit({ wallet, amount }) {
 }
 
 // =========================
+// New: user_mpc_deposit test WITH tx_id (should pass None to handle_deposit_intent)
+// =========================
+async function testUserMpcDepositWithTxId({ wallet, amount, txId, status }) {
+  try {
+    const signerAddr = await wallet.getAddress();
+    log(`\n🔐 Testing user_mpc_deposit WITH tx_id for signer: ${signerAddr}`, 'blue');
+    log(`💰 Amount: ${amount}`, 'cyan');
+    log(`📊 Transaction ID: ${txId}`, 'cyan');
+    log(`📊 Status: ${status}`, 'cyan');
+
+    // Fetch user info to get the canonical Ethereum address
+    const userInfo = await testGetUserInfo(signerAddr);
+    if (!userInfo.success) {
+      throw new Error('Failed to fetch user info');
+    }
+    const depositIntent = {
+      source_address: userInfo.data.derived_eth_address, // Use canonical address
+      target_address: '0xc6dA53bCa90753699cd19521Dd559964490C6822',
+      source_chain: 'qubetics',
+      target_chain: 'qubetics',
+      amount: amount, // Use the passed amount parameter
+      source_token: 'TICS',
+      target_token: 'TICS',
+      timestamp: 87987987987, // Current Unix timestamp in seconds
+    };
+
+    // Serialize DepositIntent for signing
+    const msg = JSON.stringify(depositIntent);
+    log(`📝 Message: ${msg}`, 'cyan');
+
+    // EIP-191 personal_sign
+    const signature = await wallet.signMessage(msg);
+    log(`✍️  Signature: ${signature}`, 'cyan');
+
+    // Request WITH tx_id and status - should pass None to handle_deposit_intent
+    const response = await axios.post(
+      `${RPC_BASE_URL}/user_mpc_deposit`,
+      { 
+        signature, 
+        msg: depositIntent,
+        tx_id: txId,    // Include tx_id
+        status: status  // Include status
+      },
+      { headers: { 'Content-Type': 'application/json' }, timeout: 10000 }
+    );
+
+    // Check response status to determine success or error
+    const isSuccess = response.data.status === 'success';
+    const isSubmitted = response.data.status === 'submitted';
+    const isProcessing = response.data.status === 'processing';
+    const isError = response.data.status === 'error';
+    const isTimeout = response.data.status === 'timeout';
+
+    if (isSuccess) {
+      log(`✅ user_mpc_deposit WITH tx_id SUCCESS - Transaction completed!`, 'green');
+    } else if (isSubmitted) {
+      log(`📤 user_mpc_deposit WITH tx_id SUBMITTED - Transaction is being processed`, 'yellow');
+    } else if (isProcessing) {
+      log(`⏳ user_mpc_deposit WITH tx_id PROCESSING - Transaction is still being processed`, 'yellow');
+    } else if (isError) {
+      log(`❌ user_mpc_deposit WITH tx_id ERROR - Transaction failed`, 'red');
+    } else if (isTimeout) {
+      log(`⏰ user_mpc_deposit WITH tx_id TIMEOUT - Transaction processing timed out`, 'yellow');
+    } else {
+      log(`❓ user_mpc_deposit WITH tx_id UNKNOWN STATUS: ${response.data.status}`, 'yellow');
+    }
+
+    log(`📊 Response Details:`, 'cyan');
+    log(`   Status: ${response.data.status}`, 'cyan');
+    log(`   Signer Address (recovered): ${response.data.signer_address}`, 'cyan');
+    log(`   Is Registered: ${response.data.is_registered}`, 'cyan');
+    log(`   Used personal_sign prefix: ${response.data.used_personal_sign_prefix}`, 'cyan');
+    log(`   Amount: ${response.data.amount}`, 'cyan');
+    
+    // Show transaction ID if available
+    if (response.data.tx_id) {
+      log(`   🎯 Transaction ID: ${response.data.tx_id}`, 'green');
+    } else {
+      log(`   🎯 Transaction ID: Not available yet`, 'yellow');
+    }
+    
+    // Show error message if present
+    if (response.data.error_message) {
+      if (isError) {
+        log(`   💥 Error Message: ${response.data.error_message}`, 'red');
+      } else {
+        log(`   ℹ️  Message: ${response.data.error_message}`, 'yellow');
+      }
+    }
+
+    return { success: true, data: response.data };
+  } catch (error) {
+    if (error.response) {
+      log(`❌ user_mpc_deposit WITH tx_id failed with HTTP status ${error.response.status}:`, 'red');
+      
+      // Check if we got a structured response with our new format
+      if (error.response.data && error.response.data.status) {
+        const errorData = error.response.data;
+        log(`   Response Status: ${errorData.status}`, 'red');
+        log(`   Signer Address: ${errorData.signer_address || 'Unknown'}`, 'red');
+        log(`   Is Registered: ${errorData.is_registered || 'Unknown'}`, 'red');
+        
+        if (errorData.tx_id) {
+          log(`   Transaction ID: ${errorData.tx_id}`, 'red');
+        }
+        
+        if (errorData.error_message) {
+          log(`   🔥 Chain Error: ${errorData.error_message}`, 'red');
+        }
+      } else {
+        // Fallback for generic HTTP errors
+        log(`   Error: ${error.response.data?.message || error.response.statusText}`, 'red');
+      }
+      
+      // Always show full response for debugging
+      if (error.response.data) {
+        log(`   Full Error Response:`, 'red');
+        console.log(JSON.stringify(error.response.data, null, 2));
+      }
+    } else if (error.code === 'ECONNREFUSED') {
+      log(`❌ Connection refused - Is the RPC server running on port 8081?`, 'red');
+    } else if (error.code === 'ENOTFOUND') {
+      log(`❌ Server not found - Check if the RPC server is accessible`, 'red');
+    } else if (error.code === 'ETIMEDOUT') {
+      log(`❌ Request timed out - Server might be overloaded`, 'red');
+    } else {
+      log(`❌ user_mpc_deposit WITH tx_id error: ${error.message}`, 'red');
+    }
+
+    return { success: false, error: error.message };
+  }
+}
+
+// =========================
 async function runTests() {
   log(`\n${colors.bright}🧪 Starting Registration + MPC Deposit Test (Derived Address Only)${colors.reset}`, 'bright');
   log(`📍 Target RPC: ${RPC_BASE_URL}`, 'cyan');
@@ -266,27 +400,33 @@ async function runTests() {
   const signerAddr = await wallet.getAddress();
   log(`\n🔑 Derived signer address from TEST_PRIVKEY: ${signerAddr}`, 'blue');
 
-  // 1) DKG status
-  await testDKGStatus();
+  // // 1) DKG status
+  // await testDKGStatus();
 
-  // 2) Register ONLY the derived address 
-  const reg = await testRegisterUser(signerAddr);
+  // // 2) Register ONLY the derived address 
+  // const reg = await testRegisterUser(signerAddr);
 
-  if (reg.success) {
-    log(`\n⏳ Waiting 2 seconds before checking user info...`, 'yellow');
-    await new Promise(r => setTimeout(r, 2000));
-    await testGetUserInfo(signerAddr);
-  } else {
-    log(`\n⚠️ Registration failed; continuing to deposit test (is_registered may be false).`, 'yellow');
-  }
+  // if (reg.success) {
+  //   log(`\n⏳ Waiting 2 seconds before checking user info...`, 'yellow');
+  //   await new Promise(r => setTimeout(r, 2000));
+  //   await testGetUserInfo(signerAddr);
+  // } else {
+  //   log(`\n⚠️ Registration failed; continuing to deposit test (is_registered may be false).`, 'yellow');
+  // }
 
-  // 3) MPC deposit test with normal amount
-  log(`\n🧪 Test 1: Normal deposit amount`, 'blue');
+  // 3) MPC deposit test WITHOUT tx_id (should pass Some(signer) to handle_deposit_intent)
+  // log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
   const amount = 1000; // keep safe for JSON
   await testUserMpcDeposit({ wallet, amount });
+  // await new Promise(r => setTimeout(r, 7000));
+  // 4) MPC deposit test WITH tx_id (should pass None to handle_deposit_intent)
+  // log(`\n🧪 Test 2: Deposit amount WITH tx_id and status update`, 'blue');
+  // const testTxId = "0x831a880aceb60bd581b1a89fe83d59a84692b284f0b03999be98e4f8db45a708"; // Generate a unique test transaction ID
+  // const testStatus = 'confirmed'; // Test status
+  // await testUserMpcDepositWithTxId({ wallet, amount, txId: testTxId, status: testStatus });
 
-  // 4) MPC deposit test with potentially problematic amount (might trigger errors)
-  // log(`\n🧪 Test 2: Large deposit amount (might trigger errors)`, 'blue');
+  // 5) MPC deposit test with potentially problematic amount (might trigger errors)
+  // log(`\n🧪 Test 3: Large deposit amount (might trigger errors)`, 'blue');
   // const largeAmount = 999999999; // Large amount that might cause insufficient funds
   // await testUserMpcDeposit({ wallet, amount: largeAmount });
 

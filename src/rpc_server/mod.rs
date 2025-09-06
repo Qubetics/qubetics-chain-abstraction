@@ -934,7 +934,14 @@ async fn handle_user_mpc_deposit(
     drop(tx);
 
     // Process the deposit intent
-    match handle_deposit_intent(req.msg.clone(), Some(signer.clone()), message_tx).await {
+    let user_eth_address = if req.tx_id.is_some() {
+        None
+    } else {
+        Some(signer.clone())
+    };
+    
+    // Process the deposit intent
+    match handle_deposit_intent(req.msg.clone(), user_eth_address, message_tx).await {
         Ok(_) => {
             info!(
                 "✅ Deposit intent processed successfully for user: {}",
