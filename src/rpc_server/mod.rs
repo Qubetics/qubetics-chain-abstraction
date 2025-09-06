@@ -120,6 +120,12 @@ pub struct UserMpcDepositVerifyResponse {
     pub error_message: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TransactionStatusUpdateRequest {
+    pub tx_hash: String,
+    pub status: String,
+}
+
 // gRPC service definition
 #[derive(Default)]
 pub struct MpcRpcService {
@@ -203,6 +209,13 @@ pub async fn start_http_server(
         .and(with_message_tx(message_tx.clone()))
         .and_then(handle_user_mpc_deposit);
 
+    // POST /update_tx_status
+    let update_tx_status = warp::path("update_tx_status")
+        .and(warp::post())
+        .and(warp::body::json())
+        .and(with_user_registry(user_registry.clone()))
+        .and_then(handle_update_tx_status);
+
     // GET /user_info/{ethereum_address}
     let get_user_info = warp::path("user_info")
         .and(warp::path::param())
@@ -253,6 +266,7 @@ pub async fn start_http_server(
         .or(get_dkg_status)
         .or(start_dkg)
         .or(user_mpc_deposit)
+        .or(update_tx_status)
         .or(heartbeat)
         .or(uptime);
 
@@ -763,8 +777,7 @@ async fn handle_user_mpc_deposit(
 
     // Poll the database frequently for up to 10 seconds so that we can
     // return a response as soon as the transaction is available.
-    let (tx_id, chain_error) =
-        wait_for_transaction_result(&user_registry, &intent_hash, 10).await;
+    let (tx_id, chain_error) = wait_for_transaction_result(&user_registry, &intent_hash, 10).await;
 
     // Store the transaction ID with pending status in the database if we got one
     if let Some(ref tx_id_str) = tx_id {
@@ -897,6 +910,53 @@ pub fn recover_eth_address_secp(
     let mut addr20 = [0u8; 20];
     addr20.copy_from_slice(&keccak[12..]); // last 20 bytes
     Ok(to_checksum_address(&addr20))
+}
+
+async fn handle_update_tx_status(
+    req: TransactionStatusUpdateRequest,
+    user_registry: std::sync::Arc<DatabaseUserRegistry>,
+) -> Result<impl warp::Reply, warp::Rejection> {
+    info!(
+        "🔄 HTTP: update_tx_status: tx_hash={}, status={}",
+        req.tx_hash, req.status
+    );
+
+    let status_enum = match req.status.to_lowercase().as_str() {
+        "pending" => TransactionStatus::Pending,
+        "rejected" => TransactionStatus::Rejected,
+        "confirmed" => TransactionStatus::Confirmed,
+        other => {
+            warn!("❌ Invalid transaction status received: {}", other);
+            return Ok(warp::reply::json(&TransactionResponse {
+                tx_hash: req.tx_hash,
+                status: "error".to_string(),
+                message: format!("Invalid status: {}", other),
+            }));
+        }
+    };
+
+    let tx_hash = req.tx_hash.clone();
+    match user_registry
+        .update_transaction_status(&tx_hash, status_enum.clone())
+        .await
+    {
+        Ok(()) => {
+            let status_str = format!("{:?}", status_enum).to_lowercase();
+            Ok(warp::reply::json(&TransactionResponse {
+                tx_hash,
+                status: status_str,
+                message: "Transaction status updated".to_string(),
+            }))
+        }
+        Err(e) => {
+            error!("Failed to update transaction status: {}", e);
+            Ok(warp::reply::json(&TransactionResponse {
+                tx_hash,
+                status: "error".to_string(),
+                message: format!("Failed to update status: {}", e),
+            }))
+        }
+    }
 }
 
 async fn handle_get_user_info(
