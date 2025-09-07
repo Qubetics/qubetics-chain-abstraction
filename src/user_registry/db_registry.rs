@@ -301,6 +301,16 @@ impl DatabaseUserRegistry {
         Ok(())
     }
 
+    /// Get the user details for a given intent hash
+    pub async fn get_user_by_intent_hash(&self, intent_hash: &str) -> Option<UserRegistration> {
+        match self.user_storage.get_user_by_intent_hash(intent_hash).await {
+            Ok(user_opt) => user_opt,
+            Err(e) => {
+                tracing::error!("Failed to get user by intent hash {}: {}", intent_hash, e);
+                None
+            }
+        }
+    }
     /// Get the actual DepositIntent by hash
     pub async fn get_intent(&self, intent_hash: &str) -> Option<DepositIntent> {
         match self.intent_storage.get_intent(intent_hash).await {

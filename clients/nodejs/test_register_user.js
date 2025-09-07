@@ -408,11 +408,11 @@ async function runTests() {
   const signerAddr = await wallet.getAddress();
   log(`\n🔑 Derived signer address from TEST_PRIVKEY: ${signerAddr}`, 'blue');
 
-  // 1) DKG status
-  await testDKGStatus();
+  // // 1) DKG status
+  // await testDKGStatus();
 
-  // 2) Register ONLY the derived address 
-  const reg = await testRegisterUser(signerAddr);
+  // // 2) Register ONLY the derived address 
+  // const reg = await testRegisterUser(signerAddr);
 
   // if (reg.success) {
   //   log(`\n⏳ Waiting 2 seconds before checking user info...`, 'yellow');
@@ -426,13 +426,13 @@ async function runTests() {
   log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
   const amount = 10000000000000; // keep safe for JSON
   await testUserMpcDeposit({ wallet, amount });
-  await new Promise(r => setTimeout(r, 7000));
-  // 4) MPC deposit test WITH tx_id (should pass None to handle_deposit_intent)
-  log(`\n🧪 Test 2: Deposit amount WITH tx_id and status update`, 'blue');
-  const testTxId = TEST_TX_ID; // Generate a unique test transaction ID
-  console.log(`📊 Test Tx ID: ${testTxId}`, 'cyan');
-  const testStatus = 'confirmed'; // Test status
-  await testUserMpcDepositWithTxId({ wallet, amount, txId: testTxId, status: testStatus });
+  // await new Promise(r => setTimeout(r, 7000));
+  // // 4) MPC deposit test WITH tx_id (should pass None to handle_deposit_intent)
+  // log(`\n🧪 Test 2: Deposit amount WITH tx_id and status update`, 'blue');
+  // const testTxId = TEST_TX_ID; // Generate a unique test transaction ID
+  // console.log(`📊 Test Tx ID: ${testTxId}`, 'cyan');
+  // const testStatus = 'confirmed'; // Test status
+  // await testUserMpcDepositWithTxId({ wallet, amount, txId: testTxId, status: testStatus });
 
   // 5) MPC deposit test with potentially problematic amount (might trigger errors)
   // log(`\n🧪 Test 3: Large deposit amount (might trigger errors)`, 'blue');

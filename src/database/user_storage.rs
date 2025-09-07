@@ -226,7 +226,26 @@ impl UserStorage {
             Ok(None)
         }
     }
-
+    /// Get user details by intent hash
+    pub async fn get_user_by_intent_hash(
+        &self,
+        intent_hash: &str,
+    ) -> Result<Option<UserRegistration>> {
+        // Use the USER_REGISTRATION prefix from the keys module
+        let user_prefix = crate::database::keys::USER_REGISTRATION;
+        // List all user keys (assuming db has a list_keys method)
+        let user_keys = self.db.get_keys_with_prefix(user_prefix)?;
+        for user_key in user_keys {
+            // user_key is like "user:0xabc...", so strip the prefix to get the address
+            let address = user_key.strip_prefix(user_prefix).unwrap_or(&user_key);
+            if let Some(user) = self.get_user(address).await? {
+                if user.intent_hashes.contains_key(intent_hash) {
+                    return Ok(Some(user));
+                }
+            }
+        }
+        Ok(None)
+    }
     /// Update intent status for a user
     pub async fn update_intent_status(
         &self,
@@ -252,6 +271,13 @@ impl UserStorage {
         } else {
             Err(anyhow::anyhow!("User not found: {}", ethereum_address))
         }
+    }
+    /// Get user registration details by Ethereum address
+    pub async fn get_user_by_address(
+        &self,
+        ethereum_address: &str,
+    ) -> Result<Option<UserRegistration>> {
+        self.get_user(ethereum_address).await
     }
 }
 

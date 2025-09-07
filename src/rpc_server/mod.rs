@@ -94,7 +94,6 @@ pub struct UserMpcDepositRequest {
     // Optional transaction ID and status for updating existing deposits
     pub tx_id: Option<String>,
     pub status: Option<String>,
-    pub intent_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -119,7 +118,6 @@ pub struct UserMpcDepositVerifyResponse {
     pub signer_address: String,
     pub is_registered: bool,
     pub amount: u128,
-    pub used_personal_sign_prefix: bool,
     pub user_to_network_tx_id: Option<String>,
     pub network_to_target_tx_id: Option<String>,
     pub error_message: Option<String>,
@@ -848,10 +846,7 @@ async fn handle_user_mpc_deposit(
     message_tx: std::sync::Arc<tokio::sync::Mutex<mpsc::Sender<ChannelMessage>>>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
     info!(
-        "🧾 HTTP: user_mpc_deposit: amount={}, sig_present={}",
-        req.msg.amount,
-        req.signature.as_ref().map(|s| s.len()).is_some()
-    );
+        "🧾 HTTP: user_mpc_deposit: amount={}", req.msg.amount);
     if let Some(ref tx_id) = req.tx_id {
         if let Some(status) = user_registry.get_transaction_status(tx_id).await {
             if status == TransactionStatus::Confirmed {
@@ -861,7 +856,6 @@ async fn handle_user_mpc_deposit(
                     signer_address: "".to_string(),
                     is_registered: false,
                     amount: 0,
-                    used_personal_sign_prefix: false,
                     user_to_network_tx_id: None,
                     network_to_target_tx_id: None,
                     error_message: Some(format!("Transaction {} is already confirmed and cannot be processed again", tx_id)),
@@ -905,227 +899,136 @@ async fn handle_user_mpc_deposit(
     // Use compact JSON serialization (no spaces) to match JavaScript's JSON.stringify()
     let intent_json = serde_json::to_string(&req.msg).unwrap();
     let intent_bytes = intent_json.as_bytes();
-
-    // Determine intent hash: prefer provided, else compute
-    let (intent_hash_bytes, intent_hash_hex) = if let Some(ref provided_hash) = req.intent_hash {
-        let h = provided_hash.trim_start_matches("0x").to_lowercase();
-        match hex::decode(&h) {
-            Ok(bytes) => (bytes, h),
-            Err(e) => {
-                warn!("❌ Invalid intent_hash provided: {}", e);
-                return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
-                    status: "error".to_string(),
-                    signer_address: "".to_string(),
-                    is_registered: false,
-                    amount: 0,
-                    used_personal_sign_prefix: false,
-                    user_to_network_tx_id: None,
-                    network_to_target_tx_id: None,
-                    error_message: Some(format!("Invalid intent_hash format: {}", e)),
-                }));
-            }
-        }
-    } else {
-        let digest = Keccak256::digest(intent_bytes);
-        (digest.to_vec(), hex::encode(digest))
-    };
+    let intent_hash = Keccak256::digest(intent_bytes);
 
     info!(
         "🔐 Processing MPC deposit - Intent hash: {:?}, Amount: {}",
-        intent_hash_hex, req.msg.amount
+        intent_hash, req.msg.amount
     );
     info!("📝 Server JSON serialization: {}", intent_json);
     info!(
         "📏 JSON length: {}, First 100 chars: {}",
         intent_json.len(),
-        if intent_json.len() > 100 { &intent_json[0..100] } else { &intent_json }
-    );
-
-    // If provided/derived intent hash already exists in DB, skip signature path and poll status
-    if user_registry.get_intent(&intent_hash_hex).await.is_some() {
-        info!(
-            "✅ Intent {} already exists in DB, skipping registration and polling for result",
-            intent_hash_hex
-        );
-        let (u2n_tx_id, n2t_tx_id, chain_error) =
-            wait_for_transaction_result(&user_registry, &intent_hash_bytes, 10).await;
-
-        if u2n_tx_id.is_some() || n2t_tx_id.is_some() {
-            return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
-                status: "success".to_string(),
-                signer_address: "".to_string(),
-                is_registered: true,
-                amount: req.msg.amount,
-                used_personal_sign_prefix: false,
-                user_to_network_tx_id: u2n_tx_id,
-                network_to_target_tx_id: n2t_tx_id,
-                error_message: None,
-            }));
-        } else if let Some(error_msg) = chain_error {
-            return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
-                status: "error".to_string(),
-                signer_address: "".to_string(),
-                is_registered: true,
-                amount: req.msg.amount,
-                used_personal_sign_prefix: false,
-                user_to_network_tx_id: None,
-                network_to_target_tx_id: None,
-                error_message: Some(error_msg),
-            }));
+        if intent_json.len() > 100 {
+            &intent_json[0..100]
         } else {
-            return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
-                status: "timeout".to_string(),
-                signer_address: "".to_string(),
-                is_registered: true,
-                amount: req.msg.amount,
-                used_personal_sign_prefix: false,
-                user_to_network_tx_id: None,
-                network_to_target_tx_id: None,
-                error_message: Some(format!(
-                    "Transaction processing timeout. Intent hash: {}. The transaction may still be processing or may have failed. Please check the status later.",
-                    intent_hash_hex
-                )),
-            }));
+            &intent_json
         }
-    }
+    );
+    // Check if the intent hash is already stored; if yes, retrieve user details in a variable
+    let intent_hash_hex = hex::encode(intent_hash);
+    // Retrieve the user by intent hash and immediately handle Some/None
+    let user_registration = match user_registry.get_user_by_intent_hash(&intent_hash_hex).await {
+        Some(existing_user) => existing_user,
+        None => {
+            // No existing user for this intent hash
+            match &req.signature {
+                Some(signature) => {
+                    info!("No existing user found for intent hash, but signature is present in the request.");
+                    let (compact, v) = match normalize_eth_signature(signature) {
+                        Ok(t) => t,
+                        Err(e) => {
+                            warn!("❌ Failed to normalize signature: {}", e);
+                            return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+                                status: "error".to_string(),
+                                signer_address: "".to_string(),
+                                is_registered: false,
+                                amount: 0,
+                                user_to_network_tx_id: None,
+                                network_to_target_tx_id: None,
+                                error_message: Some(format!("Invalid signature format: {}", e)),
+                            }));
+                        }
+                    };
+                    let (signer, _used_personal) = match recover_eth_address_secp(intent_bytes, &compact, v, true) {
+                        Ok(addr) => (addr, true),
+                        Err(e1) => {
+                            warn!("⚠️ personal_sign recovery failed: {}", e1);
+                            match recover_eth_address_secp(intent_bytes, &compact, v, false) {
+                                Ok(addr) => (addr, false),
+                                Err(e2) => {
+                                    error!(
+                                        "❌ Both signature recovery methods failed: personal_sign={}, raw={}",
+                                        e1, e2
+                                    );
+                                    return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+                                        status: "error".to_string(),
+                                        signer_address: "".to_string(),
+                                        is_registered: false,
+                                        amount: 0,
+                                        user_to_network_tx_id: None,
+                                        network_to_target_tx_id: None,
+                                        error_message: Some(format!(
+                                            "Failed to recover signature: personal_sign={}, raw={}",
+                                            e1, e2
+                                        )),
+                                    }));
+                                }
+                            }
+                        }
+                    };
+                    // Store intent hash in user registry
+                    if let Err(e) = user_registry
+                        .store_intent_hash(intent_hash.to_vec(), &signer, &req.msg)
+                        .await
+                    {
+                        error!("❌ Failed to store intent hash: {}", e);
+                        return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+                            status: "error".to_string(),
+                            signer_address: signer.clone(),
+                            is_registered: true,
+                            amount: 0,
+                            user_to_network_tx_id: None,
+                            network_to_target_tx_id: None,
+                            error_message: Some(format!("Failed to process deposit intent: {}", e)),
+                        }));
+                    }
 
-    // If we reach here, the intent is not in DB yet; require signature to register it
-    let signature = if let Some(sig) = &req.signature { sig } else {
-        return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
-            status: "error".to_string(),
-            signer_address: "".to_string(),
-            is_registered: false,
-            amount: 0,
-            used_personal_sign_prefix: false,
-            user_to_network_tx_id: None,
-            network_to_target_tx_id: None,
-            error_message: Some("Intent not found and no signature provided to register it".to_string()),
-        }));
-    };
+                    info!("✅ Intent hash stored successfully for user: {}", signer);
 
-    // Normalize signature (expects r||s||v 65 bytes in hex)
-    let (compact, v) = match normalize_eth_signature(signature) {
-        Ok(t) => t,
-        Err(e) => {
-            warn!("❌ Failed to normalize signature: {}", e);
-            return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
-                status: "error".to_string(),
-                signer_address: "".to_string(),
-                is_registered: false,
-                amount: 0,
-                used_personal_sign_prefix: false,
-                user_to_network_tx_id: None,
-                network_to_target_tx_id: None,
-                error_message: Some(format!("Invalid signature format: {}", e)),
-            }));
-        }
-    };
-
-    // Try personal_sign first, then raw keccak(msg)
-    let (signer, used_personal) = match recover_eth_address_secp(intent_bytes, &compact, v, true) {
-        Ok(addr) => (addr, true),
-        Err(e1) => {
-            warn!("⚠️ personal_sign recovery failed: {}", e1);
-            match recover_eth_address_secp(intent_bytes, &compact, v, false) {
-                Ok(addr) => (addr, false),
-                Err(e2) => {
-                    error!(
-                        "❌ Both signature recovery methods failed: personal_sign={}, raw={}",
-                        e1, e2
-                    );
+                    // Fetch UserRegistration from signer address
+                    match user_registry.get_user_by_address(&signer).await {
+                        Some(user_reg) => user_reg,
+                        None => {
+                            return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+                                status: "error".to_string(),
+                                signer_address: signer.clone(),
+                                is_registered: false,
+                                amount: 0,
+                                user_to_network_tx_id: None,
+                                network_to_target_tx_id: None,
+                                error_message: Some("No user registration found for signer address.".to_string()),
+                            }));
+                        }
+                    }
+                }
+                None => {
+                    // No signature provided and no details found in DB, return error
                     return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
                         status: "error".to_string(),
                         signer_address: "".to_string(),
                         is_registered: false,
                         amount: 0,
-                        used_personal_sign_prefix: false,
                         user_to_network_tx_id: None,
                         network_to_target_tx_id: None,
-                        error_message: Some(format!(
-                            "Failed to recover signature: personal_sign={}, raw={}",
-                            e1, e2
-                        )),
+                        error_message: Some("No details found in database for intent hash and no signature provided.".to_string()),
                     }));
                 }
             }
         }
     };
-
-    info!("✅ Recovered signer address: {}", signer);
-
-    // Check if user is registered
-    let is_registered = user_registry.get_user_by_address(&signer).await.is_some();
-
-    if !is_registered {
-        warn!("⚠️ Unregistered user attempting MPC deposit: {}", signer);
-        return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
-            status: "error".to_string(),
-            signer_address: signer,
-            is_registered: false,
-            amount: 0,
-            used_personal_sign_prefix: used_personal,
-            user_to_network_tx_id: None,
-            network_to_target_tx_id: None,
-            error_message: Some(
-                "User is not registered. Please register first before making deposits.".to_string(),
-            ),
-        }));
-    }
-
-    // Store intent hash in user registry
-    if let Err(e) = user_registry
-        .store_intent_hash(intent_hash_bytes.clone(), &signer, &req.msg)
-        .await
-    {
-        error!("❌ Failed to store intent hash: {}", e);
-        return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
-            status: "error".to_string(),
-            signer_address: signer.clone(),
-            is_registered: true,
-            amount: 0,
-            used_personal_sign_prefix: used_personal,
-            user_to_network_tx_id: None,
-            network_to_target_tx_id: None,
-            error_message: Some(format!("Failed to process deposit intent: {}", e)),
-        }));
-    }
-
-    info!("✅ Intent hash stored successfully for user: {}", signer);
-
-    // Broadcast intent to other nodes
-    let broadcast_message = ChannelMessage::Broadcast {
-        topic: "intent-broadcast".to_string(),
-        data: serde_json::to_vec(&crate::types::GossipsubMessage::IntentBroadcast {
-            intent: req.msg.clone(),
-            signature: signature.clone(),
-            intent_hash: intent_hash_hex.clone(),
-        })
-        .unwrap_or_default(),
-    };
-    info!("✅ Broadcast message: {:?}\n", broadcast_message);
-
-    // Send broadcast message
-    let tx = message_tx.lock().await;
-    if let Err(e) = tx.send(broadcast_message).await {
-        warn!("❌ Failed to broadcast intent to other nodes: {}", e);
-        // Don't fail the request if broadcasting fails
+    
+    let user_eth_address = if req.tx_id.is_some() {
+        None
     } else {
-        info!(
-            "📡 Successfully broadcasted intent {} to other nodes",
-            intent_hash_hex
-        );
-    }
-    drop(tx);
-
-    // Process the deposit intent
-    let user_eth_address = if req.tx_id.is_some() { None } else { Some(signer.clone()) };
-
+        Some(user_registration.ethereum_address.clone())
+    };
     // Process the deposit intent
     match handle_deposit_intent(req.msg.clone(), user_eth_address, message_tx).await {
         Ok(_) => {
             info!(
                 "✅ Deposit intent processed successfully for user: {}",
-                signer
+                user_registration.ethereum_address
             );
         }
         Err(e) => {
@@ -1136,10 +1039,9 @@ async fn handle_user_mpc_deposit(
 
             return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
                 status: "error".to_string(),
-                signer_address: signer.clone(),
+                signer_address: user_registration.ethereum_address.clone(),
                 is_registered: true,
                 amount: req.msg.amount,
-                used_personal_sign_prefix: used_personal,
                 user_to_network_tx_id: None,
                 network_to_target_tx_id: None,
                 error_message: Some(error_message),
@@ -1148,7 +1050,7 @@ async fn handle_user_mpc_deposit(
     }
 
     // Wait for the actual transaction result (success with TX ID or chain error)
-    let intent_hash_hex = intent_hash_hex; // already computed
+    let intent_hash_hex = hex::encode(&intent_hash);
     info!(
         "✅ Deposit intent submitted successfully. Intent hash: {}",
         intent_hash_hex
@@ -1158,7 +1060,7 @@ async fn handle_user_mpc_deposit(
     // Poll the database frequently for up to 10 seconds so that we can
     // return a response as soon as the transaction is available.
     let (u2n_tx_id, n2t_tx_id, chain_error) =
-        wait_for_transaction_result(&user_registry, &intent_hash_bytes, 10).await;
+        wait_for_transaction_result(&user_registry, &intent_hash, 10).await;
 
     // Log the transaction IDs if recorded
     if let Some(ref tx_id_str) = u2n_tx_id {
@@ -1178,10 +1080,9 @@ async fn handle_user_mpc_deposit(
         // At least one transaction succeeded
         Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
             status: "success".to_string(),
-            signer_address: signer,
+            signer_address: user_registration.ethereum_address.clone(),
             is_registered: true,
             amount: req.msg.amount,
-            used_personal_sign_prefix: used_personal,
             user_to_network_tx_id: u2n_tx_id,
             network_to_target_tx_id: n2t_tx_id,
             error_message: None,
@@ -1190,10 +1091,9 @@ async fn handle_user_mpc_deposit(
         // Chain error occurred - return the actual error from blockchain
         Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
             status: "error".to_string(),
-            signer_address: signer,
+            signer_address: user_registration.ethereum_address.clone(),
             is_registered: true,
             amount: req.msg.amount,
-            used_personal_sign_prefix: used_personal,
             user_to_network_tx_id: None,
             network_to_target_tx_id: None,
             error_message: Some(error_msg), // This is the actual chain error!
@@ -1202,10 +1102,9 @@ async fn handle_user_mpc_deposit(
         // No transaction ID and no error after waiting - still processing or timeout
         Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
             status: "timeout".to_string(),
-            signer_address: signer,
+            signer_address: user_registration.ethereum_address.clone(),
             is_registered: true,
             amount: req.msg.amount,
-            used_personal_sign_prefix: used_personal,
             user_to_network_tx_id: None,
             network_to_target_tx_id: None,
             error_message: Some(format!(
