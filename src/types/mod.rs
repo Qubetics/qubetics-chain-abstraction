@@ -61,6 +61,7 @@ pub enum GossipsubMessage {
     DepositIntent {
         intent: crate::rpc_server::DepositIntent,
         intent_id: String,
+        user_eth_address: Option<String>, // If provided, use user's tweaked share; otherwise use network's DKG share
     },
     DKGCommand(crate::types::rpc::RPCRequest),
     UserRegistration {
