@@ -153,7 +153,7 @@ async function testUserMpcDeposit({ wallet, amount }) {
       amount: amount, // Use the passed amount parameter
       source_token: 'TICS',
       target_token: 'TICS',
-      timestamp: 121, // Current Unix timestamp in seconds
+      timestamp: 10000, // Current Unix timestamp in seconds
     };
 
     // Serialize DepositIntent for signing
@@ -167,7 +167,10 @@ async function testUserMpcDeposit({ wallet, amount }) {
     const response = await axios.post(
       `${RPC_BASE_URL}/user_mpc_deposit`,
       { signature, msg: depositIntent },
-      { headers: { 'Content-Type': 'application/json' } }
+      { 
+        headers: { 'Content-Type': 'application/json' },
+        timeout: 15000 // 15 seconds timeout to match server processing time
+      }
     );
 
     // Check response status to determine success or error
@@ -284,7 +287,7 @@ async function testUserMpcDepositWithTxId({ wallet, amount, txId, status }) {
       amount: amount, // Use the passed amount parameter
       source_token: 'TICS',
       target_token: 'TICS',
-      timestamp: 1212121212, // Current Unix timestamp in seconds
+      timestamp: 10000, // Current Unix timestamp in seconds
     };
 
     // Serialize DepositIntent for signing
@@ -304,7 +307,10 @@ async function testUserMpcDepositWithTxId({ wallet, amount, txId, status }) {
         tx_id: txId,    // Include tx_id
         status: status  // Include status
       },
-      { headers: { 'Content-Type': 'application/json' } }
+      { 
+        headers: { 'Content-Type': 'application/json' },
+        timeout: 15000 // 15 seconds timeout to match server processing time
+      }
     );
 
     // Check response status to determine success or error
@@ -408,31 +414,31 @@ async function runTests() {
   const signerAddr = await wallet.getAddress();
   log(`\n🔑 Derived signer address from TEST_PRIVKEY: ${signerAddr}`, 'blue');
 
-  // // 1) DKG status
-  // await testDKGStatus();
+  // 1) DKG status
+  await testDKGStatus();
 
-  // // 2) Register ONLY the derived address 
-  // const reg = await testRegisterUser(signerAddr);
+  // 2) Register ONLY the derived address 
+  const reg = await testRegisterUser(signerAddr);
 
-  // if (reg.success) {
-  //   log(`\n⏳ Waiting 2 seconds before checking user info...`, 'yellow');
-  //   await new Promise(r => setTimeout(r, 2000));
-  //   await testGetUserInfo(signerAddr);
-  // } else {
-  //   log(`\n⚠️ Registration failed; continuing to deposit test (is_registered may be false).`, 'yellow');
-  // }
+  if (reg.success) {
+    log(`\n⏳ Waiting 2 seconds before checking user info...`, 'yellow');
+    await new Promise(r => setTimeout(r, 2000));
+    await testGetUserInfo(signerAddr);
+  } else {
+    log(`\n⚠️ Registration failed; continuing to deposit test (is_registered may be false).`, 'yellow');
+  }
 
   // 3) MPC deposit test WITHOUT tx_id (should pass Some(signer) to handle_deposit_intent)
   log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
   const amount = 10000000000000; // keep safe for JSON
   await testUserMpcDeposit({ wallet, amount });
-  // await new Promise(r => setTimeout(r, 7000));
-  // // 4) MPC deposit test WITH tx_id (should pass None to handle_deposit_intent)
-  // log(`\n🧪 Test 2: Deposit amount WITH tx_id and status update`, 'blue');
-  // const testTxId = TEST_TX_ID; // Generate a unique test transaction ID
-  // console.log(`📊 Test Tx ID: ${testTxId}`, 'cyan');
-  // const testStatus = 'confirmed'; // Test status
-  // await testUserMpcDepositWithTxId({ wallet, amount, txId: testTxId, status: testStatus });
+  await new Promise(r => setTimeout(r, 7000));
+  // 4) MPC deposit test WITH tx_id (should pass None to handle_deposit_intent)
+  log(`\n🧪 Test 2: Deposit amount WITH tx_id and status update`, 'blue');
+  const testTxId = TEST_TX_ID; // Generate a unique test transaction ID
+  console.log(`📊 Test Tx ID: ${testTxId}`, 'cyan');
+  const testStatus = 'confirmed'; // Test status
+  await testUserMpcDepositWithTxId({ wallet, amount, txId: testTxId, status: testStatus });
 
   // 5) MPC deposit test with potentially problematic amount (might trigger errors)
   // log(`\n🧪 Test 3: Large deposit amount (might trigger errors)`, 'blue');

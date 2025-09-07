@@ -56,9 +56,9 @@ async function main() {
     console.log(`${computeAddress ? '✅' : '❌'} ethers: ${computeAddress ? 'Available' : 'Missing - install ethers'}`);
 
 
-    const msgHash = Buffer.from("448fa2eac40d63ca14767d21dddc1012e71741d1c58129a54a29536d02f6f295", "hex");
+    const msgHash = Buffer.from("486d300d82918195bdd31a790e773c9efb1be7434a7d722f0436513002c37fe2", "hex");
     const rBuf = Buffer.from("24653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c", "hex");
-    const sBuf = Buffer.from("7d9372856d0f23a3e2bbc7c95172b6c5346ccce43f1d17833485f7bec776580f", "hex");
+    const sBuf = Buffer.from("4122e84aa1a78264366cfa2e82b2e246a05d01359bcddb709c15906ebeda75d4", "hex");
     const recoveryId = 1;
 
 
