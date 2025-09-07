@@ -89,11 +89,12 @@ pub struct UserRegistrationRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserMpcDepositRequest {
-    pub signature: String,
+    pub signature: Option<String>,
     pub msg: DepositIntent,
     // Optional transaction ID and status for updating existing deposits
     pub tx_id: Option<String>,
     pub status: Option<String>,
+    pub intent_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -783,7 +784,8 @@ async fn get_transaction_id_for_intent(
 
 /// Wait for a transaction ID or chain error associated with the given intent hash.
 /// Polls the database frequently to return as soon as possible and times out
-/// after the provided number of seconds.
+/// after the provided number of seconds. Tries to get both transaction IDs when possible,
+/// but returns with whatever is available after the timeout.
 async fn wait_for_transaction_result(
     user_registry: &DatabaseUserRegistry,
     intent_hash: &[u8],
@@ -793,12 +795,29 @@ async fn wait_for_transaction_result(
     let intent_hash_hex = hex::encode(intent_hash);
     let poll_interval = tokio::time::Duration::from_millis(250);
     let timeout = tokio::time::Duration::from_secs(timeout_secs);
+    
+    // Give a bit more time to potentially get both transaction IDs
+    let extended_timeout = timeout + tokio::time::Duration::from_secs(2);
+    let mut best_result = (None, None, None);
 
     loop {
         // Check for transaction ids
         let (u2n_tx, n2t_tx) = get_transaction_id_for_intent(user_registry, intent_hash).await;
+        
+        // Update our best result if we have new information
         if u2n_tx.is_some() || n2t_tx.is_some() {
-            return (u2n_tx, n2t_tx, None);
+            best_result = (u2n_tx, n2t_tx, None);
+            
+            // If we have both transaction IDs, return immediately
+            if best_result.0.is_some() && best_result.1.is_some() {
+                return best_result;
+            }
+            
+            // If we only have one, continue polling for a bit longer to see if we can get the other
+            // But don't wait too long - return after the original timeout if we have at least one
+            if start.elapsed() >= timeout {
+                return best_result;
+            }
         }
 
         // Check for any recorded chain error
@@ -811,14 +830,16 @@ async fn wait_for_transaction_result(
             }
         }
 
-        if start.elapsed() >= timeout {
+        // If we've exceeded the extended timeout, return whatever we have
+        if start.elapsed() >= extended_timeout {
             break;
         }
 
         tokio::time::sleep(poll_interval).await;
     }
 
-    (None, None, None)
+    // Return the best result we found, or None if we found nothing
+    best_result
 }
 
 async fn handle_user_mpc_deposit(
@@ -827,11 +848,27 @@ async fn handle_user_mpc_deposit(
     message_tx: std::sync::Arc<tokio::sync::Mutex<mpsc::Sender<ChannelMessage>>>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
     info!(
-        "🧾 HTTP: user_mpc_deposit: amount={}, sig_len={}",
+        "🧾 HTTP: user_mpc_deposit: amount={}, sig_present={}",
         req.msg.amount,
-        req.signature.len()
+        req.signature.as_ref().map(|s| s.len()).is_some()
     );
-
+    if let Some(ref tx_id) = req.tx_id {
+        if let Some(status) = user_registry.get_transaction_status(tx_id).await {
+            if status == TransactionStatus::Confirmed {
+                warn!("❌ Transaction {} is already confirmed, rejecting duplicate call", tx_id);
+                return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+                    status: "error".to_string(),
+                    signer_address: "".to_string(),
+                    is_registered: false,
+                    amount: 0,
+                    used_personal_sign_prefix: false,
+                    user_to_network_tx_id: None,
+                    network_to_target_tx_id: None,
+                    error_message: Some(format!("Transaction {} is already confirmed and cannot be processed again", tx_id)),
+                }));
+            }
+        }
+    }
     // If transaction ID and status are provided, update the database accordingly
     if let (Some(ref tx_id), Some(ref status_str)) = (&req.tx_id, &req.status) {
         info!(
@@ -868,25 +905,106 @@ async fn handle_user_mpc_deposit(
     // Use compact JSON serialization (no spaces) to match JavaScript's JSON.stringify()
     let intent_json = serde_json::to_string(&req.msg).unwrap();
     let intent_bytes = intent_json.as_bytes();
-    let intent_hash = Keccak256::digest(intent_bytes);
+
+    // Determine intent hash: prefer provided, else compute
+    let (intent_hash_bytes, intent_hash_hex) = if let Some(ref provided_hash) = req.intent_hash {
+        let h = provided_hash.trim_start_matches("0x").to_lowercase();
+        match hex::decode(&h) {
+            Ok(bytes) => (bytes, h),
+            Err(e) => {
+                warn!("❌ Invalid intent_hash provided: {}", e);
+                return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+                    status: "error".to_string(),
+                    signer_address: "".to_string(),
+                    is_registered: false,
+                    amount: 0,
+                    used_personal_sign_prefix: false,
+                    user_to_network_tx_id: None,
+                    network_to_target_tx_id: None,
+                    error_message: Some(format!("Invalid intent_hash format: {}", e)),
+                }));
+            }
+        }
+    } else {
+        let digest = Keccak256::digest(intent_bytes);
+        (digest.to_vec(), hex::encode(digest))
+    };
 
     info!(
         "🔐 Processing MPC deposit - Intent hash: {:?}, Amount: {}",
-        intent_hash, req.msg.amount
+        intent_hash_hex, req.msg.amount
     );
     info!("📝 Server JSON serialization: {}", intent_json);
     info!(
         "📏 JSON length: {}, First 100 chars: {}",
         intent_json.len(),
-        if intent_json.len() > 100 {
-            &intent_json[0..100]
-        } else {
-            &intent_json
-        }
+        if intent_json.len() > 100 { &intent_json[0..100] } else { &intent_json }
     );
 
+    // If provided/derived intent hash already exists in DB, skip signature path and poll status
+    if user_registry.get_intent(&intent_hash_hex).await.is_some() {
+        info!(
+            "✅ Intent {} already exists in DB, skipping registration and polling for result",
+            intent_hash_hex
+        );
+        let (u2n_tx_id, n2t_tx_id, chain_error) =
+            wait_for_transaction_result(&user_registry, &intent_hash_bytes, 10).await;
+
+        if u2n_tx_id.is_some() || n2t_tx_id.is_some() {
+            return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+                status: "success".to_string(),
+                signer_address: "".to_string(),
+                is_registered: true,
+                amount: req.msg.amount,
+                used_personal_sign_prefix: false,
+                user_to_network_tx_id: u2n_tx_id,
+                network_to_target_tx_id: n2t_tx_id,
+                error_message: None,
+            }));
+        } else if let Some(error_msg) = chain_error {
+            return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+                status: "error".to_string(),
+                signer_address: "".to_string(),
+                is_registered: true,
+                amount: req.msg.amount,
+                used_personal_sign_prefix: false,
+                user_to_network_tx_id: None,
+                network_to_target_tx_id: None,
+                error_message: Some(error_msg),
+            }));
+        } else {
+            return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+                status: "timeout".to_string(),
+                signer_address: "".to_string(),
+                is_registered: true,
+                amount: req.msg.amount,
+                used_personal_sign_prefix: false,
+                user_to_network_tx_id: None,
+                network_to_target_tx_id: None,
+                error_message: Some(format!(
+                    "Transaction processing timeout. Intent hash: {}. The transaction may still be processing or may have failed. Please check the status later.",
+                    intent_hash_hex
+                )),
+            }));
+        }
+    }
+
+    // If we reach here, the intent is not in DB yet; require signature to register it
+    let signature = if let Some(sig) = &req.signature { sig } else {
+        return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+            status: "error".to_string(),
+            signer_address: "".to_string(),
+            is_registered: false,
+            amount: 0,
+            used_personal_sign_prefix: false,
+            user_to_network_tx_id: None,
+            network_to_target_tx_id: None,
+            error_message: Some("Intent not found and no signature provided to register it".to_string()),
+        }));
+    };
+
     // Normalize signature (expects r||s||v 65 bytes in hex)
-    let (compact, v) = match normalize_eth_signature(&req.signature) {
+    let (compact, v) = match normalize_eth_signature(signature) {
         Ok(t) => t,
         Err(e) => {
             warn!("❌ Failed to normalize signature: {}", e);
@@ -956,7 +1074,7 @@ async fn handle_user_mpc_deposit(
 
     // Store intent hash in user registry
     if let Err(e) = user_registry
-        .store_intent_hash(intent_hash.to_vec(), &signer, &req.msg)
+        .store_intent_hash(intent_hash_bytes.clone(), &signer, &req.msg)
         .await
     {
         error!("❌ Failed to store intent hash: {}", e);
@@ -975,16 +1093,16 @@ async fn handle_user_mpc_deposit(
     info!("✅ Intent hash stored successfully for user: {}", signer);
 
     // Broadcast intent to other nodes
-    let intent_hash_hex = hex::encode(&intent_hash);
     let broadcast_message = ChannelMessage::Broadcast {
         topic: "intent-broadcast".to_string(),
         data: serde_json::to_vec(&crate::types::GossipsubMessage::IntentBroadcast {
             intent: req.msg.clone(),
-            signature: req.signature.clone(),
+            signature: signature.clone(),
             intent_hash: intent_hash_hex.clone(),
         })
         .unwrap_or_default(),
     };
+    info!("✅ Broadcast message: {:?}\n", broadcast_message);
 
     // Send broadcast message
     let tx = message_tx.lock().await;
@@ -1000,11 +1118,7 @@ async fn handle_user_mpc_deposit(
     drop(tx);
 
     // Process the deposit intent
-    let user_eth_address = if req.tx_id.is_some() {
-        None
-    } else {
-        Some(signer.clone())
-    };
+    let user_eth_address = if req.tx_id.is_some() { None } else { Some(signer.clone()) };
 
     // Process the deposit intent
     match handle_deposit_intent(req.msg.clone(), user_eth_address, message_tx).await {
@@ -1034,7 +1148,7 @@ async fn handle_user_mpc_deposit(
     }
 
     // Wait for the actual transaction result (success with TX ID or chain error)
-    let intent_hash_hex = hex::encode(&intent_hash);
+    let intent_hash_hex = intent_hash_hex; // already computed
     info!(
         "✅ Deposit intent submitted successfully. Intent hash: {}",
         intent_hash_hex
@@ -1044,7 +1158,7 @@ async fn handle_user_mpc_deposit(
     // Poll the database frequently for up to 10 seconds so that we can
     // return a response as soon as the transaction is available.
     let (u2n_tx_id, n2t_tx_id, chain_error) =
-        wait_for_transaction_result(&user_registry, &intent_hash, 10).await;
+        wait_for_transaction_result(&user_registry, &intent_hash_bytes, 10).await;
 
     // Log the transaction IDs if recorded
     if let Some(ref tx_id_str) = u2n_tx_id {

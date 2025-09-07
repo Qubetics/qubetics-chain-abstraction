@@ -348,7 +348,7 @@ pub async fn create_chain_transaction_from_deposit_intent(
         let ethereum_tx = EthereumTransaction {
             to: to_address,
             value: format!("0x{:x}", intent.amount),
-            gas_limit: 21000,
+            gas_limit: 300000,
             gas_price: get_default_gas_price_for_chain(chain_to_use),
             nonce: fetch_ethereum_nonce(&from_address, chain_id).await?,
             data: None,

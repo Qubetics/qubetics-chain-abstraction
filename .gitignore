@@ -2,4 +2,8 @@
 /logs
 node_modules
 # RocksDB data
-/data/rocksdb-*/
+**/data/
+/logs/
+/node2/
+/node3/
+/node4/

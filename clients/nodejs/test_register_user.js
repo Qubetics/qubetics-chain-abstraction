@@ -10,6 +10,7 @@ const RPC_BASE_URL = 'http://localhost:8081';
 
 // 👉 Private key you provided (hex, no 0x prefix needed)
 const TEST_PRIVKEY = 'b61b1415e8b5e5a3144c0d7b8c556b23baed0366586931011c9d858ecf39bd37';
+let TEST_TX_ID = "0x61ee4fbe0d5e33a5b135be2a01f12ace5e52c55bdc5b4acc2a388f247275b536";
 
 // =========================
 // Colors for console output
@@ -152,7 +153,7 @@ async function testUserMpcDeposit({ wallet, amount }) {
       amount: amount, // Use the passed amount parameter
       source_token: 'TICS',
       target_token: 'TICS',
-      timestamp: 22222, // Current Unix timestamp in seconds
+      timestamp: 444444444, // Current Unix timestamp in seconds
     };
 
     // Serialize DepositIntent for signing
@@ -166,7 +167,7 @@ async function testUserMpcDeposit({ wallet, amount }) {
     const response = await axios.post(
       `${RPC_BASE_URL}/user_mpc_deposit`,
       { signature, msg: depositIntent },
-      { headers: { 'Content-Type': 'application/json' }, timeout: 10000 }
+      { headers: { 'Content-Type': 'application/json' } }
     );
 
     // Check response status to determine success or error
@@ -196,10 +197,13 @@ async function testUserMpcDeposit({ wallet, amount }) {
     log(`   Is Registered: ${response.data.is_registered}`, 'cyan');
     log(`   Used personal_sign prefix: ${response.data.used_personal_sign_prefix}`, 'cyan');
     log(`   Amount: ${response.data.amount}`, 'cyan');
+
+    log(`📊 Response: ${response}`, 'cyan');
     
     // Show transaction ID if available
-    if (response.data.tx_id) {
-      log(`   🎯 Transaction ID: ${response.data.tx_id}`, 'green');
+    if (response.data.user_to_network_tx_id) {
+      log(`   🎯 Transaction ID: ${response.data.user_to_network_tx_id}`, 'green');
+      TEST_TX_ID = response.data.user_to_network_tx_id;
     } else {
       log(`   🎯 Transaction ID: Not available yet`, 'yellow');
     }
@@ -271,6 +275,7 @@ async function testUserMpcDepositWithTxId({ wallet, amount, txId, status }) {
     if (!userInfo.success) {
       throw new Error('Failed to fetch user info');
     }
+
     const depositIntent = {
       source_address: userInfo.data.derived_eth_address, // Use canonical address
       target_address: '0xc6dA53bCa90753699cd19521Dd559964490C6822',
@@ -279,7 +284,7 @@ async function testUserMpcDepositWithTxId({ wallet, amount, txId, status }) {
       amount: amount, // Use the passed amount parameter
       source_token: 'TICS',
       target_token: 'TICS',
-      timestamp: 87987987987, // Current Unix timestamp in seconds
+      timestamp: 444444444, // Current Unix timestamp in seconds
     };
 
     // Serialize DepositIntent for signing
@@ -299,7 +304,7 @@ async function testUserMpcDepositWithTxId({ wallet, amount, txId, status }) {
         tx_id: txId,    // Include tx_id
         status: status  // Include status
       },
-      { headers: { 'Content-Type': 'application/json' }, timeout: 10000 }
+      { headers: { 'Content-Type': 'application/json' } }
     );
 
     // Check response status to determine success or error
@@ -329,10 +334,13 @@ async function testUserMpcDepositWithTxId({ wallet, amount, txId, status }) {
     log(`   Is Registered: ${response.data.is_registered}`, 'cyan');
     log(`   Used personal_sign prefix: ${response.data.used_personal_sign_prefix}`, 'cyan');
     log(`   Amount: ${response.data.amount}`, 'cyan');
-    
+    log(`📊 Response: ${JSON.stringify(response.data)}`, 'cyan');
+
     // Show transaction ID if available
-    if (response.data.tx_id) {
-      log(`   🎯 Transaction ID: ${response.data.tx_id}`, 'green');
+    if (response.data.network_to_target_tx_id) {
+      log(`   🎯 Transaction ID: ${response.data.network_to_target_tx_id
+
+      }`, 'green');
     } else {
       log(`   🎯 Transaction ID: Not available yet`, 'yellow');
     }
@@ -400,11 +408,11 @@ async function runTests() {
   const signerAddr = await wallet.getAddress();
   log(`\n🔑 Derived signer address from TEST_PRIVKEY: ${signerAddr}`, 'blue');
 
-  // // 1) DKG status
-  // await testDKGStatus();
+  // 1) DKG status
+  await testDKGStatus();
 
-  // // 2) Register ONLY the derived address 
-  // const reg = await testRegisterUser(signerAddr);
+  // 2) Register ONLY the derived address 
+  const reg = await testRegisterUser(signerAddr);
 
   // if (reg.success) {
   //   log(`\n⏳ Waiting 2 seconds before checking user info...`, 'yellow');
@@ -415,15 +423,16 @@ async function runTests() {
   // }
 
   // 3) MPC deposit test WITHOUT tx_id (should pass Some(signer) to handle_deposit_intent)
-  // log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
-  const amount = 1000; // keep safe for JSON
+  log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
+  const amount = 10000000000000; // keep safe for JSON
   await testUserMpcDeposit({ wallet, amount });
-  // await new Promise(r => setTimeout(r, 7000));
+  await new Promise(r => setTimeout(r, 7000));
   // 4) MPC deposit test WITH tx_id (should pass None to handle_deposit_intent)
-  // log(`\n🧪 Test 2: Deposit amount WITH tx_id and status update`, 'blue');
-  // const testTxId = "0x831a880aceb60bd581b1a89fe83d59a84692b284f0b03999be98e4f8db45a708"; // Generate a unique test transaction ID
-  // const testStatus = 'confirmed'; // Test status
-  // await testUserMpcDepositWithTxId({ wallet, amount, txId: testTxId, status: testStatus });
+  log(`\n🧪 Test 2: Deposit amount WITH tx_id and status update`, 'blue');
+  const testTxId = TEST_TX_ID; // Generate a unique test transaction ID
+  console.log(`📊 Test Tx ID: ${testTxId}`, 'cyan');
+  const testStatus = 'confirmed'; // Test status
+  await testUserMpcDepositWithTxId({ wallet, amount, txId: testTxId, status: testStatus });
 
   // 5) MPC deposit test with potentially problematic amount (might trigger errors)
   // log(`\n🧪 Test 3: Large deposit amount (might trigger errors)`, 'blue');
