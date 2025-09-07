@@ -103,6 +103,7 @@ impl VrfService {
 
         let mut selector = self.selector.write().await;
         let selection_result = selector.select_mpc_nodes(available_nodes, threshold, round);
+        info!("🧐 Selection result: {:?}", selection_result);
         
         info!(
             "🎯 [VRF] Node {} selected {} nodes for {} operation round {}: {:?}",
@@ -334,7 +335,7 @@ impl VrfNodeSelector {
             .map(|(node_id, _)| node_id)
             .collect();
 
-        debug!("Selected nodes: {:?}", selected_nodes);
+        info!("🧐 Selected nodes: {:?}", selected_nodes);
 
         let result = NodeSelectionResult {
             selected_nodes: selected_nodes.clone(),

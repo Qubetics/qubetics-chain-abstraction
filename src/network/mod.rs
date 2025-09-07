@@ -1625,6 +1625,19 @@ impl NetworkLayer {
             }
             ChannelMessage::DepositIntent { intent, intent_id, user_eth_address } => {
                 info!("📝 [NETWORK] Processing deposit intent locally: {:?}", intent);
+                // Only broadcast to other nodes via gossipsub when using network share (no user_eth_address)
+                info!("🌐 [NETWORK] Using network share - broadcasting to P2P network");
+                let deposit_intent_msg = GossipsubMessage::DepositIntent {
+                    intent: intent.clone(),
+                    intent_id: intent_id.clone(),
+                };
+                let msg_bytes = serde_json::to_vec(&deposit_intent_msg)
+                    .map_err(|e| anyhow::anyhow!("Failed to serialize deposit intent: {}", e))?;
+                
+                // Broadcast to all peers via gossipsub
+                let topic = gossipsub::IdentTopic::new("deposit-intents");
+                swarm.behaviour_mut().gossipsub.publish(topic, msg_bytes)?;
+                info!("📡 [NETWORK] Broadcasted deposit intent to P2P network");
                 
                 // Calculate intent hash for transaction ID storage
                 let intent_hash = crate::utils::calculate_intent_hash(&intent);
@@ -1822,24 +1835,6 @@ impl NetworkLayer {
                     }
                 } else {
                     warn!("❌ [LOCAL] Signing node not available for deposit intent");
-                }
-                
-                // Only broadcast to other nodes via gossipsub when using network share (no user_eth_address)
-                if user_eth_address.is_none() {
-                    info!("🌐 [NETWORK] Using network share - broadcasting to P2P network");
-                    let deposit_intent_msg = GossipsubMessage::DepositIntent {
-                        intent: intent.clone(),
-                        intent_id: intent_id.clone(),
-                    };
-                    let msg_bytes = serde_json::to_vec(&deposit_intent_msg)
-                        .map_err(|e| anyhow::anyhow!("Failed to serialize deposit intent: {}", e))?;
-                    
-                    // Broadcast to all peers via gossipsub
-                    let topic = gossipsub::IdentTopic::new("deposit-intents");
-                    swarm.behaviour_mut().gossipsub.publish(topic, msg_bytes)?;
-                    info!("📡 [NETWORK] Broadcasted deposit intent to P2P network");
-                } else {
-                    info!("👤 [NETWORK] Using user-specific share - processing locally only (no broadcast)");
                 }
             }
             ChannelMessage::UserRegistration { ethereum_address, node_id } => {

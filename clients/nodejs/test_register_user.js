@@ -153,7 +153,7 @@ async function testUserMpcDeposit({ wallet, amount }) {
       amount: amount, // Use the passed amount parameter
       source_token: 'TICS',
       target_token: 'TICS',
-      timestamp: 444444444, // Current Unix timestamp in seconds
+      timestamp: 121, // Current Unix timestamp in seconds
     };
 
     // Serialize DepositIntent for signing
@@ -284,7 +284,7 @@ async function testUserMpcDepositWithTxId({ wallet, amount, txId, status }) {
       amount: amount, // Use the passed amount parameter
       source_token: 'TICS',
       target_token: 'TICS',
-      timestamp: 444444444, // Current Unix timestamp in seconds
+      timestamp: 1212121212, // Current Unix timestamp in seconds
     };
 
     // Serialize DepositIntent for signing
