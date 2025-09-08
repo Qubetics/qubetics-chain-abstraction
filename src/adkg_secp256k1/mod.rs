@@ -1,4 +1,5 @@
 use crate::{utils, NodeMembership};
+use crate::utils::hmac_helper::hmac256_from_addr;
 use anyhow::{Result, anyhow};
 use k256::{AffinePoint, ProjectivePoint, Scalar};
 use k256::elliptic_curve::group::Group;
@@ -53,6 +54,7 @@ pub struct DKGNode {
     message_tx: mpsc::Sender<ChannelMessage>,
     completion_callback: Option<DKGCompletionCallback>,
     round: u64,
+    chain_code: [u8; 32],
 }
 
 impl DKGNode {
@@ -62,6 +64,7 @@ impl DKGNode {
         total_nodes: usize,
         message_tx: mpsc::Sender<ChannelMessage>,
         storage: DkgStorage,
+        chain_code: [u8; 32],
     ) -> Self {
         Self {
             id,
@@ -72,6 +75,7 @@ impl DKGNode {
             message_tx,
             completion_callback: None,
             round: 0,
+            chain_code,
         }
     }
 
@@ -701,6 +705,38 @@ impl DKGNode {
 
         info!("📬 Ethereum Address from Group Key: {}", eth_address);
         info!("📬 Bitcoin Address from Group Key: {}", btc_address);
+
+        // Derive vault addresses using the same flow as user registration
+        let vault_hmac = hmac256_from_addr(&eth_address, &self.chain_code)
+            .unwrap_or([0u8; 32]);
+        if let Some(tweak_scalar) = Scalar::from_repr(vault_hmac.into()) {
+            match self
+                .derive_user_specific_group_key_from_commitments(tweak_scalar)
+                .await
+            {
+                Ok(vault_group_key) => {
+                    let vault_eth = utils::get_eth_address_from_group_key(vault_group_key);
+                    let vault_btc = utils::get_btc_address_from_group_key(vault_group_key);
+                    if let Err(e) = self
+                        .storage
+                        .set_vault_addresses(&vault_eth, &vault_btc)
+                        .await
+                    {
+                        warn!("⚠️ [DKG] Failed to store vault addresses: {}", e);
+                    } else {
+                        info!(
+                            "📦 [DKG] Stored vault addresses - ETH: {}, BTC: {}",
+                            vault_eth, vault_btc
+                        );
+                    }
+                }
+                Err(e) => {
+                    warn!("⚠️ [DKG] Failed to derive vault group key: {}", e);
+                }
+            }
+        } else {
+            warn!("⚠️ [DKG] Invalid tweak scalar for vault address generation");
+        }
 
         // Generate additional Ethereum addresses with different derivation paths
         let derivation_paths = [

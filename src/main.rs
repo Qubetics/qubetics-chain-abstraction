@@ -113,12 +113,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
     )));
 
     let dkg_storage = DkgStorage::new(database.clone());
+    let chain_code = [42u8; 32]; // Placeholder chain code
     let dkg_node = DKGNode::new(
         network.get_local_peer_id().to_string(),
         threshold,
         total,
         network.get_msg_tx(),
         dkg_storage.clone(),
+        chain_code,
     );
 
     let db_consensus_node = DatabaseConsensusNode::new(database.clone());
@@ -131,7 +133,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
     network.set_command_processor(command_processor);
 
     // Create database-backed user registry
-    let chain_code = [42u8; 32]; // Placeholder chain code
     let db_user_registry = Arc::new(DatabaseUserRegistry::new(database.clone(), chain_code));
     info!("🏗️ [MAIN] Created Arc<DatabaseUserRegistry>");
 
