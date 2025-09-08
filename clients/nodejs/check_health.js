@@ -102,7 +102,7 @@ async function main() {
   if (help) {
     log(`\n${colors.bright}Usage:${colors.reset}`, 'bright');
     log(`  node check_health.js [--url <BASE_URL>]`, 'cyan');
-    log(`  node check_health.js http://localhost:8081`, 'cyan');
+    log(`  node check_health.js http://localhost:${process.env.RPC_PORT || 8081}`, 'cyan');
     log(`\n${colors.bright}Env:${colors.reset}`, 'bright');
     log(`  RPC_BASE_URL can be used to set the default base URL.`, 'cyan');
     process.exit(0);

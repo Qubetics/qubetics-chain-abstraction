@@ -648,8 +648,6 @@ impl DKGNode {
             .filter_map(|comms| comms.get(0).cloned())
             .collect();
 
-        // 2. Print out the array of first commitments
-        println!("First commitments array: {:#?}", first_comms);
         // Calculate final public key (sum of all commitment constant terms)
         let mut final_public_key = ProjectivePoint::IDENTITY;
         let mut keys: Vec<_> = commitments.keys().collect();

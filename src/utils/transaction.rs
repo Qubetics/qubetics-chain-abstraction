@@ -237,8 +237,9 @@ pub fn calculate_bitcoin_fee(num_inputs: usize, num_outputs: usize) -> u64 {
 
 async fn fetch_ethereum_nonce(address: &str, chain_id: u64) -> Result<u64> {
     let rpc_url = match chain_id {
-        9029 => "https://rpc-testnet.qubetics.work", // Qubetics RPC URL
-        1 => "https://mainnet.infura.io/v3/YOUR_PROJECT_ID", // Ethereum mainnet
+        9029 => std::env::var("MPC_ETHEREUM_RPC_URL")
+            .unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string()),
+        1 => "https://mainnet.infura.io/v3/YOUR_PROJECT_ID".to_string(), // Ethereum mainnet
         _ => {
             return Err(anyhow::anyhow!(
                 "Unsupported chain ID for nonce fetching: {}",

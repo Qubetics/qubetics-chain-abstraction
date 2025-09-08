@@ -7,7 +7,7 @@ import crypto from 'crypto';
  * Allows users to choose between different deposit intent types
  */
 
-const SERVER_URL = 'http://localhost:8081';
+const SERVER_URL = process.env.RPC_BASE_URL || 'http://localhost:8081';
 
 function createBtcToTicsDepositIntent() {
     return {
@@ -68,7 +68,7 @@ async function submitDepositIntent(depositIntent, intentType) {
             console.error('🔢 Status Code:', error.response.status);
         } else if (error.request) {
             console.error('🌐 Network Error: No response received from server');
-            console.error('💡 Make sure the MPC node is running on port 8081');
+            console.error(`💡 Make sure the MPC node is running on port ${process.env.RPC_PORT || 8081}`);
         }
 
         process.exit(1);

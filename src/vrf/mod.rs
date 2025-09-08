@@ -651,9 +651,6 @@ mod tests {
         assert!(!output.hash.is_empty());
         assert!(output.value > 0);
 
-        println!("Generated proof: {} bytes", output.proof.len());
-        println!("Generated hash: {:?} bytes", output.hash.len());
-        println!("Generated value: {}", output.value);
     }
 
     #[test]
