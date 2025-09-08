@@ -6,7 +6,7 @@ import { Wallet } from 'ethers';
 // =========================
 // Configuration
 // =========================
-const RPC_BASE_URL = 'http://localhost:8081';
+const RPC_BASE_URL = process.env.RPC_BASE_URL || 'http://localhost:8081';
 
 // 👉 Private key you provided (hex, no 0x prefix needed)
 const TEST_PRIVKEY = 'b61b1415e8b5e5a3144c0d7b8c556b23baed0366586931011c9d858ecf39bd37';
@@ -61,7 +61,7 @@ async function testRegisterUser(ethereumAddress) {
         console.log(JSON.stringify(error.response.data, null, 2));
       }
     } else if (error.code === 'ECONNREFUSED') {
-      log(`❌ Connection refused - Is the RPC server running on port 8081?`, 'red');
+      log(`❌ Connection refused - Is the RPC server running on port ${process.env.RPC_PORT || 8081}?`, 'red');
     } else if (error.code === 'ENOTFOUND') {
       log(`❌ Server not found - Check if the RPC server is accessible`, 'red');
     } else if (error.code === 'ETIMEDOUT') {
@@ -250,7 +250,7 @@ async function testUserMpcDeposit({ wallet, amount }) {
         console.log(JSON.stringify(error.response.data, null, 2));
       }
     } else if (error.code === 'ECONNREFUSED') {
-      log(`❌ Connection refused - Is the RPC server running on port 8081?`, 'red');
+      log(`❌ Connection refused - Is the RPC server running on port ${process.env.RPC_PORT || 8081}?`, 'red');
     } else if (error.code === 'ENOTFOUND') {
       log(`❌ Server not found - Check if the RPC server is accessible`, 'red');
     } else if (error.code === 'ETIMEDOUT') {
@@ -390,7 +390,7 @@ async function testUserMpcDepositWithTxId({ wallet, amount, txId, status }) {
         console.log(JSON.stringify(error.response.data, null, 2));
       }
     } else if (error.code === 'ECONNREFUSED') {
-      log(`❌ Connection refused - Is the RPC server running on port 8081?`, 'red');
+      log(`❌ Connection refused - Is the RPC server running on port ${process.env.RPC_PORT || 8081}?`, 'red');
     } else if (error.code === 'ENOTFOUND') {
       log(`❌ Server not found - Check if the RPC server is accessible`, 'red');
     } else if (error.code === 'ETIMEDOUT') {

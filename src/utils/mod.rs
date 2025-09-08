@@ -36,7 +36,6 @@ pub fn get_eth_address_from_group_key(pubkey: ProjectivePoint) -> String {
     let bytes = ep.as_bytes();
     let hash = keccak256(&bytes[1..]);
     let eth_address = &hash[12..];
-    println!("Generated Ethereum address: {:?}", eth_address);
     format!("0x{}", hex::encode(eth_address))
 }
 
@@ -79,7 +78,6 @@ pub fn get_eth_address_from_group_key_with_path(pubkey: ProjectivePoint, derivat
     let hash = keccak256(&derived_bytes[1..]);
     let eth_address = &hash[12..];
     
-    println!("Generated Ethereum address with path '{}': 0x{}", derivation_path, hex::encode(eth_address));
     Ok(format!("0x{}", hex::encode(eth_address)))
 }
 
@@ -181,7 +179,6 @@ pub fn get_btc_address_from_group_key_with_type(pubkey: ProjectivePoint, address
         },
     };
     
-    println!("Generated Bitcoin {} address: {:?}", format!("{:?}", address_type), btc_address);
     Ok(btc_address.to_string())
 }
 
@@ -210,7 +207,6 @@ mod tests {
             match get_eth_address_from_group_key_with_path(test_group_key, path) {
                 Ok(address) => {
                     addresses.push((path, address));
-                    println!("Path {}: {}", path, addresses.last().unwrap().1);
                 },
                 Err(e) => panic!("Failed to derive address for path {}: {}", path, e),
             }
@@ -237,6 +233,5 @@ mod tests {
             );
         }
         
-        println!("✅ All derivation paths produce unique addresses!");
     }
 }

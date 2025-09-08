@@ -146,7 +146,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // Start RPC server in a separate task
     let message_tx = network.get_msg_tx();
-    let rpc_port = 8081; // You can make this configurable
+    let rpc_port = std::env::var("RPC_PORT")
+        .unwrap_or_else(|_| "8081".to_string())
+        .parse::<u16>()
+        .unwrap_or(8081);
     let node_id = network.get_local_peer_id().to_string();
 
     let start_time = node_start_time;

@@ -20,7 +20,7 @@ use std::{
 use tokio::io;
 use tokio::task::JoinHandle;
 use tokio::sync::{mpsc};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 use ff::PrimeField;
 
 use crate::commands::CommandProcessor;
@@ -263,7 +263,7 @@ impl NetworkLayer {
             })?
             .build();
         self.subscribe_to_default_topics(&mut swarm)?;
-        println!("Starting Kademlia bootstrap...");
+        info!("Starting Kademlia bootstrap...");
         self.node_manager
             .add_node(self.local_peer_id.clone())
             .map_err(|e| anyhow::anyhow!(e))?;
@@ -285,11 +285,11 @@ impl NetworkLayer {
         let args: Vec<String> = env::args().collect();
         if args.len() >= 2 {
             let server_addr: Multiaddr = args[1].parse()?;
-            println!("Dialing address: {}", server_addr);
+            info!("Dialing address: {}", server_addr);
             swarm.dial(server_addr.clone())?;
         }
 
-        println!("Local Peer ID: {}", self.local_peer_id);
+        info!("Local Peer ID: {}", self.local_peer_id);
 
         loop {
             tokio::select! {
@@ -315,7 +315,7 @@ impl NetworkLayer {
                 }
                  _ = bootstrap_timer.tick() => {
                     // Periodic bootstrap to discover new peers
-                    println!("Performing periodic bootstrap...");
+                    info!("Performing periodic bootstrap...");
                     if let Err(e) = swarm.behaviour_mut().kademlia.bootstrap() {
                         warn!("Periodic bootstrap failed: {:?}", e);
                     }
@@ -1121,7 +1121,7 @@ impl NetworkLayer {
                     info!("transaction.nonce: {:?}", transaction.nonce);
                     // Convert transaction to bytes for signing using RLP encoding
                     let tx_bytes = crate::utils::transaction::create_transaction_for_signing(&transaction);
-                    println!("→ RLP payload: 0x{}", hex::encode(&tx_bytes));
+                    debug!("→ RLP payload: 0x{}", hex::encode(&tx_bytes));
 
                     signing_node.sign_message(tx_bytes, &transaction, None, None, None).await?;
                 }
@@ -1527,7 +1527,7 @@ impl NetworkLayer {
                                         chain_id: eth_tx.chain_id,
                                     };
                                     let tx_bytes = crate::utils::transaction::create_transaction_for_signing(&dummy_tx);
-                                    println!("→ RLP payload: 0x{}", hex::encode(&tx_bytes));
+                                    debug!("→ RLP payload: 0x{}", hex::encode(&tx_bytes));
 
                                     // Get user's tweaked share if this is a user deposit
                                     let user_tweaked_share = if let Some(eth_addr) = &user_eth_address {
@@ -1882,7 +1882,7 @@ impl NetworkLayer {
                                         chain_id: eth_tx.chain_id,
                                     };
                                     let tx_bytes = crate::utils::transaction::create_transaction_for_signing(&dummy_tx);
-                                    println!("→ RLP payload: 0x{}", hex::encode(&tx_bytes));
+                                    debug!("→ RLP payload: 0x{}", hex::encode(&tx_bytes));
 
                                     // Get user's tweaked share if this is a user deposit
                                     let user_tweaked_share = if let Some(eth_addr) = &user_eth_address {

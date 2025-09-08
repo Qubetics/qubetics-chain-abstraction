@@ -506,7 +506,7 @@ impl SigningNode {
         use sha2::{Sha256, Digest};
         let first_hash = Sha256::digest(&tx_bytes);
         let tx_hash = Sha256::digest(&first_hash);
-        println!("🔗 [BITCOIN] Tx hash (double SHA256): 0x{}", hex::encode(&tx_hash));
+        info!("🔗 [BITCOIN] Tx hash (double SHA256): 0x{}", hex::encode(&tx_hash));
 
         // Get available nodes and perform VRF selection
         let available_nodes = self.get_available_nodes_from_manager().await;
@@ -617,30 +617,52 @@ impl SigningNode {
     }
 
     async fn broadcast_transaction(raw_tx_hex: &str, mainnet: bool) -> Result<Option<String>> {
-        let base_url = if mainnet {
-            "https://blockstream.info/api"
+        let default_url = if mainnet {
+            format!("{}/tx", "https://blockstream.info/api")
         } else {
-            "https://blockstream.info/testnet/api"
+            format!("{}/tx", "https://blockstream.info/testnet/api")
         };
-        let url = format!("{}/tx", base_url);
-        println!("Broadcasting transaction to: {}", url);
+
+        let url = std::env::var("MPC_BITCOIN_RPC_URL").unwrap_or(default_url);
+        info!("Broadcasting transaction to: {}", url);
 
         let client = reqwest::Client::new();
-        let response = client.post(&url)
-            .header("Content-Type", "text/plain")
-            .header("User-Agent", "sigg_gen_agg/0.1.0")
-            .body(raw_tx_hex.to_string())
-            .send()
-            .await?;
+
+        let response = if url.contains("blockcypher.com") {
+            let payload = serde_json::json!({ "tx": raw_tx_hex });
+            client.post(&url)
+                .header("Content-Type", "application/json")
+                .header("User-Agent", "sigg_gen_agg/0.1.0")
+                .json(&payload)
+                .send()
+                .await?
+        } else {
+            client.post(&url)
+                .header("Content-Type", "text/plain")
+                .header("User-Agent", "sigg_gen_agg/0.1.0")
+                .body(raw_tx_hex.to_string())
+                .send()
+                .await?
+        };
 
         if response.status().is_success() {
-            let txid = response.text().await?;
-            println!("✅ Transaction broadcasted successfully!");
-            println!("TXID: {}", txid);
-            Ok(Some(txid.trim().to_string()))
+            if url.contains("blockcypher.com") {
+                let result: serde_json::Value = response.json().await?;
+                if let Some(tx_hash) = result.get("hash").and_then(|v| v.as_str()) {
+                    info!("✅ Transaction broadcasted successfully! TXID: {}", tx_hash);
+                    Ok(Some(tx_hash.to_string()))
+                } else {
+                    info!("✅ Transaction broadcasted successfully");
+                    Ok(None)
+                }
+            } else {
+                let txid = response.text().await?;
+                info!("✅ Transaction broadcasted successfully! TXID: {}", txid);
+                Ok(Some(txid.trim().to_string()))
+            }
         } else {
             let error_text = response.text().await?;
-            println!("❌ Failed to broadcast transaction: {}", error_text);
+            error!("❌ Failed to broadcast transaction: {}", error_text);
             Err(anyhow!("Broadcast failed: {}", error_text))
         }
     }
@@ -648,8 +670,9 @@ impl SigningNode {
     /// Fetch nonce for an Ethereum address from the blockchain
     async fn fetch_ethereum_nonce(address: &str, chain_id: u64) -> Result<u64> {
         let rpc_url = match chain_id {
-            9029 => "https://rpc-testnet.qubetics.work", // Qubetics RPC URL
-            1 => "https://mainnet.infura.io/v3/YOUR_PROJECT_ID", // Ethereum mainnet
+            9029 => std::env::var("MPC_ETHEREUM_RPC_URL")
+                .unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string()),
+            1 => "https://mainnet.infura.io/v3/YOUR_PROJECT_ID".to_string(), // Ethereum mainnet
             _ => return Err(anyhow!("Unsupported chain ID for nonce fetching: {}", chain_id)),
         };
 
@@ -693,8 +716,9 @@ impl SigningNode {
     /// Broadcast Ethereum transaction to Qubetics chain
     async fn broadcast_ethereum_transaction(raw_tx_hex: &str, chain_id: u64) -> Result<Option<String>> {
         let rpc_url = match chain_id {
-            9029 => "https://rpc-testnet.qubetics.work", // Qubetics RPC URL
-            1 => "https://mainnet.infura.io/v3/YOUR_PROJECT_ID", // Ethereum mainnet
+            9029 => std::env::var("MPC_ETHEREUM_RPC_URL")
+                .unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string()),
+            1 => "https://mainnet.infura.io/v3/YOUR_PROJECT_ID".to_string(), // Ethereum mainnet
             _ => return Err(anyhow!("Unsupported chain ID for broadcasting: {}", chain_id)),
         };
 
@@ -706,7 +730,7 @@ impl SigningNode {
             "id": 1
         });
 
-        println!("Broadcasting Ethereum transaction to chain {}: {}", chain_id, rpc_url);
+        info!("Broadcasting Ethereum transaction to chain {}: {}", chain_id, rpc_url);
 
         let response = client.post(rpc_url)
             .header("Content-Type", "application/json")
@@ -717,19 +741,19 @@ impl SigningNode {
         if response.status().is_success() {
             let result: serde_json::Value = response.json().await?;
             if let Some(error) = result.get("error") {
-                println!("❌ Failed to broadcast transaction: {}", error);
+                error!("❌ Failed to broadcast transaction: {}", error);
                 return Err(anyhow!("Broadcast failed: {}", error));
             }
             if let Some(tx_hash) = result.get("result") {
-                println!("✅ Qubetics transaction broadcasted successfully!");
-                println!("TX Hash: {}", tx_hash);
+                info!("✅ Qubetics transaction broadcasted successfully!");
+                info!("TX Hash: {}", tx_hash);
                 if let Some(tx_hash_str) = tx_hash.as_str() {
                     return Ok(Some(tx_hash_str.to_string()));
                 }
             }
         } else {
             let error_text = response.text().await?;
-            println!("❌ Failed to broadcast transaction: {}", error_text);
+            error!("❌ Failed to broadcast transaction: {}", error_text);
             return Err(anyhow!("Broadcast failed: {}", error_text));
         }
         Ok(None)
@@ -1290,7 +1314,7 @@ impl SigningNode {
         let mut hasher: sha2::digest::core_api::CoreWrapper<sha3::Keccak256Core> = sha3::Keccak256::new();
         hasher.update(&tx_bytes);
         let tx_hash = hasher.finalize();
-        println!("Tx hash: 0x{}", hex::encode(&tx_hash));
+        info!("Tx hash: 0x{}", hex::encode(&tx_hash));
 
         // Get available nodes and perform VRF selection
         let available_nodes = self.get_available_nodes_from_manager().await;
@@ -1328,13 +1352,7 @@ impl SigningNode {
             self.id, self.chain_handler.chain_type()
         );
 
-        // Log signature components for Ethereum (for debugging)
-        if let ChainSignature::Ethereum(eth_sig) = &chain_signature {
-            println!("\n{} Signature Components:", self.chain_handler.chain_type());
-            println!("  v: {}", eth_sig.v);
-            println!("  r: 0x{}", hex::encode(&eth_sig.r));
-            println!("  s: 0x{}", hex::encode(&eth_sig.s));
-        }
+        // Debug logging removed
 
         // Convert to legacy ECDSASignature for compatibility
         let ecdsa_signature = ECDSASignature {
@@ -1915,13 +1933,7 @@ impl SigningNode {
             ));
         }
 
-        println!("=== Lagrange Interpolation Debug ===");
-        println!("Threshold: {}, Got {} shares", self.threshold, shares.len());
-
-        for (i, &(x, ref y_bytes)) in shares.iter().enumerate() {
-            let y_val = BigUint::from_bytes_be(y_bytes);
-            println!("Share {}: x={}, y={}", i + 1, x, y_val);
-        }
+        // Debug logging removed
 
         // // 🔧 FIX 1: Select exactly threshold shares deterministically
         // let mut selected_shares = shares.to_vec();
@@ -1935,17 +1947,9 @@ impl SigningNode {
         selected_shares.truncate(self.threshold);
 
 
-        println!(
-            "Selected {} shares for interpolation:",
-            selected_shares.len()
-        );
-        for (i, &(x, ref y_bytes)) in selected_shares.iter().enumerate() {
-            let y_val = BigUint::from_bytes_be(y_bytes);
-            println!("Share {}: x={}, y={}", i + 1, x, y_val);
-        }
+        // Selected shares processed without logging
 
         let n = BigUint::from_bytes_be(&CURVE_ORDER);
-        println!("Working modulo n = {}", n);
 
         // Improved extended Euclidean algorithm for modular inverse
         fn modinv(a: &BigUint, m: &BigUint) -> Option<BigUint> {
@@ -1980,69 +1984,42 @@ impl SigningNode {
         }
 
         let mut accum = BigUint::from(0u32);
-        println!("\n=== Computing Lagrange Coefficients ===");
 
         // 🔧 FIX 2: Use selected_shares in BOTH loops
-        for (share_idx, &(xj, ref yj_bytes)) in selected_shares.iter().enumerate() {
-            println!("\n--- Processing Share {} (x={}) ---", share_idx + 1, xj);
-
+        for &(xj, ref yj_bytes) in selected_shares.iter() {
             let mut num = BigUint::from(1u32);
             let mut den = BigUint::from(1u32);
 
-            println!("Computing λ_{} = ", xj);
-            let mut debug_terms = Vec::new();
-
             // 🔧 FIX 3: Inner loop uses SAME selected_shares, not all shares
             for &(xm, _) in selected_shares.iter() {
-                // ← FIXED: Use selected_shares
                 if xm != xj {
                     let xm_u = BigUint::from(xm);
                     let xj_u = BigUint::from(xj);
 
-                    // Numerator: -xₘ ≡ (n - xₘ) mod n
                     let neg_xm = (&n - &xm_u) % &n;
                     num = (num * &neg_xm) % &n;
 
-                    // Denominator: (xⱼ - xₘ) mod n
                     let diff = if xj_u >= xm_u {
                         &xj_u - &xm_u
                     } else {
                         &xj_u + &n - &xm_u
                     };
                     den = (den * diff.clone()) % &n;
-
-                    debug_terms.push(format!("(-{}/({}-{})) = ({}/{})", xm, xj, xm, neg_xm, diff));
                 }
             }
-
-            println!("  = {}", debug_terms.join(" × "));
-            println!("  numerator = {} (mod {})", num, n);
-            println!("  denominator = {} (mod {})", den, n);
 
             let den_inv = modinv(&den, &n)
                 .ok_or_else(|| anyhow!("Denominator not invertible for share x={}", xj))?;
 
-            println!("  denominator⁻¹ = {} (mod {})", den_inv, n);
-
-            let lambda = (num.clone() * den_inv.clone()) % &n;
-            println!(
-                "  λ_{} = {} × {} = {} (mod {})",
-                xj, num, den_inv, lambda, n
-            );
+            let lambda = (num.clone() * den_inv) % &n;
 
             let yj = BigUint::from_bytes_be(yj_bytes);
             let contribution = (&lambda * &yj) % &n;
-            println!(
-                "  Contribution: {} × {} = {} (mod {})",
-                lambda, yj, contribution, n
-            );
 
             accum = (accum + contribution) % &n;
-            println!("  Running total: {} (mod {})", accum, n);
         }
 
-        println!("\n=== Final Result ===");
-        println!("Reconstructed value: {} (mod {})", accum, n);
+        // Debug output removed
 
         // Rest of your conversion logic stays the same
         let mut result = accum.to_bytes_be();
@@ -3302,17 +3279,17 @@ impl Default for BroadcastConfig {
         // Default Ethereum configuration
         chain_configs.insert("ethereum".to_string(), ChainBroadcastConfig {
             enabled: true,
-            rpc_url: "https://rpc-testnet.qubetics.work".to_string(),
+            rpc_url: String::new(),
             chain_id: 9029,
             testnet: true,
             custom_headers: HashMap::new(),
             timeout_seconds: 30,
         });
-        
+
         // Default Bitcoin configuration - using public Bitcoin RPC service
         chain_configs.insert("bitcoin".to_string(), ChainBroadcastConfig {
             enabled: true, // Enabled with public API
-            rpc_url: "https://api.blockcypher.com/v1/btc/test3/txs/push".to_string(), // Public Bitcoin testnet API
+            rpc_url: String::new(),
             chain_id: 0,
             testnet: true,
             custom_headers: HashMap::new(),
@@ -3365,22 +3342,20 @@ impl BroadcastConfig {
         }
         
         // Load chain-specific configurations
-        if let Ok(rpc_url) = std::env::var("MPC_ETHEREUM_RPC_URL") {
-            if let Some(eth_config) = config.chain_configs.get_mut("ethereum") {
-                eth_config.rpc_url = rpc_url;
-            }
+        if let Some(eth_config) = config.chain_configs.get_mut("ethereum") {
+            eth_config.rpc_url = std::env::var("MPC_ETHEREUM_RPC_URL")
+                .unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string());
         }
-        
+
         if let Ok(chain_id) = std::env::var("MPC_ETHEREUM_CHAIN_ID") {
             if let Some(eth_config) = config.chain_configs.get_mut("ethereum") {
                 eth_config.chain_id = chain_id.parse().unwrap_or(9029);
             }
         }
-        
-        if let Ok(rpc_url) = std::env::var("MPC_BITCOIN_RPC_URL") {
-            if let Some(btc_config) = config.chain_configs.get_mut("bitcoin") {
-                btc_config.rpc_url = rpc_url;
-            }
+
+        if let Some(btc_config) = config.chain_configs.get_mut("bitcoin") {
+            btc_config.rpc_url = std::env::var("MPC_BITCOIN_RPC_URL")
+                .unwrap_or_else(|_| "https://api.blockcypher.com/v1/btc/test3/txs/push".to_string());
         }
         
         config
