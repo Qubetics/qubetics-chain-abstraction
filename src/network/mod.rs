@@ -1269,7 +1269,7 @@ impl NetworkLayer {
                     warn!("❌ [NETWORK] No user registry available to store synchronized transaction error");
                 }
             }
-            GossipsubMessage::DepositIntent { intent, intent_id, user_eth_address } => {
+            GossipsubMessage::DepositIntent { intent, intent_id, user_eth_address, transaction_type } => {
                 info!("📝 [GOSSIPSUB] Processing deposit intent received via gossipsub: {:?} (ID: {})", intent, intent_id);
                 
                 // Calculate intent hash for transaction ID storage
@@ -1277,18 +1277,40 @@ impl NetworkLayer {
                 info!("🔐 [GOSSIPSUB] Calculated intent hash: {}", intent_hash);
                 
                 // Determine chain type based on transaction type:
-                // - If user_eth_address exists (user deposit): use source_chain (user is depositing FROM this chain)
-                // - If no user_eth_address (network withdrawal): use target_chain (network is withdrawing TO this chain)
-                let chain_to_use = if user_eth_address.is_some() {
-                    &intent.source_chain.to_lowercase()
-                } else {
-                    &intent.target_chain.to_lowercase()
+                // - UserToVault: use source_chain (user is depositing FROM this chain)
+                // - NetworkToTarget: use target_chain (network is withdrawing TO this chain)
+                // - VaultToNetwork: use source_chain (vault is sending back to network on source chain)
+                let chain_to_use = match transaction_type {
+                    crate::types::TransactionType::UserToVault => &intent.source_chain.to_lowercase(),
+                    crate::types::TransactionType::NetworkToTarget => &intent.target_chain.to_lowercase(),
+                    crate::types::TransactionType::VaultToNetwork => &intent.source_chain.to_lowercase(),
                 };
-                info!("🔗 [GOSSIPSUB] Processing deposit intent for chain: {} (user_deposit: {})", 
-                      chain_to_use, user_eth_address.is_some());
+                info!("🔗 [GOSSIPSUB] Processing deposit intent for chain: {} (transaction_type: {:?})", 
+                      chain_to_use, transaction_type);
                 
-                // Get the appropriate signing key BEFORE borrowing signing_node mutably
-                let signing_key: Option<k256::Scalar> = self.get_signing_key_for_user(user_eth_address.as_ref()).await;
+                // Get the appropriate signing key based on transaction type
+                let signing_key: Option<k256::Scalar> = match transaction_type {
+                    crate::types::TransactionType::UserToVault => {
+                        // For user deposits, use user's tweaked secret share
+                        self.get_signing_key_for_user(user_eth_address.as_ref()).await
+                    }
+                    crate::types::TransactionType::NetworkToTarget => {
+                        // For network withdrawals, use network's DKG secret share
+                        if let Some(dkg_node) = &self.dkg_node {
+                            dkg_node.get_final_secret_share().await
+                        } else {
+                            None
+                        }
+                    }
+                    crate::types::TransactionType::VaultToNetwork => {
+                        // For vault-to-network, use vault's tweaked secret share
+                        if let Some(dkg_node) = &self.dkg_node {
+                            dkg_node.get_vault_tweaked_secret_share().await
+                        } else {
+                            None
+                        }
+                    }
+                };
                 
                 if let Some(signing_node) = &mut self.signing_node {
                     // Set appropriate chain handler based on the determined chain
@@ -1302,39 +1324,61 @@ impl NetworkLayer {
                         let mut chain_handler = crate::chain::ChainHandlerFactory::create_bitcoin_handler("testnet".to_string());
                         
                         // Set appropriate group public key in Bitcoin chain handler based on transaction type
-                        if let Some(eth_addr) = &user_eth_address {
-                            // For user deposits, use user's specific group key
-                            if let Some(user_registry) = &self.user_registry {
-                                if let Some(user) = user_registry.get_user_by_address(eth_addr).await {
-                                    if let Some(user_group_key) = &user.user_group_key {
-                                        let affine_point = user_group_key.0; // user_group_key is SerializablePoint(AffinePoint)
+                        match transaction_type {
+                            crate::types::TransactionType::UserToVault => {
+                                // For user deposits, use user's specific group key
+                                if let Some(eth_addr) = &user_eth_address {
+                                    if let Some(user_registry) = &self.user_registry {
+                                        if let Some(user) = user_registry.get_user_by_address(eth_addr).await {
+                                            if let Some(user_group_key) = &user.user_group_key {
+                                                let affine_point = user_group_key.0; // user_group_key is SerializablePoint(AffinePoint)
+                                                let encoded_point = k256::EncodedPoint::from(affine_point);
+                                                let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
+                                                
+                                                if let Some(btc_handler) = chain_handler.as_any_mut().downcast_mut::<crate::chain::BitcoinChainHandler>() {
+                                                    btc_handler.set_group_public_key(compressed_bytes);
+                                                    info!("🔑 [GOSSIPSUB] Set user-specific group public key in Bitcoin chain handler for user: {}", eth_addr);
+                                                }
+                                            } else {
+                                                warn!("❌ [GOSSIPSUB] User {} has no group key for Bitcoin transaction", eth_addr);
+                                            }
+                                        } else {
+                                            warn!("❌ [GOSSIPSUB] User {} not found for Bitcoin transaction", eth_addr);
+                                        }
+                                    } else {
+                                        warn!("❌ [GOSSIPSUB] User registry not available for Bitcoin transaction");
+                                    }
+                                } else {
+                                    warn!("❌ [GOSSIPSUB] UserToVault transaction requires user_eth_address");
+                                }
+                            }
+                            crate::types::TransactionType::NetworkToTarget => {
+                                // For network withdrawals, use network's DKG group key
+                                if let Some(dkg_node) = &self.dkg_node {
+                                    if let Some(group_key) = dkg_node.get_final_public_key().await {
+                                        let affine_point = group_key.to_affine();
                                         let encoded_point = k256::EncodedPoint::from(affine_point);
                                         let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
                                         
                                         if let Some(btc_handler) = chain_handler.as_any_mut().downcast_mut::<crate::chain::BitcoinChainHandler>() {
                                             btc_handler.set_group_public_key(compressed_bytes);
-                                            info!("🔑 [GOSSIPSUB] Set user-specific group public key in Bitcoin chain handler for user: {}", eth_addr);
+                                            info!("🔑 [GOSSIPSUB] Set network DKG group public key in Bitcoin chain handler");
                                         }
-                                    } else {
-                                        warn!("❌ [GOSSIPSUB] User {} has no group key for Bitcoin transaction", eth_addr);
                                     }
-                                } else {
-                                    warn!("❌ [GOSSIPSUB] User {} not found for Bitcoin transaction", eth_addr);
                                 }
-                            } else {
-                                warn!("❌ [GOSSIPSUB] User registry not available for Bitcoin transaction");
                             }
-                        } else {
-                            // For network withdrawals, use network's DKG group key
-                            if let Some(dkg_node) = &self.dkg_node {
-                                if let Some(group_key) = dkg_node.get_final_public_key().await {
-                                    let affine_point = group_key.to_affine();
-                                    let encoded_point = k256::EncodedPoint::from(affine_point);
-                                    let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
-                                    
-                                    if let Some(btc_handler) = chain_handler.as_any_mut().downcast_mut::<crate::chain::BitcoinChainHandler>() {
-                                        btc_handler.set_group_public_key(compressed_bytes);
-                                        info!("🔑 [GOSSIPSUB] Set network DKG group public key in Bitcoin chain handler");
+                            crate::types::TransactionType::VaultToNetwork => {
+                                // For vault-to-network, use vault's group key
+                                if let Some(dkg_node) = &self.dkg_node {
+                                    if let Some(vault_group_key) = dkg_node.get_vault_group_key().await {
+                                        let affine_point = vault_group_key.to_affine();
+                                        let encoded_point = k256::EncodedPoint::from(affine_point);
+                                        let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
+                                        
+                                        if let Some(btc_handler) = chain_handler.as_any_mut().downcast_mut::<crate::chain::BitcoinChainHandler>() {
+                                            btc_handler.set_group_public_key(compressed_bytes);
+                                            info!("🔑 [GOSSIPSUB] Set vault group public key in Bitcoin chain handler");
+                                        }
                                     }
                                 }
                             }
@@ -1346,23 +1390,31 @@ impl NetworkLayer {
                         warn!("❌ [GOSSIPSUB] Unsupported chain: {}, using default Ethereum handler", chain_to_use);
                     }
                     
-                    // Get derived addresses and appropriate group key if user_eth_address is provided
-                    let (derived_eth_addr, derived_btc_addr) = if let Some(eth_addr) = &user_eth_address {
-                        if let Some(user_registry) = &self.user_registry {
-                            if let Some(user) = user_registry.get_user_by_address(eth_addr).await {
-                                // For user deposits, use user's group key
-                                (user.derived_eth_address.clone(), user.derived_btc_address.clone())
+                    // Get derived addresses based on transaction type
+                    let (derived_eth_addr, derived_btc_addr) = match transaction_type {
+                        crate::types::TransactionType::UserToVault => {
+                            // For user deposits, use user's derived addresses
+                            if let Some(eth_addr) = &user_eth_address {
+                                if let Some(user_registry) = &self.user_registry {
+                                    if let Some(user) = user_registry.get_user_by_address(eth_addr).await {
+                                        (user.derived_eth_address.clone(), user.derived_btc_address.clone())
+                                    } else {
+                                        warn!("❌ [GOSSIPSUB] User {} not found in registry", eth_addr);
+                                        (None, None)
+                                    }
+                                } else {
+                                    warn!("❌ [GOSSIPSUB] User registry not available");
+                                    (None, None)
+                                }
                             } else {
-                                warn!("❌ [GOSSIPSUB] User {} not found in registry", eth_addr);
+                                warn!("❌ [GOSSIPSUB] UserToVault transaction requires user_eth_address");
                                 (None, None)
                             }
-                        } else {
-                            warn!("❌ [GOSSIPSUB] User registry not available");
+                        }
+                        crate::types::TransactionType::NetworkToTarget | crate::types::TransactionType::VaultToNetwork => {
+                            // For network withdrawals and vault-to-network, no derived addresses needed
                             (None, None)
                         }
-                    } else {
-                        // For network withdrawals, use network's DKG group key
-                        (None, None)
                     };
 
                     let group_public_key = if let Some(dkg_node) = &self.dkg_node {
@@ -1371,7 +1423,17 @@ impl NetworkLayer {
                         None
                     };
                     
-                    let chain_transaction_result = crate::utils::transaction::create_chain_transaction_from_deposit_intent(&intent, group_public_key, user_eth_address.as_ref(), derived_eth_addr.as_ref(), derived_btc_addr.as_ref()).await;
+                    // Get vault addresses from database
+                    let (vault_eth_addr, vault_btc_addr) = if let Some(registry) = &self.user_registry {
+                        let database = registry.get_database();
+                        let vault_eth = database.get_string(&crate::database::keys::DKG_VAULT_ETH_ADDRESS).ok().flatten();
+                        let vault_btc = database.get_string(&crate::database::keys::DKG_VAULT_BTC_ADDRESS).ok().flatten();
+                        (vault_eth, vault_btc)
+                    } else {
+                        return Err(anyhow::anyhow!("User registry not available"));
+                    };
+                    
+                    let chain_transaction_result = crate::utils::transaction::create_chain_transaction_from_deposit_intent(&intent, group_public_key, derived_eth_addr.as_ref(), derived_btc_addr.as_ref(), transaction_type.clone(), vault_eth_addr.as_ref(), vault_btc_addr.as_ref()).await;
                     
                     match chain_transaction_result {
                         Ok(chain_transaction) => {
@@ -1386,26 +1448,40 @@ impl NetworkLayer {
                                 info!("🔐 [GOSSIPSUB] Got signing key for deposit intent");
                                 signing_node.set_private_key_from_scalar(key);
                                 
-                                // Set the appropriate group public key
-                                if let Some(eth_address) = &user_eth_address {
-                                    // For user-specific keys, we need the user-specific group key
-                                    if let Some(user_registry) = &self.user_registry {
-                                        if let Some(user) = user_registry.get_user_by_address(eth_address).await {
-                                            if let Some(user_group_key) = &user.user_group_key {
-                                                signing_node.set_group_public_key(user_group_key.0.into()); // Convert AffinePoint to ProjectivePoint
-                                                info!("🔑 [GOSSIPSUB] Set user-specific group public key for: {}", eth_address);
-                                            } else {
-                                                warn!("❌ [GOSSIPSUB] User {} has no group key available", eth_address);
-                                                return Ok(());
+                                // Set the appropriate group public key based on transaction type
+                                match transaction_type {
+                                    crate::types::TransactionType::UserToVault => {
+                                        // For user deposits, use user-specific group key
+                                        if let Some(eth_address) = &user_eth_address {
+                                            if let Some(user_registry) = &self.user_registry {
+                                                if let Some(user) = user_registry.get_user_by_address(eth_address).await {
+                                                    if let Some(user_group_key) = &user.user_group_key {
+                                                        signing_node.set_group_public_key(user_group_key.0.into()); // Convert AffinePoint to ProjectivePoint
+                                                        info!("🔑 [GOSSIPSUB] Set user-specific group public key for: {}", eth_address);
+                                                    } else {
+                                                        warn!("❌ [GOSSIPSUB] User {} has no group key available", eth_address);
+                                                        return Ok(());
+                                                    }
+                                                }
                                             }
                                         }
                                     }
-                                } else {
-                                    // For network keys, use the original DKG group key
-                                    if let Some(dkg_node) = &self.dkg_node {
-                                        if let Some(group_key) = dkg_node.get_final_public_key().await {
-                                            signing_node.set_group_public_key(group_key);
-                                            info!("🔑 [GOSSIPSUB] Set network DKG group public key");
+                                    crate::types::TransactionType::NetworkToTarget => {
+                                        // For network withdrawals, use the original DKG group key
+                                        if let Some(dkg_node) = &self.dkg_node {
+                                            if let Some(group_key) = dkg_node.get_final_public_key().await {
+                                                signing_node.set_group_public_key(group_key);
+                                                info!("🔑 [GOSSIPSUB] Set network DKG group public key");
+                                            }
+                                        }
+                                    }
+                                    crate::types::TransactionType::VaultToNetwork => {
+                                        // For vault-to-network, use the vault group key
+                                        if let Some(dkg_node) = &self.dkg_node {
+                                            if let Some(vault_group_key) = dkg_node.get_vault_group_key().await {
+                                                signing_node.set_group_public_key(vault_group_key);
+                                                info!("🔑 [GOSSIPSUB] Set vault group public key");
+                                            }
                                         }
                                     }
                                 }
@@ -1442,19 +1518,40 @@ impl NetworkLayer {
                                     let tx_bytes = crate::utils::transaction::create_transaction_for_signing(&dummy_tx);
                                     debug!("→ RLP payload: 0x{}", hex::encode(&tx_bytes));
 
-                                    // Get user's tweaked share if this is a user deposit
-                                    let user_tweaked_share = if let Some(eth_addr) = &user_eth_address {
-                                        if let Some(user_registry) = &self.user_registry {
-                                            if let Some(user) = user_registry.get_user_by_address(eth_addr).await {
-                                                user.tweaked_secret_share.map(|s| s.0)
+                                    // Get user's tweaked share based on transaction type
+                                    let user_tweaked_share = match transaction_type {
+                                        crate::types::TransactionType::UserToVault => {
+                                            // For user deposits, use user's tweaked secret share
+                                            if let Some(eth_addr) = &user_eth_address {
+                                                if let Some(user_registry) = &self.user_registry {
+                                                    if let Some(user) = user_registry.get_user_by_address(eth_addr).await {
+                                                        user.tweaked_secret_share.map(|s| s.0)
+                                                    } else {
+                                                        None
+                                                    }
+                                                } else {
+                                                    None
+                                                }
                                             } else {
                                                 None
                                             }
-                                        } else {
-                                            None
                                         }
-                                    } else {
-                                        None
+                                        crate::types::TransactionType::NetworkToTarget => {
+                                            // For network withdrawals, use network's DKG secret share
+                                            if let Some(dkg_node) = &self.dkg_node {
+                                                dkg_node.get_final_secret_share().await
+                                            } else {
+                                                None
+                                            }
+                                        }
+                                        crate::types::TransactionType::VaultToNetwork => {
+                                            // For vault-to-network, use vault's tweaked secret share
+                                            if let Some(dkg_node) = &self.dkg_node {
+                                                dkg_node.get_vault_tweaked_secret_share().await
+                                            } else {
+                                                None
+                                            }
+                                        }
                                     };
                                     
                                     signing_node.sign_message(tx_bytes, &dummy_tx, user_tweaked_share, user_eth_address.clone(), Some(intent_hash.clone())).await?;
@@ -1609,7 +1706,7 @@ impl NetworkLayer {
                     .request_response
                     .send_request(&peer_id, request);
             }
-            ChannelMessage::DepositIntent { intent, intent_id, user_eth_address } => {
+            ChannelMessage::DepositIntent { intent, intent_id, user_eth_address, transaction_type } => {
                 info!("📝 [NETWORK] Processing deposit intent locally: {:?}", intent);
                 // Only broadcast to other nodes via gossipsub when using network share (no user_eth_address)
                 info!("🌐 [NETWORK] Using network share - broadcasting to P2P network");
@@ -1617,6 +1714,7 @@ impl NetworkLayer {
                     intent: intent.clone(),
                     intent_id: intent_id.clone(),
                     user_eth_address: user_eth_address.clone(),
+                    transaction_type: transaction_type.clone(),
                 };
                 let msg_bytes = serde_json::to_vec(&deposit_intent_msg)
                     .map_err(|e| anyhow::anyhow!("Failed to serialize deposit intent: {}", e))?;
@@ -1631,18 +1729,40 @@ impl NetworkLayer {
                 info!("🔐 [LOCAL] Calculated intent hash: {}", intent_hash);
                 
                 // Determine chain type based on transaction type:
-                // - If user_eth_address exists (user deposit): use source_chain (user is depositing FROM this chain)
-                // - If no user_eth_address (network withdrawal): use target_chain (network is withdrawing TO this chain)
-                let chain_to_use = if user_eth_address.is_some() {
-                    &intent.source_chain.to_lowercase()
-                } else {
-                    &intent.target_chain.to_lowercase()
+                // - UserToVault: use source_chain (user is depositing FROM this chain)
+                // - NetworkToTarget: use target_chain (network is withdrawing TO this chain)
+                // - VaultToNetwork: use source_chain (vault is sending back to network on source chain)
+                let chain_to_use = match transaction_type {
+                    crate::types::TransactionType::UserToVault => &intent.source_chain.to_lowercase(),
+                    crate::types::TransactionType::NetworkToTarget => &intent.target_chain.to_lowercase(),
+                    crate::types::TransactionType::VaultToNetwork => &intent.source_chain.to_lowercase(),
                 };
-                info!("🔗 [LOCAL] Processing deposit intent for chain: {} (user_deposit: {})", 
-                      chain_to_use, user_eth_address.is_some());
+                info!("🔗 [LOCAL] Processing deposit intent for chain: {} (transaction_type: {:?})", 
+                      chain_to_use, transaction_type);
                 
-                // Get the appropriate signing key BEFORE borrowing signing_node mutably
-                let signing_key: Option<k256::Scalar> = self.get_signing_key_for_user(user_eth_address.as_ref()).await;
+                // Get the appropriate signing key based on transaction type
+                let signing_key: Option<k256::Scalar> = match transaction_type {
+                    crate::types::TransactionType::UserToVault => {
+                        // For user deposits, use user's tweaked secret share
+                        self.get_signing_key_for_user(user_eth_address.as_ref()).await
+                    }
+                    crate::types::TransactionType::NetworkToTarget => {
+                        // For network withdrawals, use network's DKG secret share
+                        if let Some(dkg_node) = &self.dkg_node {
+                            dkg_node.get_final_secret_share().await
+                        } else {
+                            None
+                        }
+                    }
+                    crate::types::TransactionType::VaultToNetwork => {
+                        // For vault-to-network, use vault's tweaked secret share
+                        if let Some(dkg_node) = &self.dkg_node {
+                            dkg_node.get_vault_tweaked_secret_share().await
+                        } else {
+                            None
+                        }
+                    }
+                };
                 
                 // Process locally first (this node will sign it)
                 if let Some(signing_node) = &mut self.signing_node {
@@ -1657,39 +1777,61 @@ impl NetworkLayer {
                         let mut chain_handler = crate::chain::ChainHandlerFactory::create_bitcoin_handler("testnet".to_string());
                         
                         // Set appropriate group public key in Bitcoin chain handler based on transaction type
-                        if let Some(eth_addr) = &user_eth_address {
-                            // For user deposits, use user's specific group key
-                            if let Some(user_registry) = &self.user_registry {
-                                if let Some(user) = user_registry.get_user_by_address(eth_addr).await {
-                                    if let Some(user_group_key) = &user.user_group_key {
-                                        let affine_point = user_group_key.0; // user_group_key is SerializablePoint(AffinePoint)
+                        match transaction_type {
+                            crate::types::TransactionType::UserToVault => {
+                                // For user deposits, use user's specific group key
+                                if let Some(eth_addr) = &user_eth_address {
+                                    if let Some(user_registry) = &self.user_registry {
+                                        if let Some(user) = user_registry.get_user_by_address(eth_addr).await {
+                                            if let Some(user_group_key) = &user.user_group_key {
+                                                let affine_point = user_group_key.0; // user_group_key is SerializablePoint(AffinePoint)
+                                                let encoded_point = k256::EncodedPoint::from(affine_point);
+                                                let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
+                                                
+                                                if let Some(btc_handler) = chain_handler.as_any_mut().downcast_mut::<crate::chain::BitcoinChainHandler>() {
+                                                    btc_handler.set_group_public_key(compressed_bytes);
+                                                    info!("🔑 [LOCAL] Set user-specific group public key in Bitcoin chain handler for user: {}", eth_addr);
+                                                }
+                                            } else {
+                                                warn!("❌ [LOCAL] User {} has no group key for Bitcoin transaction", eth_addr);
+                                            }
+                                        } else {
+                                            warn!("❌ [LOCAL] User {} not found for Bitcoin transaction", eth_addr);
+                                        }
+                                    } else {
+                                        warn!("❌ [LOCAL] User registry not available for Bitcoin transaction");
+                                    }
+                                } else {
+                                    warn!("❌ [LOCAL] UserToVault transaction requires user_eth_address");
+                                }
+                            }
+                            crate::types::TransactionType::NetworkToTarget => {
+                                // For network withdrawals, use network's DKG group key
+                                if let Some(dkg_node) = &self.dkg_node {
+                                    if let Some(group_key) = dkg_node.get_final_public_key().await {
+                                        let affine_point = group_key.to_affine();
                                         let encoded_point = k256::EncodedPoint::from(affine_point);
                                         let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
                                         
                                         if let Some(btc_handler) = chain_handler.as_any_mut().downcast_mut::<crate::chain::BitcoinChainHandler>() {
                                             btc_handler.set_group_public_key(compressed_bytes);
-                                            info!("🔑 [LOCAL] Set user-specific group public key in Bitcoin chain handler for user: {}", eth_addr);
+                                            info!("🔑 [LOCAL] Set network DKG group public key in Bitcoin chain handler");
                                         }
-                                    } else {
-                                        warn!("❌ [LOCAL] User {} has no group key for Bitcoin transaction", eth_addr);
                                     }
-                                } else {
-                                    warn!("❌ [LOCAL] User {} not found for Bitcoin transaction", eth_addr);
                                 }
-                            } else {
-                                warn!("❌ [LOCAL] User registry not available for Bitcoin transaction");
                             }
-                        } else {
-                            // For network withdrawals, use network's DKG group key
-                            if let Some(dkg_node) = &self.dkg_node {
-                                if let Some(group_key) = dkg_node.get_final_public_key().await {
-                                    let affine_point = group_key.to_affine();
-                                    let encoded_point = k256::EncodedPoint::from(affine_point);
-                                    let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
-                                    
-                                    if let Some(btc_handler) = chain_handler.as_any_mut().downcast_mut::<crate::chain::BitcoinChainHandler>() {
-                                        btc_handler.set_group_public_key(compressed_bytes);
-                                        info!("🔑 [LOCAL] Set network DKG group public key in Bitcoin chain handler");
+                            crate::types::TransactionType::VaultToNetwork => {
+                                // For vault-to-network, use vault's group key
+                                if let Some(dkg_node) = &self.dkg_node {
+                                    if let Some(vault_group_key) = dkg_node.get_vault_group_key().await {
+                                        let affine_point = vault_group_key.to_affine();
+                                        let encoded_point = k256::EncodedPoint::from(affine_point);
+                                        let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
+                                        
+                                        if let Some(btc_handler) = chain_handler.as_any_mut().downcast_mut::<crate::chain::BitcoinChainHandler>() {
+                                            btc_handler.set_group_public_key(compressed_bytes);
+                                            info!("🔑 [LOCAL] Set vault group public key in Bitcoin chain handler");
+                                        }
                                     }
                                 }
                             }
@@ -1701,23 +1843,31 @@ impl NetworkLayer {
                         warn!("❌ [LOCAL] Unsupported chain: {}, using default Ethereum handler", chain_to_use);
                     }
                     
-                    // Get derived addresses and appropriate group key if user_eth_address is provided
-                    let (derived_eth_addr, derived_btc_addr) = if let Some(eth_addr) = &user_eth_address {
-                        if let Some(user_registry) = &self.user_registry {
-                            if let Some(user) = user_registry.get_user_by_address(eth_addr).await {
-                                // For user deposits, use user's group key
-                                (user.derived_eth_address.clone(), user.derived_btc_address.clone())
+                    // Get derived addresses based on transaction type
+                    let (derived_eth_addr, derived_btc_addr) = match transaction_type {
+                        crate::types::TransactionType::UserToVault => {
+                            // For user deposits, use user's derived addresses
+                            if let Some(eth_addr) = &user_eth_address {
+                                if let Some(user_registry) = &self.user_registry {
+                                    if let Some(user) = user_registry.get_user_by_address(eth_addr).await {
+                                        (user.derived_eth_address.clone(), user.derived_btc_address.clone())
+                                    } else {
+                                        warn!("❌ [LOCAL] User {} not found in registry", eth_addr);
+                                        (None, None)
+                                    }
+                                } else {
+                                    warn!("❌ [LOCAL] User registry not available");
+                                    (None, None)
+                                }
                             } else {
-                                warn!("❌ [LOCAL] User {} not found in registry", eth_addr);
+                                warn!("❌ [LOCAL] UserToVault transaction requires user_eth_address");
                                 (None, None)
                             }
-                        } else {
-                            warn!("❌ [LOCAL] User registry not available");
+                        }
+                        crate::types::TransactionType::NetworkToTarget | crate::types::TransactionType::VaultToNetwork => {
+                            // For network withdrawals and vault-to-network, no derived addresses needed
                             (None, None)
                         }
-                    } else {
-                        // For network withdrawals, use network's DKG group key
-                        (None, None)
                     };
 
                     let group_public_key = if let Some(dkg_node) = &self.dkg_node {
@@ -1726,7 +1876,17 @@ impl NetworkLayer {
                         None
                     };
                     
-                    let chain_transaction_result = crate::utils::transaction::create_chain_transaction_from_deposit_intent(&intent, group_public_key, user_eth_address.as_ref(), derived_eth_addr.as_ref(), derived_btc_addr.as_ref()).await;
+                    // Get vault addresses from database
+                    let (vault_eth_addr, vault_btc_addr) = if let Some(registry) = &self.user_registry {
+                        let database = registry.get_database();
+                        let vault_eth = database.get_string(&crate::database::keys::DKG_VAULT_ETH_ADDRESS).ok().flatten();
+                        let vault_btc = database.get_string(&crate::database::keys::DKG_VAULT_BTC_ADDRESS).ok().flatten();
+                        (vault_eth, vault_btc)
+                    } else {
+                        return Err(anyhow::anyhow!("User registry not available"));
+                    };
+                    
+                    let chain_transaction_result = crate::utils::transaction::create_chain_transaction_from_deposit_intent(&intent, group_public_key, derived_eth_addr.as_ref(), derived_btc_addr.as_ref(), transaction_type.clone(), vault_eth_addr.as_ref(), vault_btc_addr.as_ref()).await;
                     
                     match chain_transaction_result {
                         Ok(chain_transaction) => {
@@ -1741,26 +1901,40 @@ impl NetworkLayer {
                                 info!("🔐 [LOCAL] Got signing key for deposit intent");
                                 signing_node.set_private_key_from_scalar(key);
                                 
-                                // Set the appropriate group public key
-                                if let Some(eth_address) = &user_eth_address {
-                                    // For user-specific keys, we need the user-specific group key
-                                    if let Some(user_registry) = &self.user_registry {
-                                        if let Some(user) = user_registry.get_user_by_address(eth_address).await {
-                                            if let Some(user_group_key) = &user.user_group_key {
-                                                signing_node.set_group_public_key(user_group_key.0.into()); // Convert AffinePoint to ProjectivePoint
-                                                info!("🔑 [LOCAL] Set user-specific group public key for: {}", eth_address);
-                                            } else {
-                                                warn!("❌ [LOCAL] User {} has no group key available", eth_address);
-                                                return Ok(());
+                                // Set the appropriate group public key based on transaction type
+                                match transaction_type {
+                                    crate::types::TransactionType::UserToVault => {
+                                        // For user deposits, use user-specific group key
+                                        if let Some(eth_address) = &user_eth_address {
+                                            if let Some(user_registry) = &self.user_registry {
+                                                if let Some(user) = user_registry.get_user_by_address(eth_address).await {
+                                                    if let Some(user_group_key) = &user.user_group_key {
+                                                        signing_node.set_group_public_key(user_group_key.0.into()); // Convert AffinePoint to ProjectivePoint
+                                                        info!("🔑 [LOCAL] Set user-specific group public key for: {}", eth_address);
+                                                    } else {
+                                                        warn!("❌ [LOCAL] User {} has no group key available", eth_address);
+                                                        return Ok(());
+                                                    }
+                                                }
                                             }
                                         }
                                     }
-                                } else {
-                                    // For network keys, use the original DKG group key
-                                    if let Some(dkg_node) = &self.dkg_node {
-                                        if let Some(group_key) = dkg_node.get_final_public_key().await {
-                                            signing_node.set_group_public_key(group_key);
-                                            info!("🔑 [LOCAL] Set network DKG group public key");
+                                    crate::types::TransactionType::NetworkToTarget => {
+                                        // For network withdrawals, use the original DKG group key
+                                        if let Some(dkg_node) = &self.dkg_node {
+                                            if let Some(group_key) = dkg_node.get_final_public_key().await {
+                                                signing_node.set_group_public_key(group_key);
+                                                info!("🔑 [LOCAL] Set network DKG group public key");
+                                            }
+                                        }
+                                    }
+                                    crate::types::TransactionType::VaultToNetwork => {
+                                        // For vault-to-network, use the vault group key
+                                        if let Some(dkg_node) = &self.dkg_node {
+                                            if let Some(vault_group_key) = dkg_node.get_vault_group_key().await {
+                                                signing_node.set_group_public_key(vault_group_key);
+                                                info!("🔑 [LOCAL] Set vault group public key");
+                                            }
                                         }
                                     }
                                 }
@@ -1797,19 +1971,40 @@ impl NetworkLayer {
                                     let tx_bytes = crate::utils::transaction::create_transaction_for_signing(&dummy_tx);
                                     debug!("→ RLP payload: 0x{}", hex::encode(&tx_bytes));
 
-                                    // Get user's tweaked share if this is a user deposit
-                                    let user_tweaked_share = if let Some(eth_addr) = &user_eth_address {
-                                        if let Some(user_registry) = &self.user_registry {
-                                            if let Some(user) = user_registry.get_user_by_address(eth_addr).await {
-                                                user.tweaked_secret_share.map(|s| s.0)
+                                    // Get signing key based on transaction type
+                                    let user_tweaked_share = match transaction_type {
+                                        crate::types::TransactionType::UserToVault => {
+                                            // For user deposits, use user's tweaked secret share
+                                            if let Some(eth_addr) = &user_eth_address {
+                                                if let Some(user_registry) = &self.user_registry {
+                                                    if let Some(user) = user_registry.get_user_by_address(eth_addr).await {
+                                                        user.tweaked_secret_share.map(|s| s.0)
+                                                    } else {
+                                                        None
+                                                    }
+                                                } else {
+                                                    None
+                                                }
                                             } else {
                                                 None
                                             }
-                                        } else {
-                                            None
                                         }
-                                    } else {
-                                        None
+                                        crate::types::TransactionType::NetworkToTarget => {
+                                            // For network withdrawals, use network's DKG secret share
+                                            if let Some(dkg_node) = &self.dkg_node {
+                                                dkg_node.get_final_secret_share().await
+                                            } else {
+                                                None
+                                            }
+                                        }
+                                        crate::types::TransactionType::VaultToNetwork => {
+                                            // For vault-to-network, use vault's tweaked secret share
+                                            if let Some(dkg_node) = &self.dkg_node {
+                                                dkg_node.get_vault_tweaked_secret_share().await
+                                            } else {
+                                                None
+                                            }
+                                        }
                                     };
                                     
                                     signing_node.sign_message(tx_bytes, &dummy_tx, user_tweaked_share, user_eth_address.clone(), Some(intent_hash.clone())).await?;

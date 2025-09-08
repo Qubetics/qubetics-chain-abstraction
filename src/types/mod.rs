@@ -1,6 +1,13 @@
 use libp2p::{Multiaddr, PeerId};
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum TransactionType {
+    UserToVault,
+    NetworkToTarget,
+    VaultToNetwork,
+}
+
 mod secp;
 pub use secp::{SerializablePoint, SerializableScalar};
 
@@ -31,6 +38,7 @@ pub enum ChannelMessage {
         intent: crate::rpc_server::DepositIntent,
         intent_id: String,
         user_eth_address: Option<String>, // If provided, use user's tweaked share; otherwise use network's DKG share
+        transaction_type: TransactionType,
     },
     UserRegistration {
         ethereum_address: String,
@@ -62,6 +70,7 @@ pub enum GossipsubMessage {
         intent: crate::rpc_server::DepositIntent,
         intent_id: String,
         user_eth_address: Option<String>, // If provided, use user's tweaked share; otherwise use network's DKG share
+        transaction_type: TransactionType,
     },
     DKGCommand(crate::types::rpc::RPCRequest),
     UserRegistration {

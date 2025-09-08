@@ -56,10 +56,10 @@ async function main() {
     console.log(`${computeAddress ? '✅' : '❌'} ethers: ${computeAddress ? 'Available' : 'Missing - install ethers'}`);
 
 
-    const msgHash = Buffer.from("486d300d82918195bdd31a790e773c9efb1be7434a7d722f0436513002c37fe2", "hex");
+    const msgHash = Buffer.from("45a1789e366a6ef835a21127ab9ebe000afc1d04d42b485d2a9bbf51df9a5737", "hex");
     const rBuf = Buffer.from("24653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c", "hex");
-    const sBuf = Buffer.from("4122e84aa1a78264366cfa2e82b2e246a05d01359bcddb709c15906ebeda75d4", "hex");
-    const recoveryId = 1;
+    const sBuf = Buffer.from("2fe8d467e63702a61ac3c043d907eda80cc075f6fbc1e6d851b6d4b77fef2887", "hex");
+    const recoveryId = 0;
 
 
     console.log("\n🔍 Input validation:");

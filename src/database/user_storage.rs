@@ -19,6 +19,11 @@ impl UserStorage {
         Self { db }
     }
 
+    /// Get access to the underlying database
+    pub fn get_database(&self) -> &Database {
+        &self.db
+    }
+
     /// Store a user registration
     pub async fn store_user(&self, ethereum_address: &str, user: &UserRegistration) -> Result<()> {
         let key = key_utils::user_key(ethereum_address);

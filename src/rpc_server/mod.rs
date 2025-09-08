@@ -531,6 +531,7 @@ pub async fn handle_deposit_intent(
     intent: DepositIntent,
     user_eth_address: Option<String>,
     message_tx: std::sync::Arc<tokio::sync::Mutex<mpsc::Sender<ChannelMessage>>>,
+    transaction_type: crate::types::TransactionType,
 ) -> Result<impl warp::Reply, warp::Rejection> {
     info!("📝 HTTP: Received deposit intent request: {:?}", intent);
     info!(
@@ -543,6 +544,7 @@ pub async fn handle_deposit_intent(
         intent: intent.clone(),
         intent_id: intent_id.clone(),
         user_eth_address: user_eth_address.clone(),
+        transaction_type: transaction_type.clone(),
     };
 
     let tx_sender = message_tx.lock().await;
@@ -1029,8 +1031,31 @@ async fn handle_user_mpc_deposit(
     } else {
         Some(user_registration.ethereum_address.clone())
     };
+    // Fetch all transaction IDs corresponding to this intent hash
+    let intent_hash_hex = hex::encode(&intent_hash);
+    let mut transaction_ids = Vec::new();
+    
+    if let Some(tx_ids) = user_registry.get_intent_transaction_ids(&intent_hash_hex).await {
+        // Only store transaction IDs if there's no error
+        if tx_ids.error_message.is_none() {
+            if let Some(ref user_to_network_tx) = tx_ids.user_to_network_tx_id {
+                transaction_ids.push(user_to_network_tx.clone());
+            }
+            if let Some(ref network_to_target_tx) = tx_ids.network_to_target_tx_id {
+                transaction_ids.push(network_to_target_tx.clone());
+            }
+        }
+    }
     // Process the deposit intent
-    match handle_deposit_intent(req.msg.clone(), user_eth_address, message_tx).await {
+    let transaction_type = if transaction_ids.len() == 1 {
+        crate::types::TransactionType::NetworkToTarget
+    } else if transaction_ids.len() == 2 {
+        crate::types::TransactionType::VaultToNetwork
+    } else {
+        crate::types::TransactionType::UserToVault
+    };
+    
+    match handle_deposit_intent(req.msg.clone(), user_eth_address, message_tx, transaction_type).await {
         Ok(_) => {
             info!(
                 "✅ Deposit intent processed successfully for user: {}",

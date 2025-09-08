@@ -181,5 +181,34 @@ impl DkgStorage {
         tracing::info!("🗑️ [DKG_STORAGE] Deleted vault tweaked secret share from database");
         Ok(())
     }
+
+    pub async fn set_vault_group_key(&self, vault_group_key: ProjectivePoint) -> Result<()> {
+        let affine: AffinePoint = vault_group_key.into();
+        let ser = SerializablePoint(affine);
+        self.db.put_string(keys::DKG_VAULT_GROUP_KEY, &ser)?;
+        tracing::info!("💾 [DKG_STORAGE] Stored vault group key: {:?}", vault_group_key);
+        Ok(())
+    }
+
+    pub async fn get_vault_group_key(&self) -> Result<Option<ProjectivePoint>> {
+        let result = self
+            .db
+            .get_string::<SerializablePoint>(keys::DKG_VAULT_GROUP_KEY)?
+            .map(|p| ProjectivePoint::from(p.0));
+        
+        if result.is_some() {
+            tracing::info!("🔍 [DKG_STORAGE] Retrieved vault group key: {:?}", result.unwrap());
+        } else {
+            tracing::debug!("🔍 [DKG_STORAGE] No vault group key found in database");
+        }
+        
+        Ok(result)
+    }
+
+    pub async fn delete_vault_group_key(&self) -> Result<()> {
+        self.db.delete_string(keys::DKG_VAULT_GROUP_KEY)?;
+        tracing::info!("🗑️ [DKG_STORAGE] Deleted vault group key from database");
+        Ok(())
+    }
 }
 

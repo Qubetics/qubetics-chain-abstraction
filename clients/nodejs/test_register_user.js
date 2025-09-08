@@ -24,6 +24,7 @@ const colors = {
   cyan: '\x1b[36m',
   green: '\x1b[32m'
 };
+const oooo = 111
 
 function log(message, color = 'reset') {
   console.log(`${colors[color]}${message}${colors.reset}`);
@@ -153,7 +154,7 @@ async function testUserMpcDeposit({ wallet, amount }) {
       amount: amount, // Use the passed amount parameter
       source_token: 'TICS',
       target_token: 'TICS',
-      timestamp: 10000, // Current Unix timestamp in seconds
+      timestamp: oooo, // Current Unix timestamp in seconds
     };
 
     // Serialize DepositIntent for signing
@@ -287,7 +288,7 @@ async function testUserMpcDepositWithTxId({ wallet, amount, txId, status }) {
       amount: amount, // Use the passed amount parameter
       source_token: 'TICS',
       target_token: 'TICS',
-      timestamp: 10000, // Current Unix timestamp in seconds
+      timestamp: oooo, // Current Unix timestamp in seconds
     };
 
     // Serialize DepositIntent for signing

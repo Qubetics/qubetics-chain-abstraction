@@ -2,7 +2,7 @@ use crate::chain::{
     BitcoinInput, BitcoinOutput, BitcoinTransaction, ChainTransaction, EthereumTransaction,BitcoinWitness, BitcoinWitnessInput, BitcoinWitnessUtxo
 };
 use crate::rpc_server::{DepositIntent, DummyTransaction};
-use crate::utils::{get_eth_address_from_group_key, get_eth_address_from_group_key_with_path};
+use crate::utils::get_eth_address_from_group_key;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use tracing::info;
@@ -291,63 +291,77 @@ async fn fetch_ethereum_nonce(address: &str, chain_id: u64) -> Result<u64> {
 
 /// Create a chain-specific transaction from a deposit intent
 /// For Bitcoin transactions, group_public_key is required to derive the Bitcoin address and fetch UTXOs
-/// user_eth_address determines the fund flow:
-/// - Some(address): User deposit - FROM derived address TO network address
-/// - None: Network withdrawal - FROM network address TO target address
+/// transaction_type determines the fund flow:
+/// - UserToVault: User deposit - FROM derived address TO vault address (on source chain)
+/// - NetworkToTarget: Network withdrawal - FROM network address TO target address (on target chain)
+/// - VaultToNetwork: Vault to network - FROM vault address TO network address (on source chain)
 /// derived_eth_addr and derived_btc_addr are the actual addresses that hold user funds
 pub async fn create_chain_transaction_from_deposit_intent(
     intent: &DepositIntent,
     group_public_key: Option<k256::ProjectivePoint>,
-    user_eth_address: Option<&String>,
     derived_eth_addr: Option<&String>,
     derived_btc_addr: Option<&String>,
+    transaction_type: crate::types::TransactionType,
+    vault_eth_address: Option<&String>,
+    vault_btc_address: Option<&String>,
 ) -> Result<ChainTransaction> {
     // Determine chain type based on transaction type:
-    // - If user_eth_address exists (user deposit): use source_chain (user is depositing FROM this chain)
-    // - If no user_eth_address (network withdrawal): use target_chain (network is withdrawing TO this chain)
-    let chain_to_use = if user_eth_address.is_some() {
-        &intent.source_chain.to_lowercase()
-    } else {
-        &intent.target_chain.to_lowercase()
+    // - UserToVault: use source_chain (user is depositing FROM this chain)
+    // - NetworkToTarget: use target_chain (network is withdrawing TO this chain)
+    // - VaultToNetwork: use source_chain (vault is sending back to network on source chain)
+    let chain_to_use = match transaction_type {
+        crate::types::TransactionType::UserToVault => &intent.source_chain.to_lowercase(),
+        crate::types::TransactionType::NetworkToTarget => &intent.target_chain.to_lowercase(),
+        crate::types::TransactionType::VaultToNetwork => &intent.source_chain.to_lowercase(),
     };
 
     if is_evm_chain(chain_to_use) {
         // Create Ethereum-compatible transaction
         let chain_id = get_chain_id_from_name(chain_to_use)
             .ok_or_else(|| anyhow::anyhow!("Unknown EVM chain: {}", chain_to_use))?;
-        let vault_address = if let Err(e) = get_eth_address_from_group_key_with_path(group_public_key.unwrap(),"m/44'/60'/0'/0/1") {
-            return Err(anyhow::anyhow!("Failed to derive Ethereum address: {}", e));
-        }else {
-            get_eth_address_from_group_key_with_path(group_public_key.unwrap(),"m/44'/60'/0'/0/1").unwrap()
-        };
+        // Get vault address from parameter
+        let vault_address = vault_eth_address
+            .ok_or_else(|| anyhow::anyhow!("Vault ETH address not provided"))?;
 
         let network_address = get_eth_address_from_group_key(group_public_key.unwrap());
 
-        // Determine source and target based on user_eth_address
-        let (from_address, to_address) = if let Some(_user_addr) = user_eth_address {
-            // User deposit: FROM derived ethereum address TO network address
-            if let Some(derived_addr) = derived_eth_addr {
-                tracing::info!(
-                    "💰 [TRANSACTION] User deposit: {} -> {}",
-                    derived_addr,
-                    vault_address
-                );
-                (derived_addr.clone(), vault_address)
-            } else {
-                return Err(anyhow::anyhow!("User deposit requires derived_eth_address"));
+        // Determine source and target based on transaction type
+        let (from_address, to_address) = match transaction_type {
+            crate::types::TransactionType::UserToVault => {
+                // User deposit: FROM derived ethereum address TO vault address
+                if let Some(derived_addr) = derived_eth_addr {
+                    tracing::info!(
+                        "💰 [TRANSACTION] User to vault: {} -> {}",
+                        derived_addr,
+                        vault_address
+                    );
+                    (derived_addr.clone(), vault_address)
+                } else {
+                    return Err(anyhow::anyhow!("UserToVault transaction requires derived_eth_address"));
+                }
             }
-        } else {
-            // Network withdrawal: FROM network address TO target address
-            tracing::info!(
-                "💰 [TRANSACTION] Network withdrawal: {} -> {}",
-                network_address,
-                intent.target_address
-            );
-            (network_address.clone(), intent.target_address.clone())
+            crate::types::TransactionType::NetworkToTarget => {
+                // Network withdrawal: FROM network address TO target address
+                tracing::info!(
+                    "💰 [TRANSACTION] Network to target: {} -> {}",
+                    network_address,
+                    intent.target_address
+                );
+                (network_address.clone(), &intent.target_address)
+            }
+            crate::types::TransactionType::VaultToNetwork => {
+                // Vault to network: FROM vault address TO network address
+                tracing::info!(
+                    "💰 [TRANSACTION] Vault to network: {} -> {}",
+                    vault_address,
+                    network_address
+                );
+                (vault_address.clone(), &network_address)
+            }
         };
 
         let ethereum_tx = EthereumTransaction {
-            to: to_address,
+            to: to_address.to_string(),
             value: format!("0x{:x}", intent.amount),
             gas_limit: 300000,
             gas_price: get_default_gas_price_for_chain(chain_to_use),
@@ -362,30 +376,45 @@ pub async fn create_chain_transaction_from_deposit_intent(
         let group_key = group_public_key
             .ok_or_else(|| anyhow::anyhow!("Group public key required for Bitcoin transactions"))?;
 
-        // Get Bitcoin address from group key
+        // Get Bitcoin addresses
         let btc_network_address = crate::utils::get_btc_address_from_group_key(group_key);
+        // Get vault address from parameter
+        let btc_vault_address = vault_btc_address
+            .ok_or_else(|| anyhow::anyhow!("Vault BTC address not provided"))?;
 
-        // Determine source and target based on user_eth_address
-        let (from_address, to_address) = if let Some(_user_addr) = user_eth_address {
-            // User deposit: FROM derived bitcoin address TO network bitcoin address
-            if let Some(derived_btc_addr) = derived_btc_addr {
+        // Determine source and target based on transaction type
+        let (from_address, to_address) = match transaction_type {
+            crate::types::TransactionType::UserToVault => {
+                // User deposit: FROM derived bitcoin address TO vault bitcoin address
+                if let Some(derived_btc_addr) = derived_btc_addr {
+                    tracing::info!(
+                        "💰 [TRANSACTION] Bitcoin user to vault: {} -> {}",
+                        derived_btc_addr,
+                        btc_vault_address
+                    );
+                    (derived_btc_addr.clone(), btc_vault_address)
+                } else {
+                    return Err(anyhow::anyhow!("UserToVault transaction requires derived_btc_address"));
+                }
+            }
+            crate::types::TransactionType::NetworkToTarget => {
+                // Network withdrawal: FROM network bitcoin address TO target address
                 tracing::info!(
-                    "💰 [TRANSACTION] Bitcoin user deposit: {} -> {}",
-                    derived_btc_addr,
+                    "💰 [TRANSACTION] Bitcoin network to target: {} -> {}",
+                    btc_network_address,
+                    intent.target_address
+                );
+                (btc_network_address.clone(), &intent.target_address)
+            }
+            crate::types::TransactionType::VaultToNetwork => {
+                // Vault to network: FROM vault bitcoin address TO network bitcoin address
+                tracing::info!(
+                    "💰 [TRANSACTION] Bitcoin vault to network: {} -> {}",
+                    btc_vault_address,
                     btc_network_address
                 );
-                (derived_btc_addr.clone(), btc_network_address)
-            } else {
-                return Err(anyhow::anyhow!("User deposit requires derived_btc_address"));
+                (btc_vault_address.clone(), &btc_network_address)
             }
-        } else {
-            // Network withdrawal: FROM network bitcoin address TO target address
-            tracing::info!(
-                "💰 [TRANSACTION] Bitcoin network withdrawal: {} -> {}",
-                btc_network_address,
-                intent.target_address
-            );
-            (btc_network_address.clone(), intent.target_address.clone())
         };
 
         tracing::info!("Using Bitcoin source address for UTXOs: {}", from_address);
