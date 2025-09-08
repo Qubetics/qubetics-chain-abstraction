@@ -397,6 +397,7 @@ pub mod keys {
     pub const DKG_FINAL_PUBLIC: &str = "dkg_final_public";
     pub const DKG_VAULT_ETH_ADDRESS: &str = "dkg_vault_eth_address";
     pub const DKG_VAULT_BTC_ADDRESS: &str = "dkg_vault_btc_address";
+    pub const DKG_VAULT_TWEAKED_SECRET: &str = "dkg_vault_tweaked_secret";
 }
 
 /// Utility functions for key generation

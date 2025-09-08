@@ -4,7 +4,7 @@ use anyhow::{Result, anyhow};
 use k256::{AffinePoint, ProjectivePoint, Scalar};
 use k256::elliptic_curve::group::Group;
 use ethers::core::k256::ecdsa::Error;
-use ff::Field;
+use ff::{Field, PrimeField};
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -117,6 +117,26 @@ impl DKGNode {
 
     pub fn get_status(&self) -> DKGStatus {
         self.status.clone()
+    }
+
+    /// Calculate the vault tweaked secret share from the final secret share and vault HMAC
+    /// This is the secret share that corresponds to the vault group key
+    pub async fn calculate_vault_tweaked_secret_share(
+        &self,
+        tweak_scalar: Scalar,
+    ) -> Result<Scalar> {
+        let final_secret_share = self.storage.get_final_secret().await?
+            .ok_or_else(|| anyhow!("No final secret share available"))?;
+        
+        // The vault tweaked secret share is: final_secret_share + tweak_scalar
+        let vault_tweaked_secret = final_secret_share + tweak_scalar;
+        
+        info!("🔐 [DKG] Calculated vault tweaked secret share");
+        info!("  📊 Final secret share: {:?}", final_secret_share);
+        info!("  🔧 Tweak scalar: {:?}", tweak_scalar);
+        info!("  🏦 Vault tweaked secret: {:?}", vault_tweaked_secret);
+        
+        Ok(vault_tweaked_secret)
     }
 
     /// Derive NEW group key from updated commitments for a specific user
@@ -706,10 +726,34 @@ impl DKGNode {
         info!("📬 Ethereum Address from Group Key: {}", eth_address);
         info!("📬 Bitcoin Address from Group Key: {}", btc_address);
 
+
         // Derive vault addresses using the same flow as user registration
         let vault_hmac = hmac256_from_addr(&eth_address, &self.chain_code)
             .unwrap_or([0u8; 32]);
-        if let Some(tweak_scalar) = Scalar::from_repr(vault_hmac.into()) {
+
+        info!("🏦 [DKG] === VAULT GENERATION STARTED ===");
+        info!("🏦 [DKG] Main ETH address: {}", eth_address);
+        info!("🏦 [DKG] Vault HMAC: {:?}", vault_hmac);
+
+        if let Some(tweak_scalar) = k256::Scalar::from_repr_vartime(vault_hmac.into()).into() {
+            info!("🏦 [DKG] Vault tweak scalar: {:?}", tweak_scalar);
+            
+            // Calculate and store the vault tweaked secret share
+            match self.calculate_vault_tweaked_secret_share(tweak_scalar).await {
+                Ok(vault_tweaked_secret) => {
+                    info!("🔐 [DKG] Successfully calculated vault tweaked secret share: {:?}", vault_tweaked_secret);
+                    if let Err(e) = self.storage.set_vault_tweaked_secret(vault_tweaked_secret).await {
+                        warn!("⚠️ [DKG] Failed to store vault tweaked secret share: {}", e);
+                    } else {
+                        info!("✅ [DKG] Successfully stored vault tweaked secret share in database");
+                    }
+                }
+                Err(e) => {
+                    warn!("⚠️ [DKG] Failed to calculate vault tweaked secret share: {}", e);
+                }
+            }
+
+            // Derive and store the vault group key and addresses
             match self
                 .derive_user_specific_group_key_from_commitments(tweak_scalar)
                 .await
@@ -717,6 +761,10 @@ impl DKGNode {
                 Ok(vault_group_key) => {
                     let vault_eth = utils::get_eth_address_from_group_key(vault_group_key);
                     let vault_btc = utils::get_btc_address_from_group_key(vault_group_key);
+                    info!("🏦 [DKG] Derived vault group key: {:?}", vault_group_key);
+                    info!("🏦 [DKG] Vault ETH address: {}", vault_eth);
+                    info!("🏦 [DKG] Vault BTC address: {}", vault_btc);
+                    
                     if let Err(e) = self
                         .storage
                         .set_vault_addresses(&vault_eth, &vault_btc)
@@ -724,8 +772,9 @@ impl DKGNode {
                     {
                         warn!("⚠️ [DKG] Failed to store vault addresses: {}", e);
                     } else {
+                        info!("✅ [DKG] Successfully stored vault addresses in database");
                         info!(
-                            "📦 [DKG] Stored vault addresses - ETH: {}, BTC: {}",
+                            "📦 [DKG] Vault addresses - ETH: {}, BTC: {}",
                             vault_eth, vault_btc
                         );
                     }
@@ -738,22 +787,7 @@ impl DKGNode {
             warn!("⚠️ [DKG] Invalid tweak scalar for vault address generation");
         }
 
-        // Generate additional Ethereum addresses with different derivation paths
-        let derivation_paths = [
-            "m/44'/60'/0'/0/1",
-        ];
-
-        info!("📬 Generating additional Ethereum addresses with different derivation paths:");
-        for path in &derivation_paths {
-            match utils::get_eth_address_from_group_key_with_path(final_public_key, path) {
-                Ok(derived_address) => {
-                    info!("📬 Ethereum Address ({}): {}", path, derived_address);
-                },
-                Err(e) => {
-                    warn!("⚠️ Failed to derive Ethereum address for path {}: {}", path, e);
-                }
-            }
-        }
+        info!("🏦 [DKG] === VAULT GENERATION COMPLETED ===");
 
         Ok(())
     }
@@ -767,6 +801,13 @@ impl DKGNode {
 
     pub async fn get_final_public_key(&self) -> Option<ProjectivePoint> {
         match self.storage.get_final_public().await {
+            Ok(v) => v,
+            Err(_) => None,
+        }
+    }
+
+    pub async fn get_vault_tweaked_secret_share(&self) -> Option<Scalar> {
+        match self.storage.get_vault_tweaked_secret().await {
             Ok(v) => v,
             Err(_) => None,
         }
