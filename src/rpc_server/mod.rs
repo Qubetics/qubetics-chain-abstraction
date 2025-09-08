@@ -414,7 +414,13 @@ pub async fn start_http_server(
         .or(uptime);
 
     info!("🌐 Starting HTTP RPC server on port {}", port);
-    warp::serve(routes).run(([127, 0, 0, 1], port)).await;
+    // Enable CORS for all origins and common HTTP methods/headers
+    let cors = warp::cors()
+        .allow_any_origin()
+        .allow_methods(vec!["GET", "POST", "OPTIONS"])
+        .allow_headers(vec!["Content-Type", "Authorization"]);
+
+    warp::serve(routes.with(cors)).run(([0, 0, 0, 0], port)).await;
     Ok(())
 }
 

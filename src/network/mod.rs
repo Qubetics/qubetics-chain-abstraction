@@ -390,7 +390,6 @@ impl NetworkLayer {
             "dkg-commands",
             "signatures-to-final-node",
             "user-registrations",
-            "intent-broadcast",
             "transaction-id-sync",
             "consensus-result",
             "transaction-error-sync",
@@ -1203,92 +1202,6 @@ impl NetworkLayer {
                     }
                 } else {
                     warn!("❌ [GOSSIPSUB] User registry not available to handle user registration");
-                }
-            }
-            GossipsubMessage::IntentBroadcast { intent, signature, intent_hash } => {
-                info!("📡 Received intent broadcast via gossipsub - Intent hash: {}", intent_hash);
-                info!("🔍 Intent details: {:?}", intent);
-                
-                // Derive public address from signature and message on this node
-                if let Some(user_registry) = &mut self.user_registry {
-                    // Serialize the intent to get the message bytes that were signed
-                    match serde_json::to_string(&intent) {
-                        Ok(intent_json) => {
-                            let intent_bytes = intent_json.as_bytes();
-                            
-                            // Try to recover the signer address from the signature
-                            match crate::rpc_server::normalize_eth_signature(&signature) {
-                                Ok((compact, v)) => {
-                                    // Try personal_sign first, then raw keccak
-                                    let recovery_result = crate::rpc_server::recover_eth_address_secp(
-                                        intent_bytes,
-                                        &compact,
-                                        v,
-                                        true // use_personal_prefix
-                                    ).or_else(|_| {
-                                        crate::rpc_server::recover_eth_address_secp(
-                                            intent_bytes,
-                                            &compact,
-                                            v,
-                                            false // raw keccak
-                                        )
-                                    });
-                                    
-                                    match recovery_result {
-                                        Ok(signer_address) => {
-                                            info!("✅ Successfully derived signer address: {}", signer_address);
-                                            
-                                            // Check if user exists in our registry
-                                            match user_registry.get_user_by_address(&signer_address).await {
-                                                Some(_user) => {
-                                                    info!("👤 User {} found in local registry", signer_address);
-                                                    
-                                                    // Store the intent hash and intent in our registry
-                                                    match user_registry.store_intent_hash(
-                                                        hex::decode(&intent_hash).unwrap_or_default(),
-                                                        &signer_address,
-                                                        &intent
-                                                    ).await {
-                                                        Ok(_) => {
-                                                            info!("✅ Successfully stored broadcasted intent for user {}", signer_address);
-                                                            
-                                                            // Handle the deposit intent through the network layer
-                                                            let message_tx_arc = std::sync::Arc::new(tokio::sync::Mutex::new(self.message_tx.clone()));
-                                                            if let Err(e) = crate::rpc_server::handle_deposit_intent(
-                                                                intent.clone(), 
-                                                                Some(signer_address.clone()), 
-                                                                message_tx_arc
-                                                            ).await {
-                                                                warn!("❌ Failed to handle deposit intent: {:?}", e);
-                                                            }
-                                                        }
-                                                        Err(e) => {
-                                                            warn!("❌ Failed to store broadcasted intent: {}", e);
-                                                        }
-                                                    }
-                                                }
-                                                None => {
-                                                    warn!("❌ User {} not found in local registry - cannot process broadcasted intent", signer_address);
-                                                    warn!("💡 User must be registered through proper registration flow before submitting intents");
-                                                }
-                                            }
-                                        }
-                                        Err(e) => {
-                                            warn!("❌ Failed to recover signer address from intent broadcast: {}", e);
-                                        }
-                                    }
-                                }
-                                Err(e) => {
-                                    warn!("❌ Failed to normalize signature from intent broadcast: {}", e);
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            warn!("❌ Failed to serialize intent from broadcast: {}", e);
-                        }
-                    }
-                } else {
-                    warn!("❌ User registry not available to handle intent broadcast");
                 }
             }
             GossipsubMessage::TransactionIdBroadcast { intent_hash, transaction_id, transaction_type, node_id } => {
