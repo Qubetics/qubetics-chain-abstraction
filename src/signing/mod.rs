@@ -114,9 +114,11 @@ pub struct SigningNode {
     consensus_node: Option<ConsensusNode>, // Consensus node for final node selection
     available_nodes: Option<Vec<PeerId>>,  // Available nodes from node manager
     // Store original transaction and bytes for reconstruction
-    pending_transactions: Arc<RwLock<HashMap<u64, (ChainTransaction, Vec<u8>, Option<String>)>>>, // round -> (original_tx, tx_bytes, intent_hash)
+    pending_transactions: Arc<RwLock<HashMap<u64, (ChainTransaction, Vec<u8>, Option<String>, Option<crate::types::TransactionType>)>>>, // round -> (original_tx, tx_bytes, intent_hash, transaction_type)
     // ✅ Store DKG group public key
     group_public_key: Option<k256::ProjectivePoint>, // DKG group public key for Bitcoin addresses
+    // ✅ Store vault group public key separately
+    vault_group_key: Option<k256::ProjectivePoint>, // Vault group public key for vault transactions
     // User registry for storing transaction IDs
     user_registry: Option<Arc<DatabaseUserRegistry>>,
     // Dynamic broadcast configuration
@@ -156,6 +158,7 @@ impl SigningNode {
             available_nodes: None,
             pending_transactions: Arc::new(RwLock::new(HashMap::new())),
             group_public_key: None, // ✅ Initialize DKG group public key
+            vault_group_key: None, // ✅ Initialize vault group public key
             user_registry: None, // Will be set later via set_user_registry
             broadcast_config: BroadcastConfig::from_env(), // Load configuration from environment
         }
@@ -606,7 +609,7 @@ impl SigningNode {
         // Store original transaction for reconstruction after aggregation
         if let Some(original_tx) = original_tx {
             let mut pending_transactions = self.pending_transactions.write().await;
-            pending_transactions.insert(current_round, (ChainTransaction::Bitcoin(original_tx), tx_bytes.clone(), intent_hash.clone()));
+            pending_transactions.insert(current_round, (ChainTransaction::Bitcoin(original_tx), tx_bytes.clone(), intent_hash.clone(), None));
             info!(
                 "💾 [SIGNING] Node {} stored original Bitcoin transaction for round {} reconstruction (intent_hash: {:?})",
                 self.id, current_round, intent_hash
@@ -768,7 +771,7 @@ impl SigningNode {
     ) -> Result<Option<String>> {
         let pending_transactions = self.pending_transactions.read().await;
         
-        if let Some((chain_tx, _tx_bytes,_)) = pending_transactions.get(&round) {
+        if let Some((chain_tx, _tx_bytes, _, _)) = pending_transactions.get(&round) {
             if let ChainTransaction::Bitcoin(original_tx) = chain_tx {
                 info!(
                     "🔧 [SIGNING] Node {} reconstructing signed Bitcoin transaction for round {}",
@@ -844,7 +847,7 @@ impl SigningNode {
     ) -> Result<Option<String>> {
         let pending_transactions = self.pending_transactions.read().await;
         
-        if let Some((chain_tx, _tx_bytes, _intent_hash)) = pending_transactions.get(&round) {
+        if let Some((chain_tx, _tx_bytes, _intent_hash, transaction_type)) = pending_transactions.get(&round) {
             if let ChainTransaction::Ethereum(original_tx) = chain_tx {
                 info!(
                     "🔧 [SIGNING] Node {} reconstructing signed Ethereum transaction for round {}",
@@ -875,30 +878,90 @@ impl SigningNode {
                     }
                 };
                 
-                // Determine which address to use for nonce fetching
-                let (nonce_address, dynamic_nonce) = if let Some(user_addr) = &user_eth_address {
-                    // This is a user transaction - fetch nonce from user's derived address
-                    if let Some(user_registry) = &self.user_registry {
-                        if let Some(user) = user_registry.get_user_by_address(user_addr).await {
-                            if let Some(derived_eth_addr) = &user.derived_eth_address {
-                                let nonce = Self::fetch_ethereum_nonce(derived_eth_addr, chain_id).await?;
-                                info!("🔢 [SIGNING] User transaction: fetching nonce {} from user's derived address {}", nonce, derived_eth_addr);
-                                (derived_eth_addr.clone(), nonce)
+                // Determine which address to use for nonce fetching based on transaction type
+                let (nonce_address, dynamic_nonce) = match transaction_type {
+                    Some(crate::types::TransactionType::UserToVault) => {
+                        // This is a user transaction - fetch nonce from user's derived address
+                        if let Some(user_addr) = &user_eth_address {
+                            if let Some(user_registry) = &self.user_registry {
+                                if let Some(user) = user_registry.get_user_by_address(user_addr).await {
+                                    if let Some(derived_eth_addr) = &user.derived_eth_address {
+                                        let nonce = Self::fetch_ethereum_nonce(derived_eth_addr, chain_id).await?;
+                                        info!("🔢 [SIGNING] UserToVault transaction: fetching nonce {} from user's derived address {}", nonce, derived_eth_addr);
+                                        (derived_eth_addr.clone(), nonce)
+                                    } else {
+                                        return Err(anyhow::anyhow!("User {} has no derived Ethereum address", user_addr));
+                                    }
+                                } else {
+                                    return Err(anyhow::anyhow!("User {} not found in registry", user_addr));
+                                }
                             } else {
-                                return Err(anyhow::anyhow!("User {} has no derived Ethereum address", user_addr));
+                                return Err(anyhow::anyhow!("User registry not available for user transaction"));
                             }
                         } else {
-                            return Err(anyhow::anyhow!("User {} not found in registry", user_addr));
+                            return Err(anyhow::anyhow!("UserToVault transaction requires user_eth_address"));
                         }
-                    } else {
-                        return Err(anyhow::anyhow!("User registry not available for user transaction"));
                     }
-                } else {
-                    // This is a network transaction - fetch nonce from group address
-                    let group_address = get_eth_address_from_group_key(self.group_public_key.unwrap());
-                    let nonce = Self::fetch_ethereum_nonce(&group_address, chain_id).await?;
-                    info!("🔢 [SIGNING] Network transaction: fetching nonce {} from group address {}", nonce, group_address);
-                    (group_address, nonce)
+                    Some(crate::types::TransactionType::NetworkToTarget) => {
+                        // This is a network transaction - fetch nonce from network's group address
+                        let group_address = if let Some(group_key) = self.group_public_key {
+                            get_eth_address_from_group_key(group_key)
+                        } else {
+                            return Err(anyhow::anyhow!("No group public key available for network transaction"));
+                        };
+                        
+                        let nonce = Self::fetch_ethereum_nonce(&group_address, chain_id).await?;
+                        info!("🔢 [SIGNING] NetworkToTarget transaction: fetching nonce {} from network group address {}", nonce, group_address);
+                        (group_address, nonce)
+                    }
+                    Some(crate::types::TransactionType::VaultToNetwork) => {
+                        // This is a vault transaction - fetch nonce from the actual vault address stored in database
+                        if let Some(user_registry) = &self.user_registry {
+                            let database = user_registry.get_database();
+                            let vault_eth_address: String = database.get_string(&crate::database::keys::DKG_VAULT_ETH_ADDRESS)
+                                .ok()
+                                .flatten()
+                                .ok_or_else(|| anyhow::anyhow!("Vault ETH address not found in database"))?;
+                            
+                            let nonce = Self::fetch_ethereum_nonce(&vault_eth_address, chain_id).await?;
+                            info!("🔢 [SIGNING] VaultToNetwork transaction: fetching nonce {} from vault address {}", nonce, vault_eth_address);
+                            (vault_eth_address, nonce)
+                        } else {
+                            return Err(anyhow::anyhow!("User registry not available for vault transaction"));
+                        }
+                    }
+                    None => {
+                        // Fallback to old logic for backward compatibility
+                        if let Some(user_addr) = &user_eth_address {
+                            // This is a user transaction - fetch nonce from user's derived address
+                            if let Some(user_registry) = &self.user_registry {
+                                if let Some(user) = user_registry.get_user_by_address(user_addr).await {
+                                    if let Some(derived_eth_addr) = &user.derived_eth_address {
+                                        let nonce = Self::fetch_ethereum_nonce(derived_eth_addr, chain_id).await?;
+                                        info!("🔢 [SIGNING] User transaction (fallback): fetching nonce {} from user's derived address {}", nonce, derived_eth_addr);
+                                        (derived_eth_addr.clone(), nonce)
+                                    } else {
+                                        return Err(anyhow::anyhow!("User {} has no derived Ethereum address", user_addr));
+                                    }
+                                } else {
+                                    return Err(anyhow::anyhow!("User {} not found in registry", user_addr));
+                                }
+                            } else {
+                                return Err(anyhow::anyhow!("User registry not available for user transaction"));
+                            }
+                        } else {
+                            // This is either a network or vault transaction
+                            let group_address = if let Some(group_key) = self.group_public_key {
+                                get_eth_address_from_group_key(group_key)
+                            } else {
+                                return Err(anyhow::anyhow!("No group public key available for nonce fetching"));
+                            };
+                            
+                            let nonce = Self::fetch_ethereum_nonce(&group_address, chain_id).await?;
+                            info!("🔢 [SIGNING] Network/Vault transaction (fallback): fetching nonce {} from group address {}", nonce, group_address);
+                            (group_address, nonce)
+                        }
+                    }
                 };
                 
                 info!("💰 [SIGNING] Transaction cost: {} wei", original_tx.value);
@@ -1280,6 +1343,7 @@ impl SigningNode {
         user_tweaked_share: Option<k256::Scalar>,
         user_eth_address: Option<String>,
         intent_hash: Option<String>,
+        transaction_type: Option<crate::types::TransactionType>,
     ) -> Result<()> {
         // Determine which key to use for signing
         info!("🔑 [SIGNING] user_tweaked_share: {:?}\n", user_tweaked_share);
@@ -1394,7 +1458,7 @@ impl SigningNode {
                 data: None,
                 chain_id: transaction.chain_id,
             });
-            pending_transactions.insert(round, (chain_tx, tx_bytes.clone(), intent_hash.clone()));
+            pending_transactions.insert(round, (chain_tx, tx_bytes.clone(), intent_hash.clone(), transaction_type));
             info!(
                 "💾 [SIGNING] Node {} stored original Ethereum transaction for round {} reconstruction (nonce will be fetched dynamically, intent_hash: {:?})",
                 self.id, round, intent_hash
@@ -2201,9 +2265,20 @@ impl SigningNode {
         self.group_public_key = Some(group_key);
     }
 
+    /// Set the vault group public key
+    pub fn set_vault_group_key(&mut self, vault_group_key: k256::ProjectivePoint) {
+        info!("🔑 [SIGNING] Setting vault group public key for node {}", self.id);
+        self.vault_group_key = Some(vault_group_key);
+    }
+
     /// Get the DKG group public key
     pub fn get_group_public_key(&self) -> Option<k256::ProjectivePoint> {
         self.group_public_key
+    }
+
+    /// Get the vault group public key
+    pub fn get_vault_group_key(&self) -> Option<k256::ProjectivePoint> {
+        self.vault_group_key
     }
 
     pub fn set_user_registry(&mut self, user_registry: Arc<DatabaseUserRegistry>) {
@@ -2216,7 +2291,7 @@ impl SigningNode {
         // Get intent hash from pending transactions
         let intent_hash = {
             let pending_transactions = self.pending_transactions.read().await;
-            if let Some((_tx, _tx_bytes, intent_hash)) = pending_transactions.get(&round) {
+            if let Some((_tx, _tx_bytes, intent_hash, _)) = pending_transactions.get(&round) {
                 intent_hash.clone()
             } else {
                 None
@@ -2224,14 +2299,14 @@ impl SigningNode {
         };
 
         match (intent_hash, &self.user_registry) {
-            (Some(intent_hash), Some(user_registry)) => {
+            (Some(ref intent_hash), Some(user_registry)) => {
                 // Store error locally
-                match user_registry.store_transaction_error(&intent_hash, error_message).await {
+                match user_registry.store_transaction_error(intent_hash, error_message).await {
                     Ok(()) => {
                         info!("💥 [SIGNING] Stored transaction error for intent {} (round {}): {}", intent_hash, round, error_message);
                         
                         // Broadcast error to other nodes for synchronization
-                        self.broadcast_transaction_error(&intent_hash, error_message, "user_to_network").await;
+                        self.broadcast_transaction_error(intent_hash, error_message, "user_to_network").await;
                     },
                     Err(e) => {
                         error!("❌ [SIGNING] Failed to store transaction error for intent {}: {}", intent_hash, e);
@@ -2252,7 +2327,7 @@ impl SigningNode {
         // Get intent hash from pending transactions
         let intent_hash = {
             let pending_transactions = self.pending_transactions.read().await;
-            if let Some((_tx, _tx_bytes, intent_hash)) = pending_transactions.get(&round) {
+            if let Some((_tx, _tx_bytes, intent_hash, _)) = pending_transactions.get(&round) {
                 intent_hash.clone()
             } else {
                 None
@@ -2260,13 +2335,13 @@ impl SigningNode {
         };
 
         match (intent_hash, &self.user_registry) {
-            (Some(intent_hash), Some(user_registry)) => {
+            (Some(ref intent_hash), Some(user_registry)) => {
                 // Determine transaction type based on user_eth_address
                 // - If user_eth_address exists: this is a user-to-network transaction
                 // - If user_eth_address is None: this is a network-to-target transaction
                 let (transaction_type, storage_result) = if let Some(eth_addr) = &user_eth_address {
                     // User-to-network transaction
-                    let result = user_registry.store_user_to_network_tx_id(&intent_hash, tx_id).await;
+                    let result = user_registry.store_user_to_network_tx_id(intent_hash, tx_id).await;
                     match &result {
                         Ok(()) => {
                             info!("💾 [SIGNING] Stored user-to-network transaction ID {} for intent {} (round {}) for user {}", tx_id, intent_hash, round, eth_addr);
@@ -2278,7 +2353,7 @@ impl SigningNode {
                     ("user_to_network", result)
                 } else {
                     // Network-to-target transaction
-                    let result = user_registry.store_network_to_target_tx_id(&intent_hash, tx_id).await;
+                    let result = user_registry.store_network_to_target_tx_id(intent_hash, tx_id).await;
                     match &result {
                         Ok(()) => {
                             info!("💾 [SIGNING] Stored network-to-target transaction ID {} for intent {} (round {})", tx_id, intent_hash, round);

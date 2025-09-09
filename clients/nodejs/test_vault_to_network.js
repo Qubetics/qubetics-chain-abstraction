@@ -48,16 +48,16 @@ async function vaultToNetworkTransfer({ wallet, amount }) {
   log(`🔐 VaultToNetwork - Amount: ${amount}`, 'blue');
 
   const userInfo = await getUserInfo(signerAddr);
-  
+  console.log(`UserInfo: ${JSON.stringify(userInfo, null, 2)}`);
   const depositIntent = {
     source_address: userInfo.derived_eth_address, // Use canonical address
     target_address: '0xc6dA53bCa90753699cd19521Dd559964490C6822',
       source_chain: 'qubetics',
       target_chain: 'qubetics',
-      amount: amount, // Use the passed amount parameter
+      amount: amount,
       source_token: 'TICS',
       target_token: 'TICS',
-      timestamp: 111, // Current Unix timestamp in seconds
+      timestamp: 1111,
     };
 
   const msg = JSON.stringify(depositIntent);

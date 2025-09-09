@@ -1122,7 +1122,7 @@ impl NetworkLayer {
                     let tx_bytes = crate::utils::transaction::create_transaction_for_signing(&transaction);
                     debug!("→ RLP payload: 0x{}", hex::encode(&tx_bytes));
 
-                    signing_node.sign_message(tx_bytes, &transaction, None, None, None).await?;
+                    signing_node.sign_message(tx_bytes, &transaction, None, None, None, None).await?;
                 }
             }
             GossipsubMessage::DKGCommand(dkg_cmd) => {
@@ -1479,7 +1479,7 @@ impl NetworkLayer {
                                         // For vault-to-network, use the vault group key
                                         if let Some(dkg_node) = &self.dkg_node {
                                             if let Some(vault_group_key) = dkg_node.get_vault_group_key().await {
-                                                signing_node.set_group_public_key(vault_group_key);
+                                                signing_node.set_vault_group_key(vault_group_key);
                                                 info!("🔑 [GOSSIPSUB] Set vault group public key");
                                             }
                                         }
@@ -1554,7 +1554,7 @@ impl NetworkLayer {
                                         }
                                     };
                                     
-                                    signing_node.sign_message(tx_bytes, &dummy_tx, user_tweaked_share, user_eth_address.clone(), Some(intent_hash.clone())).await?;
+                                    signing_node.sign_message(tx_bytes, &dummy_tx, user_tweaked_share, user_eth_address.clone(), Some(intent_hash.clone()), Some(transaction_type.clone())).await?;
                                 }
                             }
                             info!("✅ [GOSSIPSUB] {} deposit intent signing completed", signing_node.get_chain_type());
@@ -1683,7 +1683,7 @@ impl NetworkLayer {
                     // Convert transaction to bytes for signing using RLP encoding
                     let tx_bytes = crate::utils::transaction::create_transaction_for_signing(&transaction);
                     info!("🔐 [LOCAL] Starting local signing process {:?}", hex::encode(tx_bytes.clone()));
-                    signing_node.sign_message(tx_bytes, &transaction, None, None, None).await?;
+                    signing_node.sign_message(tx_bytes, &transaction, None, None, None, None).await?;
                     info!("✅ [LOCAL] Local transaction signing completed");
                 } else {
                     warn!("❌ [LOCAL] Signing node not available for local processing");
@@ -1932,7 +1932,7 @@ impl NetworkLayer {
                                         // For vault-to-network, use the vault group key
                                         if let Some(dkg_node) = &self.dkg_node {
                                             if let Some(vault_group_key) = dkg_node.get_vault_group_key().await {
-                                                signing_node.set_group_public_key(vault_group_key);
+                                                signing_node.set_vault_group_key(vault_group_key);
                                                 info!("🔑 [LOCAL] Set vault group public key");
                                             }
                                         }
@@ -2007,7 +2007,7 @@ impl NetworkLayer {
                                         }
                                     };
                                     
-                                    signing_node.sign_message(tx_bytes, &dummy_tx, user_tweaked_share, user_eth_address.clone(), Some(intent_hash.clone())).await?;
+                                    signing_node.sign_message(tx_bytes, &dummy_tx, user_tweaked_share, user_eth_address.clone(), Some(intent_hash.clone()), Some(transaction_type.clone())).await?;
                                 }
                             }
                         }
