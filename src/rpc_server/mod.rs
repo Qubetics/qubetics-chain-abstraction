@@ -619,14 +619,55 @@ pub async fn handle_deposit_intent(
                 return Err(warp::reject::custom(TransactionError::InvalidRequest));
             };
 
+        // Fetch current prices for BTC and TICS to determine the
+        // value equivalence between source and target chains.
+        let prices = fetch_crypto_prices()
+            .await
+            .map_err(|_| warp::reject::custom(TransactionError::NetworkError))?;
+
+        // Helper closure to map chain names to the price symbols returned by
+        // the price API. Any non-Bitcoin chain is treated as TICS (our EVM
+        // token).
+        let chain_to_symbol = |chain: &str| match chain.to_lowercase().as_str() {
+            "btc" | "bitcoin" => "BTC",
+            _ => "TICS",
+        };
+
+        let source_symbol = chain_to_symbol(&intent.source_chain);
+        let target_symbol = chain_to_symbol(&intent.target_chain);
+
+        let source_price = *prices
+            .get(source_symbol)
+            .ok_or_else(|| warp::reject::custom(TransactionError::NetworkError))?;
+        let target_price = *prices
+            .get(target_symbol)
+            .ok_or_else(|| warp::reject::custom(TransactionError::NetworkError))?;
+
+        // Convert the intent amount using the price ratio so we can compare
+        // against the balance of the address on the chain we are about to
+        // spend from.
+        let mut required_amount = (intent.amount as f64) * (source_price / target_price);
+
+        // Adjust for chain-specific decimals. Target chain dictates the unit
+        // size we should compare against: EVM-based chains use 1e18 while
+        // Bitcoin uses 1e8.
+        let decimal_multiplier = match intent.target_chain.to_lowercase().as_str() {
+            "eth" | "ethereum" | "qubetics" => 1e18,
+            "btc" | "bitcoin" => 1e8,
+            _ => 1e18,
+        };
+
+        required_amount *= decimal_multiplier;
+        let required_amount = required_amount.round() as u128;
+
         let balance = fetch_balance(&address_to_check, &blockchain)
             .await
             .map_err(|_| warp::reject::custom(TransactionError::NetworkError))?;
 
-        if balance < intent.amount {
+        if balance < required_amount {
             warn!(
                 "Insufficient balance for address {} on chain {}: required {}, found {}",
-                address_to_check, chain_to_use, intent.amount, balance
+                address_to_check, chain_to_use, required_amount, balance
             );
             return Err(warp::reject::custom(TransactionError::InvalidRequest));
         }
@@ -1138,7 +1179,6 @@ async fn handle_user_mpc_deposit(
         }
     }
     // If transaction ID and status are provided, update the database accordingly
-   
 
     // Serialize the DepositIntent to match the client's JSON.stringify() format
     // Use compact JSON serialization (no spaces) to match JavaScript's JSON.stringify()
@@ -1425,7 +1465,8 @@ async fn handle_user_mpc_deposit(
                 } else {
                     info!(
                         "✅ Updated transaction status in db for {}: {:?}",
-                        tx_id, TransactionStatus::Confirmed
+                        tx_id,
+                        TransactionStatus::Confirmed
                     );
                 }
             }
