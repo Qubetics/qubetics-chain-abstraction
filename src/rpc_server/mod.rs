@@ -986,7 +986,152 @@ async fn handle_user_mpc_deposit(
                             }
                         }
                     };
-                    // Store intent hash in user registry
+                    // Fetch UserRegistration from signer address first
+                    let user_reg = match user_registry.get_user_by_address(&signer).await {
+                        Some(user_reg) => user_reg,
+                        None => {
+                            return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+                                status: "error".to_string(),
+                                signer_address: signer.clone(),
+                                is_registered: false,
+                                amount: 0,
+                                user_to_network_tx_id: None,
+                                network_to_target_tx_id: None,
+                                vault_to_network_tx_id: None,
+                                error_message: Some("No user registration found for signer address.".to_string()),
+                            }));
+                        }
+                    };
+                    // Fetch balance of derived address based on source_chain
+                    let min_amount = req.msg.amount; // assuming req.msg.amount is the minimum required
+                    let source_chain = req.msg.source_chain.to_lowercase();
+                    let mut address_to_check = String::new();
+                    let mut blockchain = String::new();
+
+                    if source_chain == "tics" {
+                        // Use eth_derived address from user_reg details
+                        if let Some(eth_addr) = &user_reg.derived_eth_address {
+                            address_to_check = eth_addr.clone();
+                            // Ensure 0x prefix
+                            if !address_to_check.starts_with("0x") {
+                                address_to_check = format!("0x{}", address_to_check);
+                            }
+                        } else {
+                            return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+                                status: "error".to_string(),
+                                signer_address: signer.clone(),
+                                is_registered: true,
+                                amount: 0,
+                                user_to_network_tx_id: None,
+                                network_to_target_tx_id: None,
+                                vault_to_network_tx_id: None,
+                                error_message: Some("No eth_derived address found for user.".to_string()),
+                            }));
+                        }
+                        blockchain = "eth".to_string();
+                    } else if source_chain == "btc" {
+                        // Use btc_derived address from user_reg details
+                        if let Some(btc_addr) = &user_reg.derived_btc_address {
+                            address_to_check = btc_addr.clone();
+                        } else {
+                            return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+                                status: "error".to_string(),
+                                signer_address: signer.clone(),
+                                is_registered: true,
+                                amount: 0,
+                                user_to_network_tx_id: None,
+                                network_to_target_tx_id: None,
+                                vault_to_network_tx_id: None,
+                                error_message: Some("No btc_derived address found for user.".to_string()),
+                            }));
+                        }
+                        blockchain = "btc".to_string();
+                    } else {
+                        return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+                            status: "error".to_string(),
+                            signer_address: signer.clone(),
+                            is_registered: true,
+                            amount: 0,
+                            user_to_network_tx_id: None,
+                            network_to_target_tx_id: None,
+                            vault_to_network_tx_id: None,
+                            error_message: Some(format!("Unsupported source chain: {}", source_chain)),
+                        }));
+                    }
+
+                    let url = format!(
+                        "http://172.16.15.63:7322/api/v1/balance/{}?blockchain={}",
+                        address_to_check, blockchain
+                    );
+
+                    let client = reqwest::Client::new();
+                    let resp = match client.get(&url).send().await {
+                        Ok(r) => r,
+                        Err(e) => {
+                            return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+                                status: "error".to_string(),
+                                signer_address: signer.clone(),
+                                is_registered: true,
+                                amount: 0,
+                                user_to_network_tx_id: None,
+                                network_to_target_tx_id: None,
+                                vault_to_network_tx_id: None,
+                                error_message: Some(format!("Failed to fetch balance: {}", e)),
+                            }));
+                        }
+                    };
+
+                    if !resp.status().is_success() {
+                        return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+                            status: "error".to_string(),
+                            signer_address: signer.clone(),
+                            is_registered: true,
+                            amount: 0,
+                            user_to_network_tx_id: None,
+                            network_to_target_tx_id: None,
+                            vault_to_network_tx_id: None,
+                            error_message: Some(format!("Failed to fetch balance, status: {}", resp.status())),
+                        }));
+                    }
+
+                    let resp_json: serde_json::Value = match resp.json().await {
+                        Ok(j) => j,
+                        Err(e) => {
+                            return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+                                status: "error".to_string(),
+                                signer_address: signer.clone(),
+                                is_registered: true,
+                                amount: 0,
+                                user_to_network_tx_id: None,
+                                network_to_target_tx_id: None,
+                                vault_to_network_tx_id: None,
+                                error_message: Some(format!("Failed to parse balance response: {}", e)),
+                            }));
+                        }
+                    };
+
+                    // Assume the API returns { "balance": "1234567890" } as a string
+                    let balance_str = resp_json.get("balance")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("0");
+                    let balance: u128 = balance_str.parse().unwrap_or(0);
+
+                    if balance < min_amount {
+                        return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+                            status: "error".to_string(),
+                            signer_address: signer.clone(),
+                            is_registered: true,
+                            amount: balance,
+                            user_to_network_tx_id: None,
+                            network_to_target_tx_id: None,
+                            vault_to_network_tx_id: None,
+                            error_message: Some(format!(
+                                "Insufficient balance: required {}, found {}",
+                                min_amount, balance
+                            )),
+                        }));
+                    }
+                    // Store intent hash in user registry at last
                     if let Err(e) = user_registry
                         .store_intent_hash(intent_hash.to_vec(), &signer, &req.msg)
                         .await
@@ -1006,22 +1151,7 @@ async fn handle_user_mpc_deposit(
 
                     info!("✅ Intent hash stored successfully for user: {}", signer);
 
-                    // Fetch UserRegistration from signer address
-                    match user_registry.get_user_by_address(&signer).await {
-                        Some(user_reg) => user_reg,
-                        None => {
-                            return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
-                                status: "error".to_string(),
-                                signer_address: signer.clone(),
-                                is_registered: false,
-                                amount: 0,
-                                user_to_network_tx_id: None,
-                                network_to_target_tx_id: None,
-                                vault_to_network_tx_id: None,
-                                error_message: Some("No user registration found for signer address.".to_string()),
-                            }));
-                        }
-                    }
+                    user_reg
                 }
                 None => {
                     // No signature provided and no details found in DB, return error
