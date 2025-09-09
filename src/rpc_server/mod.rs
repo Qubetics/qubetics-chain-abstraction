@@ -857,6 +857,7 @@ async fn wait_for_transaction_result(
 }
 
 async fn fetch_balance(address: &str, blockchain: &str) -> Result<u128, String> {
+    info!("Fetching balance for address: {}, blockchain: {}", address, blockchain);
     let url = format!(
         "http://172.16.15.63:7322/api/v1/balance/{}?blockchain={}",
         address, blockchain
@@ -869,27 +870,79 @@ async fn fetch_balance(address: &str, blockchain: &str) -> Result<u128, String> 
         .await
         .map_err(|e| format!("Failed to fetch balance: {}", e))?;
 
-    if !resp.status().is_success() {
-        return Err(format!(
-            "Failed to fetch balance, status: {}",
-            resp.status()
-        ));
-    }
+    info!("Balance API response status: {}", resp.status());
 
-    let resp_json: serde_json::Value = resp
-        .json()
+    let resp_text = resp
+        .text()
         .await
+        .map_err(|e| format!("Failed to read balance response text: {}", e))?;
+
+    info!("Full balance API response body: {}", resp_text);
+
+    // Parse the response text as JSON
+    let resp_json: serde_json::Value = serde_json::from_str(&resp_text)
         .map_err(|e| format!("Failed to parse balance response: {}", e))?;
 
-    let balance_str = resp_json
-        .get("balance")
-        .and_then(|v| v.as_str())
-        .unwrap_or("0");
+    info!("Balance API response JSON: {}", resp_json);
+
+    // The new API response has the balance under "data" as a float, so we fetch it and multiply by 10^18
+    let balance_f64 = resp_json
+        .get("data")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    let balance_str = format!("{}", (balance_f64 * 1e18).round() as u128);
+
+    info!("Parsed balance string: {}", balance_str);
 
     balance_str
         .parse::<u128>()
         .map_err(|e| format!("Failed to parse balance value: {}", e))
 }
+
+/// Check whether a transaction is confirmed on a given chain using the
+/// external transaction confirmation service.
+///
+/// Returns `Ok(true)` if the transaction is confirmed, `Ok(false)` if the
+/// transaction is not yet confirmed, and `Err` if the API call fails or returns
+/// an unexpected response.
+pub async fn check_tx_confirmation(chain: &str, tx_id: &str) -> anyhow::Result<bool> {
+    // Map common chain aliases to the API expected values
+    let chain_lc = chain.to_lowercase();
+    let api_chain: &str = match chain_lc.as_str() {
+        "btc" | "bitcoin" => "btc",
+        "qubetics" => "eth",
+        other => other,
+    };
+
+    let url = format!(
+        "http://172.16.15.63:7322/api/v1/tx-confirmation/{}/{}",
+        api_chain,
+        tx_id
+    );
+
+    let client = reqwest::Client::new();
+    let resp = client.get(&url).send().await.map_err(|e| {
+        anyhow::anyhow!("Failed to send tx confirmation request: {}", e)
+    })?;
+
+    if !resp.status().is_success() {
+        return Err(anyhow::anyhow!(
+            "Tx confirmation API error: {}",
+            resp.status()
+        ));
+    }
+
+    let json: serde_json::Value = resp.json().await.map_err(|e| {
+        anyhow::anyhow!("Failed to parse tx confirmation response: {}", e)
+    })?;
+
+    let status = json.get("data")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("Missing or invalid 'data' field in tx confirmation response"))?;
+
+    Ok(status.eq_ignore_ascii_case("confirmed"))
+}
+
 
 async fn handle_user_mpc_deposit(
     req: UserMpcDepositRequest,
@@ -1202,26 +1255,27 @@ async fn handle_user_mpc_deposit(
             None => "tics", // Defensive, but should not happen if tx_id is Some
         };
 
-        // Map chain names to API path (for now, just pass as is, but you may want to map aliases)
-        let api_chain = match selected_chain {
-            "btc" | "bitcoin" => "btc",
-            "tics" => "tics",
-            // Add more mappings as needed
-            other => other,
-        };
-
-        // Build the API URL
-        let api_url = format!(
-            "http://172.16.15.63:7322/api/v1/tx-confirmation/{}/{}",
-            api_chain,
-            tx_id
-        );
-
-        // Call the API to check confirmation
-        let resp = match reqwest::get(&api_url).await {
-            Ok(r) => r,
+        match check_tx_confirmation(selected_chain, tx_id).await {
+            Ok(true) => { /* confirmed, continue */ }
+            Ok(false) => {
+                warn!(
+                    "Transaction {} not yet confirmed on chain {}",
+                    tx_id, selected_chain
+                );
+            
+                return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+                    status: "pending".to_string(),
+                    signer_address: user_registration.ethereum_address.clone(),
+                    is_registered: true,
+                    amount: req.msg.amount,
+                    user_to_network_tx_id: None,
+                    network_to_target_tx_id: None,
+                    vault_to_network_tx_id: None,
+                    error_message: Some("Transaction not yet confirmed on chain".to_string()),
+                }));
+            }
             Err(e) => {
-                error!("Failed to call tx confirmation API: {}", e);
+                error!("Tx confirmation API returned error: {}", e);
                 return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
                     status: "error".to_string(),
                     signer_address: user_registration.ethereum_address.clone(),
@@ -1230,57 +1284,9 @@ async fn handle_user_mpc_deposit(
                     user_to_network_tx_id: None,
                     network_to_target_tx_id: None,
                     vault_to_network_tx_id: None,
-                    error_message: Some("Failed to call tx confirmation API".to_string()),
+                    error_message: Some(format!("Tx confirmation API error: {}", e)),
                 }));
             }
-        };
-
-        if !resp.status().is_success() {
-            error!("Tx confirmation API returned error status: {}", resp.status());
-            return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
-                status: "error".to_string(),
-                signer_address: user_registration.ethereum_address.clone(),
-                is_registered: true,
-                amount: req.msg.amount,
-                user_to_network_tx_id: None,
-                network_to_target_tx_id: None,
-                vault_to_network_tx_id: None,
-                error_message: Some(format!("Tx confirmation API error: {}", resp.status())),
-            }));
-        }
-
-        // Parse the response (assuming JSON with a "confirmed" boolean field)
-        let json: serde_json::Value = match resp.json().await {
-            Ok(j) => j,
-            Err(e) => {
-                error!("Failed to parse tx confirmation API response: {}", e);
-                return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
-                    status: "error".to_string(),
-                    signer_address: user_registration.ethereum_address.clone(),
-                    is_registered: true,
-                    amount: req.msg.amount,
-                    user_to_network_tx_id: None,
-                    network_to_target_tx_id: None,
-                    vault_to_network_tx_id: None,
-                    error_message: Some("Failed to parse tx confirmation API response".to_string()),
-                }));
-            }
-        };
-
-        let confirmed = json.get("confirmed").and_then(|v| v.as_bool()).unwrap_or(false);
-
-        if !confirmed {
-            warn!("Transaction {} not yet confirmed on chain {}", tx_id, api_chain);
-            return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
-                status: "pending".to_string(),
-                signer_address: user_registration.ethereum_address.clone(),
-                is_registered: true,
-                amount: req.msg.amount,
-                user_to_network_tx_id: None,
-                network_to_target_tx_id: None,
-                vault_to_network_tx_id: None,
-                error_message: Some("Transaction not yet confirmed on chain".to_string()),
-            }));
         }
         // If confirmed, continue processing
     }

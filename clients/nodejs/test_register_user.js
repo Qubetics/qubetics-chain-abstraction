@@ -149,8 +149,8 @@ async function testUserMpcDeposit({ wallet, amount }) {
     const depositIntent = {
       source_address: userInfo.data.derived_eth_address, // Use canonical address
       target_address: '0xc6dA53bCa90753699cd19521Dd559964490C6822',
-      source_chain: 'tics',
-      target_chain: 'tics',
+      source_chain: 'qubetics',
+      target_chain: 'qubetics',
       amount: amount, // Use the passed amount parameter
       source_token: 'TICS',
       target_token: 'TICS',
@@ -415,7 +415,7 @@ async function runTests() {
   const signerAddr = await wallet.getAddress();
   log(`\n🔑 Derived signer address from TEST_PRIVKEY: ${signerAddr}`, 'blue');
 
-  // 1) DKG status
+  // // 1) DKG status
   // await testDKGStatus();
 
   // // 2) Register ONLY the derived address 
@@ -433,7 +433,7 @@ async function runTests() {
   log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
   const amount = 10000000000000; // keep safe for JSON
   await testUserMpcDeposit({ wallet, amount });
-  await new Promise(r => setTimeout(r, 7000));
+  // await new Promise(r => setTimeout(r, 7000));
   // 4) MPC deposit test WITH tx_id (should pass None to handle_deposit_intent)
   // log(`\n🧪 Test 2: Deposit amount WITH tx_id and status update`, 'blue');
   // const testTxId = TEST_TX_ID; // Generate a unique test transaction ID
