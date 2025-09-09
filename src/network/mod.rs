@@ -1272,7 +1272,7 @@ impl NetworkLayer {
                     warn!("❌ [NETWORK] No user registry available to store synchronized transaction error");
                 }
             }
-            GossipsubMessage::DepositIntent { intent, intent_id, user_eth_address, transaction_type } => {
+            GossipsubMessage::DepositIntent { intent, intent_id, user_eth_address, transaction_type, amount } => {
                 info!("📝 [GOSSIPSUB] Processing deposit intent received via gossipsub: {:?} (ID: {})", intent, intent_id);
                 
                 // Calculate intent hash for transaction ID storage
@@ -1436,7 +1436,7 @@ impl NetworkLayer {
                         return Err(anyhow::anyhow!("User registry not available"));
                     };
                     
-                    let chain_transaction_result = crate::utils::transaction::create_chain_transaction_from_deposit_intent(&intent, group_public_key, derived_eth_addr.as_ref(), derived_btc_addr.as_ref(), transaction_type.clone(), vault_eth_addr.as_ref(), vault_btc_addr.as_ref()).await;
+                    let chain_transaction_result = crate::utils::transaction::create_chain_transaction_from_deposit_intent(&intent, group_public_key, derived_eth_addr.as_ref(), derived_btc_addr.as_ref(), transaction_type.clone(), vault_eth_addr.as_ref(), vault_btc_addr.as_ref(), amount).await;
                     
                     match chain_transaction_result {
                         Ok(chain_transaction) => {
@@ -1709,8 +1709,9 @@ impl NetworkLayer {
                     .request_response
                     .send_request(&peer_id, request);
             }
-            ChannelMessage::DepositIntent { intent, intent_id, user_eth_address, transaction_type } => {
+            ChannelMessage::DepositIntent { intent, intent_id, user_eth_address, transaction_type, amount } => {
                 info!("📝 [NETWORK] Processing deposit intent locally: {:?}", intent);
+                
                 // Only broadcast to other nodes via gossipsub when using network share (no user_eth_address)
                 info!("🌐 [NETWORK] Using network share - broadcasting to P2P network");
                 let deposit_intent_msg = GossipsubMessage::DepositIntent {
@@ -1718,10 +1719,12 @@ impl NetworkLayer {
                     intent_id: intent_id.clone(),
                     user_eth_address: user_eth_address.clone(),
                     transaction_type: transaction_type.clone(),
+                    amount: amount.clone(),
                 };
                 let msg_bytes = serde_json::to_vec(&deposit_intent_msg)
                     .map_err(|e| anyhow::anyhow!("Failed to serialize deposit intent: {}", e))?;
                 
+
                 // Broadcast to all peers via gossipsub
                 let topic = gossipsub::IdentTopic::new("deposit-intents");
                 swarm.behaviour_mut().gossipsub.publish(topic, msg_bytes)?;
@@ -1889,7 +1892,7 @@ impl NetworkLayer {
                         return Err(anyhow::anyhow!("User registry not available"));
                     };
                     
-                    let chain_transaction_result = crate::utils::transaction::create_chain_transaction_from_deposit_intent(&intent, group_public_key, derived_eth_addr.as_ref(), derived_btc_addr.as_ref(), transaction_type.clone(), vault_eth_addr.as_ref(), vault_btc_addr.as_ref()).await;
+                    let chain_transaction_result = crate::utils::transaction::create_chain_transaction_from_deposit_intent(&intent, group_public_key, derived_eth_addr.as_ref(), derived_btc_addr.as_ref(), transaction_type.clone(), vault_eth_addr.as_ref(), vault_btc_addr.as_ref(), amount).await;
                     
                     match chain_transaction_result {
                         Ok(chain_transaction) => {

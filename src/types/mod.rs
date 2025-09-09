@@ -39,6 +39,7 @@ pub enum ChannelMessage {
         intent_id: String,
         user_eth_address: Option<String>, // If provided, use user's tweaked share; otherwise use network's DKG share
         transaction_type: TransactionType,
+        amount: u128,
     },
     UserRegistration {
         ethereum_address: String,
@@ -71,6 +72,7 @@ pub enum GossipsubMessage {
         intent_id: String,
         user_eth_address: Option<String>, // If provided, use user's tweaked share; otherwise use network's DKG share
         transaction_type: TransactionType,
+        amount: u128,
     },
     DKGCommand(crate::types::rpc::RPCRequest),
     UserRegistration {

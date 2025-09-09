@@ -544,12 +544,78 @@ pub async fn handle_deposit_intent(
         "📝 HTTP: User eth address for signing: {:?}",
         user_eth_address
     );
+    let mut required_amount_u128 = 0;
 
+    // Only do price conversion for NetworkToTarget, else just use intent.amount
+    if matches!(transaction_type, crate::types::TransactionType::NetworkToTarget) {
+        // Fetch current prices for BTC and TICS to determine the
+        // value equivalence between source and target chains.
+        let prices = fetch_crypto_prices()
+            .await
+            .map_err(|_| warp::reject::custom(TransactionError::NetworkError))?;
+
+        // Helper closure to map chain names to the price symbols returned by
+        // the price API. Any non-Bitcoin chain is treated as TICS (our EVM token).
+        let chain_to_symbol = |chain: &str| match chain.to_lowercase().as_str() {
+            "btc" | "bitcoin" => "BTC",
+            _ => "TICS",
+        };
+
+        let source_symbol = chain_to_symbol(&intent.source_chain);
+        let target_symbol = chain_to_symbol(&intent.target_chain);
+
+        let source_price = *prices
+            .get(source_symbol)
+            .ok_or_else(|| warp::reject::custom(TransactionError::NetworkError))?;
+        let target_price = *prices
+            .get(target_symbol)
+            .ok_or_else(|| warp::reject::custom(TransactionError::NetworkError))?;
+
+        info!(
+            "💱 Conversion: {} {} (source chain: {}) @ {} per unit --> {} (target chain: {}) @ {} per unit",
+            intent.amount, source_symbol, intent.source_chain, source_price, target_symbol, intent.target_chain, target_price
+        );
+
+        // Convert the intent amount using the price ratio so we can compare
+        // against the balance of the address on the chain we are about to
+        // spend from.
+        let required_amount = (intent.amount as f64) * (source_price / target_price);
+
+        info!(
+            "💱 Conversion: {} {} (source) is equivalent to {} {} (target) before decimals",
+            intent.amount, source_symbol, required_amount, target_symbol
+        );
+
+        // Adjust for chain-specific decimals. Target chain dictates the unit
+        // size we should compare against: EVM-based chains use 1e18 while
+        // Bitcoin uses 1e8.
+        let decimal_multiplier = match intent.target_chain.to_lowercase().as_str() {
+            "eth" | "ethereum" | "qubetics" => 1e18,
+            "btc" | "bitcoin" => 1e8,
+            _ => 1e18,
+        };
+
+        required_amount_u128 = required_amount as u128;
+
+        info!(
+            "💱 Conversion: After applying decimal multiplier ({}), required amount on {}: {}",
+            decimal_multiplier, intent.target_chain, required_amount_u128
+        );
+    } else {
+        // For VaultToNetwork and other types, just use the intent amount directly
+        required_amount_u128 = intent.amount;
+        info!(
+            "💱 No price conversion needed. Using intent amount as required amount: {}",
+            required_amount_u128
+        );
+    }
+
+        
     // Additional balance validation for NetworkToTarget and VaultToNetwork
     if matches!(
         transaction_type,
         crate::types::TransactionType::NetworkToTarget
-            | crate::types::TransactionType::VaultToNetwork
+            | crate::types::TransactionType::VaultToNetwork 
     ) {
         // Determine which chain to check based on the transaction type
         let chain_to_use = match transaction_type {
@@ -618,59 +684,24 @@ pub async fn handle_deposit_intent(
                 warn!("Unsupported chain for balance validation: {}", chain_to_use);
                 return Err(warp::reject::custom(TransactionError::InvalidRequest));
             };
-
-        // Fetch current prices for BTC and TICS to determine the
-        // value equivalence between source and target chains.
-        let prices = fetch_crypto_prices()
+            
+            let balance = fetch_balance(&address_to_check, &blockchain)
             .await
             .map_err(|_| warp::reject::custom(TransactionError::NetworkError))?;
 
-        // Helper closure to map chain names to the price symbols returned by
-        // the price API. Any non-Bitcoin chain is treated as TICS (our EVM
-        // token).
-        let chain_to_symbol = |chain: &str| match chain.to_lowercase().as_str() {
-            "btc" | "bitcoin" => "BTC",
-            _ => "TICS",
-        };
+        info!(
+            "💰 Balance check: address {} on chain {} has balance {} (required: {})",
+            address_to_check, chain_to_use, balance, required_amount_u128
+        );
 
-        let source_symbol = chain_to_symbol(&intent.source_chain);
-        let target_symbol = chain_to_symbol(&intent.target_chain);
-
-        let source_price = *prices
-            .get(source_symbol)
-            .ok_or_else(|| warp::reject::custom(TransactionError::NetworkError))?;
-        let target_price = *prices
-            .get(target_symbol)
-            .ok_or_else(|| warp::reject::custom(TransactionError::NetworkError))?;
-
-        // Convert the intent amount using the price ratio so we can compare
-        // against the balance of the address on the chain we are about to
-        // spend from.
-        let mut required_amount = (intent.amount as f64) * (source_price / target_price);
-
-        // Adjust for chain-specific decimals. Target chain dictates the unit
-        // size we should compare against: EVM-based chains use 1e18 while
-        // Bitcoin uses 1e8.
-        let decimal_multiplier = match intent.target_chain.to_lowercase().as_str() {
-            "eth" | "ethereum" | "qubetics" => 1e18,
-            "btc" | "bitcoin" => 1e8,
-            _ => 1e18,
-        };
-
-        required_amount *= decimal_multiplier;
-        let required_amount = required_amount.round() as u128;
-
-        let balance = fetch_balance(&address_to_check, &blockchain)
-            .await
-            .map_err(|_| warp::reject::custom(TransactionError::NetworkError))?;
-
-        if balance < required_amount {
+        if balance < required_amount_u128 {
             warn!(
                 "Insufficient balance for address {} on chain {}: required {}, found {}",
-                address_to_check, chain_to_use, required_amount, balance
+                address_to_check, chain_to_use, required_amount_u128, balance
             );
             return Err(warp::reject::custom(TransactionError::InvalidRequest));
         }
+
     }
 
     let intent_id = format!("intent-{}", Uuid::new_v4());
@@ -679,6 +710,7 @@ pub async fn handle_deposit_intent(
         intent_id: intent_id.clone(),
         user_eth_address: user_eth_address.clone(),
         transaction_type: transaction_type.clone(),
+        amount: required_amount_u128,
     };
 
     let tx_sender = message_tx.lock().await;
@@ -1000,22 +1032,40 @@ async fn wait_for_transaction_result(
 }
 
 async fn fetch_crypto_prices() -> Result<HashMap<String, f64>, String> {
+    use tracing::{debug, error, info};
+
     let url = "http://172.16.15.63:7322/api/v1/cryptos/prices?symbols=BTC,TICS";
     let client = reqwest::Client::new();
+
+    info!("Fetching crypto prices from URL: {}", url);
 
     let resp = client
         .get(url)
         .send()
         .await
-        .map_err(|e| format!("Failed to fetch crypto prices: {}", e))?;
+        .map_err(|e| {
+            error!("Failed to fetch crypto prices: {}", e);
+            format!("Failed to fetch crypto prices: {}", e)
+        })?;
 
     let status = resp.status();
+    debug!("Crypto prices API response status: {}", status);
+
     let resp_text = resp
         .text()
         .await
-        .map_err(|e| format!("Failed to read crypto prices response text: {}", e))?;
+        .map_err(|e| {
+            error!("Failed to read crypto prices response text: {}", e);
+            format!("Failed to read crypto prices response text: {}", e)
+        })?;
+
+    debug!("Crypto prices API response body: {}", resp_text);
 
     if !status.is_success() {
+        error!(
+            "Crypto prices API returned non-success status {}: {}",
+            status, resp_text
+        );
         return Err(format!(
             "Crypto prices API returned non-success status {}: {}",
             status, resp_text
@@ -1023,28 +1073,44 @@ async fn fetch_crypto_prices() -> Result<HashMap<String, f64>, String> {
     }
 
     let resp_json: serde_json::Value = serde_json::from_str(&resp_text)
-        .map_err(|e| format!("Failed to parse crypto prices response: {}", e))?;
+        .map_err(|e| {
+            error!("Failed to parse crypto prices response: {}", e);
+            format!("Failed to parse crypto prices response: {}", e)
+        })?;
+
+    debug!("Crypto prices API response JSON: {:?}", resp_json);
 
     if resp_json.get("error").and_then(|v| v.as_bool()) == Some(true) {
         let msg = resp_json
             .get("message")
             .and_then(|v| v.as_str())
             .unwrap_or("Unknown error");
+        error!("Crypto prices API error: {}", msg);
         return Err(format!("Crypto prices API error: {}", msg));
     }
 
     let data = resp_json
         .get("data")
-        .ok_or_else(|| "No 'data' field in crypto prices response".to_string())?;
+        .ok_or_else(|| {
+            error!("No 'data' field in crypto prices response");
+            "No 'data' field in crypto prices response".to_string()
+        })?;
 
     let mut prices = std::collections::HashMap::new();
     if let Some(obj) = data.as_object() {
         for (symbol, value) in obj {
             if let Some(price) = value.as_f64() {
+                debug!("Parsed price for {}: {}", symbol, price);
                 prices.insert(symbol.clone(), price);
+            } else {
+                debug!("Could not parse price for {}: {:?}", symbol, value);
             }
         }
+    } else {
+        debug!("'data' field is not an object in crypto prices response");
     }
+
+    info!("Fetched crypto prices: {:?}", prices);
 
     Ok(prices)
 }
@@ -1155,6 +1221,58 @@ async fn handle_user_mpc_deposit(
     dkg_storage: std::sync::Arc<DkgStorage>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
     info!("🧾 HTTP: user_mpc_deposit: amount={}", req.msg.amount);
+     // If transaction ID and status are provided, update the database accordingly
+
+    // Serialize the DepositIntent to match the client's JSON.stringify() format
+    // Use compact JSON serialization (no spaces) to match JavaScript's JSON.stringify()
+    let intent_json = serde_json::to_string(&req.msg).unwrap();
+    let intent_bytes = intent_json.as_bytes();
+    let intent_hash = Keccak256::digest(intent_bytes);
+    let intent_hash_hex = hex::encode(intent_hash);
+
+
+    let mut transaction_ids = Vec::new();
+
+    let tx_mapping = user_registry
+        .get_intent_transaction_ids(&intent_hash_hex)
+        .await;
+    if let Some(tx_ids) = user_registry
+        .get_intent_transaction_ids(&intent_hash_hex)
+        .await
+    {
+        // Only store transaction IDs if there's no error
+        if tx_ids.error_message.is_none() {
+            if let Some(ref user_to_network_tx) = tx_ids.user_to_network_tx_id {
+                transaction_ids.push(user_to_network_tx.clone());
+            }
+            if let Some(ref network_to_target_tx) = tx_ids.network_to_target_tx_id {
+                transaction_ids.push(network_to_target_tx.clone());
+            }
+        }
+    }
+    // Process the deposit intent
+    // If there are any transaction IDs, req.tx_id must be provided, else return error
+    if transaction_ids.len() >= 1 && req.tx_id.is_none() {
+        return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+            status: "error".to_string(),
+            signer_address: "".to_string(),
+            is_registered: false,
+            amount: 0,
+            user_to_network_tx_id: None,
+            network_to_target_tx_id: None,
+            vault_to_network_tx_id: None,
+            error_message: Some("Transaction ID must be provided when transaction(s) already exist for this intent".to_string()),
+        }));
+    }
+
+    let transaction_type = if transaction_ids.len() == 1 {
+        crate::types::TransactionType::NetworkToTarget
+    } else if transaction_ids.len() == 2 {
+        crate::types::TransactionType::VaultToNetwork
+    } else {
+        crate::types::TransactionType::UserToVault
+    };
+
     if let Some(ref tx_id) = req.tx_id {
         if let Some(status) = user_registry.get_transaction_status(tx_id).await {
             if status == TransactionStatus::Confirmed {
@@ -1178,13 +1296,7 @@ async fn handle_user_mpc_deposit(
             }
         }
     }
-    // If transaction ID and status are provided, update the database accordingly
-
-    // Serialize the DepositIntent to match the client's JSON.stringify() format
-    // Use compact JSON serialization (no spaces) to match JavaScript's JSON.stringify()
-    let intent_json = serde_json::to_string(&req.msg).unwrap();
-    let intent_bytes = intent_json.as_bytes();
-    let intent_hash = Keccak256::digest(intent_bytes);
+   
 
     info!(
         "🔐 Processing MPC deposit - Intent hash: {:?}, Amount: {}",
@@ -1201,7 +1313,6 @@ async fn handle_user_mpc_deposit(
         }
     );
     // Check if the intent hash is already stored; if yes, retrieve user details in a variable
-    let intent_hash_hex = hex::encode(intent_hash);
     // Retrieve the user by intent hash and immediately handle Some/None
     let user_registration = match user_registry
         .get_user_by_intent_hash(&intent_hash_hex)
@@ -1419,11 +1530,7 @@ async fn handle_user_mpc_deposit(
     };
     // Fetch all transaction IDs corresponding to this intent hash
     let intent_hash_hex = hex::encode(&intent_hash);
-    let mut transaction_ids = Vec::new();
-
-    let tx_mapping = user_registry
-        .get_intent_transaction_ids(&intent_hash_hex)
-        .await;
+    
 
     let chain_to_check = if let Some(ref tx_id) = req.tx_id {
         if let Some(ref map) = tx_mapping {
@@ -1504,29 +1611,7 @@ async fn handle_user_mpc_deposit(
         // If confirmed, continue processing
     }
 
-    if let Some(tx_ids) = user_registry
-        .get_intent_transaction_ids(&intent_hash_hex)
-        .await
-    {
-        // Only store transaction IDs if there's no error
-        if tx_ids.error_message.is_none() {
-            if let Some(ref user_to_network_tx) = tx_ids.user_to_network_tx_id {
-                transaction_ids.push(user_to_network_tx.clone());
-            }
-            if let Some(ref network_to_target_tx) = tx_ids.network_to_target_tx_id {
-                transaction_ids.push(network_to_target_tx.clone());
-            }
-        }
-    }
-    // Process the deposit intent
-    let transaction_type = if transaction_ids.len() == 1 {
-        crate::types::TransactionType::NetworkToTarget
-    } else if transaction_ids.len() == 2 {
-        crate::types::TransactionType::VaultToNetwork
-    } else {
-        crate::types::TransactionType::UserToVault
-    };
-
+    
     match handle_deposit_intent(
         req.msg.clone(),
         user_eth_address,
@@ -1572,7 +1657,7 @@ async fn handle_user_mpc_deposit(
     // Poll the database frequently for up to 10 seconds so that we can
     // return a response as soon as the transaction is available.
     let (u2n_tx_id, n2t_tx_id, v2n_tx_id, chain_error) =
-        wait_for_transaction_result(&user_registry, &intent_hash, 10).await;
+        wait_for_transaction_result(&user_registry, &intent_hash, 20).await;
 
     // Log the transaction IDs if recorded
     if let Some(ref tx_id_str) = u2n_tx_id {
