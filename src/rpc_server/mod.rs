@@ -856,6 +856,41 @@ async fn wait_for_transaction_result(
     best_result
 }
 
+async fn fetch_balance(address: &str, blockchain: &str) -> Result<u128, String> {
+    let url = format!(
+        "http://172.16.15.63:7322/api/v1/balance/{}?blockchain={}",
+        address, blockchain
+    );
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to fetch balance: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err(format!(
+            "Failed to fetch balance, status: {}",
+            resp.status()
+        ));
+    }
+
+    let resp_json: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse balance response: {}", e))?;
+
+    let balance_str = resp_json
+        .get("balance")
+        .and_then(|v| v.as_str())
+        .unwrap_or("0");
+
+    balance_str
+        .parse::<u128>()
+        .map_err(|e| format!("Failed to parse balance value: {}", e))
+}
+
 async fn handle_user_mpc_deposit(
     req: UserMpcDepositRequest,
     user_registry: std::sync::Arc<DatabaseUserRegistry>,
@@ -1008,7 +1043,7 @@ async fn handle_user_mpc_deposit(
                     let mut address_to_check = String::new();
                     let mut blockchain = String::new();
 
-                    if source_chain == "tics" {
+                    if source_chain == "qubetics" {
                         // Use eth_derived address from user_reg details
                         if let Some(eth_addr) = &user_reg.derived_eth_address {
                             address_to_check = eth_addr.clone();
@@ -1058,15 +1093,8 @@ async fn handle_user_mpc_deposit(
                             error_message: Some(format!("Unsupported source chain: {}", source_chain)),
                         }));
                     }
-
-                    let url = format!(
-                        "http://172.16.15.63:7322/api/v1/balance/{}?blockchain={}",
-                        address_to_check, blockchain
-                    );
-
-                    let client = reqwest::Client::new();
-                    let resp = match client.get(&url).send().await {
-                        Ok(r) => r,
+                    let balance = match fetch_balance(&address_to_check, &blockchain).await {
+                        Ok(b) => b,
                         Err(e) => {
                             return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
                                 status: "error".to_string(),
@@ -1076,46 +1104,10 @@ async fn handle_user_mpc_deposit(
                                 user_to_network_tx_id: None,
                                 network_to_target_tx_id: None,
                                 vault_to_network_tx_id: None,
-                                error_message: Some(format!("Failed to fetch balance: {}", e)),
+                                error_message: Some(e),
                             }));
                         }
                     };
-
-                    if !resp.status().is_success() {
-                        return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
-                            status: "error".to_string(),
-                            signer_address: signer.clone(),
-                            is_registered: true,
-                            amount: 0,
-                            user_to_network_tx_id: None,
-                            network_to_target_tx_id: None,
-                            vault_to_network_tx_id: None,
-                            error_message: Some(format!("Failed to fetch balance, status: {}", resp.status())),
-                        }));
-                    }
-
-                    let resp_json: serde_json::Value = match resp.json().await {
-                        Ok(j) => j,
-                        Err(e) => {
-                            return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
-                                status: "error".to_string(),
-                                signer_address: signer.clone(),
-                                is_registered: true,
-                                amount: 0,
-                                user_to_network_tx_id: None,
-                                network_to_target_tx_id: None,
-                                vault_to_network_tx_id: None,
-                                error_message: Some(format!("Failed to parse balance response: {}", e)),
-                            }));
-                        }
-                    };
-
-                    // Assume the API returns { "balance": "1234567890" } as a string
-                    let balance_str = resp_json.get("balance")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("0");
-                    let balance: u128 = balance_str.parse().unwrap_or(0);
-
                     if balance < min_amount {
                         return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
                             status: "error".to_string(),
@@ -1179,6 +1171,120 @@ async fn handle_user_mpc_deposit(
     let intent_hash_hex = hex::encode(&intent_hash);
     let mut transaction_ids = Vec::new();
     
+    let tx_mapping = user_registry.get_intent_transaction_ids(&intent_hash_hex).await;
+
+    let chain_to_check = if let Some(ref tx_id) = req.tx_id {
+        if let Some(ref map) = tx_mapping {
+            if map.user_to_network_tx_id.as_ref() == Some(tx_id) {
+                Some("source")
+            } else if map.network_to_target_tx_id.as_ref() == Some(tx_id) {
+                Some("target")
+            } else {
+                Some("tics")
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    // Only perform this check if a tx_id is provided
+    if let Some(ref tx_id) = req.tx_id {
+        // Determine which chain to check based on mapping logic
+        let source_chain = req.msg.source_chain.to_lowercase();
+        let target_chain = req.msg.target_chain.to_lowercase();
+        let selected_chain = match chain_to_check {
+            Some("target") => &target_chain,
+            Some("source") => &source_chain,
+            // If chain_to_check is "tics" or any other value, always use "tics"
+            Some("tics") | Some(_) => "tics",
+            None => "tics", // Defensive, but should not happen if tx_id is Some
+        };
+
+        // Map chain names to API path (for now, just pass as is, but you may want to map aliases)
+        let api_chain = match selected_chain {
+            "btc" | "bitcoin" => "btc",
+            "tics" => "tics",
+            // Add more mappings as needed
+            other => other,
+        };
+
+        // Build the API URL
+        let api_url = format!(
+            "http://172.16.15.63:7322/api/v1/tx-confirmation/{}/{}",
+            api_chain,
+            tx_id
+        );
+
+        // Call the API to check confirmation
+        let resp = match reqwest::get(&api_url).await {
+            Ok(r) => r,
+            Err(e) => {
+                error!("Failed to call tx confirmation API: {}", e);
+                return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+                    status: "error".to_string(),
+                    signer_address: user_registration.ethereum_address.clone(),
+                    is_registered: true,
+                    amount: req.msg.amount,
+                    user_to_network_tx_id: None,
+                    network_to_target_tx_id: None,
+                    vault_to_network_tx_id: None,
+                    error_message: Some("Failed to call tx confirmation API".to_string()),
+                }));
+            }
+        };
+
+        if !resp.status().is_success() {
+            error!("Tx confirmation API returned error status: {}", resp.status());
+            return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+                status: "error".to_string(),
+                signer_address: user_registration.ethereum_address.clone(),
+                is_registered: true,
+                amount: req.msg.amount,
+                user_to_network_tx_id: None,
+                network_to_target_tx_id: None,
+                vault_to_network_tx_id: None,
+                error_message: Some(format!("Tx confirmation API error: {}", resp.status())),
+            }));
+        }
+
+        // Parse the response (assuming JSON with a "confirmed" boolean field)
+        let json: serde_json::Value = match resp.json().await {
+            Ok(j) => j,
+            Err(e) => {
+                error!("Failed to parse tx confirmation API response: {}", e);
+                return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+                    status: "error".to_string(),
+                    signer_address: user_registration.ethereum_address.clone(),
+                    is_registered: true,
+                    amount: req.msg.amount,
+                    user_to_network_tx_id: None,
+                    network_to_target_tx_id: None,
+                    vault_to_network_tx_id: None,
+                    error_message: Some("Failed to parse tx confirmation API response".to_string()),
+                }));
+            }
+        };
+
+        let confirmed = json.get("confirmed").and_then(|v| v.as_bool()).unwrap_or(false);
+
+        if !confirmed {
+            warn!("Transaction {} not yet confirmed on chain {}", tx_id, api_chain);
+            return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+                status: "pending".to_string(),
+                signer_address: user_registration.ethereum_address.clone(),
+                is_registered: true,
+                amount: req.msg.amount,
+                user_to_network_tx_id: None,
+                network_to_target_tx_id: None,
+                vault_to_network_tx_id: None,
+                error_message: Some("Transaction not yet confirmed on chain".to_string()),
+            }));
+        }
+        // If confirmed, continue processing
+    }
+
     if let Some(tx_ids) = user_registry.get_intent_transaction_ids(&intent_hash_hex).await {
         // Only store transaction IDs if there's no error
         if tx_ids.error_message.is_none() {
