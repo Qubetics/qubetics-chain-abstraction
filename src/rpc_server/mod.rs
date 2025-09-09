@@ -359,6 +359,7 @@ pub async fn start_http_server(
         .and(warp::body::json())
         .and(with_user_registry(user_registry.clone()))
         .and(with_message_tx(message_tx.clone()))
+        .and(with_dkg_storage(dkg_storage.clone()))
         .and_then(handle_user_mpc_deposit);
 
     // GET /user_info/{ethereum_address}
@@ -421,7 +422,9 @@ pub async fn start_http_server(
         .allow_methods(vec!["GET", "POST", "OPTIONS"])
         .allow_headers(vec!["Content-Type", "Authorization"]);
 
-    warp::serve(routes.with(cors)).run(([0, 0, 0, 0], port)).await;
+    warp::serve(routes.with(cors))
+        .run(([0, 0, 0, 0], port))
+        .await;
     Ok(())
 }
 
@@ -533,12 +536,100 @@ pub async fn handle_deposit_intent(
     user_eth_address: Option<String>,
     message_tx: std::sync::Arc<tokio::sync::Mutex<mpsc::Sender<ChannelMessage>>>,
     transaction_type: crate::types::TransactionType,
+    dkg_storage: std::sync::Arc<DkgStorage>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
     info!("📝 HTTP: Received deposit intent request: {:?}", intent);
     info!(
         "📝 HTTP: User eth address for signing: {:?}",
         user_eth_address
     );
+
+    // Additional balance validation for NetworkToTarget and VaultToNetwork
+    if matches!(
+        transaction_type,
+        crate::types::TransactionType::NetworkToTarget
+            | crate::types::TransactionType::VaultToNetwork
+    ) {
+        // Determine which chain to check based on the transaction type
+        let chain_to_use = match transaction_type {
+            crate::types::TransactionType::NetworkToTarget => intent.target_chain.to_lowercase(),
+            crate::types::TransactionType::VaultToNetwork => intent.source_chain.to_lowercase(),
+            _ => unreachable!(),
+        };
+
+        // Decide which address to check: network address or vault address
+        let (address_to_check, blockchain) =
+            if crate::utils::transaction::is_evm_chain(&chain_to_use) {
+                let address = match transaction_type {
+                    crate::types::TransactionType::NetworkToTarget => {
+                        let group_key = dkg_storage
+                            .get_final_public()
+                            .await
+                            .map_err(|_| warp::reject::custom(TransactionError::InvalidRequest))?
+                            .ok_or_else(|| {
+                                warp::reject::custom(TransactionError::InvalidRequest)
+                            })?;
+                        let mut addr = crate::utils::get_eth_address_from_group_key(group_key);
+                        if !addr.starts_with("0x") {
+                            addr = format!("0x{}", addr);
+                        }
+                        addr
+                    }
+                    crate::types::TransactionType::VaultToNetwork => {
+                        let (vault_eth, _) = dkg_storage
+                            .get_vault_addresses()
+                            .await
+                            .map_err(|_| warp::reject::custom(TransactionError::InvalidRequest))?
+                            .ok_or_else(|| {
+                                warp::reject::custom(TransactionError::InvalidRequest)
+                            })?;
+                        vault_eth
+                    }
+                    _ => unreachable!(),
+                };
+                (address, "eth".to_string())
+            } else if chain_to_use == "bitcoin" || chain_to_use == "btc" {
+                let address = match transaction_type {
+                    crate::types::TransactionType::NetworkToTarget => {
+                        let group_key = dkg_storage
+                            .get_final_public()
+                            .await
+                            .map_err(|_| warp::reject::custom(TransactionError::InvalidRequest))?
+                            .ok_or_else(|| {
+                                warp::reject::custom(TransactionError::InvalidRequest)
+                            })?;
+                        crate::utils::get_btc_address_from_group_key(group_key)
+                    }
+                    crate::types::TransactionType::VaultToNetwork => {
+                        let (_, vault_btc) = dkg_storage
+                            .get_vault_addresses()
+                            .await
+                            .map_err(|_| warp::reject::custom(TransactionError::InvalidRequest))?
+                            .ok_or_else(|| {
+                                warp::reject::custom(TransactionError::InvalidRequest)
+                            })?;
+                        vault_btc
+                    }
+                    _ => unreachable!(),
+                };
+                (address, "btc".to_string())
+            } else {
+                warn!("Unsupported chain for balance validation: {}", chain_to_use);
+                return Err(warp::reject::custom(TransactionError::InvalidRequest));
+            };
+
+        let balance = fetch_balance(&address_to_check, &blockchain)
+            .await
+            .map_err(|_| warp::reject::custom(TransactionError::NetworkError))?;
+
+        if balance < intent.amount {
+            warn!(
+                "Insufficient balance for address {} on chain {}: required {}, found {}",
+                address_to_check, chain_to_use, intent.amount, balance
+            );
+            return Err(warp::reject::custom(TransactionError::InvalidRequest));
+        }
+    }
 
     let intent_id = format!("intent-{}", Uuid::new_v4());
     let deposit_intent_msg = ChannelMessage::DepositIntent {
@@ -790,7 +881,11 @@ async fn get_transaction_id_for_intent(
             }
         }
 
-        return (user_to_network_tx_id, network_to_target_tx_id, vault_to_network_tx_id);
+        return (
+            user_to_network_tx_id,
+            network_to_target_tx_id,
+            vault_to_network_tx_id,
+        );
     }
 
     (None, None, None)
@@ -804,29 +899,35 @@ async fn wait_for_transaction_result(
     user_registry: &DatabaseUserRegistry,
     intent_hash: &[u8],
     timeout_secs: u64,
-) -> (Option<String>, Option<String>, Option<String>, Option<String>) {
+) -> (
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+) {
     let start = std::time::Instant::now();
     let intent_hash_hex = hex::encode(intent_hash);
     let poll_interval = tokio::time::Duration::from_millis(250);
     let timeout = tokio::time::Duration::from_secs(timeout_secs);
-    
+
     // Give a bit more time to potentially get all transaction IDs
     let extended_timeout = timeout + tokio::time::Duration::from_secs(2);
     let mut best_result = (None, None, None, None);
 
     loop {
         // Check for transaction ids
-        let (u2n_tx, n2t_tx, v2n_tx) = get_transaction_id_for_intent(user_registry, intent_hash).await;
-        
+        let (u2n_tx, n2t_tx, v2n_tx) =
+            get_transaction_id_for_intent(user_registry, intent_hash).await;
+
         // Update our best result if we have new information
         if u2n_tx.is_some() || n2t_tx.is_some() || v2n_tx.is_some() {
             best_result = (u2n_tx, n2t_tx, v2n_tx, None);
-            
+
             // If we have all transaction IDs, return immediately
             if best_result.0.is_some() && best_result.1.is_some() && best_result.2.is_some() {
                 return best_result;
             }
-            
+
             // If we have at least one, continue polling for a bit longer to see if we can get the others
             // But don't wait too long - return after the original timeout if we have at least one
             if start.elapsed() >= timeout {
@@ -857,7 +958,10 @@ async fn wait_for_transaction_result(
 }
 
 async fn fetch_balance(address: &str, blockchain: &str) -> Result<u128, String> {
-    info!("Fetching balance for address: {}, blockchain: {}", address, blockchain);
+    info!(
+        "Fetching balance for address: {}, blockchain: {}",
+        address, blockchain
+    );
     let url = format!(
         "http://172.16.15.63:7322/api/v1/balance/{}?blockchain={}",
         address, blockchain
@@ -916,14 +1020,15 @@ pub async fn check_tx_confirmation(chain: &str, tx_id: &str) -> anyhow::Result<b
 
     let url = format!(
         "http://172.16.15.63:7322/api/v1/tx-confirmation/{}/{}",
-        api_chain,
-        tx_id
+        api_chain, tx_id
     );
 
     let client = reqwest::Client::new();
-    let resp = client.get(&url).send().await.map_err(|e| {
-        anyhow::anyhow!("Failed to send tx confirmation request: {}", e)
-    })?;
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to send tx confirmation request: {}", e))?;
 
     if !resp.status().is_success() {
         return Err(anyhow::anyhow!(
@@ -932,29 +1037,32 @@ pub async fn check_tx_confirmation(chain: &str, tx_id: &str) -> anyhow::Result<b
         ));
     }
 
-    let json: serde_json::Value = resp.json().await.map_err(|e| {
-        anyhow::anyhow!("Failed to parse tx confirmation response: {}", e)
-    })?;
+    let json: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to parse tx confirmation response: {}", e))?;
 
-    let status = json.get("data")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("Missing or invalid 'data' field in tx confirmation response"))?;
+    let status = json.get("data").and_then(|v| v.as_str()).ok_or_else(|| {
+        anyhow::anyhow!("Missing or invalid 'data' field in tx confirmation response")
+    })?;
 
     Ok(status.eq_ignore_ascii_case("confirmed"))
 }
-
 
 async fn handle_user_mpc_deposit(
     req: UserMpcDepositRequest,
     user_registry: std::sync::Arc<DatabaseUserRegistry>,
     message_tx: std::sync::Arc<tokio::sync::Mutex<mpsc::Sender<ChannelMessage>>>,
+    dkg_storage: std::sync::Arc<DkgStorage>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
-    info!(
-        "🧾 HTTP: user_mpc_deposit: amount={}", req.msg.amount);
+    info!("🧾 HTTP: user_mpc_deposit: amount={}", req.msg.amount);
     if let Some(ref tx_id) = req.tx_id {
         if let Some(status) = user_registry.get_transaction_status(tx_id).await {
             if status == TransactionStatus::Confirmed {
-                warn!("❌ Transaction {} is already confirmed, rejecting duplicate call", tx_id);
+                warn!(
+                    "❌ Transaction {} is already confirmed, rejecting duplicate call",
+                    tx_id
+                );
                 return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
                     status: "error".to_string(),
                     signer_address: "".to_string(),
@@ -963,7 +1071,10 @@ async fn handle_user_mpc_deposit(
                     user_to_network_tx_id: None,
                     network_to_target_tx_id: None,
                     vault_to_network_tx_id: None,
-                    error_message: Some(format!("Transaction {} is already confirmed and cannot be processed again", tx_id)),
+                    error_message: Some(format!(
+                        "Transaction {} is already confirmed and cannot be processed again",
+                        tx_id
+                    )),
                 }));
             }
         }
@@ -1023,7 +1134,10 @@ async fn handle_user_mpc_deposit(
     // Check if the intent hash is already stored; if yes, retrieve user details in a variable
     let intent_hash_hex = hex::encode(intent_hash);
     // Retrieve the user by intent hash and immediately handle Some/None
-    let user_registration = match user_registry.get_user_by_intent_hash(&intent_hash_hex).await {
+    let user_registration = match user_registry
+        .get_user_by_intent_hash(&intent_hash_hex)
+        .await
+    {
         Some(existing_user) => existing_user,
         None => {
             // No existing user for this intent hash
@@ -1046,7 +1160,12 @@ async fn handle_user_mpc_deposit(
                             }));
                         }
                     };
-                    let (signer, _used_personal) = match recover_eth_address_secp(intent_bytes, &compact, v, true) {
+                    let (signer, _used_personal) = match recover_eth_address_secp(
+                        intent_bytes,
+                        &compact,
+                        v,
+                        true,
+                    ) {
                         Ok(addr) => (addr, true),
                         Err(e1) => {
                             warn!("⚠️ personal_sign recovery failed: {}", e1);
@@ -1086,7 +1205,9 @@ async fn handle_user_mpc_deposit(
                                 user_to_network_tx_id: None,
                                 network_to_target_tx_id: None,
                                 vault_to_network_tx_id: None,
-                                error_message: Some("No user registration found for signer address.".to_string()),
+                                error_message: Some(
+                                    "No user registration found for signer address.".to_string(),
+                                ),
                             }));
                         }
                     };
@@ -1113,7 +1234,9 @@ async fn handle_user_mpc_deposit(
                                 user_to_network_tx_id: None,
                                 network_to_target_tx_id: None,
                                 vault_to_network_tx_id: None,
-                                error_message: Some("No eth_derived address found for user.".to_string()),
+                                error_message: Some(
+                                    "No eth_derived address found for user.".to_string(),
+                                ),
                             }));
                         }
                         blockchain = "eth".to_string();
@@ -1130,7 +1253,9 @@ async fn handle_user_mpc_deposit(
                                 user_to_network_tx_id: None,
                                 network_to_target_tx_id: None,
                                 vault_to_network_tx_id: None,
-                                error_message: Some("No btc_derived address found for user.".to_string()),
+                                error_message: Some(
+                                    "No btc_derived address found for user.".to_string(),
+                                ),
                             }));
                         }
                         blockchain = "btc".to_string();
@@ -1143,7 +1268,10 @@ async fn handle_user_mpc_deposit(
                             user_to_network_tx_id: None,
                             network_to_target_tx_id: None,
                             vault_to_network_tx_id: None,
-                            error_message: Some(format!("Unsupported source chain: {}", source_chain)),
+                            error_message: Some(format!(
+                                "Unsupported source chain: {}",
+                                source_chain
+                            )),
                         }));
                     }
                     let balance = match fetch_balance(&address_to_check, &blockchain).await {
@@ -1214,7 +1342,7 @@ async fn handle_user_mpc_deposit(
             }
         }
     };
-    
+
     let user_eth_address = if req.tx_id.is_some() {
         None
     } else {
@@ -1223,8 +1351,10 @@ async fn handle_user_mpc_deposit(
     // Fetch all transaction IDs corresponding to this intent hash
     let intent_hash_hex = hex::encode(&intent_hash);
     let mut transaction_ids = Vec::new();
-    
-    let tx_mapping = user_registry.get_intent_transaction_ids(&intent_hash_hex).await;
+
+    let tx_mapping = user_registry
+        .get_intent_transaction_ids(&intent_hash_hex)
+        .await;
 
     let chain_to_check = if let Some(ref tx_id) = req.tx_id {
         if let Some(ref map) = tx_mapping {
@@ -1262,7 +1392,7 @@ async fn handle_user_mpc_deposit(
                     "Transaction {} not yet confirmed on chain {}",
                     tx_id, selected_chain
                 );
-            
+
                 return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
                     status: "pending".to_string(),
                     signer_address: user_registration.ethereum_address.clone(),
@@ -1291,7 +1421,10 @@ async fn handle_user_mpc_deposit(
         // If confirmed, continue processing
     }
 
-    if let Some(tx_ids) = user_registry.get_intent_transaction_ids(&intent_hash_hex).await {
+    if let Some(tx_ids) = user_registry
+        .get_intent_transaction_ids(&intent_hash_hex)
+        .await
+    {
         // Only store transaction IDs if there's no error
         if tx_ids.error_message.is_none() {
             if let Some(ref user_to_network_tx) = tx_ids.user_to_network_tx_id {
@@ -1310,8 +1443,16 @@ async fn handle_user_mpc_deposit(
     } else {
         crate::types::TransactionType::UserToVault
     };
-    
-    match handle_deposit_intent(req.msg.clone(), user_eth_address, message_tx, transaction_type).await {
+
+    match handle_deposit_intent(
+        req.msg.clone(),
+        user_eth_address,
+        message_tx,
+        transaction_type,
+        dkg_storage.clone(),
+    )
+    .await
+    {
         Ok(_) => {
             info!(
                 "✅ Deposit intent processed successfully for user: {}",
