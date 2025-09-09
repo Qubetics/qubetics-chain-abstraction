@@ -81,6 +81,9 @@ async function vaultToNetworkTransfer({ wallet, amount }) {
   if (response.data.network_to_target_tx_id) {
     log(`   Network->Target TX: ${response.data.network_to_target_tx_id}`, 'cyan');
   }
+  if (response.data.vault_to_network_tx_id) {
+    log(`   Vault->Network TX: ${response.data.vault_to_network_tx_id}`, 'cyan');
+  }
   
   if (response.data.error_message) {
     log(`   Error: ${response.data.error_message}`, 'red');
@@ -89,21 +92,6 @@ async function vaultToNetworkTransfer({ wallet, amount }) {
   return response.data;
 }
 
-// =========================
-// Intent Endpoints
-// =========================
-async function getAllIntents() {
-  log(`🔍 Getting all intents`, 'blue');
-  const response = await axios.get(`${RPC_BASE_URL}/get_all_intents`, { timeout: 10000 });
-  
-  if (response.data && Array.isArray(response.data)) {
-    log(`✅ Found ${response.data.length} intents`, 'green');
-    return response.data;
-  } else {
-    log(`⚠️ No intents found`, 'yellow');
-    return [];
-  }
-}
 
 async function getIntentByHash(intentHash) {
   log(`🔍 Getting intent: ${intentHash.substring(0, 10)}...`, 'blue');
@@ -115,6 +103,9 @@ async function getIntentByHash(intentHash) {
   }
   if (response.data.network_to_target_tx_id) {
     log(`   Network->Target TX: ${response.data.network_to_target_tx_id}`, 'cyan');
+  }
+  if (response.data.vault_to_network_tx_id) {
+    log(`   Vault->Network TX: ${response.data.vault_to_network_tx_id}`, 'cyan');
   }
   
   return response.data;
@@ -136,19 +127,6 @@ async function runVaultToNetworkTests() {
   const amount = 10000000000000;
   await vaultToNetworkTransfer({ wallet, amount });
   await new Promise(r => setTimeout(r, 7000));
-
-  // Get all intents
-  const intents = await getAllIntents();
-  console.log(`Intents: ${JSON.stringify(intents, null, 2)}`);
-  
-  // Get intent by hash if available
-  if (intents.length > 0 && intents[0].intent_hash) {
-    await getIntentByHash(intents[0].intent_hash);
-  }
-
-  // Another VaultToNetwork transfer
-//   const amount2 = 5000000000000;
-//   await vaultToNetworkTransfer({ wallet, amount: amount2 });
 
   log(`${colors.bright}✅ Completed!${colors.reset}`, 'bright');
 }

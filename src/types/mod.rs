@@ -81,13 +81,13 @@ pub enum GossipsubMessage {
     TransactionIdBroadcast {
         intent_hash: String,
         transaction_id: String,
-        transaction_type: String, // "user_to_network" or "network_to_target"
+        transaction_type: String, // "user_to_network", "network_to_target", or "vault_to_network"
         node_id: String, // Node that broadcasted the transaction
     },
     TransactionErrorBroadcast {
         intent_hash: String,
         error_message: String,
-        transaction_type: String, // "user_to_network" or "network_to_target"
+        transaction_type: String, // "user_to_network", "network_to_target", or "vault_to_network"
         node_id: String, // Node that encountered the error
     },
 }

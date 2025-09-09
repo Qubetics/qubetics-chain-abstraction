@@ -2324,45 +2324,87 @@ impl SigningNode {
 
     /// Store transaction ID for a round if intent hash is available and broadcast to other nodes
     async fn store_transaction_id_for_round(&self, round: u64, tx_id: &str, user_eth_address: Option<String>) {
-        // Get intent hash from pending transactions
-        let intent_hash = {
+        // Get intent hash and transaction type from pending transactions
+        let (intent_hash, transaction_type) = {
             let pending_transactions = self.pending_transactions.read().await;
-            if let Some((_tx, _tx_bytes, intent_hash, _)) = pending_transactions.get(&round) {
-                intent_hash.clone()
+            if let Some((_tx, _tx_bytes, intent_hash, transaction_type)) = pending_transactions.get(&round) {
+                (intent_hash.clone(), transaction_type.clone())
             } else {
-                None
+                (None, None)
             }
         };
 
         match (intent_hash, &self.user_registry) {
             (Some(ref intent_hash), Some(user_registry)) => {
-                // Determine transaction type based on user_eth_address
-                // - If user_eth_address exists: this is a user-to-network transaction
-                // - If user_eth_address is None: this is a network-to-target transaction
-                let (transaction_type, storage_result) = if let Some(eth_addr) = &user_eth_address {
-                    // User-to-network transaction
-                    let result = user_registry.store_user_to_network_tx_id(intent_hash, tx_id).await;
-                    match &result {
-                        Ok(()) => {
-                            info!("💾 [SIGNING] Stored user-to-network transaction ID {} for intent {} (round {}) for user {}", tx_id, intent_hash, round, eth_addr);
-                        },
-                        Err(e) => {
-                            error!("❌ [SIGNING] Failed to store user-to-network transaction ID for intent {}: {}", intent_hash, e);
+                // Determine transaction type based on the actual transaction type from pending transactions
+                let (transaction_type_str, storage_result) = match transaction_type {
+                    Some(crate::types::TransactionType::UserToVault) => {
+                        // User-to-vault transaction
+                        let result = user_registry.store_user_to_network_tx_id(intent_hash, tx_id).await;
+                        match &result {
+                            Ok(()) => {
+                                info!("💾 [SIGNING] Stored user-to-network transaction ID {} for intent {} (round {})", tx_id, intent_hash, round);
+                            },
+                            Err(e) => {
+                                error!("❌ [SIGNING] Failed to store user-to-network transaction ID for intent {}: {}", intent_hash, e);
+                            }
+                        }
+                        ("user_to_network", result)
+                    },
+                    Some(crate::types::TransactionType::NetworkToTarget) => {
+                        // Network-to-target transaction
+                        let result = user_registry.store_network_to_target_tx_id(intent_hash, tx_id).await;
+                        match &result {
+                            Ok(()) => {
+                                info!("💾 [SIGNING] Stored network-to-target transaction ID {} for intent {} (round {})", tx_id, intent_hash, round);
+                            },
+                            Err(e) => {
+                                error!("❌ [SIGNING] Failed to store network-to-target transaction ID for intent {}: {}", intent_hash, e);
+                            }
+                        }
+                        ("network_to_target", result)
+                    },
+                    Some(crate::types::TransactionType::VaultToNetwork) => {
+                        // Vault-to-network transaction
+                        let result = user_registry.store_vault_to_network_tx_id(intent_hash, tx_id).await;
+                        match &result {
+                            Ok(()) => {
+                                info!("💾 [SIGNING] Stored vault-to-network transaction ID {} for intent {} (round {})", tx_id, intent_hash, round);
+                            },
+                            Err(e) => {
+                                error!("❌ [SIGNING] Failed to store vault-to-network transaction ID for intent {}: {}", intent_hash, e);
+                            }
+                        }
+                        ("vault_to_network", result)
+                    },
+                    None => {
+                        // Fallback to old logic based on user_eth_address
+                        if let Some(eth_addr) = &user_eth_address {
+                            // User-to-network transaction
+                            let result = user_registry.store_user_to_network_tx_id(intent_hash, tx_id).await;
+                            match &result {
+                                Ok(()) => {
+                                    info!("💾 [SIGNING] Stored user-to-network transaction ID {} for intent {} (round {}) for user {}", tx_id, intent_hash, round, eth_addr);
+                                },
+                                Err(e) => {
+                                    error!("❌ [SIGNING] Failed to store user-to-network transaction ID for intent {}: {}", intent_hash, e);
+                                }
+                            }
+                            ("user_to_network", result)
+                        } else {
+                            // Network-to-target transaction
+                            let result = user_registry.store_network_to_target_tx_id(intent_hash, tx_id).await;
+                            match &result {
+                                Ok(()) => {
+                                    info!("💾 [SIGNING] Stored network-to-target transaction ID {} for intent {} (round {})", tx_id, intent_hash, round);
+                                },
+                                Err(e) => {
+                                    error!("❌ [SIGNING] Failed to store network-to-target transaction ID for intent {}: {}", intent_hash, e);
+                                }
+                            }
+                            ("network_to_target", result)
                         }
                     }
-                    ("user_to_network", result)
-                } else {
-                    // Network-to-target transaction
-                    let result = user_registry.store_network_to_target_tx_id(intent_hash, tx_id).await;
-                    match &result {
-                        Ok(()) => {
-                            info!("💾 [SIGNING] Stored network-to-target transaction ID {} for intent {} (round {})", tx_id, intent_hash, round);
-                        },
-                        Err(e) => {
-                            error!("❌ [SIGNING] Failed to store network-to-target transaction ID for intent {}: {}", intent_hash, e);
-                        }
-                    }
-                    ("network_to_target", result)
                 };
 
                 // If storage was successful, record transaction status and broadcast to other nodes
@@ -2376,7 +2418,7 @@ impl SigningNode {
                             tx_id, e
                         );
                     }
-                    self.broadcast_transaction_id(&intent_hash, tx_id, transaction_type).await;
+                    self.broadcast_transaction_id(&intent_hash, tx_id, transaction_type_str).await;
                 }
             },
             (None, _) => {
