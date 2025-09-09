@@ -10,6 +10,7 @@ use secp256k1::{
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
 use sha3::Keccak256;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc;
@@ -957,6 +958,56 @@ async fn wait_for_transaction_result(
     best_result
 }
 
+async fn fetch_crypto_prices() -> Result<HashMap<String, f64>, String> {
+    let url = "http://172.16.15.63:7322/api/v1/cryptos/prices?symbols=BTC,TICS";
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to fetch crypto prices: {}", e))?;
+
+    let status = resp.status();
+    let resp_text = resp
+        .text()
+        .await
+        .map_err(|e| format!("Failed to read crypto prices response text: {}", e))?;
+
+    if !status.is_success() {
+        return Err(format!(
+            "Crypto prices API returned non-success status {}: {}",
+            status, resp_text
+        ));
+    }
+
+    let resp_json: serde_json::Value = serde_json::from_str(&resp_text)
+        .map_err(|e| format!("Failed to parse crypto prices response: {}", e))?;
+
+    if resp_json.get("error").and_then(|v| v.as_bool()) == Some(true) {
+        let msg = resp_json
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Unknown error");
+        return Err(format!("Crypto prices API error: {}", msg));
+    }
+
+    let data = resp_json
+        .get("data")
+        .ok_or_else(|| "No 'data' field in crypto prices response".to_string())?;
+
+    let mut prices = std::collections::HashMap::new();
+    if let Some(obj) = data.as_object() {
+        for (symbol, value) in obj {
+            if let Some(price) = value.as_f64() {
+                prices.insert(symbol.clone(), price);
+            }
+        }
+    }
+
+    Ok(prices)
+}
+
 async fn fetch_balance(address: &str, blockchain: &str) -> Result<u128, String> {
     info!(
         "Fetching balance for address: {}, blockchain: {}",
@@ -989,12 +1040,19 @@ async fn fetch_balance(address: &str, blockchain: &str) -> Result<u128, String> 
 
     info!("Balance API response JSON: {}", resp_json);
 
-    // The new API response has the balance under "data" as a float, so we fetch it and multiply by 10^18
+    // Determine the multiplier based on blockchain type
+    let multiplier = match blockchain.to_lowercase().as_str() {
+        "eth" | "ethereum" | "qubetics" => 1e18,
+        "btc" | "bitcoin" => 1e8,
+        _ => 1e18, // Default to 1e18 if unknown
+    };
+
+    // The new API response has the balance under "data" as a float, so we fetch it and multiply by the correct multiplier
     let balance_f64 = resp_json
         .get("data")
         .and_then(|v| v.as_f64())
         .unwrap_or(0.0);
-    let balance_str = format!("{}", (balance_f64 * 1e18).round() as u128);
+    let balance_str = format!("{}", (balance_f64 * multiplier).round() as u128);
 
     info!("Parsed balance string: {}", balance_str);
 
@@ -1080,36 +1138,7 @@ async fn handle_user_mpc_deposit(
         }
     }
     // If transaction ID and status are provided, update the database accordingly
-    if let (Some(ref tx_id), Some(ref status_str)) = (&req.tx_id, &req.status) {
-        info!(
-            "🔄 HTTP: updating tx status for tx_id={} to {}",
-            tx_id, status_str
-        );
-
-        let status_enum = match status_str.to_lowercase().as_str() {
-            "pending" => Some(TransactionStatus::Pending),
-            "rejected" => Some(TransactionStatus::Rejected),
-            "confirmed" => Some(TransactionStatus::Confirmed),
-            other => {
-                warn!("❌ Invalid transaction status received: {}", other);
-                None
-            }
-        };
-
-        if let Some(status_enum) = status_enum {
-            if let Err(e) = user_registry
-                .update_transaction_status(tx_id, status_enum.clone())
-                .await
-            {
-                error!("Failed to update transaction status: {}", e);
-            } else {
-                info!(
-                    "✅ Updated transaction status for {}: {:?}",
-                    tx_id, status_enum
-                );
-            }
-        }
-    }
+   
 
     // Serialize the DepositIntent to match the client's JSON.stringify() format
     // Use compact JSON serialization (no spaces) to match JavaScript's JSON.stringify()
@@ -1386,7 +1415,20 @@ async fn handle_user_mpc_deposit(
         };
 
         match check_tx_confirmation(selected_chain, tx_id).await {
-            Ok(true) => { /* confirmed, continue */ }
+            Ok(true) => {
+                // Only update the status in db if txn is confirmed
+                if let Err(e) = user_registry
+                    .update_transaction_status(tx_id, TransactionStatus::Confirmed)
+                    .await
+                {
+                    error!("Failed to update transaction status in db: {}", e);
+                } else {
+                    info!(
+                        "✅ Updated transaction status in db for {}: {:?}",
+                        tx_id, TransactionStatus::Confirmed
+                    );
+                }
+            }
             Ok(false) => {
                 warn!(
                     "Transaction {} not yet confirmed on chain {}",
