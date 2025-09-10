@@ -40,6 +40,7 @@ use crate::utils::transaction::DetectedAddressType;
 use crate::contract::{ContractClient, SolverManagerContract};
 use crate::database::RewardStorage;
 use ethers::types::U256;
+use ethereum_types::U256 as EthereumU256;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ECDSASignature {
@@ -3326,8 +3327,8 @@ impl SigningNode {
             .as_ref()
             .ok_or_else(|| anyhow!("User registry not available"))?;
 
-        let reward_storage = RewardStorage::new(database.clone());
-        if let Some(true) = reward_storage.get_intent_reward_status(intent_hash).await? {
+        // Check if rewards already calculated using user registry
+        if let Some(true) = user_registry.get_intent_reward_status(intent_hash).await {
             info!(
                 "⏭️ [SOLVER] Rewards already calculated for intent {}",
                 intent_hash
@@ -3345,18 +3346,19 @@ impl SigningNode {
         let intent_amount = U256::from(intent.amount);
         let base_reward = intent_amount / U256::from(10u8); // 10% of intent amount
 
-        // Fetch total liquidity values
-        let tics_key = crate::database::key_utils::total_liquidity_tics_key();
-        let btc_key = crate::database::key_utils::total_liquidity_btc_key();
+        // Fetch total liquidity values using user registry
+        let total_tics = user_registry
+            .get_total_liquidity_tics()
+            .await
+            .unwrap_or(0);
+        let total_btc = user_registry
+            .get_total_liquidity_btc()
+            .await
+            .unwrap_or(0.0);
 
-        let total_tics: U256 = database
-            .get_string::<String>(&tics_key)?
-            .and_then(|v| U256::from_dec_str(&v).ok())
-            .unwrap_or_else(U256::zero);
-        let total_btc: U256 = database
-            .get_string::<String>(&btc_key)?
-            .and_then(|v| U256::from_dec_str(&v).ok())
-            .unwrap_or_else(U256::zero);
+        // Convert to U256 for calculations
+        let total_tics_u256 = U256::from(total_tics);
+        let total_btc_u256 = U256::from((total_btc * 1e8) as u64); // Convert BTC to satoshis
 
         // Fetch liquidity for all solvers
         let all_key = "solver_liquidity:all";
@@ -3370,41 +3372,56 @@ impl SigningNode {
                     .get(1)
                     .and_then(|v| U256::from_dec_str(v).ok())
                     .unwrap_or_else(U256::zero);
-                if total_btc.is_zero() {
+                if total_btc_u256.is_zero() {
                     U256::zero()
                 } else {
-                    solver_btc * base_reward / total_btc
+                    solver_btc * base_reward / total_btc_u256
                 }
             } else {
                 let solver_tics = amounts
                     .get(0)
                     .and_then(|v| U256::from_dec_str(v).ok())
                     .unwrap_or_else(U256::zero);
-                if total_tics.is_zero() {
+                if total_tics_u256.is_zero() {
                     U256::zero()
                 } else {
-                    solver_tics * base_reward / total_tics
+                    solver_tics * base_reward / total_tics_u256
                 }
             };
 
-            let current = reward_storage
+            // Get current reward and update using user registry
+            let current = user_registry
                 .get_solver_reward(solver)
-                .await?
-                .unwrap_or_else(U256::zero);
-            let updated = current + reward;
-            reward_storage
-                .set_solver_reward(solver, updated)
-                .await?;
-            info!("💰 [SOLVER] Reward for {} updated to {}", solver, updated);
+                .await
+                .unwrap_or_else(|| EthereumU256::zero());
+            
+            // Convert ethereum_types::U256 to ethers::types::U256 for calculation
+            let current_ethers = U256::from_dec_str(&current.to_string())
+                .map_err(|e| anyhow!("Failed to convert current reward: {}", e))?;
+            let updated_ethers = current_ethers + reward;
+            
+            // Convert back to ethereum_types::U256 for user registry
+            let updated_ethereum_types = EthereumU256::from_dec_str(&updated_ethers.to_string())
+                .map_err(|e| anyhow!("Failed to convert updated reward: {}", e))?;
+            
+            user_registry
+                .set_solver_reward(solver, updated_ethereum_types)
+                .await
+                .map_err(|e| anyhow!("Failed to set solver reward: {}", e))?;
+            
+            info!("💰 [SOLVER] Reward for {} updated to {}", solver, updated_ethers);
         }
 
         info!(
             "✅ [SOLVER] Calculated rewards for {} solvers",
             solver_liquidity_map.len()
         );
-        reward_storage
+        
+        // Mark intent reward status as calculated using user registry
+        user_registry
             .set_intent_reward_status(intent_hash, true)
-            .await?;
+            .await
+            .map_err(|e| anyhow!("Failed to set intent reward status: {}", e))?;
 
         Ok(())
     }
