@@ -1,7 +1,13 @@
 use crate::database::DkgStorage;
+use crate::prepare_unsigned_eip1559_tx;
 use crate::types::{rpc::RPCRequest, ChannelMessage};
 use crate::user_registry::{
     checksum_from_any, to_checksum_address, DatabaseUserRegistry, TransactionStatus,
+};
+use ethers::{
+    abi::Token,
+    providers::{Http, Provider},
+    types::{Address, U256},
 };
 use secp256k1::{
     ecdsa::{RecoverableSignature, RecoveryId},
@@ -11,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use sha2::Digest;
 use sha3::Keccak256;
 use std::collections::HashMap;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc;
@@ -547,7 +554,10 @@ pub async fn handle_deposit_intent(
     let mut required_amount_u128 = 0;
 
     // Only do price conversion for NetworkToTarget, else just use intent.amount
-    if matches!(transaction_type, crate::types::TransactionType::NetworkToTarget) {
+    if matches!(
+        transaction_type,
+        crate::types::TransactionType::NetworkToTarget
+    ) {
         // Fetch current prices for BTC and TICS to determine the
         // value equivalence between source and target chains.
         let prices = fetch_crypto_prices()
@@ -610,12 +620,11 @@ pub async fn handle_deposit_intent(
         );
     }
 
-        
     // Additional balance validation for NetworkToTarget and VaultToNetwork
     if matches!(
         transaction_type,
         crate::types::TransactionType::NetworkToTarget
-            | crate::types::TransactionType::VaultToNetwork 
+            | crate::types::TransactionType::VaultToNetwork
     ) {
         // Determine which chain to check based on the transaction type
         let chain_to_use = match transaction_type {
@@ -684,8 +693,8 @@ pub async fn handle_deposit_intent(
                 warn!("Unsupported chain for balance validation: {}", chain_to_use);
                 return Err(warp::reject::custom(TransactionError::InvalidRequest));
             };
-            
-            let balance = fetch_balance(&address_to_check, &blockchain)
+
+        let balance = fetch_balance(&address_to_check, &blockchain)
             .await
             .map_err(|_| warp::reject::custom(TransactionError::NetworkError))?;
 
@@ -701,7 +710,6 @@ pub async fn handle_deposit_intent(
             );
             return Err(warp::reject::custom(TransactionError::InvalidRequest));
         }
-
     }
 
     let intent_id = format!("intent-{}", Uuid::new_v4());
@@ -1039,25 +1047,18 @@ async fn fetch_crypto_prices() -> Result<HashMap<String, f64>, String> {
 
     info!("Fetching crypto prices from URL: {}", url);
 
-    let resp = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| {
-            error!("Failed to fetch crypto prices: {}", e);
-            format!("Failed to fetch crypto prices: {}", e)
-        })?;
+    let resp = client.get(url).send().await.map_err(|e| {
+        error!("Failed to fetch crypto prices: {}", e);
+        format!("Failed to fetch crypto prices: {}", e)
+    })?;
 
     let status = resp.status();
     debug!("Crypto prices API response status: {}", status);
 
-    let resp_text = resp
-        .text()
-        .await
-        .map_err(|e| {
-            error!("Failed to read crypto prices response text: {}", e);
-            format!("Failed to read crypto prices response text: {}", e)
-        })?;
+    let resp_text = resp.text().await.map_err(|e| {
+        error!("Failed to read crypto prices response text: {}", e);
+        format!("Failed to read crypto prices response text: {}", e)
+    })?;
 
     debug!("Crypto prices API response body: {}", resp_text);
 
@@ -1072,11 +1073,10 @@ async fn fetch_crypto_prices() -> Result<HashMap<String, f64>, String> {
         ));
     }
 
-    let resp_json: serde_json::Value = serde_json::from_str(&resp_text)
-        .map_err(|e| {
-            error!("Failed to parse crypto prices response: {}", e);
-            format!("Failed to parse crypto prices response: {}", e)
-        })?;
+    let resp_json: serde_json::Value = serde_json::from_str(&resp_text).map_err(|e| {
+        error!("Failed to parse crypto prices response: {}", e);
+        format!("Failed to parse crypto prices response: {}", e)
+    })?;
 
     debug!("Crypto prices API response JSON: {:?}", resp_json);
 
@@ -1089,12 +1089,10 @@ async fn fetch_crypto_prices() -> Result<HashMap<String, f64>, String> {
         return Err(format!("Crypto prices API error: {}", msg));
     }
 
-    let data = resp_json
-        .get("data")
-        .ok_or_else(|| {
-            error!("No 'data' field in crypto prices response");
-            "No 'data' field in crypto prices response".to_string()
-        })?;
+    let data = resp_json.get("data").ok_or_else(|| {
+        error!("No 'data' field in crypto prices response");
+        "No 'data' field in crypto prices response".to_string()
+    })?;
 
     let mut prices = std::collections::HashMap::new();
     if let Some(obj) = data.as_object() {
@@ -1221,7 +1219,7 @@ async fn handle_user_mpc_deposit(
     dkg_storage: std::sync::Arc<DkgStorage>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
     info!("🧾 HTTP: user_mpc_deposit: amount={}", req.msg.amount);
-     // If transaction ID and status are provided, update the database accordingly
+    // If transaction ID and status are provided, update the database accordingly
 
     // Serialize the DepositIntent to match the client's JSON.stringify() format
     // Use compact JSON serialization (no spaces) to match JavaScript's JSON.stringify()
@@ -1229,7 +1227,6 @@ async fn handle_user_mpc_deposit(
     let intent_bytes = intent_json.as_bytes();
     let intent_hash = Keccak256::digest(intent_bytes);
     let intent_hash_hex = hex::encode(intent_hash);
-
 
     let mut transaction_ids = Vec::new();
 
@@ -1261,7 +1258,10 @@ async fn handle_user_mpc_deposit(
             user_to_network_tx_id: None,
             network_to_target_tx_id: None,
             vault_to_network_tx_id: None,
-            error_message: Some("Transaction ID must be provided when transaction(s) already exist for this intent".to_string()),
+            error_message: Some(
+                "Transaction ID must be provided when transaction(s) already exist for this intent"
+                    .to_string(),
+            ),
         }));
     }
 
@@ -1296,7 +1296,6 @@ async fn handle_user_mpc_deposit(
             }
         }
     }
-   
 
     info!(
         "🔐 Processing MPC deposit - Intent hash: {:?}, Amount: {}",
@@ -1484,6 +1483,63 @@ async fn handle_user_mpc_deposit(
                             )),
                         }));
                     }
+                    // Prepare unsigned transaction for on-chain deposit intent recording
+                    if let (Ok(contract_addr_str), Ok(rpc_url)) = (
+                        std::env::var("INTENT_MANAGER_CONTRACT_ADDRESS"),
+                        std::env::var("MPC_ETHEREUM_RPC_URL"),
+                    ) {
+                        if let Ok(contract_addr) = Address::from_str(contract_addr_str.trim()) {
+                            if let Ok(Some(group_key)) = dkg_storage.get_final_public().await {
+                                let mut from_addr_str =
+                                    crate::utils::get_eth_address_from_group_key(group_key);
+                                if !from_addr_str.starts_with("0x") {
+                                    from_addr_str = format!("0x{}", from_addr_str);
+                                }
+                                if let Ok(from_addr) = Address::from_str(&from_addr_str) {
+                                    if let Ok(provider) =
+                                        Provider::<Http>::try_from(rpc_url.clone())
+                                    {
+                                        let provider = Arc::new(provider);
+                                        let params = vec![
+                                            Token::String(req.msg.source_address.clone()),
+                                            Token::String(req.msg.target_address.clone()),
+                                            Token::String(req.msg.source_chain.clone()),
+                                            Token::String(req.msg.target_chain.clone()),
+                                            Token::Uint(U256::from(req.msg.amount)),
+                                            Token::String(req.msg.source_token.clone()),
+                                            Token::String(req.msg.target_token.clone()),
+                                            Token::String(String::new()),
+                                            Token::String(intent_hash_hex.clone()),
+                                        ];
+                                        if let Err(e) = prepare_unsigned_eip1559_tx(
+                                            provider,
+                                            9029u64,
+                                            from_addr,
+                                            contract_addr,
+                                            "depositIntent",
+                                            params,
+                                            None,
+                                            None,
+                                            None,
+                                            None,
+                                        )
+                                        .await
+                                        .map(|(_, preimage, _)| {
+                                            info!(
+                                                "Prepared unsigned depositIntent transaction: {}",
+                                                preimage
+                                            );
+                                        }) {
+                                            error!(
+                                                "Failed to build depositIntent unsigned tx: {:?}",
+                                                e
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                     // Store intent hash in user registry at last
                     if let Err(e) = user_registry
                         .store_intent_hash(intent_hash.to_vec(), &signer, &req.msg)
@@ -1530,7 +1586,6 @@ async fn handle_user_mpc_deposit(
     };
     // Fetch all transaction IDs corresponding to this intent hash
     let intent_hash_hex = hex::encode(&intent_hash);
-    
 
     let chain_to_check = if let Some(ref tx_id) = req.tx_id {
         if let Some(ref map) = tx_mapping {
@@ -1611,7 +1666,6 @@ async fn handle_user_mpc_deposit(
         // If confirmed, continue processing
     }
 
-    
     match handle_deposit_intent(
         req.msg.clone(),
         user_eth_address,
