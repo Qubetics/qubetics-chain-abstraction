@@ -6,6 +6,7 @@ pub mod adkg_secp256k1;
 pub mod chain;
 pub mod commands;
 pub mod consensus;
+pub mod contract;
 pub mod database;
 pub mod network;
 pub mod node_management;

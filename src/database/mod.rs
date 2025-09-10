@@ -1,17 +1,18 @@
 use anyhow::{anyhow, Result};
-use rocksdb::{Error as RocksDBError, Options, DB};
+use rocksdb::{Options, DB};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
 use std::sync::Arc;
 use tracing::{debug, error, info};
 
 pub mod consensus_storage;
+pub mod dkg_storage;
 pub mod signing_storage;
 pub mod user_storage;
 pub mod dkg_storage;
 pub mod reward_storage;
 
 pub use consensus_storage::{ConsensusStats, ConsensusStorage};
+pub use dkg_storage::DkgStorage;
 pub use signing_storage::SigningStorage;
 pub use user_storage::{IntentStorage, TransactionStatusStorage, UserStorage};
 pub use dkg_storage::DkgStorage;
@@ -401,6 +402,7 @@ pub mod keys {
     pub const DKG_VAULT_BTC_ADDRESS: &str = "dkg_vault_btc_address";
     pub const DKG_VAULT_TWEAKED_SECRET: &str = "dkg_vault_tweaked_secret";
     pub const DKG_VAULT_GROUP_KEY: &str = "dkg_vault_group_key";
+    pub const SOLVER_AMOUNTS: &str = "solver_amounts:";
     pub const TOTAL_LIQUIDITY_TICS: &str = "total_liquidity_tics";
     pub const TOTAL_LIQUIDITY_BTC: &str = "total_liquidity_btc";
 }
@@ -465,6 +467,14 @@ pub mod keys {
         pub fn selected_nodes_key(round: u64) -> String {
             format!("{}{}", keys::SELECTED_NODES, round)
         }
+
+    pub fn solver_amounts_key(node_id: &str, solver_id: &str) -> String {
+        format!("{}{}:{}", keys::SOLVER_AMOUNTS, node_id, solver_id)
+    }
+
+    pub fn all_solver_amounts_key(node_id: &str) -> String {
+        format!("{}all:{}", keys::SOLVER_AMOUNTS, node_id)
+    }
 
         pub fn total_liquidity_tics_key() -> String {
             keys::TOTAL_LIQUIDITY_TICS.to_string()
