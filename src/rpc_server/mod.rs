@@ -385,6 +385,8 @@ pub async fn start_http_server(
         .and(warp::post())
         .and(warp::body::json())
         .and(with_user_registry(user_registry.clone()))
+        .and(with_dkg_storage(dkg_storage.clone()))
+        .and(with_message_tx(message_tx.clone()))
         .and_then(handle_solver_reward);
 
     // GET /user_info/{ethereum_address}
@@ -1928,6 +1930,8 @@ async fn handle_get_uptime(
 async fn handle_solver_reward(
     req: SolverRewardRequest,
     user_registry: std::sync::Arc<DatabaseUserRegistry>,
+    dkg_storage: std::sync::Arc<DkgStorage>,
+    message_tx: std::sync::Arc<tokio::sync::Mutex<mpsc::Sender<ChannelMessage>>>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
     info!("🔍 HTTP: solver_reward request");
 
@@ -1989,26 +1993,46 @@ async fn handle_solver_reward(
     }
 
     // Use user registry's reward storage instead of direct reward storage
-    let reward = match user_registry.get_solver_reward(&signer).await {
-        Some(r) => {
-            if let Err(e) = user_registry
-                .set_solver_claimed_request_amount(&signer, r)
-                .await
-            {
-                warn!(
-                    "Failed to store claimed request amount for {}: {}",
-                    signer, e
-                );
-            }
-            Some(r.to_string())
-        }
-        None => None,
-    };
+    let reward_opt = user_registry.get_solver_reward(&signer).await;
+    let reward_str = reward_opt.as_ref().map(|r| r.to_string());
 
+    if let Some(reward_u256) = reward_opt {
+        let reward_u128 = reward_u256.as_u128();
+
+        // Create dummy transaction representing solver reward
+        let from_addr = match dkg_storage.get_final_public().await {
+            Ok(Some(pk)) => crate::utils::get_eth_address_from_group_key(pk),
+            _ => "0x0".to_string(),
+        };
+
+        let dummy_tx = DummyTransaction {
+            to: signer.clone(),
+            value: format!("0x{:x}", reward_u128),
+            nonce: 0,
+            gas_limit: 21_000,
+            gas_price: "0x0".to_string(),
+            chain_id: 1,
+        };
+        info!(
+            "🧾 [HTTP] Created solver reward tx from {} to {} amount {}",
+            from_addr, signer, reward_u128
+        );
+
+        let mut tx_sender = message_tx.lock().await;
+        if let Err(e) = tx_sender
+            .send(ChannelMessage::SolverReward {
+                solver_address: signer.clone(),
+                reward: reward_u128,
+            })
+            .await
+        {
+            warn!("Failed to send solver reward message: {}", e);
+        }
+    }
     Ok(warp::reply::json(&SolverRewardResponse {
         status: "success".to_string(),
         solver_address: signer,
-        reward,
+        reward: reward_str,
         error_message: None,
     }))
 }
