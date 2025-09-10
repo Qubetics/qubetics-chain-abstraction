@@ -3219,12 +3219,20 @@ impl SigningNode {
             active_solvers
         );
 
-        // Store amounts for each solver
-        let mut all_solver_amounts = std::collections::HashMap::new();
+        // Store amounts for each solver by EVM address
+        let mut solver_liquidity_map = std::collections::HashMap::new();
         let mut total_tics = U256::zero();
         let mut total_btc = U256::zero();
 
         for solver_id in &active_solvers {
+            // Get solver EVM address
+            let solver_evm_address = solver_contract
+                .get_solver_evm_address(solver_id)
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!("Failed to get EVM address for solver {}: {}", solver_id, e)
+                })?;
+
             // Call getSolverAllChainAmounts for each solver
             let amounts = solver_contract
                 .get_all_chain_amounts(solver_id)
@@ -3241,36 +3249,36 @@ impl SigningNode {
                 total_btc = total_btc + *btc_amount;
             }
 
-            // Convert amounts to strings for storage
-            let amounts_str: Vec<String> = amounts.iter().map(|u| u.to_string()).collect();
+            // Convert amounts to strings for storage: [tics, btc]
+            let liquidity_amounts: Vec<String> = amounts.iter().map(|u| u.to_string()).collect();
 
-            // Store individual solver amounts with key: solver_amounts:{node_id}:{solver_id}
-            let individual_key = crate::database::key_utils::solver_amounts_key(&self.id, solver_id);
+            // Store solver liquidity with key: solver_liquidity:{solver_evm_address}
+            let solver_liquidity_key = format!("solver_liquidity:{}", format!("{:?}", solver_evm_address).to_lowercase());
 
-            // Store individual solver amounts in database
+            // Store individual solver liquidity in database
             if let Some(ref database) = self.database {
-                if let Err(e) = database.put_string(&individual_key, &amounts_str) {
-                    warn!("⚠️ [SOLVER] Failed to store amounts for solver {}: {}", solver_id, e);
+                if let Err(e) = database.put_string(&solver_liquidity_key, &liquidity_amounts) {
+                    warn!("⚠️ [SOLVER] Failed to store liquidity for solver {} (address: {:?}): {}", solver_id, solver_evm_address, e);
                 } else {
-                    info!("💾 [SOLVER] Stored amounts for solver {}: {:?}", solver_id, amounts_str);
+                    info!("💾 [SOLVER] Stored liquidity for solver {} (address: {:?}): {:?}", solver_id, solver_evm_address, liquidity_amounts);
                 }
             } else {
-                warn!("⚠️ [SOLVER] No database available to store solver amounts");
+                warn!("⚠️ [SOLVER] No database available to store solver liquidity");
             }
 
-            // Add to all solver amounts map
-            all_solver_amounts.insert(solver_id.clone(), amounts_str.clone());
+            // Add to solver liquidity map: solver_address -> [tics, btc]
+            solver_liquidity_map.insert(format!("{:?}", solver_evm_address).to_lowercase(), liquidity_amounts.clone());
         }
 
-        // Store all solver amounts with key: solver_amounts:all:{node_id}
-        let all_key = crate::database::key_utils::all_solver_amounts_key(&self.id);
+        // Store all solver liquidity with key: solver_liquidity:all
+        let all_solver_liquidity_key = "solver_liquidity:all";
         
-        // Store consolidated amounts and totals in database
+        // Store consolidated liquidity and totals in database
         if let Some(ref database) = self.database {
-            if let Err(e) = database.put_string(&all_key, &all_solver_amounts) {
-                warn!("⚠️ [SOLVER] Failed to store all solver amounts: {}", e);
+            if let Err(e) = database.put_string(all_solver_liquidity_key, &solver_liquidity_map) {
+                warn!("⚠️ [SOLVER] Failed to store all solver liquidity: {}", e);
             } else {
-                info!("💾 [SOLVER] Stored all solver amounts for node {}: {} solvers", self.id, all_solver_amounts.len());
+                info!("💾 [SOLVER] Stored all solver liquidity: {} solvers", solver_liquidity_map.len());
             }
 
             // Store total liquidity values (index 0 = tics, index 1 = btc)
@@ -3288,19 +3296,17 @@ impl SigningNode {
                 info!("💾 [SOLVER] Stored total btc liquidity: {}", total_btc);
             }
         } else {
-            warn!("⚠️ [SOLVER] No database available to store all solver amounts");
+            warn!("⚠️ [SOLVER] No database available to store solver liquidity");
         }
         
         // Log the consolidated amounts
         info!(
-            "📋 [SOLVER] All solver amounts for node {}: {:?}",
-            self.id,
-            all_solver_amounts
+            "📋 [SOLVER] All solver liquidity by EVM address: {:?}",
+            solver_liquidity_map
         );
 
         info!(
-            "✅ [SOLVER] Updated all solver amounts for node {}: {} solvers",
-            self.id,
+            "✅ [SOLVER] Updated all solver liquidity: {} solvers",
             active_solvers.len()
         );
 
