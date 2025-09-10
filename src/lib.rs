@@ -15,6 +15,7 @@ pub mod types;
 pub mod user_registry;
 pub mod utils;
 pub mod vrf;
+pub mod intent_manager;
 
 pub use adkg_secp256k1::DKGNode;
 pub use commands::CommandProcessor;
@@ -33,3 +34,4 @@ pub use user_registry::{DatabaseUserRegistry, UserRegistry};
 pub use vrf::{
     NodeSelectionResult, VrfNodeSelector, VrfOutput, VrfSelectedNodesBroadcast, VrfSelectionMessage,
 };
+pub use intent_manager::prepare_unsigned_eip1559_tx;
