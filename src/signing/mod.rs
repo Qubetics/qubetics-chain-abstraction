@@ -38,6 +38,7 @@ use crate::chain::{BitcoinTransaction, BitcoinInput};
 use crate::user_registry::{DatabaseUserRegistry, TransactionStatus};
 use crate::utils::transaction::DetectedAddressType;
 use crate::contract::{ContractClient, SolverManagerContract};
+use ethers::types::U256;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ECDSASignature {
@@ -3220,6 +3221,8 @@ impl SigningNode {
 
         // Store amounts for each solver
         let mut all_solver_amounts = std::collections::HashMap::new();
+        let mut total_tics = U256::zero();
+        let mut total_btc = U256::zero();
 
         for solver_id in &active_solvers {
             // Call getSolverAllChainAmounts for each solver
@@ -3230,12 +3233,20 @@ impl SigningNode {
                     anyhow::anyhow!("Failed to get amounts for solver {}: {}", solver_id, e)
                 })?;
 
+            // Track totals: index 0 = tics, index 1 = btc
+            if let Some(tics_amount) = amounts.get(0) {
+                total_tics = total_tics + *tics_amount;
+            }
+            if let Some(btc_amount) = amounts.get(1) {
+                total_btc = total_btc + *btc_amount;
+            }
+
             // Convert amounts to strings for storage
             let amounts_str: Vec<String> = amounts.iter().map(|u| u.to_string()).collect();
 
             // Store individual solver amounts with key: solver_amounts:{node_id}:{solver_id}
             let individual_key = crate::database::key_utils::solver_amounts_key(&self.id, solver_id);
-            
+
             // Store individual solver amounts in database
             if let Some(ref database) = self.database {
                 if let Err(e) = database.put_string(&individual_key, &amounts_str) {
@@ -3254,12 +3265,27 @@ impl SigningNode {
         // Store all solver amounts with key: solver_amounts:all:{node_id}
         let all_key = crate::database::key_utils::all_solver_amounts_key(&self.id);
         
-        // Store consolidated amounts in database
+        // Store consolidated amounts and totals in database
         if let Some(ref database) = self.database {
             if let Err(e) = database.put_string(&all_key, &all_solver_amounts) {
                 warn!("⚠️ [SOLVER] Failed to store all solver amounts: {}", e);
             } else {
                 info!("💾 [SOLVER] Stored all solver amounts for node {}: {} solvers", self.id, all_solver_amounts.len());
+            }
+
+            // Store total liquidity values (index 0 = tics, index 1 = btc)
+            let tics_key = crate::database::key_utils::total_liquidity_tics_key();
+            if let Err(e) = database.put_string(&tics_key, &total_tics.to_string()) {
+                warn!("⚠️ [SOLVER] Failed to store total tics liquidity: {}", e);
+            } else {
+                info!("💾 [SOLVER] Stored total tics liquidity: {}", total_tics);
+            }
+
+            let btc_key = crate::database::key_utils::total_liquidity_btc_key();
+            if let Err(e) = database.put_string(&btc_key, &total_btc.to_string()) {
+                warn!("⚠️ [SOLVER] Failed to store total btc liquidity: {}", e);
+            } else {
+                info!("💾 [SOLVER] Stored total btc liquidity: {}", total_btc);
             }
         } else {
             warn!("⚠️ [SOLVER] No database available to store all solver amounts");
