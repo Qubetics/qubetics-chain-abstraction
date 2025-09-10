@@ -1,5 +1,6 @@
-use crate::database::{Database, keys};
+use crate::database::{Database, key_utils, keys};
 use anyhow::Result;
+use ethers::types::U256;
 
 /// Database-backed reward storage
 #[derive(Clone)]
@@ -44,5 +45,24 @@ impl RewardStorage {
     pub async fn delete_total_liquidity_btc(&self) -> Result<()> {
         self.db.delete_string(keys::TOTAL_LIQUIDITY_BTC)?;
         Ok(())
+    }
+
+    /// Store reward for a specific solver
+    pub async fn set_solver_reward(&self, solver_address: &str, reward: U256) -> Result<()> {
+        let key = key_utils::solver_reward_key(solver_address);
+        self.db.put_string(&key, &reward.to_string())?;
+        Ok(())
+    }
+
+    /// Get reward for a specific solver
+    pub async fn get_solver_reward(&self, solver_address: &str) -> Result<Option<U256>> {
+        let key = key_utils::solver_reward_key(solver_address);
+        if let Some(value) = self.db.get_string::<String>(&key)? {
+            let reward = U256::from_dec_str(&value)
+                .map_err(|e| anyhow::anyhow!("Failed to parse reward: {}", e))?;
+            Ok(Some(reward))
+        } else {
+            Ok(None)
+        }
     }
 }

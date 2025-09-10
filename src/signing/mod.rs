@@ -38,6 +38,7 @@ use crate::chain::{BitcoinTransaction, BitcoinInput};
 use crate::user_registry::{DatabaseUserRegistry, TransactionStatus};
 use crate::utils::transaction::DetectedAddressType;
 use crate::contract::{ContractClient, SolverManagerContract};
+use crate::database::RewardStorage;
 use ethers::types::U256;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -3308,6 +3309,91 @@ impl SigningNode {
         info!(
             "✅ [SOLVER] Updated all solver liquidity: {} solvers",
             active_solvers.len()
+        );
+
+        Ok(())
+    }
+
+    /// Calculate and store rewards for each solver based on an intent hash
+    pub async fn calculate_reward_per_solver(&self, intent_hash: &str) -> Result<()> {
+        // Ensure database and user registry are available
+        let database = self
+            .database
+            .as_ref()
+            .ok_or_else(|| anyhow!("Database not available"))?;
+        let user_registry = self
+            .user_registry
+            .as_ref()
+            .ok_or_else(|| anyhow!("User registry not available"))?;
+
+        // Fetch intent to determine amount and target chain
+        let intent = user_registry
+            .get_intent(intent_hash)
+            .await
+            .ok_or_else(|| anyhow!("Intent not found: {}", intent_hash))?;
+
+        let target_chain = intent.target_chain.to_lowercase();
+        let intent_amount = U256::from(intent.amount);
+        let base_reward = intent_amount / U256::from(10u8); // 10% of intent amount
+
+        // Fetch total liquidity values
+        let tics_key = crate::database::key_utils::total_liquidity_tics_key();
+        let btc_key = crate::database::key_utils::total_liquidity_btc_key();
+
+        let total_tics: U256 = database
+            .get_string::<String>(&tics_key)?
+            .and_then(|v| U256::from_dec_str(&v).ok())
+            .unwrap_or_else(U256::zero);
+        let total_btc: U256 = database
+            .get_string::<String>(&btc_key)?
+            .and_then(|v| U256::from_dec_str(&v).ok())
+            .unwrap_or_else(U256::zero);
+
+        // Fetch liquidity for all solvers
+        let all_key = "solver_liquidity:all";
+        let solver_liquidity_map: HashMap<String, Vec<String>> = database
+            .get_string(all_key)?
+            .unwrap_or_default();
+
+        let reward_storage = RewardStorage::new(database.clone());
+
+        for (solver, amounts) in solver_liquidity_map.iter() {
+            let reward = if target_chain == "btc" {
+                let solver_btc = amounts
+                    .get(1)
+                    .and_then(|v| U256::from_dec_str(v).ok())
+                    .unwrap_or_else(U256::zero);
+                if total_btc.is_zero() {
+                    U256::zero()
+                } else {
+                    solver_btc * base_reward / total_btc
+                }
+            } else {
+                let solver_tics = amounts
+                    .get(0)
+                    .and_then(|v| U256::from_dec_str(v).ok())
+                    .unwrap_or_else(U256::zero);
+                if total_tics.is_zero() {
+                    U256::zero()
+                } else {
+                    solver_tics * base_reward / total_tics
+                }
+            };
+
+            let current = reward_storage
+                .get_solver_reward(solver)
+                .await?
+                .unwrap_or_else(U256::zero);
+            let updated = current + reward;
+            reward_storage
+                .set_solver_reward(solver, updated)
+                .await?;
+            info!("💰 [SOLVER] Reward for {} updated to {}", solver, updated);
+        }
+
+        info!(
+            "✅ [SOLVER] Calculated rewards for {} solvers",
+            solver_liquidity_map.len()
         );
 
         Ok(())
