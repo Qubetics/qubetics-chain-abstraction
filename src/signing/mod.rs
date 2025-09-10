@@ -37,6 +37,7 @@ use crate::utils::get_eth_address_from_group_key;
 use crate::chain::{BitcoinTransaction, BitcoinInput};
 use crate::user_registry::{DatabaseUserRegistry, TransactionStatus};
 use crate::utils::transaction::DetectedAddressType;
+use crate::contract::{ContractClient, SolverManagerContract};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ECDSASignature {
@@ -121,6 +122,8 @@ pub struct SigningNode {
     vault_group_key: Option<k256::ProjectivePoint>, // Vault group public key for vault transactions
     // User registry for storing transaction IDs
     user_registry: Option<Arc<DatabaseUserRegistry>>,
+    // Database for storing solver amounts
+    database: Option<Arc<crate::database::Database>>,
     // Dynamic broadcast configuration
     broadcast_config: BroadcastConfig,
 }
@@ -160,6 +163,7 @@ impl SigningNode {
             group_public_key: None, // ✅ Initialize DKG group public key
             vault_group_key: None, // ✅ Initialize vault group public key
             user_registry: None, // Will be set later via set_user_registry
+            database: None, // Will be set later via set_database
             broadcast_config: BroadcastConfig::from_env(), // Load configuration from environment
         }
     }
@@ -2286,6 +2290,11 @@ impl SigningNode {
         info!("📋 [SIGNING] Node {} user registry set", self.id);
     }
 
+    pub fn set_database(&mut self, database: Arc<crate::database::Database>) {
+        self.database = Some(database);
+        info!("🗄️ [SIGNING] Node {} database set", self.id);
+    }
+
     /// Store transaction error for a round if intent hash is available and broadcast to other nodes
     async fn store_transaction_error_for_round(&self, round: u64, error_message: &str) {
         // Get intent hash from pending transactions
@@ -2344,6 +2353,11 @@ impl SigningNode {
                         match &result {
                             Ok(()) => {
                                 info!("💾 [SIGNING] Stored user-to-network transaction ID {} for intent {} (round {})", tx_id, intent_hash, round);
+                                
+                                // Update solver amounts after successful UserToVault transaction
+                                if let Err(e) = self.update_solver_amounts_for_user_to_vault(intent_hash).await {
+                                    warn!("⚠️ [SIGNING] Failed to update solver amounts for UserToVault transaction: {}", e);
+                                }
                             },
                             Err(e) => {
                                 error!("❌ [SIGNING] Failed to store user-to-network transaction ID for intent {}: {}", intent_hash, e);
@@ -3355,6 +3369,119 @@ impl SigningNode {
             info!("⚠️ [SIGNING] No available nodes, using default DKG index 1 for peer {} (sync)", peer_id);
             1
         }
+    }
+
+    /// Update solver amounts for UserToVault transactions
+    async fn update_solver_amounts_for_user_to_vault(&self, _intent_hash: &str) -> Result<()> {
+        // Configuration for contract interaction
+        let rpc_url = std::env::var("SOLVER_CONTRACT_RPC_URL")
+            .unwrap_or_else(|_| "http://localhost:8545".to_string());
+        let contract_address = std::env::var("SOLVER_CONTRACT_ADDRESS")
+            .unwrap_or_else(|_| "0x0000000000000000000000000000000000000000".to_string());
+        let chain_id = std::env::var("SOLVER_CONTRACT_CHAIN_ID")
+            .unwrap_or_else(|_| "1".to_string())
+            .parse::<u64>()
+            .unwrap_or(1);
+
+        // Skip if using default/placeholder values
+        if contract_address == "0x0000000000000000000000000000000000000000" {
+            info!("⏭️ [SOLVER] Skipping solver amount update - using placeholder contract address");
+            return Ok(());
+        }
+
+        info!("🔄 [SOLVER] Updating solver amounts for UserToVault transaction: {}", _intent_hash);
+
+        // Parse contract address
+        let contract_addr = contract_address.parse::<ethers::types::Address>()
+            .map_err(|e| anyhow::anyhow!("Invalid contract address: {}", e))?;
+
+        // Create contract configuration
+        let config = crate::contract::ContractConfig {
+            rpc_url: rpc_url.clone(),
+            contract_address: contract_addr,
+            chain_id,
+        };
+
+        // Initialize contract client
+        let client = crate::contract::ContractClient::new(config.clone())
+            .map_err(|e| anyhow::anyhow!("Failed to create contract client: {}", e))?;
+
+        let solver_contract = crate::contract::SolverManagerContract::new(&config, client.provider())
+            .map_err(|e| anyhow::anyhow!("Failed to create solver contract: {}", e))?;
+
+        // Get all active solvers
+        let active_solvers = solver_contract
+            .get_active_solvers()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to get active solvers: {}", e))?;
+
+        info!(
+            "🔍 [SOLVER] Found {} active solvers: {:?}",
+            active_solvers.len(),
+            active_solvers
+        );
+
+        // Store amounts for each solver
+        let mut all_solver_amounts = std::collections::HashMap::new();
+
+        for solver_id in &active_solvers {
+            // Call getSolverAllChainAmounts for each solver
+            let amounts = solver_contract
+                .get_all_chain_amounts(solver_id)
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!("Failed to get amounts for solver {}: {}", solver_id, e)
+                })?;
+
+            // Convert amounts to strings for storage
+            let amounts_str: Vec<String> = amounts.iter().map(|u| u.to_string()).collect();
+
+            // Store individual solver amounts with key: solver_amounts:{node_id}:{solver_id}
+            let individual_key = crate::database::key_utils::solver_amounts_key(&self.id, solver_id);
+            
+            // Store individual solver amounts in database
+            if let Some(ref database) = self.database {
+                if let Err(e) = database.put_string(&individual_key, &amounts_str) {
+                    warn!("⚠️ [SOLVER] Failed to store amounts for solver {}: {}", solver_id, e);
+                } else {
+                    info!("💾 [SOLVER] Stored amounts for solver {}: {:?}", solver_id, amounts_str);
+                }
+            } else {
+                warn!("⚠️ [SOLVER] No database available to store solver amounts");
+            }
+
+            // Add to all solver amounts map
+            all_solver_amounts.insert(solver_id.clone(), amounts_str.clone());
+        }
+
+        // Store all solver amounts with key: solver_amounts:all:{node_id}
+        let all_key = crate::database::key_utils::all_solver_amounts_key(&self.id);
+        
+        // Store consolidated amounts in database
+        if let Some(ref database) = self.database {
+            if let Err(e) = database.put_string(&all_key, &all_solver_amounts) {
+                warn!("⚠️ [SOLVER] Failed to store all solver amounts: {}", e);
+            } else {
+                info!("💾 [SOLVER] Stored all solver amounts for node {}: {} solvers", self.id, all_solver_amounts.len());
+            }
+        } else {
+            warn!("⚠️ [SOLVER] No database available to store all solver amounts");
+        }
+        
+        // Log the consolidated amounts
+        info!(
+            "📋 [SOLVER] All solver amounts for node {}: {:?}",
+            self.id,
+            all_solver_amounts
+        );
+
+        info!(
+            "✅ [SOLVER] Updated all solver amounts for node {}: {} solvers",
+            self.id,
+            active_solvers.len()
+        );
+
+        Ok(())
     }
 }
 

@@ -6,7 +6,7 @@ import { Wallet } from 'ethers';
 // =========================
 // Configuration
 // =========================
-const RPC_BASE_URL = process.env.RPC_BASE_URL || 'http://localhost:8081';
+const RPC_BASE_URL = process.env.RPC_BASE_URL || 'http://localhost:8082';
 
 // 👉 Private key you provided (hex, no 0x prefix needed)
 const TEST_PRIVKEY = '415c01d63918df986d1d537f9b5974f383cac3b4fe9edc44f58f09bdfc5f672a';
@@ -418,35 +418,36 @@ async function runTests() {
   // // 1) DKG status
   // await testDKGStatus();
 
-  // 2) Register ONLY the derived address 
-  const reg = await testRegisterUser(signerAddr);
+  // // 2) Register ONLY the derived address 
+  // const reg = await testRegisterUser(signerAddr);
 
-  if (reg.success) {
-    log(`\n⏳ Waiting 2 seconds before checking user info...`, 'yellow');
-    await new Promise(r => setTimeout(r, 2000));
-    await testGetUserInfo(signerAddr);
-  } else {
-    log(`\n⚠️ Registration failed; continuing to deposit test (is_registered may be false).`, 'yellow');
-  }
+  // if (reg.success) {
+  //   log(`\n⏳ Waiting 2 seconds before checking user info...`, 'yellow');
+  //   await new Promise(r => setTimeout(r, 2000));
+  //   await testGetUserInfo(signerAddr);
+  // } else {
+  //   log(`\n⚠️ Registration failed; continuing to deposit test (is_registered may be false).`, 'yellow');
+  // }
 
   // // 3) MPC deposit test WITHOUT tx_id (should pass Some(signer) to handle_deposit_intent)
-  // log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
-  // const amount = 10000000000000; // keep safe for JSON
-  // await testUserMpcDeposit({ wallet, amount });
+  log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
+  const amount = 10000000000000; // keep safe for JSON
+  await testUserMpcDeposit({ wallet, amount });
+
   // await new Promise(r => setTimeout(r, 7000));
   // // 4) MPC deposit test WITH tx_id (should pass None to handle_deposit_intent)
   // log(`\n🧪 Test 2: Deposit amount WITH tx_id and status update`, 'blue');
   // const testTxId = TEST_TX_ID; // Generate a unique test transaction ID
   // console.log(`📊 Test Tx ID: ${testTxId}`, 'cyan');
   // const testStatus = 'confirmed'; // Test status
-  await testUserMpcDepositWithTxId({ wallet, amount, txId: testTxId, status: testStatus });
+  // await testUserMpcDepositWithTxId({ wallet, amount, txId: testTxId, status: testStatus });
 
   // // 5) MPC deposit test with potentially problematic amount (might trigger errors)
   // log(`\n🧪 Test 3: Large deposit amount (might trigger errors)`, 'blue');
   // const largeAmount = 999999999; // Large amount that might cause insufficient funds
   // await testUserMpcDeposit({ wallet, amount: largeAmount });
 
-  log(`\n${colors.bright}✅ Test completed!${colors.reset}`, 'bright');
+  // log(`\n${colors.bright}✅ Test completed!${colors.reset}`, 'bright');
 }
 
 // =========================

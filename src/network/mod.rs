@@ -144,6 +144,18 @@ impl NetworkLayer {
         }
     }
 
+    pub fn set_database(&mut self, database: Arc<crate::database::Database>) {
+        info!("🗄️ [NETWORK] Setting database on signing node for solver amount storage");
+        
+        // Set the database on the signing node for solver amount storage
+        if let Some(signing_node) = &mut self.signing_node {
+            signing_node.set_database(database);
+            info!("🗄️ [NETWORK] Set database on signing node for solver amount storage");
+        } else {
+            info!("⚠️ [NETWORK] Signing node not available when setting database");
+        }
+    }
+
     pub fn get_dkg_node(&mut self) -> Option<&mut DKGNode> {
         self.dkg_node.as_mut()
     }
