@@ -32,6 +32,22 @@ pub struct DummyTransaction {
     pub chain_id: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContractTransaction {
+    pub to: String,
+    pub value: String,
+    pub nonce: u64,
+    #[serde(rename = "gasLimit")]
+    pub gas_limit: u64,
+    #[serde(rename = "gasPrice")]
+    pub gas_price: String,
+    #[serde(rename = "chainId")]
+    pub chain_id: u64,
+
+    /// ABI-encoded calldata as 0x-prefixed hex. Use "0x" when empty.
+    #[serde(default)]
+    pub data: String,
+}
 // Define the deposit intent structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DepositIntent {
@@ -1035,7 +1051,10 @@ async fn wait_for_transaction_result(
 async fn fetch_crypto_prices() -> Result<HashMap<String, f64>, String> {
     use tracing::{debug, error, info};
 
-    let url = "http://172.16.15.63:7322/api/v1/cryptos/prices?symbols=BTC,TICS";
+    // Get crypto prices API URL from environment variable
+    let base_url = std::env::var("BACKEND_API_URL")
+        .unwrap_or_else(|_| "http://172.16.15.63:7322".to_string());
+    let url = format!("{}/api/v1/cryptos/prices?symbols=BTC,TICS", base_url);
     let client = reqwest::Client::new();
 
     info!("Fetching crypto prices from URL: {}", url);
@@ -1111,8 +1130,11 @@ async fn fetch_balance(address: &str, blockchain: &str) -> Result<u128, String> 
         "Fetching balance for address: {}, blockchain: {}",
         address, blockchain
     );
+    let base_url = std::env::var("BACKEND_API_URL")
+        .unwrap_or_else(|_| "http://172.16.15.63:7322".to_string());
     let url = format!(
-        "http://172.16.15.63:7322/api/v1/balance/{}?blockchain={}",
+        "{}/api/v1/balance/{}?blockchain={}",
+        base_url,
         address, blockchain
     );
 
@@ -1172,10 +1194,13 @@ pub async fn check_tx_confirmation(chain: &str, tx_id: &str) -> anyhow::Result<b
         "btc" | "bitcoin" => "btc",
         "qubetics" => "eth",
         other => other,
-    };
+    };  
 
+    let base_url = std::env::var("BACKEND_API_URL")
+        .unwrap_or_else(|_| "http://172.16.15.63:7322".to_string());
     let url = format!(
-        "http://172.16.15.63:7322/api/v1/tx-confirmation/{}/{}",
+        "{}/api/v1/tx-confirmation/{}/{}",
+        base_url,
         api_chain, tx_id
     );
 
