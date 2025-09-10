@@ -6,15 +6,15 @@ use tracing::{debug, error, info};
 
 pub mod consensus_storage;
 pub mod dkg_storage;
+pub mod reward_storage;
 pub mod signing_storage;
 pub mod user_storage;
-pub mod reward_storage;
 
 pub use consensus_storage::{ConsensusStats, ConsensusStorage};
 pub use dkg_storage::DkgStorage;
+pub use reward_storage::RewardStorage;
 pub use signing_storage::SigningStorage;
 pub use user_storage::{IntentStorage, TransactionStatusStorage, UserStorage};
-pub use reward_storage::RewardStorage;
 
 /// Database configuration
 #[derive(Debug, Clone)]
@@ -404,69 +404,70 @@ pub mod keys {
     pub const TOTAL_LIQUIDITY_TICS: &str = "total_liquidity_tics";
     pub const TOTAL_LIQUIDITY_BTC: &str = "total_liquidity_btc";
     pub const SOLVER_REWARD: &str = "solver_reward:";
+    pub const CLAIMED_REQUEST_AMOUNT: &str = "claimed_request_amount:";
     pub const INTENT_REWARD_STATUS: &str = "intent_reward_status:";
 }
 
-    /// Utility functions for key generation
-    pub mod key_utils {
-        use super::keys;
+/// Utility functions for key generation
+pub mod key_utils {
+    use super::keys;
 
-        pub fn user_key(ethereum_address: &str) -> String {
-            format!("{}{}", keys::USER_REGISTRATION, ethereum_address)
-        }
+    pub fn user_key(ethereum_address: &str) -> String {
+        format!("{}{}", keys::USER_REGISTRATION, ethereum_address)
+    }
 
-        pub fn intent_key(intent_hash: &str) -> String {
-            format!("{}{}", keys::INTENT_REGISTRY, intent_hash)
-        }
+    pub fn intent_key(intent_hash: &str) -> String {
+        format!("{}{}", keys::INTENT_REGISTRY, intent_hash)
+    }
 
-        pub fn user_intent_key(ethereum_address: &str, intent_hash: &str) -> String {
-            format!(
-                "{}{}:{}",
-                keys::USER_INTENT_HASH,
-                ethereum_address,
-                intent_hash
-            )
-        }
+    pub fn user_intent_key(ethereum_address: &str, intent_hash: &str) -> String {
+        format!(
+            "{}{}:{}",
+            keys::USER_INTENT_HASH,
+            ethereum_address,
+            intent_hash
+        )
+    }
 
-        pub fn intent_transaction_ids_key(intent_hash: &str) -> String {
-            format!("{}{}", keys::INTENT_TRANSACTION_IDS, intent_hash)
-        }
+    pub fn intent_transaction_ids_key(intent_hash: &str) -> String {
+        format!("{}{}", keys::INTENT_TRANSACTION_IDS, intent_hash)
+    }
 
-        pub fn transaction_status_key(tx_hash: &str) -> String {
-            format!("{}{}", keys::TRANSACTION_STATUS, tx_hash)
-        }
+    pub fn transaction_status_key(tx_hash: &str) -> String {
+        format!("{}{}", keys::TRANSACTION_STATUS, tx_hash)
+    }
 
-        pub fn public_key_key(node_id: &str) -> String {
-            format!("{}{}", keys::PUBLIC_KEY, node_id)
-        }
+    pub fn public_key_key(node_id: &str) -> String {
+        format!("{}{}", keys::PUBLIC_KEY, node_id)
+    }
 
-        pub fn signature_key(node_id: &str) -> String {
-            format!("{}{}", keys::SIGNATURE, node_id)
-        }
+    pub fn signature_key(node_id: &str) -> String {
+        format!("{}{}", keys::SIGNATURE, node_id)
+    }
 
-        pub fn signature_round_key(round: u64, node_id: &str) -> String {
-            format!("{}{}:{}", keys::SIGNATURE_ROUND, round, node_id)
-        }
+    pub fn signature_round_key(round: u64, node_id: &str) -> String {
+        format!("{}{}:{}", keys::SIGNATURE_ROUND, round, node_id)
+    }
 
-        pub fn final_node_round_key(round: u64) -> String {
-            format!("{}{}", keys::FINAL_NODE_ROUND, round)
-        }
+    pub fn final_node_round_key(round: u64) -> String {
+        format!("{}{}", keys::FINAL_NODE_ROUND, round)
+    }
 
-        pub fn pending_transaction_key(round: u64) -> String {
-            format!("{}{}", keys::PENDING_TRANSACTION, round)
-        }
+    pub fn pending_transaction_key(round: u64) -> String {
+        format!("{}{}", keys::PENDING_TRANSACTION, round)
+    }
 
-        pub fn consensus_round_key(round: u64) -> String {
-            format!("{}{}", keys::CONSENSUS_ROUND, round)
-        }
+    pub fn consensus_round_key(round: u64) -> String {
+        format!("{}{}", keys::CONSENSUS_ROUND, round)
+    }
 
-        pub fn consensus_result_key(round: u64) -> String {
-            format!("{}{}", keys::CONSENSUS_RESULT, round)
-        }
+    pub fn consensus_result_key(round: u64) -> String {
+        format!("{}{}", keys::CONSENSUS_RESULT, round)
+    }
 
-        pub fn selected_nodes_key(round: u64) -> String {
-            format!("{}{}", keys::SELECTED_NODES, round)
-        }
+    pub fn selected_nodes_key(round: u64) -> String {
+        format!("{}{}", keys::SELECTED_NODES, round)
+    }
 
     pub fn solver_amounts_key(node_id: &str, solver_id: &str) -> String {
         format!("{}{}:{}", keys::SOLVER_AMOUNTS, node_id, solver_id)
@@ -476,19 +477,31 @@ pub mod keys {
         format!("{}all:{}", keys::SOLVER_AMOUNTS, node_id)
     }
 
-        pub fn total_liquidity_tics_key() -> String {
-            keys::TOTAL_LIQUIDITY_TICS.to_string()
-        }
-
-        pub fn total_liquidity_btc_key() -> String {
-            keys::TOTAL_LIQUIDITY_BTC.to_string()
-        }
-
-        pub fn solver_reward_key(solver_address: &str) -> String {
-            format!("{}{}", keys::SOLVER_REWARD, solver_address.to_lowercase())
-        }
-
-        pub fn intent_reward_status_key(intent_hash: &str) -> String {
-            format!("{}{}", keys::INTENT_REWARD_STATUS, intent_hash.to_lowercase())
-        }
+    pub fn total_liquidity_tics_key() -> String {
+        keys::TOTAL_LIQUIDITY_TICS.to_string()
     }
+
+    pub fn total_liquidity_btc_key() -> String {
+        keys::TOTAL_LIQUIDITY_BTC.to_string()
+    }
+
+    pub fn solver_reward_key(solver_address: &str) -> String {
+        format!("{}{}", keys::SOLVER_REWARD, solver_address.to_lowercase())
+    }
+
+    pub fn claimed_request_amount_key(solver_address: &str) -> String {
+        format!(
+            "{}{}",
+            keys::CLAIMED_REQUEST_AMOUNT,
+            solver_address.to_lowercase()
+        )
+    }
+
+    pub fn intent_reward_status_key(intent_hash: &str) -> String {
+        format!(
+            "{}{}",
+            keys::INTENT_REWARD_STATUS,
+            intent_hash.to_lowercase()
+        )
+    }
+}
