@@ -21,7 +21,7 @@ pub use commands::CommandProcessor;
 pub use consensus::{ConsensusNode, DatabaseConsensusNode};
 pub use database::{
     ConsensusStorage, DkgStorage, Database, DatabaseConfig, IntentStorage, SigningStorage,
-    TransactionStatusStorage, UserStorage,
+    TransactionStatusStorage, UserStorage, RewardStorage,
 };
 pub use network::NetworkLayer;
 pub use node_management::{

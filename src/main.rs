@@ -4,7 +4,7 @@ use mpc_node::{
     adkg_secp256k1::DKGNode,
     commands::CommandProcessor,
     consensus::{ConsensusNode, DatabaseConsensusNode},
-    database::{Database, DatabaseConfig, DkgStorage},
+    database::{Database, DatabaseConfig, DkgStorage, RewardStorage},
     network::NetworkLayer,
     rpc_server,
     signing::{DatabaseSigningNode, SigningNode},
