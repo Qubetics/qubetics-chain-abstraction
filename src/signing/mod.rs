@@ -1408,13 +1408,6 @@ impl SigningNode {
         let signature = self.create_ecdsa_signature_with_key(&msg, transaction, &signing_key)?;
         let (recovery_id, signature_bytes) = signature.serialize_compact();
 
-        // Use chain handler to create chain-specific signature
-        let chain_signature = self.chain_handler.create_signature(
-            &signature_bytes, 
-            recovery_id.to_i32() as u8, 
-            &chain_transaction
-        )?;
-
         info!(
             "✍️ [SIGNING] Node {} created {} signature",
             self.id, self.chain_handler.chain_type()
@@ -1458,7 +1451,7 @@ impl SigningNode {
                 value: transaction.value.clone(),
                 gas_limit: transaction.gas_limit,
                 gas_price: transaction.gas_price.clone(),
-                nonce: transaction.nonce, // This will be replaced with dynamic nonce during reconstruction
+                nonce: transaction.nonce, 
                 data: None,
                 chain_id: transaction.chain_id,
             });
@@ -1469,18 +1462,144 @@ impl SigningNode {
             );
         }
 
-        // let msg = serde_json::to_vec(&crate::types::GossipsubMessage::Signing(
-        //     SigningMessage::ECDSASignature {
-        //         from: self.id.clone(),
-        //         signature: ecdsa_signature,
-        //         round,
-        //         timestamp: SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis(),
-        //         user_eth_address: user_eth_address.clone(), // No user_eth_address for Ethereum
-        //     },
-        // ))?;
-
-        // self.broadcast("signing", &msg).await?;
         info!("📤 [SIGNING] Node {} broadcasted ECDSA signature", self.id);
+        Ok(())
+    }
+
+    /// Sign a contract transaction message (overload for ContractTransaction)
+    pub async fn sign_contract_message(
+        &mut self,
+        _message: Vec<u8>,
+        transaction: &crate::rpc_server::ContractTransaction,
+        user_tweaked_share: Option<k256::Scalar>,
+        user_eth_address: Option<String>,
+    ) -> Result<()> {
+        // Determine which key to use for signing
+        info!("🔑 [SIGNING] user_tweaked_share: {:?}\n", user_tweaked_share);
+        let signing_key = if let Some(tweaked_share) = user_tweaked_share {
+            // Use user's tweaked share for user deposits
+            info!("🔑 [SIGNING] Using user-specific tweaked share for signing");
+            Self::derive_secp_secret(&tweaked_share)
+        } else {
+            // Use network DKG share for network withdrawals
+            info!("🔑 [SIGNING] Using network DKG share for signing");
+            match self.private_key {
+                Some(key) => key,
+                None => {
+                    error!("❌ [SIGNING] Node {} cannot sign: no private key available", self.id);
+                    return Err(anyhow::anyhow!("No private key available"));
+                }
+            }
+        };
+
+        info!(
+            "📝 [SIGNING] Node {} starting to sign contract transaction",
+            self.id
+        );
+
+        // Create chain transaction from contract transaction
+        let chain_transaction = crate::chain::ChainTransaction::Ethereum(crate::chain::EthereumTransaction {
+            to: transaction.to.clone(),
+            value: transaction.value.clone(),
+            gas_limit: transaction.gas_limit,
+            gas_price: transaction.gas_price.clone(),
+            nonce: transaction.nonce,
+            data: Some(transaction.data.clone().into_bytes()),
+            chain_id: transaction.chain_id,
+        });
+
+        // Create transaction bytes using chain handler
+        let tx_bytes = self.chain_handler.create_transaction_bytes(&chain_transaction)?;
+        info!("🔐 [SIGNING] Contract transaction bytes: 0x{}", hex::encode(&tx_bytes));
+
+        // Hash the transaction bytes
+        let mut hasher: sha2::digest::core_api::CoreWrapper<sha3::Keccak256Core> = sha3::Keccak256::new();
+        hasher.update(&tx_bytes);
+        let tx_hash = hasher.finalize();
+        info!("Tx hash: 0x{}", hex::encode(&tx_hash));
+        // Get available nodes and perform VRF selection
+        let available_nodes = self.get_available_nodes_from_manager().await;
+                
+        // Use VrfService for node selection (chain-agnostic)
+        if let Some(vrf_service) = &self.vrf_service {
+            let round = vrf_service.get_current_round().await;
+            let _selection_result = vrf_service.perform_node_selection(
+                &available_nodes, 
+                1, 
+                round, 
+                self.chain_handler.chain_type()
+            ).await?;
+            
+            info!(
+                "🎯 [VRF] Node {} completed VRF selection for {} signing round {}",
+                self.id, self.chain_handler.chain_type(), round
+            );
+        }
+
+        // Create ECDSA signature using secp256k1
+        let msg = Message::from_digest_slice(&tx_hash)?;
+        let signature = self.create_ecdsa_signature_with_key(&msg, &crate::rpc_server::DummyTransaction {
+            to: transaction.to.clone(),
+            value: transaction.value.clone(),
+            nonce: transaction.nonce,
+            gas_limit: transaction.gas_limit,
+            gas_price: transaction.gas_price.clone(),
+            chain_id: transaction.chain_id,
+        }, &signing_key)?;
+        let (recovery_id, signature_bytes) = signature.serialize_compact();
+
+        // Create ECDSA signature struct
+        let ecdsa_signature = crate::signing::ECDSASignature {
+            signature: signature_bytes.to_vec(),
+            signer_id: self.id.clone(),
+            recovery_id: recovery_id.to_i32() as u8,
+            user_eth_address,
+        };
+
+        info!(
+            "✍️ [SIGNING] Node {} created {} contract signature",
+            self.id, self.chain_handler.chain_type()
+        );
+
+        // Get current round from VRF service
+        let round = if let Some(vrf_service) = &self.vrf_service {
+            vrf_service.get_next_round().await
+        } else {
+            0
+        };
+
+        // Store signature by round
+        {
+            let mut signatures_by_round = self.signatures_by_round.write().await;
+            let round_signatures = signatures_by_round
+                .entry(round)
+                .or_insert_with(HashMap::new);
+            round_signatures.insert(self.id.clone(), ecdsa_signature.clone());
+            info!(
+                "💾 [SIGNING] Node {} stored signature for {} round {}",
+                self.id, self.chain_handler.chain_type(), round
+            );
+        }
+
+        {
+            let mut pending_transactions = self.pending_transactions.write().await;
+            let chain_tx = ChainTransaction::Ethereum(crate::chain::EthereumTransaction {
+                to: transaction.to.clone(),
+                value: transaction.value.clone(),
+                gas_limit: transaction.gas_limit,
+                gas_price: transaction.gas_price.clone(),
+                nonce: transaction.nonce, 
+                data: None,
+                chain_id: transaction.chain_id,
+            });
+            pending_transactions.insert(round, (chain_tx, tx_bytes.clone(), None, None));
+            info!(
+                "💾 [SIGNING] Node {} stored original Ethereum transaction for round {} reconstruction",
+                self.id, round
+            );
+        }
+
+        info!("📤 [SIGNING] Node {} broadcasted ECDSA signature for contract transaction", self.id);
         Ok(())
     }
 

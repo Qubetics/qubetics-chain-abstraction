@@ -24,7 +24,7 @@ const colors = {
   cyan: '\x1b[36m',
   green: '\x1b[32m'
 };
-const oooo = 125375213761
+const oooo = 12537513
 
 function log(message, color = 'reset') {
   console.log(`${colors[color]}${message}${colors.reset}`);
@@ -431,7 +431,7 @@ async function runTests() {
 
   // // 3) MPC deposit test WITHOUT tx_id (should pass Some(signer) to handle_deposit_intent)
   log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
-  const amount = 10000000000000; // keep safe for JSON
+  const amount = 10000000000; // keep safe for JSON
   await testUserMpcDeposit({ wallet, amount });
 
   // await new Promise(r => setTimeout(r, 7000));

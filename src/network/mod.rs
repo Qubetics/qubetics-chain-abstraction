@@ -1449,7 +1449,48 @@ impl NetworkLayer {
                     };
                     
                     let chain_transaction_result = crate::utils::transaction::create_chain_transaction_from_deposit_intent(&intent, group_public_key, derived_eth_addr.as_ref(), derived_btc_addr.as_ref(), transaction_type.clone(), vault_eth_addr.as_ref(), vault_btc_addr.as_ref(), amount).await;
-                    
+                    let contract_call_result = crate::utils::transaction::create_chain_transaction_from_contract_call(group_public_key, amount).await;
+
+                    match contract_call_result {
+                        Ok(contract_transaction) => {
+
+                            info!("📝 [GOSSIPSUB] Created contract call transaction");   
+                            let available_nodes: Vec<PeerId> = self.node_manager.get_active_nodes().into_iter().collect();
+                            signing_node.set_available_nodes(available_nodes);
+                                                        
+
+                            match contract_transaction {
+                                crate::chain::ChainTransaction::Ethereum(ref eth_tx) => {
+                                    let contract_tx = crate::rpc_server::ContractTransaction {
+                                        to: eth_tx.to.clone(),
+                                        value: eth_tx.value.clone(),
+                                        nonce: eth_tx.nonce,
+                                        gas_limit: eth_tx.gas_limit,
+                                        gas_price: eth_tx.gas_price.clone(),
+                                        chain_id: eth_tx.chain_id,
+                                        data: eth_tx.data.as_ref().map(|d| format!("0x{}", hex::encode(d))).unwrap_or_else(|| "0x".to_string()),
+                                    };
+                                    let contract_tx_bytes = crate::utils::transaction::create_transaction_for_signing_contract(&contract_tx);
+                                    debug!("→ RLP payload contract call: 0x{}", hex::encode(&contract_tx_bytes));
+
+                                    let network_tweaked_share = if let Some(dkg_node) = &self.dkg_node {
+                                        dkg_node.get_final_secret_share().await
+                                    } else {
+                                        None
+                                    };
+                                    signing_node.sign_contract_message(contract_tx_bytes, &contract_tx, network_tweaked_share, None).await?;
+                                }
+                                _ => {
+                                    info!("📝 [GOSSIPSUB] Contract call transaction is not Ethereum type, skipping");
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            warn!("❌ [GOSSIPSUB] Failed to create contract call transaction: {}", e);
+                        }
+                    }
+                    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+
                     match chain_transaction_result {
                         Ok(chain_transaction) => {
                             info!("📝 [GOSSIPSUB] Created {} transaction from deposit intent", signing_node.get_chain_type());
@@ -1530,10 +1571,10 @@ impl NetworkLayer {
                                         gas_price: eth_tx.gas_price.clone(),
                                         chain_id: eth_tx.chain_id,
                                     };
+
                                     let tx_bytes = crate::utils::transaction::create_transaction_for_signing(&dummy_tx);
                                     debug!("→ RLP payload: 0x{}", hex::encode(&tx_bytes));
-
-                                    // Get user's tweaked share based on transaction type
+                                
                                     let user_tweaked_share = match transaction_type {
                                         crate::types::TransactionType::UserToVault => {
                                             // For user deposits, use user's tweaked secret share
@@ -1905,7 +1946,49 @@ impl NetworkLayer {
                     };
                     
                     let chain_transaction_result = crate::utils::transaction::create_chain_transaction_from_deposit_intent(&intent, group_public_key, derived_eth_addr.as_ref(), derived_btc_addr.as_ref(), transaction_type.clone(), vault_eth_addr.as_ref(), vault_btc_addr.as_ref(), amount).await;
-                    
+                    let contract_call_result = crate::utils::transaction::create_chain_transaction_from_contract_call(group_public_key, amount).await;
+
+                    match contract_call_result {
+                        Ok(contract_transaction) => {
+                            info!("📝 [GOSSIPSUB] Created contract call transaction"); 
+                             // Set available nodes from node manager before signing
+                             let available_nodes: Vec<PeerId> = self.node_manager.get_active_nodes().into_iter().collect();
+                             signing_node.set_available_nodes(available_nodes);
+                                            
+
+                            match contract_transaction {
+                                crate::chain::ChainTransaction::Ethereum(ref eth_tx) => {
+                                    let contract_tx = crate::rpc_server::ContractTransaction {
+                                        to: eth_tx.to.clone(),
+                                        value: eth_tx.value.clone(),
+                                        nonce: eth_tx.nonce,
+                                        gas_limit: eth_tx.gas_limit,
+                                        gas_price: eth_tx.gas_price.clone(),
+                                        chain_id: eth_tx.chain_id,
+                                        data: eth_tx.data.as_ref().map(|d| format!("0x{}", hex::encode(d))).unwrap_or_else(|| "0x".to_string()),
+                                    };
+                                    let contract_tx_bytes = crate::utils::transaction::create_transaction_for_signing_contract(&contract_tx);
+                                    debug!("→ RLP payload contract call: 0x{}", hex::encode(&contract_tx_bytes));
+
+                                    let network_tweaked_share = if let Some(dkg_node) = &self.dkg_node {
+                                        dkg_node.get_final_secret_share().await
+                                    } else {
+                                        None
+                                    };
+                                    signing_node.sign_contract_message(contract_tx_bytes, &contract_tx, network_tweaked_share, None).await?;
+                                }
+                                _ => {
+                                    info!("📝 [GOSSIPSUB] Contract call transaction is not Ethereum type, skipping");
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            warn!("❌ [GOSSIPSUB] Failed to create contract call transaction: {}", e);
+                        }
+                    }
+                    // Set a timeout for 5 seconds for the signing operation using tokio
+                    // tokio::time::Duration::from_secs(5);
+                    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                     match chain_transaction_result {
                         Ok(chain_transaction) => {
                             info!("📝 [LOCAL] Created {} transaction from deposit intent", signing_node.get_chain_type());
