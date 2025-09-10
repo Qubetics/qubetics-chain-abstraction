@@ -1,13 +1,7 @@
 use crate::database::DkgStorage;
-use crate::prepare_unsigned_eip1559_tx;
 use crate::types::{rpc::RPCRequest, ChannelMessage};
 use crate::user_registry::{
     checksum_from_any, to_checksum_address, DatabaseUserRegistry, TransactionStatus,
-};
-use ethers::{
-    abi::Token,
-    providers::{Http, Provider},
-    types::{Address, U256},
 };
 use secp256k1::{
     ecdsa::{RecoverableSignature, RecoveryId},
@@ -17,7 +11,6 @@ use serde::{Deserialize, Serialize};
 use sha2::Digest;
 use sha3::Keccak256;
 use std::collections::HashMap;
-use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc;
@@ -1482,63 +1475,6 @@ async fn handle_user_mpc_deposit(
                                 min_amount, balance
                             )),
                         }));
-                    }
-                    // Prepare unsigned transaction for on-chain deposit intent recording
-                    if let (Ok(contract_addr_str), Ok(rpc_url)) = (
-                        std::env::var("INTENT_MANAGER_CONTRACT_ADDRESS"),
-                        std::env::var("MPC_ETHEREUM_RPC_URL"),
-                    ) {
-                        if let Ok(contract_addr) = Address::from_str(contract_addr_str.trim()) {
-                            if let Ok(Some(group_key)) = dkg_storage.get_final_public().await {
-                                let mut from_addr_str =
-                                    crate::utils::get_eth_address_from_group_key(group_key);
-                                if !from_addr_str.starts_with("0x") {
-                                    from_addr_str = format!("0x{}", from_addr_str);
-                                }
-                                if let Ok(from_addr) = Address::from_str(&from_addr_str) {
-                                    if let Ok(provider) =
-                                        Provider::<Http>::try_from(rpc_url.clone())
-                                    {
-                                        let provider = Arc::new(provider);
-                                        let params = vec![
-                                            Token::String(req.msg.source_address.clone()),
-                                            Token::String(req.msg.target_address.clone()),
-                                            Token::String(req.msg.source_chain.clone()),
-                                            Token::String(req.msg.target_chain.clone()),
-                                            Token::Uint(U256::from(req.msg.amount)),
-                                            Token::String(req.msg.source_token.clone()),
-                                            Token::String(req.msg.target_token.clone()),
-                                            Token::String(String::new()),
-                                            Token::String(intent_hash_hex.clone()),
-                                        ];
-                                        if let Err(e) = prepare_unsigned_eip1559_tx(
-                                            provider,
-                                            9029u64,
-                                            from_addr,
-                                            contract_addr,
-                                            "depositIntent",
-                                            params,
-                                            None,
-                                            None,
-                                            None,
-                                            None,
-                                        )
-                                        .await
-                                        .map(|(_, preimage, _)| {
-                                            info!(
-                                                "Prepared unsigned depositIntent transaction: {}",
-                                                preimage
-                                            );
-                                        }) {
-                                            error!(
-                                                "Failed to build depositIntent unsigned tx: {:?}",
-                                                e
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                        }
                     }
                     // Store intent hash in user registry at last
                     if let Err(e) = user_registry
