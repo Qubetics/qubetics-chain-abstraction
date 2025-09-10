@@ -3326,6 +3326,15 @@ impl SigningNode {
             .as_ref()
             .ok_or_else(|| anyhow!("User registry not available"))?;
 
+        let reward_storage = RewardStorage::new(database.clone());
+        if let Some(true) = reward_storage.get_intent_reward_status(intent_hash).await? {
+            info!(
+                "⏭️ [SOLVER] Rewards already calculated for intent {}",
+                intent_hash
+            );
+            return Ok(());
+        }
+
         // Fetch intent to determine amount and target chain
         let intent = user_registry
             .get_intent(intent_hash)
@@ -3354,8 +3363,6 @@ impl SigningNode {
         let solver_liquidity_map: HashMap<String, Vec<String>> = database
             .get_string(all_key)?
             .unwrap_or_default();
-
-        let reward_storage = RewardStorage::new(database.clone());
 
         for (solver, amounts) in solver_liquidity_map.iter() {
             let reward = if target_chain == "btc" {
@@ -3395,6 +3402,9 @@ impl SigningNode {
             "✅ [SOLVER] Calculated rewards for {} solvers",
             solver_liquidity_map.len()
         );
+        reward_storage
+            .set_intent_reward_status(intent_hash, true)
+            .await?;
 
         Ok(())
     }

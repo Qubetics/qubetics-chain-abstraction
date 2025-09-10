@@ -404,6 +404,7 @@ pub mod keys {
     pub const TOTAL_LIQUIDITY_TICS: &str = "total_liquidity_tics";
     pub const TOTAL_LIQUIDITY_BTC: &str = "total_liquidity_btc";
     pub const SOLVER_REWARD: &str = "solver_reward:";
+    pub const INTENT_REWARD_STATUS: &str = "intent_reward_status:";
 }
 
     /// Utility functions for key generation
@@ -485,5 +486,9 @@ pub mod keys {
 
         pub fn solver_reward_key(solver_address: &str) -> String {
             format!("{}{}", keys::SOLVER_REWARD, solver_address.to_lowercase())
+        }
+
+        pub fn intent_reward_status_key(intent_hash: &str) -> String {
+            format!("{}{}", keys::INTENT_REWARD_STATUS, intent_hash.to_lowercase())
         }
     }
