@@ -403,6 +403,7 @@ pub mod keys {
     pub const SOLVER_AMOUNTS: &str = "solver_amounts:";
     pub const TOTAL_LIQUIDITY_TICS: &str = "total_liquidity_tics";
     pub const TOTAL_LIQUIDITY_BTC: &str = "total_liquidity_btc";
+    pub const SOLVER_REWARD: &str = "solver_reward:";
 }
 
     /// Utility functions for key generation
@@ -480,5 +481,9 @@ pub mod keys {
 
         pub fn total_liquidity_btc_key() -> String {
             keys::TOTAL_LIQUIDITY_BTC.to_string()
+        }
+
+        pub fn solver_reward_key(solver_address: &str) -> String {
+            format!("{}{}", keys::SOLVER_REWARD, solver_address.to_lowercase())
         }
     }
