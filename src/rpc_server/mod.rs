@@ -1,4 +1,4 @@
-use crate::database::DkgStorage;
+use crate::database::{DkgStorage, RewardStorage};
 use crate::types::{rpc::RPCRequest, ChannelMessage};
 use crate::user_registry::{
     checksum_from_any, to_checksum_address, DatabaseUserRegistry, TransactionStatus,
@@ -122,6 +122,21 @@ pub struct UserMpcDepositVerifyResponse {
     pub user_to_network_tx_id: Option<String>,
     pub network_to_target_tx_id: Option<String>,
     pub vault_to_network_tx_id: Option<String>,
+    pub error_message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SolverRewardRequest {
+    pub signature: String,
+    pub msg: String,
+    pub address: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SolverRewardResponse {
+    pub status: String,
+    pub solver_address: String,
+    pub reward: Option<String>,
     pub error_message: Option<String>,
 }
 
@@ -317,6 +332,7 @@ pub async fn start_http_server(
     port: u16,
     user_registry: Arc<DatabaseUserRegistry>,
     dkg_storage: DkgStorage,
+    reward_storage: RewardStorage,
     node_id: String,
     start_time: Instant,
 ) -> Result<(), warp::Rejection> {
@@ -328,6 +344,7 @@ pub async fn start_http_server(
     let message_tx = std::sync::Arc::new(tokio::sync::Mutex::new(message_tx));
     // user_registry is already Arc<DatabaseUserRegistry>, no need to wrap again
     let dkg_storage = std::sync::Arc::new(dkg_storage);
+    let reward_storage = std::sync::Arc::new(reward_storage);
     let start_time = std::sync::Arc::new(start_time);
 
     // POST /submit_transaction
@@ -362,6 +379,13 @@ pub async fn start_http_server(
         .and(with_message_tx(message_tx.clone()))
         .and(with_dkg_storage(dkg_storage.clone()))
         .and_then(handle_user_mpc_deposit);
+
+    // POST /solver_reward
+    let solver_reward = warp::path("solver_reward")
+        .and(warp::post())
+        .and(warp::body::json())
+        .and(with_reward_storage(reward_storage.clone()))
+        .and_then(handle_solver_reward);
 
     // GET /user_info/{ethereum_address}
     let get_user_info = warp::path("user_info")
@@ -413,6 +437,7 @@ pub async fn start_http_server(
         .or(get_dkg_status)
         .or(start_dkg)
         .or(user_mpc_deposit)
+        .or(solver_reward)
         .or(heartbeat)
         .or(uptime);
 
@@ -450,6 +475,12 @@ fn with_dkg_storage(
 ) -> impl Filter<Extract = (std::sync::Arc<DkgStorage>,), Error = std::convert::Infallible> + Clone
 {
     warp::any().map(move || dkg_storage.clone())
+}
+
+fn with_reward_storage(
+    reward_storage: std::sync::Arc<RewardStorage>,
+) -> impl Filter<Extract = (std::sync::Arc<RewardStorage>,), Error = std::convert::Infallible> + Clone {
+    warp::any().map(move || reward_storage.clone())
 }
 
 fn with_node_id(
@@ -1890,6 +1921,90 @@ async fn handle_get_uptime(
     let uptime = start_time.elapsed().as_secs();
     Ok(warp::reply::json(&UptimeResponse {
         uptime_seconds: uptime,
+    }))
+}
+
+async fn handle_solver_reward(
+    req: SolverRewardRequest,
+    reward_storage: std::sync::Arc<RewardStorage>,
+) -> Result<impl warp::Reply, warp::Rejection> {
+    info!("🔍 HTTP: solver_reward request");
+
+    let (compact, v) = match normalize_eth_signature(&req.signature) {
+        Ok(t) => t,
+        Err(e) => {
+            warn!("❌ Invalid signature: {}", e);
+            return Ok(warp::reply::json(&SolverRewardResponse {
+                status: "error".to_string(),
+                solver_address: "".to_string(),
+                reward: None,
+                error_message: Some(format!("Invalid signature: {}", e)),
+            }));
+        }
+    };
+
+    let msg_bytes = req.msg.as_bytes();
+    let signer = match recover_eth_address_secp(msg_bytes, &compact, v, true) {
+        Ok(addr) => addr,
+        Err(e1) => match recover_eth_address_secp(msg_bytes, &compact, v, false) {
+            Ok(addr) => addr,
+            Err(e2) => {
+                error!("❌ Failed to recover address: personal_sign={}, raw={}", e1, e2);
+                return Ok(warp::reply::json(&SolverRewardResponse {
+                    status: "error".to_string(),
+                    solver_address: "".to_string(),
+                    reward: None,
+                    error_message: Some(format!(
+                        "Failed to recover signature: personal_sign={}, raw={}",
+                        e1, e2
+                    )),
+                }));
+            }
+        },
+    };
+
+    let provided = match checksum_from_any(&req.address) {
+        Ok(a) => a,
+        Err(e) => {
+            return Ok(warp::reply::json(&SolverRewardResponse {
+                status: "error".to_string(),
+                solver_address: signer,
+                reward: None,
+                error_message: Some(format!("Invalid address: {}", e)),
+            }));
+        }
+    };
+
+    if signer != provided {
+        return Ok(warp::reply::json(&SolverRewardResponse {
+            status: "error".to_string(),
+            solver_address: signer,
+            reward: None,
+            error_message: Some(
+                "Recovered address does not match provided address".to_string(),
+            ),
+        }));
+    }
+
+    let reward = match reward_storage.get_solver_reward(&signer).await {
+        Ok(Some(r)) => Some(r.to_string()),
+        Ok(None) => None,
+        Err(e) => {
+            warn!("❌ Failed to fetch reward: {}", e);
+            return Ok(warp::reply::json(&SolverRewardResponse {
+                status: "error".to_string(),
+                solver_address: signer,
+                reward: None,
+                error_message: Some(format!("Failed to fetch reward: {}", e)),
+            }));
+        }
+    };
+
+    Ok(warp::reply::json(&SolverRewardResponse {
+        status: "success".to_string(),
+        solver_address: signer,
+        reward,
+        error_message: None,
     }))
 }
 
