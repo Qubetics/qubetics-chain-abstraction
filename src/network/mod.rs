@@ -402,6 +402,7 @@ impl NetworkLayer {
             "dkg-commands",
             "signatures-to-final-node",
             "user-registrations",
+            "solver-rewards",
             "transaction-id-sync",
             "consensus-result",
             "transaction-error-sync",
@@ -1290,6 +1291,9 @@ impl NetworkLayer {
                     warn!("❌ [NETWORK] No user registry available to store synchronized transaction error");
                 }
             }
+            GossipsubMessage::SolverReward { solver_address, reward } => {
+                info!("💰 [REWARD] Received solver reward for {}: {}", solver_address, reward);
+            }
             GossipsubMessage::DepositIntent { intent, intent_id, user_eth_address, transaction_type, amount } => {
                 info!("📝 [GOSSIPSUB] Processing deposit intent received via gossipsub: {:?} (ID: {})", intent, intent_id);
                 
@@ -2042,6 +2046,19 @@ impl NetworkLayer {
                 } else {
                     warn!("❌ [LOCAL] Signing node not available for deposit intent");
                 }
+            }
+            ChannelMessage::SolverReward { solver_address, reward } => {
+                info!("💰 [NETWORK] Broadcasting solver reward: {} -> {}", solver_address, reward);
+                let reward_msg = GossipsubMessage::SolverReward {
+                    solver_address: solver_address.clone(),
+                    reward,
+                };
+                let msg_bytes = serde_json::to_vec(&reward_msg)
+                    .map_err(|e| anyhow::anyhow!("Failed to serialize solver reward: {}", e))?;
+
+                let topic = gossipsub::IdentTopic::new("solver-rewards");
+                swarm.behaviour_mut().gossipsub.publish(topic, msg_bytes)?;
+                info!("📡 [NETWORK] Broadcasted solver reward to P2P network");
             }
             ChannelMessage::UserRegistration { ethereum_address, node_id } => {
                 info!("👤 [NETWORK] Broadcasting user registration: {} from node {}", ethereum_address, node_id);
