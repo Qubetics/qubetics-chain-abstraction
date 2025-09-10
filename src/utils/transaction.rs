@@ -106,12 +106,14 @@ impl RlpEncoder {
 fn encode_hex_to_bytes(hex_str: &str) -> Vec<u8> {
     let clean_hex = hex_str.strip_prefix("0x").unwrap_or(hex_str);
     let trimmed = clean_hex.trim_start_matches('0');
-    let mut final_hex = if trimmed.is_empty() {
-        "0".to_string()
-    } else {
-        trimmed.to_string()
-    };
 
+    // If the value is zero or only zeros were provided, return an empty
+    // Vec so that the caller encodes it as an empty byte slice (0x80 in RLP).
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+
+    let mut final_hex = trimmed.to_string();
     if final_hex.len() % 2 == 1 {
         final_hex = format!("0{}", final_hex);
     }
@@ -836,6 +838,19 @@ pub fn create_transaction_for_signing(tx: &DummyTransaction) -> Vec<u8> {
     final_encoder.data.extend_from_slice(&content);
 
     final_encoder.finalize()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn encode_hex_string_zero_is_canonical() {
+        let mut encoder = RlpEncoder::new();
+        encoder.encode_hex_string("0x0");
+        // RLP encoding of zero should be a single 0x80 byte
+        assert_eq!(encoder.finalize(), vec![0x80]);
+    }
 }
 
 pub fn create_transaction_for_signing_contract(tx: &ContractTransaction) -> Vec<u8> {
