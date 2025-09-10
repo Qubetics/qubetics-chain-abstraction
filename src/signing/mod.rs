@@ -266,211 +266,6 @@ impl SigningNode {
         }
     }
     
-    // Dynamic broadcast method with retry logic
-    pub async fn dynamic_broadcast_transaction(
-        &self,
-        raw_tx_hex: &str,
-        chain_type: &str,
-    ) -> Result<()> {
-        let config = &self.broadcast_config;
-        
-        // Check if chain is enabled
-        if !config.is_chain_enabled(chain_type) {
-            warn!("⚠️ [SIGNING] Chain {} is disabled, skipping broadcast", chain_type);
-            return Ok(());
-        }
-        
-        // Get chain-specific configuration
-        let chain_config = config.get_chain_config(chain_type)
-            .ok_or_else(|| anyhow!("No configuration found for chain {}", chain_type))?;
-        
-        info!("🚀 [BROADCAST] Sending {} transaction to {}", chain_type, chain_config.rpc_url);
-        
-        let mut attempt = 0;
-        loop {
-            attempt += 1;
-            
-            let broadcast_result = match chain_type {
-                "ethereum" => {
-                    self.broadcast_ethereum_transaction_with_config(raw_tx_hex, chain_config).await
-                }
-                "bitcoin" => {
-                    self.broadcast_bitcoin_transaction_with_config(raw_tx_hex, chain_config).await
-                }
-                _ => Err(anyhow!("Unsupported chain type: {}", chain_type))
-            };
-            
-            match broadcast_result {
-                Ok(_) => {
-                    info!("✅ [BROADCAST] Transaction sent successfully");
-                    return Ok(());
-                }
-                Err(e) => {
-                    let error_msg = e.to_string();
-                        if attempt < config.max_retries {
-                        error!("❌ [BROADCAST] Attempt {}: {}", attempt, error_msg);
-                        warn!("🔄 [BROADCAST] Retrying in {}ms (attempt {}/{})", config.retry_delay_ms, attempt + 1, config.max_retries);
-                        
-                        tokio::time::sleep(tokio::time::Duration::from_millis(config.retry_delay_ms)).await;
-                        continue;
-                    } else {
-                        // Max retries reached
-                        if config.continue_on_failure {
-                            error!("❌ [BROADCAST] {}", error_msg);
-                            
-                            // Return success so the node doesn't stop
-                            return Ok(());
-                        } else {
-                            // Return error to stop the node
-                            return Err(anyhow!("{}", error_msg));
-                        }
-                    }
-                }
-            }
-        }
-    }
-    
-    // Enhanced broadcast methods with configuration
-    async fn broadcast_ethereum_transaction_with_config(
-        &self,
-        raw_tx_hex: &str,
-        config: &ChainBroadcastConfig,
-    ) -> Result<()> {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(config.timeout_seconds))
-            .build()?;
-            
-        let payload = serde_json::json!({
-            "jsonrpc": "2.0",
-            "method": "eth_sendRawTransaction",
-            "params": [raw_tx_hex],
-            "id": 1
-        });
-
-        // Sending to RPC endpoint
-
-        let mut request = client.post(&config.rpc_url)
-            .header("Content-Type", "application/json")
-            .json(&payload);
-            
-        // Add custom headers
-        for (key, value) in &config.custom_headers {
-            request = request.header(key, value);
-        }
-
-        let response = request.send().await?;
-
-        if response.status().is_success() {
-            let result: serde_json::Value = response.json().await?;
-            if let Some(error) = result.get("error") {
-                return Err(anyhow!("Broadcast failed: {}", error));
-            }
-            if let Some(tx_hash) = result.get("result") {
-                info!("✅ [BROADCAST] TX Hash: {}", tx_hash);
-            }
-        } else {
-            let error_text = response.text().await?;
-            return Err(anyhow!("Broadcast failed: {}", error_text));
-        }
-        Ok(())
-    }
-    
-    async fn broadcast_bitcoin_transaction_with_config(
-        &self,
-        raw_tx_hex: &str,
-        config: &ChainBroadcastConfig,
-    ) -> Result<()> {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(config.timeout_seconds))
-            .build()?;
-            
-        // Check if this is a BlockCypher API endpoint
-        if config.rpc_url.contains("blockcypher.com") {
-            // BlockCypher API format
-            let payload = serde_json::json!({
-                "tx": raw_tx_hex
-            });
-
-            let mut request = client.post(&config.rpc_url)
-                .header("Content-Type", "application/json")
-                .header("User-Agent", "mpc-node/1.0.0")
-                .json(&payload);
-                
-            // Add custom headers
-            for (key, value) in &config.custom_headers {
-                request = request.header(key, value);
-            }
-
-            let response = request.send().await?;
-
-            if response.status().is_success() {
-                let response_text = response.text().await?;
-                if let Ok(json_response) = serde_json::from_str::<serde_json::Value>(&response_text) {
-                    if let Some(tx_hash) = json_response.get("hash") {
-                        info!("✅ [BROADCAST] TXID: {}", tx_hash);
-                    } else if let Some(error) = json_response.get("error") {
-                        return Err(anyhow!("BlockCypher API error: {}", error));
-                    } else {
-                        info!("✅ [BROADCAST] Response: {}", response_text);
-                    }
-                } else {
-                    info!("✅ [BROADCAST] Response: {}", response_text);
-                }
-            } else {
-                let error_text = response.text().await?;
-                return Err(anyhow!("BlockCypher API failed: {}", error_text));
-            }
-        } else {
-            // Standard Bitcoin RPC format
-            let payload = serde_json::json!({
-                "jsonrpc": "2.0",
-                "method": "sendrawtransaction",
-                "params": [raw_tx_hex],
-                "id": 1
-            });
-
-            let mut request = client.post(&config.rpc_url)
-                .header("Content-Type", "application/json")
-                .header("User-Agent", "mpc-node/1.0.0")
-                .json(&payload);
-                
-            // Add custom headers
-            for (key, value) in &config.custom_headers {
-                request = request.header(key, value);
-            }
-
-            let response = request.send().await?;
-
-            if response.status().is_success() {
-                let response_text = response.text().await?;
-                // Parse JSON response to get txid
-                if let Ok(json_response) = serde_json::from_str::<serde_json::Value>(&response_text) {
-                    if let Some(result) = json_response.get("result") {
-                        info!("✅ [BROADCAST] TXID: {}", result);
-                    } else if let Some(error) = json_response.get("error") {
-                        return Err(anyhow!("sendrawtransaction RPC error: {}", error));
-                    } else {
-                        info!("✅ [BROADCAST] Response: {}", response_text);
-                    }
-                } else {
-                    info!("✅ [BROADCAST] Response: {}", response_text);
-                }
-            } else {
-                let error_text = response.text().await?;
-                // Check for common RPC endpoint issues
-                if error_text.contains("too many redirects") {
-                    return Err(anyhow!("RPC endpoint error: {} - This appears to be a REST API, not a JSON-RPC endpoint. Please configure a proper Bitcoin RPC URL (e.g., http://localhost:18332 for testnet)", error_text));
-                } else if error_text.contains("connection refused") {
-                    return Err(anyhow!("RPC endpoint error: {} - Cannot connect to Bitcoin RPC. Make sure Bitcoin Core is running and RPC is enabled", error_text));
-                } else {
-                    return Err(anyhow!("Broadcast failed: {}", error_text));
-                }
-            }
-        }
-        Ok(())
-    }
-
-
     pub fn add_public_key(&self, node_id: String, public_key: PublicKey) {
         let node_id_clone = node_id.clone();
         tokio::spawn({
@@ -2349,21 +2144,16 @@ impl SigningNode {
                 let (transaction_type_str, storage_result) = match transaction_type {
                     Some(crate::types::TransactionType::UserToVault) => {
                         // User-to-vault transaction
-                        let result = user_registry.store_user_to_network_tx_id(intent_hash, tx_id).await;
+                        let result = user_registry.store_user_to_vault_tx_id(intent_hash, tx_id).await;
                         match &result {
                             Ok(()) => {
                                 info!("💾 [SIGNING] Stored user-to-network transaction ID {} for intent {} (round {})", tx_id, intent_hash, round);
-                                
-                                // Update solver amounts after successful UserToVault transaction
-                                if let Err(e) = self.update_solver_amounts_for_user_to_vault(intent_hash).await {
-                                    warn!("⚠️ [SIGNING] Failed to update solver amounts for UserToVault transaction: {}", e);
-                                }
                             },
                             Err(e) => {
                                 error!("❌ [SIGNING] Failed to store user-to-network transaction ID for intent {}: {}", intent_hash, e);
                             }
                         }
-                        ("user_to_network", result)
+                        ("user_to_vault", result)
                     },
                     Some(crate::types::TransactionType::NetworkToTarget) => {
                         // Network-to-target transaction
@@ -2395,7 +2185,7 @@ impl SigningNode {
                         // Fallback to old logic based on user_eth_address
                         if let Some(eth_addr) = &user_eth_address {
                             // User-to-network transaction
-                            let result = user_registry.store_user_to_network_tx_id(intent_hash, tx_id).await;
+                            let result = user_registry.store_user_to_vault_tx_id(intent_hash, tx_id).await;
                             match &result {
                                 Ok(()) => {
                                     info!("💾 [SIGNING] Stored user-to-network transaction ID {} for intent {} (round {}) for user {}", tx_id, intent_hash, round, eth_addr);
@@ -2457,6 +2247,13 @@ impl SigningNode {
             topic: "transaction-id-sync".to_string(),
             data: serde_json::to_vec(&broadcast_message).unwrap_or_default(),
         };
+
+        // Call update_solver_amounts_for_user_to_vault only for user_to_vault transaction type
+        if transaction_type == "user_to_vault" {
+            if let Err(e) = self.update_solver_amounts_for_user_to_vault(intent_hash).await {
+                warn!("⚠️ [SIGNING] Failed to update solver amounts for UserToVault transaction: {}", e);
+            }
+        }
 
         if let Err(e) = self.message_tx.send(channel_message).await {
             error!("❌ [SIGNING] Failed to broadcast transaction ID to other nodes: {}", e);
@@ -3372,7 +3169,7 @@ impl SigningNode {
     }
 
     /// Update solver amounts for UserToVault transactions
-    async fn update_solver_amounts_for_user_to_vault(&self, _intent_hash: &str) -> Result<()> {
+    pub async fn update_solver_amounts_for_user_to_vault(&self, _intent_hash: &str) -> Result<()> {
         // Configuration for contract interaction
         let rpc_url = std::env::var("SOLVER_CONTRACT_RPC_URL")
             .unwrap_or_else(|_| "http://localhost:8545".to_string());

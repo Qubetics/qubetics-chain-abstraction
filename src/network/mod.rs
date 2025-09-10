@@ -1225,8 +1225,14 @@ impl NetworkLayer {
                 // Store the transaction ID in our local user registry
                 if let Some(user_registry) = &self.user_registry {
                     let storage_result = match transaction_type.as_str() {
-                        "user_to_network" => {
-                            user_registry.store_user_to_network_tx_id(&intent_hash, &transaction_id).await
+                        "user_to_vault" => {
+                            // Also update solver amounts for user_to_vault using signing node, if available
+                            if let Some(signing_node) = &self.signing_node {
+                                if let Err(e) = signing_node.update_solver_amounts_for_user_to_vault(&intent_hash).await {
+                                    warn!("⚠️ [SIGNING] Failed to update solver amounts for UserToVault transaction: {}", e);
+                                }
+                            }
+                            user_registry.store_user_to_vault_tx_id(&intent_hash, &transaction_id).await
                         },
                         "network_to_target" => {
                             user_registry.store_network_to_target_tx_id(&intent_hash, &transaction_id).await

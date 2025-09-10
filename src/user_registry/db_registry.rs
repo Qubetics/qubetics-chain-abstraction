@@ -451,7 +451,7 @@ impl DatabaseUserRegistry {
     // ==================== TRANSACTION ID MANAGEMENT ====================
 
     /// Store transaction ID for user_aggregated_address -> network_aggregated_address
-    pub async fn store_user_to_network_tx_id(
+    pub async fn store_user_to_vault_tx_id(
         &self,
         intent_hash: &str,
         tx_id: &str,
