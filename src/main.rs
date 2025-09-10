@@ -117,6 +117,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     )));
 
     let dkg_storage = DkgStorage::new(database.as_ref().clone());
+    let reward_storage = RewardStorage::new(database.as_ref().clone());
     let chain_code = [42u8; 32]; // Placeholder chain code
     let dkg_node = DKGNode::new(
         network.get_local_peer_id().to_string(),
@@ -175,6 +176,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             rpc_port,
             db_user_registry.clone(),
             dkg_storage,
+            reward_storage,
             node_id,
             start_time,
         )
