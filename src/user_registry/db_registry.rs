@@ -13,11 +13,11 @@ use super::{
     checksum_from_any, to_checksum_address, IntentStatus, IntentTransactionIds, TransactionStatus,
     UserRegistration,
 };
+use crate::database::RewardStorage;
 use crate::database::{Database, IntentStorage, TransactionStatusStorage, UserStorage};
 use crate::rpc_server::DepositIntent;
 use crate::types::{SerializablePoint, SerializableScalar};
 use crate::utils::hmac_helper::hmac256_from_addr;
-use crate::database::RewardStorage;
 use anyhow::Result;
 use tracing::{error, info};
 
@@ -37,8 +37,8 @@ impl DatabaseUserRegistry {
         self.user_storage.get_database()
     }
 
-     /// Create a new database-backed user registry
-     pub fn new(database: Database, chain_code: [u8; 32]) -> Self {
+    /// Create a new database-backed user registry
+    pub fn new(database: Database, chain_code: [u8; 32]) -> Self {
         let user_storage = UserStorage::new(database.clone());
         let intent_storage = IntentStorage::new(database.clone());
         let tx_status_storage = TransactionStatusStorage::new(database.clone());
@@ -701,10 +701,7 @@ impl DatabaseUserRegistry {
             .store_status(tx_hash, status.clone())
             .await
             .map_err(|e| e.to_string())?;
-        info!(
-            "✅ Stored transaction status for {}: {:?}",
-            tx_hash, status
-        );
+        info!("✅ Stored transaction status for {}: {:?}", tx_hash, status);
         Ok(())
     }
     /// Update the status of a transaction hash
@@ -741,10 +738,7 @@ impl DatabaseUserRegistry {
             .set_total_liquidity_tics(tics)
             .await
             .map_err(|e| e.to_string())?;
-        info!(
-            "✅ [DB_USER_REGISTRY] Set total liquidity tics: {}",
-            tics
-        );
+        info!("✅ [DB_USER_REGISTRY] Set total liquidity tics: {}", tics);
         Ok(())
     }
 
@@ -765,10 +759,7 @@ impl DatabaseUserRegistry {
             .set_total_liquidity_btc(btc)
             .await
             .map_err(|e| e.to_string())?;
-        info!(
-            "✅ [DB_USER_REGISTRY] Set total liquidity BTC: {}",
-            btc
-        );
+        info!("✅ [DB_USER_REGISTRY] Set total liquidity BTC: {}", btc);
         Ok(())
     }
 
@@ -804,12 +795,20 @@ impl DatabaseUserRegistry {
     }
 
     /// Store reward for a specific solver
-    pub async fn set_solver_reward(&self, solver_address: &str, reward: U256) -> Result<(), String> {
+    pub async fn set_solver_reward(
+        &self,
+        solver_address: &str,
+        reward: U256,
+    ) -> Result<(), String> {
         info!("💰 [DB_USER_REGISTRY] Processing solver reward storage:");
         info!("  🤖 Solver address: {}", solver_address);
         info!("  💰 Reward amount: {}", reward);
 
-        match self.reward_storage.set_solver_reward(solver_address, reward).await {
+        match self
+            .reward_storage
+            .set_solver_reward(solver_address, reward)
+            .await
+        {
             Ok(()) => {
                 info!("✅ [DB_USER_REGISTRY] Successfully stored solver reward");
                 info!("  🤖 Solver: {}", solver_address);
@@ -839,8 +838,62 @@ impl DatabaseUserRegistry {
                 reward
             }
             Err(e) => {
+                tracing::error!("Failed to get solver reward for {}: {}", solver_address, e);
+                None
+            }
+        }
+    }
+
+    /// Store claimed request amount for a specific solver
+    pub async fn set_solver_claimed_request_amount(
+        &self,
+        solver_address: &str,
+        amount: U256,
+    ) -> Result<(), String> {
+        info!("💰 [DB_USER_REGISTRY] Processing claimed request amount storage:");
+        info!("  🤖 Solver address: {}", solver_address);
+        info!("  💵 Claimed amount: {}", amount);
+
+        match self
+            .reward_storage
+            .set_claimed_request_amount(solver_address, amount)
+            .await
+        {
+            Ok(()) => {
+                info!("✅ [DB_USER_REGISTRY] Successfully stored claimed request amount");
+                info!("  🤖 Solver: {}", solver_address);
+                info!("  💵 Amount: {}", amount);
+                Ok(())
+            }
+            Err(e) => {
+                error!("❌ [DB_USER_REGISTRY] Failed to store claimed request amount");
+                error!("  🤖 Solver address: {}", solver_address);
+                error!("  💵 Amount: {}", amount);
+                error!("  💥 Error: {}", e);
+                Err(e.to_string())
+            }
+        }
+    }
+
+    /// Get claimed request amount for a specific solver
+    pub async fn get_solver_claimed_request_amount(&self, solver_address: &str) -> Option<U256> {
+        match self
+            .reward_storage
+            .get_claimed_request_amount(solver_address)
+            .await
+        {
+            Ok(amount) => {
+                if amount.is_some() {
+                    info!(
+                        "🔍 [DB_USER_REGISTRY] Retrieved claimed request amount for: {}",
+                        solver_address
+                    );
+                }
+                amount
+            }
+            Err(e) => {
                 tracing::error!(
-                    "Failed to get solver reward for {}: {}",
+                    "Failed to get claimed request amount for {}: {}",
                     solver_address,
                     e
                 );
@@ -850,12 +903,20 @@ impl DatabaseUserRegistry {
     }
 
     /// Set reward calculation status for a specific intent hash
-    pub async fn set_intent_reward_status(&self, intent_hash: &str, status: bool) -> Result<(), String> {
+    pub async fn set_intent_reward_status(
+        &self,
+        intent_hash: &str,
+        status: bool,
+    ) -> Result<(), String> {
         info!("🎯 [DB_USER_REGISTRY] Processing intent reward status storage:");
         info!("  🔗 Intent hash: {}", intent_hash);
         info!("  ✅ Status: {}", status);
 
-        match self.reward_storage.set_intent_reward_status(intent_hash, status).await {
+        match self
+            .reward_storage
+            .set_intent_reward_status(intent_hash, status)
+            .await
+        {
             Ok(()) => {
                 info!("✅ [DB_USER_REGISTRY] Successfully stored intent reward status");
                 info!("  🎯 Intent: {}", intent_hash);
@@ -874,7 +935,11 @@ impl DatabaseUserRegistry {
 
     /// Get reward calculation status for a specific intent hash
     pub async fn get_intent_reward_status(&self, intent_hash: &str) -> Option<bool> {
-        match self.reward_storage.get_intent_reward_status(intent_hash).await {
+        match self
+            .reward_storage
+            .get_intent_reward_status(intent_hash)
+            .await
+        {
             Ok(status) => {
                 if status.is_some() {
                     info!(
@@ -894,5 +959,4 @@ impl DatabaseUserRegistry {
             }
         }
     }
-
 }

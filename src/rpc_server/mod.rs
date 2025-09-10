@@ -481,7 +481,8 @@ fn with_dkg_storage(
 
 fn with_reward_storage(
     reward_storage: std::sync::Arc<RewardStorage>,
-) -> impl Filter<Extract = (std::sync::Arc<RewardStorage>,), Error = std::convert::Infallible> + Clone {
+) -> impl Filter<Extract = (std::sync::Arc<RewardStorage>,), Error = std::convert::Infallible> + Clone
+{
     warp::any().map(move || reward_storage.clone())
 }
 
@@ -1953,7 +1954,10 @@ async fn handle_solver_reward(
         Err(e1) => match recover_eth_address_secp(msg_bytes, &compact, v, false) {
             Ok(addr) => addr,
             Err(e2) => {
-                error!("❌ Failed to recover address: personal_sign={}, raw={}", e1, e2);
+                error!(
+                    "❌ Failed to recover address: personal_sign={}, raw={}",
+                    e1, e2
+                );
                 return Ok(warp::reply::json(&SolverRewardResponse {
                     status: "error".to_string(),
                     solver_address: "".to_string(),
@@ -1984,9 +1988,7 @@ async fn handle_solver_reward(
             status: "error".to_string(),
             solver_address: signer,
             reward: None,
-            error_message: Some(
-                "Recovered address does not match provided address".to_string(),
-            ),
+            error_message: Some("Recovered address does not match provided address".to_string()),
         }));
     }
 
@@ -2027,7 +2029,6 @@ async fn handle_solver_reward(
             warn!("Failed to send solver reward message: {}", e);
         }
     }
-
     Ok(warp::reply::json(&SolverRewardResponse {
         status: "success".to_string(),
         solver_address: signer,
