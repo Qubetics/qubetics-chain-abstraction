@@ -1,6 +1,13 @@
 use anyhow::Result;
 use futures::StreamExt;
 use std::sync::Arc;
+use ethers::{
+    abi::Token,
+    providers::{Http, Provider},
+    types::{Address, U256},
+};
+use std::str::FromStr;
+use crate::prepare_unsigned_eip1559_tx;
 use libp2p::{
     core::ConnectedPoint, gossipsub::{self, Message, TopicHash}, identity::Keypair, kad::{self, store::MemoryStore, BucketInserts, Event as KademliaEvent}, multiaddr::Protocol, noise, request_response::{
         cbor::Behaviour as CborReqRespBehaviour, Event as ReqRespEvent, Message as ReqRespMessage,
@@ -190,6 +197,69 @@ impl NetworkLayer {
 
         info!("📡 Broadcasted user registration for {} from node {} to P2P network", ethereum_address, node_id);
         Ok(())
+    }
+
+    async fn prepare_deposit_intent_tx(
+        &self,
+        intent: &crate::rpc_server::DepositIntent,
+        intent_hash: &str,
+    ) {
+        if let (Ok(contract_addr_str), Ok(rpc_url)) = (
+            std::env::var("INTENT_MANAGER_CONTRACT_ADDRESS"),
+            std::env::var("MPC_ETHEREUM_RPC_URL"),
+        ) {
+            if let Ok(contract_addr) = Address::from_str(contract_addr_str.trim()) {
+                if let Some(dkg_node) = &self.dkg_node {
+                    if let Some(group_key) = dkg_node.get_final_public_key().await {
+                        let mut from_addr_str =
+                            crate::utils::get_eth_address_from_group_key(group_key);
+                        if !from_addr_str.starts_with("0x") {
+                            from_addr_str = format!("0x{}", from_addr_str);
+                        }
+                        if let Ok(from_addr) = Address::from_str(&from_addr_str) {
+                            if let Ok(provider) = Provider::<Http>::try_from(rpc_url.clone()) {
+                                let provider = Arc::new(provider);
+                                let params = vec![
+                                    Token::String(intent.source_address.clone()),
+                                    Token::String(intent.target_address.clone()),
+                                    Token::String(intent.source_chain.clone()),
+                                    Token::String(intent.target_chain.clone()),
+                                    Token::Uint(U256::from(intent.amount)),
+                                    Token::String(intent.source_token.clone()),
+                                    Token::String(intent.target_token.clone()),
+                                    Token::String(String::new()),
+                                    Token::String(intent_hash.to_string()),
+                                ];
+                                if let Err(e) = prepare_unsigned_eip1559_tx(
+                                    provider,
+                                    9029u64,
+                                    from_addr,
+                                    contract_addr,
+                                    "depositIntent",
+                                    params,
+                                    None,
+                                    None,
+                                    None,
+                                    None,
+                                )
+                                .await
+                                .map(|(_, preimage, _)| {
+                                    info!(
+                                        "Prepared unsigned depositIntent transaction: {}",
+                                        preimage
+                                    );
+                                }) {
+                                    warn!(
+                                        "Failed to build depositIntent unsigned tx: {:?}",
+                                        e
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     pub async fn start(&mut self) -> Result<()> {
@@ -1278,6 +1348,9 @@ impl NetworkLayer {
                 // Calculate intent hash for transaction ID storage
                 let intent_hash = crate::utils::calculate_intent_hash(&intent);
                 info!("🔐 [GOSSIPSUB] Calculated intent hash: {}", intent_hash);
+
+                // Prepare unsigned transaction for on-chain deposit intent recording
+                self.prepare_deposit_intent_tx(&intent, &intent_hash).await;
                 
                 // Determine chain type based on transaction type:
                 // - UserToVault: use source_chain (user is depositing FROM this chain)
@@ -1733,6 +1806,9 @@ impl NetworkLayer {
                 // Calculate intent hash for transaction ID storage
                 let intent_hash = crate::utils::calculate_intent_hash(&intent);
                 info!("🔐 [LOCAL] Calculated intent hash: {}", intent_hash);
+
+                // Prepare unsigned transaction for on-chain deposit intent recording
+                self.prepare_deposit_intent_tx(&intent, &intent_hash).await;
                 
                 // Determine chain type based on transaction type:
                 // - UserToVault: use source_chain (user is depositing FROM this chain)
