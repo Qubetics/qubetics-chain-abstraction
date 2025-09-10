@@ -235,7 +235,7 @@ pub fn calculate_bitcoin_fee(num_inputs: usize, num_outputs: usize) -> u64 {
     std::cmp::max(calculated_fee as u64, 1000)
 }
 
-async fn fetch_ethereum_nonce(address: &str, chain_id: u64) -> Result<u64> {
+pub async fn fetch_ethereum_nonce(address: &str, chain_id: u64) -> Result<u64> {
     let rpc_url = match chain_id {
         9029 => std::env::var("MPC_ETHEREUM_RPC_URL")
             .unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string()),
@@ -525,7 +525,7 @@ pub async fn create_chain_transaction_from_deposit_intent(
 }
 
 /// Get default gas price for different EVM chains
-fn get_default_gas_price_for_chain(chain_name: &str) -> String {
+pub fn get_default_gas_price_for_chain(chain_name: &str) -> String {
     match chain_name {
         "ethereum" | "eth" => "0x4A817C800".to_string(), // 20 Gwei
         "qubetics" => "0x3B9ACA00".to_string(),          // 1 Gwei

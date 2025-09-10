@@ -473,7 +473,7 @@ impl SigningNode {
     }
 
     /// Fetch nonce for an Ethereum address from the blockchain
-    async fn fetch_ethereum_nonce(address: &str, chain_id: u64) -> Result<u64> {
+    pub async fn fetch_ethereum_nonce(address: &str, chain_id: u64) -> Result<u64> {
         let rpc_url = match chain_id {
             9029 => std::env::var("MPC_ETHEREUM_RPC_URL")
                 .unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string()),
@@ -1205,13 +1205,6 @@ impl SigningNode {
         let msg = Message::from_digest_slice(&tx_hash)?;
         let signature = self.create_ecdsa_signature_with_key(&msg, transaction, &signing_key)?;
         let (recovery_id, signature_bytes) = signature.serialize_compact();
-
-        // Use chain handler to create chain-specific signature
-        let chain_signature = self.chain_handler.create_signature(
-            &signature_bytes, 
-            recovery_id.to_i32() as u8, 
-            &chain_transaction
-        )?;
 
         info!(
             "✍️ [SIGNING] Node {} created {} signature",

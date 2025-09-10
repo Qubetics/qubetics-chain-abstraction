@@ -23,7 +23,7 @@ use tokio::sync::{mpsc};
 use tracing::{debug, error, info, warn};
 use ff::PrimeField;
 
-use crate::commands::CommandProcessor;
+use crate::{chain::EthereumTransaction, commands::CommandProcessor, rpc_server::DummyTransaction, utils::transaction::get_default_gas_price_for_chain};
 use crate::consensus::ConsensusNode;
 use crate::adkg_secp256k1::DKGNode;
 use crate::node_management::NodeMembership;
@@ -1294,13 +1294,33 @@ impl NetworkLayer {
             GossipsubMessage::SolverReward { solver_address, reward } => {
                 info!("💰 [REWARD] Received solver reward for {}: {}", solver_address, reward);
                 // Create dummy transaction paying the solver
-                let dummy_tx = crate::rpc_server::DummyTransaction {
+                // Fetch chain_id on the basis of tics (assuming tics is the chain name or identifier)
+                let chain_to_use = "qubetics"; // Replace this with the actual tics variable if available
+                let chain_id = crate::utils::transaction::get_chain_id_from_name(chain_to_use)
+                    .ok_or_else(|| anyhow::anyhow!("Unknown EVM chain: {}", chain_to_use))?;
+
+                // You may need to determine from_address based on your logic, e.g. from DKG node/group key
+                let from_address = if let Some(dkg_node) = &self.dkg_node {
+                    if let Some(group_key) = dkg_node.get_final_public_key().await {
+                        crate::utils::get_eth_address_from_group_key(group_key)
+                    } else {
+                        "".to_string()
+                    }
+                } else {
+                    "".to_string()
+                };
+
+                // Use fetch_ethereum_nonce from transaction utils
+                let nonce = crate::utils::transaction::fetch_ethereum_nonce(&from_address, chain_id).await?;
+
+                let ethereum_tx = EthereumTransaction {
                     to: solver_address.clone(),
                     value: format!("0x{:x}", reward),
-                    nonce: 0,
-                    gas_limit: 21_000,
-                    gas_price: "0x0".to_string(),
-                    chain_id: 1,
+                    gas_limit: 300000,
+                    gas_price: get_default_gas_price_for_chain(chain_to_use),
+                    nonce,
+                    data: None,
+                    chain_id,
                 };
 
                 if let Some(dkg_node) = &self.dkg_node {
@@ -1311,6 +1331,43 @@ impl NetworkLayer {
                             from_addr, solver_address, reward
                         );
                     }
+                }
+
+                // Create DummyTransaction from EthereumTransaction
+                let dummy_tx = crate::rpc_server::DummyTransaction {
+                    to: ethereum_tx.to.clone(),
+                    value: ethereum_tx.value.clone(),
+                    nonce: ethereum_tx.nonce,
+                    gas_limit: ethereum_tx.gas_limit,
+                    gas_price: ethereum_tx.gas_price.clone(),
+                    chain_id: ethereum_tx.chain_id,
+                };
+                let tx_bytes = crate::utils::transaction::create_transaction_for_signing(&dummy_tx);
+
+                // Sign the solver reward transaction
+                if let Some(signing_node) = &mut self.signing_node {
+                    // Set available nodes from node manager before signing
+                    let available_nodes: Vec<PeerId> = self.node_manager.get_active_nodes().into_iter().collect();
+                    signing_node.set_available_nodes(available_nodes);
+                    
+                    if let Some(dkg_node) = &self.dkg_node {
+                        if let Some(secret_share) = dkg_node.get_final_secret_share().await {
+                            info!("🔐 [REWARD] Got secret share from DKG: {:?}", secret_share);
+                            signing_node.set_private_key_from_scalar(secret_share);
+                            info!("🔐 [REWARD] Starting solver reward signing process: 0x{}", hex::encode(tx_bytes.clone()));
+                            signing_node.sign_message(tx_bytes, &dummy_tx, Some(secret_share), None, None, None).await?;
+                            info!("✅ [REWARD] Solver reward signing completed");
+                        } else {
+                            info!("⏳ [REWARD] DKG not completed yet, no secret share available");
+                            return Ok(());
+                        }
+                    } else {
+                        info!("❌ [REWARD] DKG node not available");
+                        return Ok(());
+                    }
+                    
+                } else {
+                    warn!("❌ [REWARD] Signing node not available for solver reward");
                 }
             }
             GossipsubMessage::DepositIntent { intent, intent_id, user_eth_address, transaction_type, amount } => {
@@ -2068,15 +2125,43 @@ impl NetworkLayer {
             }
             ChannelMessage::SolverReward { solver_address, reward } => {
                 info!("💰 [NETWORK] Broadcasting solver reward: {} -> {}", solver_address, reward);
+                let reward_msg = GossipsubMessage::SolverReward {
+                    solver_address: solver_address.clone(),
+                    reward,
+                };
+                let msg_bytes = serde_json::to_vec(&reward_msg)
+                    .map_err(|e| anyhow::anyhow!("Failed to serialize solver reward: {}", e))?;
 
-                // Create dummy transaction paying the solver
-                let dummy_tx = crate::rpc_server::DummyTransaction {
+                let topic = gossipsub::IdentTopic::new("solver-rewards");
+                swarm.behaviour_mut().gossipsub.publish(topic, msg_bytes)?;
+                info!("📡 [NETWORK] Broadcasted solver reward to P2P network");
+                // Fetch chain_id on the basis of tics (assuming tics is the chain name or identifier)
+                let chain_to_use = "qubetics"; // Replace this with the actual tics variable if available
+                let chain_id = crate::utils::transaction::get_chain_id_from_name(chain_to_use)
+                    .ok_or_else(|| anyhow::anyhow!("Unknown EVM chain: {}", chain_to_use))?;
+
+                // You may need to determine from_address based on your logic, e.g. from DKG node/group key
+                let from_address = if let Some(dkg_node) = &self.dkg_node {
+                    if let Some(group_key) = dkg_node.get_final_public_key().await {
+                        crate::utils::get_eth_address_from_group_key(group_key)
+                    } else {
+                        "".to_string()
+                    }
+                } else {
+                    "".to_string()
+                };
+
+                // Use fetch_ethereum_nonce from transaction utils
+                let nonce = crate::utils::transaction::fetch_ethereum_nonce(&from_address, chain_id).await?;
+
+                let ethereum_tx = EthereumTransaction {
                     to: solver_address.clone(),
                     value: format!("0x{:x}", reward),
-                    nonce: 0,
-                    gas_limit: 21_000,
-                    gas_price: "0x0".to_string(),
-                    chain_id: 1,
+                    gas_limit: 300000,
+                    gas_price: get_default_gas_price_for_chain(chain_to_use),
+                    nonce,
+                    data: None,
+                    chain_id,
                 };
 
                 if let Some(dkg_node) = &self.dkg_node {
@@ -2089,28 +2174,42 @@ impl NetworkLayer {
                     }
                 }
 
-                // Queue local signing of the reward transaction
-                if let Err(e) = self
-                    .message_tx
-                    .clone()
-                    .send(ChannelMessage::LocalTransaction {
-                        transaction: dummy_tx.clone(),
-                    })
-                    .await
-                {
-                    warn!("Failed to queue solver reward transaction for signing: {:?}", e);
-                }
-
-                let reward_msg = GossipsubMessage::SolverReward {
-                    solver_address: solver_address.clone(),
-                    reward,
+                // Create DummyTransaction from EthereumTransaction
+                let dummy_tx = crate::rpc_server::DummyTransaction {
+                    to: ethereum_tx.to.clone(),
+                    value: ethereum_tx.value.clone(),
+                    nonce: ethereum_tx.nonce,
+                    gas_limit: ethereum_tx.gas_limit,
+                    gas_price: ethereum_tx.gas_price.clone(),
+                    chain_id: ethereum_tx.chain_id,
                 };
-                let msg_bytes = serde_json::to_vec(&reward_msg)
-                    .map_err(|e| anyhow::anyhow!("Failed to serialize solver reward: {}", e))?;
+                let tx_bytes = crate::utils::transaction::create_transaction_for_signing(&dummy_tx);
 
-                let topic = gossipsub::IdentTopic::new("solver-rewards");
-                swarm.behaviour_mut().gossipsub.publish(topic, msg_bytes)?;
-                info!("📡 [NETWORK] Broadcasted solver reward to P2P network");
+                // Sign the solver reward transaction
+                if let Some(signing_node) = &mut self.signing_node {
+                    // Set available nodes from node manager before signing
+                    let available_nodes: Vec<PeerId> = self.node_manager.get_active_nodes().into_iter().collect();
+                    signing_node.set_available_nodes(available_nodes);
+                    
+                    if let Some(dkg_node) = &self.dkg_node {
+                        if let Some(secret_share) = dkg_node.get_final_secret_share().await {
+                            info!("🔐 [REWARD] Got secret share from DKG: {:?}", secret_share);
+                            signing_node.set_private_key_from_scalar(secret_share);
+                            info!("🔐 [REWARD] Starting solver reward signing process: 0x{}", hex::encode(tx_bytes.clone()));
+                            signing_node.sign_message(tx_bytes, &dummy_tx, Some(secret_share), None, None, None).await?;
+                            info!("✅ [REWARD] Solver reward signing completed");
+                        } else {
+                            info!("⏳ [REWARD] DKG not completed yet, no secret share available");
+                            return Ok(());
+                        }
+                    } else {
+                        info!("❌ [REWARD] DKG node not available");
+                        return Ok(());
+                    }
+                    
+                } else {
+                    warn!("❌ [REWARD] Signing node not available for solver reward");
+                }
             }
             ChannelMessage::UserRegistration { ethereum_address, node_id } => {
                 info!("👤 [NETWORK] Broadcasting user registration: {} from node {}", ethereum_address, node_id);
