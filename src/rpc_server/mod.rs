@@ -384,7 +384,7 @@ pub async fn start_http_server(
     let solver_reward = warp::path("solver_reward")
         .and(warp::post())
         .and(warp::body::json())
-        .and(with_reward_storage(reward_storage.clone()))
+        .and(with_user_registry(user_registry.clone()))
         .and_then(handle_solver_reward);
 
     // GET /user_info/{ethereum_address}
@@ -1926,7 +1926,7 @@ async fn handle_get_uptime(
 
 async fn handle_solver_reward(
     req: SolverRewardRequest,
-    reward_storage: std::sync::Arc<RewardStorage>,
+    user_registry: std::sync::Arc<DatabaseUserRegistry>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
     info!("🔍 HTTP: solver_reward request");
 
@@ -1986,18 +1986,10 @@ async fn handle_solver_reward(
         }));
     }
 
-    let reward = match reward_storage.get_solver_reward(&signer).await {
-        Ok(Some(r)) => Some(r.to_string()),
-        Ok(None) => None,
-        Err(e) => {
-            warn!("❌ Failed to fetch reward: {}", e);
-            return Ok(warp::reply::json(&SolverRewardResponse {
-                status: "error".to_string(),
-                solver_address: signer,
-                reward: None,
-                error_message: Some(format!("Failed to fetch reward: {}", e)),
-            }));
-        }
+    // Use user registry's reward storage instead of direct reward storage
+    let reward = match user_registry.get_solver_reward(&signer).await {
+        Some(r) => Some(r.to_string()),
+        None => None,
     };
 
     Ok(warp::reply::json(&SolverRewardResponse {
