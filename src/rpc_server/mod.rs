@@ -588,25 +588,10 @@ pub async fn handle_deposit_intent(
             "💱 Conversion: {} {} (source) is equivalent to {} {} (target) before decimals",
             intent.amount, source_symbol, required_amount, target_symbol
         );
-
-        // Adjust for chain-specific decimals. Target chain dictates the unit
-        // size we should compare against: EVM-based chains use 1e18 while
-        // Bitcoin uses 1e8.
-        let decimal_multiplier = match intent.target_chain.to_lowercase().as_str() {
-            "eth" | "ethereum" | "qubetics" => 1e18,
-            "btc" | "bitcoin" => 1e8,
-            _ => 1e18,
-        };
-
         required_amount_u128 = required_amount as u128;
-
-        info!(
-            "💱 Conversion: After applying decimal multiplier ({}), required amount on {}: {}",
-            decimal_multiplier, intent.target_chain, required_amount_u128
-        );
     } else {
-        // For VaultToNetwork and other types, just use the intent amount directly
-        required_amount_u128 = intent.amount;
+        // For VaultToNetwork and other types, use the intent amount plus 10%
+        required_amount_u128 = intent.amount + (intent.amount / 10);
         info!(
             "💱 No price conversion needed. Using intent amount as required amount: {}",
             required_amount_u128
@@ -1384,7 +1369,8 @@ async fn handle_user_mpc_deposit(
                         }
                     };
                     // Fetch balance of derived address based on source_chain
-                    let min_amount = req.msg.amount; // assuming req.msg.amount is the minimum required
+                    // Add 10% buffer to the minimum required amount
+                    let min_amount = req.msg.amount + (req.msg.amount / 10);
                     let source_chain = req.msg.source_chain.to_lowercase();
                     let mut address_to_check = String::new();
                     let mut blockchain = String::new();
