@@ -57,7 +57,7 @@ async function vaultToNetworkTransfer({ wallet, amount }) {
     amount: amount, // Use the passed amount parameter
     source_token: 'TICS',
     target_token: 'TICS',
-    timestamp: 11111,
+    timestamp: 9090,
   };
 
 
@@ -125,7 +125,7 @@ async function runVaultToNetworkTests() {
   log(`🔑 Signer: ${signerAddr}`, 'blue');
 
   // VaultToNetwork transfer
-  const amount = 1000;
+  const amount = 997;
   await vaultToNetworkTransfer({ wallet, amount });
   await new Promise(r => setTimeout(r, 7000));
 

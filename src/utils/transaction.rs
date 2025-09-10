@@ -472,7 +472,7 @@ pub async fn create_chain_transaction_from_deposit_intent(
                 txid: utxo.txid.clone(),
                 vout: utxo.vout,
                 script_sig: vec![],   // Will be filled during signing
-                sequence: 0xfffffffe, // Enable RBF (Replace-By-Fee)
+                sequence: 0xFFFFFFFD, // Enable RBF (Replace-By-Fee)
                 witness_utxo,
             }
         })

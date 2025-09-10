@@ -24,7 +24,7 @@ const colors = {
   cyan: '\x1b[36m',
   green: '\x1b[32m'
 };
-const oooo = 234
+const oooo = 9090
 
 function log(message, color = 'reset') {
   console.log(`${colors[color]}${message}${colors.reset}`);
@@ -281,14 +281,14 @@ async function testUserMpcDepositWithTxId({ wallet, amount, txId, status }) {
     }
 
     const depositIntent = {
-      source_address: userInfo.data.derived_btc_address, // Use canonical address
+      source_address: userInfo.data.derived_btc_address,
       target_address: 'tb1qzxxlpvxx44ak6tasj5ffstr6gj5xrpxzxwrjy3',
       source_chain: 'bitcoin',
       target_chain: 'bitcoin',
-      amount: amount, // Use the passed amount parameter
+      amount: amount, 
       source_token: 'TICS',
       target_token: 'TICS',
-      timestamp: oooo, // Current Unix timestamp in seconds
+      timestamp: oooo,
     };
 
     // Serialize DepositIntent for signing
@@ -431,7 +431,7 @@ async function runTests() {
 
   // 3) MPC deposit test WITHOUT tx_id (should pass Some(signer) to handle_deposit_intent)
   log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
-  const amount = 1000; // keep safe for JSON
+  const amount = 900; // skeep safe for JSON
   await testUserMpcDeposit({ wallet, amount });
   await new Promise(r => setTimeout(r, 7000));
   // 4) MPC deposit test WITH tx_id (should pass None to handle_deposit_intent)

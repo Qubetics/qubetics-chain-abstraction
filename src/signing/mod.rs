@@ -825,15 +825,26 @@ impl SigningNode {
                 // Prepare signature bytes depending on address type
                 let signature = match address_type {
                     DetectedAddressType::P2TR => {
+                        // P2TR uses Schnorr signatures: raw 64-byte (r||s) + sighash
                         let mut sig = aggregated_signature.to_vec();
-                        // Append SIGHASH_ALL for Taproot
-                        sig.push(0x01);
+                        sig.push(0x01); // SIGHASH_ALL
+                        info!("🔍 [SIGNING] P2TR Schnorr signature: {}", hex::encode(&sig));
                         sig
                     },
                     _ => {
+                        // ECDSA signatures need DER encoding for P2PKH, P2WPKH, P2WSH
                         let r = &aggregated_signature[0..32];
                         let s = &aggregated_signature[32..64];
-                        self.create_der_signature(r, s)?
+                        
+                        // Debug: Log signature components
+                        info!("🔍 [SIGNING] ECDSA signature components:");
+                        info!("  Raw R (32 bytes): {}", hex::encode(r));
+                        info!("  Raw S (32 bytes): {}", hex::encode(s));
+                        
+                        // Convert raw r,s to DER-encoded ECDSA signature
+                        let der_sig = Self::create_der_signature(r, s, 0x01)?; // SIGHASH_ALL = 0x01
+                        info!("  DER-encoded signature: {}", hex::encode(&der_sig));
+                        der_sig
                     }
                 };
 
@@ -1037,45 +1048,110 @@ impl SigningNode {
         }
     }
 
-    /// Create DER-encoded signature for Bitcoin
-    fn create_der_signature(&self, r: &[u8], s: &[u8]) -> Result<Vec<u8>> {
-        let mut der_sig = Vec::new();
-        der_sig.push(0x30); // SEQUENCE tag
+    // /// Create DER-encoded signature for Bitcoin
+    // fn create_der_signature(&self, r: &[u8], s: &[u8]) -> Result<Vec<u8>> {
+    //     let mut der_sig = Vec::new();
+    //     der_sig.push(0x30); // SEQUENCE tag
         
-        // Calculate and add the total length later
-        let length_pos = der_sig.len();
-        der_sig.push(0x00); // Placeholder for length
+    //     // Calculate and add the total length later
+    //     let length_pos = der_sig.len();
+    //     der_sig.push(0x00); // Placeholder for length
         
-        // Add r value
-        der_sig.push(0x02); // INTEGER tag
-        if r[0] & 0x80 != 0 {
-            // If high bit is set, prepend 0x00 to make it positive
-            der_sig.push((r.len() + 1) as u8);
-            der_sig.push(0x00);
-        } else {
-            der_sig.push(r.len() as u8);
+    //     // Add r value
+    //     der_sig.push(0x02); // INTEGER tag
+    //     if r[0] & 0x80 != 0 {
+    //         // If high bit is set, prepend 0x00 to make it positive
+    //         der_sig.push((r.len() + 1) as u8);
+    //         der_sig.push(0x00);
+    //     } else {
+    //         der_sig.push(r.len() as u8);
+    //     }
+    //     der_sig.extend_from_slice(r);
+        
+    //     // Add s value  
+    //     der_sig.push(0x02); // INTEGER tag
+    //     if s[0] & 0x80 != 0 {
+    //         // If high bit is set, prepend 0x00 to make it positive
+    //         der_sig.push((s.len() + 1) as u8);
+    //         der_sig.push(0x00);
+    //     } else {
+    //         der_sig.push(s.len() as u8);
+    //     }
+    //     der_sig.extend_from_slice(s);
+        
+    //     // Update the total length
+    //     let content_length = der_sig.len() - 2; // Exclude the SEQUENCE tag and length byte
+    //     der_sig[length_pos] = content_length as u8;
+        
+    //     // Add SIGHASH_ALL flag
+    //     der_sig.push(0x01); // SIGHASH_ALL
+        
+    //     Ok(der_sig)
+    // }
+
+    fn der_encode_int_be(raw: &[u8]) -> Vec<u8> {
+        // 1) Strip leading zeros (minimal encoding)
+        let mut i = 0;
+        while i < raw.len() && raw[i] == 0 {
+            i += 1;
         }
-        der_sig.extend_from_slice(r);
-        
-        // Add s value  
-        der_sig.push(0x02); // INTEGER tag
-        if s[0] & 0x80 != 0 {
-            // If high bit is set, prepend 0x00 to make it positive
-            der_sig.push((s.len() + 1) as u8);
-            der_sig.push(0x00);
-        } else {
-            der_sig.push(s.len() as u8);
+        // If the value is zero, encode as single 0x00
+        let mut v = if i == raw.len() { vec![0u8] } else { raw[i..].to_vec() };
+
+        // 2) If MSB set, prepend 0x00 so it's interpreted as positive
+        if v[0] & 0x80 != 0 {
+            let mut with_pad = Vec::with_capacity(v.len() + 1);
+            with_pad.push(0x00);
+            with_pad.extend_from_slice(&v);
+            v = with_pad;
         }
-        der_sig.extend_from_slice(s);
-        
-        // Update the total length
-        let content_length = der_sig.len() - 2; // Exclude the SEQUENCE tag and length byte
-        der_sig[length_pos] = content_length as u8;
-        
-        // Add SIGHASH_ALL flag
-        der_sig.push(0x01); // SIGHASH_ALL
-        
-        Ok(der_sig)
+
+        // 3) INTEGER: 0x02 | length | value
+        let mut out = Vec::with_capacity(2 + v.len());
+        out.push(0x02);
+        out.push(u8::try_from(v.len()).unwrap()); // short-form length (< 128)
+        out.extend_from_slice(&v);
+        out
+    }
+
+    fn normalize_low_s(s: &[u8]) -> [u8; 32] {
+        let n = BigUint::from_bytes_be(&CURVE_ORDER);
+        let half = &n >> 1;
+        let mut sv = BigUint::from_bytes_be(s);
+        if sv > half { sv = &n - sv; }
+        let mut out = [0u8; 32];
+        let b = sv.to_bytes_be();
+        out[32 - b.len()..].copy_from_slice(&b);
+        out
+    }
+
+    /// Create a DER-encoded ECDSA (r, s) and append the Bitcoin sighash byte (e.g., 0x01).
+    /// NOTE: Do low-S normalization of `s` *before* calling this if needed.
+    pub fn create_der_signature(r: &[u8], s: &[u8], sighash: u8) -> Result<Vec<u8>> {
+        // Sanity: sighash must be 0x01, 0x02, 0x03 or those | 0x80
+        match sighash {
+            0x01 | 0x02 | 0x03 | 0x81 | 0x82 | 0x83 => {}
+            _ => panic!("Invalid Bitcoin sighash type: 0x{:02x}", sighash),
+        }
+        let s_low = Self::normalize_low_s(s);
+        let r_der = Self::der_encode_int_be(r);
+        let s_der = Self::der_encode_int_be(&s_low);
+
+        // Total DER content length = len(R-INTEGER) + len(S-INTEGER)
+        let content_len = r_der.len() + s_der.len(); // e.g., 69 (0x45) for your sample
+        debug_assert!(content_len < 128);
+
+        // SEQUENCE: 0x30 | content_len | r_der | s_der
+        let mut sig = Vec::with_capacity(2 + content_len + 1); // +1 for sighash (outside DER)
+        sig.push(0x30);
+        sig.push(u8::try_from(content_len).unwrap());
+        sig.extend_from_slice(&r_der);
+        sig.extend_from_slice(&s_der);
+
+        // Append the sighash type byte (NOT part of DER)
+        sig.push(sighash);
+
+        Ok(sig)
     }
 
     async fn create_signed_bitcoin_transaction(
@@ -1193,6 +1269,7 @@ impl SigningNode {
         } else {
             // Legacy P2PKH - create standard script_sig
             let group_key_bytes = self.get_group_public_key_bytes(transaction_type.clone(), user_eth_address.clone()).await?;
+            info!("🔍 [SIGNING] Using public key: {}", hex::encode(&group_key_bytes));
             let mut script_sig = Vec::new();
             
             // Push signature (DER format)
@@ -1214,6 +1291,7 @@ impl SigningNode {
                 22 if witness_utxo.script_pubkey[0] == 0x00 && witness_utxo.script_pubkey[1] == 0x14 => {
                     // P2WPKH: [signature, pubkey]
                     let group_key_bytes = self.get_group_public_key_bytes(transaction_type.clone(), user_eth_address.clone()).await?;
+                    info!("🔍 [SIGNING] P2WPKH - Using public key: {}", hex::encode(&group_key_bytes));
                     Ok(vec![signature.to_vec(), group_key_bytes])
                 },
                 34 if witness_utxo.script_pubkey[0] == 0x00 && witness_utxo.script_pubkey[1] == 0x20 => {
