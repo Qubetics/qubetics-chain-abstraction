@@ -1293,6 +1293,25 @@ impl NetworkLayer {
             }
             GossipsubMessage::SolverReward { solver_address, reward } => {
                 info!("💰 [REWARD] Received solver reward for {}: {}", solver_address, reward);
+                // Create dummy transaction paying the solver
+                let dummy_tx = crate::rpc_server::DummyTransaction {
+                    to: solver_address.clone(),
+                    value: format!("0x{:x}", reward),
+                    nonce: 0,
+                    gas_limit: 21_000,
+                    gas_price: "0x0".to_string(),
+                    chain_id: 1,
+                };
+
+                if let Some(dkg_node) = &self.dkg_node {
+                    if let Some(group_key) = dkg_node.get_final_public_key().await {
+                        let from_addr = crate::utils::get_eth_address_from_group_key(group_key);
+                        info!(
+                            "🧾 [NETWORK] Created solver reward tx from {} to {} amount {}",
+                            from_addr, solver_address, reward
+                        );
+                    }
+                }
             }
             GossipsubMessage::DepositIntent { intent, intent_id, user_eth_address, transaction_type, amount } => {
                 info!("📝 [GOSSIPSUB] Processing deposit intent received via gossipsub: {:?} (ID: {})", intent, intent_id);
