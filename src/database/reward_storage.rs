@@ -50,7 +50,7 @@ impl RewardStorage {
     /// Store reward for a specific solver
     pub async fn set_solver_reward(&self, solver_address: &str, reward: U256) -> Result<()> {
         let key = key_utils::solver_reward_key(solver_address);
-        self.db.put_string(&key, &reward.to_string())?;
+       self.db.put_string(&key, &reward.to_string())?;
         Ok(())
     }
 
@@ -64,5 +64,18 @@ impl RewardStorage {
         } else {
             Ok(None)
         }
+    }
+
+    /// Set reward calculation status for a specific intent hash
+    pub async fn set_intent_reward_status(&self, intent_hash: &str, status: bool) -> Result<()> {
+        let key = key_utils::intent_reward_status_key(intent_hash);
+        self.db.put_string(&key, &status)?;
+        Ok(())
+    }
+
+    /// Get reward calculation status for a specific intent hash
+    pub async fn get_intent_reward_status(&self, intent_hash: &str) -> Result<Option<bool>> {
+        let key = key_utils::intent_reward_status_key(intent_hash);
+        self.db.get_string(&key)
     }
 }
