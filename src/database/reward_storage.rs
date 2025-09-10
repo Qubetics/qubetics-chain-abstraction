@@ -1,4 +1,4 @@
-use crate::database::{Database, key_utils, keys};
+use crate::database::{key_utils, keys, Database};
 use anyhow::Result;
 use ethers::types::U256;
 
@@ -26,7 +26,8 @@ impl RewardStorage {
 
     /// Store total liquidity in BTC (as f64)
     pub async fn set_total_liquidity_btc(&self, btc: f64) -> Result<()> {
-        self.db.put_string(keys::TOTAL_LIQUIDITY_BTC, &btc.to_string())?;
+        self.db
+            .put_string(keys::TOTAL_LIQUIDITY_BTC, &btc.to_string())?;
         Ok(())
     }
 
@@ -50,7 +51,7 @@ impl RewardStorage {
     /// Store reward for a specific solver
     pub async fn set_solver_reward(&self, solver_address: &str, reward: U256) -> Result<()> {
         let key = key_utils::solver_reward_key(solver_address);
-       self.db.put_string(&key, &reward.to_string())?;
+        self.db.put_string(&key, &reward.to_string())?;
         Ok(())
     }
 
@@ -61,6 +62,29 @@ impl RewardStorage {
             let reward = U256::from_dec_str(&value)
                 .map_err(|e| anyhow::anyhow!("Failed to parse reward: {}", e))?;
             Ok(Some(reward))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Store claimed request amount for a specific solver
+    pub async fn set_claimed_request_amount(
+        &self,
+        solver_address: &str,
+        amount: U256,
+    ) -> Result<()> {
+        let key = key_utils::claimed_request_amount_key(solver_address);
+        self.db.put_string(&key, &amount.to_string())?;
+        Ok(())
+    }
+
+    /// Get claimed request amount for a specific solver
+    pub async fn get_claimed_request_amount(&self, solver_address: &str) -> Result<Option<U256>> {
+        let key = key_utils::claimed_request_amount_key(solver_address);
+        if let Some(value) = self.db.get_string::<String>(&key)? {
+            let amount = U256::from_dec_str(&value)
+                .map_err(|e| anyhow::anyhow!("Failed to parse claimed amount: {}", e))?;
+            Ok(Some(amount))
         } else {
             Ok(None)
         }
