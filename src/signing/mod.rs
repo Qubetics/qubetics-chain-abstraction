@@ -981,6 +981,7 @@ impl SigningNode {
                         gas_price: original_tx.gas_price.clone(),
                         chain_id: original_tx.chain_id,
                     },
+                    original_tx.data.as_deref(),
                     r,
                     s,
                     v,

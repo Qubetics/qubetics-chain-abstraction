@@ -910,7 +910,13 @@ pub fn create_transaction_for_signing_contract(tx: &ContractTransaction) -> Vec<
     final_encoder.finalize()
 }
 
-pub fn create_signed_transaction(tx: &DummyTransaction, r: &[u8], s: &[u8], v: u64) -> Vec<u8> {
+pub fn create_signed_transaction(
+    tx: &DummyTransaction,
+    data: Option<&[u8]>,
+    r: &[u8],
+    s: &[u8],
+    v: u64,
+) -> Vec<u8> {
     let mut content = Vec::new();
 
     // Encode transaction fields
@@ -940,9 +946,13 @@ pub fn create_signed_transaction(tx: &DummyTransaction, r: &[u8], s: &[u8], v: u
     encoder.encode_hex_string(&tx.value);
     content.extend_from_slice(&encoder.finalize());
 
-    // Data (empty)
+    // Data - include contract calldata if provided
     encoder = RlpEncoder::new();
-    encoder.encode_bytes(&[]);
+    if let Some(data) = data {
+        encoder.encode_bytes(data);
+    } else {
+        encoder.encode_bytes(&[]);
+    }
     content.extend_from_slice(&encoder.finalize());
 
     // v
