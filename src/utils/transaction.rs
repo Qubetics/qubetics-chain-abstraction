@@ -1,11 +1,16 @@
 use crate::chain::{
-    BitcoinInput, BitcoinOutput, BitcoinTransaction, ChainTransaction, EthereumTransaction
+
+    BitcoinInput, BitcoinOutput, BitcoinTransaction, BitcoinWitness, BitcoinWitnessInput,
+    BitcoinWitnessUtxo, ChainTransaction, EthereumTransaction,
 };
-use crate::rpc_server::{DepositIntent, DummyTransaction};
+use crate::rpc_server::{ContractTransaction, DepositIntent, DummyTransaction};
 use crate::utils::get_eth_address_from_group_key;
 use anyhow::Result;
+use ethabi::ethereum_types::U256;
+use ethabi::{Function, Param, ParamType, StateMutability, Token};
 use serde::{Deserialize, Serialize};
-use tracing::info;
+use tracing::info; // for Token::Uint
+
 // use rlp::RlpStream;
 
 /// Bitcoin UTXO structure for fetching from external APIs
@@ -102,12 +107,14 @@ impl RlpEncoder {
 fn encode_hex_to_bytes(hex_str: &str) -> Vec<u8> {
     let clean_hex = hex_str.strip_prefix("0x").unwrap_or(hex_str);
     let trimmed = clean_hex.trim_start_matches('0');
-    let mut final_hex = if trimmed.is_empty() {
-        "0".to_string()
-    } else {
-        trimmed.to_string()
-    };
 
+    // If the value is zero or only zeros were provided, return an empty
+    // Vec so that the caller encodes it as an empty byte slice (0x80 in RLP).
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+
+    let mut final_hex = trimmed.to_string();
     if final_hex.len() % 2 == 1 {
         final_hex = format!("0{}", final_hex);
     }
@@ -120,7 +127,7 @@ fn encode_hex_to_bytes(hex_str: &str) -> Vec<u8> {
 fn strip_leading_zeros(bytes: &[u8]) -> Vec<u8> {
     // Find the first non-zero byte
     let start = bytes.iter().position(|&x| x != 0).unwrap_or(bytes.len());
-    
+
     // If all bytes are zero, return a single zero byte
     if start == bytes.len() {
         vec![0]
@@ -669,7 +676,7 @@ pub async fn fetch_ethereum_nonce(address: &str, chain_id: u64) -> Result<u64> {
     let payload = serde_json::json!({
         "jsonrpc": "2.0",
         "method": "eth_getTransactionCount",
-        "params": [address, "latest"],
+        "params": [address, "pending"],
         "id": 1
     });
 
@@ -730,6 +737,71 @@ pub async fn create_chain_transaction_from_deposit_intent_with_utxo_check(
 }
 
 /// Create a chain-specific transaction from a deposit intent (legacy function for backward compatibility)
+/// Estimate gas for a call using eth_estimateGas
+async fn estimate_gas_for_deposit_intent(
+    from: &str,
+    to: &str,
+    data_hex: &str,
+    chain_id: u64,
+) -> Result<u64> {
+    let rpc_url = match chain_id {
+        9029 => std::env::var("MPC_ETHEREUM_RPC_URL")
+            .unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string()),
+        1 => "https://mainnet.infura.io/v3/YOUR_PROJECT_ID".to_string(),
+        _ => {
+            return Err(anyhow::anyhow!(
+                "Unsupported chain ID for gas estimation: {}",
+                chain_id
+            ))
+        }
+    };
+
+    let client = reqwest::Client::new();
+    let payload = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "eth_estimateGas",
+        "params": [{
+            "from": from,
+            "to": to,
+            "data": data_hex
+        }],
+        "id": 1
+    });
+
+    info!(
+        "🔧 Estimating gas for contract call from {} to {}",
+        from, to
+    );
+
+    let response = client
+        .post(&rpc_url)
+        .header("Content-Type", "application/json")
+        .json(&payload)
+        .send()
+        .await?;
+
+    if response.status().is_success() {
+        let result: serde_json::Value = response.json().await?;
+        if let Some(error) = result.get("error") {
+            tracing::error!("❌ Gas estimation failed: {}", error);
+            return Err(anyhow::anyhow!("Gas estimation failed: {}", error));
+        }
+        if let Some(gas_hex) = result.get("result") {
+            let gas_str = gas_hex.as_str().unwrap_or("0x0");
+            let gas = u64::from_str_radix(gas_str.strip_prefix("0x").unwrap_or(gas_str), 16)?;
+            info!("✅ Estimated gas: {}", gas);
+            Ok(gas)
+        } else {
+            Err(anyhow::anyhow!("No gas result in response"))
+        }
+    } else {
+        let error_text = response.text().await?;
+        tracing::error!("❌ Gas estimation failed: {}", error_text);
+        Err(anyhow::anyhow!("Gas estimation failed: {}", error_text))
+    }
+}
+
+/// Create a chain-specific transaction from a deposit intent
 /// For Bitcoin transactions, group_public_key is required to derive the Bitcoin address and fetch UTXOs
 /// transaction_type determines the fund flow:
 /// - UserToVault: User deposit - FROM derived address TO vault address (on source chain)
@@ -786,8 +858,8 @@ async fn create_chain_transaction_from_deposit_intent_internal(
         let chain_id = get_chain_id_from_name(chain_to_use)
             .ok_or_else(|| anyhow::anyhow!("Unknown EVM chain: {}", chain_to_use))?;
         // Get vault address from parameter
-        let vault_address = vault_eth_address
-            .ok_or_else(|| anyhow::anyhow!("Vault ETH address not provided"))?;
+        let vault_address =
+            vault_eth_address.ok_or_else(|| anyhow::anyhow!("Vault ETH address not provided"))?;
 
         let network_address = get_eth_address_from_group_key(group_public_key.unwrap());
 
@@ -803,10 +875,12 @@ async fn create_chain_transaction_from_deposit_intent_internal(
                     );
                     (derived_addr.clone(), vault_address)
                 } else {
-                    return Err(anyhow::anyhow!("UserToVault transaction requires derived_eth_address"));
+                    return Err(anyhow::anyhow!(
+                        "UserToVault transaction requires derived_eth_address"
+                    ));
                 }
             }
-            crate::types::TransactionType::NetworkToTarget => { 
+            crate::types::TransactionType::NetworkToTarget => {
                 // Network withdrawal: FROM network address TO target address
                 tracing::info!(
                     "💰 [TRANSACTION] Network to target: {} -> {}",
@@ -828,7 +902,7 @@ async fn create_chain_transaction_from_deposit_intent_internal(
 
         let ethereum_tx = EthereumTransaction {
             to: to_address.to_string(),
-            value: format!("0x{:x}", amount),
+            value: amount.to_string(),
             gas_limit: 300000,
             gas_price: get_default_gas_price_for_chain(chain_to_use),
             nonce: fetch_ethereum_nonce(&from_address, chain_id).await?,
@@ -845,8 +919,8 @@ async fn create_chain_transaction_from_deposit_intent_internal(
         // Get Bitcoin addresses
         let btc_network_address = crate::utils::get_btc_address_from_group_key(group_key);
         // Get vault address from parameter
-        let btc_vault_address = vault_btc_address
-            .ok_or_else(|| anyhow::anyhow!("Vault BTC address not provided"))?;
+        let btc_vault_address =
+            vault_btc_address.ok_or_else(|| anyhow::anyhow!("Vault BTC address not provided"))?;
 
         // Determine source and target based on transaction type
         let (from_address, to_address) = match transaction_type {
@@ -860,7 +934,9 @@ async fn create_chain_transaction_from_deposit_intent_internal(
                     );
                     (derived_btc_addr.clone(), btc_vault_address)
                 } else {
-                    return Err(anyhow::anyhow!("UserToVault transaction requires derived_btc_address"));
+                    return Err(anyhow::anyhow!(
+                        "UserToVault transaction requires derived_btc_address"
+                    ));
                 }
             }
             crate::types::TransactionType::NetworkToTarget => {
@@ -953,6 +1029,32 @@ async fn create_chain_transaction_from_deposit_intent_internal(
             }
         })
         .collect();
+            .iter()
+            .map(|utxo| {
+                let address_type = detect_bitcoin_address_type(&from_address);
+                let witness_utxo = match address_type {
+                    DetectedAddressType::P2WPKH
+                    | DetectedAddressType::P2WSH
+                    | DetectedAddressType::P2TR => {
+                        // For SegWit inputs, we need witness UTXO information
+                        Some(BitcoinWitnessUtxo {
+                            value: utxo.value,
+                            script_pubkey: create_bitcoin_script_pubkey(&from_address)
+                                .unwrap_or_default(),
+                        })
+                    }
+                    _ => None, // Legacy inputs don't need witness UTXO
+                };
+
+                BitcoinInput {
+                    txid: utxo.txid.clone(),
+                    vout: utxo.vout,
+                    script_sig: vec![],   // Will be filled during signing
+                    sequence: 0xfffffffe, // Enable RBF (Replace-By-Fee)
+                    witness_utxo,
+                }
+            })
+            .collect();
 
         // Create outputs
         let mut outputs = vec![BitcoinOutput {
@@ -971,6 +1073,21 @@ async fn create_chain_transaction_from_deposit_intent_internal(
         }
 
         // P2PKH transactions don't use witness data
+//         // Determine if we need witness data based on input address types
+//         let needs_witness = inputs.iter().any(|input| input.witness_utxo.is_some());
+//         let witness = if needs_witness {
+//             Some(BitcoinWitness {
+//                 inputs: inputs
+//                     .iter()
+//                     .map(|_| BitcoinWitnessInput {
+//                         stack: vec![], // Will be filled during signing
+//                     })
+//                     .collect(),
+//             })
+//         } else {
+//             None
+//         };
+
         let bitcoin_tx = BitcoinTransaction {
             inputs,
             outputs,
@@ -983,6 +1100,283 @@ async fn create_chain_transaction_from_deposit_intent_internal(
     } else {
         Err(anyhow::anyhow!("Unsupported chain: {}", chain_to_use))
     }
+}
+
+pub async fn create_chain_transaction_from_contract_call(
+    group_public_key: Option<k256::ProjectivePoint>,
+    amount: u128,
+    intent: &DepositIntent,
+    intent_hash: &str,
+    tx_hash: Vec<u8>,
+    transaction_type: crate::types::TransactionType,
+) -> Result<ChainTransaction> {
+    let network_address = get_eth_address_from_group_key(group_public_key.unwrap());
+    let chain_id = get_chain_id_from_name("qubetics")
+        .ok_or_else(|| anyhow::anyhow!("Unknown EVM chain: {}", "eth"))?;
+
+    // Get contract address from environment variable and normalize to 0x-prefixed
+    let contract_address_env = std::env::var("INTENT_MANAGER_CONTRACT_ADDRESS")
+        .unwrap_or_else(|_| "0x0000000000000000000000000000000000000000".to_string());
+
+    info!(
+            "[create_chain_transaction_from_contract_call] encode_deposit_intent_calldata params:\n  source_address: {}\n  target_address: {}\n  source_chain: {}\n  target_chain: {}\n  amount: {}\n  source_token: {}\n  target_token: {}\n  transaction_hash: {}\n  intent_hash: {}",
+            &intent.source_address,
+            &intent.target_address,
+            &intent.source_chain,
+            &intent.target_chain,
+            amount,
+            &intent.source_token,
+            &intent.target_token,
+            &hex::encode(&tx_hash),
+            intent_hash
+        );
+
+    info!("🔧 [CONTRACT] Network address: {}", network_address);
+    info!("🔧 [CONTRACT] Chain ID: {}", chain_id);
+
+    // Choose the appropriate calldata encoding function based on transaction type
+    let calldata = match transaction_type {
+        crate::types::TransactionType::UserToVault => {
+            info!("🔧 [CONTRACT] Using depositIntent calldata for UserToVault transaction");
+            encode_deposit_intent_calldata(
+                &intent.source_address,
+                &intent.target_address,
+                &intent.source_chain,
+                &intent.target_chain,
+                amount,
+                &intent.source_token,
+                &intent.target_token,
+                &format!("0x{}", hex::encode(tx_hash)),
+                intent_hash,
+            )
+        }
+        _ => {
+            info!(
+                "🔧 [CONTRACT] Using fulfillIntent calldata for {:?} transaction",
+                transaction_type
+            );
+            encode_fulfill_intent_calldata(
+                &intent.source_address,
+                &intent.target_address,
+                &intent.source_chain,
+                &intent.target_chain,
+                amount,
+                &intent.source_token,
+                &intent.target_token,
+                &format!("0x{}", hex::encode(tx_hash)),
+                intent_hash,
+            )
+        }
+    };
+
+    let calldata_hex = calldata
+        .as_ref()
+        .map(|d| format!("0x{}", hex::encode(d)))
+        .unwrap_or_else(|| "0x".to_string());
+    let estimated_gas = estimate_gas_for_deposit_intent(
+        &network_address,
+        &contract_address_env,
+        &calldata_hex,
+        chain_id,
+    )
+    .await
+    .unwrap_or(300000);
+    let gas_limit = estimated_gas + (estimated_gas / 10); // Add 10% buffer
+
+    info!(
+        "🔧 [CONTRACT] Estimated gas: {}, using gas_limit: {}",
+        estimated_gas, gas_limit
+    );
+
+    let nonce = fetch_ethereum_nonce(&network_address, chain_id).await?;
+    let gas_price = get_default_gas_price_for_chain("qubetics");
+
+    info!("🔧 [CONTRACT] Final transaction details:");
+    info!("  - To: {}", contract_address_env);
+    info!("  - From: {}", network_address);
+    info!("  - Nonce: {}", nonce);
+    info!("  - Gas Limit: {}", gas_limit);
+    info!("  - Gas Price: {}", gas_price);
+    info!("  - Chain ID: {}", chain_id);
+    info!(
+        "  - Calldata: 0x{}",
+        calldata
+            .as_ref()
+            .map(|d| hex::encode(d))
+            .unwrap_or_else(|| "".to_string())
+    );
+
+    let ethereum_tx = EthereumTransaction {
+        to: contract_address_env,
+        value: "0x0".to_string(),
+        gas_limit,
+        gas_price,
+        nonce,
+        data: calldata,
+        chain_id,
+    };
+
+    Ok(ChainTransaction::Ethereum(ethereum_tx))
+}
+
+pub fn encode_deposit_intent_calldata(
+    source_address: &str,
+    target_address: &str,
+    source_chain: &str,
+    target_chain: &str,
+    amount: u128,
+    source_token: &str,
+    target_token: &str,
+    transaction_hash: &str,
+    intent_id: &str,
+) -> Option<Vec<u8>> {
+    let f = Function {
+        name: "depositIntent".to_owned(),
+        inputs: vec![
+            Param {
+                name: "sourceAddress".into(),
+                kind: ParamType::String,
+                internal_type: None,
+            },
+            Param {
+                name: "targetAddress".into(),
+                kind: ParamType::String,
+                internal_type: None,
+            },
+            Param {
+                name: "sourceChain".into(),
+                kind: ParamType::String,
+                internal_type: None,
+            },
+            Param {
+                name: "targetChain".into(),
+                kind: ParamType::String,
+                internal_type: None,
+            },
+            Param {
+                name: "amount".into(),
+                kind: ParamType::Uint(128),
+                internal_type: None,
+            },
+            Param {
+                name: "sourceToken".into(),
+                kind: ParamType::String,
+                internal_type: None,
+            },
+            Param {
+                name: "targetToken".into(),
+                kind: ParamType::String,
+                internal_type: None,
+            },
+            Param {
+                name: "transactionHash".into(),
+                kind: ParamType::String,
+                internal_type: None,
+            },
+            Param {
+                name: "intentId".into(),
+                kind: ParamType::String,
+                internal_type: None,
+            },
+        ],
+        outputs: vec![],
+        constant: None,
+        state_mutability: StateMutability::NonPayable,
+    };
+
+    let tokens = vec![
+        Token::String(source_address.to_owned()),
+        Token::String(target_address.to_owned()),
+        Token::String(source_chain.to_owned()),
+        Token::String(target_chain.to_owned()),
+        Token::Uint(U256::from(amount)), // uint128
+        Token::String(source_token.to_owned()),
+        Token::String(target_token.to_owned()),
+        Token::String(transaction_hash.to_owned()),
+        Token::String(intent_id.to_owned()),
+    ];
+
+    f.encode_input(&tokens).ok()
+}
+
+pub fn encode_fulfill_intent_calldata(
+    source_address: &str,
+    target_address: &str,
+    source_chain: &str,
+    target_chain: &str,
+    amount: u128,
+    source_token: &str,
+    target_token: &str,
+    transaction_hash: &str,
+    intent_id: &str,
+) -> Option<Vec<u8>> {
+    let f = Function {
+        name: "fulfillIntent".to_owned(),
+        inputs: vec![
+            Param {
+                name: "sourceAddress".into(),
+                kind: ParamType::String,
+                internal_type: None,
+            },
+            Param {
+                name: "targetAddress".into(),
+                kind: ParamType::String,
+                internal_type: None,
+            },
+            Param {
+                name: "sourceChain".into(),
+                kind: ParamType::String,
+                internal_type: None,
+            },
+            Param {
+                name: "targetChain".into(),
+                kind: ParamType::String,
+                internal_type: None,
+            },
+            Param {
+                name: "amount".into(),
+                kind: ParamType::Uint(128),
+                internal_type: None,
+            },
+            Param {
+                name: "sourceToken".into(),
+                kind: ParamType::String,
+                internal_type: None,
+            },
+            Param {
+                name: "targetToken".into(),
+                kind: ParamType::String,
+                internal_type: None,
+            },
+            Param {
+                name: "transactionHash".into(),
+                kind: ParamType::String,
+                internal_type: None,
+            },
+            Param {
+                name: "intentId".into(),
+                kind: ParamType::String,
+                internal_type: None,
+            },
+        ],
+        outputs: vec![],
+        constant: None,
+        state_mutability: StateMutability::NonPayable,
+    };
+
+    let tokens = vec![
+        Token::String(source_address.to_owned()),
+        Token::String(target_address.to_owned()),
+        Token::String(source_chain.to_owned()),
+        Token::String(target_chain.to_owned()),
+        Token::Uint(U256::from(amount)), // uint128
+        Token::String(source_token.to_owned()),
+        Token::String(target_token.to_owned()),
+        Token::String(transaction_hash.to_owned()),
+        Token::String(intent_id.to_owned()),
+    ];
+
+    f.encode_input(&tokens).ok()
 }
 
 /// Get default gas price for different EVM chains
@@ -1029,7 +1423,6 @@ fn is_testnet_p2pkh_address(address: &str) -> bool {
 }
 
 
-/// Create a Bitcoin script_pubkey for P2PKH address only
 fn create_bitcoin_script_pubkey(address: &str) -> Result<Vec<u8>> {
     use bitcoin::{Address, Network};
     use std::str::FromStr;
@@ -1363,7 +1756,83 @@ pub fn create_transaction_for_signing(tx: &DummyTransaction) -> Vec<u8> {
     final_encoder.finalize()
 }
 
-pub fn create_signed_transaction(tx: &DummyTransaction, r: &[u8], s: &[u8], v: u64) -> Vec<u8> {
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn encode_hex_string_zero_is_canonical() {
+        let mut encoder = RlpEncoder::new();
+        encoder.encode_hex_string("0x0");
+        // RLP encoding of zero should be a single 0x80 byte
+        assert_eq!(encoder.finalize(), vec![0x80]);
+    }
+}
+
+pub fn create_transaction_for_signing_contract(tx: &ContractTransaction) -> Vec<u8> {
+    let mut content = Vec::new();
+
+    // Encode transaction fields for signing (EIP-155)
+    let mut encoder = RlpEncoder::new();
+
+    // Nonce
+    encoder.encode_u64(tx.nonce);
+    content.extend_from_slice(&encoder.finalize());
+
+    // Gas price
+    encoder = RlpEncoder::new();
+    encoder.encode_hex_string(&tx.gas_price);
+    content.extend_from_slice(&encoder.finalize());
+
+    // Gas limit
+    encoder = RlpEncoder::new();
+    encoder.encode_u64(tx.gas_limit);
+    content.extend_from_slice(&encoder.finalize());
+
+    // To address
+    encoder = RlpEncoder::new();
+    encoder.encode_address(&tx.to);
+    content.extend_from_slice(&encoder.finalize());
+
+    // Value
+    encoder = RlpEncoder::new();
+    encoder.encode_hex_string(&tx.value);
+    content.extend_from_slice(&encoder.finalize());
+
+    // Data (empty)
+    encoder = RlpEncoder::new();
+    encoder.encode_hex_string(&tx.data);
+    content.extend_from_slice(&encoder.finalize());
+
+    // Chain ID
+    encoder = RlpEncoder::new();
+    encoder.encode_u64(tx.chain_id);
+    content.extend_from_slice(&encoder.finalize());
+
+    // Empty r and s for EIP-155
+    encoder = RlpEncoder::new();
+    encoder.encode_bytes(&[]);
+    content.extend_from_slice(&encoder.finalize());
+
+    encoder = RlpEncoder::new();
+    encoder.encode_bytes(&[]);
+    content.extend_from_slice(&encoder.finalize());
+
+    // Create final RLP with list header
+    let mut final_encoder = RlpEncoder::new();
+    final_encoder.encode_list_header(content.len());
+    final_encoder.data.extend_from_slice(&content);
+
+    final_encoder.finalize()
+}
+
+pub fn create_signed_transaction(
+    tx: &DummyTransaction,
+    data: Option<&[u8]>,
+    r: &[u8],
+    s: &[u8],
+    v: u64,
+) -> Vec<u8> {
     let mut content = Vec::new();
 
     // Encode transaction fields
@@ -1393,9 +1862,13 @@ pub fn create_signed_transaction(tx: &DummyTransaction, r: &[u8], s: &[u8], v: u
     encoder.encode_hex_string(&tx.value);
     content.extend_from_slice(&encoder.finalize());
 
-    // Data (empty)
+    // Data - include contract calldata if provided
     encoder = RlpEncoder::new();
-    encoder.encode_bytes(&[]);
+    if let Some(data) = data {
+        encoder.encode_bytes(data);
+    } else {
+        encoder.encode_bytes(&[]);
+    }
     content.extend_from_slice(&encoder.finalize());
 
     // v
@@ -1409,7 +1882,7 @@ pub fn create_signed_transaction(tx: &DummyTransaction, r: &[u8], s: &[u8], v: u
     encoder.encode_bytes(&r_trimmed);
     content.extend_from_slice(&encoder.finalize());
 
-    // s - strip leading zeros for RLP compliance  
+    // s - strip leading zeros for RLP compliance
     encoder = RlpEncoder::new();
     let s_trimmed = strip_leading_zeros(s);
     encoder.encode_bytes(&s_trimmed);

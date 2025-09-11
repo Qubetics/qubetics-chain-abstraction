@@ -26,18 +26,21 @@ fn encode_varint(value: u64) -> Vec<u8> {
 /// Create P2PKH script_pubkey for Bitcoin signing using the actual DKG group public key
 /// This should match the script of the UTXO being spent
 fn create_p2pkh_script_for_signing(group_public_key: &[u8]) -> Result<Vec<u8>> {
-    use sha2::{Sha256, Digest};
     use ripemd::Ripemd160;
-    
+    use sha2::{Digest, Sha256};
+
     if group_public_key.len() != 33 {
-        return Err(anyhow::anyhow!("Invalid group public key length: expected 33 bytes, got {}", group_public_key.len()));
+        return Err(anyhow::anyhow!(
+            "Invalid group public key length: expected 33 bytes, got {}",
+            group_public_key.len()
+        ));
     }
-    
+
     // ✅ Create actual pubkey hash from DKG group public key
     // Bitcoin address derivation: SHA256(pubkey) -> RIPEMD160(hash) = pubkey_hash
     let sha256_hash = Sha256::digest(group_public_key);
     let pubkey_hash = Ripemd160::new().chain_update(&sha256_hash).finalize();
-    
+
     // Create standard P2PKH script: OP_DUP OP_HASH160 <20-byte-pubkey-hash> OP_EQUALVERIFY OP_CHECKSIG
     let mut script = Vec::new();
     script.push(0x76); // OP_DUP
@@ -46,7 +49,7 @@ fn create_p2pkh_script_for_signing(group_public_key: &[u8]) -> Result<Vec<u8>> {
     script.extend_from_slice(&pubkey_hash);
     script.push(0x88); // OP_EQUALVERIFY
     script.push(0xac); // OP_CHECKSIG
-    
+
     Ok(script)
 }
 // use crate::signing::{ECDSASignature, SignedMessage}; // Removed unused imports
@@ -94,7 +97,6 @@ pub struct BitcoinOutput {
     pub value: u64,
     pub script_pubkey: Vec<u8>,
 }
-
 
 /// SegWit witness data
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -148,22 +150,32 @@ pub struct BitcoinSignature {
 pub trait ChainHandler: Send + Sync {
     /// Get the chain type identifier
     fn chain_type(&self) -> &'static str;
-    
+
     /// Create transaction bytes for signing
     fn create_transaction_bytes(&self, transaction: &ChainTransaction) -> Result<Vec<u8>>;
-    
+
     /// Create signature from raw signature data
-    fn create_signature(&self, signature_data: &[u8], recovery_id: u8, transaction: &ChainTransaction) -> Result<ChainSignature>;
-    
+    fn create_signature(
+        &self,
+        signature_data: &[u8],
+        recovery_id: u8,
+        transaction: &ChainTransaction,
+    ) -> Result<ChainSignature>;
+
     /// Verify a signature against transaction
-    fn verify_signature(&self, transaction: &ChainTransaction, signature: &ChainSignature, public_key: &[u8]) -> Result<bool>;
-    
+    fn verify_signature(
+        &self,
+        transaction: &ChainTransaction,
+        signature: &ChainSignature,
+        public_key: &[u8],
+    ) -> Result<bool>;
+
     /// Convert from legacy DummyTransaction (for backward compatibility)
     fn from_dummy_transaction(&self, dummy_tx: &DummyTransaction) -> Result<ChainTransaction>;
-    
+
     /// Get chain-specific parameters (e.g., chain ID for Ethereum)
     fn get_chain_params(&self) -> HashMap<String, String>;
-    
+
     /// Downcast to concrete type for type-specific operations
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
 }
@@ -183,40 +195,68 @@ impl ChainHandler for EthereumChainHandler {
     fn chain_type(&self) -> &'static str {
         "ethereum"
     }
-    
+
     fn create_transaction_bytes(&self, transaction: &ChainTransaction) -> Result<Vec<u8>> {
         match transaction {
             ChainTransaction::Ethereum(eth_tx) => {
-                // Use the existing transaction utility function
-                let dummy_tx = DummyTransaction {
-                    to: eth_tx.to.clone(),
-                    value: eth_tx.value.clone(),
-                    gas_limit: eth_tx.gas_limit,
-                    gas_price: eth_tx.gas_price.clone(),
-                    nonce: eth_tx.nonce,
-                    chain_id: eth_tx.chain_id,
-                };
-                Ok(crate::utils::transaction::create_transaction_for_signing(&dummy_tx))
+                // Check if this is a contract transaction (has data)
+                if let Some(data) = &eth_tx.data {
+                    // Use contract transaction function for transactions with data
+                    let contract_tx = crate::rpc_server::ContractTransaction {
+                        to: eth_tx.to.clone(),
+                        value: eth_tx.value.clone(),
+                        gas_limit: eth_tx.gas_limit,
+                        gas_price: eth_tx.gas_price.clone(),
+                        nonce: eth_tx.nonce,
+                        chain_id: eth_tx.chain_id,
+                        data: hex::encode(data), // Convert bytes back to hex string
+                    };
+                    Ok(
+                        crate::utils::transaction::create_transaction_for_signing_contract(
+                            &contract_tx,
+                        ),
+                    )
+                } else {
+                    // Use regular transaction function for simple transfers (no data)
+                    let dummy_tx = DummyTransaction {
+                        to: eth_tx.to.clone(),
+                        value: eth_tx.value.clone(),
+                        gas_limit: eth_tx.gas_limit,
+                        gas_price: eth_tx.gas_price.clone(),
+                        nonce: eth_tx.nonce,
+                        chain_id: eth_tx.chain_id,
+                    };
+                    Ok(crate::utils::transaction::create_transaction_for_signing(
+                        &dummy_tx,
+                    ))
+                }
             }
-            _ => Err(anyhow::anyhow!("Invalid transaction type for Ethereum handler"))
+            _ => Err(anyhow::anyhow!(
+                "Invalid transaction type for Ethereum handler"
+            )),
         }
     }
-    
-    fn create_signature(&self, signature_data: &[u8], recovery_id: u8, transaction: &ChainTransaction) -> Result<ChainSignature> {
+
+    fn create_signature(
+        &self,
+        signature_data: &[u8],
+        recovery_id: u8,
+        transaction: &ChainTransaction,
+    ) -> Result<ChainSignature> {
         if signature_data.len() != 64 {
             return Err(anyhow::anyhow!("Invalid signature length for Ethereum"));
         }
-        
+
         let r = signature_data[0..32].to_vec();
         let s = signature_data[32..64].to_vec();
-        
+
         // Calculate v value for Ethereum (EIP-155)
         let v = if let ChainTransaction::Ethereum(eth_tx) = transaction {
             recovery_id as u64 + 35 + eth_tx.chain_id * 2
         } else {
             recovery_id as u64 + 27 // Legacy format
         };
-        
+
         Ok(ChainSignature::Ethereum(EthereumSignature {
             v,
             r,
@@ -224,32 +264,39 @@ impl ChainHandler for EthereumChainHandler {
             recovery_id,
         }))
     }
-    
-    fn verify_signature(&self, transaction: &ChainTransaction, signature: &ChainSignature, public_key: &[u8]) -> Result<bool> {
+
+    fn verify_signature(
+        &self,
+        transaction: &ChainTransaction,
+        signature: &ChainSignature,
+        public_key: &[u8],
+    ) -> Result<bool> {
         match (transaction, signature) {
             (ChainTransaction::Ethereum(eth_tx), ChainSignature::Ethereum(eth_sig)) => {
                 // Basic validation
                 if eth_sig.r.len() != 32 || eth_sig.s.len() != 32 {
                     return Ok(false);
                 }
-                
+
                 if public_key.len() != 64 && public_key.len() != 65 {
                     return Ok(false);
                 }
-                
+
                 // In a production implementation, you would:
                 // 1. Recreate the transaction hash
                 // 2. Recover the public key from the signature
                 // 3. Compare with the expected public key
-                
+
                 // For now, we'll do basic validation and return true
                 tracing::info!("Ethereum signature verification - basic validation passed for transaction to: {}", eth_tx.to);
                 Ok(true)
             }
-            _ => Err(anyhow::anyhow!("Mismatched transaction and signature types for Ethereum"))
+            _ => Err(anyhow::anyhow!(
+                "Mismatched transaction and signature types for Ethereum"
+            )),
         }
     }
-    
+
     fn from_dummy_transaction(&self, dummy_tx: &DummyTransaction) -> Result<ChainTransaction> {
         Ok(ChainTransaction::Ethereum(EthereumTransaction {
             to: dummy_tx.to.clone(),
@@ -261,14 +308,14 @@ impl ChainHandler for EthereumChainHandler {
             chain_id: dummy_tx.chain_id,
         }))
     }
-    
+
     fn get_chain_params(&self) -> HashMap<String, String> {
         let mut params = HashMap::new();
         params.insert("chain_id".to_string(), self.chain_id.to_string());
         params.insert("signature_type".to_string(), "ECDSA".to_string());
         params
     }
-    
+
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
     }
@@ -276,18 +323,18 @@ impl ChainHandler for EthereumChainHandler {
 
 /// Bitcoin chain handler implementation
 pub struct BitcoinChainHandler {
-    network: String, // mainnet, testnet, regtest
+    network: String,                   // mainnet, testnet, regtest
     group_public_key: Option<Vec<u8>>, // DKG group public key for signing
 }
 
 impl BitcoinChainHandler {
     pub fn new(network: String) -> Self {
-        Self { 
+        Self {
             network,
             group_public_key: None,
         }
     }
-    
+
     /// Set the DKG group public key for signing
     pub fn set_group_public_key(&mut self, group_key: Vec<u8>) {
         self.group_public_key = Some(group_key);
@@ -298,7 +345,7 @@ impl ChainHandler for BitcoinChainHandler {
     fn chain_type(&self) -> &'static str {
         "bitcoin"
     }
-    
+
     fn create_transaction_bytes(&self, transaction: &ChainTransaction) -> Result<Vec<u8>> {
         match transaction {
             ChainTransaction::Bitcoin(btc_tx) => {
@@ -424,7 +471,8 @@ impl ChainHandler for BitcoinChainHandler {
                         if i == 0 {
                             if let Some(ref group_key) = self.group_public_key {
                                 let script_pubkey = create_p2pkh_script_for_signing(group_key)?;
-                                tx_bytes.extend_from_slice(&encode_varint(script_pubkey.len() as u64));
+                                tx_bytes
+                                    .extend_from_slice(&encode_varint(script_pubkey.len() as u64));
                                 tx_bytes.extend_from_slice(&script_pubkey);
                             } else {
                                 return Err(anyhow::anyhow!(
@@ -456,28 +504,38 @@ impl ChainHandler for BitcoinChainHandler {
                     Ok(tx_bytes)
                 }
             }
-            _ => Err(anyhow::anyhow!("Invalid transaction type for Bitcoin handler")),
+            _ => Err(anyhow::anyhow!(
+                "Invalid transaction type for Bitcoin handler"
+            )),
         }
     }
-    
-    fn create_signature(&self, signature_data: &[u8], _recovery_id: u8, _transaction: &ChainTransaction) -> Result<ChainSignature> {
+
+    fn create_signature(
+        &self,
+        signature_data: &[u8],
+        _recovery_id: u8,
+        _transaction: &ChainTransaction,
+    ) -> Result<ChainSignature> {
         if signature_data.len() != 64 {
-            return Err(anyhow::anyhow!("Invalid signature length for Bitcoin: expected 64 bytes, got {}", signature_data.len()));
+            return Err(anyhow::anyhow!(
+                "Invalid signature length for Bitcoin: expected 64 bytes, got {}",
+                signature_data.len()
+            ));
         }
-        
+
         // For Bitcoin, we use DER encoding of ECDSA signature
         // signature_data should be [r (32 bytes) || s (32 bytes)]
         let r = &signature_data[0..32];
         let s = &signature_data[32..64];
-        
+
         // Create DER-encoded signature
         let mut der_sig = Vec::new();
         der_sig.push(0x30); // SEQUENCE tag
-        
+
         // We'll calculate the length later
         let length_pos = der_sig.len();
         der_sig.push(0x00); // Placeholder for length
-        
+
         // Add r value
         der_sig.push(0x02); // INTEGER tag
         if r[0] & 0x80 != 0 {
@@ -488,7 +546,7 @@ impl ChainHandler for BitcoinChainHandler {
             der_sig.push(r.len() as u8);
         }
         der_sig.extend_from_slice(r);
-        
+
         // Add s value
         der_sig.push(0x02); // INTEGER tag
         if s[0] & 0x80 != 0 {
@@ -499,79 +557,90 @@ impl ChainHandler for BitcoinChainHandler {
             der_sig.push(s.len() as u8);
         }
         der_sig.extend_from_slice(s);
-        
+
         // Update the length
         let content_length = der_sig.len() - 2; // Exclude the SEQUENCE tag and length byte
         der_sig[length_pos] = content_length as u8;
-        
+
         // Add SIGHASH_ALL flag
         der_sig.push(0x01); // SIGHASH_ALL
-        
+
         Ok(ChainSignature::Bitcoin(BitcoinSignature {
             signature: der_sig,
             sighash_type: 0x01, // SIGHASH_ALL
         }))
     }
-    
-    fn verify_signature(&self, transaction: &ChainTransaction, signature: &ChainSignature, public_key: &[u8]) -> Result<bool> {
+
+    fn verify_signature(
+        &self,
+        transaction: &ChainTransaction,
+        signature: &ChainSignature,
+        public_key: &[u8],
+    ) -> Result<bool> {
         match (transaction, signature) {
             (ChainTransaction::Bitcoin(_), ChainSignature::Bitcoin(btc_sig)) => {
                 // For Bitcoin signature verification, we would need to:
                 // 1. Create the signature hash from the transaction
                 // 2. Verify the DER-encoded signature against the hash using the public key
                 // This is a complex process involving SIGHASH computation
-                
+
                 // For now, we'll do basic validation
                 if btc_sig.signature.len() < 8 {
                     return Ok(false);
                 }
-                
+
                 if public_key.len() != 33 && public_key.len() != 65 {
                     return Ok(false);
                 }
-                
+
                 // In a production implementation, you would use secp256k1 to verify:
                 // let secp = secp256k1::Secp256k1::verification_only();
                 // let pubkey = secp256k1::PublicKey::from_slice(public_key)?;
                 // let sig = secp256k1::ecdsa::Signature::from_der(&btc_sig.signature[..btc_sig.signature.len()-1])?;
                 // let message = secp256k1::Message::from_slice(&tx_hash)?;
                 // Ok(secp.verify_ecdsa(&message, &sig, &pubkey).is_ok())
-                
+
                 // For now, return true to indicate basic validation passed
                 tracing::warn!("Bitcoin signature verification not fully implemented - returning true for basic validation");
                 Ok(true)
             }
-            _ => Err(anyhow::anyhow!("Mismatched transaction and signature types"))
+            _ => Err(anyhow::anyhow!(
+                "Mismatched transaction and signature types"
+            )),
         }
     }
-    
+
     fn from_dummy_transaction(&self, dummy_tx: &DummyTransaction) -> Result<ChainTransaction> {
         // DummyTransaction is EVM-specific, so we can't directly convert to Bitcoin
         // We'll create a placeholder Bitcoin transaction that indicates this limitation
         tracing::warn!("Converting DummyTransaction to Bitcoin transaction - this creates an invalid placeholder");
-        
+
         let bitcoin_tx = BitcoinTransaction {
             inputs: vec![],
             outputs: vec![],
             version: 2,
             lock_time: 0,
-            witness: None
+            witness: None,
         };
-        
+
         // Log the original dummy transaction details for debugging
-        tracing::info!("DummyTransaction details: to={}, value={}, chain_id={}", 
-                      dummy_tx.to, dummy_tx.value, dummy_tx.chain_id);
-        
+        tracing::info!(
+            "DummyTransaction details: to={}, value={}, chain_id={}",
+            dummy_tx.to,
+            dummy_tx.value,
+            dummy_tx.chain_id
+        );
+
         Ok(ChainTransaction::Bitcoin(bitcoin_tx))
     }
-    
+
     fn get_chain_params(&self) -> HashMap<String, String> {
         let mut params = HashMap::new();
         params.insert("network".to_string(), self.network.clone());
         params.insert("signature_type".to_string(), "ECDSA".to_string());
         params
     }
-    
+
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
     }
@@ -584,26 +653,31 @@ impl ChainHandlerFactory {
     pub fn create_ethereum_handler(chain_id: u64) -> Box<dyn ChainHandler> {
         Box::new(EthereumChainHandler::new(chain_id))
     }
-    
+
     pub fn create_bitcoin_handler(network: String) -> Box<dyn ChainHandler> {
         Box::new(BitcoinChainHandler::new(network))
     }
-    
-    pub fn create_handler_by_type(chain_type: &str, params: HashMap<String, String>) -> Result<Box<dyn ChainHandler>> {
+
+    pub fn create_handler_by_type(
+        chain_type: &str,
+        params: HashMap<String, String>,
+    ) -> Result<Box<dyn ChainHandler>> {
         match chain_type {
             "ethereum" => {
-                let chain_id = params.get("chain_id")
+                let chain_id = params
+                    .get("chain_id")
                     .ok_or_else(|| anyhow::anyhow!("Missing chain_id parameter for Ethereum"))?
                     .parse::<u64>()?;
                 Ok(Self::create_ethereum_handler(chain_id))
             }
             "bitcoin" => {
-                let network = params.get("network")
+                let network = params
+                    .get("network")
                     .unwrap_or(&"mainnet".to_string())
                     .clone();
                 Ok(Self::create_bitcoin_handler(network))
             }
-            _ => Err(anyhow::anyhow!("Unsupported chain type: {}", chain_type))
+            _ => Err(anyhow::anyhow!("Unsupported chain type: {}", chain_type)),
         }
     }
 }

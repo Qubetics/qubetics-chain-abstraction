@@ -463,6 +463,8 @@ impl SigningNode {
             })
             .await?;
 
+        // Note: Chain handler signature creation is handled separately for Bitcoin
+      
         info!(
             "📤 [SIGNING] Node {} broadcasted Bitcoin signature to network for round {}",
             self.id, current_round
@@ -563,7 +565,7 @@ impl SigningNode {
         let payload = serde_json::json!({
             "jsonrpc": "2.0",
             "method": "eth_getTransactionCount",
-            "params": [address, "latest"],
+            "params": [address, "pending"],
             "id": 1
         });
 
@@ -847,17 +849,20 @@ impl SigningNode {
                 
                 info!("💰 [SIGNING] Transaction cost: {} wei", original_tx.value);
                 info!("🔍 [SIGNING] Please ensure the address {} has sufficient balance", nonce_address);
+                info!("🔍 [SIGNING] Data: {:?}", original_tx.data.as_deref().unwrap_or(&[]));
+                info!("🔍 [SIGNING] Original Nonce: {}", original_tx.nonce);
                 
                 // Create signed transaction using the utility function with dynamic nonce
                 let signed_tx = crate::utils::transaction::create_signed_transaction(
                     &crate::rpc_server::DummyTransaction {
                         to: original_tx.to.clone(),
                         value: original_tx.value.clone(),
-                        nonce: dynamic_nonce,
+                        nonce: original_tx.nonce,
                         gas_limit: original_tx.gas_limit,
                         gas_price: original_tx.gas_price.clone(),
                         chain_id: original_tx.chain_id,
                     },
+                    original_tx.data.as_deref(),
                     r,
                     s,
                     v,
@@ -1554,7 +1559,7 @@ impl SigningNode {
         let msg = Message::from_digest_slice(&tx_hash)?;
         let signature = self.create_ecdsa_signature_with_key(&msg, transaction, &signing_key)?;
         let (recovery_id, signature_bytes) = signature.serialize_compact();
-      
+
         info!(
             "✍️ [SIGNING] Node {} created {} signature",
             self.id, self.chain_handler.chain_type()
@@ -1598,7 +1603,7 @@ impl SigningNode {
                 value: transaction.value.clone(),
                 gas_limit: transaction.gas_limit,
                 gas_price: transaction.gas_price.clone(),
-                nonce: transaction.nonce, // This will be replaced with dynamic nonce during reconstruction
+                nonce: transaction.nonce, 
                 data: None,
                 chain_id: transaction.chain_id,
             });
@@ -1609,18 +1614,158 @@ impl SigningNode {
             );
         }
 
-        // let msg = serde_json::to_vec(&crate::types::GossipsubMessage::Signing(
-        //     SigningMessage::ECDSASignature {
-        //         from: self.id.clone(),
-        //         signature: ecdsa_signature,
-        //         round,
-        //         timestamp: SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis(),
-        //         user_eth_address: user_eth_address.clone(), // No user_eth_address for Ethereum
-        //     },
-        // ))?;
-
-        // self.broadcast("signing", &msg).await?;
         info!("📤 [SIGNING] Node {} broadcasted ECDSA signature", self.id);
+        Ok(())
+    }
+
+    /// Sign a contract transaction message (overload for ContractTransaction)
+    pub async fn sign_contract_message(
+        &mut self,
+        _message: Vec<u8>,
+        transaction: &crate::rpc_server::ContractTransaction,
+        user_tweaked_share: Option<k256::Scalar>,
+        user_eth_address: Option<String>,
+    ) -> Result<()> {
+        // Determine which key to use for signing
+        info!("🔑 [SIGNING] user_tweaked_share: {:?}\n", user_tweaked_share);
+        let signing_key = if let Some(tweaked_share) = user_tweaked_share {
+            // Use user's tweaked share for user deposits
+            info!("🔑 [SIGNING] Using user-specific tweaked share for signing");
+            Self::derive_secp_secret(&tweaked_share)
+        } else {
+            // Use network DKG share for network withdrawals
+            info!("🔑 [SIGNING] Using network DKG share for signing");
+            match self.private_key {
+                Some(key) => key,
+                None => {
+                    error!("❌ [SIGNING] Node {} cannot sign: no private key available", self.id);
+                    return Err(anyhow::anyhow!("No private key available"));
+                }
+            }
+        };
+
+        info!(
+            "📝 [SIGNING] Node {} starting to sign contract transaction",
+            self.id
+        );
+
+        // Create chain transaction from contract transaction
+        // Convert hex string data to actual bytes
+        let data_bytes = if transaction.data.is_empty() || transaction.data == "0x" {
+            vec![]
+        } else {
+            hex::decode(transaction.data.strip_prefix("0x").unwrap_or(&transaction.data))
+                .map_err(|e| anyhow::anyhow!("Invalid hex data in contract transaction: {}", e))?
+        };
+        
+        info!("🔍 [SIGNING] Contract transaction data: '{}' -> {} bytes", 
+              transaction.data, data_bytes.len());
+        
+        let chain_transaction = crate::chain::ChainTransaction::Ethereum(crate::chain::EthereumTransaction {
+            to: transaction.to.clone(),
+            value: transaction.value.clone(),
+            gas_limit: transaction.gas_limit,
+            gas_price: transaction.gas_price.clone(),
+            nonce: transaction.nonce,
+            data: Some(data_bytes.clone()),
+            chain_id: transaction.chain_id,
+        });
+
+        // Create transaction bytes using chain handler
+        let tx_bytes = self.chain_handler.create_transaction_bytes(&chain_transaction)?;
+        info!("🔐 [SIGNING] Contract transaction bytes: 0x{}", hex::encode(&tx_bytes));
+
+        // Hash the transaction bytes
+        let mut hasher: sha2::digest::core_api::CoreWrapper<sha3::Keccak256Core> = sha3::Keccak256::new();
+        hasher.update(&tx_bytes);
+        let tx_hash = hasher.finalize();
+        info!("Tx hash: 0x{}", hex::encode(&tx_hash));
+        // Get available nodes and perform VRF selection
+        let available_nodes = self.get_available_nodes_from_manager().await;
+                
+        // Use VrfService for node selection (chain-agnostic)
+        if let Some(vrf_service) = &self.vrf_service {
+            let round = vrf_service.get_current_round().await;
+            let _selection_result = vrf_service.perform_node_selection(
+                &available_nodes, 
+                1, 
+                round, 
+                self.chain_handler.chain_type()
+            ).await?;
+            
+            info!(
+                "🎯 [VRF] Node {} completed VRF selection for {} signing round {}",
+                self.id, self.chain_handler.chain_type(), round
+            );
+        }
+
+        // Create ECDSA signature using secp256k1
+        let msg = Message::from_digest_slice(&tx_hash)?;
+        let signature = self.create_ecdsa_signature_with_key_contract(&msg, &crate::rpc_server::ContractTransaction {
+            to: transaction.to.clone(),
+            value: transaction.value.clone(),
+            nonce: transaction.nonce,
+            gas_limit: transaction.gas_limit,
+            gas_price: transaction.gas_price.clone(),
+            chain_id: transaction.chain_id,
+            data: transaction.data.clone(),
+        }, &signing_key)?;
+        
+        info!("🔍 [SIGNING] Data: {:?}", transaction.data);
+        let (recovery_id, signature_bytes) = signature.serialize_compact();
+
+        // Create ECDSA signature struct
+        let ecdsa_signature = crate::signing::ECDSASignature {
+            signature: signature_bytes.to_vec(),
+            signer_id: self.id.clone(),
+            recovery_id: recovery_id.to_i32() as u8,
+            user_eth_address,
+        };
+
+        info!(
+            "✍️ [SIGNING] Node {} created {} contract signature",
+            self.id, self.chain_handler.chain_type()
+        );
+
+        // Get current round from VRF service
+        let round = if let Some(vrf_service) = &self.vrf_service {
+            vrf_service.get_next_round().await
+        } else {
+            0
+        };
+
+        // Store signature by round
+        {
+            let mut signatures_by_round = self.signatures_by_round.write().await;
+            let round_signatures = signatures_by_round
+                .entry(round)
+                .or_insert_with(HashMap::new);
+            round_signatures.insert(self.id.clone(), ecdsa_signature.clone());
+            info!(
+                "💾 [SIGNING] Node {} stored signature for {} round {}",
+                self.id, self.chain_handler.chain_type(), round
+            );
+        }
+
+        {
+            let mut pending_transactions = self.pending_transactions.write().await;
+            let chain_tx = ChainTransaction::Ethereum(crate::chain::EthereumTransaction {
+                to: transaction.to.clone(),
+                value: transaction.value.clone(),
+                gas_limit: transaction.gas_limit,
+                gas_price: transaction.gas_price.clone(),
+                nonce: transaction.nonce, 
+                data: Some(data_bytes.clone()),
+                chain_id: transaction.chain_id,
+            });
+            pending_transactions.insert(round, (chain_tx, tx_bytes.clone(), None, None));
+            info!(
+                "💾 [SIGNING] Node {} stored original Ethereum transaction for round {} reconstruction",
+                self.id, round
+            );
+        }
+
+        info!("📤 [SIGNING] Node {} broadcasted ECDSA signature for contract transaction", self.id);
         Ok(())
     }
 
@@ -1628,6 +1773,75 @@ impl SigningNode {
         &self,
         message: &Message,
         _transaction: &DummyTransaction,
+        signing_key: &SecretKey,
+    ) -> Result<RecoverableSignature> {
+        // 1) Use provided signing key and context
+        let sk = signing_key;
+        let secp = Secp256k1::new();
+
+        // 2) Fixed nonce k = 0x42…42
+        let k_bytes = [0x42u8; 32];
+        let sec_nonce =
+            SecretKey::from_slice(&k_bytes).map_err(|e| anyhow!("invalid nonce slice: {}", e))?;
+
+        // 3) R = k·G
+        let r = PublicKey::from_secret_key(&secp, &sec_nonce);
+        let rser = r.serialize_uncompressed(); // [0x04 || X(32) || Y(32)]
+        info!("[SIGNING] R serialized: {:?}", rser);
+        if BigUint::from_bytes_be(&rser) == BigUint::from(0u32) {
+            return Err(anyhow!("r is zero, need new nonce"));
+        }
+
+        // 4) r = X mod n
+        let mut r_bytes: [u8; 32] = [0u8; 32];
+        r_bytes.copy_from_slice(&rser[1..33]);
+        let r = BigUint::from_bytes_be(&r_bytes);
+
+        // 5) z = message hash as BigUint
+        let z = BigUint::from_bytes_be(message.as_ref());
+
+        // 6) x = private key as BigUint
+        let sk_bytes = sk.secret_bytes();
+        let x = BigUint::from_bytes_be(&sk_bytes);
+
+        // 7) Curve order n
+        let n = BigUint::parse_bytes(
+            b"FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141",
+            16,
+        )
+        .unwrap();
+
+        // 8) k⁻¹ mod n
+        let k_inv = BigUint::from_bytes_be(&k_bytes)
+            .modinv(&n)
+            .ok_or_else(|| anyhow!("nonce not invertible"))?;
+
+        // 9) s = k⁻¹·(z + r·x) mod n
+        let s = (&k_inv * (&z + (&r * &x) % &n)) % &n;
+
+        // 10) Serialize r‖s into 64-byte array
+        let mut sig_bytes = [0u8; 64];
+        let r_be: Vec<u8> = r.to_bytes_be();
+        let s_be = s.to_bytes_be();
+        sig_bytes[32 - r_be.len()..32].copy_from_slice(&r_be);
+        sig_bytes[64 - s_be.len()..64].copy_from_slice(&s_be);
+
+        // 11) Compute RecoveryId from R_y parity
+        let y_parity = (rser[64] & 1) as i32;
+        let rid: RecoveryId =
+            RecoveryId::from_i32(y_parity).map_err(|e| anyhow!("invalid recovery ID: {}", e))?;
+
+        // 12) Build the recoverable signature
+        let rec_sig = RecoverableSignature::from_compact(&sig_bytes, rid)
+            .map_err(|e| anyhow!("invalid compact signature: {}", e))?;
+
+        Ok(rec_sig)
+    }
+
+    pub fn create_ecdsa_signature_with_key_contract(
+        &self,
+        message: &Message,
+        _transaction: &crate::rpc_server::ContractTransaction,
         signing_key: &SecretKey,
     ) -> Result<RecoverableSignature> {
         // 1) Use provided signing key and context
@@ -2246,18 +2460,6 @@ impl SigningNode {
         }
 
         Ok(result)
-    }
-    /// From a slice of RecoveryIds, pick the one that appears most often.
-    fn get_most_common_recovery_id(&self, recid_ints: &[i32]) -> Result<RecoveryId> {
-        let mut counts = HashMap::new();
-        for &v in recid_ints {
-            *counts.entry(v).or_insert(0usize) += 1;
-        }
-        let (&common, _) = counts
-            .iter()
-            .max_by_key(|&(_, &cnt)| cnt)
-            .ok_or_else(|| anyhow!("No recovery IDs provided"))?;
-        RecoveryId::from_i32(common).map_err(|e| anyhow!("invalid recid {}: {}", common, e))
     }
 
     async fn handle_signed_message(
@@ -3362,30 +3564,6 @@ impl SigningNode {
     /// Get the node ID
     pub fn get_node_id(&self) -> &str {
         &self.id
-    }
-
-    /// Debug function to test ECDSA signature handling
-    pub async fn test_ecdsa_signature_handling(&mut self) -> Result<()> {
-        info!(
-            "🧪 [DEBUG] Testing ECDSA signature handling for node {}",
-            self.id
-        );
-
-        // Create a test signature
-        let test_signature = ECDSASignature {
-            signature: vec![1, 2, 3, 4, 5], // Dummy signature
-            signer_id: "test_signer".to_string(),
-            // message_hash: vec![10, 20, 30, 40], // Dummy hash
-            recovery_id: 0,
-            user_eth_address: None, // No user_eth_address for test
-        };
-
-        // Test the handle_ecdsa_signature function directly
-        self.handle_ecdsa_signature("test_signer".to_string(), test_signature)
-            .await?;
-
-        info!("✅ [DEBUG] ECDSA signature handling test completed successfully");
-        Ok(())
     }
 
     /// Create threshold signature shares from a regular ECDSA signature

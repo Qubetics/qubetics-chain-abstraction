@@ -10,7 +10,7 @@ const RPC_BASE_URL = process.env.RPC_BASE_URL || 'http://localhost:8082';
 
 // 👉 Private key you provided (hex, no 0x prefix needed)
 const TEST_PRIVKEY = '415c01d63918df986d1d537f9b5974f383cac3b4fe9edc44f58f09bdfc5f672a';
-let TEST_TX_ID = "0x61ee4fbe0d5e33a5b135be2a01f12ace5e52c55bdc5b4acc2a388f247275b536";
+let TEST_TX_ID = "0x68bebab82c69d5ebf9748b278d0d8b9c2e83d7130bb9e97376b372c5504a94b1";
 
 // =========================
 // Colors for console output
@@ -25,7 +25,7 @@ const colors = {
   green: '\x1b[32m'
 };
 
-const oooo = 99999
+const oooo = 12537513
 
 function log(message, color = 'reset') {
   console.log(`${colors[color]}${message}${colors.reset}`);
@@ -431,16 +431,17 @@ async function runTests() {
   // }
 
   // // 3) MPC deposit test WITHOUT tx_id (should pass Some(signer) to handle_deposit_intent)
-  log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
-  const amount = 847; // skeep safe for JSON // 922   723  
-  await testUserMpcDeposit({ wallet, amount });
-  await new Promise(r => setTimeout(r, 7000));
+  // log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
+  const amount = 20000000000; // keep safe for JSON
+  // await testUserMpcDeposit({ wallet, amount }); 
+
+  // await new Promise(r => setTimeout(r, 7000));
   // 4) MPC deposit test WITH tx_id (should pass None to handle_deposit_intent)
-  // log(`\n🧪 Test 2: Deposit amount WITH tx_id and status update`, 'blue');
-  // const testTxId = TEST_TX_ID; // Generate a unique test transaction ID
-  // console.log(`📊 Test Tx ID: ${testTxId}`, 'cyan');
-  // const testStatus = 'confirmed'; // Test status
-  // await testUserMpcDepositWithTxId({ wallet, amount, txId: testTxId, status: testStatus });
+  log(`\n🧪 Test 2: Deposit amount WITH tx_id and status update`, 'blue');
+  const testTxId = TEST_TX_ID; // Generate a unique test transaction ID
+  console.log(`📊 Test Tx ID: ${testTxId}`, 'cyan');
+  const testStatus = 'confirmed'; // Test status
+  await testUserMpcDepositWithTxId({ wallet, amount, txId: testTxId, status: testStatus });
 
   // // 5) MPC deposit test with potentially problematic amount (might trigger errors)
   // log(`\n🧪 Test 3: Large deposit amount (might trigger errors)`, 'blue');
