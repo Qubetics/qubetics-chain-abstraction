@@ -330,4 +330,5 @@ impl SigningStorage {
         info!("✅ [SIGNING_STORAGE] Marked round {} as aggregated", round);
         Ok(())
     }
+
 }
