@@ -1604,7 +1604,7 @@ impl NetworkLayer {
                             match chain_transaction {
                                 crate::chain::ChainTransaction::Bitcoin(ref btc_tx) => {
                                     // For Bitcoin, use direct signing with tx_bytes and original transaction
-                                    signing_node.sign_bitcoin_transaction(tx_bytes.clone(), Some(btc_tx.clone()), user_eth_address.clone(), Some(intent_hash.clone())).await?;
+                                    signing_node.sign_bitcoin_transaction(tx_bytes.clone(), Some(btc_tx.clone()), user_eth_address.clone(), Some(intent_hash.clone()), Some(transaction_type.clone()), signing_key).await?;
                                 }
                                 crate::chain::ChainTransaction::Ethereum(ref eth_tx) => {
                                     // For EVM chains, use your proven DummyTransaction logic
@@ -2060,7 +2060,7 @@ impl NetworkLayer {
                             match chain_transaction {
                                 crate::chain::ChainTransaction::Bitcoin(ref btc_tx) => {
                                     // For Bitcoin, use direct signing with tx_bytes and original transaction
-                                    signing_node.sign_bitcoin_transaction( tx_bytes.clone(), Some(btc_tx.clone()), user_eth_address.clone(), Some(intent_hash.clone()) ).await?;
+                                    signing_node.sign_bitcoin_transaction( tx_bytes.clone(), Some(btc_tx.clone()), user_eth_address.clone(), Some(intent_hash.clone()), Some(transaction_type.clone()), signing_key ).await?;
                                 }
                                 crate::chain::ChainTransaction::Ethereum(ref eth_tx) => {
                                     // For EVM chains, use your proven DummyTransaction logic

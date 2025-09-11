@@ -288,7 +288,7 @@ impl SigningNode {
     }
 
     /// Sign Bitcoin transaction directly with tx_bytes (no DummyTransaction wrapper)
-    pub async fn sign_bitcoin_transaction(&mut self, tx_bytes: Vec<u8>, original_tx: Option<BitcoinTransaction>, user_eth_address: Option<String>, intent_hash: Option<String>) -> Result<()> {
+    pub async fn sign_bitcoin_transaction(&mut self, tx_bytes: Vec<u8>, original_tx: Option<BitcoinTransaction>, user_eth_address: Option<String>, intent_hash: Option<String>, transaction_type: Option<crate::types::TransactionType>, user_tweaked_share: Option<k256::Scalar>) -> Result<()> {
         // Clone user_eth_address early to avoid borrow checker issues
         let user_eth_address_clone = user_eth_address.clone();
         
@@ -336,9 +336,26 @@ impl SigningNode {
             0
         };
 
-        // Create ECDSA signature using your proven custom logic (no DummyTransaction needed)
+        // Determine which signing key to use based on transaction type
+        let signing_key = if let Some(tweaked_share) = user_tweaked_share {
+            // Use user's tweaked share for user deposits
+            info!("🔑 [SIGNING] Using user-specific tweaked share for Bitcoin signing");
+            Self::derive_secp_secret(&tweaked_share)
+        } else {
+            // Use network DKG share for network withdrawals
+            info!("🔑 [SIGNING] Using network DKG share for Bitcoin signing");
+            match self.private_key {
+                Some(key) => key,
+                None => {
+                    error!("❌ [SIGNING] Node {} cannot sign Bitcoin transaction: no private key available", self.id);
+                    return Err(anyhow::anyhow!("No private key available"));
+                }
+            }
+        };
+
+        // Create ECDSA signature using the appropriate signing key
         let msg = Message::from_digest_slice(&tx_hash)?;
-        let signature = self.create_ecdsa_signature_direct(&msg)?;
+        let signature = self.create_ecdsa_signature_with_signing_key(&msg, &signing_key)?;
         let (recovery_id, signature_bytes) = signature.serialize_compact();
         
         // ✅ Debug logging to verify signature format
@@ -411,7 +428,7 @@ impl SigningNode {
         // Store original transaction for reconstruction after aggregation
         if let Some(original_tx) = original_tx {
             let mut pending_transactions = self.pending_transactions.write().await;
-            pending_transactions.insert(current_round, (ChainTransaction::Bitcoin(original_tx), tx_bytes.clone(), intent_hash.clone(), None));
+            pending_transactions.insert(current_round, (ChainTransaction::Bitcoin(original_tx), tx_bytes.clone(), intent_hash.clone(), transaction_type.clone()));
             info!(
                 "💾 [SIGNING] Node {} stored original Bitcoin transaction for round {} reconstruction (intent_hash: {:?})",
                 self.id, current_round, intent_hash
@@ -573,7 +590,7 @@ impl SigningNode {
     ) -> Result<Option<String>> {
         let pending_transactions = self.pending_transactions.read().await;
         
-        if let Some((chain_tx, _tx_bytes, _, _)) = pending_transactions.get(&round) {
+        if let Some((chain_tx, _tx_bytes, _, transaction_type)) = pending_transactions.get(&round) {
             if let ChainTransaction::Bitcoin(original_tx) = chain_tx {
                 info!(
                     "🔧 [SIGNING] Node {} reconstructing signed Bitcoin transaction for round {}",
@@ -596,23 +613,45 @@ impl SigningNode {
                     DetectedAddressType::P2PKH
                 };
 
+                // Get user_eth_address from signatures for this round
+                let user_eth_address = {
+                    let signatures_by_round = self.signatures_by_round.read().await;
+                    if let Some(round_signatures) = signatures_by_round.get(&round) {
+                        // Get user_eth_address from any signature in this round (all should have the same value)
+                        round_signatures.values().next().and_then(|sig| sig.user_eth_address.clone())
+                    } else {
+                        None
+                    }
+                };
+
                 // Prepare signature bytes depending on address type
                 let signature = match address_type {
                     DetectedAddressType::P2TR => {
+                        // P2TR uses Schnorr signatures: raw 64-byte (r||s) + sighash
                         let mut sig = aggregated_signature.to_vec();
-                        // Append SIGHASH_ALL for Taproot
-                        sig.push(0x01);
+                        sig.push(0x01); // SIGHASH_ALL
+                        info!("🔍 [SIGNING] P2TR Schnorr signature: {}", hex::encode(&sig));
                         sig
                     },
                     _ => {
+                        // ECDSA signatures need DER encoding for P2PKH, P2WPKH, P2WSH
                         let r = &aggregated_signature[0..32];
                         let s = &aggregated_signature[32..64];
-                        self.create_der_signature(r, s)?
+                        
+                        // Debug: Log signature components
+                        info!("🔍 [SIGNING] ECDSA signature components:");
+                        info!("  Raw R (32 bytes): {}", hex::encode(r));
+                        info!("  Raw S (32 bytes): {}", hex::encode(s));
+                        
+                        // Convert raw r,s to DER-encoded ECDSA signature
+                        let der_sig = Self::create_der_signature(r, s, 0x01)?; // SIGHASH_ALL = 0x01
+                        info!("  DER-encoded signature: {}", hex::encode(&der_sig));
+                        der_sig
                     }
                 };
 
                 // Create the complete signed transaction
-                let signed_tx = self.create_signed_bitcoin_transaction(original_tx, &signature)?;
+                let signed_tx = self.create_signed_bitcoin_transaction(original_tx, &signature, transaction_type, user_eth_address.clone()).await?;
                 
                 let signed_tx_hex = hex::encode(&signed_tx);
                 
@@ -811,51 +850,118 @@ impl SigningNode {
         }
     }
 
-    /// Create DER-encoded signature for Bitcoin
-    fn create_der_signature(&self, r: &[u8], s: &[u8]) -> Result<Vec<u8>> {
-        let mut der_sig = Vec::new();
-        der_sig.push(0x30); // SEQUENCE tag
+    // /// Create DER-encoded signature for Bitcoin
+    // fn create_der_signature(&self, r: &[u8], s: &[u8]) -> Result<Vec<u8>> {
+    //     let mut der_sig = Vec::new();
+    //     der_sig.push(0x30); // SEQUENCE tag
         
-        // Calculate and add the total length later
-        let length_pos = der_sig.len();
-        der_sig.push(0x00); // Placeholder for length
+    //     // Calculate and add the total length later
+    //     let length_pos = der_sig.len();
+    //     der_sig.push(0x00); // Placeholder for length
         
-        // Add r value
-        der_sig.push(0x02); // INTEGER tag
-        if r[0] & 0x80 != 0 {
-            // If high bit is set, prepend 0x00 to make it positive
-            der_sig.push((r.len() + 1) as u8);
-            der_sig.push(0x00);
-        } else {
-            der_sig.push(r.len() as u8);
+    //     // Add r value
+    //     der_sig.push(0x02); // INTEGER tag
+    //     if r[0] & 0x80 != 0 {
+    //         // If high bit is set, prepend 0x00 to make it positive
+    //         der_sig.push((r.len() + 1) as u8);
+    //         der_sig.push(0x00);
+    //     } else {
+    //         der_sig.push(r.len() as u8);
+    //     }
+    //     der_sig.extend_from_slice(r);
+        
+    //     // Add s value  
+    //     der_sig.push(0x02); // INTEGER tag
+    //     if s[0] & 0x80 != 0 {
+    //         // If high bit is set, prepend 0x00 to make it positive
+    //         der_sig.push((s.len() + 1) as u8);
+    //         der_sig.push(0x00);
+    //     } else {
+    //         der_sig.push(s.len() as u8);
+    //     }
+    //     der_sig.extend_from_slice(s);
+        
+    //     // Update the total length
+    //     let content_length = der_sig.len() - 2; // Exclude the SEQUENCE tag and length byte
+    //     der_sig[length_pos] = content_length as u8;
+        
+    //     // Add SIGHASH_ALL flag
+    //     der_sig.push(0x01); // SIGHASH_ALL
+        
+    //     Ok(der_sig)
+    // }
+
+    fn der_encode_int_be(raw: &[u8]) -> Vec<u8> {
+        // 1) Strip leading zeros (minimal encoding)
+        let mut i = 0;
+        while i < raw.len() && raw[i] == 0 {
+            i += 1;
         }
-        der_sig.extend_from_slice(r);
-        
-        // Add s value  
-        der_sig.push(0x02); // INTEGER tag
-        if s[0] & 0x80 != 0 {
-            // If high bit is set, prepend 0x00 to make it positive
-            der_sig.push((s.len() + 1) as u8);
-            der_sig.push(0x00);
-        } else {
-            der_sig.push(s.len() as u8);
+        // If the value is zero, encode as single 0x00
+        let mut v = if i == raw.len() { vec![0u8] } else { raw[i..].to_vec() };
+
+        // 2) If MSB set, prepend 0x00 so it's interpreted as positive
+        if v[0] & 0x80 != 0 {
+            let mut with_pad = Vec::with_capacity(v.len() + 1);
+            with_pad.push(0x00);
+            with_pad.extend_from_slice(&v);
+            v = with_pad;
         }
-        der_sig.extend_from_slice(s);
-        
-        // Update the total length
-        let content_length = der_sig.len() - 2; // Exclude the SEQUENCE tag and length byte
-        der_sig[length_pos] = content_length as u8;
-        
-        // Add SIGHASH_ALL flag
-        der_sig.push(0x01); // SIGHASH_ALL
-        
-        Ok(der_sig)
+
+        // 3) INTEGER: 0x02 | length | value
+        let mut out = Vec::with_capacity(2 + v.len());
+        out.push(0x02);
+        out.push(u8::try_from(v.len()).unwrap()); // short-form length (< 128)
+        out.extend_from_slice(&v);
+        out
     }
 
-    fn create_signed_bitcoin_transaction(
+    fn normalize_low_s(s: &[u8]) -> [u8; 32] {
+        let n = BigUint::from_bytes_be(&CURVE_ORDER);
+        let half = &n >> 1;
+        let mut sv = BigUint::from_bytes_be(s);
+        if sv > half { sv = &n - sv; }
+        let mut out = [0u8; 32];
+        let b = sv.to_bytes_be();
+        out[32 - b.len()..].copy_from_slice(&b);
+        out
+    }
+
+    /// Create a DER-encoded ECDSA (r, s) and append the Bitcoin sighash byte (e.g., 0x01).
+    /// NOTE: Do low-S normalization of `s` *before* calling this if needed.
+    pub fn create_der_signature(r: &[u8], s: &[u8], sighash: u8) -> Result<Vec<u8>> {
+        // Sanity: sighash must be 0x01, 0x02, 0x03 or those | 0x80
+        match sighash {
+            0x01 | 0x02 | 0x03 | 0x81 | 0x82 | 0x83 => {}
+            _ => panic!("Invalid Bitcoin sighash type: 0x{:02x}", sighash),
+        }
+        let s_low = Self::normalize_low_s(s);
+        let r_der = Self::der_encode_int_be(r);
+        let s_der = Self::der_encode_int_be(&s_low);
+
+        // Total DER content length = len(R-INTEGER) + len(S-INTEGER)
+        let content_len = r_der.len() + s_der.len(); // e.g., 69 (0x45) for your sample
+        debug_assert!(content_len < 128);
+
+        // SEQUENCE: 0x30 | content_len | r_der | s_der
+        let mut sig = Vec::with_capacity(2 + content_len + 1); // +1 for sighash (outside DER)
+        sig.push(0x30);
+        sig.push(u8::try_from(content_len).unwrap());
+        sig.extend_from_slice(&r_der);
+        sig.extend_from_slice(&s_der);
+
+        // Append the sighash type byte (NOT part of DER)
+        sig.push(sighash);
+
+        Ok(sig)
+    }
+
+    async fn create_signed_bitcoin_transaction(
         &self,
         original_tx: &BitcoinTransaction,
         signature: &[u8],
+        transaction_type: &Option<crate::types::TransactionType>,
+        user_eth_address: Option<String>,
     ) -> Result<Vec<u8>> {
         let mut signed_tx = Vec::new();
         
@@ -887,7 +993,7 @@ impl SigningNode {
             
             // Create script_sig based on address type
             let script_sig = if i == 0 {
-                self.create_script_sig_for_input(input, signature)?
+                self.create_script_sig_for_input(input, signature, transaction_type, user_eth_address.clone()).await?
             } else {
                 vec![] // Empty for other inputs for now
             };
@@ -919,7 +1025,7 @@ impl SigningNode {
                 for (i, _witness_input) in witness.inputs.iter().enumerate() {
                     if i == 0 {
                         // Create witness stack for the first input
-                        let witness_stack = self.create_witness_stack_for_input(&original_tx.inputs[i], signature)?;
+                        let witness_stack = self.create_witness_stack_for_input(&original_tx.inputs[i], signature, transaction_type, user_eth_address.clone()).await?;
                         signed_tx.extend_from_slice(&self.encode_varint(witness_stack.len() as u64));
                         for item in witness_stack {
                             signed_tx.extend_from_slice(&self.encode_varint(item.len() as u64));
@@ -941,7 +1047,7 @@ impl SigningNode {
 
 
     /// Create script_sig for different input types
-    fn create_script_sig_for_input(&self, input: &BitcoinInput, signature: &[u8]) -> Result<Vec<u8>> {
+    async fn create_script_sig_for_input(&self, input: &BitcoinInput, signature: &[u8], transaction_type: &Option<crate::types::TransactionType>, user_eth_address: Option<String>) -> Result<Vec<u8>> {
         if let Some(witness_utxo) = &input.witness_utxo {
             // For SegWit inputs, script_sig is usually empty or contains redeem script
             match witness_utxo.script_pubkey.len() {
@@ -964,7 +1070,8 @@ impl SigningNode {
             }
         } else {
             // Legacy P2PKH - create standard script_sig
-            let group_key_bytes = self.get_group_public_key_bytes()?;
+            let group_key_bytes = self.get_group_public_key_bytes(transaction_type.clone(), user_eth_address.clone()).await?;
+            info!("🔍 [SIGNING] Using public key: {}", hex::encode(&group_key_bytes));
             let mut script_sig = Vec::new();
             
             // Push signature (DER format)
@@ -980,17 +1087,18 @@ impl SigningNode {
     }
 
     /// Create witness stack for SegWit inputs
-    fn create_witness_stack_for_input(&self, input: &BitcoinInput, signature: &[u8]) -> Result<Vec<Vec<u8>>> {
+    async fn create_witness_stack_for_input(&self, input: &BitcoinInput, signature: &[u8], transaction_type: &Option<crate::types::TransactionType>, user_eth_address: Option<String>) -> Result<Vec<Vec<u8>>> {
         if let Some(witness_utxo) = &input.witness_utxo {
             match witness_utxo.script_pubkey.len() {
                 22 if witness_utxo.script_pubkey[0] == 0x00 && witness_utxo.script_pubkey[1] == 0x14 => {
                     // P2WPKH: [signature, pubkey]
-                    let group_key_bytes = self.get_group_public_key_bytes()?;
+                    let group_key_bytes = self.get_group_public_key_bytes(transaction_type.clone(), user_eth_address.clone()).await?;
+                    info!("🔍 [SIGNING] P2WPKH - Using public key: {}", hex::encode(&group_key_bytes));
                     Ok(vec![signature.to_vec(), group_key_bytes])
                 },
                 34 if witness_utxo.script_pubkey[0] == 0x00 && witness_utxo.script_pubkey[1] == 0x20 => {
                     // P2WSH: [signature, script, ...]
-                    let group_key_bytes = self.get_group_public_key_bytes()?;
+                    let group_key_bytes = self.get_group_public_key_bytes(transaction_type.clone(), user_eth_address.clone()).await?;
                     Ok(vec![signature.to_vec(), group_key_bytes])
                 },
                 34 if witness_utxo.script_pubkey[0] == 0x51 && witness_utxo.script_pubkey[1] == 0x20 => {
@@ -1000,7 +1108,7 @@ impl SigningNode {
                 },
                 _ => {
                     // P2SH-wrapped SegWit
-                    let group_key_bytes = self.get_group_public_key_bytes()?;
+                    let group_key_bytes = self.get_group_public_key_bytes(transaction_type.clone(), user_eth_address.clone()).await?;
                     Ok(vec![signature.to_vec(), group_key_bytes])
                 }
             }
@@ -1010,18 +1118,73 @@ impl SigningNode {
         }
     }
 
-    /// Get the group public key bytes from DKG
-    fn get_group_public_key_bytes(&self) -> Result<Vec<u8>> {
-        if let Some(group_key) = self.group_public_key {
-            // ✅ Convert k256::ProjectivePoint to compressed bytes for Bitcoin
-            let affine_point = group_key.to_affine();
-            let encoded_point = k256::EncodedPoint::from(affine_point);
-            let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
-            
-            info!("🔑 [SIGNING] Using REAL DKG group public key: {}", hex::encode(&compressed_bytes));
-            Ok(compressed_bytes)
-        } else {
-            Err(anyhow::anyhow!("DKG group public key not available - ensure DKG process is completed"))
+    /// Get the appropriate public key bytes based on transaction type
+    async fn get_group_public_key_bytes(&self, transaction_type: Option<crate::types::TransactionType>, user_eth_address: Option<String>) -> Result<Vec<u8>> {
+        match transaction_type {
+            Some(crate::types::TransactionType::UserToVault) => {
+                // UserToVault transactions use the user's specific group key from user registry
+                if let Some(user_addr) = &user_eth_address {
+                    if let Some(user_registry) = &self.user_registry {
+                        if let Some(user) = user_registry.get_user_by_address(user_addr).await {
+                            if let Some(user_group_key) = &user.user_group_key {
+                                let affine_point = user_group_key.0; // user_group_key is SerializablePoint(AffinePoint)
+                                let encoded_point = k256::EncodedPoint::from(affine_point);
+                                let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
+                                
+                                info!("🔑 [SIGNING] UserToVault: Using user-specific group public key for {}: {}", user_addr, hex::encode(&compressed_bytes));
+                                Ok(compressed_bytes)
+                            } else {
+                                Err(anyhow::anyhow!("User {} has no group key available - ensure user registration and key derivation is completed", user_addr))
+                            }
+                        } else {
+                            Err(anyhow::anyhow!("User {} not found in registry", user_addr))
+                        }
+                    } else {
+                        Err(anyhow::anyhow!("User registry not available for UserToVault transaction"))
+                    }
+                } else {
+                    Err(anyhow::anyhow!("UserToVault transaction requires user_eth_address"))
+                }
+            },
+            Some(crate::types::TransactionType::NetworkToTarget) => {
+                // NetworkToTarget uses the DKG group public key
+                if let Some(group_key) = self.group_public_key {
+                    let affine_point = group_key.to_affine();
+                    let encoded_point = k256::EncodedPoint::from(affine_point);
+                    let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
+                    
+                    info!("🔑 [SIGNING] NetworkToTarget: Using DKG group public key: {}", hex::encode(&compressed_bytes));
+                    Ok(compressed_bytes)
+                } else {
+                    Err(anyhow::anyhow!("DKG group public key not available for NetworkToTarget transaction - ensure DKG process is completed"))
+                }
+            },
+            Some(crate::types::TransactionType::VaultToNetwork) => {
+                // VaultToNetwork uses the vault group key
+                if let Some(vault_key) = self.vault_group_key {
+                    let affine_point = vault_key.to_affine();
+                    let encoded_point = k256::EncodedPoint::from(affine_point);
+                    let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
+                    
+                    info!("🔑 [SIGNING] VaultToNetwork: Using vault group public key: {}", hex::encode(&compressed_bytes));
+                    Ok(compressed_bytes)
+                } else {
+                    Err(anyhow::anyhow!("Vault group public key not available for VaultToNetwork transaction - ensure vault key is set"))
+                }
+            },
+            None => {
+                // Fallback to DKG group public key for backward compatibility
+                if let Some(group_key) = self.group_public_key {
+                    let affine_point = group_key.to_affine();
+                    let encoded_point = k256::EncodedPoint::from(affine_point);
+                    let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
+                    
+                    info!("🔑 [SIGNING] Fallback: Using DKG group public key: {}", hex::encode(&compressed_bytes));
+                    Ok(compressed_bytes)
+                } else {
+                    Err(anyhow::anyhow!("DKG group public key not available - ensure DKG process is completed"))
+                }
+            }
         }
     }
 
@@ -1066,17 +1229,15 @@ impl SigningNode {
     }
 
     /// Create ECDSA signature directly without DummyTransaction (pure Bitcoin signing)
-    /// This is your exact proven logic extracted from create_ecdsa_signature
-    pub fn create_ecdsa_signature_direct(
+    /// Create ECDSA signature with a specific signing key (for Bitcoin transactions)
+    pub fn create_ecdsa_signature_with_signing_key(
         &self,
         message: &Message,
+        signing_key: &SecretKey,
     ) -> Result<RecoverableSignature> {
         // Your exact proven custom signature logic (copied from create_ecdsa_signature)
-        // 1) Get secret key and context
-        let sk = self
-            .private_key
-            .as_ref()
-            .ok_or_else(|| anyhow!("No private key available"))?;
+        // 1) Use provided signing key and context
+        let sk = signing_key;
         let secp = Secp256k1::new();
 
         // 2) Fixed nonce k = 0x42…42
