@@ -24,7 +24,7 @@ const colors = {
   cyan: '\x1b[36m',
   green: '\x1b[32m'
 };
-const oooo = 9090
+const oooo = 99999
 
 function log(message, color = 'reset') {
   console.log(`${colors[color]}${message}${colors.reset}`);
@@ -415,7 +415,7 @@ async function runTests() {
   const signerAddr = await wallet.getAddress();
   log(`\n🔑 Derived signer address from TEST_PRIVKEY: ${signerAddr}`, 'blue');
 
-  // // 1) DKG status
+  // 1) DKG status
   // await testDKGStatus();
 
   // // 2) Register ONLY the derived address 
@@ -431,15 +431,15 @@ async function runTests() {
 
   // 3) MPC deposit test WITHOUT tx_id (should pass Some(signer) to handle_deposit_intent)
   log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
-  const amount = 900; // skeep safe for JSON
+  const amount = 847; // skeep safe for JSON // 922   723  
   await testUserMpcDeposit({ wallet, amount });
   await new Promise(r => setTimeout(r, 7000));
   // 4) MPC deposit test WITH tx_id (should pass None to handle_deposit_intent)
-  log(`\n🧪 Test 2: Deposit amount WITH tx_id and status update`, 'blue');
-  const testTxId = TEST_TX_ID; // Generate a unique test transaction ID
-  console.log(`📊 Test Tx ID: ${testTxId}`, 'cyan');
-  const testStatus = 'confirmed'; // Test status
-  await testUserMpcDepositWithTxId({ wallet, amount, txId: testTxId, status: testStatus });
+  // log(`\n🧪 Test 2: Deposit amount WITH tx_id and status update`, 'blue');
+  // const testTxId = TEST_TX_ID; // Generate a unique test transaction ID
+  // console.log(`📊 Test Tx ID: ${testTxId}`, 'cyan');
+  // const testStatus = 'confirmed'; // Test status
+  // await testUserMpcDepositWithTxId({ wallet, amount, txId: testTxId, status: testStatus });
 
   // // 5) MPC deposit test with potentially problematic amount (might trigger errors)
   // log(`\n🧪 Test 3: Large deposit amount (might trigger errors)`, 'blue');
