@@ -6,6 +6,7 @@ pub mod adkg_secp256k1;
 pub mod chain;
 pub mod commands;
 pub mod consensus;
+pub mod contract;
 pub mod database;
 pub mod network;
 pub mod node_management;
@@ -21,7 +22,7 @@ pub use commands::CommandProcessor;
 pub use consensus::{ConsensusNode, DatabaseConsensusNode};
 pub use database::{
     ConsensusStorage, DkgStorage, Database, DatabaseConfig, IntentStorage, SigningStorage,
-    TransactionStatusStorage, UserStorage,
+    TransactionStatusStorage, UserStorage, RewardStorage,
 };
 pub use network::NetworkLayer;
 pub use node_management::{

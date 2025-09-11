@@ -235,7 +235,7 @@ pub fn calculate_bitcoin_fee(num_inputs: usize, num_outputs: usize) -> u64 {
     std::cmp::max(calculated_fee as u64, 1000)
 }
 
-async fn fetch_ethereum_nonce(address: &str, chain_id: u64) -> Result<u64> {
+pub async fn fetch_ethereum_nonce(address: &str, chain_id: u64) -> Result<u64> {
     let rpc_url = match chain_id {
         9029 => std::env::var("MPC_ETHEREUM_RPC_URL")
             .unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string()),
@@ -304,6 +304,7 @@ pub async fn create_chain_transaction_from_deposit_intent(
     transaction_type: crate::types::TransactionType,
     vault_eth_address: Option<&String>,
     vault_btc_address: Option<&String>,
+    amount: u128,
 ) -> Result<ChainTransaction> {
     // Determine chain type based on transaction type:
     // - UserToVault: use source_chain (user is depositing FROM this chain)
@@ -314,6 +315,8 @@ pub async fn create_chain_transaction_from_deposit_intent(
         crate::types::TransactionType::NetworkToTarget => &intent.target_chain.to_lowercase(),
         crate::types::TransactionType::VaultToNetwork => &intent.source_chain.to_lowercase(),
     };
+
+    info!("amount::::: {}", amount);
 
     if is_evm_chain(chain_to_use) {
         // Create Ethereum-compatible transaction
@@ -340,7 +343,7 @@ pub async fn create_chain_transaction_from_deposit_intent(
                     return Err(anyhow::anyhow!("UserToVault transaction requires derived_eth_address"));
                 }
             }
-            crate::types::TransactionType::NetworkToTarget => {
+            crate::types::TransactionType::NetworkToTarget => { 
                 // Network withdrawal: FROM network address TO target address
                 tracing::info!(
                     "💰 [TRANSACTION] Network to target: {} -> {}",
@@ -362,7 +365,7 @@ pub async fn create_chain_transaction_from_deposit_intent(
 
         let ethereum_tx = EthereumTransaction {
             to: to_address.to_string(),
-            value: format!("0x{:x}", intent.amount),
+            value: format!("0x{:x}", amount),
             gas_limit: 300000,
             gas_price: get_default_gas_price_for_chain(chain_to_use),
             nonce: fetch_ethereum_nonce(&from_address, chain_id).await?,
@@ -437,7 +440,7 @@ pub async fn create_chain_transaction_from_deposit_intent(
         }
 
         // Convert amount from wei to satoshis (assuming 1:1 conversion for now, you might want to adjust this)
-        let amount_satoshis = (intent.amount) as u64;
+        let amount_satoshis = (amount) as u64;
         let estimated_fee = calculate_bitcoin_fee(utxos.len(), 2); // 2 outputs (recipient + change)
 
         // Select UTXOs that provide enough value
@@ -522,7 +525,7 @@ pub async fn create_chain_transaction_from_deposit_intent(
 }
 
 /// Get default gas price for different EVM chains
-fn get_default_gas_price_for_chain(chain_name: &str) -> String {
+pub fn get_default_gas_price_for_chain(chain_name: &str) -> String {
     match chain_name {
         "ethereum" | "eth" => "0x4A817C800".to_string(), // 20 Gwei
         "qubetics" => "0x3B9ACA00".to_string(),          // 1 Gwei
