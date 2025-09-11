@@ -430,9 +430,9 @@ async function runTests() {
   // }
 
   // // 3) MPC deposit test WITHOUT tx_id (should pass Some(signer) to handle_deposit_intent)
-  log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
-  const amount = 1000000000; // keep safe for JSON
-  await testUserMpcDeposit({ wallet, amount });
+  // log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
+  // const amount = 2000000000; // keep safe for JSON
+  // await testUserMpcDeposit({ wallet, amount });
 
   // await new Promise(r => setTimeout(r, 7000));
   // // 4) MPC deposit test WITH tx_id (should pass None to handle_deposit_intent)

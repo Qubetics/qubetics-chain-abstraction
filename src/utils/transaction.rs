@@ -258,7 +258,7 @@ async fn fetch_ethereum_nonce(address: &str, chain_id: u64) -> Result<u64> {
     let payload = serde_json::json!({
         "jsonrpc": "2.0",
         "method": "eth_getTransactionCount",
-        "params": [address, "latest"],
+        "params": [address, "pending"],
         "id": 1
     });
 
@@ -292,6 +292,70 @@ async fn fetch_ethereum_nonce(address: &str, chain_id: u64) -> Result<u64> {
         let error_text = response.text().await?;
         tracing::error!("❌ Failed to fetch nonce: {}", error_text);
         Err(anyhow::anyhow!("Nonce fetch failed: {}", error_text))
+    }
+}
+
+/// Estimate gas for a call using eth_estimateGas
+async fn estimate_gas_for_deposit_intent(
+    from: &str,
+    to: &str,
+    data_hex: &str,
+    chain_id: u64,
+) -> Result<u64> {
+    let rpc_url = match chain_id {
+        9029 => std::env::var("MPC_ETHEREUM_RPC_URL")
+            .unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string()),
+        1 => "https://mainnet.infura.io/v3/YOUR_PROJECT_ID".to_string(),
+        _ => {
+            return Err(anyhow::anyhow!(
+                "Unsupported chain ID for gas estimation: {}",
+                chain_id
+            ))
+        }
+    };
+
+    let client = reqwest::Client::new();
+    let payload = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "eth_estimateGas",
+        "params": [{
+            "from": from,
+            "to": to,
+            "data": data_hex
+        }],
+        "id": 1
+    });
+
+    info!(
+        "🔧 Estimating gas for contract call from {} to {}",
+        from, to
+    );
+
+    let response = client
+        .post(&rpc_url)
+        .header("Content-Type", "application/json")
+        .json(&payload)
+        .send()
+        .await?;
+
+    if response.status().is_success() {
+        let result: serde_json::Value = response.json().await?;
+        if let Some(error) = result.get("error") {
+            tracing::error!("❌ Gas estimation failed: {}", error);
+            return Err(anyhow::anyhow!("Gas estimation failed: {}", error));
+        }
+        if let Some(gas_hex) = result.get("result") {
+            let gas_str = gas_hex.as_str().unwrap_or("0x0");
+            let gas = u64::from_str_radix(gas_str.strip_prefix("0x").unwrap_or(gas_str), 16)?;
+            info!("✅ Estimated gas: {}", gas);
+            Ok(gas)
+        } else {
+            Err(anyhow::anyhow!("No gas result in response"))
+        }
+    } else {
+        let error_text = response.text().await?;
+        tracing::error!("❌ Gas estimation failed: {}", error_text);
+        Err(anyhow::anyhow!("Gas estimation failed: {}", error_text))
     }
 }
 
@@ -373,7 +437,7 @@ pub async fn create_chain_transaction_from_deposit_intent(
 
         let ethereum_tx = EthereumTransaction {
             to: to_address.to_string(),
-            value: "0x0".to_string(),
+            value: amount.to_string(),
             gas_limit: 300000,
             gas_price: get_default_gas_price_for_chain(chain_to_use),
             nonce: fetch_ethereum_nonce(&from_address, chain_id).await?,
@@ -542,32 +606,91 @@ pub async fn create_chain_transaction_from_deposit_intent(
 pub async fn create_chain_transaction_from_contract_call(
     group_public_key: Option<k256::ProjectivePoint>,
     amount: u128,
+    intent: &DepositIntent,
+    intent_hash: &str,
+    tx_hash: Vec<u8>,
 ) -> Result<ChainTransaction> {
     let network_address = get_eth_address_from_group_key(group_public_key.unwrap());
     let chain_id = get_chain_id_from_name("qubetics")
         .ok_or_else(|| anyhow::anyhow!("Unknown EVM chain: {}", "eth"))?;
 
-    // Get contract address from environment variable
-    let contract_address = std::env::var("INTENT_MANAGER_CONTRACT_ADDRESS")
+    // Get contract address from environment variable and normalize to 0x-prefixed
+    let contract_address_env = std::env::var("INTENT_MANAGER_CONTRACT_ADDRESS")
         .unwrap_or_else(|_| "0x0000000000000000000000000000000000000000".to_string());
 
-    let ethereum_tx = EthereumTransaction {
-        to: contract_address,
-        value: "0x0".to_string(),
-        gas_limit: 300000,
-        gas_price: get_default_gas_price_for_chain("qubetics"),
-        nonce: fetch_ethereum_nonce(&network_address, chain_id).await?,
-        data: encode_deposit_intent_calldata(
-            "source_address",
-            "target_address",
-            "source_chain",
-            "target_chain",
+    info!(
+            "[create_chain_transaction_from_contract_call] encode_deposit_intent_calldata params:\n  source_address: {}\n  target_address: {}\n  source_chain: {}\n  target_chain: {}\n  amount: {}\n  source_token: {}\n  target_token: {}\n  transaction_hash: {}\n  intent_hash: {}",
+            &intent.source_address,
+            &intent.target_address,
+            &intent.source_chain,
+            &intent.target_chain,
             amount,
-            "source_token",
-            "target_token",
-            "transaction_hash",
-            "intent_id",
-        ),
+            &intent.source_token,
+            &intent.target_token,
+            &hex::encode(&tx_hash),
+            intent_hash
+        );
+
+    info!("🔧 [CONTRACT] Network address: {}", network_address);
+    info!("🔧 [CONTRACT] Chain ID: {}", chain_id);
+
+    // Estimate gas for the contract call
+    let calldata = encode_deposit_intent_calldata(
+        &intent.source_address,
+        &intent.target_address,
+        &intent.source_chain,
+        &intent.target_chain,
+        amount,
+        &intent.source_token,
+        &intent.target_token,
+        &format!("0x{}", hex::encode(tx_hash)),
+        intent_hash,
+    );
+
+    let calldata_hex = calldata
+        .as_ref()
+        .map(|d| format!("0x{}", hex::encode(d)))
+        .unwrap_or_else(|| "0x".to_string());
+    let estimated_gas = estimate_gas_for_deposit_intent(
+        &network_address,
+        &contract_address_env,
+        &calldata_hex,
+        chain_id,
+    )
+    .await
+    .unwrap_or(300000);
+    let gas_limit = estimated_gas + (estimated_gas / 10); // Add 10% buffer
+
+    info!(
+        "🔧 [CONTRACT] Estimated gas: {}, using gas_limit: {}",
+        estimated_gas, gas_limit
+    );
+
+    let nonce = fetch_ethereum_nonce(&network_address, chain_id).await?;
+    let gas_price = get_default_gas_price_for_chain("qubetics");
+
+    info!("🔧 [CONTRACT] Final transaction details:");
+    info!("  - To: {}", contract_address_env);
+    info!("  - From: {}", network_address);
+    info!("  - Nonce: {}", nonce);
+    info!("  - Gas Limit: {}", gas_limit);
+    info!("  - Gas Price: {}", gas_price);
+    info!("  - Chain ID: {}", chain_id);
+    info!(
+        "  - Calldata: 0x{}",
+        calldata
+            .as_ref()
+            .map(|d| hex::encode(d))
+            .unwrap_or_else(|| "".to_string())
+    );
+
+    let ethereum_tx = EthereumTransaction {
+        to: contract_address_env,
+        value: "0x0".to_string(),
+        gas_limit,
+        gas_price,
+        nonce,
+        data: calldata,
         chain_id,
     };
 
