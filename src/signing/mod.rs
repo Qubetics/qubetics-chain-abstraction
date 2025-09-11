@@ -654,7 +654,7 @@ impl SigningNode {
         let payload = serde_json::json!({
             "jsonrpc": "2.0",
             "method": "eth_getTransactionCount",
-            "params": [address, "latest"],
+            "params": [address, "pending"],
             "id": 1
         });
 
@@ -938,6 +938,7 @@ impl SigningNode {
                 info!("💰 [SIGNING] Transaction cost: {} wei", original_tx.value);
                 info!("🔍 [SIGNING] Please ensure the address {} has sufficient balance", nonce_address);
                 info!("🔍 [SIGNING] Data: {:?}", original_tx.data.as_deref().unwrap_or(&[]));
+                info!("🔍 [SIGNING] Original Nonce: {}", original_tx.nonce);
                 
                 // Create signed transaction using the utility function with dynamic nonce
                 let signed_tx = crate::utils::transaction::create_signed_transaction(
@@ -2275,18 +2276,6 @@ impl SigningNode {
         }
 
         Ok(result)
-    }
-    /// From a slice of RecoveryIds, pick the one that appears most often.
-    fn get_most_common_recovery_id(&self, recid_ints: &[i32]) -> Result<RecoveryId> {
-        let mut counts = HashMap::new();
-        for &v in recid_ints {
-            *counts.entry(v).or_insert(0usize) += 1;
-        }
-        let (&common, _) = counts
-            .iter()
-            .max_by_key(|&(_, &cnt)| cnt)
-            .ok_or_else(|| anyhow!("No recovery IDs provided"))?;
-        RecoveryId::from_i32(common).map_err(|e| anyhow!("invalid recid {}: {}", common, e))
     }
 
     async fn handle_signed_message(

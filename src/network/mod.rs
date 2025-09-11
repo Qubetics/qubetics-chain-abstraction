@@ -1511,6 +1511,13 @@ impl NetworkLayer {
                         None
                     };
                     
+                    // Get vault group key for vault operations
+                    let vault_group_key = if let Some(dkg_node) = &self.dkg_node {
+                        dkg_node.get_vault_group_key().await
+                    } else {
+                        None
+                    };
+                    
                     // Get vault addresses from database
                     let (vault_eth_addr, vault_btc_addr) = if let Some(registry) = &self.user_registry {
                         let database = registry.get_database();
@@ -1654,9 +1661,9 @@ impl NetworkLayer {
                                         let tx_hash = hasher.finalize();
                                         info!("Tx hash --> for contract call: 0x{}", hex::encode(&tx_hash));
 
-                                        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                                        tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
 
-                                        let contract_call_result = crate::utils::transaction::create_chain_transaction_from_contract_call(group_public_key, amount, &intent, &intent_hash, tx_hash.to_vec(), transaction_type.clone()).await;
+                                        let contract_call_result = crate::utils::transaction::create_chain_transaction_from_contract_call(vault_group_key, amount, &intent, &intent_hash, tx_hash.to_vec(), transaction_type.clone()).await;
 
                                         match contract_call_result {
                                             Ok(contract_transaction) => {
@@ -1680,12 +1687,12 @@ impl NetworkLayer {
                                                         let contract_tx_bytes = crate::utils::transaction::create_transaction_for_signing_contract(&contract_tx);
                                                         debug!("→ RLP payload contract call: 0x{}", hex::encode(&contract_tx_bytes));
                         
-                                                        let network_tweaked_share = if let Some(dkg_node) = &self.dkg_node {
-                                                            dkg_node.get_final_secret_share().await
+                                                        let vault_tweaked_share = if let Some(dkg_node) = &self.dkg_node {
+                                                            dkg_node.get_vault_tweaked_secret_share().await
                                                         } else {
                                                             None
                                                         };
-                                                        signing_node.sign_contract_message(contract_tx_bytes, &contract_tx, network_tweaked_share, None).await?;
+                                                        signing_node.sign_contract_message(contract_tx_bytes, &contract_tx, vault_tweaked_share, None).await?;
                                                     }
                                                     _ => {
                                                         info!("📝 [GOSSIPSUB] Contract call transaction is not Ethereum type, skipping");
@@ -1696,7 +1703,7 @@ impl NetworkLayer {
                                                 warn!("❌ [GOSSIPSUB] Failed to create contract call transaction: {}", e);
                                             }
                                         }
-                                    } else {
+                                    } else if matches!(transaction_type, crate::types::TransactionType::NetworkToTarget){
                                         info!("📝 [GOSSIPSUB] networkToTarget transaction detected - executing contract call");
                                         
                                         use sha3::{Digest, Keccak256};
@@ -1707,7 +1714,7 @@ impl NetworkLayer {
 
                                         tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
 
-                                        let contract_call_result = crate::utils::transaction::create_chain_transaction_from_contract_call(group_public_key, amount, &intent, &intent_hash, tx_hash.to_vec(), transaction_type.clone()).await;
+                                        let contract_call_result = crate::utils::transaction::create_chain_transaction_from_contract_call(vault_group_key, amount, &intent, &intent_hash, tx_hash.to_vec(), transaction_type.clone()).await;
 
                                         match contract_call_result {
                                             Ok(contract_transaction) => {
@@ -1731,12 +1738,12 @@ impl NetworkLayer {
                                                         let contract_tx_bytes = crate::utils::transaction::create_transaction_for_signing_contract(&contract_tx);
                                                         debug!("→ RLP payload contract call: 0x{}", hex::encode(&contract_tx_bytes));
                         
-                                                        let network_tweaked_share = if let Some(dkg_node) = &self.dkg_node {
-                                                            dkg_node.get_final_secret_share().await
+                                                        let vault_tweaked_share = if let Some(dkg_node) = &self.dkg_node {
+                                                            dkg_node.get_vault_tweaked_secret_share().await
                                                         } else {
                                                             None
                                                         };
-                                                        signing_node.sign_contract_message(contract_tx_bytes, &contract_tx, network_tweaked_share, None).await?;
+                                                        signing_node.sign_contract_message(contract_tx_bytes, &contract_tx, vault_tweaked_share, None).await?;
                                                     }
                                                     _ => {
                                                         info!("📝 [GOSSIPSUB] Contract call transaction is not Ethereum type, skipping");
@@ -2074,6 +2081,12 @@ impl NetworkLayer {
                     } else {
                         None
                     };
+
+                    let vault_group_key = if let Some(dkg_node) = &self.dkg_node {
+                        dkg_node.get_vault_group_key().await
+                    } else {
+                        None
+                    };
                     
                     // Get vault addresses from database
                     let (vault_eth_addr, vault_btc_addr) = if let Some(registry) = &self.user_registry {
@@ -2218,9 +2231,9 @@ impl NetworkLayer {
                                         let tx_hash = hasher.finalize();
                                         info!("Tx hash --> for contract call: 0x{}", hex::encode(&tx_hash));
 
-                                        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                                        tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
 
-                                        let contract_call_result = crate::utils::transaction::create_chain_transaction_from_contract_call(group_public_key, amount, &intent, &intent_hash, tx_hash.to_vec(), transaction_type.clone()).await;
+                                        let contract_call_result = crate::utils::transaction::create_chain_transaction_from_contract_call(vault_group_key, amount, &intent, &intent_hash, tx_hash.to_vec(), transaction_type.clone()).await;
 
                                         match contract_call_result {
                                             Ok(contract_transaction) => {
@@ -2244,12 +2257,12 @@ impl NetworkLayer {
                                                         let contract_tx_bytes = crate::utils::transaction::create_transaction_for_signing_contract(&contract_tx);
                                                         debug!("→ RLP payload contract call: 0x{}", hex::encode(&contract_tx_bytes));
                         
-                                                        let network_tweaked_share = if let Some(dkg_node) = &self.dkg_node {
-                                                            dkg_node.get_final_secret_share().await
+                                                        let vault_tweaked_share = if let Some(dkg_node) = &self.dkg_node {
+                                                            dkg_node.get_vault_tweaked_secret_share().await
                                                         } else {
                                                             None
                                                         };
-                                                        signing_node.sign_contract_message(contract_tx_bytes, &contract_tx, network_tweaked_share, None).await?;
+                                                        signing_node.sign_contract_message(contract_tx_bytes, &contract_tx, vault_tweaked_share, None).await?;
                                                     }
                                                     _ => {
                                                         info!("📝 [LOCAL] Contract call transaction is not Ethereum type, skipping");
@@ -2260,7 +2273,7 @@ impl NetworkLayer {
                                                 warn!("❌ [LOCAL] Failed to create contract call transaction: {}", e);
                                             }
                                         }
-                                    } else {
+                                    } else if matches!(transaction_type, crate::types::TransactionType::NetworkToTarget){
                                         info!("📝 [GOSSIPSUB] networkToTarget transaction detected - executing contract call");
                                         
                                         use sha3::{Digest, Keccak256};
@@ -2271,7 +2284,7 @@ impl NetworkLayer {
 
                                         tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
 
-                                        let contract_call_result = crate::utils::transaction::create_chain_transaction_from_contract_call(group_public_key, amount, &intent, &intent_hash, tx_hash.to_vec(), transaction_type.clone()).await;
+                                        let contract_call_result = crate::utils::transaction::create_chain_transaction_from_contract_call(vault_group_key, amount, &intent, &intent_hash, tx_hash.to_vec(), transaction_type.clone()).await;
 
                                         match contract_call_result {
                                             Ok(contract_transaction) => {
@@ -2295,12 +2308,12 @@ impl NetworkLayer {
                                                         let contract_tx_bytes = crate::utils::transaction::create_transaction_for_signing_contract(&contract_tx);
                                                         debug!("→ RLP payload contract call: 0x{}", hex::encode(&contract_tx_bytes));
                         
-                                                        let network_tweaked_share = if let Some(dkg_node) = &self.dkg_node {
-                                                            dkg_node.get_final_secret_share().await
+                                                        let vault_tweaked_share = if let Some(dkg_node) = &self.dkg_node {
+                                                            dkg_node.get_vault_tweaked_secret_share().await
                                                         } else {
                                                             None
                                                         };
-                                                        signing_node.sign_contract_message(contract_tx_bytes, &contract_tx, network_tweaked_share, None).await?;
+                                                        signing_node.sign_contract_message(contract_tx_bytes, &contract_tx, vault_tweaked_share, None).await?;
                                                     }
                                                     _ => {
                                                         info!("📝 [GOSSIPSUB] Contract call transaction is not Ethereum type, skipping");

@@ -10,7 +10,7 @@ const RPC_BASE_URL = process.env.RPC_BASE_URL || 'http://localhost:8082';
 
 // 👉 Private key you provided (hex, no 0x prefix needed)
 const TEST_PRIVKEY = '415c01d63918df986d1d537f9b5974f383cac3b4fe9edc44f58f09bdfc5f672a';
-let TEST_TX_ID = "0xa461ae6a9f905ccc96745f3886e378452ca5dfd6c0bef56649600e39f25673e4";
+let TEST_TX_ID = "0x68bebab82c69d5ebf9748b278d0d8b9c2e83d7130bb9e97376b372c5504a94b1";
 
 // =========================
 // Colors for console output
@@ -415,7 +415,7 @@ async function runTests() {
   const signerAddr = await wallet.getAddress();
   log(`\n🔑 Derived signer address from TEST_PRIVKEY: ${signerAddr}`, 'blue');
 
-  // 1) DKG status
+  // // 1) DKG status
   // await testDKGStatus();
 
   // // 2) Register ONLY the derived address 
@@ -429,10 +429,10 @@ async function runTests() {
   //   log(`\n⚠️ Registration failed; continuing to deposit test (is_registered may be false).`, 'yellow');
   // }
 
-  // // // 3) MPC deposit test WITHOUT tx_id (should pass Some(signer) to handle_deposit_intent)
+  // // 3) MPC deposit test WITHOUT tx_id (should pass Some(signer) to handle_deposit_intent)
   // log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
-  const amount = 1000000000; // keep safe for JSON
-  // await testUserMpcDeposit({ wallet, amount });
+  const amount = 20000000000; // keep safe for JSON
+  // await testUserMpcDeposit({ wallet, amount }); 
 
   // await new Promise(r => setTimeout(r, 7000));
   // 4) MPC deposit test WITH tx_id (should pass None to handle_deposit_intent)
