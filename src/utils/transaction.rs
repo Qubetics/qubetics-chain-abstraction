@@ -609,6 +609,7 @@ pub async fn create_chain_transaction_from_contract_call(
     intent: &DepositIntent,
     intent_hash: &str,
     tx_hash: Vec<u8>,
+    transaction_type: crate::types::TransactionType,
 ) -> Result<ChainTransaction> {
     let network_address = get_eth_address_from_group_key(group_public_key.unwrap());
     let chain_id = get_chain_id_from_name("qubetics")
@@ -634,18 +635,40 @@ pub async fn create_chain_transaction_from_contract_call(
     info!("🔧 [CONTRACT] Network address: {}", network_address);
     info!("🔧 [CONTRACT] Chain ID: {}", chain_id);
 
-    // Estimate gas for the contract call
-    let calldata = encode_deposit_intent_calldata(
-        &intent.source_address,
-        &intent.target_address,
-        &intent.source_chain,
-        &intent.target_chain,
-        amount,
-        &intent.source_token,
-        &intent.target_token,
-        &format!("0x{}", hex::encode(tx_hash)),
-        intent_hash,
-    );
+    // Choose the appropriate calldata encoding function based on transaction type
+    let calldata = match transaction_type {
+        crate::types::TransactionType::UserToVault => {
+            info!("🔧 [CONTRACT] Using depositIntent calldata for UserToVault transaction");
+            encode_deposit_intent_calldata(
+                &intent.source_address,
+                &intent.target_address,
+                &intent.source_chain,
+                &intent.target_chain,
+                amount,
+                &intent.source_token,
+                &intent.target_token,
+                &format!("0x{}", hex::encode(tx_hash)),
+                intent_hash,
+            )
+        }
+        _ => {
+            info!(
+                "🔧 [CONTRACT] Using fulfillIntent calldata for {:?} transaction",
+                transaction_type
+            );
+            encode_fulfill_intent_calldata(
+                &intent.source_address,
+                &intent.target_address,
+                &intent.source_chain,
+                &intent.target_chain,
+                amount,
+                &intent.source_token,
+                &intent.target_token,
+                &format!("0x{}", hex::encode(tx_hash)),
+                intent_hash,
+            )
+        }
+    };
 
     let calldata_hex = calldata
         .as_ref()
@@ -710,6 +733,86 @@ pub fn encode_deposit_intent_calldata(
 ) -> Option<Vec<u8>> {
     let f = Function {
         name: "depositIntent".to_owned(),
+        inputs: vec![
+            Param {
+                name: "sourceAddress".into(),
+                kind: ParamType::String,
+                internal_type: None,
+            },
+            Param {
+                name: "targetAddress".into(),
+                kind: ParamType::String,
+                internal_type: None,
+            },
+            Param {
+                name: "sourceChain".into(),
+                kind: ParamType::String,
+                internal_type: None,
+            },
+            Param {
+                name: "targetChain".into(),
+                kind: ParamType::String,
+                internal_type: None,
+            },
+            Param {
+                name: "amount".into(),
+                kind: ParamType::Uint(128),
+                internal_type: None,
+            },
+            Param {
+                name: "sourceToken".into(),
+                kind: ParamType::String,
+                internal_type: None,
+            },
+            Param {
+                name: "targetToken".into(),
+                kind: ParamType::String,
+                internal_type: None,
+            },
+            Param {
+                name: "transactionHash".into(),
+                kind: ParamType::String,
+                internal_type: None,
+            },
+            Param {
+                name: "intentId".into(),
+                kind: ParamType::String,
+                internal_type: None,
+            },
+        ],
+        outputs: vec![],
+        constant: None,
+        state_mutability: StateMutability::NonPayable,
+    };
+
+    let tokens = vec![
+        Token::String(source_address.to_owned()),
+        Token::String(target_address.to_owned()),
+        Token::String(source_chain.to_owned()),
+        Token::String(target_chain.to_owned()),
+        Token::Uint(U256::from(amount)), // uint128
+        Token::String(source_token.to_owned()),
+        Token::String(target_token.to_owned()),
+        Token::String(transaction_hash.to_owned()),
+        Token::String(intent_id.to_owned()),
+    ];
+
+    f.encode_input(&tokens).ok()
+}
+
+pub fn encode_fulfill_intent_calldata(
+    source_address: &str,
+    target_address: &str,
+    source_chain: &str,
+    target_chain: &str,
+    amount: u128,
+    source_token: &str,
+    target_token: &str,
+    transaction_hash: &str,
+    intent_id: &str,
+) -> Option<Vec<u8>> {
+    let f = Function {
+        name: "fulfillIntent".to_owned(),
         inputs: vec![
             Param {
                 name: "sourceAddress".into(),
