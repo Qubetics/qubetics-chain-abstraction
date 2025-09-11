@@ -1,10 +1,11 @@
+use dotenv::dotenv;
 use libp2p::identity::Keypair;
 use mpc_node::node_management::{DefaultThresholdCalculator, NodeMembership, VrfNodeManager};
 use mpc_node::{
     adkg_secp256k1::DKGNode,
     commands::CommandProcessor,
     consensus::{ConsensusNode, DatabaseConsensusNode},
-    database::{Database, DatabaseConfig, DkgStorage},
+    database::{Database, DatabaseConfig, DkgStorage, RewardStorage},
     network::NetworkLayer,
     rpc_server,
     signing::{DatabaseSigningNode, SigningNode},
@@ -26,6 +27,9 @@ use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    // Load environment variables from .env file
+    dotenv().ok();
+
     let node_start_time = Instant::now();
     let rand_num: u32 = thread_rng().gen_range(1000..9999);
     let file_appender = tracing_appender::rolling::never("logs", format!("mpcn-{}.log", rand_num));
@@ -92,7 +96,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         create_if_missing: true,
         max_open_files: 1000,
     };
-    let database = Database::new(db_config)?;
+    let database = Arc::new(Database::new(db_config)?);
     info!("🗄️ [MAIN] Database initialized successfully");
 
     let mut network = NetworkLayer::new(node_manager).await?;
@@ -102,7 +106,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         network.get_local_peer_id().to_string(),
         threshold,
         network.get_msg_tx(),
-        database.clone(),
+        database.as_ref().clone(),
     )));
 
     // Create legacy signing node for compatibility (can be removed later)
@@ -112,7 +116,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         network.get_msg_tx(),
     )));
 
-    let dkg_storage = DkgStorage::new(database.clone());
+    let dkg_storage = DkgStorage::new(database.as_ref().clone());
+    let reward_storage = RewardStorage::new(database.as_ref().clone());
     let chain_code = [42u8; 32]; // Placeholder chain code
     let dkg_node = DKGNode::new(
         network.get_local_peer_id().to_string(),
@@ -123,7 +128,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         chain_code,
     );
 
-    let db_consensus_node = DatabaseConsensusNode::new(database.clone());
+    let db_consensus_node = DatabaseConsensusNode::new(database.as_ref().clone());
     let consensus_node = ConsensusNode::new(); // Keep legacy for compatibility
     let command_processor = CommandProcessor::new();
 
@@ -133,7 +138,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     network.set_command_processor(command_processor);
 
     // Create database-backed user registry
-    let db_user_registry = Arc::new(DatabaseUserRegistry::new(database.clone(), chain_code));
+    let db_user_registry = Arc::new(DatabaseUserRegistry::new(
+        database.as_ref().clone(),
+        chain_code,
+    ));
     info!("🏗️ [MAIN] Created Arc<DatabaseUserRegistry>");
 
     // Legacy user registry removed - now using database-backed registry
@@ -144,6 +152,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         Arc::as_ptr(&db_user_registry)
     );
     network.set_user_registry(db_user_registry.clone());
+
+    // Set database on signing node for solver amount storage
+    network.set_database(database);
 
     // Start RPC server in a separate task
     let message_tx = network.get_msg_tx();
@@ -165,6 +176,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             rpc_port,
             db_user_registry.clone(),
             dkg_storage,
+            reward_storage,
             node_id,
             start_time,
         )

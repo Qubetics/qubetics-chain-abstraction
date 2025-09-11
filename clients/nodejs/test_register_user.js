@@ -6,10 +6,10 @@ import { Wallet } from 'ethers';
 // =========================
 // Configuration
 // =========================
-const RPC_BASE_URL = process.env.RPC_BASE_URL || 'http://localhost:8081';
+const RPC_BASE_URL = process.env.RPC_BASE_URL || 'http://localhost:8082';
 
 // 👉 Private key you provided (hex, no 0x prefix needed)
-const TEST_PRIVKEY = 'b61b1415e8b5e5a3144c0d7b8c556b23baed0366586931011c9d858ecf39bd37';
+const TEST_PRIVKEY = '415c01d63918df986d1d537f9b5974f383cac3b4fe9edc44f58f09bdfc5f672a';
 let TEST_TX_ID = "0x61ee4fbe0d5e33a5b135be2a01f12ace5e52c55bdc5b4acc2a388f247275b536";
 
 // =========================
@@ -24,6 +24,7 @@ const colors = {
   cyan: '\x1b[36m',
   green: '\x1b[32m'
 };
+
 const oooo = 99999
 
 function log(message, color = 'reset') {
@@ -170,7 +171,7 @@ async function testUserMpcDeposit({ wallet, amount }) {
       { signature, msg: depositIntent },
       { 
         headers: { 'Content-Type': 'application/json' },
-        timeout: 15000 // 15 seconds timeout to match server processing time
+        timeout: 25000 // 15 seconds timeout to match server processing time
       }
     );
 
@@ -211,7 +212,7 @@ async function testUserMpcDeposit({ wallet, amount }) {
     } else {
       log(`   🎯 Transaction ID: Not available yet`, 'yellow');
     }
-    
+    console.log(`📊 Response: ${JSON.stringify(response.data)}`, 'cyan');
     // Show error message if present
     if (response.data.error_message) {
       if (isError) {
@@ -310,7 +311,7 @@ async function testUserMpcDepositWithTxId({ wallet, amount, txId, status }) {
       },
       { 
         headers: { 'Content-Type': 'application/json' },
-        timeout: 15000 // 15 seconds timeout to match server processing time
+        timeout: 25000 // 15 seconds timeout to match server processing time
       }
     );
 
@@ -429,7 +430,7 @@ async function runTests() {
   //   log(`\n⚠️ Registration failed; continuing to deposit test (is_registered may be false).`, 'yellow');
   // }
 
-  // 3) MPC deposit test WITHOUT tx_id (should pass Some(signer) to handle_deposit_intent)
+  // // 3) MPC deposit test WITHOUT tx_id (should pass Some(signer) to handle_deposit_intent)
   log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
   const amount = 847; // skeep safe for JSON // 922   723  
   await testUserMpcDeposit({ wallet, amount });
@@ -446,7 +447,7 @@ async function runTests() {
   // const largeAmount = 999999999; // Large amount that might cause insufficient funds
   // await testUserMpcDeposit({ wallet, amount: largeAmount });
 
-  log(`\n${colors.bright}✅ Test completed!${colors.reset}`, 'bright');
+  // log(`\n${colors.bright}✅ Test completed!${colors.reset}`, 'bright');
 }
 
 // =========================

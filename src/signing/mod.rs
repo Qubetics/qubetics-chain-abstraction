@@ -37,6 +37,10 @@ use crate::utils::get_eth_address_from_group_key;
 use crate::chain::{BitcoinTransaction, BitcoinInput};
 use crate::user_registry::{DatabaseUserRegistry, TransactionStatus};
 use crate::utils::transaction::DetectedAddressType;
+use crate::contract::{ContractClient, SolverManagerContract};
+use crate::database::RewardStorage;
+use ethers::types::U256;
+use ethereum_types::U256 as EthereumU256;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ECDSASignature {
@@ -121,6 +125,8 @@ pub struct SigningNode {
     vault_group_key: Option<k256::ProjectivePoint>, // Vault group public key for vault transactions
     // User registry for storing transaction IDs
     user_registry: Option<Arc<DatabaseUserRegistry>>,
+    // Database for storing solver amounts
+    database: Option<Arc<crate::database::Database>>,
     // Dynamic broadcast configuration
     broadcast_config: BroadcastConfig,
 }
@@ -160,6 +166,7 @@ impl SigningNode {
             group_public_key: None, // ✅ Initialize DKG group public key
             vault_group_key: None, // ✅ Initialize vault group public key
             user_registry: None, // Will be set later via set_user_registry
+            database: None, // Will be set later via set_database
             broadcast_config: BroadcastConfig::from_env(), // Load configuration from environment
         }
     }
@@ -262,211 +269,6 @@ impl SigningNode {
         }
     }
     
-    // Dynamic broadcast method with retry logic
-    pub async fn dynamic_broadcast_transaction(
-        &self,
-        raw_tx_hex: &str,
-        chain_type: &str,
-    ) -> Result<()> {
-        let config = &self.broadcast_config;
-        
-        // Check if chain is enabled
-        if !config.is_chain_enabled(chain_type) {
-            warn!("⚠️ [SIGNING] Chain {} is disabled, skipping broadcast", chain_type);
-            return Ok(());
-        }
-        
-        // Get chain-specific configuration
-        let chain_config = config.get_chain_config(chain_type)
-            .ok_or_else(|| anyhow!("No configuration found for chain {}", chain_type))?;
-        
-        info!("🚀 [BROADCAST] Sending {} transaction to {}", chain_type, chain_config.rpc_url);
-        
-        let mut attempt = 0;
-        loop {
-            attempt += 1;
-            
-            let broadcast_result = match chain_type {
-                "ethereum" => {
-                    self.broadcast_ethereum_transaction_with_config(raw_tx_hex, chain_config).await
-                }
-                "bitcoin" => {
-                    self.broadcast_bitcoin_transaction_with_config(raw_tx_hex, chain_config).await
-                }
-                _ => Err(anyhow!("Unsupported chain type: {}", chain_type))
-            };
-            
-            match broadcast_result {
-                Ok(_) => {
-                    info!("✅ [BROADCAST] Transaction sent successfully");
-                    return Ok(());
-                }
-                Err(e) => {
-                    let error_msg = e.to_string();
-                        if attempt < config.max_retries {
-                        error!("❌ [BROADCAST] Attempt {}: {}", attempt, error_msg);
-                        warn!("🔄 [BROADCAST] Retrying in {}ms (attempt {}/{})", config.retry_delay_ms, attempt + 1, config.max_retries);
-                        
-                        tokio::time::sleep(tokio::time::Duration::from_millis(config.retry_delay_ms)).await;
-                        continue;
-                    } else {
-                        // Max retries reached
-                        if config.continue_on_failure {
-                            error!("❌ [BROADCAST] {}", error_msg);
-                            
-                            // Return success so the node doesn't stop
-                            return Ok(());
-                        } else {
-                            // Return error to stop the node
-                            return Err(anyhow!("{}", error_msg));
-                        }
-                    }
-                }
-            }
-        }
-    }
-    
-    // Enhanced broadcast methods with configuration
-    async fn broadcast_ethereum_transaction_with_config(
-        &self,
-        raw_tx_hex: &str,
-        config: &ChainBroadcastConfig,
-    ) -> Result<()> {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(config.timeout_seconds))
-            .build()?;
-            
-        let payload = serde_json::json!({
-            "jsonrpc": "2.0",
-            "method": "eth_sendRawTransaction",
-            "params": [raw_tx_hex],
-            "id": 1
-        });
-
-        // Sending to RPC endpoint
-
-        let mut request = client.post(&config.rpc_url)
-            .header("Content-Type", "application/json")
-            .json(&payload);
-            
-        // Add custom headers
-        for (key, value) in &config.custom_headers {
-            request = request.header(key, value);
-        }
-
-        let response = request.send().await?;
-
-        if response.status().is_success() {
-            let result: serde_json::Value = response.json().await?;
-            if let Some(error) = result.get("error") {
-                return Err(anyhow!("Broadcast failed: {}", error));
-            }
-            if let Some(tx_hash) = result.get("result") {
-                info!("✅ [BROADCAST] TX Hash: {}", tx_hash);
-            }
-        } else {
-            let error_text = response.text().await?;
-            return Err(anyhow!("Broadcast failed: {}", error_text));
-        }
-        Ok(())
-    }
-    
-    async fn broadcast_bitcoin_transaction_with_config(
-        &self,
-        raw_tx_hex: &str,
-        config: &ChainBroadcastConfig,
-    ) -> Result<()> {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(config.timeout_seconds))
-            .build()?;
-            
-        // Check if this is a BlockCypher API endpoint
-        if config.rpc_url.contains("blockcypher.com") {
-            // BlockCypher API format
-            let payload = serde_json::json!({
-                "tx": raw_tx_hex
-            });
-
-            let mut request = client.post(&config.rpc_url)
-                .header("Content-Type", "application/json")
-                .header("User-Agent", "mpc-node/1.0.0")
-                .json(&payload);
-                
-            // Add custom headers
-            for (key, value) in &config.custom_headers {
-                request = request.header(key, value);
-            }
-
-            let response = request.send().await?;
-
-            if response.status().is_success() {
-                let response_text = response.text().await?;
-                if let Ok(json_response) = serde_json::from_str::<serde_json::Value>(&response_text) {
-                    if let Some(tx_hash) = json_response.get("hash") {
-                        info!("✅ [BROADCAST] TXID: {}", tx_hash);
-                    } else if let Some(error) = json_response.get("error") {
-                        return Err(anyhow!("BlockCypher API error: {}", error));
-                    } else {
-                        info!("✅ [BROADCAST] Response: {}", response_text);
-                    }
-                } else {
-                    info!("✅ [BROADCAST] Response: {}", response_text);
-                }
-            } else {
-                let error_text = response.text().await?;
-                return Err(anyhow!("BlockCypher API failed: {}", error_text));
-            }
-        } else {
-            // Standard Bitcoin RPC format
-            let payload = serde_json::json!({
-                "jsonrpc": "2.0",
-                "method": "sendrawtransaction",
-                "params": [raw_tx_hex],
-                "id": 1
-            });
-
-            let mut request = client.post(&config.rpc_url)
-                .header("Content-Type", "application/json")
-                .header("User-Agent", "mpc-node/1.0.0")
-                .json(&payload);
-                
-            // Add custom headers
-            for (key, value) in &config.custom_headers {
-                request = request.header(key, value);
-            }
-
-            let response = request.send().await?;
-
-            if response.status().is_success() {
-                let response_text = response.text().await?;
-                // Parse JSON response to get txid
-                if let Ok(json_response) = serde_json::from_str::<serde_json::Value>(&response_text) {
-                    if let Some(result) = json_response.get("result") {
-                        info!("✅ [BROADCAST] TXID: {}", result);
-                    } else if let Some(error) = json_response.get("error") {
-                        return Err(anyhow!("sendrawtransaction RPC error: {}", error));
-                    } else {
-                        info!("✅ [BROADCAST] Response: {}", response_text);
-                    }
-                } else {
-                    info!("✅ [BROADCAST] Response: {}", response_text);
-                }
-            } else {
-                let error_text = response.text().await?;
-                // Check for common RPC endpoint issues
-                if error_text.contains("too many redirects") {
-                    return Err(anyhow!("RPC endpoint error: {} - This appears to be a REST API, not a JSON-RPC endpoint. Please configure a proper Bitcoin RPC URL (e.g., http://localhost:18332 for testnet)", error_text));
-                } else if error_text.contains("connection refused") {
-                    return Err(anyhow!("RPC endpoint error: {} - Cannot connect to Bitcoin RPC. Make sure Bitcoin Core is running and RPC is enabled", error_text));
-                } else {
-                    return Err(anyhow!("Broadcast failed: {}", error_text));
-                }
-            }
-        }
-        Ok(())
-    }
-
-
     pub fn add_public_key(&self, node_id: String, public_key: PublicKey) {
         let node_id_clone = node_id.clone();
         tokio::spawn({
@@ -749,7 +551,7 @@ impl SigningNode {
     }
 
     /// Fetch nonce for an Ethereum address from the blockchain
-    async fn fetch_ethereum_nonce(address: &str, chain_id: u64) -> Result<u64> {
+    pub async fn fetch_ethereum_nonce(address: &str, chain_id: u64) -> Result<u64> {
         let rpc_url = match chain_id {
             9029 => std::env::var("MPC_ETHEREUM_RPC_URL")
                 .unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string()),
@@ -1752,14 +1554,7 @@ impl SigningNode {
         let msg = Message::from_digest_slice(&tx_hash)?;
         let signature = self.create_ecdsa_signature_with_key(&msg, transaction, &signing_key)?;
         let (recovery_id, signature_bytes) = signature.serialize_compact();
-
-        // Use chain handler to create chain-specific signature
-        let _chain_signature = self.chain_handler.create_signature(
-            &signature_bytes, 
-            recovery_id.to_i32() as u8, 
-            &chain_transaction
-        )?;
-
+      
         info!(
             "✍️ [SIGNING] Node {} created {} signature",
             self.id, self.chain_handler.chain_type()
@@ -2637,6 +2432,11 @@ impl SigningNode {
         info!("📋 [SIGNING] Node {} user registry set", self.id);
     }
 
+    pub fn set_database(&mut self, database: Arc<crate::database::Database>) {
+        self.database = Some(database);
+        info!("🗄️ [SIGNING] Node {} database set", self.id);
+    }
+
     /// Store transaction error for a round if intent hash is available and broadcast to other nodes
     async fn store_transaction_error_for_round(&self, round: u64, error_message: &str) {
         // Get intent hash from pending transactions
@@ -2704,7 +2504,7 @@ impl SigningNode {
                 let (transaction_type_str, storage_result) = match transaction_type {
                     Some(crate::types::TransactionType::UserToVault) => {
                         // User-to-vault transaction
-                        let result = user_registry.store_user_to_network_tx_id(intent_hash, tx_id).await;
+                        let result = user_registry.store_user_to_vault_tx_id(intent_hash, tx_id).await;
                         match &result {
                             Ok(()) => {
                                 info!("💾 [SIGNING] Stored user-to-network transaction ID {} for intent {} (round {})", tx_id, intent_hash, round);
@@ -2713,7 +2513,7 @@ impl SigningNode {
                                 error!("❌ [SIGNING] Failed to store user-to-network transaction ID for intent {}: {}", intent_hash, e);
                             }
                         }
-                        ("user_to_network", result)
+                        ("user_to_vault", result)
                     },
                     Some(crate::types::TransactionType::NetworkToTarget) => {
                         // Network-to-target transaction
@@ -2745,7 +2545,7 @@ impl SigningNode {
                         // Fallback to old logic based on user_eth_address
                         if let Some(eth_addr) = &user_eth_address {
                             // User-to-network transaction
-                            let result = user_registry.store_user_to_network_tx_id(intent_hash, tx_id).await;
+                            let result = user_registry.store_user_to_vault_tx_id(intent_hash, tx_id).await;
                             match &result {
                                 Ok(()) => {
                                     info!("💾 [SIGNING] Stored user-to-network transaction ID {} for intent {} (round {}) for user {}", tx_id, intent_hash, round, eth_addr);
@@ -2807,6 +2607,13 @@ impl SigningNode {
             topic: "transaction-id-sync".to_string(),
             data: serde_json::to_vec(&broadcast_message).unwrap_or_default(),
         };
+
+        // Call update_solver_amounts_for_user_to_vault only for user_to_vault transaction type
+        if transaction_type == "user_to_vault" {
+            if let Err(e) = self.update_solver_amounts_for_user_to_vault(intent_hash).await {
+                warn!("⚠️ [SIGNING] Failed to update solver amounts for UserToVault transaction: {}", e);
+            }
+        }
 
         if let Err(e) = self.message_tx.send(channel_message).await {
             error!("❌ [SIGNING] Failed to broadcast transaction ID to other nodes: {}", e);
@@ -3717,6 +3524,261 @@ impl SigningNode {
             info!("⚠️ [SIGNING] No available nodes, using default DKG index 1 for peer {} (sync)", peer_id);
             1
         }
+    }
+
+    /// Update solver amounts for UserToVault transactions
+    pub async fn update_solver_amounts_for_user_to_vault(&self, _intent_hash: &str) -> Result<()> {
+        // Configuration for contract interaction
+        let rpc_url = std::env::var("SOLVER_CONTRACT_RPC_URL")
+            .unwrap_or_else(|_| "http://localhost:8545".to_string());
+        let contract_address = std::env::var("SOLVER_CONTRACT_ADDRESS")
+            .unwrap_or_else(|_| "0x0000000000000000000000000000000000000000".to_string());
+        let chain_id = std::env::var("SOLVER_CONTRACT_CHAIN_ID")
+            .unwrap_or_else(|_| "1".to_string())
+            .parse::<u64>()
+            .unwrap_or(1);
+
+        // Skip if using default/placeholder values
+        if contract_address == "0x0000000000000000000000000000000000000000" {
+            info!("⏭️ [SOLVER] Skipping solver amount update - using placeholder contract address");
+            return Ok(());
+        }
+
+        info!("🔄 [SOLVER] Updating solver amounts for UserToVault transaction: {}", _intent_hash);
+
+        // Parse contract address
+        let contract_addr = contract_address.parse::<ethers::types::Address>()
+            .map_err(|e| anyhow::anyhow!("Invalid contract address: {}", e))?;
+
+        // Create contract configuration
+        let config = crate::contract::ContractConfig {
+            rpc_url: rpc_url.clone(),
+            contract_address: contract_addr,
+            chain_id,
+        };
+
+        // Initialize contract client
+        let client = crate::contract::ContractClient::new(config.clone())
+            .map_err(|e| anyhow::anyhow!("Failed to create contract client: {}", e))?;
+
+        let solver_contract = crate::contract::SolverManagerContract::new(&config, client.provider())
+            .map_err(|e| anyhow::anyhow!("Failed to create solver contract: {}", e))?;
+
+        // Get all active solvers
+        let active_solvers = solver_contract
+            .get_active_solvers()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to get active solvers: {}", e))?;
+
+        info!(
+            "🔍 [SOLVER] Found {} active solvers: {:?}",
+            active_solvers.len(),
+            active_solvers
+        );
+
+        // Store amounts for each solver by EVM address
+        let mut solver_liquidity_map = std::collections::HashMap::new();
+        let mut total_tics = U256::zero();
+        let mut total_btc = U256::zero();
+
+        for solver_id in &active_solvers {
+            // Get solver EVM address
+            let solver_evm_address = solver_contract
+                .get_solver_evm_address(solver_id)
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!("Failed to get EVM address for solver {}: {}", solver_id, e)
+                })?;
+
+            // Call getSolverAllChainAmounts for each solver
+            let amounts = solver_contract
+                .get_all_chain_amounts(solver_id)
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!("Failed to get amounts for solver {}: {}", solver_id, e)
+                })?;
+
+            // Track totals: index 0 = tics, index 1 = btc
+            if let Some(tics_amount) = amounts.get(0) {
+                total_tics = total_tics + *tics_amount;
+            }
+            if let Some(btc_amount) = amounts.get(1) {
+                total_btc = total_btc + *btc_amount;
+            }
+
+            // Convert amounts to strings for storage: [tics, btc]
+            let liquidity_amounts: Vec<String> = amounts.iter().map(|u| u.to_string()).collect();
+
+            // Store solver liquidity with key: solver_liquidity:{solver_evm_address}
+            let solver_liquidity_key = format!("solver_liquidity:{}", format!("{:?}", solver_evm_address).to_lowercase());
+
+            // Store individual solver liquidity in database
+            if let Some(ref database) = self.database {
+                if let Err(e) = database.put_string(&solver_liquidity_key, &liquidity_amounts) {
+                    warn!("⚠️ [SOLVER] Failed to store liquidity for solver {} (address: {:?}): {}", solver_id, solver_evm_address, e);
+                } else {
+                    info!("💾 [SOLVER] Stored liquidity for solver {} (address: {:?}): {:?}", solver_id, solver_evm_address, liquidity_amounts);
+                }
+            } else {
+                warn!("⚠️ [SOLVER] No database available to store solver liquidity");
+            }
+
+            // Add to solver liquidity map: solver_address -> [tics, btc]
+            solver_liquidity_map.insert(format!("{:?}", solver_evm_address).to_lowercase(), liquidity_amounts.clone());
+        }
+
+        // Store all solver liquidity with key: solver_liquidity:all
+        let all_solver_liquidity_key = "solver_liquidity:all";
+        
+        // Store consolidated liquidity and totals in database
+        if let Some(ref database) = self.database {
+            if let Err(e) = database.put_string(all_solver_liquidity_key, &solver_liquidity_map) {
+                warn!("⚠️ [SOLVER] Failed to store all solver liquidity: {}", e);
+            } else {
+                info!("💾 [SOLVER] Stored all solver liquidity: {} solvers", solver_liquidity_map.len());
+            }
+
+            // Store total liquidity values (index 0 = tics, index 1 = btc)
+            let tics_key = crate::database::key_utils::total_liquidity_tics_key();
+            if let Err(e) = database.put_string(&tics_key, &total_tics.to_string()) {
+                warn!("⚠️ [SOLVER] Failed to store total tics liquidity: {}", e);
+            } else {
+                info!("💾 [SOLVER] Stored total tics liquidity: {}", total_tics);
+            }
+
+            let btc_key = crate::database::key_utils::total_liquidity_btc_key();
+            if let Err(e) = database.put_string(&btc_key, &total_btc.to_string()) {
+                warn!("⚠️ [SOLVER] Failed to store total btc liquidity: {}", e);
+            } else {
+                info!("💾 [SOLVER] Stored total btc liquidity: {}", total_btc);
+            }
+        } else {
+            warn!("⚠️ [SOLVER] No database available to store solver liquidity");
+        }
+        
+        // Log the consolidated amounts
+        info!(
+            "📋 [SOLVER] All solver liquidity by EVM address: {:?}",
+            solver_liquidity_map
+        );
+
+        info!(
+            "✅ [SOLVER] Updated all solver liquidity: {} solvers",
+            active_solvers.len()
+        );
+
+        Ok(())
+    }
+
+    /// Calculate and store rewards for each solver based on an intent hash
+    pub async fn calculate_reward_per_solver(&self, intent_hash: &str) -> Result<()> {
+        // Ensure database and user registry are available
+        let database = self
+            .database
+            .as_ref()
+            .ok_or_else(|| anyhow!("Database not available"))?;
+        let user_registry = self
+            .user_registry
+            .as_ref()
+            .ok_or_else(|| anyhow!("User registry not available"))?;
+
+        // Check if rewards already calculated using user registry
+        if let Some(true) = user_registry.get_intent_reward_status(intent_hash).await {
+            info!(
+                "⏭️ [SOLVER] Rewards already calculated for intent {}",
+                intent_hash
+            );
+            return Ok(());
+        }
+
+        // Fetch intent to determine amount and target chain
+        let intent = user_registry
+            .get_intent(intent_hash)
+            .await
+            .ok_or_else(|| anyhow!("Intent not found: {}", intent_hash))?;
+
+        let target_chain = intent.target_chain.to_lowercase();
+        let intent_amount = U256::from(intent.amount);
+        let base_reward = intent_amount / U256::from(10u8); // 10% of intent amount
+
+        // Fetch total liquidity values using user registry
+        let total_tics = user_registry
+            .get_total_liquidity_tics()
+            .await
+            .unwrap_or(0);
+        let total_btc = user_registry
+            .get_total_liquidity_btc()
+            .await
+            .unwrap_or(0.0);
+
+        // Convert to U256 for calculations
+        let total_tics_u256 = U256::from(total_tics);
+        let total_btc_u256 = U256::from((total_btc * 1e8) as u64); // Convert BTC to satoshis
+
+        // Fetch liquidity for all solvers
+        let all_key = "solver_liquidity:all";
+        let solver_liquidity_map: HashMap<String, Vec<String>> = database
+            .get_string(all_key)?
+            .unwrap_or_default();
+
+        for (solver, amounts) in solver_liquidity_map.iter() {
+            let reward = if target_chain == "btc" {
+                let solver_btc = amounts
+                    .get(1)
+                    .and_then(|v| U256::from_dec_str(v).ok())
+                    .unwrap_or_else(U256::zero);
+                if total_btc_u256.is_zero() {
+                    U256::zero()
+                } else {
+                    solver_btc * base_reward / total_btc_u256
+                }
+            } else {
+                let solver_tics = amounts
+                    .get(0)
+                    .and_then(|v| U256::from_dec_str(v).ok())
+                    .unwrap_or_else(U256::zero);
+                if total_tics_u256.is_zero() {
+                    U256::zero()
+                } else {
+                    solver_tics * base_reward / total_tics_u256
+                }
+            };
+
+            // Get current reward and update using user registry
+            let current = user_registry
+                .get_solver_reward(solver)
+                .await
+                .unwrap_or_else(|| EthereumU256::zero());
+            
+            // Convert ethereum_types::U256 to ethers::types::U256 for calculation
+            let current_ethers = U256::from_dec_str(&current.to_string())
+                .map_err(|e| anyhow!("Failed to convert current reward: {}", e))?;
+            let updated_ethers = current_ethers + reward;
+            
+            // Convert back to ethereum_types::U256 for user registry
+            let updated_ethereum_types = EthereumU256::from_dec_str(&updated_ethers.to_string())
+                .map_err(|e| anyhow!("Failed to convert updated reward: {}", e))?;
+            
+            user_registry
+                .set_solver_reward(solver, updated_ethereum_types)
+                .await
+                .map_err(|e| anyhow!("Failed to set solver reward: {}", e))?;
+            
+            info!("💰 [SOLVER] Reward for {} updated to {}", solver, updated_ethers);
+        }
+
+        info!(
+            "✅ [SOLVER] Calculated rewards for {} solvers",
+            solver_liquidity_map.len()
+        );
+        
+        // Mark intent reward status as calculated using user registry
+        user_registry
+            .set_intent_reward_status(intent_hash, true)
+            .await
+            .map_err(|e| anyhow!("Failed to set intent reward status: {}", e))?;
+
+        Ok(())
     }
 }
 

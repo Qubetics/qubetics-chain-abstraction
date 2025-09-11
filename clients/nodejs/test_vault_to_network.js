@@ -9,7 +9,7 @@ import { Wallet } from 'ethers';
 const RPC_BASE_URL = process.env.RPC_BASE_URL || 'http://localhost:8081';
 
 // 👉 Private key you provided (hex, no 0x prefix needed)
-const TEST_PRIVKEY = 'b61b1415e8b5e5a3144c0d7b8c556b23baed0366586931011c9d858ecf39bd37';
+const TEST_PRIVKEY = '415c01d63918df986d1d537f9b5974f383cac3b4fe9edc44f58f09bdfc5f672a';
 
 // =========================
 // Colors for console output
@@ -60,7 +60,6 @@ async function vaultToNetworkTransfer({ wallet, amount }) {
     timestamp: 909092,
   };
 
-
   const msg = JSON.stringify(depositIntent);
   const signature = await wallet.signMessage(msg);
 
@@ -69,7 +68,7 @@ async function vaultToNetworkTransfer({ wallet, amount }) {
     { signature, msg: depositIntent },
     { 
       headers: { 'Content-Type': 'application/json' },
-      timeout: 15000
+      timeout: 25000
     }
   );
 
