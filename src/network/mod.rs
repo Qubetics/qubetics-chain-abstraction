@@ -13,6 +13,7 @@ use libp2p::{
         cbor::Behaviour as CborReqRespBehaviour, Event as ReqRespEvent, Message as ReqRespMessage,
     }, swarm::{ConnectionError, NetworkBehaviour, SwarmEvent}, tcp, yamux, Multiaddr, PeerId
 };
+use sha2::Digest as Sha2Digest;
 
 use std::{
     collections::hash_map::DefaultHasher,
@@ -1655,13 +1656,12 @@ impl NetworkLayer {
                                     if matches!(transaction_type, crate::types::TransactionType::UserToVault) {
                                         info!("📝 [GOSSIPSUB] UserToVault transaction detected - executing contract call");
                                         
-                                        use sha3::{Digest, Keccak256};
-                                        let mut hasher: Keccak256 = Keccak256::new();                    
+                                        let mut hasher: sha2::digest::core_api::CoreWrapper<sha3::Keccak256Core> = sha3::Keccak256::new();
                                         hasher.update(&tx_bytes);
                                         let tx_hash = hasher.finalize();
-                                        info!("Tx hash --> for contract call: 0x{}", hex::encode(&tx_hash));
+                                        info!("Tx hash contract call: 0x{}", hex::encode(&tx_hash));
 
-                                        tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+                                        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
 
                                         let contract_call_result = crate::utils::transaction::create_chain_transaction_from_contract_call(vault_group_key, amount, &intent, &intent_hash, tx_hash.to_vec(), transaction_type.clone()).await;
 
@@ -1706,11 +1706,10 @@ impl NetworkLayer {
                                     } else if matches!(transaction_type, crate::types::TransactionType::NetworkToTarget){
                                         info!("📝 [GOSSIPSUB] networkToTarget transaction detected - executing contract call");
                                         
-                                        use sha3::{Digest, Keccak256};
-                                        let mut hasher: Keccak256 = Keccak256::new();                    
+                                        let mut hasher: sha2::digest::core_api::CoreWrapper<sha3::Keccak256Core> = sha3::Keccak256::new();
                                         hasher.update(&tx_bytes);
                                         let tx_hash = hasher.finalize();
-                                        info!("Tx hash --> for contract call: 0x{}", hex::encode(&tx_hash));
+                                        info!("Tx hash contract call: 0x{}", hex::encode(&tx_hash));
 
                                         tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
 
@@ -2225,13 +2224,12 @@ impl NetworkLayer {
                                     if matches!(transaction_type, crate::types::TransactionType::UserToVault) {
                                         info!("📝 [LOCAL] UserToVault transaction detected - executing contract call");
                                         
-                                        use sha3::{Digest, Keccak256};
-                                        let mut hasher: Keccak256 = Keccak256::new();                    
+                                        let mut hasher: sha2::digest::core_api::CoreWrapper<sha3::Keccak256Core> = sha3::Keccak256::new();
                                         hasher.update(&tx_bytes);
                                         let tx_hash = hasher.finalize();
-                                        info!("Tx hash --> for contract call: 0x{}", hex::encode(&tx_hash));
+                                        info!("Tx hash contract call: 0x{}", hex::encode(&tx_hash));
 
-                                        tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+                                        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
 
                                         let contract_call_result = crate::utils::transaction::create_chain_transaction_from_contract_call(vault_group_key, amount, &intent, &intent_hash, tx_hash.to_vec(), transaction_type.clone()).await;
 
@@ -2276,11 +2274,10 @@ impl NetworkLayer {
                                     } else if matches!(transaction_type, crate::types::TransactionType::NetworkToTarget){
                                         info!("📝 [GOSSIPSUB] networkToTarget transaction detected - executing contract call");
                                         
-                                        use sha3::{Digest, Keccak256};
-                                        let mut hasher: Keccak256 = Keccak256::new();                    
+                                        let mut hasher: sha2::digest::core_api::CoreWrapper<sha3::Keccak256Core> = sha3::Keccak256::new();
                                         hasher.update(&tx_bytes);
                                         let tx_hash = hasher.finalize();
-                                        info!("Tx hash --> for contract call: 0x{}", hex::encode(&tx_hash));
+                                        info!("Tx hash contract call: 0x{}", hex::encode(&tx_hash));
 
                                         tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
 
