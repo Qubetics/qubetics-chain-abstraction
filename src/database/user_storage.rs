@@ -652,7 +652,7 @@ impl IntentStorage {
 
         let mut completed_intents = Vec::new();
 
-        for (key, tx_ids) in tx_results {
+        for (_key, tx_ids) in tx_results {
             // Check if both transaction IDs are present
             if tx_ids.user_to_network_tx_id.is_some() && tx_ids.network_to_target_tx_id.is_some() {
                 if let Some(intent) = self.get_intent(&tx_ids.intent_hash).await? {

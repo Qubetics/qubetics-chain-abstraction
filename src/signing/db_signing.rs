@@ -71,7 +71,7 @@ impl DatabaseSigningNode {
         
         let mut hasher = Sha256::new();
         hasher.update(id.as_bytes());
-        let hash = hasher.finalize();
+        let _hash = hasher.finalize();
         
         // Use the hash as seed to generate a deterministic keypair
         let keypair = Keypair::generate_ed25519();

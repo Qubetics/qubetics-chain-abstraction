@@ -295,13 +295,24 @@ impl NetworkLayer {
             tokio::select! {
                 event = swarm.select_next_some() => {
                     info!("[SWARM] some");
-                    self.handle_swarm_event(event, &mut swarm).await?;
+                    // 🛡️ Error recovery for swarm events - prevent node crashes
+                    if let Err(e) = self.handle_swarm_event(event, &mut swarm).await {
+                        error!("❌ [NETWORK] Swarm event handling failed: {}", e);
+                        error!("🛡️ [NETWORK] Node continues operating despite swarm event failure");
+                        error!("🔍 [NETWORK] Error details: {:?}", e);
+                        // Continue processing other events
+                    }
                 }
                 // only hit when there is anything on the mpsc channel
                 msg = self.message_rx.recv() => {
                     if let Some(msg) = msg {
-                        // lets handle the channel msg on the basis of its type
-                        self.handle_channel_message(msg, &mut swarm).await?;
+                        // 🛡️ Error recovery for channel messages - prevent node crashes
+                        if let Err(e) = self.handle_channel_message(msg, &mut swarm).await {
+                            error!("❌ [NETWORK] Channel message handling failed: {}", e);
+                            error!("🛡️ [NETWORK] Node continues operating despite message handling failure");
+                            error!("🔍 [NETWORK] Error details: {:?}", e);
+                            // Continue processing other messages
+                        }
                     }
                 }
 
@@ -1005,18 +1016,18 @@ impl NetworkLayer {
                 info!("📋 [NETWORK] Signing message type: {:?}", signing_msg);
                 
                 if let Some(signing_node) = &mut self.signing_node {
-                    // Check if this message is from the signatures-to-final-node topic
-                    if message.topic.to_string() == "signatures-to-final-node" {
+                    // 🛡️ Error recovery for signing message processing - prevent node crashes
+                    let signing_result = if message.topic.to_string() == "signatures-to-final-node" {
                         info!("🎯 [NETWORK] Processing signature for final node topic");
                         match signing_msg {
                             crate::signing::SigningMessage::ECDSASignature { from, signature, round, timestamp:_timestamp, user_eth_address } => {
                                 info!("📤 [NETWORK] Routing ECDSA signature to final node handler from: {} for round: {} (user_eth_address: {:?})", from, round, user_eth_address);
-                                signing_node.handle_signature_to_final_node(from, signature, round).await?;
+                                signing_node.handle_signature_to_final_node(from, signature, round).await
                             }
                             _ => {
                                 info!("📤 [NETWORK] Routing other signing message to normal handler");
                                 // Handle other signing messages normally
-                                signing_node.handle_message(signing_msg).await?;
+                                signing_node.handle_message(signing_msg).await
                             }
                         }
                     } else {
@@ -1033,7 +1044,15 @@ impl NetworkLayer {
                                 info!("📥 [NETWORK] Received other signing message type");
                             }
                         }
-                        signing_node.handle_message(signing_msg).await?;
+                        signing_node.handle_message(signing_msg).await
+                    };
+                    
+                    // Handle signing errors gracefully
+                    if let Err(e) = signing_result {
+                        error!("❌ [NETWORK] Signing message processing failed: {}", e);
+                        error!("🛡️ [NETWORK] Node continues operating despite signing failure");
+                        error!("🔍 [NETWORK] Error details: {:?}", e);
+                        // Don't propagate the error - continue processing other messages
                     }
                 } else {
                     warn!("❌ [NETWORK] Signing node not available to handle signing message");
