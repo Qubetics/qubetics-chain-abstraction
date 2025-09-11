@@ -1,4 +1,4 @@
-use crate::database::DkgStorage;
+use crate::database::{DkgStorage, RewardStorage};
 use crate::types::{rpc::RPCRequest, ChannelMessage};
 use crate::user_registry::{
     checksum_from_any, to_checksum_address, DatabaseUserRegistry, TransactionStatus,
@@ -138,6 +138,21 @@ pub struct UserMpcDepositVerifyResponse {
     pub user_to_network_tx_id: Option<String>,
     pub network_to_target_tx_id: Option<String>,
     pub vault_to_network_tx_id: Option<String>,
+    pub error_message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SolverRewardRequest {
+    pub signature: String,
+    pub msg: String,
+    pub address: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SolverRewardResponse {
+    pub status: String,
+    pub solver_address: String,
+    pub reward: Option<String>,
     pub error_message: Option<String>,
 }
 
@@ -333,6 +348,7 @@ pub async fn start_http_server(
     port: u16,
     user_registry: Arc<DatabaseUserRegistry>,
     dkg_storage: DkgStorage,
+    reward_storage: RewardStorage,
     node_id: String,
     start_time: Instant,
 ) -> Result<(), warp::Rejection> {
@@ -344,6 +360,7 @@ pub async fn start_http_server(
     let message_tx = std::sync::Arc::new(tokio::sync::Mutex::new(message_tx));
     // user_registry is already Arc<DatabaseUserRegistry>, no need to wrap again
     let dkg_storage = std::sync::Arc::new(dkg_storage);
+    let reward_storage = std::sync::Arc::new(reward_storage);
     let start_time = std::sync::Arc::new(start_time);
 
     // POST /submit_transaction
@@ -378,6 +395,15 @@ pub async fn start_http_server(
         .and(with_message_tx(message_tx.clone()))
         .and(with_dkg_storage(dkg_storage.clone()))
         .and_then(handle_user_mpc_deposit);
+
+    // POST /solver_reward
+    let solver_reward = warp::path("solver_reward")
+        .and(warp::post())
+        .and(warp::body::json())
+        .and(with_user_registry(user_registry.clone()))
+        .and(with_dkg_storage(dkg_storage.clone()))
+        .and(with_message_tx(message_tx.clone()))
+        .and_then(handle_solver_reward);
 
     // GET /user_info/{ethereum_address}
     let get_user_info = warp::path("user_info")
@@ -429,6 +455,7 @@ pub async fn start_http_server(
         .or(get_dkg_status)
         .or(start_dkg)
         .or(user_mpc_deposit)
+        .or(solver_reward)
         .or(heartbeat)
         .or(uptime);
 
@@ -466,6 +493,13 @@ fn with_dkg_storage(
 ) -> impl Filter<Extract = (std::sync::Arc<DkgStorage>,), Error = std::convert::Infallible> + Clone
 {
     warp::any().map(move || dkg_storage.clone())
+}
+
+fn with_reward_storage(
+    reward_storage: std::sync::Arc<RewardStorage>,
+) -> impl Filter<Extract = (std::sync::Arc<RewardStorage>,), Error = std::convert::Infallible> + Clone
+{
+    warp::any().map(move || reward_storage.clone())
 }
 
 fn with_node_id(
@@ -604,25 +638,10 @@ pub async fn handle_deposit_intent(
             "💱 Conversion: {} {} (source) is equivalent to {} {} (target) before decimals",
             intent.amount, source_symbol, required_amount, target_symbol
         );
-
-        // Adjust for chain-specific decimals. Target chain dictates the unit
-        // size we should compare against: EVM-based chains use 1e18 while
-        // Bitcoin uses 1e8.
-        let decimal_multiplier = match intent.target_chain.to_lowercase().as_str() {
-            "eth" | "ethereum" | "qubetics" => 1e18,
-            "btc" | "bitcoin" => 1e8,
-            _ => 1e18,
-        };
-
         required_amount_u128 = required_amount as u128;
-
-        info!(
-            "💱 Conversion: After applying decimal multiplier ({}), required amount on {}: {}",
-            decimal_multiplier, intent.target_chain, required_amount_u128
-        );
     } else {
-        // For VaultToNetwork and other types, just use the intent amount directly
-        required_amount_u128 = intent.amount;
+        // For VaultToNetwork and other types, use the intent amount plus 10%
+        required_amount_u128 = intent.amount + (intent.amount / 10);
         info!(
             "💱 No price conversion needed. Using intent amount as required amount: {}",
             required_amount_u128
@@ -1409,7 +1428,8 @@ async fn handle_user_mpc_deposit(
                         }
                     };
                     // Fetch balance of derived address based on source_chain
-                    let min_amount = req.msg.amount; // assuming req.msg.amount is the minimum required
+                    // Add 10% buffer to the minimum required amount
+                    let min_amount = req.msg.amount + (req.msg.amount / 10);
                     let source_chain = req.msg.source_chain.to_lowercase();
                     let mut address_to_check = String::new();
                     let mut blockchain = String::new();
@@ -1929,6 +1949,116 @@ async fn handle_get_uptime(
     let uptime = start_time.elapsed().as_secs();
     Ok(warp::reply::json(&UptimeResponse {
         uptime_seconds: uptime,
+    }))
+}
+
+async fn handle_solver_reward(
+    req: SolverRewardRequest,
+    user_registry: std::sync::Arc<DatabaseUserRegistry>,
+    dkg_storage: std::sync::Arc<DkgStorage>,
+    message_tx: std::sync::Arc<tokio::sync::Mutex<mpsc::Sender<ChannelMessage>>>,
+) -> Result<impl warp::Reply, warp::Rejection> {
+    info!("🔍 HTTP: solver_reward request");
+
+    let (compact, v) = match normalize_eth_signature(&req.signature) {
+        Ok(t) => t,
+        Err(e) => {
+            warn!("❌ Invalid signature: {}", e);
+            return Ok(warp::reply::json(&SolverRewardResponse {
+                status: "error".to_string(),
+                solver_address: "".to_string(),
+                reward: None,
+                error_message: Some(format!("Invalid signature: {}", e)),
+            }));
+        }
+    };
+
+    let msg_bytes = req.msg.as_bytes();
+    let signer = match recover_eth_address_secp(msg_bytes, &compact, v, true) {
+        Ok(addr) => addr,
+        Err(e1) => match recover_eth_address_secp(msg_bytes, &compact, v, false) {
+            Ok(addr) => addr,
+            Err(e2) => {
+                error!(
+                    "❌ Failed to recover address: personal_sign={}, raw={}",
+                    e1, e2
+                );
+                return Ok(warp::reply::json(&SolverRewardResponse {
+                    status: "error".to_string(),
+                    solver_address: "".to_string(),
+                    reward: None,
+                    error_message: Some(format!(
+                        "Failed to recover signature: personal_sign={}, raw={}",
+                        e1, e2
+                    )),
+                }));
+            }
+        },
+    };
+
+    let provided = match checksum_from_any(&req.address) {
+        Ok(a) => a,
+        Err(e) => {
+            return Ok(warp::reply::json(&SolverRewardResponse {
+                status: "error".to_string(),
+                solver_address: signer,
+                reward: None,
+                error_message: Some(format!("Invalid address: {}", e)),
+            }));
+        }
+    };
+
+    if signer != provided {
+        return Ok(warp::reply::json(&SolverRewardResponse {
+            status: "error".to_string(),
+            solver_address: signer,
+            reward: None,
+            error_message: Some("Recovered address does not match provided address".to_string()),
+        }));
+    }
+
+    // Use user registry's reward storage instead of direct reward storage
+    let reward_opt = user_registry.get_solver_reward(&signer).await;
+    let reward_str = reward_opt.as_ref().map(|r| r.to_string());
+
+    if let Some(reward_u256) = reward_opt {
+        let reward_u128 = reward_u256.as_u128();
+
+        // Create dummy transaction representing solver reward
+        let from_addr = match dkg_storage.get_final_public().await {
+            Ok(Some(pk)) => crate::utils::get_eth_address_from_group_key(pk),
+            _ => "0x0".to_string(),
+        };
+
+        let dummy_tx = DummyTransaction {
+            to: signer.clone(),
+            value: format!("0x{:x}", reward_u128),
+            nonce: 0,
+            gas_limit: 21_000,
+            gas_price: "0x0".to_string(),
+            chain_id: 1,
+        };
+        info!(
+            "🧾 [HTTP] Created solver reward tx from {} to {} amount {}",
+            from_addr, signer, reward_u128
+        );
+
+        let mut tx_sender = message_tx.lock().await;
+        if let Err(e) = tx_sender
+            .send(ChannelMessage::SolverReward {
+                solver_address: signer.clone(),
+                reward: reward_u128,
+            })
+            .await
+        {
+            warn!("Failed to send solver reward message: {}", e);
+        }
+    }
+    Ok(warp::reply::json(&SolverRewardResponse {
+        status: "success".to_string(),
+        solver_address: signer,
+        reward: reward_str,
+        error_message: None,
     }))
 }
 

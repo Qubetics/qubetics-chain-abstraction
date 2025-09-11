@@ -50,15 +50,15 @@ async function vaultToNetworkTransfer({ wallet, amount }) {
   const userInfo = await getUserInfo(signerAddr);
   console.log(`UserInfo: ${JSON.stringify(userInfo, null, 2)}`);
   const depositIntent = {
-    source_address: userInfo.derived_eth_address, // Use canonical address
-    target_address: '0xc6dA53bCa90753699cd19521Dd559964490C6822',
-      source_chain: 'qubetics',
-      target_chain: 'qubetics',
-      amount: amount,
-      source_token: 'TICS',
-      target_token: 'TICS',
-      timestamp: 125375213761,
-    };
+    source_address: userInfo.derived_btc_address, // Use canonical address
+    target_address: 'tb1qzxxlpvxx44ak6tasj5ffstr6gj5xrpxzxwrjy3',
+    source_chain: 'bitcoin',
+    target_chain: 'bitcoin',
+    amount: amount, // Use the passed amount parameter
+    source_token: 'TICS',
+    target_token: 'TICS',
+    timestamp: 909092,
+  };
 
   const msg = JSON.stringify(depositIntent);
   const signature = await wallet.signMessage(msg);
@@ -124,7 +124,7 @@ async function runVaultToNetworkTests() {
   log(`🔑 Signer: ${signerAddr}`, 'blue');
 
   // VaultToNetwork transfer
-  const amount = 10000000000000;
+  const amount = 921;
   await vaultToNetworkTransfer({ wallet, amount });
   await new Promise(r => setTimeout(r, 7000));
 

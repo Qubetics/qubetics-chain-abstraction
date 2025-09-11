@@ -38,6 +38,9 @@ use crate::chain::{BitcoinTransaction, BitcoinInput};
 use crate::user_registry::{DatabaseUserRegistry, TransactionStatus};
 use crate::utils::transaction::DetectedAddressType;
 use crate::contract::{ContractClient, SolverManagerContract};
+use crate::database::RewardStorage;
+use ethers::types::U256;
+use ethereum_types::U256 as EthereumU256;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ECDSASignature {
@@ -266,211 +269,6 @@ impl SigningNode {
         }
     }
     
-    // Dynamic broadcast method with retry logic
-    pub async fn dynamic_broadcast_transaction(
-        &self,
-        raw_tx_hex: &str,
-        chain_type: &str,
-    ) -> Result<()> {
-        let config = &self.broadcast_config;
-        
-        // Check if chain is enabled
-        if !config.is_chain_enabled(chain_type) {
-            warn!("⚠️ [SIGNING] Chain {} is disabled, skipping broadcast", chain_type);
-            return Ok(());
-        }
-        
-        // Get chain-specific configuration
-        let chain_config = config.get_chain_config(chain_type)
-            .ok_or_else(|| anyhow!("No configuration found for chain {}", chain_type))?;
-        
-        info!("🚀 [BROADCAST] Sending {} transaction to {}", chain_type, chain_config.rpc_url);
-        
-        let mut attempt = 0;
-        loop {
-            attempt += 1;
-            
-            let broadcast_result = match chain_type {
-                "ethereum" => {
-                    self.broadcast_ethereum_transaction_with_config(raw_tx_hex, chain_config).await
-                }
-                "bitcoin" => {
-                    self.broadcast_bitcoin_transaction_with_config(raw_tx_hex, chain_config).await
-                }
-                _ => Err(anyhow!("Unsupported chain type: {}", chain_type))
-            };
-            
-            match broadcast_result {
-                Ok(_) => {
-                    info!("✅ [BROADCAST] Transaction sent successfully");
-                    return Ok(());
-                }
-                Err(e) => {
-                    let error_msg = e.to_string();
-                        if attempt < config.max_retries {
-                        error!("❌ [BROADCAST] Attempt {}: {}", attempt, error_msg);
-                        warn!("🔄 [BROADCAST] Retrying in {}ms (attempt {}/{})", config.retry_delay_ms, attempt + 1, config.max_retries);
-                        
-                        tokio::time::sleep(tokio::time::Duration::from_millis(config.retry_delay_ms)).await;
-                        continue;
-                    } else {
-                        // Max retries reached
-                        if config.continue_on_failure {
-                            error!("❌ [BROADCAST] {}", error_msg);
-                            
-                            // Return success so the node doesn't stop
-                            return Ok(());
-                        } else {
-                            // Return error to stop the node
-                            return Err(anyhow!("{}", error_msg));
-                        }
-                    }
-                }
-            }
-        }
-    }
-    
-    // Enhanced broadcast methods with configuration
-    async fn broadcast_ethereum_transaction_with_config(
-        &self,
-        raw_tx_hex: &str,
-        config: &ChainBroadcastConfig,
-    ) -> Result<()> {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(config.timeout_seconds))
-            .build()?;
-            
-        let payload = serde_json::json!({
-            "jsonrpc": "2.0",
-            "method": "eth_sendRawTransaction",
-            "params": [raw_tx_hex],
-            "id": 1
-        });
-
-        // Sending to RPC endpoint
-
-        let mut request = client.post(&config.rpc_url)
-            .header("Content-Type", "application/json")
-            .json(&payload);
-            
-        // Add custom headers
-        for (key, value) in &config.custom_headers {
-            request = request.header(key, value);
-        }
-
-        let response = request.send().await?;
-
-        if response.status().is_success() {
-            let result: serde_json::Value = response.json().await?;
-            if let Some(error) = result.get("error") {
-                return Err(anyhow!("Broadcast failed: {}", error));
-            }
-            if let Some(tx_hash) = result.get("result") {
-                info!("✅ [BROADCAST] TX Hash: {}", tx_hash);
-            }
-        } else {
-            let error_text = response.text().await?;
-            return Err(anyhow!("Broadcast failed: {}", error_text));
-        }
-        Ok(())
-    }
-    
-    async fn broadcast_bitcoin_transaction_with_config(
-        &self,
-        raw_tx_hex: &str,
-        config: &ChainBroadcastConfig,
-    ) -> Result<()> {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(config.timeout_seconds))
-            .build()?;
-            
-        // Check if this is a BlockCypher API endpoint
-        if config.rpc_url.contains("blockcypher.com") {
-            // BlockCypher API format
-            let payload = serde_json::json!({
-                "tx": raw_tx_hex
-            });
-
-            let mut request = client.post(&config.rpc_url)
-                .header("Content-Type", "application/json")
-                .header("User-Agent", "mpc-node/1.0.0")
-                .json(&payload);
-                
-            // Add custom headers
-            for (key, value) in &config.custom_headers {
-                request = request.header(key, value);
-            }
-
-            let response = request.send().await?;
-
-            if response.status().is_success() {
-                let response_text = response.text().await?;
-                if let Ok(json_response) = serde_json::from_str::<serde_json::Value>(&response_text) {
-                    if let Some(tx_hash) = json_response.get("hash") {
-                        info!("✅ [BROADCAST] TXID: {}", tx_hash);
-                    } else if let Some(error) = json_response.get("error") {
-                        return Err(anyhow!("BlockCypher API error: {}", error));
-                    } else {
-                        info!("✅ [BROADCAST] Response: {}", response_text);
-                    }
-                } else {
-                    info!("✅ [BROADCAST] Response: {}", response_text);
-                }
-            } else {
-                let error_text = response.text().await?;
-                return Err(anyhow!("BlockCypher API failed: {}", error_text));
-            }
-        } else {
-            // Standard Bitcoin RPC format
-            let payload = serde_json::json!({
-                "jsonrpc": "2.0",
-                "method": "sendrawtransaction",
-                "params": [raw_tx_hex],
-                "id": 1
-            });
-
-            let mut request = client.post(&config.rpc_url)
-                .header("Content-Type", "application/json")
-                .header("User-Agent", "mpc-node/1.0.0")
-                .json(&payload);
-                
-            // Add custom headers
-            for (key, value) in &config.custom_headers {
-                request = request.header(key, value);
-            }
-
-            let response = request.send().await?;
-
-            if response.status().is_success() {
-                let response_text = response.text().await?;
-                // Parse JSON response to get txid
-                if let Ok(json_response) = serde_json::from_str::<serde_json::Value>(&response_text) {
-                    if let Some(result) = json_response.get("result") {
-                        info!("✅ [BROADCAST] TXID: {}", result);
-                    } else if let Some(error) = json_response.get("error") {
-                        return Err(anyhow!("sendrawtransaction RPC error: {}", error));
-                    } else {
-                        info!("✅ [BROADCAST] Response: {}", response_text);
-                    }
-                } else {
-                    info!("✅ [BROADCAST] Response: {}", response_text);
-                }
-            } else {
-                let error_text = response.text().await?;
-                // Check for common RPC endpoint issues
-                if error_text.contains("too many redirects") {
-                    return Err(anyhow!("RPC endpoint error: {} - This appears to be a REST API, not a JSON-RPC endpoint. Please configure a proper Bitcoin RPC URL (e.g., http://localhost:18332 for testnet)", error_text));
-                } else if error_text.contains("connection refused") {
-                    return Err(anyhow!("RPC endpoint error: {} - Cannot connect to Bitcoin RPC. Make sure Bitcoin Core is running and RPC is enabled", error_text));
-                } else {
-                    return Err(anyhow!("Broadcast failed: {}", error_text));
-                }
-            }
-        }
-        Ok(())
-    }
-
-
     pub fn add_public_key(&self, node_id: String, public_key: PublicKey) {
         let node_id_clone = node_id.clone();
         tokio::spawn({
@@ -489,31 +287,112 @@ impl SigningNode {
         self.private_key.is_some()
     }
 
-    /// Sign Bitcoin transaction directly with tx_bytes (no DummyTransaction wrapper)
-    pub async fn sign_bitcoin_transaction(&mut self, tx_bytes: Vec<u8>, original_tx: Option<BitcoinTransaction>, user_eth_address: Option<String>, intent_hash: Option<String>) -> Result<()> {
-        // Clone user_eth_address early to avoid borrow checker issues
+    /// Sign Bitcoin transaction - production ready implementation
+    pub async fn sign_bitcoin_transaction(&mut self, tx_bytes: Vec<u8>, original_tx: Option<BitcoinTransaction>, user_eth_address: Option<String>, intent_hash: Option<String>, transaction_type: Option<crate::types::TransactionType>, user_tweaked_share: Option<k256::Scalar>) -> Result<()> {
         let user_eth_address_clone = user_eth_address.clone();
         
         if self.private_key.is_none() {
-            error!(
-                "❌ [SIGNING] Node {} cannot sign Bitcoin transaction: no private key available",
-                self.id
-            );
             return Err(anyhow::anyhow!("No private key available"));
         }
 
-        info!(
-            "📝 [SIGNING] Node {} starting to sign Bitcoin transaction",
-            self.id
-        );
+        info!("📝 [SIGNING] Node {} starting Bitcoin transaction signing", self.id);
 
-        // Use the provided Bitcoin transaction bytes directly
+        // For Bitcoin transactions, we need to compute the proper BIP-143 sighash
+        // instead of using the raw transaction hash
+        let tx_hash = if let Some(original_tx) = &original_tx {
+            // Compute proper BIP-143 sighash for the first input
+            if let Some(first_input) = original_tx.inputs.first() {
+                if let Some(witness_utxo) = &first_input.witness_utxo {
+                    // Check if this is a P2WPKH input
+                    if witness_utxo.script_pubkey.len() == 22 && 
+                       witness_utxo.script_pubkey[0] == 0x00 && 
+                       witness_utxo.script_pubkey[1] == 0x14 {
+                        
+                        // Extract the 20-byte program from the witness UTXO
+                        let program20 = &witness_utxo.script_pubkey[2..22];
+                        
+                        // Create the proper scriptCode for P2WPKH: 76 a9 14 <20-byte-program> 88 ac
+                        let mut script_code = Vec::new();
+                        script_code.extend_from_slice(&[0x76, 0xa9, 0x14]); // OP_DUP OP_HASH160 OP_PUSH_20
+                        script_code.extend_from_slice(program20);
+                        script_code.extend_from_slice(&[0x88, 0xac]); // OP_EQUALVERIFY OP_CHECKSIG
+                        
+                        info!("🔗 [BITCOIN] P2WPKH scriptCode: {}", hex::encode(&script_code));
+                        info!("🔗 [BITCOIN] Expected: 76a914{}88ac", hex::encode(program20));
+                        
+                        // Get the correct pubkey for this transaction type
+                        let pubkey_bytes = self.get_group_public_key_bytes(transaction_type.clone(), user_eth_address.clone()).await?;
+                        if pubkey_bytes.len() != 33 {
+                            return Err(anyhow::anyhow!("Invalid pubkey length: {} (expected 33)", pubkey_bytes.len()));
+                        }
+                        
+                        // CRITICAL: Verify pubkey matches UTXO to prevent -26 errors
+                        use sha2::{Sha256, Digest};
+                        use ripemd::Ripemd160;
+                        
+                        let pubkey_hash160 = {
+                            let sha = Sha256::digest(&pubkey_bytes);
+                            let rip = Ripemd160::digest(&sha);
+                            let mut hash160 = [0u8; 20];
+                            hash160.copy_from_slice(&rip);
+                            hash160
+                        };
+                        
+                        if &pubkey_hash160 != program20 {
+                            error!("❌ [BITCOIN] PUBKEY MISMATCH!");
+                            error!("  Expected UTXO hash160: {}", hex::encode(program20));
+                            error!("  Signing pubkey hash160: {}", hex::encode(pubkey_hash160));
+                            error!("  Signing pubkey: {}", hex::encode(&pubkey_bytes));
+                            return Err(anyhow::anyhow!(
+                                "Pubkey mismatch: signing pubkey hash160 ({}) doesn't match UTXO program ({}).", 
+                                hex::encode(pubkey_hash160), 
+                                hex::encode(program20)
+                            ));
+                        }
+                        
+                        info!("✅ [BITCOIN] Pubkey verification passed - hash160 matches UTXO");
+                        info!("  UTXO program: {}", hex::encode(program20));
+                        info!("  Pubkey hash160: {}", hex::encode(pubkey_hash160));
+                        info!("  Signing pubkey: {}", hex::encode(&pubkey_bytes));
+                        
+                        // Compute BIP-143 sighash using the correct implementation
+                        let sighash = self.compute_bip143_sighash_p2wpkh(original_tx, 0, &pubkey_bytes, witness_utxo.value)?;
+                        info!("🔗 [BITCOIN] BIP-143 sighash: {}", hex::encode(&sighash));
+                        sighash
+                    } else {
+                        // Fallback to raw transaction hash for non-P2WPKH
+                        use sha2::{Sha256, Digest};
+                        let first_hash = Sha256::digest(&tx_bytes);
+                        let tx_hash = Sha256::digest(&first_hash);
+                        info!("🔗 [BITCOIN] Using raw tx hash (non-P2WPKH): {}", hex::encode(&tx_hash));
+                        tx_hash.to_vec().try_into().unwrap()
+                    }
+                } else {
+                    // Fallback to raw transaction hash for non-witness inputs
+                    use sha2::{Sha256, Digest};
+                    let first_hash = Sha256::digest(&tx_bytes);
+                    let tx_hash = Sha256::digest(&first_hash);
+                    info!("🔗 [BITCOIN] Using raw tx hash (non-witness): {}", hex::encode(&tx_hash));
+                    tx_hash.to_vec().try_into().unwrap()
+                }
+            } else {
+                // Fallback to raw transaction hash if no inputs
+                use sha2::{Sha256, Digest};
+                let first_hash = Sha256::digest(&tx_bytes);
+                let tx_hash = Sha256::digest(&first_hash);
+                info!("🔗 [BITCOIN] Using raw tx hash (no inputs): {}", hex::encode(&tx_hash));
+                tx_hash.to_vec().try_into().unwrap()
+            }
+        } else {
+            // Fallback to raw transaction hash if no original transaction
+            use sha2::{Sha256, Digest};
+            let first_hash = Sha256::digest(&tx_bytes);
+            let tx_hash = Sha256::digest(&first_hash);
+            info!("🔗 [BITCOIN] Using raw tx hash (no original tx): {}", hex::encode(&tx_hash));
+            tx_hash.to_vec().try_into().unwrap()
+        };
         
-        // Hash the transaction bytes using Bitcoin's double SHA256
-        use sha2::{Sha256, Digest};
-        let first_hash = Sha256::digest(&tx_bytes);
-        let tx_hash = Sha256::digest(&first_hash);
-        info!("🔗 [BITCOIN] Tx hash (double SHA256): 0x{}", hex::encode(&tx_hash));
+        info!("🔗 [BITCOIN] Final digest hex: {}", hex::encode(&tx_hash));
 
         // Get available nodes and perform VRF selection
         let available_nodes = self.get_available_nodes_from_manager().await;
@@ -538,23 +417,54 @@ impl SigningNode {
             0
         };
 
-        // Create ECDSA signature using your proven custom logic (no DummyTransaction needed)
+        // Determine signing key
+        let signing_key = if let Some(tweaked_share) = user_tweaked_share {
+            Self::derive_secp_secret(&tweaked_share)
+        } else {
+            self.private_key.unwrap()
+        };
+
+        // Create signature
         let msg = Message::from_digest_slice(&tx_hash)?;
-        let signature = self.create_ecdsa_signature_direct(&msg)?;
+        let signature = self.create_ecdsa_signature_with_signing_key(&msg, &signing_key)?;
         let (recovery_id, signature_bytes) = signature.serialize_compact();
-        
-        // ✅ Debug logging to verify signature format
-        info!(
-            "🔍 [SIGNING] Node {} created signature - Recovery ID: {}, Signature length: {} bytes",
-            self.id, recovery_id.to_i32(), signature_bytes.len()
-        );
+
+        info!("✅ [SIGNING] Node {} successfully signed Bitcoin transaction", self.id);
+
+        // Create ECDSASignature for broadcasting
+        // ✅ FIX: Don't append recovery_id to signature bytes - keep them separate!
+        // The aggregation expects 64-byte signature + separate recovery_id field
+        let ecdsa_signature = ECDSASignature {
+            signature: signature_bytes.to_vec(), // ✅ 64 bytes (r||s only)
+            signer_id: self.id.clone(),
+            recovery_id: recovery_id.to_i32() as u8, // ✅ Separate field
+            user_eth_address: user_eth_address_clone.clone(), // Clone to avoid borrow checker issues
+        };
+
+        // Broadcast the signature to other nodes with proper VRF round
+        let signing_message = SigningMessage::ECDSASignature {
+            from: self.id.clone(),
+            signature: ecdsa_signature,
+            round: current_round, // ✅ Use actual VRF round
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis(),
+            user_eth_address: user_eth_address_clone.clone(), // Pass user_eth_address for tracking
+        };
+
+        let gossipsub_msg = crate::types::GossipsubMessage::Signing(signing_message);
+        let msg_data = serde_json::to_vec(&gossipsub_msg)?;
+
+        self.message_tx
+            .send(ChannelMessage::Broadcast {
+                topic: "signatures".to_string(),
+                data: msg_data,
+            })
+            .await?;
 
         // Note: Chain handler signature creation is handled separately for Bitcoin
-
-        info!(
-            "✅ [SIGNING] Node {} successfully signed Bitcoin transaction",
-            self.id
-        );
+      
         info!(
             "📤 [SIGNING] Node {} broadcasted Bitcoin signature to network for round {}",
             self.id, current_round
@@ -578,9 +488,10 @@ impl SigningNode {
         }
 
         // Store original transaction for reconstruction after aggregation
-        if let Some(original_tx) = original_tx {
+        if let Some(original_tx) = &original_tx {
             let mut pending_transactions = self.pending_transactions.write().await;
-            pending_transactions.insert(current_round, (ChainTransaction::Bitcoin(original_tx), tx_bytes.clone(), intent_hash.clone(), None));
+            pending_transactions.insert(current_round, (ChainTransaction::Bitcoin(original_tx.clone()), tx_bytes.clone(), intent_hash.clone(), transaction_type.clone()));
+            
             info!(
                 "💾 [SIGNING] Node {} stored original Bitcoin transaction for round {} reconstruction (intent_hash: {:?})",
                 self.id, current_round, intent_hash
@@ -642,7 +553,7 @@ impl SigningNode {
     }
 
     /// Fetch nonce for an Ethereum address from the blockchain
-    async fn fetch_ethereum_nonce(address: &str, chain_id: u64) -> Result<u64> {
+    pub async fn fetch_ethereum_nonce(address: &str, chain_id: u64) -> Result<u64> {
         let rpc_url = match chain_id {
             9029 => std::env::var("MPC_ETHEREUM_RPC_URL")
                 .unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string()),
@@ -742,46 +653,47 @@ impl SigningNode {
     ) -> Result<Option<String>> {
         let pending_transactions = self.pending_transactions.read().await;
         
-        if let Some((chain_tx, _tx_bytes, _, _)) = pending_transactions.get(&round) {
+        if let Some((chain_tx, _tx_bytes, _, transaction_type)) = pending_transactions.get(&round) {
             if let ChainTransaction::Bitcoin(original_tx) = chain_tx {
                 info!(
                     "🔧 [SIGNING] Node {} reconstructing signed Bitcoin transaction for round {}",
                     self.id, round
                 );
                 
-                // Determine address type from first input
-                let address_type = if let Some(input) = original_tx.inputs.first() {
-                    if let Some(witness_utxo) = &input.witness_utxo {
-                        match witness_utxo.script_pubkey.len() {
-                            22 if witness_utxo.script_pubkey[0] == 0x00 && witness_utxo.script_pubkey[1] == 0x14 => DetectedAddressType::P2WPKH,
-                            34 if witness_utxo.script_pubkey[0] == 0x00 && witness_utxo.script_pubkey[1] == 0x20 => DetectedAddressType::P2WSH,
-                            34 if witness_utxo.script_pubkey[0] == 0x51 && witness_utxo.script_pubkey[1] == 0x20 => DetectedAddressType::P2TR,
-                            _ => DetectedAddressType::P2WPKH,
-                        }
+                // All transactions are P2WPKH only
+                let _address_type = DetectedAddressType::P2PKH;
+
+                // Get user_eth_address from signatures for this round
+                let user_eth_address = {
+                    let signatures_by_round = self.signatures_by_round.read().await;
+                    if let Some(round_signatures) = signatures_by_round.get(&round) {
+                        // Get user_eth_address from any signature in this round (all should have the same value)
+                        round_signatures.values().next().and_then(|sig| sig.user_eth_address.clone())
                     } else {
-                        DetectedAddressType::P2PKH
+                        None
                     }
-                } else {
-                    DetectedAddressType::P2PKH
                 };
 
                 // Prepare signature bytes depending on address type
-                let signature = match address_type {
-                    DetectedAddressType::P2TR => {
-                        let mut sig = aggregated_signature.to_vec();
-                        // Append SIGHASH_ALL for Taproot
-                        sig.push(0x01);
-                        sig
-                    },
-                    _ => {
-                        let r = &aggregated_signature[0..32];
-                        let s = &aggregated_signature[32..64];
-                        self.create_der_signature(r, s)?
-                    }
-                };
+                // P2WPKH uses ECDSA signatures with DER encoding
+                let r = &aggregated_signature[0..32];
+                let s = &aggregated_signature[32..64];
+                
+                // Debug: Log signature components
+                info!("🔍 [SIGNING] P2WPKH ECDSA signature components:");
+                info!("  Raw R (32 bytes): {}", hex::encode(r));
+                info!("  Raw S (32 bytes): {}", hex::encode(s));
+                
+                // Convert raw r,s to DER-encoded ECDSA signature
+                let mut r32 = [0u8; 32];
+                let mut s32 = [0u8; 32];
+                r32.copy_from_slice(r);
+                s32.copy_from_slice(s);
+                let signature = Self::create_der_signature_p2wpkh(&r32, &s32);
+                info!("  DER-encoded P2WPKH signature: {}", hex::encode(&signature));
 
                 // Create the complete signed transaction
-                let signed_tx = self.create_signed_bitcoin_transaction(original_tx, &signature)?;
+                let signed_tx = self.create_signed_bitcoin_transaction(original_tx, &signature, transaction_type, user_eth_address.clone()).await?;
                 
                 let signed_tx_hex = hex::encode(&signed_tx);
                 
@@ -983,51 +895,268 @@ impl SigningNode {
         }
     }
 
-    /// Create DER-encoded signature for Bitcoin
-    fn create_der_signature(&self, r: &[u8], s: &[u8]) -> Result<Vec<u8>> {
-        let mut der_sig = Vec::new();
-        der_sig.push(0x30); // SEQUENCE tag
+    // /// Create DER-encoded signature for Bitcoin
+    // fn create_der_signature(&self, r: &[u8], s: &[u8]) -> Result<Vec<u8>> {
+    //     let mut der_sig = Vec::new();
+    //     der_sig.push(0x30); // SEQUENCE tag
         
-        // Calculate and add the total length later
-        let length_pos = der_sig.len();
-        der_sig.push(0x00); // Placeholder for length
+    //     // Calculate and add the total length later
+    //     let length_pos = der_sig.len();
+    //     der_sig.push(0x00); // Placeholder for length
         
-        // Add r value
-        der_sig.push(0x02); // INTEGER tag
-        if r[0] & 0x80 != 0 {
-            // If high bit is set, prepend 0x00 to make it positive
-            der_sig.push((r.len() + 1) as u8);
-            der_sig.push(0x00);
-        } else {
-            der_sig.push(r.len() as u8);
+    //     // Add r value
+    //     der_sig.push(0x02); // INTEGER tag
+    //     if r[0] & 0x80 != 0 {
+    //         // If high bit is set, prepend 0x00 to make it positive
+    //         der_sig.push((r.len() + 1) as u8);
+    //         der_sig.push(0x00);
+    //     } else {
+    //         der_sig.push(r.len() as u8);
+    //     }
+    //     der_sig.extend_from_slice(r);
+        
+    //     // Add s value  
+    //     der_sig.push(0x02); // INTEGER tag
+    //     if s[0] & 0x80 != 0 {
+    //         // If high bit is set, prepend 0x00 to make it positive
+    //         der_sig.push((s.len() + 1) as u8);
+    //         der_sig.push(0x00);
+    //     } else {
+    //         der_sig.push(s.len() as u8);
+    //     }
+    //     der_sig.extend_from_slice(s);
+        
+    //     // Update the total length
+    //     let content_length = der_sig.len() - 2; // Exclude the SEQUENCE tag and length byte
+    //     der_sig[length_pos] = content_length as u8;
+        
+    //     // Add SIGHASH_ALL flag
+    //     der_sig.push(0x01); // SIGHASH_ALL
+        
+    //     Ok(der_sig)
+    // }
+
+    fn der_encode_int_be(raw: &[u8]) -> Vec<u8> {
+        // 1) Strip leading zeros (minimal encoding)
+        let mut i = 0;
+        while i < raw.len() && raw[i] == 0 {
+            i += 1;
         }
-        der_sig.extend_from_slice(r);
-        
-        // Add s value  
-        der_sig.push(0x02); // INTEGER tag
-        if s[0] & 0x80 != 0 {
-            // If high bit is set, prepend 0x00 to make it positive
-            der_sig.push((s.len() + 1) as u8);
-            der_sig.push(0x00);
-        } else {
-            der_sig.push(s.len() as u8);
+        // If the value is zero, encode as single 0x00
+        let mut v = if i == raw.len() { vec![0u8] } else { raw[i..].to_vec() };
+
+        // 2) If MSB set, prepend 0x00 so it's interpreted as positive
+        if v[0] & 0x80 != 0 {
+            let mut with_pad = Vec::with_capacity(v.len() + 1);
+            with_pad.push(0x00);
+            with_pad.extend_from_slice(&v);
+            v = with_pad;
         }
-        der_sig.extend_from_slice(s);
-        
-        // Update the total length
-        let content_length = der_sig.len() - 2; // Exclude the SEQUENCE tag and length byte
-        der_sig[length_pos] = content_length as u8;
-        
-        // Add SIGHASH_ALL flag
-        der_sig.push(0x01); // SIGHASH_ALL
-        
-        Ok(der_sig)
+
+        // 3) INTEGER: 0x02 | length | value
+        let mut out = Vec::with_capacity(2 + v.len());
+        out.push(0x02);
+        out.push(u8::try_from(v.len()).unwrap()); // short-form length (< 128)
+        out.extend_from_slice(&v);
+        out
     }
 
-    fn create_signed_bitcoin_transaction(
+    fn normalize_low_s(s: &[u8]) -> [u8; 32] {
+        let n = BigUint::from_bytes_be(&CURVE_ORDER);
+        let half = &n >> 1;
+        let mut sv = BigUint::from_bytes_be(s);
+        if sv > half { sv = &n - sv; }
+        let mut out = [0u8; 32];
+        let b = sv.to_bytes_be();
+        out[32 - b.len()..].copy_from_slice(&b);
+        out
+    }
+
+    /// Compute BIP-143 sighash for P2WPKH transactions (based on working implementation)
+    fn compute_bip143_sighash_p2wpkh(
+        &self,
+        tx: &BitcoinTransaction,
+        input_index: usize,
+        pubkey33: &[u8],
+        prevout_value: u64,
+    ) -> Result<[u8; 32]> {
+        use sha2::{Sha256, Digest};
+        use ripemd::Ripemd160;
+
+        // Helper function for double SHA256
+        fn dsha256(data: &[u8]) -> [u8; 32] {
+            let h1 = Sha256::digest(data);
+            let h2 = Sha256::digest(&h1);
+            let mut out = [0u8; 32];
+            out.copy_from_slice(&h2);
+            out
+        }
+
+        // Helper function for HASH160
+        fn hash160(data: &[u8]) -> [u8; 20] {
+            let sha = Sha256::digest(data);
+            let rip = Ripemd160::digest(&sha);
+            let mut out = [0u8; 20];
+            out.copy_from_slice(&rip);
+            out
+        }
+
+        // Helper for varint encoding
+        fn varint(v: u64) -> Vec<u8> {
+            if v < 253 { 
+                vec![v as u8] 
+            } else if v <= 0xFFFF { 
+                vec![253u8, (v & 0xff) as u8, ((v >> 8) & 0xff) as u8] 
+            } else if v <= 0xFFFF_FFFF {
+                let mut out = vec![254u8, 0, 0, 0, 0]; 
+                for i in 0..4 { 
+                    out[1 + i] = ((v >> (8 * i)) & 0xff) as u8; 
+                } 
+                out
+            } else {
+                let mut out = vec![255u8, 0, 0, 0, 0, 0, 0, 0, 0]; 
+                for i in 0..8 { 
+                    out[1 + i] = ((v >> (8 * i)) & 0xff) as u8; 
+                } 
+                out
+            }
+        }
+
+        // Convert txid from hex to little-endian bytes
+        fn hex_rev32(txid_hex: &str) -> Result<[u8; 32]> {
+            let mut b = hex::decode(txid_hex)?;
+            if b.len() != 32 {
+                return Err(anyhow::anyhow!("txid must be 32 bytes"));
+            }
+            b.reverse();
+            let mut out = [0u8; 32];
+            out.copy_from_slice(&b);
+            Ok(out)
+        }
+
+        // 1. hashPrevouts - double SHA256 of all outpoints
+        let mut hpv = Vec::with_capacity(36 * tx.inputs.len());
+        for input in &tx.inputs {
+            let txid_le = hex_rev32(&input.txid)?;
+            hpv.extend_from_slice(&txid_le);
+            hpv.extend_from_slice(&input.vout.to_le_bytes());
+        }
+        let hash_prevouts = dsha256(&hpv);
+
+        // 2. hashSequence - double SHA256 of all sequences
+        let mut hseq = Vec::with_capacity(4 * tx.inputs.len());
+        for input in &tx.inputs {
+            hseq.extend_from_slice(&input.sequence.to_le_bytes());
+        }
+        let hash_sequence = dsha256(&hseq);
+
+        // 3. hashOutputs - double SHA256 of all outputs
+        let mut hout = Vec::new();
+        for output in &tx.outputs {
+            hout.extend_from_slice(&output.value.to_le_bytes());
+            hout.extend_from_slice(&varint(output.script_pubkey.len() as u64));
+            hout.extend_from_slice(&output.script_pubkey);
+        }
+        let hash_outputs = dsha256(&hout);
+
+        // 4. scriptCode for P2WPKH: 0x19 + P2PKH template
+        let h160 = hash160(pubkey33);
+        let mut script_code = Vec::with_capacity(26);
+        script_code.push(0x19); // length 25
+        script_code.extend_from_slice(&[0x76, 0xa9, 0x14]); // OP_DUP OP_HASH160 PUSH20
+        script_code.extend_from_slice(&h160);
+        script_code.extend_from_slice(&[0x88, 0xac]); // OP_EQUALVERIFY OP_CHECKSIG
+
+        // 5. Build BIP-143 preimage
+        let current_input = &tx.inputs[input_index];
+        let txid_le = hex_rev32(&current_input.txid)?;
+        
+        let mut preimage = Vec::new();
+        preimage.extend_from_slice(&(tx.version as i32).to_le_bytes());
+        preimage.extend_from_slice(&hash_prevouts);
+        preimage.extend_from_slice(&hash_sequence);
+        preimage.extend_from_slice(&txid_le);
+        preimage.extend_from_slice(&current_input.vout.to_le_bytes());
+        preimage.extend_from_slice(&script_code);
+        preimage.extend_from_slice(&prevout_value.to_le_bytes());
+        preimage.extend_from_slice(&current_input.sequence.to_le_bytes());
+        preimage.extend_from_slice(&hash_outputs);
+        preimage.extend_from_slice(&tx.lock_time.to_le_bytes());
+        preimage.extend_from_slice(&1u32.to_le_bytes()); // SIGHASH_ALL
+
+        Ok(dsha256(&preimage))
+    }
+
+    /// Create DER-encoded ECDSA signature with SIGHASH_ALL (based on working implementation)
+    pub fn create_der_signature_p2wpkh(r32: &[u8; 32], s32: &[u8; 32]) -> Vec<u8> {
+        // Encode integer with proper DER rules
+        fn enc_int(mut v: Vec<u8>) -> Vec<u8> {
+            // Strip leading zeros
+            while v.len() > 1 && v[0] == 0 {
+                v.remove(0);
+            }
+            // Add leading zero if MSB set to ensure positive
+            if v[0] & 0x80 != 0 {
+                let mut t = Vec::with_capacity(v.len() + 1);
+                t.push(0x00);
+                t.extend_from_slice(&v);
+                return t;
+            }
+            v
+        }
+
+        let r = enc_int(r32.to_vec());
+        let s = enc_int(s32.to_vec());
+        
+        let mut der = Vec::with_capacity(6 + r.len() + s.len());
+        der.push(0x30); // SEQUENCE
+        der.push((4 + r.len() + s.len()) as u8); // Total length
+        der.push(0x02); // INTEGER tag for r
+        der.push(r.len() as u8);
+        der.extend_from_slice(&r);
+        der.push(0x02); // INTEGER tag for s
+        der.push(s.len() as u8);
+        der.extend_from_slice(&s);
+        der.push(0x01); // SIGHASH_ALL
+        
+        der
+    }
+
+    /// Create a DER-encoded ECDSA (r, s) and append the Bitcoin sighash byte (e.g., 0x01).
+    /// NOTE: Do low-S normalization of `s` *before* calling this if needed.
+    pub fn create_der_signature(r: &[u8], s: &[u8], sighash: u8) -> Result<Vec<u8>> {
+        // Sanity: sighash must be 0x01, 0x02, 0x03 or those | 0x80
+        match sighash {
+            0x01 | 0x02 | 0x03 | 0x81 | 0x82 | 0x83 => {}
+            _ => panic!("Invalid Bitcoin sighash type: 0x{:02x}", sighash),
+        }
+        let s_low = Self::normalize_low_s(s);
+        let r_der = Self::der_encode_int_be(r);
+        let s_der = Self::der_encode_int_be(&s_low);
+
+        // Total DER content length = len(R-INTEGER) + len(S-INTEGER)
+        let content_len = r_der.len() + s_der.len(); // e.g., 69 (0x45) for your sample
+        debug_assert!(content_len < 128);
+
+        // SEQUENCE: 0x30 | content_len | r_der | s_der
+        let mut sig = Vec::with_capacity(2 + content_len + 1); // +1 for sighash (outside DER)
+        sig.push(0x30);
+        sig.push(u8::try_from(content_len).unwrap());
+        sig.extend_from_slice(&r_der);
+        sig.extend_from_slice(&s_der);
+
+        // Append the sighash type byte (NOT part of DER)
+        sig.push(sighash);
+
+        Ok(sig)
+    }
+
+    async fn create_signed_bitcoin_transaction(
         &self,
         original_tx: &BitcoinTransaction,
         signature: &[u8],
+        transaction_type: &Option<crate::types::TransactionType>,
+        user_eth_address: Option<String>,
     ) -> Result<Vec<u8>> {
         let mut signed_tx = Vec::new();
         
@@ -1059,7 +1188,7 @@ impl SigningNode {
             
             // Create script_sig based on address type
             let script_sig = if i == 0 {
-                self.create_script_sig_for_input(input, signature)?
+                self.create_script_sig_for_input(input, signature, transaction_type, user_eth_address.clone()).await?
             } else {
                 vec![] // Empty for other inputs for now
             };
@@ -1091,7 +1220,7 @@ impl SigningNode {
                 for (i, _witness_input) in witness.inputs.iter().enumerate() {
                     if i == 0 {
                         // Create witness stack for the first input
-                        let witness_stack = self.create_witness_stack_for_input(&original_tx.inputs[i], signature)?;
+                        let witness_stack = self.create_witness_stack_for_input(&original_tx.inputs[i], signature, transaction_type, user_eth_address.clone()).await?;
                         signed_tx.extend_from_slice(&self.encode_varint(witness_stack.len() as u64));
                         for item in witness_stack {
                             signed_tx.extend_from_slice(&self.encode_varint(item.len() as u64));
@@ -1113,7 +1242,7 @@ impl SigningNode {
 
 
     /// Create script_sig for different input types
-    fn create_script_sig_for_input(&self, input: &BitcoinInput, signature: &[u8]) -> Result<Vec<u8>> {
+    async fn create_script_sig_for_input(&self, input: &BitcoinInput, signature: &[u8], transaction_type: &Option<crate::types::TransactionType>, user_eth_address: Option<String>) -> Result<Vec<u8>> {
         if let Some(witness_utxo) = &input.witness_utxo {
             // For SegWit inputs, script_sig is usually empty or contains redeem script
             match witness_utxo.script_pubkey.len() {
@@ -1136,7 +1265,8 @@ impl SigningNode {
             }
         } else {
             // Legacy P2PKH - create standard script_sig
-            let group_key_bytes = self.get_group_public_key_bytes()?;
+            let group_key_bytes = self.get_group_public_key_bytes(transaction_type.clone(), user_eth_address.clone()).await?;
+            info!("🔍 [SIGNING] Using public key: {}", hex::encode(&group_key_bytes));
             let mut script_sig = Vec::new();
             
             // Push signature (DER format)
@@ -1152,48 +1282,86 @@ impl SigningNode {
     }
 
     /// Create witness stack for SegWit inputs
-    fn create_witness_stack_for_input(&self, input: &BitcoinInput, signature: &[u8]) -> Result<Vec<Vec<u8>>> {
-        if let Some(witness_utxo) = &input.witness_utxo {
-            match witness_utxo.script_pubkey.len() {
-                22 if witness_utxo.script_pubkey[0] == 0x00 && witness_utxo.script_pubkey[1] == 0x14 => {
-                    // P2WPKH: [signature, pubkey]
-                    let group_key_bytes = self.get_group_public_key_bytes()?;
-                    Ok(vec![signature.to_vec(), group_key_bytes])
-                },
-                34 if witness_utxo.script_pubkey[0] == 0x00 && witness_utxo.script_pubkey[1] == 0x20 => {
-                    // P2WSH: [signature, script, ...]
-                    let group_key_bytes = self.get_group_public_key_bytes()?;
-                    Ok(vec![signature.to_vec(), group_key_bytes])
-                },
-                34 if witness_utxo.script_pubkey[0] == 0x51 && witness_utxo.script_pubkey[1] == 0x20 => {
-                    // P2TR: [signature] (Schnorr signature)
-                    // Note: This is simplified - real P2TR uses Schnorr signatures
-                    Ok(vec![signature.to_vec()])
-                },
-                _ => {
-                    // P2SH-wrapped SegWit
-                    let group_key_bytes = self.get_group_public_key_bytes()?;
-                    Ok(vec![signature.to_vec(), group_key_bytes])
-                }
-            }
+    async fn create_witness_stack_for_input(&self, input: &BitcoinInput, signature: &[u8], transaction_type: &Option<crate::types::TransactionType>, user_eth_address: Option<String>) -> Result<Vec<Vec<u8>>> {
+        // All inputs are P2WPKH, so they all have witness UTXOs
+        if let Some(_witness_utxo) = &input.witness_utxo {
+            // P2WPKH witness stack: [signature, pubkey]
+            let group_key_bytes = self.get_group_public_key_bytes(transaction_type.clone(), user_eth_address.clone()).await?;
+            info!("🔍 [SIGNING] P2WPKH witness stack - signature: {} bytes, pubkey: {} bytes", 
+                  signature.len(), group_key_bytes.len());
+            Ok(vec![signature.to_vec(), group_key_bytes])
         } else {
-            // Legacy input - no witness
-            Ok(vec![])
+            return Err(anyhow::anyhow!("P2WPKH input must have witness UTXO"));
         }
     }
 
-    /// Get the group public key bytes from DKG
-    fn get_group_public_key_bytes(&self) -> Result<Vec<u8>> {
-        if let Some(group_key) = self.group_public_key {
-            // ✅ Convert k256::ProjectivePoint to compressed bytes for Bitcoin
-            let affine_point = group_key.to_affine();
-            let encoded_point = k256::EncodedPoint::from(affine_point);
-            let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
-            
-            info!("🔑 [SIGNING] Using REAL DKG group public key: {}", hex::encode(&compressed_bytes));
-            Ok(compressed_bytes)
-        } else {
-            Err(anyhow::anyhow!("DKG group public key not available - ensure DKG process is completed"))
+    /// Get the appropriate public key bytes based on transaction type
+    async fn get_group_public_key_bytes(&self, transaction_type: Option<crate::types::TransactionType>, user_eth_address: Option<String>) -> Result<Vec<u8>> {
+        match transaction_type {
+            Some(crate::types::TransactionType::UserToVault) => {
+                // UserToVault transactions use the user's specific group key from user registry
+                if let Some(user_addr) = &user_eth_address {
+                    if let Some(user_registry) = &self.user_registry {
+                        if let Some(user) = user_registry.get_user_by_address(user_addr).await {
+                            if let Some(user_group_key) = &user.user_group_key {
+                                let affine_point = user_group_key.0; // user_group_key is SerializablePoint(AffinePoint)
+                                let encoded_point = k256::EncodedPoint::from(affine_point);
+                                let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
+                                
+                                info!("🔑 [SIGNING] UserToVault: Using user-specific group public key for {}: {}", user_addr, hex::encode(&compressed_bytes));
+                                Ok(compressed_bytes)
+                            } else {
+                                Err(anyhow::anyhow!("User {} has no group key available - ensure user registration and key derivation is completed", user_addr))
+                            }
+                        } else {
+                            Err(anyhow::anyhow!("User {} not found in registry", user_addr))
+                        }
+                    } else {
+                        Err(anyhow::anyhow!("User registry not available for UserToVault transaction"))
+                    }
+                } else {
+                    Err(anyhow::anyhow!("UserToVault transaction requires user_eth_address"))
+                }
+            },
+            Some(crate::types::TransactionType::NetworkToTarget) => {
+                // NetworkToTarget uses the DKG group public key
+                if let Some(group_key) = self.group_public_key {
+                    let affine_point = group_key.to_affine();
+                    let encoded_point = k256::EncodedPoint::from(affine_point);
+                    let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
+                    
+                    info!("🔑 [SIGNING] NetworkToTarget: Using DKG group public key: {}", hex::encode(&compressed_bytes));
+                    Ok(compressed_bytes)
+                } else {
+                    Err(anyhow::anyhow!("DKG group public key not available for NetworkToTarget transaction - ensure DKG process is completed"))
+                }
+            },
+            Some(crate::types::TransactionType::VaultToNetwork) => {
+                // VaultToNetwork uses the vault group key
+                if let Some(vault_key) = self.vault_group_key {
+                    let affine_point = vault_key.to_affine();
+                    let encoded_point = k256::EncodedPoint::from(affine_point);
+                    let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
+                    
+                    info!("🔑 [SIGNING] VaultToNetwork: Using vault group public key: {}", hex::encode(&compressed_bytes));
+                    Ok(compressed_bytes)
+                } else {
+                    Err(anyhow::anyhow!("Vault group public key not available for VaultToNetwork transaction - ensure vault key is set"))
+                }
+            },
+            None => {
+                // Fallback to DKG group public key for backward compatibility
+                if let Some(group_key) = self.group_public_key {
+                    let affine_point = group_key.to_affine();
+                    let encoded_point = k256::EncodedPoint::from(affine_point);
+                    let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
+                    
+                    info!("🔑 [SIGNING] Fallback: Using DKG group public key: {}", hex::encode(&compressed_bytes));
+                    Ok(compressed_bytes)
+                } else {
+                    Err(anyhow::anyhow!("DKG group public key not available - ensure DKG process is completed"))
+                }
+            }
         }
     }
 
@@ -1238,17 +1406,15 @@ impl SigningNode {
     }
 
     /// Create ECDSA signature directly without DummyTransaction (pure Bitcoin signing)
-    /// This is your exact proven logic extracted from create_ecdsa_signature
-    pub fn create_ecdsa_signature_direct(
+    /// Create ECDSA signature with a specific signing key (for Bitcoin transactions)
+    pub fn create_ecdsa_signature_with_signing_key(
         &self,
         message: &Message,
+        signing_key: &SecretKey,
     ) -> Result<RecoverableSignature> {
         // Your exact proven custom signature logic (copied from create_ecdsa_signature)
-        // 1) Get secret key and context
-        let sk = self
-            .private_key
-            .as_ref()
-            .ok_or_else(|| anyhow!("No private key available"))?;
+        // 1) Use provided signing key and context
+        let sk = signing_key;
         let secp = Secp256k1::new();
 
         // 2) Fixed nonce k = 0x42…42
@@ -1342,8 +1508,24 @@ impl SigningNode {
             self.id
         );
 
-        // Convert DummyTransaction to ChainTransaction for chain-agnostic handling
-        let chain_transaction = self.chain_handler.from_dummy_transaction(transaction)?;
+        // Convert DummyTransaction to ChainTransaction for chain-agnostic handling with UTXO error handling
+        let chain_transaction = match self.chain_handler.from_dummy_transaction(transaction) {
+            Ok(tx) => tx,
+            Err(e) => {
+                // Check if this is a UTXO-related error that should stop VRF
+                let error_msg = e.to_string();
+                if error_msg.contains("No spendable UTXOs") || 
+                   error_msg.contains("Failed to fetch spendable UTXOs") ||
+                   error_msg.contains("UTXO") {
+                    error!("❌ [SIGNING] UTXO error detected, stopping VRF process: {}", e);
+                    error!("🛑 [VRF] Stopping VRF selection due to UTXO unavailability");
+                    return Err(anyhow::anyhow!("Transaction creation failed due to UTXO unavailability: {}", e));
+                } else {
+                    // For other errors, continue with normal error handling
+                    return Err(e);
+                }
+            }
+        };
         
         // Create transaction bytes using chain handler
         let tx_bytes = self.chain_handler.create_transaction_bytes(&chain_transaction)?;
@@ -2025,6 +2207,8 @@ impl SigningNode {
                                 "🎉 [SIGNING] 🔗 SIGNED BITCOIN TRANSACTION READY! 🔗"
                             );
                             info!("📄 Raw signed transaction: {}", signed_tx_hex);
+                            
+                            
                             // info!("Broadcasting transaction to Bitcoin network...");
                             // Self::broadcast_transaction(&signed_tx_hex, false).await?;
                         }
@@ -2490,6 +2674,19 @@ impl SigningNode {
             }
         }
     }
+    
+    /// Store transaction error for a specific intent hash
+    async fn store_transaction_error_for_intent(&self, intent_hash: &str, error_message: &str) {
+        if let Some(user_registry) = &self.user_registry {
+            if let Err(e) = user_registry.store_transaction_error(intent_hash, error_message).await {
+                error!("❌ [SIGNING] Failed to store transaction error for intent {}: {}", intent_hash, e);
+            } else {
+                info!("✅ [SIGNING] Stored transaction error for intent {}: {}", intent_hash, error_message);
+            }
+        } else {
+            warn!("⚠️ [SIGNING] No user registry available to store transaction error for intent {}", intent_hash);
+        }
+    }
 
     /// Store transaction ID for a round if intent hash is available and broadcast to other nodes
     async fn store_transaction_id_for_round(&self, round: u64, tx_id: &str, user_eth_address: Option<String>) {
@@ -2509,21 +2706,16 @@ impl SigningNode {
                 let (transaction_type_str, storage_result) = match transaction_type {
                     Some(crate::types::TransactionType::UserToVault) => {
                         // User-to-vault transaction
-                        let result = user_registry.store_user_to_network_tx_id(intent_hash, tx_id).await;
+                        let result = user_registry.store_user_to_vault_tx_id(intent_hash, tx_id).await;
                         match &result {
                             Ok(()) => {
                                 info!("💾 [SIGNING] Stored user-to-network transaction ID {} for intent {} (round {})", tx_id, intent_hash, round);
-                                
-                                // Update solver amounts after successful UserToVault transaction
-                                if let Err(e) = self.update_solver_amounts_for_user_to_vault(intent_hash).await {
-                                    warn!("⚠️ [SIGNING] Failed to update solver amounts for UserToVault transaction: {}", e);
-                                }
                             },
                             Err(e) => {
                                 error!("❌ [SIGNING] Failed to store user-to-network transaction ID for intent {}: {}", intent_hash, e);
                             }
                         }
-                        ("user_to_network", result)
+                        ("user_to_vault", result)
                     },
                     Some(crate::types::TransactionType::NetworkToTarget) => {
                         // Network-to-target transaction
@@ -2555,7 +2747,7 @@ impl SigningNode {
                         // Fallback to old logic based on user_eth_address
                         if let Some(eth_addr) = &user_eth_address {
                             // User-to-network transaction
-                            let result = user_registry.store_user_to_network_tx_id(intent_hash, tx_id).await;
+                            let result = user_registry.store_user_to_vault_tx_id(intent_hash, tx_id).await;
                             match &result {
                                 Ok(()) => {
                                     info!("💾 [SIGNING] Stored user-to-network transaction ID {} for intent {} (round {}) for user {}", tx_id, intent_hash, round, eth_addr);
@@ -2617,6 +2809,13 @@ impl SigningNode {
             topic: "transaction-id-sync".to_string(),
             data: serde_json::to_vec(&broadcast_message).unwrap_or_default(),
         };
+
+        // Call update_solver_amounts_for_user_to_vault only for user_to_vault transaction type
+        if transaction_type == "user_to_vault" {
+            if let Err(e) = self.update_solver_amounts_for_user_to_vault(intent_hash).await {
+                warn!("⚠️ [SIGNING] Failed to update solver amounts for UserToVault transaction: {}", e);
+            }
+        }
 
         if let Err(e) = self.message_tx.send(channel_message).await {
             error!("❌ [SIGNING] Failed to broadcast transaction ID to other nodes: {}", e);
@@ -3247,7 +3446,6 @@ impl SigningNode {
                                     match Self::broadcast_transaction(&signed_tx_hex, false).await {
                                         Ok(Some(txid)) => {
                                             info!("✅ [SIGNING] Bitcoin transaction broadcasted successfully: {}", txid);
-                                            // Store transaction ID if we have intent hash and user registry
                                             self.store_transaction_id_for_round(round, &txid, signature.user_eth_address.clone()).await;
                                         },
                                         Ok(None) => {
@@ -3255,7 +3453,6 @@ impl SigningNode {
                                         },
                                         Err(e) => {
                                             error!("❌ [SIGNING] Failed to broadcast Bitcoin transaction: {}", e);
-                                            // Store the error message for the user to see
                                             self.store_transaction_error_for_round(round, &e.to_string()).await;
                                         }
                                     }
@@ -3508,7 +3705,7 @@ impl SigningNode {
     }
 
     /// Update solver amounts for UserToVault transactions
-    async fn update_solver_amounts_for_user_to_vault(&self, _intent_hash: &str) -> Result<()> {
+    pub async fn update_solver_amounts_for_user_to_vault(&self, _intent_hash: &str) -> Result<()> {
         // Configuration for contract interaction
         let rpc_url = std::env::var("SOLVER_CONTRACT_RPC_URL")
             .unwrap_or_else(|_| "http://localhost:8545".to_string());
@@ -3557,10 +3754,20 @@ impl SigningNode {
             active_solvers
         );
 
-        // Store amounts for each solver
-        let mut all_solver_amounts = std::collections::HashMap::new();
+        // Store amounts for each solver by EVM address
+        let mut solver_liquidity_map = std::collections::HashMap::new();
+        let mut total_tics = U256::zero();
+        let mut total_btc = U256::zero();
 
         for solver_id in &active_solvers {
+            // Get solver EVM address
+            let solver_evm_address = solver_contract
+                .get_solver_evm_address(solver_id)
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!("Failed to get EVM address for solver {}: {}", solver_id, e)
+                })?;
+
             // Call getSolverAllChainAmounts for each solver
             let amounts = solver_contract
                 .get_all_chain_amounts(solver_id)
@@ -3569,53 +3776,185 @@ impl SigningNode {
                     anyhow::anyhow!("Failed to get amounts for solver {}: {}", solver_id, e)
                 })?;
 
-            // Convert amounts to strings for storage
-            let amounts_str: Vec<String> = amounts.iter().map(|u| u.to_string()).collect();
+            // Track totals: index 0 = tics, index 1 = btc
+            if let Some(tics_amount) = amounts.get(0) {
+                total_tics = total_tics + *tics_amount;
+            }
+            if let Some(btc_amount) = amounts.get(1) {
+                total_btc = total_btc + *btc_amount;
+            }
 
-            // Store individual solver amounts with key: solver_amounts:{node_id}:{solver_id}
-            let individual_key = crate::database::key_utils::solver_amounts_key(&self.id, solver_id);
-            
-            // Store individual solver amounts in database
+            // Convert amounts to strings for storage: [tics, btc]
+            let liquidity_amounts: Vec<String> = amounts.iter().map(|u| u.to_string()).collect();
+
+            // Store solver liquidity with key: solver_liquidity:{solver_evm_address}
+            let solver_liquidity_key = format!("solver_liquidity:{}", format!("{:?}", solver_evm_address).to_lowercase());
+
+            // Store individual solver liquidity in database
             if let Some(ref database) = self.database {
-                if let Err(e) = database.put_string(&individual_key, &amounts_str) {
-                    warn!("⚠️ [SOLVER] Failed to store amounts for solver {}: {}", solver_id, e);
+                if let Err(e) = database.put_string(&solver_liquidity_key, &liquidity_amounts) {
+                    warn!("⚠️ [SOLVER] Failed to store liquidity for solver {} (address: {:?}): {}", solver_id, solver_evm_address, e);
                 } else {
-                    info!("💾 [SOLVER] Stored amounts for solver {}: {:?}", solver_id, amounts_str);
+                    info!("💾 [SOLVER] Stored liquidity for solver {} (address: {:?}): {:?}", solver_id, solver_evm_address, liquidity_amounts);
                 }
             } else {
-                warn!("⚠️ [SOLVER] No database available to store solver amounts");
+                warn!("⚠️ [SOLVER] No database available to store solver liquidity");
             }
 
-            // Add to all solver amounts map
-            all_solver_amounts.insert(solver_id.clone(), amounts_str.clone());
+            // Add to solver liquidity map: solver_address -> [tics, btc]
+            solver_liquidity_map.insert(format!("{:?}", solver_evm_address).to_lowercase(), liquidity_amounts.clone());
         }
 
-        // Store all solver amounts with key: solver_amounts:all:{node_id}
-        let all_key = crate::database::key_utils::all_solver_amounts_key(&self.id);
+        // Store all solver liquidity with key: solver_liquidity:all
+        let all_solver_liquidity_key = "solver_liquidity:all";
         
-        // Store consolidated amounts in database
+        // Store consolidated liquidity and totals in database
         if let Some(ref database) = self.database {
-            if let Err(e) = database.put_string(&all_key, &all_solver_amounts) {
-                warn!("⚠️ [SOLVER] Failed to store all solver amounts: {}", e);
+            if let Err(e) = database.put_string(all_solver_liquidity_key, &solver_liquidity_map) {
+                warn!("⚠️ [SOLVER] Failed to store all solver liquidity: {}", e);
             } else {
-                info!("💾 [SOLVER] Stored all solver amounts for node {}: {} solvers", self.id, all_solver_amounts.len());
+                info!("💾 [SOLVER] Stored all solver liquidity: {} solvers", solver_liquidity_map.len());
+            }
+
+            // Store total liquidity values (index 0 = tics, index 1 = btc)
+            let tics_key = crate::database::key_utils::total_liquidity_tics_key();
+            if let Err(e) = database.put_string(&tics_key, &total_tics.to_string()) {
+                warn!("⚠️ [SOLVER] Failed to store total tics liquidity: {}", e);
+            } else {
+                info!("💾 [SOLVER] Stored total tics liquidity: {}", total_tics);
+            }
+
+            let btc_key = crate::database::key_utils::total_liquidity_btc_key();
+            if let Err(e) = database.put_string(&btc_key, &total_btc.to_string()) {
+                warn!("⚠️ [SOLVER] Failed to store total btc liquidity: {}", e);
+            } else {
+                info!("💾 [SOLVER] Stored total btc liquidity: {}", total_btc);
             }
         } else {
-            warn!("⚠️ [SOLVER] No database available to store all solver amounts");
+            warn!("⚠️ [SOLVER] No database available to store solver liquidity");
         }
         
         // Log the consolidated amounts
         info!(
-            "📋 [SOLVER] All solver amounts for node {}: {:?}",
-            self.id,
-            all_solver_amounts
+            "📋 [SOLVER] All solver liquidity by EVM address: {:?}",
+            solver_liquidity_map
         );
 
         info!(
-            "✅ [SOLVER] Updated all solver amounts for node {}: {} solvers",
-            self.id,
+            "✅ [SOLVER] Updated all solver liquidity: {} solvers",
             active_solvers.len()
         );
+
+        Ok(())
+    }
+
+    /// Calculate and store rewards for each solver based on an intent hash
+    pub async fn calculate_reward_per_solver(&self, intent_hash: &str) -> Result<()> {
+        // Ensure database and user registry are available
+        let database = self
+            .database
+            .as_ref()
+            .ok_or_else(|| anyhow!("Database not available"))?;
+        let user_registry = self
+            .user_registry
+            .as_ref()
+            .ok_or_else(|| anyhow!("User registry not available"))?;
+
+        // Check if rewards already calculated using user registry
+        if let Some(true) = user_registry.get_intent_reward_status(intent_hash).await {
+            info!(
+                "⏭️ [SOLVER] Rewards already calculated for intent {}",
+                intent_hash
+            );
+            return Ok(());
+        }
+
+        // Fetch intent to determine amount and target chain
+        let intent = user_registry
+            .get_intent(intent_hash)
+            .await
+            .ok_or_else(|| anyhow!("Intent not found: {}", intent_hash))?;
+
+        let target_chain = intent.target_chain.to_lowercase();
+        let intent_amount = U256::from(intent.amount);
+        let base_reward = intent_amount / U256::from(10u8); // 10% of intent amount
+
+        // Fetch total liquidity values using user registry
+        let total_tics = user_registry
+            .get_total_liquidity_tics()
+            .await
+            .unwrap_or(0);
+        let total_btc = user_registry
+            .get_total_liquidity_btc()
+            .await
+            .unwrap_or(0.0);
+
+        // Convert to U256 for calculations
+        let total_tics_u256 = U256::from(total_tics);
+        let total_btc_u256 = U256::from((total_btc * 1e8) as u64); // Convert BTC to satoshis
+
+        // Fetch liquidity for all solvers
+        let all_key = "solver_liquidity:all";
+        let solver_liquidity_map: HashMap<String, Vec<String>> = database
+            .get_string(all_key)?
+            .unwrap_or_default();
+
+        for (solver, amounts) in solver_liquidity_map.iter() {
+            let reward = if target_chain == "btc" {
+                let solver_btc = amounts
+                    .get(1)
+                    .and_then(|v| U256::from_dec_str(v).ok())
+                    .unwrap_or_else(U256::zero);
+                if total_btc_u256.is_zero() {
+                    U256::zero()
+                } else {
+                    solver_btc * base_reward / total_btc_u256
+                }
+            } else {
+                let solver_tics = amounts
+                    .get(0)
+                    .and_then(|v| U256::from_dec_str(v).ok())
+                    .unwrap_or_else(U256::zero);
+                if total_tics_u256.is_zero() {
+                    U256::zero()
+                } else {
+                    solver_tics * base_reward / total_tics_u256
+                }
+            };
+
+            // Get current reward and update using user registry
+            let current = user_registry
+                .get_solver_reward(solver)
+                .await
+                .unwrap_or_else(|| EthereumU256::zero());
+            
+            // Convert ethereum_types::U256 to ethers::types::U256 for calculation
+            let current_ethers = U256::from_dec_str(&current.to_string())
+                .map_err(|e| anyhow!("Failed to convert current reward: {}", e))?;
+            let updated_ethers = current_ethers + reward;
+            
+            // Convert back to ethereum_types::U256 for user registry
+            let updated_ethereum_types = EthereumU256::from_dec_str(&updated_ethers.to_string())
+                .map_err(|e| anyhow!("Failed to convert updated reward: {}", e))?;
+            
+            user_registry
+                .set_solver_reward(solver, updated_ethereum_types)
+                .await
+                .map_err(|e| anyhow!("Failed to set solver reward: {}", e))?;
+            
+            info!("💰 [SOLVER] Reward for {} updated to {}", solver, updated_ethers);
+        }
+
+        info!(
+            "✅ [SOLVER] Calculated rewards for {} solvers",
+            solver_liquidity_map.len()
+        );
+        
+        // Mark intent reward status as calculated using user registry
+        user_registry
+            .set_intent_reward_status(intent_hash, true)
+            .await
+            .map_err(|e| anyhow!("Failed to set intent reward status: {}", e))?;
 
         Ok(())
     }

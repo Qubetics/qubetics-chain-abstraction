@@ -41,6 +41,10 @@ pub enum ChannelMessage {
         transaction_type: TransactionType,
         amount: u128,
     },
+    SolverReward {
+        solver_address: String,
+        reward: u128,
+    },
     UserRegistration {
         ethereum_address: String,
         node_id: String,
@@ -73,6 +77,10 @@ pub enum GossipsubMessage {
         user_eth_address: Option<String>, // If provided, use user's tweaked share; otherwise use network's DKG share
         transaction_type: TransactionType,
         amount: u128,
+    },
+    SolverReward {
+        solver_address: String,
+        reward: u128,
     },
     DKGCommand(crate::types::rpc::RPCRequest),
     UserRegistration {

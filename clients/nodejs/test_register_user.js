@@ -24,6 +24,7 @@ const colors = {
   cyan: '\x1b[36m',
   green: '\x1b[32m'
 };
+
 const oooo = 12537513
 
 function log(message, color = 'reset') {
@@ -147,16 +148,16 @@ async function testUserMpcDeposit({ wallet, amount }) {
 
     // Construct DepositIntent
     const depositIntent = {
-      source_address: userInfo.data.derived_eth_address, // Use canonical address
-      target_address: '0xc6dA53bCa90753699cd19521Dd559964490C6822',
-      source_chain: 'qubetics',
-      target_chain: 'qubetics',
+      source_address: userInfo.data.derived_btc_address, // Use canonical address
+      target_address: 'tb1qzxxlpvxx44ak6tasj5ffstr6gj5xrpxzxwrjy3',
+      source_chain: 'bitcoin',
+      target_chain: 'bitcoin',
       amount: amount, // Use the passed amount parameter
       source_token: 'TICS',
       target_token: 'TICS',
       timestamp: oooo, // Current Unix timestamp in seconds
     };
-
+    console.log(`📊 Deposit Intent: ${JSON.stringify(depositIntent)}`, 'cyan');
     // Serialize DepositIntent for signing
     const msg = JSON.stringify(depositIntent);
     log(`📝 Message: ${msg}`, 'cyan');
@@ -281,14 +282,14 @@ async function testUserMpcDepositWithTxId({ wallet, amount, txId, status }) {
     }
 
     const depositIntent = {
-      source_address: userInfo.data.derived_eth_address, // Use canonical address
-      target_address: '0xc6dA53bCa90753699cd19521Dd559964490C6822',
-      source_chain: 'qubetics',
-      target_chain: 'qubetics',
-      amount: amount, // Use the passed amount parameter
+      source_address: userInfo.data.derived_btc_address,
+      target_address: 'tb1qzxxlpvxx44ak6tasj5ffstr6gj5xrpxzxwrjy3',
+      source_chain: 'bitcoin',
+      target_chain: 'bitcoin',
+      amount: amount, 
       source_token: 'TICS',
       target_token: 'TICS',
-      timestamp: oooo, // Current Unix timestamp in seconds
+      timestamp: oooo,
     };
 
     // Serialize DepositIntent for signing
@@ -415,7 +416,7 @@ async function runTests() {
   const signerAddr = await wallet.getAddress();
   log(`\n🔑 Derived signer address from TEST_PRIVKEY: ${signerAddr}`, 'blue');
 
-  // // 1) DKG status
+  // 1) DKG status
   // await testDKGStatus();
 
   // // 2) Register ONLY the derived address 

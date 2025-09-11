@@ -31,7 +31,7 @@ use tokio::sync::{mpsc};
 use tracing::{debug, error, info, warn};
 use ff::PrimeField;
 
-use crate::commands::CommandProcessor;
+use crate::{chain::EthereumTransaction, commands::CommandProcessor, rpc_server::DummyTransaction, utils::transaction::get_default_gas_price_for_chain};
 use crate::consensus::ConsensusNode;
 use crate::adkg_secp256k1::DKGNode;
 use crate::node_management::NodeMembership;
@@ -378,13 +378,24 @@ impl NetworkLayer {
             tokio::select! {
                 event = swarm.select_next_some() => {
                     info!("[SWARM] some");
-                    self.handle_swarm_event(event, &mut swarm).await?;
+                    // 🛡️ Error recovery for swarm events - prevent node crashes
+                    if let Err(e) = self.handle_swarm_event(event, &mut swarm).await {
+                        error!("❌ [NETWORK] Swarm event handling failed: {}", e);
+                        error!("🛡️ [NETWORK] Node continues operating despite swarm event failure");
+                        error!("🔍 [NETWORK] Error details: {:?}", e);
+                        // Continue processing other events
+                    }
                 }
                 // only hit when there is anything on the mpsc channel
                 msg = self.message_rx.recv() => {
                     if let Some(msg) = msg {
-                        // lets handle the channel msg on the basis of its type
-                        self.handle_channel_message(msg, &mut swarm).await?;
+                        // 🛡️ Error recovery for channel messages - prevent node crashes
+                        if let Err(e) = self.handle_channel_message(msg, &mut swarm).await {
+                            error!("❌ [NETWORK] Channel message handling failed: {}", e);
+                            error!("🛡️ [NETWORK] Node continues operating despite message handling failure");
+                            error!("🔍 [NETWORK] Error details: {:?}", e);
+                            // Continue processing other messages
+                        }
                     }
                 }
 
@@ -473,6 +484,7 @@ impl NetworkLayer {
             "dkg-commands",
             "signatures-to-final-node",
             "user-registrations",
+            "solver-rewards",
             "transaction-id-sync",
             "consensus-result",
             "transaction-error-sync",
@@ -1088,18 +1100,18 @@ impl NetworkLayer {
                 info!("📋 [NETWORK] Signing message type: {:?}", signing_msg);
                 
                 if let Some(signing_node) = &mut self.signing_node {
-                    // Check if this message is from the signatures-to-final-node topic
-                    if message.topic.to_string() == "signatures-to-final-node" {
+                    // 🛡️ Error recovery for signing message processing - prevent node crashes
+                    let signing_result = if message.topic.to_string() == "signatures-to-final-node" {
                         info!("🎯 [NETWORK] Processing signature for final node topic");
                         match signing_msg {
                             crate::signing::SigningMessage::ECDSASignature { from, signature, round, timestamp:_timestamp, user_eth_address } => {
                                 info!("📤 [NETWORK] Routing ECDSA signature to final node handler from: {} for round: {} (user_eth_address: {:?})", from, round, user_eth_address);
-                                signing_node.handle_signature_to_final_node(from, signature, round).await?;
+                                signing_node.handle_signature_to_final_node(from, signature, round).await
                             }
                             _ => {
                                 info!("📤 [NETWORK] Routing other signing message to normal handler");
                                 // Handle other signing messages normally
-                                signing_node.handle_message(signing_msg).await?;
+                                signing_node.handle_message(signing_msg).await
                             }
                         }
                     } else {
@@ -1116,7 +1128,15 @@ impl NetworkLayer {
                                 info!("📥 [NETWORK] Received other signing message type");
                             }
                         }
-                        signing_node.handle_message(signing_msg).await?;
+                        signing_node.handle_message(signing_msg).await
+                    };
+                    
+                    // Handle signing errors gracefully
+                    if let Err(e) = signing_result {
+                        error!("❌ [NETWORK] Signing message processing failed: {}", e);
+                        error!("🛡️ [NETWORK] Node continues operating despite signing failure");
+                        error!("🔍 [NETWORK] Error details: {:?}", e);
+                        // Don't propagate the error - continue processing other messages
                     }
                 } else {
                     warn!("❌ [NETWORK] Signing node not available to handle signing message");
@@ -1296,8 +1316,14 @@ impl NetworkLayer {
                 // Store the transaction ID in our local user registry
                 if let Some(user_registry) = &self.user_registry {
                     let storage_result = match transaction_type.as_str() {
-                        "user_to_network" => {
-                            user_registry.store_user_to_network_tx_id(&intent_hash, &transaction_id).await
+                        "user_to_vault" => {
+                            // Also update solver amounts for user_to_vault using signing node, if available
+                            if let Some(signing_node) = &self.signing_node {
+                                if let Err(e) = signing_node.update_solver_amounts_for_user_to_vault(&intent_hash).await {
+                                    warn!("⚠️ [SIGNING] Failed to update solver amounts for UserToVault transaction: {}", e);
+                                }
+                            }
+                            user_registry.store_user_to_vault_tx_id(&intent_hash, &transaction_id).await
                         },
                         "network_to_target" => {
                             user_registry.store_network_to_target_tx_id(&intent_hash, &transaction_id).await
@@ -1353,6 +1379,85 @@ impl NetworkLayer {
                     }
                 } else {
                     warn!("❌ [NETWORK] No user registry available to store synchronized transaction error");
+                }
+            }
+            GossipsubMessage::SolverReward { solver_address, reward } => {
+                info!("💰 [REWARD] Received solver reward for {}: {}", solver_address, reward);
+                // Create dummy transaction paying the solver
+                // Fetch chain_id on the basis of tics (assuming tics is the chain name or identifier)
+                let chain_to_use = "qubetics"; // Replace this with the actual tics variable if available
+                let chain_id = crate::utils::transaction::get_chain_id_from_name(chain_to_use)
+                    .ok_or_else(|| anyhow::anyhow!("Unknown EVM chain: {}", chain_to_use))?;
+
+                // You may need to determine from_address based on your logic, e.g. from DKG node/group key
+                let from_address = if let Some(dkg_node) = &self.dkg_node {
+                    if let Some(group_key) = dkg_node.get_final_public_key().await {
+                        crate::utils::get_eth_address_from_group_key(group_key)
+                    } else {
+                        "".to_string()
+                    }
+                } else {
+                    "".to_string()
+                };
+
+                // Use fetch_ethereum_nonce from transaction utils
+                let nonce = crate::utils::transaction::fetch_ethereum_nonce(&from_address, chain_id).await?;
+
+                let ethereum_tx = EthereumTransaction {
+                    to: solver_address.clone(),
+                    value: format!("0x{:x}", reward),
+                    gas_limit: 300000,
+                    gas_price: get_default_gas_price_for_chain(chain_to_use),
+                    nonce,
+                    data: None,
+                    chain_id,
+                };
+
+                if let Some(dkg_node) = &self.dkg_node {
+                    if let Some(group_key) = dkg_node.get_final_public_key().await {
+                        let from_addr = crate::utils::get_eth_address_from_group_key(group_key);
+                        info!(
+                            "🧾 [NETWORK] Created solver reward tx from {} to {} amount {}",
+                            from_addr, solver_address, reward
+                        );
+                    }
+                }
+
+                // Create DummyTransaction from EthereumTransaction
+                let dummy_tx = crate::rpc_server::DummyTransaction {
+                    to: ethereum_tx.to.clone(),
+                    value: ethereum_tx.value.clone(),
+                    nonce: ethereum_tx.nonce,
+                    gas_limit: ethereum_tx.gas_limit,
+                    gas_price: ethereum_tx.gas_price.clone(),
+                    chain_id: ethereum_tx.chain_id,
+                };
+                let tx_bytes = crate::utils::transaction::create_transaction_for_signing(&dummy_tx);
+
+                // Sign the solver reward transaction
+                if let Some(signing_node) = &mut self.signing_node {
+                    // Set available nodes from node manager before signing
+                    let available_nodes: Vec<PeerId> = self.node_manager.get_active_nodes().into_iter().collect();
+                    signing_node.set_available_nodes(available_nodes);
+                    
+                    if let Some(dkg_node) = &self.dkg_node {
+                        if let Some(secret_share) = dkg_node.get_final_secret_share().await {
+                            info!("🔐 [REWARD] Got secret share from DKG: {:?}", secret_share);
+                            signing_node.set_private_key_from_scalar(secret_share);
+                            info!("🔐 [REWARD] Starting solver reward signing process: 0x{}", hex::encode(tx_bytes.clone()));
+                            signing_node.sign_message(tx_bytes, &dummy_tx, Some(secret_share), None, None, None).await?;
+                            info!("✅ [REWARD] Solver reward signing completed");
+                        } else {
+                            info!("⏳ [REWARD] DKG not completed yet, no secret share available");
+                            return Ok(());
+                        }
+                    } else {
+                        info!("❌ [REWARD] DKG node not available");
+                        return Ok(());
+                    }
+                    
+                } else {
+                    warn!("❌ [REWARD] Signing node not available for solver reward");
                 }
             }
             GossipsubMessage::DepositIntent { intent, intent_id, user_eth_address, transaction_type, amount } => {
@@ -1599,7 +1704,7 @@ impl NetworkLayer {
                             match chain_transaction {
                                 crate::chain::ChainTransaction::Bitcoin(ref btc_tx) => {
                                     // For Bitcoin, use direct signing with tx_bytes and original transaction
-                                    signing_node.sign_bitcoin_transaction(tx_bytes.clone(), Some(btc_tx.clone()), user_eth_address.clone(), Some(intent_hash.clone())).await?;
+                                    signing_node.sign_bitcoin_transaction(tx_bytes.clone(), Some(btc_tx.clone()), user_eth_address.clone(), Some(intent_hash.clone()), Some(transaction_type.clone()), signing_key).await?;
                                 }
                                 crate::chain::ChainTransaction::Ethereum(ref eth_tx) => {
                                     // For EVM chains, use your proven DummyTransaction logic
@@ -2167,7 +2272,7 @@ impl NetworkLayer {
                             match chain_transaction {
                                 crate::chain::ChainTransaction::Bitcoin(ref btc_tx) => {
                                     // For Bitcoin, use direct signing with tx_bytes and original transaction
-                                    signing_node.sign_bitcoin_transaction( tx_bytes.clone(), Some(btc_tx.clone()), user_eth_address.clone(), Some(intent_hash.clone()) ).await?;
+                                    signing_node.sign_bitcoin_transaction( tx_bytes.clone(), Some(btc_tx.clone()), user_eth_address.clone(), Some(intent_hash.clone()), Some(transaction_type.clone()), signing_key ).await?;
                                 }
                                 crate::chain::ChainTransaction::Ethereum(ref eth_tx) => {
                                     // For EVM chains, use your proven DummyTransaction logic
@@ -2332,6 +2437,94 @@ impl NetworkLayer {
                     }
                 } else {
                     warn!("❌ [LOCAL] Signing node not available for deposit intent");
+                }
+            }
+            ChannelMessage::SolverReward { solver_address, reward } => {
+                info!("💰 [NETWORK] Broadcasting solver reward: {} -> {}", solver_address, reward);
+                let reward_msg = GossipsubMessage::SolverReward {
+                    solver_address: solver_address.clone(),
+                    reward,
+                };
+                let msg_bytes = serde_json::to_vec(&reward_msg)
+                    .map_err(|e| anyhow::anyhow!("Failed to serialize solver reward: {}", e))?;
+
+                let topic = gossipsub::IdentTopic::new("solver-rewards");
+                swarm.behaviour_mut().gossipsub.publish(topic, msg_bytes)?;
+                info!("📡 [NETWORK] Broadcasted solver reward to P2P network");
+                // Fetch chain_id on the basis of tics (assuming tics is the chain name or identifier)
+                let chain_to_use = "qubetics"; // Replace this with the actual tics variable if available
+                let chain_id = crate::utils::transaction::get_chain_id_from_name(chain_to_use)
+                    .ok_or_else(|| anyhow::anyhow!("Unknown EVM chain: {}", chain_to_use))?;
+
+                // You may need to determine from_address based on your logic, e.g. from DKG node/group key
+                let from_address = if let Some(dkg_node) = &self.dkg_node {
+                    if let Some(group_key) = dkg_node.get_final_public_key().await {
+                        crate::utils::get_eth_address_from_group_key(group_key)
+                    } else {
+                        "".to_string()
+                    }
+                } else {
+                    "".to_string()
+                };
+
+                // Use fetch_ethereum_nonce from transaction utils
+                let nonce = crate::utils::transaction::fetch_ethereum_nonce(&from_address, chain_id).await?;
+
+                let ethereum_tx = EthereumTransaction {
+                    to: solver_address.clone(),
+                    value: format!("0x{:x}", reward),
+                    gas_limit: 300000,
+                    gas_price: get_default_gas_price_for_chain(chain_to_use),
+                    nonce,
+                    data: None,
+                    chain_id,
+                };
+
+                if let Some(dkg_node) = &self.dkg_node {
+                    if let Some(group_key) = dkg_node.get_final_public_key().await {
+                        let from_addr = crate::utils::get_eth_address_from_group_key(group_key);
+                        info!(
+                            "🧾 [NETWORK] Created solver reward tx from {} to {} amount {}",
+                            from_addr, solver_address, reward
+                        );
+                    }
+                }
+
+                // Create DummyTransaction from EthereumTransaction
+                let dummy_tx = crate::rpc_server::DummyTransaction {
+                    to: ethereum_tx.to.clone(),
+                    value: ethereum_tx.value.clone(),
+                    nonce: ethereum_tx.nonce,
+                    gas_limit: ethereum_tx.gas_limit,
+                    gas_price: ethereum_tx.gas_price.clone(),
+                    chain_id: ethereum_tx.chain_id,
+                };
+                let tx_bytes = crate::utils::transaction::create_transaction_for_signing(&dummy_tx);
+
+                // Sign the solver reward transaction
+                if let Some(signing_node) = &mut self.signing_node {
+                    // Set available nodes from node manager before signing
+                    let available_nodes: Vec<PeerId> = self.node_manager.get_active_nodes().into_iter().collect();
+                    signing_node.set_available_nodes(available_nodes);
+                    
+                    if let Some(dkg_node) = &self.dkg_node {
+                        if let Some(secret_share) = dkg_node.get_final_secret_share().await {
+                            info!("🔐 [REWARD] Got secret share from DKG: {:?}", secret_share);
+                            signing_node.set_private_key_from_scalar(secret_share);
+                            info!("🔐 [REWARD] Starting solver reward signing process: 0x{}", hex::encode(tx_bytes.clone()));
+                            signing_node.sign_message(tx_bytes, &dummy_tx, Some(secret_share), None, None, None).await?;
+                            info!("✅ [REWARD] Solver reward signing completed");
+                        } else {
+                            info!("⏳ [REWARD] DKG not completed yet, no secret share available");
+                            return Ok(());
+                        }
+                    } else {
+                        info!("❌ [REWARD] DKG node not available");
+                        return Ok(());
+                    }
+                    
+                } else {
+                    warn!("❌ [REWARD] Signing node not available for solver reward");
                 }
             }
             ChannelMessage::UserRegistration { ethereum_address, node_id } => {

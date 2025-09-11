@@ -534,7 +534,7 @@ impl VrfNodeSelector {
                 own_selections.push(node.clone());
             }
         } else {
-            info!("⚠️ [VRF] No own selections found for round {}", round);
+            info!("⚠️ [VRF] No own selections found for round {} - this may be due to UTXO unavailability", round);
         }
 
         // Add selections from other nodes
