@@ -10,7 +10,6 @@ use secp256k1::{
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
 use sha3::Keccak256;
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc;
@@ -153,6 +152,20 @@ pub struct SolverRewardResponse {
     pub status: String,
     pub solver_address: String,
     pub reward: Option<String>,
+    pub error_message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetRewardSolverRequest {
+    pub solver_address: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetRewardSolverResponse {
+    pub status: String,
+    pub solver_address: String,
+    pub reward: Option<String>,
+    pub message: String,
     pub error_message: Option<String>,
 }
 
@@ -310,6 +323,28 @@ fn validate_ethereum_address(address: &str) -> Result<String, RpcError> {
     }
 }
 
+/// Apply chain-specific multiplier to handle decimal differences between chains
+/// - TICS source chain: multiply by 10^-10 (divide by 10^10)
+/// - BTC source chain: multiply by 10^10
+fn apply_chain_multiplier(source_chain: &str, amount: u128) -> u128 {
+    match source_chain.to_lowercase().as_str() {
+        "tics" | "qubetics" => {
+            // Multiply by 10^-10 (divide by 10^10)
+            let divisor = 10_000_000_000u128;
+            amount / divisor
+        }
+        "btc" | "bitcoin" => {
+            // Multiply by 10^10
+            let multiplier = 10_000_000_000u128;
+            amount.saturating_mul(multiplier)
+        }
+        _ => {
+            // No multiplier for other chains
+            amount
+        }
+    }
+}
+
 // gRPC service definition
 #[derive(Default)]
 pub struct MpcRpcService {
@@ -405,6 +440,13 @@ pub async fn start_http_server(
         .and(with_message_tx(message_tx.clone()))
         .and_then(handle_solver_reward);
 
+    // POST /get_reward_solver
+    let get_reward_solver = warp::path("get_reward_solver")
+        .and(warp::post())
+        .and(warp::body::json())
+        .and(with_user_registry(user_registry.clone()))
+        .and_then(handle_get_reward_solver);
+
     // GET /user_info/{ethereum_address}
     let get_user_info = warp::path("user_info")
         .and(warp::path::param())
@@ -456,6 +498,7 @@ pub async fn start_http_server(
         .or(start_dkg)
         .or(user_mpc_deposit)
         .or(solver_reward)
+        .or(get_reward_solver)
         .or(heartbeat)
         .or(uptime);
 
@@ -596,57 +639,63 @@ pub async fn handle_deposit_intent(
     );
     let mut required_amount_u128 = 0;
 
-    // Only do price conversion for NetworkToTarget, else just use intent.amount
-    if matches!(
-        transaction_type,
-        crate::types::TransactionType::NetworkToTarget
-    ) {
-        // Fetch current prices for BTC and TICS to determine the
-        // value equivalence between source and target chains.
-        let prices = fetch_crypto_prices()
-            .await
-            .map_err(|_| warp::reject::custom(TransactionError::NetworkError))?;
+    // // Only do price conversion for NetworkToTarget, else just use intent.amount
+    // if matches!(
+    //     transaction_type,
+    //     crate::types::TransactionType::NetworkToTarget
+    // ) {
+    //     // Fetch current prices for BTC and TICS to determine the
+    //     // value equivalence between source and target chains.
+    //     let prices = fetch_crypto_prices()
+    //         .await
+    //         .map_err(|_| warp::reject::custom(TransactionError::NetworkError))?;
 
-        // Helper closure to map chain names to the price symbols returned by
-        // the price API. Any non-Bitcoin chain is treated as TICS (our EVM token).
-        let chain_to_symbol = |chain: &str| match chain.to_lowercase().as_str() {
-            "btc" | "bitcoin" => "BTC",
-            _ => "TICS",
-        };
+    //     // Helper closure to map chain names to the price symbols returned by
+    //     // the price API. Any non-Bitcoin chain is treated as TICS (our EVM token).
+    //     let chain_to_symbol = |chain: &str| match chain.to_lowercase().as_str() {
+    //         "btc" | "bitcoin" => "BTC",
+    //         _ => "TICS",
+    //     };
 
-        let source_symbol = chain_to_symbol(&intent.source_chain);
-        let target_symbol = chain_to_symbol(&intent.target_chain);
+    //     let source_symbol = chain_to_symbol(&intent.source_chain);
+    //     let target_symbol = chain_to_symbol(&intent.target_chain);
 
-        let source_price = *prices
-            .get(source_symbol)
-            .ok_or_else(|| warp::reject::custom(TransactionError::NetworkError))?;
-        let target_price = *prices
-            .get(target_symbol)
-            .ok_or_else(|| warp::reject::custom(TransactionError::NetworkError))?;
+    //     let source_price = *prices
+    //         .get(source_symbol)
+    //         .ok_or_else(|| warp::reject::custom(TransactionError::NetworkError))?;
+    //     let target_price = *prices
+    //         .get(target_symbol)
+    //         .ok_or_else(|| warp::reject::custom(TransactionError::NetworkError))?;
 
-        info!(
-            "💱 Conversion: {} {} (source chain: {}) @ {} per unit --> {} (target chain: {}) @ {} per unit",
-            intent.amount, source_symbol, intent.source_chain, source_price, target_symbol, intent.target_chain, target_price
-        );
+    //     info!(
+    //         "💱 Conversion: {} {} (source chain: {}) @ {} per unit --> {} (target chain: {}) @ {} per unit",
+    //         intent.amount, source_symbol, intent.source_chain, source_price, target_symbol, intent.target_chain, target_price
+    //     );
 
-        // Convert the intent amount using the price ratio so we can compare
-        // against the balance of the address on the chain we are about to
-        // spend from.
-        let required_amount = (intent.amount as f64) * (source_price / target_price);
+    //     // Convert the intent amount using the price ratio so we can compare
+    //     // against the balance of the address on the chain we are about to
+    //     // spend from.
+    //     let required_amount = (intent.amount as f64) * (source_price / target_price);
 
-        info!(
-            "💱 Conversion: {} {} (source) is equivalent to {} {} (target) before decimals",
-            intent.amount, source_symbol, required_amount, target_symbol
-        );
-        required_amount_u128 = required_amount as u128;
-    } else {
-        // For VaultToNetwork and other types, use the intent amount plus 10%
-        required_amount_u128 = intent.amount + (intent.amount / 10);
-        info!(
-            "💱 No price conversion needed. Using intent amount as required amount: {}",
-            required_amount_u128
-        );
-    }
+    //     info!(
+    //         "💱 Conversion: {} {} (source) is equivalent to {} {} (target) before decimals",
+    //         intent.amount, source_symbol, required_amount, target_symbol
+    //     );
+    //     let before_multiplier = required_amount as u128;
+    //     required_amount_u128 = apply_chain_multiplier(&intent.source_chain, before_multiplier);
+    //     info!(
+    //         "🔢 Chain multiplier applied: {} {} -> {} (source chain: {})",
+    //         before_multiplier, source_symbol, required_amount_u128, intent.source_chain
+    //     );
+    // } else {
+    //     // For VaultToNetwork and other types, use the intent amount plus 10%
+    //     let base_amount = intent.amount + (intent.amount / 10);
+    //     required_amount_u128 = apply_chain_multiplier(&intent.source_chain, base_amount);
+    //     info!(
+    //         "💱 No price conversion needed. Using intent amount as required amount: {} -> {} (source chain: {})",
+    //         base_amount, required_amount_u128, intent.source_chain
+    //     );
+    // }
 
     // Additional balance validation for NetworkToTarget and VaultToNetwork
     if matches!(
@@ -738,7 +787,6 @@ pub async fn handle_deposit_intent(
         //     );
         //     return Err(warp::reject::custom(TransactionError::InvalidRequest));
         // }
-        
     }
 
     let intent_id = format!("intent-{}", Uuid::new_v4());
@@ -1068,82 +1116,82 @@ async fn wait_for_transaction_result(
     best_result
 }
 
-async fn fetch_crypto_prices() -> Result<HashMap<String, f64>, String> {
-    use tracing::{debug, error, info};
+// async fn fetch_crypto_prices() -> Result<HashMap<String, f64>, String> {
+//     use tracing::{debug, error, info};
 
-    // Get crypto prices API URL from environment variable
-    let base_url = std::env::var("BACKEND_API_URL")
-        .unwrap_or_else(|_| "http://172.16.15.63:7322".to_string());
-    let url = format!("{}/api/v1/cryptos/prices?symbols=BTC,TICS", base_url);
-    let client = reqwest::Client::new();
+//     // Get crypto prices API URL from environment variable
+//     let base_url = std::env::var("BACKEND_API_URL")
+//         .unwrap_or_else(|_| "http://172.16.15.63:7322".to_string());
+//     let url = format!("{}/api/v1/cryptos/prices?symbols=BTC,TICS", base_url);
+//     let client = reqwest::Client::new();
 
-    info!("Fetching crypto prices from URL: {}", url);
+//     info!("Fetching crypto prices from URL: {}", url);
 
-    let resp = client.get(url).send().await.map_err(|e| {
-        error!("Failed to fetch crypto prices: {}", e);
-        format!("Failed to fetch crypto prices: {}", e)
-    })?;
+//     let resp = client.get(url).send().await.map_err(|e| {
+//         error!("Failed to fetch crypto prices: {}", e);
+//         format!("Failed to fetch crypto prices: {}", e)
+//     })?;
 
-    let status = resp.status();
-    debug!("Crypto prices API response status: {}", status);
+//     let status = resp.status();
+//     debug!("Crypto prices API response status: {}", status);
 
-    let resp_text = resp.text().await.map_err(|e| {
-        error!("Failed to read crypto prices response text: {}", e);
-        format!("Failed to read crypto prices response text: {}", e)
-    })?;
+//     let resp_text = resp.text().await.map_err(|e| {
+//         error!("Failed to read crypto prices response text: {}", e);
+//         format!("Failed to read crypto prices response text: {}", e)
+//     })?;
 
-    debug!("Crypto prices API response body: {}", resp_text);
+//     debug!("Crypto prices API response body: {}", resp_text);
 
-    if !status.is_success() {
-        error!(
-            "Crypto prices API returned non-success status {}: {}",
-            status, resp_text
-        );
-        return Err(format!(
-            "Crypto prices API returned non-success status {}: {}",
-            status, resp_text
-        ));
-    }
+//     if !status.is_success() {
+//         error!(
+//             "Crypto prices API returned non-success status {}: {}",
+//             status, resp_text
+//         );
+//         return Err(format!(
+//             "Crypto prices API returned non-success status {}: {}",
+//             status, resp_text
+//         ));
+//     }
 
-    let resp_json: serde_json::Value = serde_json::from_str(&resp_text).map_err(|e| {
-        error!("Failed to parse crypto prices response: {}", e);
-        format!("Failed to parse crypto prices response: {}", e)
-    })?;
+//     let resp_json: serde_json::Value = serde_json::from_str(&resp_text).map_err(|e| {
+//         error!("Failed to parse crypto prices response: {}", e);
+//         format!("Failed to parse crypto prices response: {}", e)
+//     })?;
 
-    debug!("Crypto prices API response JSON: {:?}", resp_json);
+//     debug!("Crypto prices API response JSON: {:?}", resp_json);
 
-    if resp_json.get("error").and_then(|v| v.as_bool()) == Some(true) {
-        let msg = resp_json
-            .get("message")
-            .and_then(|v| v.as_str())
-            .unwrap_or("Unknown error");
-        error!("Crypto prices API error: {}", msg);
-        return Err(format!("Crypto prices API error: {}", msg));
-    }
+//     if resp_json.get("error").and_then(|v| v.as_bool()) == Some(true) {
+//         let msg = resp_json
+//             .get("message")
+//             .and_then(|v| v.as_str())
+//             .unwrap_or("Unknown error");
+//         error!("Crypto prices API error: {}", msg);
+//         return Err(format!("Crypto prices API error: {}", msg));
+//     }
 
-    let data = resp_json.get("data").ok_or_else(|| {
-        error!("No 'data' field in crypto prices response");
-        "No 'data' field in crypto prices response".to_string()
-    })?;
+//     let data = resp_json.get("data").ok_or_else(|| {
+//         error!("No 'data' field in crypto prices response");
+//         "No 'data' field in crypto prices response".to_string()
+//     })?;
 
-    let mut prices = std::collections::HashMap::new();
-    if let Some(obj) = data.as_object() {
-        for (symbol, value) in obj {
-            if let Some(price) = value.as_f64() {
-                debug!("Parsed price for {}: {}", symbol, price);
-                prices.insert(symbol.clone(), price);
-            } else {
-                debug!("Could not parse price for {}: {:?}", symbol, value);
-            }
-        }
-    } else {
-        debug!("'data' field is not an object in crypto prices response");
-    }
+//     let mut prices = std::collections::HashMap::new();
+//     if let Some(obj) = data.as_object() {
+//         for (symbol, value) in obj {
+//             if let Some(price) = value.as_f64() {
+//                 debug!("Parsed price for {}: {}", symbol, price);
+//                 prices.insert(symbol.clone(), price);
+//             } else {
+//                 debug!("Could not parse price for {}: {:?}", symbol, value);
+//             }
+//         }
+//     } else {
+//         debug!("'data' field is not an object in crypto prices response");
+//     }
 
-    info!("Fetched crypto prices: {:?}", prices);
+//     info!("Fetched crypto prices: {:?}", prices);
 
-    Ok(prices)
-}
+//     Ok(prices)
+// }
 
 // async fn fetch_balance(address: &str, blockchain: &str) -> Result<u128, String> {
 //     info!(
@@ -1201,10 +1249,11 @@ async fn fetch_crypto_prices() -> Result<HashMap<String, f64>, String> {
 //         .map_err(|e| format!("Failed to parse balance value: {}", e))
 // }
 
-
+/// Check whether a transaction is confirmed on a given chain using the
+/// external transaction confirmation service.
+///
 /// Returns `Ok(true)` if the transaction is confirmed, `Ok(false)` if the
 /// transaction is not yet confirmed, and `Err` if the API call fails or returns
-/// 
 /// an unexpected response.
 // pub async fn check_tx_confirmation(chain: &str, tx_id: &str) -> anyhow::Result<bool> {
 //     // Map common chain aliases to the API expected values
@@ -2129,6 +2178,63 @@ async fn handle_start_dkg(
         status: "initiated".to_string(),
         message: "DKG start request sent to P2P network".to_string(),
     }))
+}
+
+async fn handle_get_reward_solver(
+    req: GetRewardSolverRequest,
+    user_registry: std::sync::Arc<DatabaseUserRegistry>,
+) -> Result<impl warp::Reply, warp::Rejection> {
+    info!("🔍 HTTP: get_reward_solver request for solver: {}", req.solver_address);
+
+    // Validate solver_address
+    if req.solver_address.trim().is_empty() {
+        return Ok(warp::reply::json(&GetRewardSolverResponse {
+            status: "error".to_string(),
+            solver_address: req.solver_address,
+            reward: None,
+            message: "Solver address cannot be empty".to_string(),
+            error_message: Some("Solver address is required".to_string()),
+        }));
+    }
+
+    // Validate Ethereum address format
+    let normalized_address = match checksum_from_any(&req.solver_address) {
+        Ok(addr) => addr,
+        Err(e) => {
+            warn!("❌ Invalid solver address format: {}", e);
+            return Ok(warp::reply::json(&GetRewardSolverResponse {
+                status: "error".to_string(),
+                solver_address: req.solver_address,
+                reward: None,
+                message: "Invalid solver address format".to_string(),
+                error_message: Some(format!("Invalid address format: {}", e)),
+            }));
+        }
+    };
+
+    // Get solver reward using user registry
+    match user_registry.get_solver_reward(&normalized_address).await {
+        Some(reward) => {
+            info!("✅ Found reward for solver {}: {}", normalized_address, reward);
+            Ok(warp::reply::json(&GetRewardSolverResponse {
+                status: "success".to_string(),
+                solver_address: normalized_address,
+                reward: Some(reward.to_string()),
+                message: "Solver reward retrieved successfully".to_string(),
+                error_message: None,
+            }))
+        }
+        None => {
+            info!("ℹ️ No reward found for solver: {}", normalized_address);
+            Ok(warp::reply::json(&GetRewardSolverResponse {
+                status: "success".to_string(),
+                solver_address: normalized_address,
+                reward: Some("0".to_string()),
+                message: "No reward found for this solver".to_string(),
+                error_message: None,
+            }))
+        }
+    }
 }
 
 #[derive(Debug)]

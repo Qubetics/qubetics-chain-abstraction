@@ -1321,6 +1321,13 @@ impl NetworkLayer {
                             if let Some(signing_node) = &self.signing_node {
                                 if let Err(e) = signing_node.update_solver_amounts_for_user_to_vault(&intent_hash).await {
                                     warn!("⚠️ [SIGNING] Failed to update solver amounts for UserToVault transaction: {}", e);
+                                } else {
+                                    // Calculate rewards after successfully updating solver amounts
+                                    if let Err(e) = signing_node.calculate_reward_per_solver(&intent_hash).await {
+                                        warn!("⚠️ [SIGNING] Failed to calculate rewards for UserToVault transaction: {}", e);
+                                    } else {
+                                        info!("✅ [SIGNING] Successfully calculated rewards for UserToVault transaction: {}", intent_hash);
+                                    }
                                 }
                             }
                             user_registry.store_user_to_vault_tx_id(&intent_hash, &transaction_id).await
