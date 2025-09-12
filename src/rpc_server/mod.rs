@@ -497,7 +497,7 @@ pub async fn start_http_server(
     .allow_origin("http://localhost:3001")
     .allow_origin("http://127.0.0.1:3000")
     .allow_origin("http://127.0.0.1:3001")
-    .allow_origin("https://your-frontend-domain.com");
+    .allow_origin("https://dev-frontend.qubetics.work");
 
     warp::serve(routes.with(cors))
         .run(([0, 0, 0, 0], port))
