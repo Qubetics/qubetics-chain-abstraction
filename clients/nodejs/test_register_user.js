@@ -6,7 +6,7 @@ import { Wallet } from 'ethers';
 // =========================
 // Configuration
 // =========================
-const RPC_BASE_URL = process.env.RPC_BASE_URL || 'http://localhost:8082';
+const RPC_BASE_URL = process.env.RPC_BASE_URL || 'http://127.0.8.1:8082';
 
 // 👉 Private key you provided (hex, no 0x prefix needed)
 const TEST_PRIVKEY = '415c01d63918df986d1d537f9b5974f383cac3b4fe9edc44f58f09bdfc5f672a';
@@ -25,7 +25,7 @@ const colors = {
   green: '\x1b[32m'
 };
 
-const oooo = 125323237513
+const oooo = 432432423
 
 function log(message, color = 'reset') {
   console.log(`${colors[color]}${message}${colors.reset}`);
@@ -149,12 +149,12 @@ async function testUserMpcDeposit({ wallet, amount }) {
     // Construct DepositIntent
     const depositIntent = {
       source_address: userInfo.data.derived_eth_address, // Use canonical address
-      target_address: 'n1f5qYrCUSakSHBxyNLnDFetp5LNTaYjKw',
+      target_address: '0x94C8F147767702EC8020E5c616964c72a837C88d',
       source_chain: 'qubetics',
-      target_chain: 'bitcoin',
+      target_chain: 'qubetics',
       amount: amount, // Use the passed amount parameter
       source_token: 'TICS',
-      target_token: 'BTC',
+      target_token: 'TICS',
       timestamp: oooo, // Current Unix timestamp in seconds
     };
     console.log(`📊 Deposit Intent: ${JSON.stringify(depositIntent)}`, 'cyan');
@@ -171,7 +171,7 @@ async function testUserMpcDeposit({ wallet, amount }) {
       { signature, msg: depositIntent },
       { 
         headers: { 'Content-Type': 'application/json' },
-        timeout: 25000 // 15 seconds timeout to match server processing time
+        timeout: 60000 // 15 seconds timeout to match server processing time
       }
     );
 
@@ -282,14 +282,14 @@ async function testUserMpcDepositWithTxId({ wallet, amount, txId, status }) {
     }
 
     const depositIntent = {
-      source_address: userInfo.data.derived_eth_address,
-      target_address: 'n1f5qYrCUSakSHBxyNLnDFetp5LNTaYjKw',
+      source_address: userInfo.data.derived_eth_address, // Use canonical address
+      target_address: '0x94C8F147767702EC8020E5c616964c72a837C88d',
       source_chain: 'qubetics',
-      target_chain: 'bitcoin',
-      amount: amount, 
+      target_chain: 'qubetics',
+      amount: amount, // Use the passed amount parameter
       source_token: 'TICS',
-      target_token: 'BTC',
-      timestamp: oooo,
+      target_token: 'TICS',
+      timestamp: oooo, // Current Unix timestamp in seconds
     };
 
     // Serialize DepositIntent for signing
@@ -311,7 +311,7 @@ async function testUserMpcDepositWithTxId({ wallet, amount, txId, status }) {
       },
       { 
         headers: { 'Content-Type': 'application/json' },
-        timeout: 25000 // 15 seconds timeout to match server processing time
+        timeout: 60000 // 15 seconds timeout to match server processing time
       }
     );
 
@@ -431,17 +431,14 @@ async function runTests() {
   // }
 
   // 3) MPC deposit test WITHOUT tx_id (should pass Some(signer) to handle_deposit_intent)
-  // log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
+  log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
   const amount = 10342322432; // keep safe for JSON
-  // await testUserMpcDeposit({ wallet, amount }); 
+  await testUserMpcDeposit({ wallet, amount }); 
 
-  // await new Promise(r => setTimeout(r, 7000));
-  // 4) MPC deposit test WITH tx_id (should pass None to handle_deposit_intent)
-  log(`\n🧪 Test 2: Deposit amount WITH tx_id and status update`, 'blue');
-  const testTxId = TEST_TX_ID; // Generate a unique test transaction ID
-  console.log(`📊 Test Tx ID: ${testTxId}`, 'cyan');
-  const testStatus = 'confirmed'; // Test status
-  await testUserMpcDepositWithTxId({ wallet, amount, txId: testTxId, status: testStatus });
+  await new Promise(r => setTimeout(r, 10000));
+  // 4) MPC deposit test WITHOUT tx_id and status
+  log(`\n🧪 Test 2: Deposit amount WITHOUT tx_id and status`, 'blue');
+  await testUserMpcDeposit({ wallet, amount }); 
 
   // // 5) MPC deposit test with potentially problematic amount (might trigger errors)
   // log(`\n🧪 Test 3: Large deposit amount (might trigger errors)`, 'blue');

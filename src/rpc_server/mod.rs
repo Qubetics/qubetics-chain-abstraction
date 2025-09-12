@@ -3,6 +3,7 @@ use crate::types::{rpc::RPCRequest, ChannelMessage};
 use crate::user_registry::{
     checksum_from_any, to_checksum_address, DatabaseUserRegistry, TransactionStatus,
 };
+use serde_json::Value;
 use secp256k1::{
     ecdsa::{RecoverableSignature, RecoveryId},
     Message, PublicKey, Secp256k1,
@@ -17,6 +18,10 @@ use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 use uuid::Uuid;
 use warp::Filter;
+use rust_decimal::Decimal;
+use rust_decimal::prelude::{FromPrimitive, ToPrimitive};
+use rust_decimal_macros::dec;
+use std::str::FromStr;
 
 // Define the transaction types for the RPC server
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -324,27 +329,6 @@ fn validate_ethereum_address(address: &str) -> Result<String, RpcError> {
     }
 }
 
-/// Apply chain-specific multiplier to handle decimal differences between chains
-/// - TICS source chain: multiply by 10^-10 (divide by 10^10)
-/// - BTC source chain: multiply by 10^10
-fn apply_chain_multiplier(source_chain: &str, amount: u128) -> u128 {
-    match source_chain.to_lowercase().as_str() {
-        "tics" | "qubetics" => {
-            // Multiply by 10^-10 (divide by 10^10)
-            let divisor = 10_000_000_000u128;
-            amount / divisor
-        }
-        "btc" | "bitcoin" => {
-            // Multiply by 10^10
-            let multiplier = 10_000_000_000u128;
-            amount.saturating_mul(multiplier)
-        }
-        _ => {
-            // No multiplier for other chains
-            amount
-        }
-    }
-}
 
 // gRPC service definition
 #[derive(Default)]
@@ -506,9 +490,14 @@ pub async fn start_http_server(
     info!("🌐 Starting HTTP RPC server on port {}", port);
     // Enable CORS for all origins and common HTTP methods/headers
     let cors = warp::cors()
-        .allow_any_origin()
-        .allow_methods(vec!["GET", "POST", "OPTIONS"])
-        .allow_headers(vec!["Content-Type", "Authorization"]);
+    .allow_credentials(true)
+    .allow_headers(vec!["Content-Type", "Authorization"])
+    .allow_methods(vec!["GET", "POST", "OPTIONS"])
+    .allow_origin("http://localhost:3000")
+    .allow_origin("http://localhost:3001")
+    .allow_origin("http://127.0.0.1:3000")
+    .allow_origin("http://127.0.0.1:3001")
+    .allow_origin("https://your-frontend-domain.com");
 
     warp::serve(routes.with(cors))
         .run(([0, 0, 0, 0], port))
@@ -625,6 +614,101 @@ async fn handle_submit_transaction(
 
 //     handle_deposit_intent(intent, user_eth_address, message_tx).await
 // }
+/// Convert source smallest units -> target smallest units using token prices (per whole units)
+
+
+
+fn symbol_for(chain: &str) -> &'static str {
+    match chain.to_lowercase().as_str() {
+        "btc" | "bitcoin" => "BTC",
+        _ => "TICS",
+    }
+}
+
+fn decimals_for(chain: &str) -> u32 {
+    match chain.to_lowercase().as_str() {
+        "btc" | "bitcoin" => 8,     // satoshis
+        "tics" | "qubetics" => 18,  // wei-like
+        _ => 18,
+    }
+}
+
+fn pow10_dec(n: u32) -> Decimal {
+    // 10^n as Decimal without float errors
+    let mut v = dec!(1);
+    for _ in 0..n {
+        v *= dec!(10);
+    }
+    v
+}
+
+fn convert_src_smallest_to_dst_smallest(
+    amount_src_smallest: u128,
+    src_chain: &str,
+    dst_chain: &str,
+    prices: &HashMap<String, Decimal>,
+) -> Result<u128, TransactionError> {
+    let src_sym = symbol_for(src_chain);
+    let dst_sym = symbol_for(dst_chain);
+
+    let p_src = *prices.get(src_sym).ok_or(TransactionError::PricingUnavailable)?;
+    let p_dst = *prices.get(dst_sym).ok_or(TransactionError::PricingUnavailable)?;
+
+    let src_dec = decimals_for(src_chain);
+    let dst_dec = decimals_for(dst_chain);
+
+    info!("🔄 [CONVERSION] Starting conversion:");
+    info!("  📊 Source: {} {} (smallest units: {})", amount_src_smallest, src_sym, src_chain);
+    info!("  📊 Target: {} (smallest units: {})", dst_sym, dst_chain);
+    info!("  💰 Prices: {} = ${}, {} = ${}", src_sym, p_src, dst_sym, p_dst);
+    info!("  🔢 Decimals: {} = {}, {} = {}", src_sym, src_dec, dst_sym, dst_dec);
+
+    // Apply chain-specific multiplier before price conversion
+    let adjusted_amount = match src_chain.to_lowercase().as_str() {
+        "tics" | "qubetics" => {
+            // For TICS source chain: divide by 10^10
+            let divisor = pow10_dec(10);
+            let result = Decimal::from_u128(amount_src_smallest)
+                .ok_or(TransactionError::Overflow)?
+                / divisor;
+            info!("  🔄 TICS conversion: {} / 10^10 = {}", amount_src_smallest, result);
+            result
+        }
+        "btc" | "bitcoin" => {
+            // For BTC source chain: multiply by 10^10
+            let multiplier = pow10_dec(10);
+            let result = Decimal::from_u128(amount_src_smallest)
+                .ok_or(TransactionError::Overflow)?
+                * multiplier;
+            info!("  🔄 BTC conversion: {} * 10^10 = {}", amount_src_smallest, result);
+            result
+        }
+        _ => {
+            // For other chains: no multiplier
+            let result = Decimal::from_u128(amount_src_smallest)
+                .ok_or(TransactionError::Overflow)?;
+            info!("  🔄 Other chain conversion: {} (no multiplier)", amount_src_smallest);
+            result
+        }
+    };
+
+    // Convert to whole units using actual decimals
+    let src_whole = adjusted_amount / pow10_dec(src_dec);
+    info!("  📏 Converted to whole units: {} / 10^{} = {}", adjusted_amount, src_dec, src_whole);
+
+    // Apply price conversion
+    let dst_whole = src_whole * p_src / p_dst;
+    info!("  💱 Price conversion: {} * {} / {} = {}", src_whole, p_src, p_dst, dst_whole);
+
+    // Convert back to smallest units
+    let dst_smallest = (dst_whole * pow10_dec(dst_dec)).floor();
+    let result = dst_smallest.to_u128().ok_or(TransactionError::Overflow)?;
+    
+    info!("  📏 Converted to target smallest units: {} * 10^{} = {} (floored)", dst_whole, dst_dec, result);
+    info!("  ✅ Final result: {} {} smallest units", result, dst_sym);
+
+    Ok(result)
+}
 
 pub async fn handle_deposit_intent(
     intent: DepositIntent,
@@ -676,22 +760,23 @@ pub async fn handle_deposit_intent(
         // Convert the intent amount using the price ratio so we can compare
         // against the balance of the address on the chain we are about to
         // spend from.
-        let required_amount = (intent.amount as f64) * (source_price / target_price);
+        let target_smallest = convert_src_smallest_to_dst_smallest(
+            intent.amount,
+            &intent.source_chain,
+            &intent.target_chain,
+            &prices,
+        )?;
+
+        required_amount_u128 = target_smallest;
 
         info!(
-            "💱 Conversion: {} {} (source) is equivalent to {} {} (target) before decimals",
-            intent.amount, source_symbol, required_amount, target_symbol
-        );
-        let before_multiplier = required_amount as u128;
-        required_amount_u128 = apply_chain_multiplier(&intent.source_chain, before_multiplier);
-        info!(
-            "🔢 Chain multiplier applied: {} {} -> {} (source chain: {})",
-            before_multiplier, source_symbol, required_amount_u128, intent.source_chain
+            "💱 Conversion: {} {} (source) is equivalent to {} {} (target) smallest units",
+            intent.amount, source_symbol, required_amount_u128, target_symbol
         );
     } else {
         // For VaultToNetwork and other types, use the intent amount plus 10%
         let base_amount = intent.amount + (intent.amount / 10);
-        required_amount_u128 = apply_chain_multiplier(&intent.source_chain, base_amount);
+        required_amount_u128 = base_amount;
         info!(
             "💱 No price conversion needed. Using intent amount as required amount: {} -> {} (source chain: {})",
             base_amount, required_amount_u128, intent.source_chain
@@ -1117,10 +1202,9 @@ async fn wait_for_transaction_result(
     best_result
 }
 
-async fn fetch_crypto_prices() -> Result<HashMap<String, f64>, String> {
+pub async fn fetch_crypto_prices() -> Result<HashMap<String, Decimal>, String> {
     use tracing::{debug, error, info};
 
-    // Get crypto prices API URL from environment variable
     let base_url = std::env::var("BACKEND_API_URL")
         .unwrap_or_else(|_| "http://172.16.15.63:7322".to_string());
     let url = format!("{}/api/v1/cryptos/prices?symbols=BTC,TICS", base_url);
@@ -1128,7 +1212,7 @@ async fn fetch_crypto_prices() -> Result<HashMap<String, f64>, String> {
 
     info!("Fetching crypto prices from URL: {}", url);
 
-    let resp = client.get(url).send().await.map_err(|e| {
+    let resp = client.get(&url).send().await.map_err(|e| {
         error!("Failed to fetch crypto prices: {}", e);
         format!("Failed to fetch crypto prices: {}", e)
     })?;
@@ -1154,7 +1238,7 @@ async fn fetch_crypto_prices() -> Result<HashMap<String, f64>, String> {
         ));
     }
 
-    let resp_json: serde_json::Value = serde_json::from_str(&resp_text).map_err(|e| {
+    let resp_json: Value = serde_json::from_str(&resp_text).map_err(|e| {
         error!("Failed to parse crypto prices response: {}", e);
         format!("Failed to parse crypto prices response: {}", e)
     })?;
@@ -1175,25 +1259,34 @@ async fn fetch_crypto_prices() -> Result<HashMap<String, f64>, String> {
         "No 'data' field in crypto prices response".to_string()
     })?;
 
-    let mut prices = std::collections::HashMap::new();
+    let mut prices: HashMap<String, Decimal> = HashMap::new();
+
+    // Tolerant parsing: accept string or number for price fields
+    let to_decimal = |v: &Value| -> Option<Decimal> {
+        match v {
+            Value::String(s) => Decimal::from_str(s).ok(),
+            Value::Number(n) => Decimal::from_str(&n.to_string()).ok(),
+            _ => None,
+        }
+    };
+
     if let Some(obj) = data.as_object() {
         for (symbol, value) in obj {
-            if let Some(price) = value.as_f64() {
-                debug!("Parsed price for {}: {}", symbol, price);
+            if let Some(price) = to_decimal(value) {
+                debug!("Parsed Decimal price for {}: {}", symbol, price);
                 prices.insert(symbol.clone(), price);
             } else {
-                debug!("Could not parse price for {}: {:?}", symbol, value);
+                // Last-ditch: log and skip
+                debug!("Could not parse Decimal price for {}: {:?}", symbol, value);
             }
         }
     } else {
         debug!("'data' field is not an object in crypto prices response");
     }
 
-    info!("Fetched crypto prices: {:?}", prices);
-
+    info!("Fetched crypto prices (Decimal): {:?}", prices);
     Ok(prices)
 }
-
 // async fn fetch_balance(address: &str, blockchain: &str) -> Result<u128, String> {
 //     info!(
 //         "Fetching balance for address: {}, blockchain: {}",
@@ -1336,21 +1429,21 @@ async fn handle_user_mpc_deposit(
     }
     // Process the deposit intent
     // If there are any transaction IDs, req.tx_id must be provided, else return error
-    if transaction_ids.len() >= 1 && req.tx_id.is_none() {
-        return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
-            status: "error".to_string(),
-            signer_address: "".to_string(),
-            is_registered: false,
-            amount: 0,
-            user_to_network_tx_id: None,
-            network_to_target_tx_id: None,
-            vault_to_network_tx_id: None,
-            error_message: Some(
-                "Transaction ID must be provided when transaction(s) already exist for this intent"
-                    .to_string(),
-            ),
-        }));
-    }
+    // if transaction_ids.len() >= 1 && req.tx_id.is_none() {
+    //     return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+    //         status: "error".to_string(),
+    //         signer_address: "".to_string(),
+    //         is_registered: false,
+    //         amount: 0,
+    //         user_to_network_tx_id: None,
+    //         network_to_target_tx_id: None,
+    //         vault_to_network_tx_id: None,
+    //         error_message: Some(
+    //             "Transaction ID must be provided when transaction(s) already exist for this intent"
+    //                 .to_string(),
+    //         ),
+    //     }));
+    // }
 
     let transaction_type = if transaction_ids.len() == 1 {
         crate::types::TransactionType::NetworkToTarget
@@ -1360,29 +1453,29 @@ async fn handle_user_mpc_deposit(
         crate::types::TransactionType::UserToVault
     };
 
-    if let Some(ref tx_id) = req.tx_id {
-        if let Some(status) = user_registry.get_transaction_status(tx_id).await {
-            if status == TransactionStatus::Confirmed {
-                warn!(
-                    "❌ Transaction {} is already confirmed, rejecting duplicate call",
-                    tx_id
-                );
-                return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
-                    status: "error".to_string(),
-                    signer_address: "".to_string(),
-                    is_registered: false,
-                    amount: 0,
-                    user_to_network_tx_id: None,
-                    network_to_target_tx_id: None,
-                    vault_to_network_tx_id: None,
-                    error_message: Some(format!(
-                        "Transaction {} is already confirmed and cannot be processed again",
-                        tx_id
-                    )),
-                }));
-            }
-        }
-    }
+    // if let Some(ref tx_id) = req.tx_id {
+    //     if let Some(status) = user_registry.get_transaction_status(tx_id).await {
+    //         if status == TransactionStatus::Confirmed {
+    //             warn!(
+    //                 "❌ Transaction {} is already confirmed, rejecting duplicate call",
+    //                 tx_id
+    //             );
+    //             return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+    //                 status: "error".to_string(),
+    //                 signer_address: "".to_string(),
+    //                 is_registered: false,
+    //                 amount: 0,
+    //                 user_to_network_tx_id: None,
+    //                 network_to_target_tx_id: None,
+    //                 vault_to_network_tx_id: None,
+    //                 error_message: Some(format!(
+    //                     "Transaction {} is already confirmed and cannot be processed again",
+    //                     tx_id
+    //                 )),
+    //             }));
+    //         }
+    //     }
+    // }
 
     info!(
         "🔐 Processing MPC deposit - Intent hash: {:?}, Amount: {}",
@@ -1610,10 +1703,9 @@ async fn handle_user_mpc_deposit(
         }
     };
 
-    let user_eth_address = if req.tx_id.is_some() {
-        None
-    } else {
-        Some(user_registration.ethereum_address.clone())
+    let user_eth_address = match transaction_type {
+        crate::types::TransactionType::UserToVault => Some(user_registration.ethereum_address.clone()),
+        _ => None,
     };
     // Fetch all transaction IDs corresponding to this intent hash
     let intent_hash_hex = hex::encode(&intent_hash);
@@ -2243,6 +2335,8 @@ pub enum TransactionError {
     SerializationError,
     NetworkError,
     InvalidRequest,
+    PricingUnavailable,
+    Overflow,
 }
 
 impl warp::reject::Reject for TransactionError {}
