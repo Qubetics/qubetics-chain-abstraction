@@ -6,7 +6,7 @@ import { Wallet } from 'ethers';
 // =========================
 // Configuration
 // =========================
-const RPC_BASE_URL = process.env.RPC_BASE_URL || 'http://127.0.8.1:8082';
+const RPC_BASE_URL = process.env.RPC_BASE_URL || 'http://127.0.0.1:8082';
 
 // 👉 Private key you provided (hex, no 0x prefix needed)
 const TEST_PRIVKEY = '415c01d63918df986d1d537f9b5974f383cac3b4fe9edc44f58f09bdfc5f672a';
@@ -25,7 +25,7 @@ const colors = {
   green: '\x1b[32m'
 };
 
-const oooo = 432432423
+const oooo = 432422121
 
 function log(message, color = 'reset') {
   console.log(`${colors[color]}${message}${colors.reset}`);
@@ -432,7 +432,7 @@ async function runTests() {
 
   // 3) MPC deposit test WITHOUT tx_id (should pass Some(signer) to handle_deposit_intent)
   log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
-  const amount = 1000323078032; // keep safe for JSON
+  const amount = 1000000000000000000; // keep safe for JSON
   await testUserMpcDeposit({ wallet, amount }); 
 
   // await new Promise(r => setTimeout(r, 10000));

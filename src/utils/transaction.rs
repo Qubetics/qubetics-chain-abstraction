@@ -135,6 +135,69 @@ fn strip_leading_zeros(bytes: &[u8]) -> Vec<u8> {
     }
 }
 
+/// Convert amount (u128) to proper hex string format for Ethereum transactions
+/// Returns "0x0" for zero amounts, otherwise returns minimal hex representation with 0x prefix
+pub fn amount_to_hex_string(amount: u128) -> String {
+    if amount == 0 {
+        return "0x0".to_string();
+    }
+    
+    // Convert to hex and remove leading zeros
+    let hex_str = format!("{:x}", amount);
+    format!("0x{}", hex_str)
+}
+
+/// Validate and normalize hex string for amounts
+/// Ensures proper 0x prefix and removes unnecessary leading zeros
+pub fn validate_and_normalize_hex_amount(hex_str: &str) -> Result<String> {
+    let clean_hex = hex_str.strip_prefix("0x").unwrap_or(hex_str);
+    
+    // Validate hex characters
+    if !clean_hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(anyhow::anyhow!("Invalid hex characters in amount: {}", hex_str));
+    }
+    
+    // Remove leading zeros but keep at least one digit
+    let trimmed = clean_hex.trim_start_matches('0');
+    let normalized = if trimmed.is_empty() { "0" } else { trimmed };
+    
+    Ok(format!("0x{}", normalized))
+}
+
+/// Validate that a transaction has proper hex formatting for value and gas_price
+pub fn validate_transaction_hex_fields(tx: &crate::rpc_server::DummyTransaction) -> Result<()> {
+    // Validate value field
+    validate_and_normalize_hex_amount(&tx.value)
+        .map_err(|e| anyhow::anyhow!("Invalid value field: {}", e))?;
+    
+    // Validate gas_price field
+    validate_and_normalize_hex_amount(&tx.gas_price)
+        .map_err(|e| anyhow::anyhow!("Invalid gas_price field: {}", e))?;
+    
+    Ok(())
+}
+
+/// Validate that a contract transaction has proper hex formatting
+pub fn validate_contract_transaction_hex_fields(tx: &crate::rpc_server::ContractTransaction) -> Result<()> {
+    // Validate value field
+    validate_and_normalize_hex_amount(&tx.value)
+        .map_err(|e| anyhow::anyhow!("Invalid value field: {}", e))?;
+    
+    // Validate gas_price field
+    validate_and_normalize_hex_amount(&tx.gas_price)
+        .map_err(|e| anyhow::anyhow!("Invalid gas_price field: {}", e))?;
+    
+    // Validate data field (should be hex if not empty)
+    if !tx.data.is_empty() && tx.data != "0x" {
+        let clean_data = tx.data.strip_prefix("0x").unwrap_or(&tx.data);
+        if !clean_data.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(anyhow::anyhow!("Invalid hex characters in data field: {}", tx.data));
+        }
+    }
+    
+    Ok(())
+}
+
 /// Chain mapping to convert string names to chain IDs
 pub fn get_chain_id_from_name(chain_name: &str) -> Option<u64> {
     match chain_name.to_lowercase().as_str() {
@@ -996,7 +1059,7 @@ async fn create_chain_transaction_from_deposit_intent_internal(
 
         let ethereum_tx = EthereumTransaction {
             to: to_address.to_string(),
-            value: amount.to_string(),
+            value: amount_to_hex_string(amount),
             gas_limit: 300000,
             gas_price: get_default_gas_price_for_chain(chain_to_use),
             nonce: fetch_ethereum_nonce(&from_address, chain_id).await?,
@@ -1774,6 +1837,12 @@ pub fn log_pre_broadcast_details(tx: &BitcoinTransaction, tx_bytes: &[u8]) -> St
 }
 
 pub fn create_transaction_for_signing(tx: &DummyTransaction) -> Vec<u8> {
+    // Log transaction details before creating raw transaction
+    info!(
+        "🔧 [ETH_RAW_TXN] Creating raw Ethereum transaction - To: {}, Value: {}, Nonce: {}, GasLimit: {}, GasPrice: {}, ChainId: {}",
+        tx.to, tx.value, tx.nonce, tx.gas_limit, tx.gas_price, tx.chain_id
+    );
+
     let mut content = Vec::new();
 
     // Encode transaction fields for signing (EIP-155)
@@ -1841,9 +1910,159 @@ mod tests {
         // RLP encoding of zero should be a single 0x80 byte
         assert_eq!(encoder.finalize(), vec![0x80]);
     }
+
+    #[test]
+    fn test_amount_to_hex_string() {
+        // Test zero amount
+        assert_eq!(amount_to_hex_string(0), "0x0");
+        
+        // Test small amounts
+        assert_eq!(amount_to_hex_string(1), "0x1");
+        assert_eq!(amount_to_hex_string(15), "0xf");
+        assert_eq!(amount_to_hex_string(16), "0x10");
+        assert_eq!(amount_to_hex_string(255), "0xff");
+        assert_eq!(amount_to_hex_string(256), "0x100");
+        
+        // Test larger amounts (common in crypto)
+        assert_eq!(amount_to_hex_string(1000000000000000000u128), "0xde0b6b3a7640000"); // 1 ETH in wei
+        assert_eq!(amount_to_hex_string(21000000000000000000u128), "0x1236efcbcbb340000"); // 21 ETH in wei
+        
+        // Test very large amounts
+        assert_eq!(amount_to_hex_string(u128::MAX), "0xffffffffffffffffffffffffffffffff");
+    }
+
+    #[test]
+    fn test_validate_and_normalize_hex_amount() {
+        // Test valid hex strings
+        assert_eq!(validate_and_normalize_hex_amount("0x0").unwrap(), "0x0");
+        assert_eq!(validate_and_normalize_hex_amount("0x1").unwrap(), "0x1");
+        assert_eq!(validate_and_normalize_hex_amount("0xff").unwrap(), "0xff");
+        assert_eq!(validate_and_normalize_hex_amount("0xFF").unwrap(), "0xFF");
+        
+        // Test normalization of leading zeros
+        assert_eq!(validate_and_normalize_hex_amount("0x00").unwrap(), "0x0");
+        assert_eq!(validate_and_normalize_hex_amount("0x000001").unwrap(), "0x1");
+        assert_eq!(validate_and_normalize_hex_amount("0x0000ff").unwrap(), "0xff");
+        
+        // Test hex without 0x prefix
+        assert_eq!(validate_and_normalize_hex_amount("1").unwrap(), "0x1");
+        assert_eq!(validate_and_normalize_hex_amount("ff").unwrap(), "0xff");
+        assert_eq!(validate_and_normalize_hex_amount("0001").unwrap(), "0x1");
+        
+        // Test invalid hex strings
+        assert!(validate_and_normalize_hex_amount("0xgg").is_err());
+        assert!(validate_and_normalize_hex_amount("0x12g3").is_err());
+        assert!(validate_and_normalize_hex_amount("xyz").is_err());
+    }
+
+    #[test]
+    fn test_validate_transaction_hex_fields() {
+        use crate::rpc_server::DummyTransaction;
+        
+        // Test valid transaction
+        let valid_tx = DummyTransaction {
+            to: "0x1234567890123456789012345678901234567890".to_string(),
+            value: "0x1".to_string(),
+            nonce: 0,
+            gas_limit: 21000,
+            gas_price: "0x3b9aca00".to_string(), // 1 Gwei
+            chain_id: 1,
+        };
+        assert!(validate_transaction_hex_fields(&valid_tx).is_ok());
+        
+        // Test invalid value field
+        let invalid_value_tx = DummyTransaction {
+            to: "0x1234567890123456789012345678901234567890".to_string(),
+            value: "invalid".to_string(),
+            nonce: 0,
+            gas_limit: 21000,
+            gas_price: "0x3b9aca00".to_string(),
+            chain_id: 1,
+        };
+        assert!(validate_transaction_hex_fields(&invalid_value_tx).is_err());
+        
+        // Test invalid gas_price field
+        let invalid_gas_price_tx = DummyTransaction {
+            to: "0x1234567890123456789012345678901234567890".to_string(),
+            value: "0x1".to_string(),
+            nonce: 0,
+            gas_limit: 21000,
+            gas_price: "invalid".to_string(),
+            chain_id: 1,
+        };
+        assert!(validate_transaction_hex_fields(&invalid_gas_price_tx).is_err());
+    }
+
+    #[test]
+    fn test_validate_contract_transaction_hex_fields() {
+        use crate::rpc_server::ContractTransaction;
+        
+        // Test valid contract transaction
+        let valid_contract_tx = ContractTransaction {
+            to: "0x1234567890123456789012345678901234567890".to_string(),
+            value: "0x0".to_string(),
+            nonce: 0,
+            gas_limit: 300000,
+            gas_price: "0x3b9aca00".to_string(),
+            chain_id: 1,
+            data: "0xa9059cbb".to_string(), // transfer function selector
+        };
+        assert!(validate_contract_transaction_hex_fields(&valid_contract_tx).is_ok());
+        
+        // Test invalid data field
+        let invalid_data_tx = ContractTransaction {
+            to: "0x1234567890123456789012345678901234567890".to_string(),
+            value: "0x0".to_string(),
+            nonce: 0,
+            gas_limit: 300000,
+            gas_price: "0x3b9aca00".to_string(),
+            chain_id: 1,
+            data: "invalid_hex".to_string(),
+        };
+        assert!(validate_contract_transaction_hex_fields(&invalid_data_tx).is_err());
+        
+        // Test empty data field (should be valid)
+        let empty_data_tx = ContractTransaction {
+            to: "0x1234567890123456789012345678901234567890".to_string(),
+            value: "0x0".to_string(),
+            nonce: 0,
+            gas_limit: 300000,
+            gas_price: "0x3b9aca00".to_string(),
+            chain_id: 1,
+            data: "0x".to_string(),
+        };
+        assert!(validate_contract_transaction_hex_fields(&empty_data_tx).is_ok());
+    }
+
+    #[test]
+    fn test_common_ethereum_amounts() {
+        // Test common Ethereum amounts in wei
+        let one_eth_wei = 1000000000000000000u128; // 1 ETH = 10^18 wei
+        assert_eq!(amount_to_hex_string(one_eth_wei), "0xde0b6b3a7640000");
+        
+        let one_gwei = 1000000000u128; // 1 Gwei = 10^9 wei
+        assert_eq!(amount_to_hex_string(one_gwei), "0x3b9aca00");
+        
+        let half_eth_wei = 500000000000000000u128; // 0.5 ETH
+        assert_eq!(amount_to_hex_string(half_eth_wei), "0x6f05b59d3b20000");
+        
+        // Test that these values are properly handled by the RLP encoder
+        let mut encoder = RlpEncoder::new();
+        encoder.encode_hex_string(&amount_to_hex_string(one_eth_wei));
+        let encoded = encoder.finalize();
+        // Should not be empty and should be properly encoded
+        assert!(!encoded.is_empty());
+        assert_ne!(encoded, vec![0x80]); // Should not be the "zero" encoding
+    }
 }
 
 pub fn create_transaction_for_signing_contract(tx: &ContractTransaction) -> Vec<u8> {
+    // Log contract transaction details before creating raw transaction
+    info!(
+        "🔧 [ETH_RAW_CONTRACT_TXN] Creating raw Ethereum contract transaction - To: {}, Value: {}, Nonce: {}, GasLimit: {}, GasPrice: {}, ChainId: {}, DataLength: {}",
+        tx.to, tx.value, tx.nonce, tx.gas_limit, tx.gas_price, tx.chain_id, tx.data.len()
+    );
+
     let mut content = Vec::new();
 
     // Encode transaction fields for signing (EIP-155)
@@ -1907,6 +2126,12 @@ pub fn create_signed_transaction(
     s: &[u8],
     v: u64,
 ) -> Vec<u8> {
+    // Log signed transaction details before creating final raw transaction
+    info!(
+        "🔧 [ETH_SIGNED_TXN] Creating final signed Ethereum transaction - To: {}, Value: {}, Nonce: {}, GasLimit: {}, GasPrice: {}, ChainId: {}, v: {}, HasData: {}",
+        tx.to, tx.value, tx.nonce, tx.gas_limit, tx.gas_price, tx.chain_id, v, data.is_some()
+    );
+
     let mut content = Vec::new();
 
     // Encode transaction fields
@@ -1930,7 +2155,8 @@ pub fn create_signed_transaction(
     encoder = RlpEncoder::new();
     encoder.encode_address(&tx.to);
     content.extend_from_slice(&encoder.finalize());
-
+    
+    info!("🔍 [SIGNING] Value: {}", tx.value);
     // Value
     encoder = RlpEncoder::new();
     encoder.encode_hex_string(&tx.value);

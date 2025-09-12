@@ -701,8 +701,8 @@ fn convert_src_smallest_to_dst_smallest(
     info!("  💱 Price conversion: {} * {} / {} = {}", src_whole, p_src, p_dst, dst_whole);
 
     // Convert back to smallest units
-    let dst_smallest = (dst_whole * pow10_dec(dst_dec)).floor();
-    let result = dst_smallest.to_u128().ok_or(TransactionError::Overflow)?;
+    let dst_smallest = dst_whole.floor();
+    let result: u128 = dst_smallest.to_u128().ok_or(TransactionError::Overflow)?;
     
     info!("  📏 Converted to target smallest units: {} * 10^{} = {} (floored)", dst_whole, dst_dec, result);
     info!("  ✅ Final result: {} {} smallest units", result, dst_sym);
