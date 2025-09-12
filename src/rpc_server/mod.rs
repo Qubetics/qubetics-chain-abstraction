@@ -10,6 +10,7 @@ use secp256k1::{
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
 use sha3::Keccak256;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc;
@@ -639,137 +640,137 @@ pub async fn handle_deposit_intent(
     );
     let mut required_amount_u128 = 0;
 
-    // // Only do price conversion for NetworkToTarget, else just use intent.amount
-    // if matches!(
-    //     transaction_type,
-    //     crate::types::TransactionType::NetworkToTarget
-    // ) {
-    //     // Fetch current prices for BTC and TICS to determine the
-    //     // value equivalence between source and target chains.
-    //     let prices = fetch_crypto_prices()
-    //         .await
-    //         .map_err(|_| warp::reject::custom(TransactionError::NetworkError))?;
-
-    //     // Helper closure to map chain names to the price symbols returned by
-    //     // the price API. Any non-Bitcoin chain is treated as TICS (our EVM token).
-    //     let chain_to_symbol = |chain: &str| match chain.to_lowercase().as_str() {
-    //         "btc" | "bitcoin" => "BTC",
-    //         _ => "TICS",
-    //     };
-
-    //     let source_symbol = chain_to_symbol(&intent.source_chain);
-    //     let target_symbol = chain_to_symbol(&intent.target_chain);
-
-    //     let source_price = *prices
-    //         .get(source_symbol)
-    //         .ok_or_else(|| warp::reject::custom(TransactionError::NetworkError))?;
-    //     let target_price = *prices
-    //         .get(target_symbol)
-    //         .ok_or_else(|| warp::reject::custom(TransactionError::NetworkError))?;
-
-    //     info!(
-    //         "💱 Conversion: {} {} (source chain: {}) @ {} per unit --> {} (target chain: {}) @ {} per unit",
-    //         intent.amount, source_symbol, intent.source_chain, source_price, target_symbol, intent.target_chain, target_price
-    //     );
-
-    //     // Convert the intent amount using the price ratio so we can compare
-    //     // against the balance of the address on the chain we are about to
-    //     // spend from.
-    //     let required_amount = (intent.amount as f64) * (source_price / target_price);
-
-    //     info!(
-    //         "💱 Conversion: {} {} (source) is equivalent to {} {} (target) before decimals",
-    //         intent.amount, source_symbol, required_amount, target_symbol
-    //     );
-    //     let before_multiplier = required_amount as u128;
-    //     required_amount_u128 = apply_chain_multiplier(&intent.source_chain, before_multiplier);
-    //     info!(
-    //         "🔢 Chain multiplier applied: {} {} -> {} (source chain: {})",
-    //         before_multiplier, source_symbol, required_amount_u128, intent.source_chain
-    //     );
-    // } else {
-    //     // For VaultToNetwork and other types, use the intent amount plus 10%
-    //     let base_amount = intent.amount + (intent.amount / 10);
-    //     required_amount_u128 = apply_chain_multiplier(&intent.source_chain, base_amount);
-    //     info!(
-    //         "💱 No price conversion needed. Using intent amount as required amount: {} -> {} (source chain: {})",
-    //         base_amount, required_amount_u128, intent.source_chain
-    //     );
-    // }
-
-    // Additional balance validation for NetworkToTarget and VaultToNetwork
+    // Only do price conversion for NetworkToTarget, else just use intent.amount
     if matches!(
         transaction_type,
         crate::types::TransactionType::NetworkToTarget
-            | crate::types::TransactionType::VaultToNetwork
     ) {
-        // Determine which chain to check based on the transaction type
-        let chain_to_use = match transaction_type {
-            crate::types::TransactionType::NetworkToTarget => intent.target_chain.to_lowercase(),
-            crate::types::TransactionType::VaultToNetwork => intent.source_chain.to_lowercase(),
-            _ => unreachable!(),
+        // Fetch current prices for BTC and TICS to determine the
+        // value equivalence between source and target chains.
+        let prices = fetch_crypto_prices()
+            .await
+            .map_err(|_| warp::reject::custom(TransactionError::NetworkError))?;
+
+        // Helper closure to map chain names to the price symbols returned by
+        // the price API. Any non-Bitcoin chain is treated as TICS (our EVM token).
+        let chain_to_symbol = |chain: &str| match chain.to_lowercase().as_str() {
+            "btc" | "bitcoin" => "BTC",
+            _ => "TICS",
         };
 
+        let source_symbol = chain_to_symbol(&intent.source_chain);
+        let target_symbol = chain_to_symbol(&intent.target_chain);
+
+        let source_price = *prices
+            .get(source_symbol)
+            .ok_or_else(|| warp::reject::custom(TransactionError::NetworkError))?;
+        let target_price = *prices
+            .get(target_symbol)
+            .ok_or_else(|| warp::reject::custom(TransactionError::NetworkError))?;
+
+        info!(
+            "💱 Conversion: {} {} (source chain: {}) @ {} per unit --> {} (target chain: {}) @ {} per unit",
+            intent.amount, source_symbol, intent.source_chain, source_price, target_symbol, intent.target_chain, target_price
+        );
+
+        // Convert the intent amount using the price ratio so we can compare
+        // against the balance of the address on the chain we are about to
+        // spend from.
+        let required_amount = (intent.amount as f64) * (source_price / target_price);
+
+        info!(
+            "💱 Conversion: {} {} (source) is equivalent to {} {} (target) before decimals",
+            intent.amount, source_symbol, required_amount, target_symbol
+        );
+        let before_multiplier = required_amount as u128;
+        required_amount_u128 = apply_chain_multiplier(&intent.source_chain, before_multiplier);
+        info!(
+            "🔢 Chain multiplier applied: {} {} -> {} (source chain: {})",
+            before_multiplier, source_symbol, required_amount_u128, intent.source_chain
+        );
+    } else {
+        // For VaultToNetwork and other types, use the intent amount plus 10%
+        let base_amount = intent.amount + (intent.amount / 10);
+        required_amount_u128 = apply_chain_multiplier(&intent.source_chain, base_amount);
+        info!(
+            "💱 No price conversion needed. Using intent amount as required amount: {} -> {} (source chain: {})",
+            base_amount, required_amount_u128, intent.source_chain
+        );
+    }
+
+    // Additional balance validation for NetworkToTarget and VaultToNetwork
+    // if matches!(
+    //     transaction_type,
+    //     crate::types::TransactionType::NetworkToTarget
+    //         | crate::types::TransactionType::VaultToNetwork
+    // ) {
+    //     // Determine which chain to check based on the transaction type
+    //     let chain_to_use = match transaction_type {
+    //         crate::types::TransactionType::NetworkToTarget => intent.target_chain.to_lowercase(),
+    //         crate::types::TransactionType::VaultToNetwork => intent.source_chain.to_lowercase(),
+    //         _ => unreachable!(),
+    //     };
+
         // Decide which address to check: network address or vault address
-        let (address_to_check, blockchain) =
-            if crate::utils::transaction::is_evm_chain(&chain_to_use) {
-                let address = match transaction_type {
-                    crate::types::TransactionType::NetworkToTarget => {
-                        let group_key = dkg_storage
-                            .get_final_public()
-                            .await
-                            .map_err(|_| warp::reject::custom(TransactionError::InvalidRequest))?
-                            .ok_or_else(|| {
-                                warp::reject::custom(TransactionError::InvalidRequest)
-                            })?;
-                        let mut addr = crate::utils::get_eth_address_from_group_key(group_key);
-                        if !addr.starts_with("0x") {
-                            addr = format!("0x{}", addr);
-                        }
-                        addr
-                    }
-                    crate::types::TransactionType::VaultToNetwork => {
-                        let (vault_eth, _) = dkg_storage
-                            .get_vault_addresses()
-                            .await
-                            .map_err(|_| warp::reject::custom(TransactionError::InvalidRequest))?
-                            .ok_or_else(|| {
-                                warp::reject::custom(TransactionError::InvalidRequest)
-                            })?;
-                        vault_eth
-                    }
-                    _ => unreachable!(),
-                };
-                (address, "eth".to_string())
-            } else if chain_to_use == "bitcoin" || chain_to_use == "btc" {
-                let address = match transaction_type {
-                    crate::types::TransactionType::NetworkToTarget => {
-                        let group_key = dkg_storage
-                            .get_final_public()
-                            .await
-                            .map_err(|_| warp::reject::custom(TransactionError::InvalidRequest))?
-                            .ok_or_else(|| {
-                                warp::reject::custom(TransactionError::InvalidRequest)
-                            })?;
-                        crate::utils::get_btc_address_from_group_key(group_key)
-                    }
-                    crate::types::TransactionType::VaultToNetwork => {
-                        let (_, vault_btc) = dkg_storage
-                            .get_vault_addresses()
-                            .await
-                            .map_err(|_| warp::reject::custom(TransactionError::InvalidRequest))?
-                            .ok_or_else(|| {
-                                warp::reject::custom(TransactionError::InvalidRequest)
-                            })?;
-                        vault_btc
-                    }
-                    _ => unreachable!(),
-                };
-                (address, "btc".to_string())
-            } else {
-                warn!("Unsupported chain for balance validation: {}", chain_to_use);
-                return Err(warp::reject::custom(TransactionError::InvalidRequest));
-            };
+        // let (address_to_check, blockchain) =
+        //     if crate::utils::transaction::is_evm_chain(&chain_to_use) {
+        //         let address = match transaction_type {
+        //             crate::types::TransactionType::NetworkToTarget => {
+        //                 let group_key = dkg_storage
+        //                     .get_final_public()
+        //                     .await
+        //                     .map_err(|_| warp::reject::custom(TransactionError::InvalidRequest))?
+        //                     .ok_or_else(|| {
+        //                         warp::reject::custom(TransactionError::InvalidRequest)
+        //                     })?;
+        //                 let mut addr = crate::utils::get_eth_address_from_group_key(group_key);
+        //                 if !addr.starts_with("0x") {
+        //                     addr = format!("0x{}", addr);
+        //                 }
+        //                 addr
+        //             }
+        //             crate::types::TransactionType::VaultToNetwork => {
+        //                 let (vault_eth, _) = dkg_storage
+        //                     .get_vault_addresses()
+        //                     .await
+        //                     .map_err(|_| warp::reject::custom(TransactionError::InvalidRequest))?
+        //                     .ok_or_else(|| {
+        //                         warp::reject::custom(TransactionError::InvalidRequest)
+        //                     })?;
+        //                 vault_eth
+        //             }
+        //             _ => unreachable!(),
+        //         };
+        //         (address, "eth".to_string())
+        //     } else if chain_to_use == "bitcoin" || chain_to_use == "btc" {
+        //         let address = match transaction_type {
+        //             crate::types::TransactionType::NetworkToTarget => {
+        //                 let group_key = dkg_storage
+        //                     .get_final_public()
+        //                     .await
+        //                     .map_err(|_| warp::reject::custom(TransactionError::InvalidRequest))?
+        //                     .ok_or_else(|| {
+        //                         warp::reject::custom(TransactionError::InvalidRequest)
+        //                     })?;
+        //                 crate::utils::get_btc_address_from_group_key(group_key)
+        //             }
+        //             crate::types::TransactionType::VaultToNetwork => {
+        //                 let (_, vault_btc) = dkg_storage
+        //                     .get_vault_addresses()
+        //                     .await
+        //                     .map_err(|_| warp::reject::custom(TransactionError::InvalidRequest))?
+        //                     .ok_or_else(|| {
+        //                         warp::reject::custom(TransactionError::InvalidRequest)
+        //                     })?;
+        //                 vault_btc
+        //             }
+        //             _ => unreachable!(),
+        //         };
+        //         (address, "btc".to_string())
+        //     } else {
+        //         warn!("Unsupported chain for balance validation: {}", chain_to_use);
+        //         return Err(warp::reject::custom(TransactionError::InvalidRequest));
+        //     };
 
         // let balance = fetch_balance(&address_to_check, &blockchain)
         //     .await
@@ -787,7 +788,7 @@ pub async fn handle_deposit_intent(
         //     );
         //     return Err(warp::reject::custom(TransactionError::InvalidRequest));
         // }
-    }
+    // }
 
     let intent_id = format!("intent-{}", Uuid::new_v4());
     let deposit_intent_msg = ChannelMessage::DepositIntent {
@@ -1116,82 +1117,82 @@ async fn wait_for_transaction_result(
     best_result
 }
 
-// async fn fetch_crypto_prices() -> Result<HashMap<String, f64>, String> {
-//     use tracing::{debug, error, info};
+async fn fetch_crypto_prices() -> Result<HashMap<String, f64>, String> {
+    use tracing::{debug, error, info};
 
-//     // Get crypto prices API URL from environment variable
-//     let base_url = std::env::var("BACKEND_API_URL")
-//         .unwrap_or_else(|_| "http://172.16.15.63:7322".to_string());
-//     let url = format!("{}/api/v1/cryptos/prices?symbols=BTC,TICS", base_url);
-//     let client = reqwest::Client::new();
+    // Get crypto prices API URL from environment variable
+    let base_url = std::env::var("BACKEND_API_URL")
+        .unwrap_or_else(|_| "http://172.16.15.63:7322".to_string());
+    let url = format!("{}/api/v1/cryptos/prices?symbols=BTC,TICS", base_url);
+    let client = reqwest::Client::new();
 
-//     info!("Fetching crypto prices from URL: {}", url);
+    info!("Fetching crypto prices from URL: {}", url);
 
-//     let resp = client.get(url).send().await.map_err(|e| {
-//         error!("Failed to fetch crypto prices: {}", e);
-//         format!("Failed to fetch crypto prices: {}", e)
-//     })?;
+    let resp = client.get(url).send().await.map_err(|e| {
+        error!("Failed to fetch crypto prices: {}", e);
+        format!("Failed to fetch crypto prices: {}", e)
+    })?;
 
-//     let status = resp.status();
-//     debug!("Crypto prices API response status: {}", status);
+    let status = resp.status();
+    debug!("Crypto prices API response status: {}", status);
 
-//     let resp_text = resp.text().await.map_err(|e| {
-//         error!("Failed to read crypto prices response text: {}", e);
-//         format!("Failed to read crypto prices response text: {}", e)
-//     })?;
+    let resp_text = resp.text().await.map_err(|e| {
+        error!("Failed to read crypto prices response text: {}", e);
+        format!("Failed to read crypto prices response text: {}", e)
+    })?;
 
-//     debug!("Crypto prices API response body: {}", resp_text);
+    debug!("Crypto prices API response body: {}", resp_text);
 
-//     if !status.is_success() {
-//         error!(
-//             "Crypto prices API returned non-success status {}: {}",
-//             status, resp_text
-//         );
-//         return Err(format!(
-//             "Crypto prices API returned non-success status {}: {}",
-//             status, resp_text
-//         ));
-//     }
+    if !status.is_success() {
+        error!(
+            "Crypto prices API returned non-success status {}: {}",
+            status, resp_text
+        );
+        return Err(format!(
+            "Crypto prices API returned non-success status {}: {}",
+            status, resp_text
+        ));
+    }
 
-//     let resp_json: serde_json::Value = serde_json::from_str(&resp_text).map_err(|e| {
-//         error!("Failed to parse crypto prices response: {}", e);
-//         format!("Failed to parse crypto prices response: {}", e)
-//     })?;
+    let resp_json: serde_json::Value = serde_json::from_str(&resp_text).map_err(|e| {
+        error!("Failed to parse crypto prices response: {}", e);
+        format!("Failed to parse crypto prices response: {}", e)
+    })?;
 
-//     debug!("Crypto prices API response JSON: {:?}", resp_json);
+    debug!("Crypto prices API response JSON: {:?}", resp_json);
 
-//     if resp_json.get("error").and_then(|v| v.as_bool()) == Some(true) {
-//         let msg = resp_json
-//             .get("message")
-//             .and_then(|v| v.as_str())
-//             .unwrap_or("Unknown error");
-//         error!("Crypto prices API error: {}", msg);
-//         return Err(format!("Crypto prices API error: {}", msg));
-//     }
+    if resp_json.get("error").and_then(|v| v.as_bool()) == Some(true) {
+        let msg = resp_json
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Unknown error");
+        error!("Crypto prices API error: {}", msg);
+        return Err(format!("Crypto prices API error: {}", msg));
+    }
 
-//     let data = resp_json.get("data").ok_or_else(|| {
-//         error!("No 'data' field in crypto prices response");
-//         "No 'data' field in crypto prices response".to_string()
-//     })?;
+    let data = resp_json.get("data").ok_or_else(|| {
+        error!("No 'data' field in crypto prices response");
+        "No 'data' field in crypto prices response".to_string()
+    })?;
 
-//     let mut prices = std::collections::HashMap::new();
-//     if let Some(obj) = data.as_object() {
-//         for (symbol, value) in obj {
-//             if let Some(price) = value.as_f64() {
-//                 debug!("Parsed price for {}: {}", symbol, price);
-//                 prices.insert(symbol.clone(), price);
-//             } else {
-//                 debug!("Could not parse price for {}: {:?}", symbol, value);
-//             }
-//         }
-//     } else {
-//         debug!("'data' field is not an object in crypto prices response");
-//     }
+    let mut prices = std::collections::HashMap::new();
+    if let Some(obj) = data.as_object() {
+        for (symbol, value) in obj {
+            if let Some(price) = value.as_f64() {
+                debug!("Parsed price for {}: {}", symbol, price);
+                prices.insert(symbol.clone(), price);
+            } else {
+                debug!("Could not parse price for {}: {:?}", symbol, value);
+            }
+        }
+    } else {
+        debug!("'data' field is not an object in crypto prices response");
+    }
 
-//     info!("Fetched crypto prices: {:?}", prices);
+    info!("Fetched crypto prices: {:?}", prices);
 
-//     Ok(prices)
-// }
+    Ok(prices)
+}
 
 // async fn fetch_balance(address: &str, blockchain: &str) -> Result<u128, String> {
 //     info!(
