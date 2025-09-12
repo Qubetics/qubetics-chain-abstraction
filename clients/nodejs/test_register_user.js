@@ -10,7 +10,7 @@ const RPC_BASE_URL = process.env.RPC_BASE_URL || 'http://127.0.8.1:8082';
 
 // 👉 Private key you provided (hex, no 0x prefix needed)
 const TEST_PRIVKEY = '415c01d63918df986d1d537f9b5974f383cac3b4fe9edc44f58f09bdfc5f672a';
-let TEST_TX_ID = "0x5d5f8240544eba78ff00cf158c39d44daaaf7e99bda830cbbcf973d2597a1498";
+let TEST_TX_ID = "0x610cb626a386b3f99395252149f8f77d845729918fa286a21681843f714a01ab";
 
 // =========================
 // Colors for console output
@@ -149,9 +149,9 @@ async function testUserMpcDeposit({ wallet, amount }) {
     // Construct DepositIntent
     const depositIntent = {
       source_address: userInfo.data.derived_eth_address, // Use canonical address
-      target_address: '0x94C8F147767702EC8020E5c616964c72a837C88d',
+      target_address: 'n1f5qYrCUSakSHBxyNLnDFetp5LNTaYjKw',
       source_chain: 'qubetics',
-      target_chain: 'qubetics',
+      target_chain: 'bitcoin',
       amount: amount, // Use the passed amount parameter
       source_token: 'TICS',
       target_token: 'TICS',
@@ -432,13 +432,13 @@ async function runTests() {
 
   // 3) MPC deposit test WITHOUT tx_id (should pass Some(signer) to handle_deposit_intent)
   log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
-  const amount = 10342322432; // keep safe for JSON
+  const amount = 1000323078032; // keep safe for JSON
   await testUserMpcDeposit({ wallet, amount }); 
 
-  await new Promise(r => setTimeout(r, 10000));
+  // await new Promise(r => setTimeout(r, 10000));
   // 4) MPC deposit test WITHOUT tx_id and status
-  log(`\n🧪 Test 2: Deposit amount WITHOUT tx_id and status`, 'blue');
-  await testUserMpcDeposit({ wallet, amount }); 
+  // log(`\n🧪 Test 2: Deposit amount WITHOUT tx_id and status`, 'blue');
+  // await testUserMpcDeposit({ wallet, amount });   
 
   // // 5) MPC deposit test with potentially problematic amount (might trigger errors)
   // log(`\n🧪 Test 3: Large deposit amount (might trigger errors)`, 'blue');

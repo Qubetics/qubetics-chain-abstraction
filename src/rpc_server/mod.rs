@@ -693,7 +693,7 @@ fn convert_src_smallest_to_dst_smallest(
     };
 
     // Convert to whole units using actual decimals
-    let src_whole = adjusted_amount / pow10_dec(src_dec);
+    let src_whole = adjusted_amount ;
     info!("  📏 Converted to whole units: {} / 10^{} = {}", adjusted_amount, src_dec, src_whole);
 
     // Apply price conversion
