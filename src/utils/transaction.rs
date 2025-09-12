@@ -1,7 +1,6 @@
 use crate::chain::{
-
-    BitcoinInput, BitcoinOutput, BitcoinTransaction, BitcoinWitness, BitcoinWitnessInput,
-    BitcoinWitnessUtxo, ChainTransaction, EthereumTransaction,
+    BitcoinInput, BitcoinOutput, BitcoinTransaction, BitcoinWitnessUtxo, ChainTransaction,
+    EthereumTransaction,
 };
 use crate::rpc_server::{ContractTransaction, DepositIntent, DummyTransaction};
 use crate::utils::get_eth_address_from_group_key;
@@ -193,7 +192,11 @@ pub struct EnhancedUtxo {
 }
 
 /// Fetch detailed UTXO information including script details
-pub async fn fetch_detailed_bitcoin_utxo(txid: &str, vout: u32, is_testnet: bool) -> Result<EnhancedUtxo> {
+pub async fn fetch_detailed_bitcoin_utxo(
+    txid: &str,
+    vout: u32,
+    is_testnet: bool,
+) -> Result<EnhancedUtxo> {
     let base_url = if is_testnet {
         "https://blockstream.info/testnet/api"
     } else {
@@ -212,15 +215,20 @@ pub async fn fetch_detailed_bitcoin_utxo(txid: &str, vout: u32, is_testnet: bool
     }
 
     let tx_data: serde_json::Value = response.json().await?;
-    let vouts = tx_data["vout"].as_array()
+    let vouts = tx_data["vout"]
+        .as_array()
         .ok_or_else(|| anyhow::anyhow!("Invalid transaction format"))?;
 
     if vout as usize >= vouts.len() {
-        return Err(anyhow::anyhow!("VOUT {} not found in transaction {}", vout, txid));
+        return Err(anyhow::anyhow!(
+            "VOUT {} not found in transaction {}",
+            vout,
+            txid
+        ));
     }
 
     let vout_data = &vouts[vout as usize];
-    
+
     Ok(EnhancedUtxo {
         txid: txid.to_string(),
         vout,
@@ -232,8 +240,12 @@ pub async fn fetch_detailed_bitcoin_utxo(txid: &str, vout: u32, is_testnet: bool
             block_time: None,
         },
         scriptpubkey: vout_data["scriptpubkey"].as_str().map(|s| s.to_string()),
-        scriptpubkey_type: vout_data["scriptpubkey_type"].as_str().map(|s| s.to_string()),
-        scriptpubkey_address: vout_data["scriptpubkey_address"].as_str().map(|s| s.to_string()),
+        scriptpubkey_type: vout_data["scriptpubkey_type"]
+            .as_str()
+            .map(|s| s.to_string()),
+        scriptpubkey_address: vout_data["scriptpubkey_address"]
+            .as_str()
+            .map(|s| s.to_string()),
     })
 }
 
@@ -247,7 +259,7 @@ pub async fn validate_p2pkh_prevout(
 ) -> Result<()> {
     // Fetch detailed prevout information
     let enhanced_utxo = fetch_detailed_bitcoin_utxo(&utxo.txid, utxo.vout, is_testnet).await?;
-    
+
     // Log prevout checkpoint
     tracing::info!(
         "🔍 [PREVOUT_CHECKPOINT] vin={}, prevout={}:{}, scriptpubkey_type={:?}, scriptpubkey={:?}, value={} sats",
@@ -270,7 +282,7 @@ pub async fn validate_p2pkh_prevout(
 
     // Derive P2PKH address from our signing pubkey
     let derived_address = derive_p2pkh_address_from_pubkey(signing_pubkey, is_testnet)?;
-    
+
     tracing::info!(
         "🔍 [PREVOUT_CHECKPOINT] derived_p2pkh_from_pubkey={}, prevout_address={:?}",
         derived_address,
@@ -279,7 +291,7 @@ pub async fn validate_p2pkh_prevout(
 
     // Check if prevout belongs to our key
     let matches_prevout = enhanced_utxo.scriptpubkey_address.as_deref() == Some(&derived_address);
-    
+
     tracing::info!(
         "🔍 [PREVOUT_CHECKPOINT] matches_prevout_address={}",
         matches_prevout
@@ -307,7 +319,7 @@ pub async fn validate_p2pkh_prevout(
 
 /// Derive P2PKH address from compressed public key
 fn derive_p2pkh_address_from_pubkey(pubkey: &[u8], is_testnet: bool) -> Result<String> {
-    use bitcoin::hashes::{sha256, hash160, Hash};
+    use bitcoin::hashes::{hash160, Hash};
     use bitcoin::{Address, Network};
 
     if pubkey.len() != 33 {
@@ -338,61 +350,89 @@ pub async fn verify_utxo_exists(txid: &str, vout: u32, is_testnet: bool) -> Resu
     };
 
     let url = format!("{}/tx/{}/outspend/{}", base_url, txid, vout);
-    
+
     let client = reqwest::Client::new();
     let response = client.get(&url).send().await?;
-    
+
     match response.status().as_u16() {
         200 => {
             // UTXO exists, check if it's spent
             let outspend: serde_json::Value = response.json().await?;
-            let is_spent = outspend.get("spent").and_then(|v| v.as_bool()).unwrap_or(false);
+            let is_spent = outspend
+                .get("spent")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             Ok(!is_spent) // Return true if not spent (spendable)
-        },
+        }
         404 => {
             // UTXO doesn't exist
             tracing::warn!("⚠️ [UTXO_VERIFY] UTXO {}:{} does not exist", txid, vout);
             Ok(false)
-        },
+        }
         _ => {
-            tracing::error!("❌ [UTXO_VERIFY] Failed to verify UTXO {}:{}: HTTP {}", txid, vout, response.status());
-            Err(anyhow::anyhow!("Failed to verify UTXO: HTTP {}", response.status()))
+            tracing::error!(
+                "❌ [UTXO_VERIFY] Failed to verify UTXO {}:{}: HTTP {}",
+                txid,
+                vout,
+                response.status()
+            );
+            Err(anyhow::anyhow!(
+                "Failed to verify UTXO: HTTP {}",
+                response.status()
+            ))
         }
     }
 }
 
 /// Verify multiple UTXOs in parallel
-pub async fn verify_utxos_exist(utxos: &[BitcoinUtxo], is_testnet: bool) -> Result<Vec<BitcoinUtxo>> {
+pub async fn verify_utxos_exist(
+    utxos: &[BitcoinUtxo],
+    is_testnet: bool,
+) -> Result<Vec<BitcoinUtxo>> {
     use futures::future::join_all;
-    
-    let verification_futures: Vec<_> = utxos.iter()
+
+    let verification_futures: Vec<_> = utxos
+        .iter()
         .map(|utxo| verify_utxo_exists(&utxo.txid, utxo.vout, is_testnet))
         .collect();
-    
+
     let results = join_all(verification_futures).await;
-    
+
     let mut verified_utxos = Vec::new();
     for (utxo, result) in utxos.iter().zip(results.iter()) {
         match result {
             Ok(true) => {
-                tracing::debug!("✅ [UTXO_VERIFY] UTXO {}:{} is spendable", utxo.txid, utxo.vout);
+                tracing::debug!(
+                    "✅ [UTXO_VERIFY] UTXO {}:{} is spendable",
+                    utxo.txid,
+                    utxo.vout
+                );
                 verified_utxos.push(utxo.clone());
-            },
+            }
             Ok(false) => {
-                tracing::warn!("⚠️ [UTXO_VERIFY] UTXO {}:{} is spent or doesn't exist", utxo.txid, utxo.vout);
-            },
+                tracing::warn!(
+                    "⚠️ [UTXO_VERIFY] UTXO {}:{} is spent or doesn't exist",
+                    utxo.txid,
+                    utxo.vout
+                );
+            }
             Err(e) => {
-                tracing::error!("❌ [UTXO_VERIFY] Failed to verify UTXO {}:{}: {}", utxo.txid, utxo.vout, e);
+                tracing::error!(
+                    "❌ [UTXO_VERIFY] Failed to verify UTXO {}:{}: {}",
+                    utxo.txid,
+                    utxo.vout,
+                    e
+                );
             }
         }
     }
-    
+
     tracing::info!(
         "🔍 [UTXO_VERIFY] Verified {} spendable UTXOs out of {} checked",
         verified_utxos.len(),
         utxos.len()
     );
-    
+
     Ok(verified_utxos)
 }
 
@@ -403,17 +443,29 @@ pub async fn fetch_and_verify_utxos_with_retry(
     max_retries: u32,
 ) -> Result<Vec<BitcoinUtxo>> {
     let mut last_error = None;
-    
+
     for attempt in 1..=max_retries {
-        tracing::info!("🔄 [UTXO_RETRY] Attempt {}/{} to fetch spendable UTXOs for {}", attempt, max_retries, address);
-        
+        tracing::info!(
+            "🔄 [UTXO_RETRY] Attempt {}/{} to fetch spendable UTXOs for {}",
+            attempt,
+            max_retries,
+            address
+        );
+
         match fetch_and_verify_utxos_once(address, is_testnet).await {
             Ok(utxos) if !utxos.is_empty() => {
-                tracing::info!("✅ [UTXO_RETRY] Successfully found {} spendable UTXOs on attempt {}", utxos.len(), attempt);
+                tracing::info!(
+                    "✅ [UTXO_RETRY] Successfully found {} spendable UTXOs on attempt {}",
+                    utxos.len(),
+                    attempt
+                );
                 return Ok(utxos);
             }
             Ok(_) => {
-                let error_msg = format!("No spendable UTXOs available for address {} on attempt {}", address, attempt);
+                let error_msg = format!(
+                    "No spendable UTXOs available for address {} on attempt {}",
+                    address, attempt
+                );
                 tracing::warn!("⚠️ [UTXO_RETRY] {}", error_msg);
                 last_error = Some(anyhow::anyhow!(error_msg));
             }
@@ -422,18 +474,27 @@ pub async fn fetch_and_verify_utxos_with_retry(
                 last_error = Some(e);
             }
         }
-        
+
         if attempt < max_retries {
             let delay_seconds = attempt * 2; // Exponential backoff: 2s, 4s, 6s
-            tracing::info!("⏳ [UTXO_RETRY] Waiting {} seconds before retry...", delay_seconds);
+            tracing::info!(
+                "⏳ [UTXO_RETRY] Waiting {} seconds before retry...",
+                delay_seconds
+            );
             tokio::time::sleep(tokio::time::Duration::from_secs(delay_seconds as u64)).await;
         }
     }
-    
+
     // All retries failed
-    let final_error = last_error.unwrap_or_else(|| anyhow::anyhow!("Unknown error during UTXO fetch"));
-    tracing::error!("❌ [UTXO_RETRY] All {} attempts failed for address {}. Final error: {}", max_retries, address, final_error);
-    
+    let final_error =
+        last_error.unwrap_or_else(|| anyhow::anyhow!("Unknown error during UTXO fetch"));
+    tracing::error!(
+        "❌ [UTXO_RETRY] All {} attempts failed for address {}. Final error: {}",
+        max_retries,
+        address,
+        final_error
+    );
+
     Err(anyhow::anyhow!(
         "Failed to fetch spendable UTXOs for address {} after {} attempts. Last error: {}",
         address,
@@ -447,15 +508,19 @@ async fn fetch_and_verify_utxos_once(address: &str, is_testnet: bool) -> Result<
     // Fetch UTXOs from API
     let raw_utxos = fetch_bitcoin_utxos(address, is_testnet).await?;
     tracing::debug!("🔍 [UTXO_FETCH] Fetched {} raw UTXOs", raw_utxos.len());
-    
+
     if raw_utxos.is_empty() {
         return Ok(vec![]); // No UTXOs available
     }
-    
+
     // Verify UTXOs exist and are spendable
     let verified_utxos = verify_utxos_exist(&raw_utxos, is_testnet).await?;
-    tracing::debug!("🔍 [UTXO_VERIFY] Verified {} spendable UTXOs out of {} raw", verified_utxos.len(), raw_utxos.len());
-    
+    tracing::debug!(
+        "🔍 [UTXO_VERIFY] Verified {} spendable UTXOs out of {} raw",
+        verified_utxos.len(),
+        raw_utxos.len()
+    );
+
     Ok(verified_utxos)
 }
 
@@ -479,34 +544,50 @@ pub fn select_utxos_for_amount(
         .filter(|utxo| {
             // Must be confirmed
             if !utxo.status.confirmed {
-                tracing::debug!("🔍 [UTXO_FILTER] Skipping unconfirmed UTXO: {}:{}", utxo.txid, utxo.vout);
+                tracing::debug!(
+                    "🔍 [UTXO_FILTER] Skipping unconfirmed UTXO: {}:{}",
+                    utxo.txid,
+                    utxo.vout
+                );
                 return false;
             }
-            
+
             // Must have valid txid (64 hex characters)
             if utxo.txid.len() != 64 {
-                tracing::warn!("⚠️ [UTXO_FILTER] Skipping UTXO with invalid txid length: {}", utxo.txid);
+                tracing::warn!(
+                    "⚠️ [UTXO_FILTER] Skipping UTXO with invalid txid length: {}",
+                    utxo.txid
+                );
                 return false;
             }
-            
+
             // Must have non-zero value
             if utxo.value == 0 {
-                tracing::warn!("⚠️ [UTXO_FILTER] Skipping UTXO with zero value: {}:{}", utxo.txid, utxo.vout);
+                tracing::warn!(
+                    "⚠️ [UTXO_FILTER] Skipping UTXO with zero value: {}:{}",
+                    utxo.txid,
+                    utxo.vout
+                );
                 return false;
             }
-            
-            tracing::debug!("✅ [UTXO_FILTER] Valid UTXO: {}:{} ({} sats)", utxo.txid, utxo.vout, utxo.value);
+
+            tracing::debug!(
+                "✅ [UTXO_FILTER] Valid UTXO: {}:{} ({} sats)",
+                utxo.txid,
+                utxo.vout,
+                utxo.value
+            );
             true
         })
         .collect();
 
     if available_utxos.is_empty() {
         return Err(anyhow::anyhow!(
-            "No valid confirmed UTXOs available from {} total UTXOs", 
+            "No valid confirmed UTXOs available from {} total UTXOs",
             utxos.len()
         ));
     }
-    
+
     tracing::info!(
         "🔍 [UTXO_SELECTION] Filtered to {} valid confirmed UTXOs from {} total",
         available_utxos.len(),
@@ -540,11 +621,12 @@ pub fn select_utxos_for_amount(
     Ok((selected_utxos, total_value))
 }
 
-
-
 /// Extract UTXO identifiers from selected UTXOs for tracking
 pub fn extract_utxo_identifiers(utxos: &[BitcoinUtxo]) -> Vec<(String, u32)> {
-    utxos.iter().map(|utxo| (utxo.txid.clone(), utxo.vout)).collect()
+    utxos
+        .iter()
+        .map(|utxo| (utxo.txid.clone(), utxo.vout))
+        .collect()
 }
 
 /// Create a UTXO consolidation transaction to merge small UTXOs
@@ -554,12 +636,15 @@ pub async fn create_utxo_consolidation_transaction(
     max_inputs: usize,
     min_utxo_value: u64,
 ) -> Result<ChainTransaction> {
-    tracing::info!("🔄 [CONSOLIDATION] Creating UTXO consolidation transaction for {}", from_address);
-    
+    tracing::info!(
+        "🔄 [CONSOLIDATION] Creating UTXO consolidation transaction for {}",
+        from_address
+    );
+
     // Validate address format
     if !is_p2pkh_address(from_address) {
         return Err(anyhow::anyhow!(
-            "Only P2PKH addresses (1.../m.../n...) are supported for consolidation, got: {}", 
+            "Only P2PKH addresses (1.../m.../n...) are supported for consolidation, got: {}",
             from_address
         ));
     }
@@ -569,9 +654,11 @@ pub async fn create_utxo_consolidation_transaction(
     // Fetch UTXOs for the address
     let raw_utxos = fetch_bitcoin_utxos(from_address, is_testnet).await?;
     let utxos = verify_utxos_exist(&raw_utxos, is_testnet).await?;
-    
+
     if utxos.is_empty() {
-        return Err(anyhow::anyhow!("No spendable UTXOs available for consolidation"));
+        return Err(anyhow::anyhow!(
+            "No spendable UTXOs available for consolidation"
+        ));
     }
 
     // Filter for small UTXOs that should be consolidated
@@ -579,7 +666,7 @@ pub async fn create_utxo_consolidation_transaction(
         .into_iter()
         .filter(|utxo| utxo.value <= min_utxo_value && utxo.status.confirmed)
         .collect();
-    
+
     if small_utxos.is_empty() {
         return Err(anyhow::anyhow!("No small UTXOs found for consolidation"));
     }
@@ -595,8 +682,9 @@ pub async fn create_utxo_consolidation_transaction(
 
     if total_input_value <= estimated_fee {
         return Err(anyhow::anyhow!(
-            "Total input value ({} sats) is less than estimated fee ({} sats)", 
-            total_input_value, estimated_fee
+            "Total input value ({} sats) is less than estimated fee ({} sats)",
+            total_input_value,
+            estimated_fee
         ));
     }
 
@@ -617,9 +705,9 @@ pub async fn create_utxo_consolidation_transaction(
             BitcoinInput {
                 txid: utxo.txid.clone(),
                 vout: utxo.vout,
-                script_sig: vec![],   // Will be filled during signing with <signature> <pubkey>
+                script_sig: vec![], // Will be filled during signing with <signature> <pubkey>
                 sequence: 0xFFFFFFFD, // Enable RBF
-                witness_utxo: None,   // No witness data for P2PKH
+                witness_utxo: None, // No witness data for P2PKH
             }
         })
         .collect();
@@ -638,7 +726,10 @@ pub async fn create_utxo_consolidation_transaction(
         witness: None, // No witness data for P2PKH
     };
 
-    tracing::info!("✅ [CONSOLIDATION] Created consolidation transaction with {} inputs -> 1 output", small_utxos.len());
+    tracing::info!(
+        "✅ [CONSOLIDATION] Created consolidation transaction with {} inputs -> 1 output",
+        small_utxos.len()
+    );
     Ok(ChainTransaction::Bitcoin(bitcoin_tx))
 }
 
@@ -714,27 +805,27 @@ pub async fn fetch_ethereum_nonce(address: &str, chain_id: u64) -> Result<u64> {
 }
 
 /// Create a chain-specific transaction from a deposit intent with optional UTXO conflict prevention
-pub async fn create_chain_transaction_from_deposit_intent_with_utxo_check(
-    intent: &DepositIntent,
-    group_public_key: Option<k256::ProjectivePoint>,
-    derived_eth_addr: Option<&String>,
-    derived_btc_addr: Option<&String>,
-    transaction_type: crate::types::TransactionType,
-    vault_eth_address: Option<&String>,
-    vault_btc_address: Option<&String>,
-    user_registry: Option<&crate::user_registry::DatabaseUserRegistry>,
-) -> Result<ChainTransaction> {
-    create_chain_transaction_from_deposit_intent_internal(
-        intent,
-        group_public_key,
-        derived_eth_addr,
-        derived_btc_addr,
-        transaction_type,
-        vault_eth_address,
-        vault_btc_address,
-        user_registry,
-    ).await
-}
+// pub async fn create_chain_transaction_from_deposit_intent_with_utxo_check(
+//     intent: &DepositIntent,
+//     group_public_key: Option<k256::ProjectivePoint>,
+//     derived_eth_addr: Option<&String>,
+//     derived_btc_addr: Option<&String>,
+//     transaction_type: crate::types::TransactionType,
+//     vault_eth_address: Option<&String>,
+//     vault_btc_address: Option<&String>,
+//     user_registry: Option<&crate::user_registry::DatabaseUserRegistry>,
+// ) -> Result<ChainTransaction> {
+//     create_chain_transaction_from_deposit_intent_internal(
+//         intent,
+//         group_public_key,
+//         derived_eth_addr,
+//         derived_btc_addr,
+//         transaction_type,
+//         vault_eth_address,
+//         vault_btc_address,
+//         user_registry,
+//     ).await
+// }
 
 /// Create a chain-specific transaction from a deposit intent (legacy function for backward compatibility)
 /// Estimate gas for a call using eth_estimateGas
@@ -827,7 +918,9 @@ pub async fn create_chain_transaction_from_deposit_intent(
         vault_eth_address,
         vault_btc_address,
         None,
-    ).await
+        amount,
+    )
+    .await
 }
 
 /// Internal implementation of transaction creation with optional UTXO checking
@@ -840,6 +933,7 @@ async fn create_chain_transaction_from_deposit_intent_internal(
     vault_eth_address: Option<&String>,
     vault_btc_address: Option<&String>,
     _user_registry: Option<&crate::user_registry::DatabaseUserRegistry>,
+    amount: u128,
 ) -> Result<ChainTransaction> {
     // Determine chain type based on transaction type:
     // - UserToVault: use source_chain (user is depositing FROM this chain)
@@ -968,7 +1062,7 @@ async fn create_chain_transaction_from_deposit_intent_internal(
                 from_address
             ));
         }
-        
+
         if !is_p2pkh_address(&to_address) {
             return Err(anyhow::anyhow!(
                 "Destination address '{}' is not supported. Only P2PKH addresses (1.../m.../n...) are supported.", 
@@ -980,11 +1074,19 @@ async fn create_chain_transaction_from_deposit_intent_internal(
 
         // Fetch UTXOs for the source address
         let raw_utxos = fetch_bitcoin_utxos(&from_address, is_testnet).await?;
-        tracing::info!("Fetched {} UTXOs for address {}", raw_utxos.len(), from_address);
-        
+        tracing::info!(
+            "Fetched {} UTXOs for address {}",
+            raw_utxos.len(),
+            from_address
+        );
+
         // Verify UTXOs actually exist and are spendable to prevent -25 errors with retry logic
         let utxos = fetch_and_verify_utxos_with_retry(&from_address, is_testnet, 3).await?;
-        tracing::info!("Final verified {} spendable UTXOs for address {}", utxos.len(), from_address);
+        tracing::info!(
+            "Final verified {} spendable UTXOs for address {}",
+            utxos.len(),
+            from_address
+        );
 
         // Convert amount from wei to satoshis (assuming 1:1 conversion for now, you might want to adjust this)
         let amount_satoshis = (amount) as u64;
@@ -992,7 +1094,8 @@ async fn create_chain_transaction_from_deposit_intent_internal(
 
         // Select UTXOs that provide enough value, excluding any that are pending
         // Select UTXOs for the transaction
-        let (selected_utxos, total_input_value) = select_utxos_for_amount(&utxos, amount_satoshis, estimated_fee)?;
+        let (selected_utxos, total_input_value) =
+            select_utxos_for_amount(&utxos, amount_satoshis, estimated_fee)?;
 
         tracing::info!(
             "Selected {} UTXOs with total value {} satoshis for transaction of {} satoshis (fee: {})",
@@ -1001,7 +1104,7 @@ async fn create_chain_transaction_from_deposit_intent_internal(
             amount_satoshis,
             estimated_fee
         );
-        
+
         // Log the specific UTXOs we're about to spend for debugging
         tracing::info!("📋 [TRANSACTION] UTXOs selected for spending:");
         for (i, utxo) in selected_utxos.iter().enumerate() {
@@ -1017,41 +1120,16 @@ async fn create_chain_transaction_from_deposit_intent_internal(
 
         // Create inputs from selected UTXOs (P2PKH only)
         let inputs: Vec<BitcoinInput> = selected_utxos
-        .iter()
-        .map(|utxo| {
-            // P2PKH inputs don't use witness data
-            BitcoinInput {
-                txid: utxo.txid.clone(),
-                vout: utxo.vout,
-                script_sig: vec![],   // Will be filled during signing with <signature> <pubkey>
-                sequence: 0xFFFFFFFD, // Enable RBF (Replace-By-Fee)
-                witness_utxo: None,   // No witness data for P2PKH
-            }
-        })
-        .collect();
             .iter()
             .map(|utxo| {
-                let address_type = detect_bitcoin_address_type(&from_address);
-                let witness_utxo = match address_type {
-                    DetectedAddressType::P2WPKH
-                    | DetectedAddressType::P2WSH
-                    | DetectedAddressType::P2TR => {
-                        // For SegWit inputs, we need witness UTXO information
-                        Some(BitcoinWitnessUtxo {
-                            value: utxo.value,
-                            script_pubkey: create_bitcoin_script_pubkey(&from_address)
-                                .unwrap_or_default(),
-                        })
-                    }
-                    _ => None, // Legacy inputs don't need witness UTXO
-                };
-
+                // For P2PKH (legacy) transactions, we don't need witness_utxo
+                // The witness_utxo field should be None for legacy P2PKH inputs
                 BitcoinInput {
                     txid: utxo.txid.clone(),
                     vout: utxo.vout,
-                    script_sig: vec![],   // Will be filled during signing
+                    script_sig: vec![], // Will be filled during signing with <signature> <pubkey>
                     sequence: 0xfffffffe, // Enable RBF (Replace-By-Fee)
-                    witness_utxo,
+                    witness_utxo: None, // No witness data for P2PKH legacy transactions
                 }
             })
             .collect();
@@ -1073,20 +1151,20 @@ async fn create_chain_transaction_from_deposit_intent_internal(
         }
 
         // P2PKH transactions don't use witness data
-//         // Determine if we need witness data based on input address types
-//         let needs_witness = inputs.iter().any(|input| input.witness_utxo.is_some());
-//         let witness = if needs_witness {
-//             Some(BitcoinWitness {
-//                 inputs: inputs
-//                     .iter()
-//                     .map(|_| BitcoinWitnessInput {
-//                         stack: vec![], // Will be filled during signing
-//                     })
-//                     .collect(),
-//             })
-//         } else {
-//             None
-//         };
+        //         // Determine if we need witness data based on input address types
+        //         let needs_witness = inputs.iter().any(|input| input.witness_utxo.is_some());
+        //         let witness = if needs_witness {
+        //             Some(BitcoinWitness {
+        //                 inputs: inputs
+        //                     .iter()
+        //                     .map(|_| BitcoinWitnessInput {
+        //                         stack: vec![], // Will be filled during signing
+        //                     })
+        //                     .collect(),
+        //             })
+        //         } else {
+        //             None
+        //         };
 
         let bitcoin_tx = BitcoinTransaction {
             inputs,
@@ -1396,7 +1474,7 @@ pub fn get_default_gas_price_for_chain(chain_name: &str) -> String {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum DetectedAddressType {
-    P2PKH, // Legacy P2PKH (1... mainnet, m.../n... testnet) - ONLY SUPPORTED TYPE
+    P2PKH,       // Legacy P2PKH (1... mainnet, m.../n... testnet) - ONLY SUPPORTED TYPE
     Unsupported, // All other types are unsupported
 }
 
@@ -1413,15 +1491,16 @@ fn detect_bitcoin_address_type(address: &str) -> DetectedAddressType {
 fn is_p2pkh_address(address: &str) -> bool {
     // Mainnet P2PKH: starts with '1'
     // Testnet P2PKH: starts with 'm' or 'n'
-    (address.starts_with('1') && address.len() >= 26 && address.len() <= 35) ||
-    ((address.starts_with('m') || address.starts_with('n')) && address.len() >= 26 && address.len() <= 35)
+    (address.starts_with('1') && address.len() >= 26 && address.len() <= 35)
+        || ((address.starts_with('m') || address.starts_with('n'))
+            && address.len() >= 26
+            && address.len() <= 35)
 }
 
 /// Check if address is testnet P2PKH
 fn is_testnet_p2pkh_address(address: &str) -> bool {
     address.starts_with('m') || address.starts_with('n')
 }
-
 
 fn create_bitcoin_script_pubkey(address: &str) -> Result<Vec<u8>> {
     use bitcoin::{Address, Network};
@@ -1433,7 +1512,10 @@ fn create_bitcoin_script_pubkey(address: &str) -> Result<Vec<u8>> {
 
     // Only support P2PKH addresses
     if !is_p2pkh_address(address) {
-        return Err(anyhow::anyhow!("Only P2PKH addresses (1.../m.../n...) are supported, got: {}", address));
+        return Err(anyhow::anyhow!(
+            "Only P2PKH addresses (1.../m.../n...) are supported, got: {}",
+            address
+        ));
     }
 
     // Determine network from P2PKH address prefix
@@ -1460,13 +1542,13 @@ fn create_bitcoin_script_pubkey(address: &str) -> Result<Vec<u8>> {
                 "✅ [TRANSACTION] Address {} is P2PKH (Legacy) - supported",
                 address
             );
-        },
+        }
         DetectedAddressType::Unsupported => {
             return Err(anyhow::anyhow!(
                 "Unsupported Bitcoin address type: {}. Only P2PKH addresses (1.../m.../n...) are supported.",
                 address
             ));
-        },
+        }
     }
 
     Ok(script_bytes)
@@ -1477,10 +1559,10 @@ pub fn create_legacy_bitcoin_sighash(
     tx: &BitcoinTransaction,
     input_index: usize,
     script_code: &[u8], // The prevout's scriptPubKey for P2PKH
-    sighash_type: u8, // Usually 0x01 for SIGHASH_ALL
+    sighash_type: u8,   // Usually 0x01 for SIGHASH_ALL
 ) -> Result<[u8; 32]> {
-    use sha2::{Sha256, Digest};
-    
+    use sha2::{Digest, Sha256};
+
     if input_index >= tx.inputs.len() {
         return Err(anyhow::anyhow!("Input index {} out of bounds", input_index));
     }
@@ -1496,8 +1578,8 @@ pub fn create_legacy_bitcoin_sighash(
     // Inputs
     for (i, input) in tx.inputs.iter().enumerate() {
         // Previous output hash (32 bytes, little-endian)
-        let txid_bytes = hex::decode(&input.txid)
-            .map_err(|e| anyhow::anyhow!("Invalid txid hex: {}", e))?;
+        let txid_bytes =
+            hex::decode(&input.txid).map_err(|e| anyhow::anyhow!("Invalid txid hex: {}", e))?;
         if txid_bytes.len() != 32 {
             return Err(anyhow::anyhow!("Invalid txid length: {}", txid_bytes.len()));
         }
@@ -1554,10 +1636,7 @@ pub fn create_legacy_bitcoin_sighash(
     let second_hash = Sha256::digest(&first_hash);
     let digest: [u8; 32] = second_hash.into();
 
-    tracing::info!(
-        "🔍 [SIGHASH_CHECKPOINT] digest32={}",
-        hex::encode(&digest)
-    );
+    tracing::info!("🔍 [SIGHASH_CHECKPOINT] digest32={}", hex::encode(&digest));
 
     Ok(digest)
 }
@@ -1578,10 +1657,9 @@ pub fn normalize_and_encode_signature(r: &[u8], s: &[u8]) -> Result<Vec<u8>> {
 
     // Get curve order n (secp256k1 order)
     let n_bytes = [
-        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFE,
-        0xBA, 0xAE, 0xDC, 0xE6, 0xAF, 0x48, 0xA0, 0x3B,
-        0xBF, 0xD2, 0x5E, 0x8C, 0xD0, 0x36, 0x41, 0x41
+        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+        0xFE, 0xBA, 0xAE, 0xDC, 0xE6, 0xAF, 0x48, 0xA0, 0x3B, 0xBF, 0xD2, 0x5E, 0x8C, 0xD0, 0x36,
+        0x41, 0x41,
     ];
     let n = Scalar::from_repr(n_bytes.into()).unwrap();
 
@@ -1639,54 +1717,50 @@ fn create_minimal_der_signature(r: &[u8], s: &[u8]) -> Result<Vec<u8>> {
     let s_trimmed = trim_leading_zeros(s);
 
     let mut der = Vec::new();
-    
+
     // SEQUENCE tag
     der.push(0x30);
-    
+
     // Calculate total length
     let r_len = r_trimmed.len();
     let s_len = s_trimmed.len();
     let total_len = 2 + r_len + 2 + s_len; // 2 bytes for each INTEGER header
-    
+
     if total_len > 255 {
         return Err(anyhow::anyhow!("DER signature too long: {}", total_len));
     }
-    
+
     der.push(total_len as u8);
-    
+
     // R INTEGER
     der.push(0x02); // INTEGER tag
     der.push(r_len as u8);
     der.extend_from_slice(&r_trimmed);
-    
-    // S INTEGER  
+
+    // S INTEGER
     der.push(0x02); // INTEGER tag
     der.push(s_len as u8);
     der.extend_from_slice(&s_trimmed);
 
-    tracing::info!(
-        "🔍 [SIGNATURE_CHECKPOINT] R_len={}, S_len={}",
-        r_len,
-        s_len
-    );
+    tracing::info!("🔍 [SIGNATURE_CHECKPOINT] R_len={}, S_len={}", r_len, s_len);
 
     Ok(der)
 }
 
 /// Log comprehensive pre-broadcast transaction details
 pub fn log_pre_broadcast_details(tx: &BitcoinTransaction, tx_bytes: &[u8]) -> String {
-    use sha2::{Sha256, Digest};
-    
+    use sha2::{Digest, Sha256};
+
     // Calculate txid (double SHA256 of raw transaction)
     let first_hash = Sha256::digest(tx_bytes);
     let second_hash = Sha256::digest(&first_hash);
     let mut txid_bytes = second_hash.to_vec();
     txid_bytes.reverse(); // Convert to big-endian for display
     let txid = hex::encode(&txid_bytes);
-    
+
     // Calculate total fee (assuming we have input values available)
     let total_output_value: u64 = tx.outputs.iter().map(|o| o.value).sum();
-    
+
     tracing::info!(
         "🚀 [PRE_BROADCAST] txid={}, raw_tx_byte_length={}, num_inputs={}, num_outputs={}, total_output_value={}",
         txid,

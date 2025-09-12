@@ -513,38 +513,18 @@ impl SigningNode {
 
         let client = reqwest::Client::new();
 
-        let response = if url.contains("blockcypher.com") {
-            let payload = serde_json::json!({ "tx": raw_tx_hex });
-            client.post(&url)
-                .header("Content-Type", "application/json")
-                .header("User-Agent", "sigg_gen_agg/0.1.0")
-                .json(&payload)
-                .send()
-                .await?
-        } else {
-            client.post(&url)
-                .header("Content-Type", "text/plain")
-                .header("User-Agent", "sigg_gen_agg/0.1.0")
-                .body(raw_tx_hex.to_string())
-                .send()
-                .await?
-        };
+        // Use Blockstream API format (raw transaction hex in body)
+        let response = client.post(&url)
+            .header("Content-Type", "text/plain")
+            .header("User-Agent", "sigg_gen_agg/0.1.0")
+            .body(raw_tx_hex.to_string())
+            .send()
+            .await?;
 
         if response.status().is_success() {
-            if url.contains("blockcypher.com") {
-                let result: serde_json::Value = response.json().await?;
-                if let Some(tx_hash) = result.get("hash").and_then(|v| v.as_str()) {
-                    info!("✅ Transaction broadcasted successfully! TXID: {}", tx_hash);
-                    Ok(Some(tx_hash.to_string()))
-                } else {
-                    info!("✅ Transaction broadcasted successfully");
-                    Ok(None)
-                }
-            } else {
-                let txid = response.text().await?;
-                info!("✅ Transaction broadcasted successfully! TXID: {}", txid);
-                Ok(Some(txid.trim().to_string()))
-            }
+            let txid = response.text().await?;
+            info!("✅ Transaction broadcasted successfully! TXID: {}", txid);
+            Ok(Some(txid.trim().to_string()))
         } else {
             let error_text = response.text().await?;
             error!("❌ Failed to broadcast transaction: {}", error_text);

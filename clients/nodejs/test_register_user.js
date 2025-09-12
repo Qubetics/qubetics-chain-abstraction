@@ -10,7 +10,7 @@ const RPC_BASE_URL = process.env.RPC_BASE_URL || 'http://localhost:8082';
 
 // 👉 Private key you provided (hex, no 0x prefix needed)
 const TEST_PRIVKEY = '415c01d63918df986d1d537f9b5974f383cac3b4fe9edc44f58f09bdfc5f672a';
-let TEST_TX_ID = "0x68bebab82c69d5ebf9748b278d0d8b9c2e83d7130bb9e97376b372c5504a94b1";
+let TEST_TX_ID = "0x5d5f8240544eba78ff00cf158c39d44daaaf7e99bda830cbbcf973d2597a1498";
 
 // =========================
 // Colors for console output
@@ -25,7 +25,7 @@ const colors = {
   green: '\x1b[32m'
 };
 
-const oooo = 12537513
+const oooo = 125323237513
 
 function log(message, color = 'reset') {
   console.log(`${colors[color]}${message}${colors.reset}`);
@@ -148,13 +148,13 @@ async function testUserMpcDeposit({ wallet, amount }) {
 
     // Construct DepositIntent
     const depositIntent = {
-      source_address: userInfo.data.derived_btc_address, // Use canonical address
-      target_address: 'tb1qzxxlpvxx44ak6tasj5ffstr6gj5xrpxzxwrjy3',
-      source_chain: 'bitcoin',
+      source_address: userInfo.data.derived_eth_address, // Use canonical address
+      target_address: 'n1f5qYrCUSakSHBxyNLnDFetp5LNTaYjKw',
+      source_chain: 'qubetics',
       target_chain: 'bitcoin',
       amount: amount, // Use the passed amount parameter
       source_token: 'TICS',
-      target_token: 'TICS',
+      target_token: 'BTC',
       timestamp: oooo, // Current Unix timestamp in seconds
     };
     console.log(`📊 Deposit Intent: ${JSON.stringify(depositIntent)}`, 'cyan');
@@ -282,13 +282,13 @@ async function testUserMpcDepositWithTxId({ wallet, amount, txId, status }) {
     }
 
     const depositIntent = {
-      source_address: userInfo.data.derived_btc_address,
-      target_address: 'tb1qzxxlpvxx44ak6tasj5ffstr6gj5xrpxzxwrjy3',
-      source_chain: 'bitcoin',
+      source_address: userInfo.data.derived_eth_address,
+      target_address: 'n1f5qYrCUSakSHBxyNLnDFetp5LNTaYjKw',
+      source_chain: 'qubetics',
       target_chain: 'bitcoin',
       amount: amount, 
       source_token: 'TICS',
-      target_token: 'TICS',
+      target_token: 'BTC',
       timestamp: oooo,
     };
 
@@ -416,7 +416,7 @@ async function runTests() {
   const signerAddr = await wallet.getAddress();
   log(`\n🔑 Derived signer address from TEST_PRIVKEY: ${signerAddr}`, 'blue');
 
-  // 1) DKG status
+  // // 1) DKG status
   // await testDKGStatus();
 
   // // 2) Register ONLY the derived address 
@@ -430,9 +430,9 @@ async function runTests() {
   //   log(`\n⚠️ Registration failed; continuing to deposit test (is_registered may be false).`, 'yellow');
   // }
 
-  // // 3) MPC deposit test WITHOUT tx_id (should pass Some(signer) to handle_deposit_intent)
+  // 3) MPC deposit test WITHOUT tx_id (should pass Some(signer) to handle_deposit_intent)
   // log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
-  const amount = 20000000000; // keep safe for JSON
+  const amount = 10342322432; // keep safe for JSON
   // await testUserMpcDeposit({ wallet, amount }); 
 
   // await new Promise(r => setTimeout(r, 7000));

@@ -722,22 +722,23 @@ pub async fn handle_deposit_intent(
                 return Err(warp::reject::custom(TransactionError::InvalidRequest));
             };
 
-        let balance = fetch_balance(&address_to_check, &blockchain)
-            .await
-            .map_err(|_| warp::reject::custom(TransactionError::NetworkError))?;
+        // let balance = fetch_balance(&address_to_check, &blockchain)
+        //     .await
+        //     .map_err(|_| warp::reject::custom(TransactionError::NetworkError))?;
 
-        info!(
-            "💰 Balance check: address {} on chain {} has balance {} (required: {})",
-            address_to_check, chain_to_use, balance, required_amount_u128
-        );
+        // info!(
+        //     "💰 Balance check: address {} on chain {} has balance {} (required: {})",
+        //     address_to_check, chain_to_use, balance, required_amount_u128
+        // );
 
-        if balance < required_amount_u128 {
-            warn!(
-                "Insufficient balance for address {} on chain {}: required {}, found {}",
-                address_to_check, chain_to_use, required_amount_u128, balance
-            );
-            return Err(warp::reject::custom(TransactionError::InvalidRequest));
-        }
+        // if balance < required_amount_u128 {
+        //     warn!(
+        //         "Insufficient balance for address {} on chain {}: required {}, found {}",
+        //         address_to_check, chain_to_use, required_amount_u128, balance
+        //     );
+        //     return Err(warp::reject::custom(TransactionError::InvalidRequest));
+        // }
+        
     }
 
     let intent_id = format!("intent-{}", Uuid::new_v4());
@@ -1144,110 +1145,109 @@ async fn fetch_crypto_prices() -> Result<HashMap<String, f64>, String> {
     Ok(prices)
 }
 
-async fn fetch_balance(address: &str, blockchain: &str) -> Result<u128, String> {
-    info!(
-        "Fetching balance for address: {}, blockchain: {}",
-        address, blockchain
-    );
-    let base_url = std::env::var("BACKEND_API_URL")
-        .unwrap_or_else(|_| "http://172.16.15.63:7322".to_string());
-    let url = format!(
-        "{}/api/v1/balance/{}?blockchain={}",
-        base_url,
-        address, blockchain
-    );
+// async fn fetch_balance(address: &str, blockchain: &str) -> Result<u128, String> {
+//     info!(
+//         "Fetching balance for address: {}, blockchain: {}",
+//         address, blockchain
+//     );
+//     let base_url = std::env::var("BACKEND_API_URL")
+//         .unwrap_or_else(|_| "http://172.16.15.63:7322".to_string());
+//     let url = format!(
+//         "{}/api/v1/balance/{}?blockchain={}",
+//         base_url,
+//         address, blockchain
+//     );
 
-    let client = reqwest::Client::new();
-    let resp = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| format!("Failed to fetch balance: {}", e))?;
+//     let client = reqwest::Client::new();
+//     let resp = client
+//         .get(&url)
+//         .send()
+//         .await
+//         .map_err(|e| format!("Failed to fetch balance: {}", e))?;
 
-    info!("Balance API response status: {}", resp.status());
+//     info!("Balance API response status: {}", resp.status());
 
-    let resp_text = resp
-        .text()
-        .await
-        .map_err(|e| format!("Failed to read balance response text: {}", e))?;
+//     let resp_text = resp
+//         .text()
+//         .await
+//         .map_err(|e| format!("Failed to read balance response text: {}", e))?;
 
-    info!("Full balance API response body: {}", resp_text);
+//     info!("Full balance API response body: {}", resp_text);
 
-    // Parse the response text as JSON
-    let resp_json: serde_json::Value = serde_json::from_str(&resp_text)
-        .map_err(|e| format!("Failed to parse balance response: {}", e))?;
+//     // Parse the response text as JSON
+//     let resp_json: serde_json::Value = serde_json::from_str(&resp_text)
+//         .map_err(|e| format!("Failed to parse balance response: {}", e))?;
 
-    info!("Balance API response JSON: {}", resp_json);
+//     info!("Balance API response JSON: {}", resp_json);
 
-    // Determine the multiplier based on blockchain type
-    let multiplier = match blockchain.to_lowercase().as_str() {
-        "eth" | "ethereum" | "qubetics" => 1e18,
-        "btc" | "bitcoin" => 1e8,
-        _ => 1e18, // Default to 1e18 if unknown
-    };
+//     // Determine the multiplier based on blockchain type
+//     let multiplier = match blockchain.to_lowercase().as_str() {
+//         "eth" | "ethereum" | "qubetics" => 1e18,
+//         "btc" | "bitcoin" => 1e8,
+//         _ => 1e18, // Default to 1e18 if unknown
+//     };
 
-    // The new API response has the balance under "data" as a float, so we fetch it and multiply by the correct multiplier
-    let balance_f64 = resp_json
-        .get("data")
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0);
-    let balance_str = format!("{}", (balance_f64 * multiplier).round() as u128);
+//     // The new API response has the balance under "data" as a float, so we fetch it and multiply by the correct multiplier
+//     let balance_f64 = resp_json
+//         .get("data")
+//         .and_then(|v| v.as_f64())
+//         .unwrap_or(0.0);
+//     let balance_str = format!("{}", (balance_f64 * multiplier).round() as u128);
 
-    info!("Parsed balance string: {}", balance_str);
+//     info!("Parsed balance string: {}", balance_str);
 
-    balance_str
-        .parse::<u128>()
-        .map_err(|e| format!("Failed to parse balance value: {}", e))
-}
+//     balance_str
+//         .parse::<u128>()
+//         .map_err(|e| format!("Failed to parse balance value: {}", e))
+// }
 
-/// Check whether a transaction is confirmed on a given chain using the
-/// external transaction confirmation service.
-///
+
 /// Returns `Ok(true)` if the transaction is confirmed, `Ok(false)` if the
 /// transaction is not yet confirmed, and `Err` if the API call fails or returns
+/// 
 /// an unexpected response.
-pub async fn check_tx_confirmation(chain: &str, tx_id: &str) -> anyhow::Result<bool> {
-    // Map common chain aliases to the API expected values
-    let chain_lc = chain.to_lowercase();
-    let api_chain: &str = match chain_lc.as_str() {
-        "btc" | "bitcoin" => "btc",
-        "qubetics" => "eth",
-        other => other,
-    };  
+// pub async fn check_tx_confirmation(chain: &str, tx_id: &str) -> anyhow::Result<bool> {
+//     // Map common chain aliases to the API expected values
+//     let chain_lc = chain.to_lowercase();
+//     let api_chain: &str = match chain_lc.as_str() {
+//         "btc" | "bitcoin" => "btc",
+//         "qubetics" => "eth",
+//         other => other,
+//     };  
 
-    let base_url = std::env::var("BACKEND_API_URL")
-        .unwrap_or_else(|_| "http://172.16.15.63:7322".to_string());
-    let url = format!(
-        "{}/api/v1/tx-confirmation/{}/{}",
-        base_url,
-        api_chain, tx_id
-    );
+//     let base_url = std::env::var("BACKEND_API_URL")
+//         .unwrap_or_else(|_| "http://172.16.15.63:7322".to_string());
+//     let url = format!(
+//         "{}/api/v1/tx-confirmation/{}/{}",
+//         base_url,
+//         api_chain, tx_id
+//     );
 
-    let client = reqwest::Client::new();
-    let resp = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to send tx confirmation request: {}", e))?;
+//     let client = reqwest::Client::new();
+//     let resp = client
+//         .get(&url)
+//         .send()
+//         .await
+//         .map_err(|e| anyhow::anyhow!("Failed to send tx confirmation request: {}", e))?;
 
-    if !resp.status().is_success() {
-        return Err(anyhow::anyhow!(
-            "Tx confirmation API error: {}",
-            resp.status()
-        ));
-    }
+//     if !resp.status().is_success() {
+//         return Err(anyhow::anyhow!(
+//             "Tx confirmation API error: {}",
+//             resp.status()
+//         ));
+//     }
 
-    let json: serde_json::Value = resp
-        .json()
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to parse tx confirmation response: {}", e))?;
+//     let json: serde_json::Value = resp
+//         .json()
+//         .await
+//         .map_err(|e| anyhow::anyhow!("Failed to parse tx confirmation response: {}", e))?;
 
-    let status = json.get("data").and_then(|v| v.as_str()).ok_or_else(|| {
-        anyhow::anyhow!("Missing or invalid 'data' field in tx confirmation response")
-    })?;
+//     let status = json.get("data").and_then(|v| v.as_str()).ok_or_else(|| {
+//         anyhow::anyhow!("Missing or invalid 'data' field in tx confirmation response")
+//     })?;
 
-    Ok(status.eq_ignore_ascii_case("confirmed"))
-}
+//     Ok(status.eq_ignore_ascii_case("confirmed"))
+// }
 
 async fn handle_user_mpc_deposit(
     req: UserMpcDepositRequest,
@@ -1491,36 +1491,36 @@ async fn handle_user_mpc_deposit(
                             )),
                         }));
                     }
-                    let balance = match fetch_balance(&address_to_check, &blockchain).await {
-                        Ok(b) => b,
-                        Err(e) => {
-                            return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
-                                status: "error".to_string(),
-                                signer_address: signer.clone(),
-                                is_registered: true,
-                                amount: 0,
-                                user_to_network_tx_id: None,
-                                network_to_target_tx_id: None,
-                                vault_to_network_tx_id: None,
-                                error_message: Some(e),
-                            }));
-                        }
-                    };
-                    if balance < min_amount {
-                        return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
-                            status: "error".to_string(),
-                            signer_address: signer.clone(),
-                            is_registered: true,
-                            amount: balance,
-                            user_to_network_tx_id: None,
-                            network_to_target_tx_id: None,
-                            vault_to_network_tx_id: None,
-                            error_message: Some(format!(
-                                "Insufficient balance: required {}, found {}",
-                                min_amount, balance
-                            )),
-                        }));
-                    }
+                    // let balance = match fetch_balance(&address_to_check, &blockchain).await {
+                    //     Ok(b) => b,
+                    //     Err(e) => {
+                    //         return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+                    //             status: "error".to_string(),
+                    //             signer_address: signer.clone(),
+                    //             is_registered: true,
+                    //             amount: 0,
+                    //             user_to_network_tx_id: None,
+                    //             network_to_target_tx_id: None,
+                    //             vault_to_network_tx_id: None,
+                    //             error_message: Some(e),
+                    //         }));
+                    //     }
+                    // };
+                    // if balance < min_amount {
+                    //     return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+                    //         status: "error".to_string(),
+                    //         signer_address: signer.clone(),
+                    //         is_registered: true,
+                    //         amount: balance,
+                    //         user_to_network_tx_id: None,
+                    //         network_to_target_tx_id: None,
+                    //         vault_to_network_tx_id: None,
+                    //         error_message: Some(format!(
+                    //             "Insufficient balance: required {}, found {}",
+                    //             min_amount, balance
+                    //         )),
+                    //     }));
+                    // }
                     // Store intent hash in user registry at last
                     if let Err(e) = user_registry
                         .store_intent_hash(intent_hash.to_vec(), &signer, &req.msg)
@@ -1597,53 +1597,53 @@ async fn handle_user_mpc_deposit(
             None => "tics", // Defensive, but should not happen if tx_id is Some
         };
 
-        match check_tx_confirmation(selected_chain, tx_id).await {
-            Ok(true) => {
-                // Only update the status in db if txn is confirmed
-                if let Err(e) = user_registry
-                    .update_transaction_status(tx_id, TransactionStatus::Confirmed)
-                    .await
-                {
-                    error!("Failed to update transaction status in db: {}", e);
-                } else {
-                    info!(
-                        "✅ Updated transaction status in db for {}: {:?}",
-                        tx_id,
-                        TransactionStatus::Confirmed
-                    );
-                }
-            }
-            Ok(false) => {
-                warn!(
-                    "Transaction {} not yet confirmed on chain {}",
-                    tx_id, selected_chain
-                );
+        // match check_tx_confirmation(selected_chain, tx_id).await {
+        //     Ok(true) => {
+        //         // Only update the status in db if txn is confirmed
+        //         if let Err(e) = user_registry
+        //             .update_transaction_status(tx_id, TransactionStatus::Confirmed)
+        //             .await
+        //         {
+        //             error!("Failed to update transaction status in db: {}", e);
+        //         } else {
+        //             info!(
+        //                 "✅ Updated transaction status in db for {}: {:?}",
+        //                 tx_id,
+        //                 TransactionStatus::Confirmed
+        //             );
+        //         }
+        //     }
+        //     Ok(false) => {
+        //         warn!(
+        //             "Transaction {} not yet confirmed on chain {}",
+        //             tx_id, selected_chain
+        //         );
 
-                return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
-                    status: "pending".to_string(),
-                    signer_address: user_registration.ethereum_address.clone(),
-                    is_registered: true,
-                    amount: req.msg.amount,
-                    user_to_network_tx_id: None,
-                    network_to_target_tx_id: None,
-                    vault_to_network_tx_id: None,
-                    error_message: Some("Transaction not yet confirmed on chain".to_string()),
-                }));
-            }
-            Err(e) => {
-                error!("Tx confirmation API returned error: {}", e);
-                return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
-                    status: "error".to_string(),
-                    signer_address: user_registration.ethereum_address.clone(),
-                    is_registered: true,
-                    amount: req.msg.amount,
-                    user_to_network_tx_id: None,
-                    network_to_target_tx_id: None,
-                    vault_to_network_tx_id: None,
-                    error_message: Some(format!("Tx confirmation API error: {}", e)),
-                }));
-            }
-        }
+        //         return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+        //             status: "pending".to_string(),
+        //             signer_address: user_registration.ethereum_address.clone(),
+        //             is_registered: true,
+        //             amount: req.msg.amount,
+        //             user_to_network_tx_id: None,
+        //             network_to_target_tx_id: None,
+        //             vault_to_network_tx_id: None,
+        //             error_message: Some("Transaction not yet confirmed on chain".to_string()),
+        //         }));
+        //     }
+        //     Err(e) => {
+        //         error!("Tx confirmation API returned error: {}", e);
+        //         return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+        //             status: "error".to_string(),
+        //             signer_address: user_registration.ethereum_address.clone(),
+        //             is_registered: true,
+        //             amount: req.msg.amount,
+        //             user_to_network_tx_id: None,
+        //             network_to_target_tx_id: None,
+        //             vault_to_network_tx_id: None,
+        //             error_message: Some(format!("Tx confirmation API error: {}", e)),
+        //         }));
+        //     }
+        // }
         // If confirmed, continue processing
     }
 
