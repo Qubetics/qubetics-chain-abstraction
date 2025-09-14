@@ -48,12 +48,27 @@ pub struct IntentTransactionIds {
     pub network_to_target_tx_id: Option<String>,
     /// Transaction ID for vault_address -> network_aggregated_address
     pub vault_to_network_tx_id: Option<String>,
+    /// Solver node ID that completed the final transaction
+    pub final_solver: Option<String>,
     /// Error message from blockchain if transaction failed
     pub error_message: Option<String>,
     /// Timestamp when first transaction was recorded
     pub created_at: chrono::DateTime<chrono::Utc>,
     /// Timestamp when last transaction was updated
     pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl IntentTransactionIds {
+    /// Get the solver node ID that completed the final transaction
+    pub fn get_final_solver(&self) -> Option<String> {
+        self.final_solver.clone()
+    }
+
+    /// Set the solver node ID for the final transaction
+    pub fn set_final_solver(&mut self, solver: Option<String>) {
+        self.final_solver = solver;
+        self.updated_at = Utc::now();
+    }
 }
 
 /// User registration data structure
