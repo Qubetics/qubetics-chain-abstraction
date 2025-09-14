@@ -633,6 +633,45 @@ impl IntentStorage {
             ).await
     }
 
+    /// Store or update the final solver for an intent
+    pub async fn store_final_solver(
+        &self,
+        intent_hash: &str,
+        solver: &str,
+    ) -> Result<()> {
+        info!(
+            "💾 [INTENT_STORAGE] Storing final solver for intent {}: {}",
+            intent_hash, solver
+        );
+
+        // Get existing transaction IDs or create a new record
+        let mut tx_ids = match self.get_intent_transaction_ids(intent_hash).await? {
+            Some(existing) => existing,
+            None => IntentTransactionIds {
+                intent_hash: intent_hash.to_string(),
+                user_to_network_tx_id: None,
+                network_to_target_tx_id: None,
+                vault_to_network_tx_id: None,
+                final_solver: None,
+                error_message: None,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+            },
+        };
+
+        tx_ids.set_final_solver(Some(solver.to_string()));
+
+        let key = key_utils::intent_transaction_ids_key(intent_hash);
+        self.db.put_string(&key, &tx_ids)?;
+
+        info!(
+            "✅ [INTENT_STORAGE] Final solver stored for intent {}: {}",
+            intent_hash, solver
+        );
+
+        Ok(())
+    }
+
     /// Store error message for a failed transaction
     pub async fn store_transaction_error(
         &self,
