@@ -50,6 +50,7 @@ pub enum ChannelMessage {
         node_id: String,
     },
     ScheduledDKGStart,
+    CheckIfFirstNode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

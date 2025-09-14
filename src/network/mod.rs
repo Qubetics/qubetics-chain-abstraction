@@ -97,6 +97,7 @@ pub struct NetworkLayer {
     user_registry: Option<DatabaseUserRegistry>,
     node_manager: Box<dyn NodeMembership>,
     scheduled_dkg_task: Option<JoinHandle<()>>,
+    first_node_start_time: Option<u64>, // t1 - Unix timestamp when first node started
 }
 
 impl NetworkLayer {
@@ -118,6 +119,7 @@ impl NetworkLayer {
             user_registry: None,
             node_manager,
             scheduled_dkg_task: None,
+            first_node_start_time: None,
         })
     }
 
@@ -347,6 +349,9 @@ impl NetworkLayer {
             .build();
         self.subscribe_to_default_topics(&mut swarm)?;
         info!("Starting Kademlia bootstrap...");
+        
+        // Node manager will determine if this is the first node
+        
         self.node_manager
             .add_node(self.local_peer_id.clone())
             .map_err(|e| anyhow::anyhow!(e))?;
@@ -355,6 +360,13 @@ impl NetworkLayer {
         if let Err(e) = swarm.behaviour_mut().kademlia.bootstrap() {
             warn!("Failed to start bootstrap: {:?}", e);
         }
+        
+        // Start a task to check if this is the first node after bootstrap attempts
+        let tx_clone = self.message_tx.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            let _ = tx_clone.send(ChannelMessage::CheckIfFirstNode).await;
+        });
         let mut bootstrap_timer = tokio::time::interval(Duration::from_secs(300));
         let mut discovery_timer = tokio::time::interval(Duration::from_secs(300));
         let mut dkg_status_timer = tokio::time::interval(Duration::from_secs(300));
@@ -693,6 +705,16 @@ impl NetworkLayer {
 
                 // Try to discover more peers through this connection
                 swarm.behaviour_mut().kademlia.get_closest_peers(peer_id);
+                
+                // If this node doesn't have first node start time (t1), request it from the connected peer
+                if self.first_node_start_time.is_none() {
+                    info!("🔄 Requesting first node start time (t1) from peer {}", peer_id);
+                    let _request_id = swarm.behaviour_mut().request_response.send_request(
+                        &peer_id,
+                        RPCRequest::RequestFirstNodeStartTime
+                    );
+                    info!("📤 Sent request for first node start time to peer {}", peer_id);
+                }
             }
 
             SwarmEvent::Behaviour(NetworkEvent::RequestResponse(ReqRespEvent::Message {
@@ -818,6 +840,21 @@ impl NetworkLayer {
                                 self.schedule_dkg_at(start_time);
                                 RPCResponse::Ack
                             }
+                            RPCRequest::RequestFirstNodeStartTime => {
+                                info!("🕐 Received request for first node start time from peer {}", peer);
+                                RPCResponse::FirstNodeStartTimeResponse {
+                                    first_node_start_time: self.first_node_start_time,
+                                }
+                            }
+                            RPCRequest::ShareFirstNodeStartTime { first_node_start_time } => {
+                                info!("🕐 Received first node start time: {} from peer {}", first_node_start_time, peer);
+                                // Only update if we don't have a time yet (new node syncing)
+                                if self.first_node_start_time.is_none() {
+                                    self.first_node_start_time = Some(first_node_start_time);
+                                    info!("✅ Synced first node start time (t1) to: {}", first_node_start_time);
+                                }
+                                RPCResponse::Ack
+                            }
                             _ => RPCResponse::Ack
                         };
                         // here the following line will send to the other connected peers (incl any testing agent(s))
@@ -866,7 +903,21 @@ impl NetworkLayer {
                             }
 
                             RPCResponse::ShareAccepted => {
-                            } 
+                            }
+                            
+                            RPCResponse::FirstNodeStartTimeResponse { first_node_start_time } => {
+                                if let Some(t1) = first_node_start_time {
+                                    info!("🕐 Received first node start time response: {} from peer {}", t1, peer);
+                                    // Only update if we don't have a time yet (new node syncing)
+                                    if self.first_node_start_time.is_none() {
+                                        self.first_node_start_time = Some(t1);
+                                        info!("✅ Synced first node start time (t1) to: {}", t1);
+                                    }
+                                } else {
+                                    info!("ℹ️ Peer {} doesn't have first node start time either", peer);
+                                }
+                            }
+                            
                             other => {
                                 info!("ℹ️  RPCResponse::{:?} from {} (no action)", other, peer);
                             }
@@ -2585,7 +2636,29 @@ impl NetworkLayer {
                 info!("📡 [NETWORK] Broadcasted user registration to P2P network");
             }
             ChannelMessage::ScheduledDKGStart => {
-                info!("🚀 Starting DKG at the exact agreed instant {}!", SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs());
+                let current_time = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs();
+                
+                // Check if 5 minutes have passed since first node start time (t1)
+                if let Some(t1) = self.first_node_start_time {
+                    let elapsed_since_t1 = current_time.saturating_sub(t1);
+                    let five_minutes = 5 * 60; // 5 minutes in seconds
+                    
+                    if elapsed_since_t1 > five_minutes {
+                        warn!("⏰ DKG start skipped: More than 5 minutes have passed since first node start time t1 (elapsed: {}s, t1: {})", 
+                              elapsed_since_t1, t1);
+                        return Ok(());
+                    }
+                    
+                    info!("🚀 Starting DKG at the exact agreed instant {}! (t1: {}, elapsed: {}s)", 
+                          current_time, t1, elapsed_since_t1);
+                } else {
+                    warn!("⚠️ No first node start time (t1) available - this shouldn't happen!");
+                    info!("🚀 Starting DKG at the exact agreed instant {}!", current_time);
+                }
+                
                 let total = self.node_manager.get_total_nodes();
                 let threshold = self.node_manager.get_threshold();
                 if let Some(dkg) = &mut self.dkg_node {
@@ -2602,6 +2675,21 @@ impl NetworkLayer {
                     }
                 } else {
                     warn!("❌ DKG node not initialized at scheduled start!");
+                }
+            }
+            ChannelMessage::CheckIfFirstNode => {
+                // Check if this node is the first node after bootstrap attempts
+                let total_nodes = self.node_manager.get_total_nodes();
+                if self.first_node_start_time.is_none() && total_nodes == 1 {
+                    // This is the first node - set the network start time (t1)
+                    let t1 = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs();
+                    self.first_node_start_time = Some(t1);
+                    info!("🕐 First node detected after bootstrap timeout (total_nodes=1) - setting t1: {}", t1);
+                } else if total_nodes > 1 {
+                    info!("🔄 Found {} nodes in network - will sync t1 from existing nodes", total_nodes);
                 }
             }
         }

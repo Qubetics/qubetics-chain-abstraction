@@ -25,7 +25,7 @@ const colors = {
   green: '\x1b[32m'
 };
 
-const oooo = 432422121
+const oooo = 4324228121
 
 function log(message, color = 'reset') {
   console.log(`${colors[color]}${message}${colors.reset}`);
@@ -149,12 +149,12 @@ async function testUserMpcDeposit({ wallet, amount }) {
     // Construct DepositIntent
     const depositIntent = {
       source_address: userInfo.data.derived_eth_address, // Use canonical address
-      target_address: 'n1f5qYrCUSakSHBxyNLnDFetp5LNTaYjKw',
+      target_address: '0x94C8F147767702EC8020E5c616964c72a837C88d',
       source_chain: 'qubetics',
-      target_chain: 'bitcoin',
+      target_chain: 'qubetics',
       amount: amount, // Use the passed amount parameter
       source_token: 'TICS',
-      target_token: 'TICS',
+      target_token: 'BTC',
       timestamp: oooo, // Current Unix timestamp in seconds
     };
     console.log(`📊 Deposit Intent: ${JSON.stringify(depositIntent)}`, 'cyan');
@@ -265,6 +265,139 @@ async function testUserMpcDeposit({ wallet, amount }) {
 }
 
 // =========================
+// New: Simple deposit test - only passes intent without signature
+// =========================
+async function testSimpleDeposit() {
+  try {
+    const amount = 1000000000000000000; // 1 ETH in wei
+    const sourceAddress = '0x9e97239232457c06db34790fb062b1e03e73256b';
+    const targetAddress = 'n1f5qYrCUSakSHBxyNLnDFetp5LNTaYjKw';
+    const sourceChain = 'qubetics';
+    const targetChain = 'bitcoin';
+    
+    log(`\n🔐 Testing user_mpc_deposit with no signature (intent only)`, 'blue');
+    log(`💰 Amount: ${amount}`, 'cyan');
+    log(`📤 Source: ${sourceAddress} (${sourceChain})`, 'cyan');
+    log(`📥 Target: ${targetAddress} (${targetChain})`, 'cyan');
+
+    // Construct DepositIntent without signature
+    const depositIntent = {
+      source_address: sourceAddress,
+      target_address: targetAddress,
+      source_chain: sourceChain,
+      target_chain: targetChain,
+      amount: amount,
+      source_token: 'TICS',
+      target_token: 'TICS',
+      timestamp: oooo, // Current Unix timestamp in seconds
+    };
+
+    log(`📊 Deposit Intent:`, 'cyan');
+    console.log(JSON.stringify(depositIntent, null, 2));
+
+    const response = await axios.post(
+      `${RPC_BASE_URL}/user_mpc_deposit`, // Use existing endpoint
+      { 
+        signature: null, // Explicitly set signature to null
+        msg: depositIntent, // Send as msg field like the signed version
+      },
+      { 
+        headers: { 'Content-Type': 'application/json' },
+        timeout: 60000 // 60 seconds timeout
+      }
+    );
+
+    // Check response status to determine success or error
+    const isSuccess = response.data.status === 'success';
+    const isSubmitted = response.data.status === 'submitted';
+    const isProcessing = response.data.status === 'processing';
+    const isError = response.data.status === 'error';
+    const isTimeout = response.data.status === 'timeout';
+
+    if (isSuccess) {
+      log(`✅ Unsigned deposit SUCCESS - Transaction completed!`, 'green');
+    } else if (isSubmitted) {
+      log(`📤 Unsigned deposit SUBMITTED - Transaction is being processed`, 'yellow');
+    } else if (isProcessing) {
+      log(`⏳ Unsigned deposit PROCESSING - Transaction is still being processed`, 'yellow');
+    } else if (isError) {
+      log(`❌ Unsigned deposit ERROR - Transaction failed`, 'red');
+    } else if (isTimeout) {
+      log(`⏰ Unsigned deposit TIMEOUT - Transaction processing timed out`, 'yellow');
+    } else {
+      log(`❓ Unsigned deposit UNKNOWN STATUS: ${response.data.status}`, 'yellow');
+    }
+
+    log(`📊 Response Details:`, 'cyan');
+    log(`   Status: ${response.data.status}`, 'cyan');
+    log(`   Amount: ${response.data.amount}`, 'cyan');
+    
+    // Show transaction ID if available
+    if (response.data.transaction_id || response.data.tx_id) {
+      const txId = response.data.transaction_id || response.data.tx_id;
+      log(`   🎯 Transaction ID: ${txId}`, 'green');
+    } else {
+      log(`   🎯 Transaction ID: Not available yet`, 'yellow');
+    }
+
+    // Show full response for debugging
+    console.log(`📊 Full Response:`, 'cyan');
+    console.log(JSON.stringify(response.data, null, 2));
+    
+    // Show error message if present
+    if (response.data.error_message) {
+      if (isError) {
+        log(`   💥 Error Message: ${response.data.error_message}`, 'red');
+      } else {
+        log(`   ℹ️  Message: ${response.data.error_message}`, 'yellow');
+      }
+    }
+
+    return { success: true, data: response.data };
+  } catch (error) {
+    if (error.response) {
+      log(`❌ Unsigned deposit failed with HTTP status ${error.response.status}:`, 'red');
+      
+      // Check if we got a structured response
+      if (error.response.data && error.response.data.status) {
+        const errorData = error.response.data;
+        log(`   Response Status: ${errorData.status}`, 'red');
+        
+        if (errorData.transaction_id || errorData.tx_id) {
+          const txId = errorData.transaction_id || errorData.tx_id;
+          log(`   Transaction ID: ${txId}`, 'red');
+        }
+        
+        if (errorData.error_message) {
+          log(`   🔥 Error: ${errorData.error_message}`, 'red');
+        }
+      } else {
+        // Fallback for generic HTTP errors
+        log(`   Error: ${error.response.data?.message || error.response.statusText}`, 'red');
+      }
+      
+      // Log complete response
+      log(`   Complete Response:`, 'red');
+      console.log(error.response);
+      // Always show full response for debugging
+      if (error.response.data) {
+        log(`   Full Error Response:`, 'red');
+        console.log(JSON.stringify(error.response.data, null, 2));
+      }
+    } else if (error.code === 'ECONNREFUSED') {
+      log(`❌ Connection refused - Is the RPC server running on port ${process.env.RPC_PORT || 8081}?`, 'red');
+    } else if (error.code === 'ENOTFOUND') {
+      log(`❌ Server not found - Check if the RPC server is accessible`, 'red');
+    } else if (error.code === 'ETIMEDOUT') {
+      log(`❌ Request timed out - Server might be overloaded`, 'red');
+    } else {
+      log(`❌ Unsigned deposit error: ${error.message}`, 'red');
+    }
+    return { success: false, error: error.message };
+  }
+}
+
+// =========================
 // New: user_mpc_deposit test WITH tx_id (should pass None to handle_deposit_intent)
 // =========================
 async function testUserMpcDepositWithTxId({ wallet, amount, txId, status }) {
@@ -286,7 +419,7 @@ async function testUserMpcDepositWithTxId({ wallet, amount, txId, status }) {
       target_address: '0x94C8F147767702EC8020E5c616964c72a837C88d',
       source_chain: 'qubetics',
       target_chain: 'qubetics',
-      amount: amount, // Use the passed amount parameter
+      amount: 1000000000000000000, // Use the passed amount parameter
       source_token: 'TICS',
       target_token: 'TICS',
       timestamp: oooo, // Current Unix timestamp in seconds
@@ -435,13 +568,17 @@ async function runTests() {
   const amount = 1000000000000000000; // keep safe for JSON
   await testUserMpcDeposit({ wallet, amount }); 
 
-  // await new Promise(r => setTimeout(r, 10000));
-  // 4) MPC deposit test WITHOUT tx_id and status
-  // log(`\n🧪 Test 2: Deposit amount WITHOUT tx_id and status`, 'blue');
-  // await testUserMpcDeposit({ wallet, amount });   
+  // 4) Simple deposit test (intent only, no signature)
+  // log(`\n🧪 Test 2: Simple deposit (intent only, no signature)`, 'blue');
+  // await testSimpleDeposit();
 
-  // // 5) MPC deposit test with potentially problematic amount (might trigger errors)
-  // log(`\n🧪 Test 3: Large deposit amount (might trigger errors)`, 'blue');
+  // await new Promise(r => setTimeout(r, 10000));
+  // 5) MPC deposit test WITHOUT tx_id and status
+  log(`\n🧪 Test 3: Deposit amount WITHOUT tx_id and status`, 'blue');
+  await testUserMpcDeposit({ wallet, amount });   
+
+  // // 6) MPC deposit test with potentially problematic amount (might trigger errors)
+  // log(`\n🧪 Test 4: Large deposit amount (might trigger errors)`, 'blue');
   // const largeAmount = 999999999; // Large amount that might cause insufficient funds
   // await testUserMpcDeposit({ wallet, amount: largeAmount });
 
