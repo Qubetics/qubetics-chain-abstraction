@@ -467,7 +467,7 @@ impl IntentStorage {
             tx_ids.network_to_target_tx_id = Some(tx_id.clone());
             tx_ids.updated_at = Utc::now();
             if old_tx_id.is_none() {
-                if let Some(solver) = final_solver_id {
+                if let Some(solver) = final_solver_id.clone() {
                     tx_ids.set_final_solver(Some(solver));
                 }
             }
@@ -495,10 +495,15 @@ impl IntentStorage {
             info!("  🆕 New TX ID: {}", tx_id);
         }
 
-        if let Some(solver) = final_solver_id {
-            if tx_ids.final_solver_id != Some(solver.clone()) {
+        if final_solver_id.is_some() {
+            let solver_ref = final_solver_id.as_ref().unwrap();
+            let needs_update = match &tx_ids.final_solver_id {
+                Some(existing) => existing != solver_ref,
+                None => true,
+            };
+            if needs_update {
                 let old_solver = tx_ids.final_solver_id.clone();
-                tx_ids.final_solver_id = Some(solver.clone());
+                tx_ids.final_solver_id = Some(solver_ref.clone());
                 tx_ids.updated_at = Utc::now();
                 changes_made = true;
 
@@ -507,7 +512,7 @@ impl IntentStorage {
                     intent_hash
                 );
                 info!("  🔄 Old solver: {:?}", old_solver);
-                info!("  🆕 New solver: {}", solver);
+                info!("  🆕 New solver: {}", solver_ref);
             }
         }
 

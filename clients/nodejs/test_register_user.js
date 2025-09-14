@@ -154,7 +154,7 @@ async function testUserMpcDeposit({ wallet, amount }) {
       target_chain: 'qubetics',
       amount: amount, // Use the passed amount parameter
       source_token: 'TICS',
-      target_token: 'BTC',
+      target_token: 'TICS',
       timestamp: oooo, // Current Unix timestamp in seconds
     };
     console.log(`📊 Deposit Intent: ${JSON.stringify(depositIntent)}`, 'cyan');

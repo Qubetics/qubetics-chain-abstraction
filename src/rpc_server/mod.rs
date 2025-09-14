@@ -1859,7 +1859,7 @@ async fn handle_user_mpc_deposit(
     // Poll the database frequently for up to 10 seconds so that we can
     // return a response as soon as the transaction is available.
     let (u2n_tx_id, n2t_tx_id, v2n_tx_id, final_solver_id, chain_error) =
-        wait_for_transaction_result(&user_registry, &intent_hash, 20).await;
+        wait_for_transaction_result(&user_registry, &intent_hash, 40).await;
 
     // Log the transaction IDs if recorded
     if let Some(ref tx_id_str) = u2n_tx_id {
