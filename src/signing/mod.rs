@@ -2741,7 +2741,7 @@ impl SigningNode {
                     Some(crate::types::TransactionType::NetworkToTarget) => {
                         // Network-to-target transaction
                         let result = user_registry
-                            .store_network_to_target_tx_id(intent_hash, tx_id, &self.id)
+                            .store_network_to_target_tx_id(intent_hash, tx_id, Some(&self.id))
                             .await;
                         match &result {
                             Ok(()) => {

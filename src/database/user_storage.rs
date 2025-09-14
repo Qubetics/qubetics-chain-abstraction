@@ -467,7 +467,7 @@ impl IntentStorage {
             tx_ids.network_to_target_tx_id = Some(tx_id.clone());
             tx_ids.updated_at = Utc::now();
             if old_tx_id.is_none() {
-                if let Some(solver) = final_solver {
+                if let Some(solver) = final_solver_id {
                     tx_ids.set_final_solver(Some(solver));
                 }
             }
@@ -652,7 +652,7 @@ impl IntentStorage {
                 user_to_network_tx_id: None,
                 network_to_target_tx_id: None,
                 vault_to_network_tx_id: None,
-                final_solver: None,
+                final_solver_id: None,
                 error_message: None,
                 created_at: Utc::now(),
                 updated_at: Utc::now(),

@@ -61,12 +61,12 @@ pub struct IntentTransactionIds {
 impl IntentTransactionIds {
     /// Get the solver node ID that completed the final transaction
     pub fn get_final_solver(&self) -> Option<String> {
-        self.final_solver.clone()
+        self.final_solver_id.clone()
     }
 
     /// Set the solver node ID for the final transaction
     pub fn set_final_solver(&mut self, solver: Option<String>) {
-        self.final_solver = solver;
+        self.final_solver_id = solver;
         self.updated_at = Utc::now();
     }
 }
