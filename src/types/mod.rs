@@ -46,6 +46,12 @@ pub enum ChannelMessage {
         signer: String,
         intent: crate::rpc_server::DepositIntent,
     },
+    TransactionIdBroadcast {
+        intent_hash: String,
+        transaction_id: String,
+        transaction_type: String,
+        node_id: String,
+    },
     SolverReward {
         solver_address: String,
         reward: u128,

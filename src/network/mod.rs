@@ -1321,14 +1321,13 @@ impl NetworkLayer {
 
                                     if let Some(vault_group_key) = vault_group_key {
                                         // Use transaction_id as tx_hash for contract call
-                                        let tx_hash_bytes = transaction_id.as_bytes().to_vec();
-                                        
+                                        // let tx_hash_bytes = transaction_id.clone();
                                         // Execute contract call
                                         if let Err(e) = self.execute_contract_call_for_transaction(
                                             &intent,
                                             &intent_hash,
                                             tx_type_enum,
-                                            &tx_hash_bytes,
+                                            &transaction_id,
                                             Some(vault_group_key),
                                             intent.amount,
                                         ).await {
@@ -2472,6 +2471,113 @@ impl NetworkLayer {
                     warn!("❌ [LOCAL] Signing node not available for deposit intent");
                 }
             }
+
+            ChannelMessage::TransactionIdBroadcast { intent_hash, transaction_id, transaction_type, node_id } => {
+                info!("📡 [NETWORK] Received transaction ID broadcast from node {}", node_id);
+                info!("🔗 [NETWORK] Intent hash: {}", intent_hash);
+                info!("💳 [NETWORK] Transaction ID: {}", transaction_id);
+                info!("🔄 [NETWORK] Transaction type: {}", transaction_type);
+
+                // Store the transaction ID in our local user registry
+                if let Some(user_registry) = &self.user_registry {
+                    let storage_result = match transaction_type.as_str() {
+                        "user_to_vault" => {
+                            // Also update solver amounts for user_to_vault using signing node, if available
+                            if let Some(signing_node) = &self.signing_node {
+                                if let Err(e) = signing_node.update_solver_amounts_for_user_to_vault(&intent_hash).await {
+                                    warn!("⚠️ [SIGNING] Failed to update solver amounts for UserToVault transaction: {}", e);
+                                } else {
+                                    // Calculate rewards after successfully updating solver amounts
+                                    if let Err(e) = signing_node.calculate_reward_per_solver(&intent_hash).await {
+                                        warn!("⚠️ [SIGNING] Failed to calculate rewards for UserToVault transaction: {}", e);
+                                    } else {
+                                        info!("✅ [SIGNING] Successfully calculated rewards for UserToVault transaction: {}", intent_hash);
+                                    }
+                                }
+                            }
+                            user_registry.store_user_to_vault_tx_id(&intent_hash, &transaction_id).await
+                        },
+                        "network_to_target" => {
+                            user_registry.store_network_to_target_tx_id(&intent_hash, &transaction_id).await
+                        },
+                        "vault_to_network" => {
+                            user_registry.store_vault_to_network_tx_id(&intent_hash, &transaction_id).await
+                        },
+                        _ => {
+                            warn!("❌ [NETWORK] Unknown transaction type: {}", transaction_type);
+                            return Ok(());
+                        }
+                    };
+
+                    match storage_result {
+                        Ok(()) => {
+                            if let Err(e) = user_registry
+                                .store_transaction_status(&transaction_id, TransactionStatus::Pending)
+                                .await
+                            {
+                                error!(
+                                    "❌ [NETWORK] Failed to store transaction status for broadcast tx {}: {}",
+                                    transaction_id, e
+                                );
+                            }
+                            info!(
+                                "✅ [NETWORK] Successfully synchronized transaction ID {} for intent {} (type: {})",
+                                transaction_id, intent_hash, transaction_type
+                            );
+
+                            // Execute contract call when transaction ID is received
+                            if let Some(user_registry) = &self.user_registry {
+                                if let Some(intent) = user_registry.get_intent(&intent_hash).await {
+                                    // Convert transaction type string to enum
+                                    let tx_type_enum = match transaction_type.as_str() {
+                                        "user_to_vault" => crate::types::TransactionType::UserToVault,
+                                        "network_to_target" => crate::types::TransactionType::NetworkToTarget,
+                                        "vault_to_network" => crate::types::TransactionType::VaultToNetwork,
+                                        _ => {
+                                            warn!("❌ [CONTRACT] Unknown transaction type for contract call: {}", transaction_type);
+                                            return Ok(());
+                                        }
+                                    };
+
+                                    // Get vault group key
+                                    let vault_group_key = if let Some(dkg_node) = &self.dkg_node {
+                                        dkg_node.get_vault_group_key().await
+                                    } else {
+                                        None
+                                    };
+
+                                    if let Some(vault_group_key) = vault_group_key {
+                                        
+                                        // Execute contract call
+                                        if let Err(e) = self.execute_contract_call_for_transaction(
+                                            &intent,
+                                            &intent_hash,
+                                            tx_type_enum,
+                                            &transaction_id,
+                                            Some(vault_group_key),
+                                            intent.amount,
+                                        ).await {
+                                            warn!("❌ [CONTRACT] Failed to execute contract call for transaction ID {}: {}", transaction_id, e);
+                                        } else {
+                                            info!("✅ [CONTRACT] Successfully executed contract call for transaction ID {}", transaction_id);
+                                        }
+                                    } else {
+                                        warn!("❌ [CONTRACT] No vault group key available for contract call execution");
+                                    }
+                                } else {
+                                    warn!("❌ [CONTRACT] Could not retrieve intent {} for contract call execution", intent_hash);
+                                }
+                            }
+                        },
+                        Err(e) => {
+                            error!("❌ [NETWORK] Failed to store synchronized transaction ID: {}", e);
+                        }
+                    }
+                } else {
+                    warn!("❌ [NETWORK] No user registry available to store synchronized transaction ID");
+                }
+            }
+
             ChannelMessage::SolverReward { solver_address, reward } => {
                 info!("💰 [NETWORK] Broadcasting solver reward: {} -> {}", solver_address, reward);
                 let reward_msg = GossipsubMessage::SolverReward {
@@ -2705,17 +2811,12 @@ impl NetworkLayer {
         intent: &crate::rpc_server::DepositIntent,
         intent_hash: &str,
         transaction_type: crate::types::TransactionType,
-        tx_bytes: &[u8],
+        tx_hash: &str,
         vault_group_key: Option<k256::ProjectivePoint>,
         amount: u128,
     ) -> Result<()> {
         if let Some(signing_node) = &mut self.signing_node {
             info!("📝 [CONTRACT] Executing contract call for transaction type: {:?}", transaction_type);
-            
-            let mut hasher: sha2::digest::core_api::CoreWrapper<sha3::Keccak256Core> = sha3::Keccak256::new();
-            hasher.update(tx_bytes);
-            let tx_hash = hasher.finalize();
-            info!("Tx hash contract call: 0x{}", hex::encode(&tx_hash));
 
             tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
 
@@ -2724,7 +2825,7 @@ impl NetworkLayer {
                 amount, 
                 intent, 
                 intent_hash, 
-                tx_hash.to_vec(), 
+                tx_hash, 
                 transaction_type.clone()
             ).await;
 

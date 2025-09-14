@@ -1600,7 +1600,7 @@ async fn handle_user_mpc_deposit(
                             }));
                         }
                         blockchain = "eth".to_string();
-                    } else if source_chain == "btc" {
+                    } else if source_chain == "bitcoin" {
                         // Use btc_derived address from user_reg details
                         if let Some(btc_addr) = &user_reg.derived_btc_address {
                             address_to_check = btc_addr.clone();
