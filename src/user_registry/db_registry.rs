@@ -551,6 +551,35 @@ impl DatabaseUserRegistry {
         }
     }
 
+    /// Store or update the final solver for an intent
+    pub async fn store_final_solver(
+        &self,
+        intent_hash: &str,
+        solver: &str,
+    ) -> Result<(), String> {
+        match self
+            .intent_storage
+            .store_final_solver(intent_hash, solver)
+            .await
+        {
+            Ok(()) => {
+                info!(
+                    "✅ [DB_USER_REGISTRY] Successfully stored final solver",
+                );
+                info!("  🎯 Intent: {}", intent_hash);
+                info!("  🧠 Solver: {}", solver);
+                Ok(())
+            }
+            Err(e) => {
+                error!("❌ [DB_USER_REGISTRY] Failed to store final solver");
+                error!("  🔗 Intent hash: {}", intent_hash);
+                error!("  🧠 Solver: {}", solver);
+                error!("  💥 Error: {}", e);
+                Err(e.to_string())
+            }
+        }
+    }
+
     /// Store transaction IDs for an intent
     pub async fn store_intent_transaction_ids(
         &self,
