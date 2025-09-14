@@ -48,6 +48,8 @@ pub struct IntentTransactionIds {
     pub network_to_target_tx_id: Option<String>,
     /// Transaction ID for vault_address -> network_aggregated_address
     pub vault_to_network_tx_id: Option<String>,
+    /// Final solver identifier responsible for the deposit
+    pub final_solver_id: Option<String>,
     /// Error message from blockchain if transaction failed
     pub error_message: Option<String>,
     /// Timestamp when first transaction was recorded

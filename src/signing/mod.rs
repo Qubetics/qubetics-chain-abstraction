@@ -2667,7 +2667,10 @@ impl SigningNode {
         match (intent_hash, &self.user_registry) {
             (Some(ref intent_hash), Some(user_registry)) => {
                 // Store error locally
-                match user_registry.store_transaction_error(intent_hash, error_message).await {
+                match user_registry
+                    .store_transaction_error(intent_hash, error_message, None)
+                    .await
+                {
                     Ok(()) => {
                         info!("💥 [SIGNING] Stored transaction error for intent {} (round {}): {}", intent_hash, round, error_message);
                         
@@ -2691,7 +2694,10 @@ impl SigningNode {
     /// Store transaction error for a specific intent hash
     async fn store_transaction_error_for_intent(&self, intent_hash: &str, error_message: &str) {
         if let Some(user_registry) = &self.user_registry {
-            if let Err(e) = user_registry.store_transaction_error(intent_hash, error_message).await {
+            if let Err(e) = user_registry
+                .store_transaction_error(intent_hash, error_message, None)
+                .await
+            {
                 error!("❌ [SIGNING] Failed to store transaction error for intent {}: {}", intent_hash, e);
             } else {
                 info!("✅ [SIGNING] Stored transaction error for intent {}: {}", intent_hash, error_message);
@@ -2719,7 +2725,9 @@ impl SigningNode {
                 let (transaction_type_str, storage_result) = match transaction_type {
                     Some(crate::types::TransactionType::UserToVault) => {
                         // User-to-vault transaction
-                        let result = user_registry.store_user_to_vault_tx_id(intent_hash, tx_id).await;
+                        let result = user_registry
+                            .store_user_to_vault_tx_id(intent_hash, tx_id, None)
+                            .await;
                         match &result {
                             Ok(()) => {
                                 info!("💾 [SIGNING] Stored user-to-network transaction ID {} for intent {} (round {})", tx_id, intent_hash, round);
@@ -2732,7 +2740,9 @@ impl SigningNode {
                     },
                     Some(crate::types::TransactionType::NetworkToTarget) => {
                         // Network-to-target transaction
-                        let result = user_registry.store_network_to_target_tx_id(intent_hash, tx_id).await;
+                        let result = user_registry
+                            .store_network_to_target_tx_id(intent_hash, tx_id, None)
+                            .await;
                         match &result {
                             Ok(()) => {
                                 info!("💾 [SIGNING] Stored network-to-target transaction ID {} for intent {} (round {})", tx_id, intent_hash, round);
@@ -2745,7 +2755,9 @@ impl SigningNode {
                     },
                     Some(crate::types::TransactionType::VaultToNetwork) => {
                         // Vault-to-network transaction
-                        let result = user_registry.store_vault_to_network_tx_id(intent_hash, tx_id).await;
+                        let result = user_registry
+                            .store_vault_to_network_tx_id(intent_hash, tx_id, None)
+                            .await;
                         match &result {
                             Ok(()) => {
                                 info!("💾 [SIGNING] Stored vault-to-network transaction ID {} for intent {} (round {})", tx_id, intent_hash, round);
@@ -2760,7 +2772,9 @@ impl SigningNode {
                         // Fallback to old logic based on user_eth_address
                         if let Some(eth_addr) = &user_eth_address {
                             // User-to-network transaction
-                            let result = user_registry.store_user_to_vault_tx_id(intent_hash, tx_id).await;
+                            let result = user_registry
+                                .store_user_to_vault_tx_id(intent_hash, tx_id, None)
+                                .await;
                             match &result {
                                 Ok(()) => {
                                     info!("💾 [SIGNING] Stored user-to-network transaction ID {} for intent {} (round {}) for user {}", tx_id, intent_hash, round, eth_addr);
@@ -2772,7 +2786,9 @@ impl SigningNode {
                             ("user_to_network", result)
                         } else {
                             // Network-to-target transaction
-                            let result = user_registry.store_network_to_target_tx_id(intent_hash, tx_id).await;
+                            let result = user_registry
+                                .store_network_to_target_tx_id(intent_hash, tx_id, None)
+                                .await;
                             match &result {
                                 Ok(()) => {
                                     info!("💾 [SIGNING] Stored network-to-target transaction ID {} for intent {} (round {})", tx_id, intent_hash, round);

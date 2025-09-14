@@ -143,6 +143,7 @@ pub struct UserMpcDepositVerifyResponse {
     pub user_to_network_tx_id: Option<String>,
     pub network_to_target_tx_id: Option<String>,
     pub vault_to_network_tx_id: Option<String>,
+    pub final_solver_id: Option<String>,
     pub error_message: Option<String>,
 }
 
@@ -1096,7 +1097,7 @@ async fn handle_register_user(
 async fn get_transaction_id_for_intent(
     user_registry: &DatabaseUserRegistry,
     intent_hash: &[u8],
-) -> (Option<String>, Option<String>, Option<String>) {
+) -> (Option<String>, Option<String>, Option<String>, Option<String>) {
     let intent_hash_hex = hex::encode(intent_hash);
 
     // Fetch any recorded transaction IDs for this intent hash
@@ -1126,14 +1127,16 @@ async fn get_transaction_id_for_intent(
             }
         }
 
+        let final_solver_id = tx_ids.final_solver_id.clone();
         return (
             user_to_network_tx_id,
             network_to_target_tx_id,
             vault_to_network_tx_id,
+            final_solver_id,
         );
     }
 
-    (None, None, None)
+    (None, None, None, None)
 }
 
 /// Wait for a transaction ID or chain error associated with the given intent hash.
@@ -1149,6 +1152,7 @@ async fn wait_for_transaction_result(
     Option<String>,
     Option<String>,
     Option<String>,
+    Option<String>,
 ) {
     let start = std::time::Instant::now();
     let intent_hash_hex = hex::encode(intent_hash);
@@ -1157,19 +1161,34 @@ async fn wait_for_transaction_result(
 
     // Give a bit more time to potentially get all transaction IDs
     let extended_timeout = timeout + tokio::time::Duration::from_secs(2);
-    let mut best_result = (None, None, None, None);
+    let mut best_result = (None, None, None, None, None);
 
     loop {
         // Check for transaction ids
-        let (u2n_tx, n2t_tx, v2n_tx) =
+        let (u2n_tx, n2t_tx, v2n_tx, solver_id) =
             get_transaction_id_for_intent(user_registry, intent_hash).await;
 
         // Update our best result if we have new information
-        if u2n_tx.is_some() || n2t_tx.is_some() || v2n_tx.is_some() {
-            best_result = (u2n_tx, n2t_tx, v2n_tx, None);
+        if u2n_tx.is_some() || n2t_tx.is_some() || v2n_tx.is_some() || solver_id.is_some() {
+            if u2n_tx.is_some() {
+                best_result.0 = u2n_tx;
+            }
+            if n2t_tx.is_some() {
+                best_result.1 = n2t_tx;
+            }
+            if v2n_tx.is_some() {
+                best_result.2 = v2n_tx;
+            }
+            if solver_id.is_some() {
+                best_result.3 = solver_id;
+            }
+            best_result.4 = None;
 
             // If we have all transaction IDs, return immediately
-            if best_result.0.is_some() && best_result.1.is_some() && best_result.2.is_some() {
+            if best_result.0.is_some()
+                && best_result.1.is_some()
+                && best_result.2.is_some()
+            {
                 return best_result;
             }
 
@@ -1186,7 +1205,13 @@ async fn wait_for_transaction_result(
             .await
         {
             if let Some(error_msg) = tx_ids.error_message {
-                return (None, None, None, Some(error_msg));
+                return (
+                    None,
+                    None,
+                    None,
+                    tx_ids.final_solver_id.clone(),
+                    Some(error_msg),
+                );
             }
         }
 
@@ -1515,6 +1540,7 @@ async fn handle_user_mpc_deposit(
                                 user_to_network_tx_id: None,
                                 network_to_target_tx_id: None,
                                 vault_to_network_tx_id: None,
+                                final_solver_id: None,
                                 error_message: Some(format!("Invalid signature format: {}", e)),
                             }));
                         }
@@ -1543,6 +1569,7 @@ async fn handle_user_mpc_deposit(
                                         user_to_network_tx_id: None,
                                         network_to_target_tx_id: None,
                                         vault_to_network_tx_id: None,
+                                        final_solver_id: None,
                                         error_message: Some(format!(
                                             "Failed to recover signature: personal_sign={}, raw={}",
                                             e1, e2
@@ -1564,6 +1591,7 @@ async fn handle_user_mpc_deposit(
                                 user_to_network_tx_id: None,
                                 network_to_target_tx_id: None,
                                 vault_to_network_tx_id: None,
+                                final_solver_id: None,
                                 error_message: Some(
                                     "No user registration found for signer address.".to_string(),
                                 ),
@@ -1594,6 +1622,7 @@ async fn handle_user_mpc_deposit(
                                 user_to_network_tx_id: None,
                                 network_to_target_tx_id: None,
                                 vault_to_network_tx_id: None,
+                                final_solver_id: None,
                                 error_message: Some(
                                     "No eth_derived address found for user.".to_string(),
                                 ),
@@ -1613,6 +1642,7 @@ async fn handle_user_mpc_deposit(
                                 user_to_network_tx_id: None,
                                 network_to_target_tx_id: None,
                                 vault_to_network_tx_id: None,
+                                final_solver_id: None,
                                 error_message: Some(
                                     "No btc_derived address found for user.".to_string(),
                                 ),
@@ -1628,6 +1658,7 @@ async fn handle_user_mpc_deposit(
                             user_to_network_tx_id: None,
                             network_to_target_tx_id: None,
                             vault_to_network_tx_id: None,
+                            final_solver_id: None,
                             error_message: Some(format!(
                                 "Unsupported source chain: {}",
                                 source_chain
@@ -1678,6 +1709,7 @@ async fn handle_user_mpc_deposit(
                             user_to_network_tx_id: None,
                             network_to_target_tx_id: None,
                             vault_to_network_tx_id: None,
+                            final_solver_id: None,
                             error_message: Some(format!("Failed to process deposit intent: {}", e)),
                         }));
                     }
@@ -1696,6 +1728,7 @@ async fn handle_user_mpc_deposit(
                         user_to_network_tx_id: None,
                         network_to_target_tx_id: None,
                         vault_to_network_tx_id: None,
+                        final_solver_id: None,
                         error_message: Some("No details found in database for intent hash and no signature provided.".to_string()),
                     }));
                 }
@@ -1818,6 +1851,7 @@ async fn handle_user_mpc_deposit(
                 user_to_network_tx_id: None,
                 network_to_target_tx_id: None,
                 vault_to_network_tx_id: None,
+                final_solver_id: None,
                 error_message: Some(error_message),
             }));
         }
@@ -1833,7 +1867,7 @@ async fn handle_user_mpc_deposit(
 
     // Poll the database frequently for up to 10 seconds so that we can
     // return a response as soon as the transaction is available.
-    let (u2n_tx_id, n2t_tx_id, v2n_tx_id, chain_error) =
+    let (u2n_tx_id, n2t_tx_id, v2n_tx_id, final_solver_id, chain_error) =
         wait_for_transaction_result(&user_registry, &intent_hash, 20).await;
 
     // Log the transaction IDs if recorded
@@ -1866,6 +1900,7 @@ async fn handle_user_mpc_deposit(
             user_to_network_tx_id: u2n_tx_id,
             network_to_target_tx_id: n2t_tx_id,
             vault_to_network_tx_id: v2n_tx_id,
+            final_solver_id: final_solver_id.clone(),
             error_message: None,
         }))
     } else if let Some(error_msg) = chain_error {
@@ -1878,6 +1913,7 @@ async fn handle_user_mpc_deposit(
             user_to_network_tx_id: None,
             network_to_target_tx_id: None,
             vault_to_network_tx_id: None,
+            final_solver_id: final_solver_id.clone(),
             error_message: Some(error_msg), // This is the actual chain error!
         }))
     } else {
@@ -1890,6 +1926,7 @@ async fn handle_user_mpc_deposit(
             user_to_network_tx_id: None,
             network_to_target_tx_id: None,
             vault_to_network_tx_id: None,
+            final_solver_id,
             error_message: Some(format!(
                 "Transaction processing timeout. Intent hash: {}. The transaction may still be processing or may have failed. Please check the status later.",
                 intent_hash_hex
