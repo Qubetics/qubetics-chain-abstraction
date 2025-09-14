@@ -1593,8 +1593,7 @@ impl NetworkLayer {
                                     &intent_hash,
                                     &transaction_id,
                                     Some(&node_id),
-                                )
-                                .await
+                                ).await
                         },
                         "vault_to_network" => {
                             user_registry
@@ -1661,6 +1660,12 @@ impl NetworkLayer {
                 } else {
                     warn!("❌ [NETWORK] No user registry available to store synchronized transaction error");
                 }
+            }
+            GossipsubMessage::IntentHashBroadcast { intent_hash, node_id } => {
+                info!(
+                    "📨 [GOSSIPSUB] Received intent hash broadcast {} from node {}",
+                    intent_hash, node_id
+                );
             }
             GossipsubMessage::SolverReward { solver_address, reward } => {
                 info!("💰 [REWARD] Received solver reward for {}: {}", solver_address, reward);
@@ -2813,6 +2818,21 @@ impl NetworkLayer {
                 } else {
                     warn!("❌ [REWARD] Signing node not available for solver reward");
                 }
+            }
+            ChannelMessage::IntentHashBroadcast { intent_hash, node_id } => {
+                info!(
+                    "📡 [NETWORK] Broadcasting intent hash {} from node {}",
+                    intent_hash, node_id
+                );
+                let broadcast_msg = GossipsubMessage::IntentHashBroadcast {
+                    intent_hash: intent_hash.clone(),
+                    node_id: node_id.clone(),
+                };
+                let msg_bytes = serde_json::to_vec(&broadcast_msg)
+                    .map_err(|e| anyhow::anyhow!("Failed to serialize intent hash broadcast: {}", e))?;
+                let topic = gossipsub::IdentTopic::new("intent-hashes");
+                swarm.behaviour_mut().gossipsub.publish(topic, msg_bytes)?;
+                info!("📡 [NETWORK] Broadcasted intent hash to P2P network");
             }
             ChannelMessage::UserRegistration { ethereum_address, node_id } => {
                 info!("👤 [NETWORK] Broadcasting user registration: {} from node {}", ethereum_address, node_id);

@@ -1097,7 +1097,12 @@ async fn handle_register_user(
 async fn get_transaction_id_for_intent(
     user_registry: &DatabaseUserRegistry,
     intent_hash: &[u8],
-) -> (Option<String>, Option<String>, Option<String>, Option<String>) {
+) -> (
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+) {
     let intent_hash_hex = hex::encode(intent_hash);
 
     // Fetch any recorded transaction IDs for this intent hash
@@ -1126,7 +1131,6 @@ async fn get_transaction_id_for_intent(
                 vault_to_network_tx_id = Some(tx_id.clone());
             }
         }
-
         let final_solver_id = tx_ids.final_solver_id.clone();
         return (
             user_to_network_tx_id,
@@ -1165,25 +1169,12 @@ async fn wait_for_transaction_result(
 
     loop {
         // Check for transaction ids
-        let (u2n_tx, n2t_tx, v2n_tx, solver_id) =
+        let (u2n_tx, n2t_tx, v2n_tx, final_solver) =
             get_transaction_id_for_intent(user_registry, intent_hash).await;
 
         // Update our best result if we have new information
-        if u2n_tx.is_some() || n2t_tx.is_some() || v2n_tx.is_some() || solver_id.is_some() {
-            if u2n_tx.is_some() {
-                best_result.0 = u2n_tx;
-            }
-            if n2t_tx.is_some() {
-                best_result.1 = n2t_tx;
-            }
-            if v2n_tx.is_some() {
-                best_result.2 = v2n_tx;
-            }
-            if solver_id.is_some() {
-                best_result.3 = solver_id;
-            }
-            best_result.4 = None;
-
+        if u2n_tx.is_some() || n2t_tx.is_some() || v2n_tx.is_some() {
+            best_result = (u2n_tx, n2t_tx, v2n_tx, final_solver, None);
             // If we have all transaction IDs, return immediately
             if best_result.0.is_some()
                 && best_result.1.is_some()
@@ -1196,7 +1187,7 @@ async fn wait_for_transaction_result(
             // But don't wait too long - return after the original timeout if we have at least one
             if start.elapsed() >= timeout {
                 return best_result;
-            }
+        }
         }
 
         // Check for any recorded chain error

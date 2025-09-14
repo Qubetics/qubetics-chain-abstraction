@@ -560,7 +560,7 @@ impl DatabaseUserRegistry {
         user_to_network_tx_id: Option<String>,
         network_to_target_tx_id: Option<String>,
         vault_to_network_tx_id: Option<String>,
-        final_solver_id: Option<String>,
+        final_solver_id: Option<String>
     ) -> Result<(), String> {
         self.intent_storage
             .store_intent_transaction_ids(

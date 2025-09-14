@@ -58,6 +58,19 @@ pub struct IntentTransactionIds {
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
 
+impl IntentTransactionIds {
+    /// Get the solver node ID that completed the final transaction
+    pub fn get_final_solver(&self) -> Option<String> {
+        self.final_solver.clone()
+    }
+
+    /// Set the solver node ID for the final transaction
+    pub fn set_final_solver(&mut self, solver: Option<String>) {
+        self.final_solver = solver;
+        self.updated_at = Utc::now();
+    }
+}
+
 /// User registration data structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserRegistration {

@@ -466,6 +466,11 @@ impl IntentStorage {
             let old_tx_id = tx_ids.network_to_target_tx_id.clone();
             tx_ids.network_to_target_tx_id = Some(tx_id.clone());
             tx_ids.updated_at = Utc::now();
+            if old_tx_id.is_none() {
+                if let Some(solver) = final_solver {
+                    tx_ids.set_final_solver(Some(solver));
+                }
+            }
             changes_made = true;
 
             info!(
@@ -590,8 +595,7 @@ impl IntentStorage {
                 None,
                 None,
                 final_solver_id,
-            )
-            .await
+            ).await
     }
 
     /// Store network_to_target transaction ID
@@ -626,8 +630,7 @@ impl IntentStorage {
                 None,
                 Some(tx_id.to_string()),
                 final_solver_id,
-            )
-            .await
+            ).await
     }
 
     /// Store error message for a failed transaction
