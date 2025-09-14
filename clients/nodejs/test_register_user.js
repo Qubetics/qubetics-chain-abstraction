@@ -549,7 +549,7 @@ async function runTests() {
   const signerAddr = await wallet.getAddress();
   log(`\n🔑 Derived signer address from TEST_PRIVKEY: ${signerAddr}`, 'blue');
 
-  // // 1) DKG status
+  // 1) DKG status
   // await testDKGStatus();
 
   // // 2) Register ONLY the derived address 
@@ -565,7 +565,7 @@ async function runTests() {
 
   // 3) MPC deposit test WITHOUT tx_id (should pass Some(signer) to handle_deposit_intent)
   log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
-  const amount = 1000000000000000000; // keep safe for JSON
+  const amount = 100000000000000000; // keep safe for JSON
   await testUserMpcDeposit({ wallet, amount }); 
 
   // 4) Simple deposit test (intent only, no signature)
@@ -574,8 +574,8 @@ async function runTests() {
 
   // await new Promise(r => setTimeout(r, 10000));
   // 5) MPC deposit test WITHOUT tx_id and status
-  log(`\n🧪 Test 3: Deposit amount WITHOUT tx_id and status`, 'blue');
-  await testUserMpcDeposit({ wallet, amount });   
+  // log(`\n🧪 Test 3: Deposit amount WITHOUT tx_id and status`, 'blue');
+  // await testUserMpcDeposit({ wallet, amount });   
 
   // // 6) MPC deposit test with potentially problematic amount (might trigger errors)
   // log(`\n🧪 Test 4: Large deposit amount (might trigger errors)`, 'blue');

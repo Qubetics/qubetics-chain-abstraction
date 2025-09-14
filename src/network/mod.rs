@@ -347,7 +347,7 @@ impl NetworkLayer {
                 })
             })?
             .build();
-        self.subscribe_to_default_topics(&mut swarm)?;
+        // Topic subscription will be done later after determining first node start time (t1)
         info!("Starting Kademlia bootstrap...");
         
         // Node manager will determine if this is the first node
@@ -478,6 +478,57 @@ impl NetworkLayer {
                 }
             };
         }
+    }
+
+    /// Check if adding peers is allowed (within 5-minute window)
+    fn is_peer_addition_allowed(&self) -> bool {
+        if let Some(t1) = self.first_node_start_time {
+            let current_time = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            let elapsed_since_t1 = current_time.saturating_sub(t1);
+            let five_minutes = 5 * 60; // 5 minutes in seconds
+            
+            if elapsed_since_t1 > five_minutes {
+                warn!("⏰ Peer addition blocked: More than 5 minutes have passed since first node start time t1 (elapsed: {}s, t1: {})", elapsed_since_t1, t1);
+                return false;
+            }
+            
+            info!("✅ Within 5-minute window - peer addition allowed (elapsed: {}s since t1: {})", elapsed_since_t1, t1);
+            true
+        } else {
+            // If we don't have t1 yet, allow peer addition (for bootstrap process)
+            info!("⚠️ No first node start time available yet - allowing peer addition");
+            true
+        }
+    }
+
+    /// Subscribe to topics with 5-minute rule check
+    fn subscribe_to_topics_with_time_check(
+        &mut self,
+        swarm: &mut libp2p::Swarm<MPCBehaviour>,
+    ) -> Result<()> {
+        // Check if more than 5 minutes have passed since first node start time
+        if let Some(t1) = self.first_node_start_time {
+            let current_time = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            let elapsed_since_t1 = current_time.saturating_sub(t1);
+            let five_minutes = 5 * 60; // 5 minutes in seconds
+            
+            if elapsed_since_t1 > five_minutes {
+                warn!("⏰ Topic subscription skipped: More than 5 minutes have passed since first node start time t1 (elapsed: {}s, t1: {})", elapsed_since_t1, t1);
+                return Ok(());
+            }
+            
+            info!("✅ Within 5-minute window - proceeding with topic subscription (elapsed: {}s since t1: {})", elapsed_since_t1, t1);
+        } else {
+            info!("⚠️ No first node start time available yet - proceeding with topic subscription");
+        }
+        
+        self.subscribe_to_default_topics(swarm)
     }
 
     fn subscribe_to_default_topics(
@@ -635,9 +686,14 @@ impl NetworkLayer {
                         }
                     }
 
-                    self.node_manager
-                            .add_node(peer_id)
-                            .map_err(|e| anyhow::anyhow!(e))?;
+                    // Check 5-minute rule before adding peer to node manager
+                    if self.is_peer_addition_allowed() {
+                        self.node_manager
+                                .add_node(peer_id)
+                                .map_err(|e| anyhow::anyhow!(e))?;
+                    } else {
+                        warn!("🚫 Peer {} not added to node manager - outside 5-minute window", peer_id);
+                    }
 
                     
                     let total = self.node_manager.get_total_nodes();
@@ -878,6 +934,13 @@ impl NetworkLayer {
                         match response {
                             RPCResponse::PeerList { peers } => {
                                 info!("🔄 Merging peer‐set from {}: {:?}", peer, peers);
+                                
+                                // Check 5-minute rule before adding peers from peer list
+                                if !self.is_peer_addition_allowed() {
+                                    warn!("🚫 Peer list merging blocked - outside 5-minute window");
+                                    return Ok(());
+                                }
+                                
                                 for SerializablePeerId(p) in peers {
                                     if !self.node_manager.get_active_nodes().contains(&p) {
                                         self.node_manager.add_node(p.clone())
@@ -912,6 +975,12 @@ impl NetworkLayer {
                                     if self.first_node_start_time.is_none() {
                                         self.first_node_start_time = Some(t1);
                                         info!("✅ Synced first node start time (t1) to: {}", t1);
+                                        
+                                        // Subscribe to topics now that we have t1 (with 5-minute check)
+                                        info!("🔔 Attempting to subscribe to topics after syncing t1...");
+                                        if let Err(e) = self.subscribe_to_topics_with_time_check(swarm) {
+                                            warn!("❌ Failed to subscribe to topics: {:?}", e);
+                                        }
                                     }
                                 } else {
                                     info!("ℹ️ Peer {} doesn't have first node start time either", peer);
@@ -1944,6 +2013,12 @@ impl NetworkLayer {
                     return Ok(());
                 }
 
+                // Check 5-minute rule before adding peer to node manager
+                if !self.is_peer_addition_allowed() {
+                    warn!("🚫 Peer {} not added to node manager - outside 5-minute window", peer);
+                    return Ok(());
+                }
+
                 match self.node_manager.add_node(peer) {
                     Ok(_) => {
                         info!("✅ Successfully added peer {} to node manager", peer);
@@ -2688,6 +2763,12 @@ impl NetworkLayer {
                         .as_secs();
                     self.first_node_start_time = Some(t1);
                     info!("🕐 First node detected after bootstrap timeout (total_nodes=1) - setting t1: {}", t1);
+                    
+                    // Subscribe to topics now that we have t1
+                    info!("🔔 Subscribing to topics as first node...");
+                    if let Err(e) = self.subscribe_to_topics_with_time_check(swarm) {
+                        warn!("❌ Failed to subscribe to topics: {:?}", e);
+                    }
                 } else if total_nodes > 1 {
                     info!("🔄 Found {} nodes in network - will sync t1 from existing nodes", total_nodes);
                 }
