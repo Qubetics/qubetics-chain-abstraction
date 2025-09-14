@@ -1664,12 +1664,16 @@ async fn handle_user_mpc_deposit(
                     //         )),
                     //     }));
                     // }
-                    // Store intent hash in user registry at last
-                    if let Err(e) = user_registry
-                        .store_intent_hash(intent_hash.to_vec(), &signer, &req.msg)
-                        .await
-                    {
-                        error!("❌ Failed to store intent hash: {}", e);
+                    // Store intent hash via network channel and broadcast
+                    let intent_hash_bytes = intent_hash.to_vec();
+                    let store_msg = ChannelMessage::IntentHash {
+                        intent_hash: intent_hash_bytes.clone(),
+                        signer: signer.clone(),
+                        intent: req.msg.clone(),
+                    };
+                    let tx_sender = message_tx.lock().await;
+                    if let Err(e) = tx_sender.send(store_msg).await {
+                        error!("❌ Failed to dispatch intent hash store message: {}", e);
                         return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
                             status: "error".to_string(),
                             signer_address: signer.clone(),
@@ -1682,7 +1686,7 @@ async fn handle_user_mpc_deposit(
                         }));
                     }
 
-                    info!("✅ Intent hash stored successfully for user: {}", signer);
+                    info!("✅ Intent hash store message sent for user: {}", signer);
 
                     user_reg
                 }
