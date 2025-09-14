@@ -2732,7 +2732,9 @@ impl SigningNode {
                     },
                     Some(crate::types::TransactionType::NetworkToTarget) => {
                         // Network-to-target transaction
-                        let result = user_registry.store_network_to_target_tx_id(intent_hash, tx_id).await;
+                        let result = user_registry
+                            .store_network_to_target_tx_id(intent_hash, tx_id, &self.id)
+                            .await;
                         match &result {
                             Ok(()) => {
                                 info!("💾 [SIGNING] Stored network-to-target transaction ID {} for intent {} (round {})", tx_id, intent_hash, round);
@@ -2772,7 +2774,9 @@ impl SigningNode {
                             ("user_to_network", result)
                         } else {
                             // Network-to-target transaction
-                            let result = user_registry.store_network_to_target_tx_id(intent_hash, tx_id).await;
+                            let result = user_registry
+                                .store_network_to_target_tx_id(intent_hash, tx_id, &self.id)
+                                .await;
                             match &result {
                                 Ok(()) => {
                                     info!("💾 [SIGNING] Stored network-to-target transaction ID {} for intent {} (round {})", tx_id, intent_hash, round);
