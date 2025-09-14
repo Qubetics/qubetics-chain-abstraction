@@ -170,6 +170,29 @@ impl Database {
         Ok(())
     }
 
+    /// Store keypair bytes
+    pub fn put_keypair(&self, key: &str, keypair_bytes: &[u8]) -> Result<()> {
+        self.db.put(key.as_bytes(), keypair_bytes)
+            .map_err(|e| anyhow!("Failed to store keypair: {}", e))?;
+        debug!("🔑 [DATABASE] Stored keypair with key: {}", key);
+        Ok(())
+    }
+
+    /// Get keypair bytes
+    pub fn get_keypair(&self, key: &str) -> Result<Option<Vec<u8>>> {
+        match self.db.get(key.as_bytes()) {
+            Ok(Some(bytes)) => {
+                debug!("🔑 [DATABASE] Retrieved keypair with key: {}", key);
+                Ok(Some(bytes))
+            }
+            Ok(None) => {
+                debug!("🔑 [DATABASE] Keypair not found with key: {}", key);
+                Ok(None)
+            }
+            Err(e) => Err(anyhow!("Failed to get keypair: {}", e)),
+        }
+    }
+
     /// Check if a key exists
     pub fn contains_key<K>(&self, key: &K) -> Result<bool>
     where
@@ -406,6 +429,7 @@ pub mod keys {
     pub const SOLVER_REWARD: &str = "solver_reward:";
     pub const CLAIMED_REQUEST_AMOUNT: &str = "claimed_request_amount:";
     pub const INTENT_REWARD_STATUS: &str = "intent_reward_status:";
+    pub const PEER_KEYPAIR: &str = "peer_keypair";
 }
 
 /// Utility functions for key generation

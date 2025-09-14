@@ -27,7 +27,7 @@ use std::{
 };
 use tokio::io;
 use tokio::task::JoinHandle;
-use tokio::sync::{mpsc};
+use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, error, info, warn};
 use ff::PrimeField;
 
@@ -35,7 +35,7 @@ use crate::{chain::EthereumTransaction, commands::CommandProcessor, rpc_server::
 use crate::consensus::ConsensusNode;
 use crate::adkg_secp256k1::DKGNode;
 use crate::node_management::NodeMembership;
-use crate::signing::SigningNode;
+use crate::signing::{SigningNode, DatabaseSigningNode};
 use crate::user_registry::{DatabaseUserRegistry, TransactionStatus};
 use crate::{
     adkg_secp256k1::DKGStatus,
@@ -92,18 +92,20 @@ pub struct NetworkLayer {
     topics: HashSet<TopicHash>,
     dkg_node: Option<DKGNode>,
     signing_node: Option<SigningNode>,
+    db_signing_node: Option<Arc<Mutex<DatabaseSigningNode>>>,
     consensus_node: Option<ConsensusNode>,
     command_processor: Option<CommandProcessor>,
     user_registry: Option<DatabaseUserRegistry>,
     node_manager: Box<dyn NodeMembership>,
     scheduled_dkg_task: Option<JoinHandle<()>>,
     first_node_start_time: Option<u64>, // t1 - Unix timestamp when first node started
+    vrf_round_requested: bool, // Flag to prevent duplicate VRF round requests
 }
 
 impl NetworkLayer {
     pub async fn new(node_manager: Box<dyn NodeMembership>) -> Result<Self> {
-        let local_key = Keypair::generate_ed25519();
-        let local_peer_id = PeerId::from(local_key.public());
+        // Load or create persistent keypair
+        let (local_key, local_peer_id) = Self::load_or_create_keypair().await?;
         let (tx, rx) = mpsc::channel(100);
 
         Ok(Self {
@@ -114,12 +116,14 @@ impl NetworkLayer {
             topics: HashSet::new(),
             dkg_node: None,
             signing_node: None,
+            db_signing_node: None,
             consensus_node: None,
             command_processor: None,
             user_registry: None,
             node_manager,
             scheduled_dkg_task: None,
             first_node_start_time: None,
+            vrf_round_requested: false,
         })
     }
 
@@ -129,6 +133,10 @@ impl NetworkLayer {
 
     pub fn set_signing_node(&mut self, signing_node: SigningNode) {
         self.signing_node = Some(signing_node);
+    }
+
+    pub fn set_db_signing_node(&mut self, db_signing_node: Arc<Mutex<DatabaseSigningNode>>) {
+        self.db_signing_node = Some(db_signing_node);
     }
 
     pub fn set_consensus_node(&mut self, node: ConsensusNode) {
@@ -188,6 +196,43 @@ impl NetworkLayer {
 
     pub fn get_local_peer_id<'a>(&'a self) -> &'a PeerId {
         &self.local_peer_id
+    }
+
+    /// Load existing keypair from database or create a new one
+    async fn load_or_create_keypair() -> Result<(Keypair, PeerId)> {
+        use crate::database::{Database, DatabaseConfig, keys};
+        
+        // Create database connection
+        let db_config = DatabaseConfig::default();
+        let database = Database::new(db_config)?;
+        
+        // Try to load existing keypair
+        if let Some(keypair_bytes) = database.get_keypair(keys::PEER_KEYPAIR)? {
+            match Keypair::from_protobuf_encoding(&keypair_bytes) {
+                Ok(keypair) => {
+                    let peer_id = PeerId::from(keypair.public());
+                    info!("🔄 Loaded existing keypair - Peer ID: {}", peer_id);
+                    return Ok((keypair, peer_id));
+                }
+                Err(e) => {
+                    warn!("⚠️ Failed to decode existing keypair: {}. Generating new one.", e);
+                }
+            }
+        } else {
+            info!("🆕 No existing keypair found. Generating new one.");
+        }
+        
+        // Generate new keypair
+        let keypair = Keypair::generate_ed25519();
+        let peer_id = PeerId::from(keypair.public());
+        
+        // Save keypair to database
+        let keypair_bytes = keypair.to_protobuf_encoding()
+            .map_err(|e| anyhow::anyhow!("Failed to encode keypair: {}", e))?;
+        database.put_keypair(keys::PEER_KEYPAIR, &keypair_bytes)?;
+        
+        info!("✅ Generated and saved new keypair - Peer ID: {}", peer_id);
+        Ok((keypair, peer_id))
     }
 
     /// Broadcast a user registration to all other nodes in the P2P network
@@ -347,7 +392,24 @@ impl NetworkLayer {
                 })
             })?
             .build();
-        // Topic subscription will be done later after determining first node start time (t1)
+        
+        // Check if this is an existing node with DKG data - if so, subscribe to topics immediately
+        if let Some(dkg_node) = &self.dkg_node {
+            let has_final_secret = dkg_node.get_final_secret_share().await.is_some();
+            let has_final_public = dkg_node.get_final_public_key().await.is_some();
+            
+            if has_final_secret && has_final_public {
+                info!("🔄 Existing node detected with DKG data - subscribing to topics immediately");
+                if let Err(e) = self.subscribe_to_default_topics(&mut swarm) {
+                    warn!("❌ Failed to subscribe to topics for existing node: {:?}", e);
+                }
+            } else {
+                info!("🆕 New node detected - topic subscription will be done later after determining first node start time (t1)");
+            }
+        } else {
+            info!("🆕 No DKG node available - topic subscription will be done later after determining first node start time (t1)");
+        }
+        
         info!("Starting Kademlia bootstrap...");
         
         // Node manager will determine if this is the first node
@@ -480,8 +542,19 @@ impl NetworkLayer {
         }
     }
 
-    /// Check if adding peers is allowed (within 5-minute window)
-    fn is_peer_addition_allowed(&self) -> bool {
+    /// Check if adding peers is allowed (within 5-minute window or existing node restart)
+    async fn is_peer_addition_allowed(&self) -> bool {
+        // Check if this is an existing node restarting (has DKG data)
+        if let Some(dkg_node) = &self.dkg_node {
+            let has_final_secret = dkg_node.get_final_secret_share().await.is_some();
+            let has_final_public = dkg_node.get_final_public_key().await.is_some();
+            
+            if has_final_secret && has_final_public {
+                info!("✅ Existing node with DKG data - peer addition allowed (bypassing 5-minute rule)");
+                return true;
+            }
+        }
+        
         if let Some(t1) = self.first_node_start_time {
             let current_time = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -504,11 +577,22 @@ impl NetworkLayer {
         }
     }
 
-    /// Subscribe to topics with 5-minute rule check
-    fn subscribe_to_topics_with_time_check(
+    /// Subscribe to topics with 5-minute rule check (allows existing nodes)
+    async fn subscribe_to_topics_with_time_check(
         &mut self,
         swarm: &mut libp2p::Swarm<MPCBehaviour>,
     ) -> Result<()> {
+        // Check if this is an existing node restarting (has DKG data)
+        if let Some(dkg_node) = &self.dkg_node {
+            let has_final_secret = dkg_node.get_final_secret_share().await.is_some();
+            let has_final_public = dkg_node.get_final_public_key().await.is_some();
+            
+            if has_final_secret && has_final_public {
+                info!("✅ Existing node with DKG data - topic subscription allowed (bypassing 5-minute rule)");
+                return self.subscribe_to_default_topics(swarm);
+            }
+        }
+        
         // Check if more than 5 minutes have passed since first node start time
         if let Some(t1) = self.first_node_start_time {
             let current_time = std::time::SystemTime::now()
@@ -687,7 +771,7 @@ impl NetworkLayer {
                     }
 
                     // Check 5-minute rule before adding peer to node manager
-                    if self.is_peer_addition_allowed() {
+                    if self.is_peer_addition_allowed().await {
                         self.node_manager
                                 .add_node(peer_id)
                                 .map_err(|e| anyhow::anyhow!(e))?;
@@ -902,6 +986,31 @@ impl NetworkLayer {
                                     first_node_start_time: self.first_node_start_time,
                                 }
                             }
+                            RPCRequest::RequestCurrentVrfRound => {
+                                info!("🔄 Received request for current VRF round from peer {}", peer);
+                                let mut current_round = None;
+                                
+                                // Check signing_node first
+                                if let Some(signing_node) = &self.signing_node {
+                                    if let Some(vrf_service) = &signing_node.vrf_service {
+                                        current_round = Some(vrf_service.get_current_round().await);
+                                    }
+                                }
+                                
+                                // If no round from signing_node, check db_signing_node
+                                if current_round.is_none() {
+                                    if let Some(db_signing_node) = &self.db_signing_node {
+                                        let node = db_signing_node.lock().await;
+                                        if let Some(vrf_service) = &node.vrf_service {
+                                            current_round = Some(vrf_service.get_current_round().await);
+                                        }
+                                    }
+                                }
+                                
+                                RPCResponse::CurrentVrfRoundResponse {
+                                    current_round,
+                                }
+                            }
                             RPCRequest::ShareFirstNodeStartTime { first_node_start_time } => {
                                 info!("🕐 Received first node start time: {} from peer {}", first_node_start_time, peer);
                                 // Only update if we don't have a time yet (new node syncing)
@@ -936,7 +1045,7 @@ impl NetworkLayer {
                                 info!("🔄 Merging peer‐set from {}: {:?}", peer, peers);
                                 
                                 // Check 5-minute rule before adding peers from peer list
-                                if !self.is_peer_addition_allowed() {
+                                if !self.is_peer_addition_allowed().await {
                                     warn!("🚫 Peer list merging blocked - outside 5-minute window");
                                     return Ok(());
                                 }
@@ -978,12 +1087,32 @@ impl NetworkLayer {
                                         
                                         // Subscribe to topics now that we have t1 (with 5-minute check)
                                         info!("🔔 Attempting to subscribe to topics after syncing t1...");
-                                        if let Err(e) = self.subscribe_to_topics_with_time_check(swarm) {
+                                        if let Err(e) = self.subscribe_to_topics_with_time_check(swarm).await {
                                             warn!("❌ Failed to subscribe to topics: {:?}", e);
                                         }
                                     }
                                 } else {
                                     info!("ℹ️ Peer {} doesn't have first node start time either", peer);
+                                }
+                            }
+                            
+                            RPCResponse::CurrentVrfRoundResponse { current_round } => {
+                                if let Some(network_round) = current_round {
+                                    info!("🔄 Received current VRF round response: {} from peer {}", network_round, peer);
+                                    
+                                    // Simple VRF round sync for both signing nodes
+                                    if let Some(signing_node) = &mut self.signing_node {
+                                        signing_node.sync_vrf_round_with_network(network_round).await;
+                                    }
+                                    if let Some(db_signing_node) = &mut self.db_signing_node {
+                                        let mut node = db_signing_node.lock().await;
+                                        node.sync_vrf_round_with_network(network_round).await;
+                                    }
+                                    
+                                    info!("✅ [NETWORK] VRF round synced to network round: {}", network_round);
+                                    // VRF sync successful, don't need to request again
+                                } else {
+                                    info!("ℹ️ Peer {} doesn't have current VRF round yet", peer);
                                 }
                             }
                             
@@ -2014,7 +2143,7 @@ impl NetworkLayer {
                 }
 
                 // Check 5-minute rule before adding peer to node manager
-                if !self.is_peer_addition_allowed() {
+                if !self.is_peer_addition_allowed().await {
                     warn!("🚫 Peer {} not added to node manager - outside 5-minute window", peer);
                     return Ok(());
                 }
@@ -2764,13 +2893,54 @@ impl NetworkLayer {
                     self.first_node_start_time = Some(t1);
                     info!("🕐 First node detected after bootstrap timeout (total_nodes=1) - setting t1: {}", t1);
                     
+                    // First node starts with default round 0 (already initialized in constructor)
+                    
                     // Subscribe to topics now that we have t1
                     info!("🔔 Subscribing to topics as first node...");
-                    if let Err(e) = self.subscribe_to_topics_with_time_check(swarm) {
+                    if let Err(e) = self.subscribe_to_topics_with_time_check(swarm).await {
                         warn!("❌ Failed to subscribe to topics: {:?}", e);
                     }
-                } else if total_nodes > 1 {
+                } else if total_nodes > 1 && !self.vrf_round_requested {
                     info!("🔄 Found {} nodes in network - will sync t1 from existing nodes", total_nodes);
+                    self.vrf_round_requested = true; // Prevent duplicate requests
+                    
+                    // Request current VRF round from existing nodes for proper initialization
+                    let peers: HashSet<PeerId> = self.node_manager.get_active_nodes();
+                    if let Some(peer) = peers.iter().find(|p| **p != self.local_peer_id) {
+                        // Check if we're connected to this peer
+                        if swarm.is_connected(peer) {
+                            info!("📡 Requesting current VRF round from connected peer: {:?}", peer);
+                            let request = RPCRequest::RequestCurrentVrfRound;
+                            let _request_id = swarm
+                                .behaviour_mut()
+                                .request_response
+                                .send_request(peer, request);
+                            info!("📤 Sent VRF round request to peer {}", peer);
+                        } else {
+                            warn!("⚠️ Peer {} not connected, cannot request VRF round", peer);
+                            
+                            // Try to find another connected peer
+                            let mut found_connected_peer = false;
+                            for other_peer in peers.iter() {
+                                if *other_peer != self.local_peer_id && swarm.is_connected(other_peer) {
+                                    info!("📡 Requesting current VRF round from alternative connected peer: {:?}", other_peer);
+                                    let request = RPCRequest::RequestCurrentVrfRound;
+                                    let _request_id = swarm
+                                        .behaviour_mut()
+                                        .request_response
+                                        .send_request(other_peer, request);
+                                    info!("📤 Sent VRF round request to peer {}", other_peer);
+                                    found_connected_peer = true;
+                                    break;
+                                }
+                            }
+                            
+                            if !found_connected_peer {
+                                warn!("⚠️ No connected peers found for VRF round sync - will retry later");
+                                self.vrf_round_requested = false; // Allow retry later
+                            }
+                        }
+                    }
                 }
             }
         }

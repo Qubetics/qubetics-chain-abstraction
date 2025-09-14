@@ -113,7 +113,7 @@ pub struct SigningNode {
     final_nodes_by_round: Arc<RwLock<HashMap<u64, String>>>, // round -> final_node_id
     aggregated_rounds: Arc<RwLock<std::collections::HashSet<u64>>>, // Track rounds that have been aggregated
     message_tx: mpsc::Sender<ChannelMessage>,
-    vrf_service: Option<VrfService>, // VRF service for node selection
+    pub vrf_service: Option<VrfService>, // VRF service for node selection
     chain_handler: Arc<dyn ChainHandler>, // Chain-specific operations
     consensus_node: Option<ConsensusNode>, // Consensus node for final node selection
     available_nodes: Option<Vec<PeerId>>,  // Available nodes from node manager
@@ -2617,6 +2617,39 @@ impl SigningNode {
     pub fn set_database(&mut self, database: Arc<crate::database::Database>) {
         self.database = Some(database);
         info!("🗄️ [SIGNING] Node {} database set", self.id);
+    }
+
+    /// Initialize VrfService with network round synchronization
+    /// This should be called only after the node has connected to the network
+    /// and received round information from other nodes
+    pub async fn initialize_vrf_service_with_network_sync(&mut self, network_round: Option<u64>) {
+        if self.vrf_service.is_some() {
+            info!("🔄 [SIGNING] VrfService already initialized for node {}", self.id);
+            return;
+        }
+
+        let peer_id = PeerId::from_str(&self.id).unwrap_or_else(|_| PeerId::random());
+        
+        // Create VrfService with proper initial round
+        let mut vrf_service = VrfService::new(peer_id, self.message_tx.clone());
+        
+        // Set the current round to match the network
+        if let Some(network_round) = network_round {
+            vrf_service.set_current_round(network_round).await;
+            info!("🔄 [SIGNING] Initialized VrfService for node {} with network round: {}", self.id, network_round);
+        } else {
+            info!("🆕 [SIGNING] Initialized VrfService for node {} with default round: 0 (first node)", self.id);
+        }
+        
+        self.vrf_service = Some(vrf_service);
+    }
+
+    /// Sync VRF round with network (simple approach)
+    pub async fn sync_vrf_round_with_network(&mut self, network_round: u64) {
+        if let Some(vrf_service) = &mut self.vrf_service {
+            vrf_service.set_current_round(network_round).await;
+            info!("🔄 [SIGNING] Synced VRF round to: {}", network_round);
+        }
     }
 
     /// Store transaction error for a round if intent hash is available and broadcast to other nodes

@@ -1,8 +1,8 @@
 use anyhow::{anyhow, Result};
 use libp2p::PeerId;
+use std::str::FromStr;
 use secp256k1::{self, PublicKey, Secp256k1, SecretKey};
 use std::collections::HashMap;
-use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 use tracing::info;
@@ -26,7 +26,7 @@ pub struct DatabaseSigningNode {
     consensus_storage: ConsensusStorage,
     aggregated_rounds: Arc<RwLock<std::collections::HashSet<u64>>>, // Keep in memory for performance
     message_tx: mpsc::Sender<ChannelMessage>,
-    vrf_service: Option<VrfService>,
+    pub vrf_service: Option<VrfService>,
     chain_handler: Arc<dyn ChainHandler>,
     consensus_node: Option<ConsensusNode>,
     available_nodes: Option<Vec<PeerId>>,
@@ -250,6 +250,39 @@ impl DatabaseSigningNode {
     /// Set VRF service
     pub fn set_vrf_service(&mut self, vrf_service: VrfService) {
         self.vrf_service = Some(vrf_service);
+    }
+
+    /// Initialize VrfService with network round synchronization
+    /// This should be called only after the node has connected to the network
+    /// and received round information from other nodes
+    pub async fn initialize_vrf_service_with_network_sync(&mut self, network_round: Option<u64>) {
+        if self.vrf_service.is_some() {
+            info!("🔄 [DB_SIGNING] VrfService already initialized for node {}", self.id);
+            return;
+        }
+
+        let peer_id = PeerId::from_str(&self.id).unwrap_or_else(|_| PeerId::random());
+        
+        // Create VrfService with proper initial round
+        let mut vrf_service = VrfService::new(peer_id, self.message_tx.clone());
+        
+        // Set the current round to match the network
+        if let Some(network_round) = network_round {
+            vrf_service.set_current_round(network_round).await;
+            info!("🔄 [DB_SIGNING] Initialized VrfService for node {} with network round: {}", self.id, network_round);
+        } else {
+            info!("🆕 [DB_SIGNING] Initialized VrfService for node {} with default round: 0 (first node)", self.id);
+        }
+        
+        self.vrf_service = Some(vrf_service);
+    }
+
+    /// Sync VRF round with network (simple approach)
+    pub async fn sync_vrf_round_with_network(&mut self, network_round: u64) {
+        if let Some(vrf_service) = &mut self.vrf_service {
+            vrf_service.set_current_round(network_round).await;
+            info!("🔄 [DB_SIGNING] Synced VRF round to: {}", network_round);
+        }
     }
 
     /// Set consensus node

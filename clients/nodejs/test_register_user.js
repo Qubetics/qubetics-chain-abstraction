@@ -565,7 +565,7 @@ async function runTests() {
 
   // 3) MPC deposit test WITHOUT tx_id (should pass Some(signer) to handle_deposit_intent)
   log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
-  const amount = 100000000000000000; // keep safe for JSON
+  const amount = 1000000000000; // keep safe for JSON
   await testUserMpcDeposit({ wallet, amount }); 
 
   // 4) Simple deposit test (intent only, no signature)
