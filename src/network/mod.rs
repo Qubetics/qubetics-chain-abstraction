@@ -418,6 +418,7 @@ impl NetworkLayer {
             "vrf-selection",
             "transactions",
             "deposit-intents",
+            "intent-hashes",
             "dkg-commands",
             "signatures-to-final-node",
             "user-registrations",
@@ -1450,6 +1451,26 @@ impl NetworkLayer {
                     warn!("❌ [REWARD] Signing node not available for solver reward");
                 }
             }
+            GossipsubMessage::IntentHash { intent_hash, signer, intent } => {
+                info!("📝 [GOSSIPSUB] Received intent hash {} from {}", intent_hash, signer);
+
+                if let Some(user_registry) = &self.user_registry {
+                    match hex::decode(&intent_hash) {
+                        Ok(bytes) => {
+                            if let Err(e) = user_registry.store_intent_hash(bytes, &signer, &intent).await {
+                                warn!("❌ [GOSSIPSUB] Failed to store intent hash: {}", e);
+                            } else {
+                                info!("✅ [GOSSIPSUB] Stored intent hash from {}", signer);
+                            }
+                        }
+                        Err(e) => {
+                            warn!("❌ [GOSSIPSUB] Invalid intent hash {}: {}", intent_hash, e);
+                        }
+                    }
+                } else {
+                    warn!("❌ [GOSSIPSUB] No user registry available to store intent hash");
+                }
+            }
             GossipsubMessage::DepositIntent { intent, intent_id, user_eth_address, transaction_type, amount } => {
                 info!("📝 [GOSSIPSUB] Processing deposit intent received via gossipsub: {:?} (ID: {})", intent, intent_id);
                 
@@ -1996,6 +2017,31 @@ impl NetworkLayer {
                     .behaviour_mut()
                     .request_response
                     .send_request(&peer_id, request);
+            }
+            ChannelMessage::IntentHash { intent_hash, signer, intent } => {
+                info!("📝 [NETWORK] Storing intent hash from signer {}", signer);
+
+                if let Some(user_registry) = &self.user_registry {
+                    if let Err(e) = user_registry.store_intent_hash(intent_hash.clone(), &signer, &intent).await {
+                        warn!("❌ [NETWORK] Failed to store intent hash: {}", e);
+                    } else {
+                        info!("✅ [NETWORK] Intent hash stored locally");
+                    }
+                } else {
+                    warn!("❌ [NETWORK] No user registry available to store intent hash");
+                }
+
+                let intent_hash_hex = hex::encode(&intent_hash);
+                let gossip_msg = GossipsubMessage::IntentHash {
+                    intent_hash: intent_hash_hex.clone(),
+                    signer: signer.clone(),
+                    intent: intent.clone(),
+                };
+                let msg_bytes = serde_json::to_vec(&gossip_msg)
+                    .map_err(|e| anyhow::anyhow!("Failed to serialize intent hash message: {}", e))?;
+                let topic = gossipsub::IdentTopic::new("intent-hashes");
+                swarm.behaviour_mut().gossipsub.publish(topic, msg_bytes)?;
+                info!("📡 [NETWORK] Broadcasted intent hash {}", intent_hash_hex);
             }
             ChannelMessage::DepositIntent { intent, intent_id, user_eth_address, transaction_type, amount } => {
                 info!("📝 [NETWORK] Processing deposit intent locally: {:?}", intent);
