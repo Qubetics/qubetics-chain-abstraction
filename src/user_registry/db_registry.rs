@@ -459,6 +459,7 @@ impl DatabaseUserRegistry {
         &self,
         intent_hash: &str,
         tx_id: &str,
+        solver_id: Option<&str>,
     ) -> Result<(), String> {
         info!("🔗 [DB_USER_REGISTRY] Processing user_to_network transaction ID storage:");
         info!("  🔗 Intent hash: {}", intent_hash);
@@ -467,7 +468,7 @@ impl DatabaseUserRegistry {
 
         match self
             .intent_storage
-            .store_user_to_network_tx_id(intent_hash, tx_id)
+            .store_user_to_network_tx_id(intent_hash, tx_id, solver_id.map(|s| s.to_string()))
             .await
         {
             Ok(()) => {
@@ -491,7 +492,7 @@ impl DatabaseUserRegistry {
         &self,
         intent_hash: &str,
         tx_id: &str,
-        solver: &str,
+        solver_id: Option<&str>,
     ) -> Result<(), String> {
         info!("🔗 [DB_USER_REGISTRY] Processing network_to_target transaction ID storage:");
         info!("  🔗 Intent hash: {}", intent_hash);
@@ -500,7 +501,7 @@ impl DatabaseUserRegistry {
 
         match self
             .intent_storage
-            .store_network_to_target_tx_id(intent_hash, tx_id, solver)
+            .store_network_to_target_tx_id(intent_hash, tx_id, solver_id.map(|s| s.to_string()))
             .await
         {
             Ok(()) => {
@@ -524,6 +525,7 @@ impl DatabaseUserRegistry {
         &self,
         intent_hash: &str,
         tx_id: &str,
+        solver_id: Option<&str>,
     ) -> Result<(), String> {
         info!("🔗 [DB_USER_REGISTRY] Processing vault_to_network transaction ID storage:");
         info!("  🔗 Intent hash: {}", intent_hash);
@@ -532,7 +534,7 @@ impl DatabaseUserRegistry {
 
         match self
             .intent_storage
-            .store_vault_to_network_tx_id(intent_hash, tx_id)
+            .store_vault_to_network_tx_id(intent_hash, tx_id, solver_id.map(|s| s.to_string()))
             .await
         {
             Ok(()) => {
@@ -558,7 +560,7 @@ impl DatabaseUserRegistry {
         user_to_network_tx_id: Option<String>,
         network_to_target_tx_id: Option<String>,
         vault_to_network_tx_id: Option<String>,
-        final_solver: Option<String>,
+        final_solver_id: Option<String>
     ) -> Result<(), String> {
         self.intent_storage
             .store_intent_transaction_ids(
@@ -566,7 +568,7 @@ impl DatabaseUserRegistry {
                 user_to_network_tx_id,
                 network_to_target_tx_id,
                 vault_to_network_tx_id,
-                final_solver,
+                final_solver_id,
             )
             .await
             .map_err(|e| e.to_string())?;
@@ -583,6 +585,7 @@ impl DatabaseUserRegistry {
         &self,
         intent_hash: &str,
         error_message: &str,
+        solver_id: Option<&str>,
     ) -> Result<(), String> {
         info!("💥 [DB_USER_REGISTRY] Processing transaction error storage:");
         info!("  🔗 Intent hash: {}", intent_hash);
@@ -590,7 +593,11 @@ impl DatabaseUserRegistry {
 
         match self
             .intent_storage
-            .store_transaction_error(intent_hash, error_message)
+            .store_transaction_error(
+                intent_hash,
+                error_message,
+                solver_id.map(|s| s.to_string()),
+            )
             .await
         {
             Ok(()) => {
