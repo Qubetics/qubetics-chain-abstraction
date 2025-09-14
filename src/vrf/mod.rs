@@ -183,6 +183,13 @@ impl VrfService {
         *current
     }
 
+    /// Set current round (used for network synchronization)
+    pub async fn set_current_round(&mut self, round: u64) {
+        let mut current = self.current_round.write().await;
+        *current = round;
+        info!("🔄 [VRF] Node {} set current round to: {}", self.node_id, round);
+    }
+
     /// Get VRF public key
     pub async fn get_public_key(&self) -> Vec<u8> {
         let selector = self.selector.read().await;

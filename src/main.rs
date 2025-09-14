@@ -134,6 +134,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     network.set_dkg_node(dkg_node);
     network.set_signing_node(signing_node.lock().await.clone());
+    network.set_db_signing_node(db_signing_node.clone());
     network.set_consensus_node(consensus_node);
     network.set_command_processor(command_processor);
 

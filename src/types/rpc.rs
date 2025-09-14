@@ -44,6 +44,11 @@ pub enum RPCRequest {
     Ping,
     StartDKG,
     StartADKG,
+    RequestFirstNodeStartTime,
+    ShareFirstNodeStartTime {
+        first_node_start_time: u64,
+    },
+    RequestCurrentVrfRound,
     SendAVSSShare {
         dealer_id: SerializablePeerId,
         receiver_id: SerializablePeerId,
@@ -91,6 +96,12 @@ pub enum RPCResponse {
     NoResponse,
     Ack,
     Verified,
+    FirstNodeStartTimeResponse {
+        first_node_start_time: Option<u64>,
+    },
+    CurrentVrfRoundResponse {
+        current_round: Option<u64>,
+    },
     ShareAccepted,
     ComplaintAccepted,
     FinishedADKG {
