@@ -1652,7 +1652,7 @@ impl SigningNode {
         });
 
         // Create transaction bytes using chain handler
-        let tx_bytes = self.chain_handler.create_transaction_bytes(&chain_transaction)?;
+        let tx_bytes = self.chain_handler.create_transaction_bytes_contract(&chain_transaction)?;
         info!("🔐 [SIGNING] Contract transaction bytes: 0x{}", hex::encode(&tx_bytes));
 
         // Hash the transaction bytes
@@ -1670,12 +1670,12 @@ impl SigningNode {
                 &available_nodes, 
                 1, 
                 round, 
-                self.chain_handler.chain_type()
+                "ethereum"
             ).await?;
             
             info!(
-                "🎯 [VRF] Node {} completed VRF selection for {} signing round {}",
-                self.id, self.chain_handler.chain_type(), round
+                "🎯 [VRF] Node {} completed VRF selection for ethereum signing round {}",
+                self.id, round
             );
         }
 
@@ -2839,6 +2839,13 @@ impl SigningNode {
             data: serde_json::to_vec(&broadcast_message).unwrap_or_default(),
         };
 
+        let channel_message_transaction_id_broadcast = crate::types::ChannelMessage::TransactionIdBroadcast {
+            intent_hash: intent_hash.to_string(),
+            transaction_id: tx_id.to_string(),
+            transaction_type: transaction_type.to_string(),
+            node_id: self.id.clone(),
+        };
+
         // Call update_solver_amounts_for_user_to_vault only for user_to_vault transaction type
         if transaction_type == "user_to_vault" {
             if let Err(e) = self.update_solver_amounts_for_user_to_vault(intent_hash).await {
@@ -2847,6 +2854,12 @@ impl SigningNode {
         }
 
         if let Err(e) = self.message_tx.send(channel_message).await {
+            error!("❌ [SIGNING] Failed to broadcast transaction ID to other nodes: {}", e);
+        } else {
+            info!("📡 [SIGNING] Broadcasted transaction ID {} for intent {} (type: {}) to other nodes", tx_id, intent_hash, transaction_type);
+        }
+
+        if let Err(e) = self.message_tx.send(channel_message_transaction_id_broadcast).await {
             error!("❌ [SIGNING] Failed to broadcast transaction ID to other nodes: {}", e);
         } else {
             info!("📡 [SIGNING] Broadcasted transaction ID {} for intent {} (type: {}) to other nodes", tx_id, intent_hash, transaction_type);

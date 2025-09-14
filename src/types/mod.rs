@@ -41,6 +41,17 @@ pub enum ChannelMessage {
         transaction_type: TransactionType,
         amount: u128,
     },
+    IntentHash {
+        intent_hash: Vec<u8>,
+        signer: String,
+        intent: crate::rpc_server::DepositIntent,
+    },
+    TransactionIdBroadcast {
+        intent_hash: String,
+        transaction_id: String,
+        transaction_type: String,
+        node_id: String,
+    },
     SolverReward {
         solver_address: String,
         reward: u128,
@@ -82,6 +93,11 @@ pub enum GossipsubMessage {
         user_eth_address: Option<String>, // If provided, use user's tweaked share; otherwise use network's DKG share
         transaction_type: TransactionType,
         amount: u128,
+    },
+    IntentHash {
+        intent_hash: String,
+        signer: String,
+        intent: crate::rpc_server::DepositIntent,
     },
     SolverReward {
         solver_address: String,

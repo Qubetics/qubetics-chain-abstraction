@@ -1248,7 +1248,7 @@ pub async fn create_chain_transaction_from_contract_call(
     amount: u128,
     intent: &DepositIntent,
     intent_hash: &str,
-    tx_hash: Vec<u8>,
+    tx_hash: &str,
     transaction_type: crate::types::TransactionType,
 ) -> Result<ChainTransaction> {
     let network_address = get_eth_address_from_group_key(group_public_key.unwrap());
@@ -1260,7 +1260,7 @@ pub async fn create_chain_transaction_from_contract_call(
         .unwrap_or_else(|_| "0x0000000000000000000000000000000000000000".to_string());
 
     info!(
-            "[create_chain_transaction_from_contract_call] encode_deposit_intent_calldata params:\n  source_address: {}\n  target_address: {}\n  source_chain: {}\n  target_chain: {}\n  amount: {}\n  source_token: {}\n  target_token: {}\n  transaction_hash: {}\n  intent_hash: {}",
+        "[create_chain_transaction_from_contract_call] encode_deposit_intent_calldata params:\n  source_address: {}\n  target_address: {}\n  source_chain: {}\n  target_chain: {}\n  amount: {}\n  source_token: {}\n  target_token: {}\n  transaction_hash: {}\n  intent_hash: {}",
             &intent.source_address,
             &intent.target_address,
             &intent.source_chain,
@@ -1268,7 +1268,7 @@ pub async fn create_chain_transaction_from_contract_call(
             amount,
             &intent.source_token,
             &intent.target_token,
-            &hex::encode(&tx_hash),
+            &tx_hash,
             intent_hash
         );
 
@@ -1279,7 +1279,7 @@ pub async fn create_chain_transaction_from_contract_call(
     let calldata = match transaction_type {
         crate::types::TransactionType::UserToVault => {
             info!("🔧 [CONTRACT] Using depositIntent calldata for UserToVault transaction");
-            encode_deposit_intent_calldata(
+                encode_deposit_intent_calldata(
                 &intent.source_address,
                 &intent.target_address,
                 &intent.source_chain,
@@ -1287,8 +1287,9 @@ pub async fn create_chain_transaction_from_contract_call(
                 amount,
                 &intent.source_token,
                 &intent.target_token,
-                &format!("0x{}", hex::encode(tx_hash)),
+                &tx_hash,
                 intent_hash,
+                &intent.timestamp.to_string(),
             )
         }
         _ => {
@@ -1304,8 +1305,9 @@ pub async fn create_chain_transaction_from_contract_call(
                 amount,
                 &intent.source_token,
                 &intent.target_token,
-                &format!("0x{}", hex::encode(tx_hash)),
+                tx_hash,
                 intent_hash,
+                &intent.timestamp.to_string(),
             )
         }
     };
@@ -1370,6 +1372,7 @@ pub fn encode_deposit_intent_calldata(
     target_token: &str,
     transaction_hash: &str,
     intent_id: &str,
+    timestamp: &str,
 ) -> Option<Vec<u8>> {
     let f = Function {
         name: "depositIntent".to_owned(),
@@ -1419,6 +1422,11 @@ pub fn encode_deposit_intent_calldata(
                 kind: ParamType::String,
                 internal_type: None,
             },
+            Param {
+                name: "timestamp".into(),
+                kind: ParamType::String,
+                internal_type: None,
+            },
         ],
         outputs: vec![],
         constant: None,
@@ -1435,6 +1443,7 @@ pub fn encode_deposit_intent_calldata(
         Token::String(target_token.to_owned()),
         Token::String(transaction_hash.to_owned()),
         Token::String(intent_id.to_owned()),
+        Token::String(timestamp.to_owned()),
     ];
 
     f.encode_input(&tokens).ok()
@@ -1450,6 +1459,7 @@ pub fn encode_fulfill_intent_calldata(
     target_token: &str,
     transaction_hash: &str,
     intent_id: &str,
+    timestamp: &str,
 ) -> Option<Vec<u8>> {
     let f = Function {
         name: "fulfillIntent".to_owned(),
@@ -1499,6 +1509,11 @@ pub fn encode_fulfill_intent_calldata(
                 kind: ParamType::String,
                 internal_type: None,
             },
+            Param {
+                name: "timestamp".into(),
+                kind: ParamType::String,
+                internal_type: None,
+            },
         ],
         outputs: vec![],
         constant: None,
@@ -1515,6 +1530,7 @@ pub fn encode_fulfill_intent_calldata(
         Token::String(target_token.to_owned()),
         Token::String(transaction_hash.to_owned()),
         Token::String(intent_id.to_owned()),
+        Token::String(timestamp.to_owned()),
     ];
 
     f.encode_input(&tokens).ok()

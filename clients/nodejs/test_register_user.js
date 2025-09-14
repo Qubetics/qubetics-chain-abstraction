@@ -10,7 +10,7 @@ const RPC_BASE_URL = process.env.RPC_BASE_URL || 'http://127.0.0.1:8082';
 
 // 👉 Private key you provided (hex, no 0x prefix needed)
 const TEST_PRIVKEY = '415c01d63918df986d1d537f9b5974f383cac3b4fe9edc44f58f09bdfc5f672a';
-let TEST_TX_ID = "0x610cb626a386b3f99395252149f8f77d845729918fa286a21681843f714a01ab";
+let TEST_TX_ID = "0x0942448ca6f6517c05c361e249cdaf9f5e054e6290236c43f6537705ef2a7885";
 
 // =========================
 // Colors for console output
@@ -25,7 +25,7 @@ const colors = {
   green: '\x1b[32m'
 };
 
-const oooo = 4324228121
+const oooo = 43222211121
 
 function log(message, color = 'reset') {
   console.log(`${colors[color]}${message}${colors.reset}`);
@@ -154,7 +154,7 @@ async function testUserMpcDeposit({ wallet, amount }) {
       target_chain: 'qubetics',
       amount: amount, // Use the passed amount parameter
       source_token: 'TICS',
-      target_token: 'TICS',
+      target_token: 'BTC',
       timestamp: oooo, // Current Unix timestamp in seconds
     };
     console.log(`📊 Deposit Intent: ${JSON.stringify(depositIntent)}`, 'cyan');
@@ -415,12 +415,12 @@ async function testUserMpcDepositWithTxId({ wallet, amount, txId, status }) {
     }
 
     const depositIntent = {
-      source_address: userInfo.data.derived_eth_address, // Use canonical address
-      target_address: '0x94C8F147767702EC8020E5c616964c72a837C88d',
-      source_chain: 'qubetics',
+      source_address: userInfo.data.derived_btc_address, // Use canonical address
+      target_address: '0xd476f40c612e5262fbEA93809E22B81BFf07efe8',
+      source_chain: 'btc',
       target_chain: 'qubetics',
-      amount: 1000000000000000000, // Use the passed amount parameter
-      source_token: 'TICS',
+      amount: amount, // Use the passed amount parameter
+      source_token: 'BTC',
       target_token: 'TICS',
       timestamp: oooo, // Current Unix timestamp in seconds
     };
@@ -563,9 +563,9 @@ async function runTests() {
   //   log(`\n⚠️ Registration failed; continuing to deposit test (is_registered may be false).`, 'yellow');
   // }
 
-  // 3) MPC deposit test WITHOUT tx_id (should pass Some(signer) to handle_deposit_intent)
+  // // 3) MPC deposit test WITHOUT tx_id (should pass Some(signer) to handle_deposit_intent)
   log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
-  const amount = 1000000000000; // keep safe for JSON
+  const amount = 21000000000000000000; // keep safe for JSON
   await testUserMpcDeposit({ wallet, amount }); 
 
   // 4) Simple deposit test (intent only, no signature)
