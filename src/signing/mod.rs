@@ -31,7 +31,7 @@ use rand::thread_rng;
 use crate::consensus::{ConsensusMessage, ConsensusNode, ConsensusResult};
 use crate::types::{p2p::SerializablePeerId, ChannelMessage};
 use crate::vrf::{VrfService, VrfSelectedNodesBroadcast};
-use crate::chain::{ChainHandler, ChainSignature, ChainHandlerFactory, ChainTransaction};
+use crate::chain::{ChainHandler, ChainHandlerFactory, ChainTransaction};
 use crate::utils::get_eth_address_from_group_key;
 // Import BitcoinTransaction directly from chain module
 use crate::chain::{BitcoinTransaction, BitcoinInput};
@@ -114,7 +114,8 @@ pub struct SigningNode {
     aggregated_rounds: Arc<RwLock<std::collections::HashSet<u64>>>, // Track rounds that have been aggregated
     message_tx: mpsc::Sender<ChannelMessage>,
     pub vrf_service: Option<VrfService>, // VRF service for node selection
-    chain_handler: Arc<dyn ChainHandler>, // Chain-specific operations
+    chain_handler: Arc<dyn ChainHandler>, // Chain-specific operations for regular transactions
+    contract_chain_handler: Arc<dyn ChainHandler>, // Chain handler specifically for contract transactions
     consensus_node: Option<ConsensusNode>, // Consensus node for final node selection
     available_nodes: Option<Vec<PeerId>>,  // Available nodes from node manager
     // Store original transaction and bytes for reconstruction
@@ -144,8 +145,12 @@ impl SigningNode {
         });
 
         // Create default Ethereum chain handler (can be changed later)
-        let chain_handler = ChainHandlerFactory::create_ethereum_handler(1043);
+        let chain_handler = ChainHandlerFactory::create_ethereum_handler(9029);
         let chain_handler: Arc<dyn ChainHandler> = chain_handler.into();
+
+        // Create contract chain handler - always Ethereum for contract transactions
+        let contract_chain_handler = ChainHandlerFactory::create_ethereum_handler(9029);
+        let contract_chain_handler: Arc<dyn ChainHandler> = contract_chain_handler.into();
 
         Self {
             id,
@@ -160,6 +165,7 @@ impl SigningNode {
             message_tx: message_tx.clone(),
             vrf_service: Some(VrfService::new(peer_id, message_tx)),
             chain_handler,
+            contract_chain_handler,
             consensus_node: Some(ConsensusNode::new()),
             available_nodes: None,
             pending_transactions: Arc::new(RwLock::new(HashMap::new())),
@@ -175,7 +181,7 @@ impl SigningNode {
     /// Print the current broadcast configuration
     pub fn print_broadcast_config(&self) {
         self.broadcast_config.print_config();
-    }
+    }   
 
     /// Derive a deterministic PeerId from a string ID
     fn derive_peer_id_from_string(id: &str) -> PeerId {
@@ -712,20 +718,33 @@ impl SigningNode {
         
         if let Some((chain_tx, _tx_bytes, _intent_hash, transaction_type)) = pending_transactions.get(&round) {
             if let ChainTransaction::Ethereum(original_tx) = chain_tx {
+                // Detect if this is a contract transaction
+                let is_contract_tx = original_tx.data.is_some() && !original_tx.data.as_ref().unwrap().is_empty();
+                
                 info!(
-                    "🔧 [SIGNING] Node {} reconstructing signed Ethereum transaction for round {}",
-                    self.id, round
+                    "🔧 [SIGNING] Node {} reconstructing signed Ethereum transaction for round {} (contract: {})",
+                    self.id, round, is_contract_tx
                 );
+                
+                if is_contract_tx {
+                    info!("📄 [SIGNING] Contract transaction detected - using contract chain handler");
+                    info!("📄 [SIGNING] Contract data length: {} bytes", original_tx.data.as_ref().unwrap().len());
+                }
                 
                 // Extract r and s from aggregated signature
                 let r = &aggregated_signature[0..32];
                 let s = &aggregated_signature[32..64];
                 
-                // Get chain ID from chain handler
-                let chain_id = self.chain_handler.get_chain_params()
+                // Get chain ID from appropriate chain handler
+                let chain_handler = if is_contract_tx {
+                    &self.contract_chain_handler
+                } else {
+                    &self.chain_handler
+                };
+                let chain_id = chain_handler.get_chain_params()
                     .get("chain_id")
                     .and_then(|id| id.parse::<u64>().ok())
-                    .unwrap_or(1043); // Default to Qubetics chain ID
+                    .unwrap_or(9029); // Default to Qubetics chain ID
                 
                 // Calculate v value for Ethereum (EIP-155)
                 let v = recovery_id as u64 + 35 + chain_id * 2;
@@ -1651,8 +1670,8 @@ impl SigningNode {
             chain_id: transaction.chain_id,
         });
 
-        // Create transaction bytes using chain handler
-        let tx_bytes = self.chain_handler.create_transaction_bytes_contract(&chain_transaction)?;
+        // Create transaction bytes using contract chain handler
+        let tx_bytes = self.contract_chain_handler.create_transaction_bytes_contract(&chain_transaction)?;
         info!("🔐 [SIGNING] Contract transaction bytes: 0x{}", hex::encode(&tx_bytes));
 
         // Hash the transaction bytes
@@ -2562,9 +2581,21 @@ impl SigningNode {
               self.id, self.chain_handler.chain_type());
     }
 
+    /// Set the contract chain handler for this signing node
+    pub fn set_contract_chain_handler(&mut self, contract_chain_handler: Arc<dyn ChainHandler>) {
+        self.contract_chain_handler = contract_chain_handler;
+        info!("🔗 [SIGNING] Node {} switched to {} contract chain handler",
+              self.id, self.contract_chain_handler.chain_type());
+    }
+
     /// Get a reference to the chain handler
     pub fn get_chain_handler(&self) -> &Arc<dyn ChainHandler> {
         &self.chain_handler
+    }
+
+    /// Get a reference to the contract chain handler
+    pub fn get_contract_chain_handler(&self) -> &Arc<dyn ChainHandler> {
+        &self.contract_chain_handler
     }
 
     /// Get the current chain type
@@ -3471,8 +3502,25 @@ impl SigningNode {
                         info!("  original_signature: 0x{}", hex::encode(signature_bytes));
                         info!("  r_canonical_len: {}, s_canonical_len: {}", r_canonical.len(), s_canonical.len());
                         
-                        // 🚀 NEW: Reconstruct and broadcast signed transaction based on chain type
-                        let chain_type = self.chain_handler.chain_type();
+                        // 🚀 NEW: Reconstruct and broadcast signed transaction based on actual transaction type
+                        // Check the actual transaction stored for this round to determine the correct chain type
+                        let pending_transactions = self.pending_transactions.read().await;
+                        let (chain_type, is_contract_tx) = if let Some((chain_tx, _tx_bytes, _intent_hash, _transaction_type)) = pending_transactions.get(&round) {
+                            match chain_tx {
+                                ChainTransaction::Ethereum(eth_tx) => {
+                                    let is_contract = eth_tx.data.is_some() && !eth_tx.data.as_ref().unwrap().is_empty();
+                                    ("ethereum", is_contract)
+                                },
+                                ChainTransaction::Bitcoin(_) => ("bitcoin", false),
+                            }
+                        } else {
+                            // Fallback to chain handler if no transaction found
+                            (self.chain_handler.chain_type(), false)
+                        };
+                        drop(pending_transactions); // Release the lock
+                        
+                        info!("🔍 [SIGNING] Determined chain type: {}, is_contract: {}", chain_type, is_contract_tx);
+                        
                         match chain_type {
                             "bitcoin" => {
                                 if let Ok(Some(signed_tx_hex)) = self.reconstruct_signed_bitcoin_transaction(
@@ -3516,8 +3564,13 @@ impl SigningNode {
                                     );
                                     info!("📄 Raw signed transaction: {}", signed_tx_hex);
                                     
-                                    // Get chain ID for broadcasting
-                                    let chain_id = self.chain_handler.get_chain_params()
+                                    // Get chain ID for broadcasting - use contract chain handler for contract transactions
+                                    let chain_handler = if is_contract_tx {
+                                        &self.contract_chain_handler
+                                    } else {
+                                        &self.chain_handler
+                                    };
+                                    let chain_id = chain_handler.get_chain_params()
                                         .get("chain_id")
                                         .and_then(|id| id.parse::<u64>().ok())
                                         .unwrap_or(9029); // Default to Qubetics

@@ -599,11 +599,11 @@ async function runTests() {
   // }
 
   // 3) MPC deposit test WITHOUT tx_id (should pass Some(signer) to handle_deposit_intent)
-  // log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
-  // const amount = 2111000000000000; // keep safe for JSON
-  // await testUserMpcDeposit({ wallet, amount }); 
-  const address = '0xbac113cebd9CB2fBD2a01B5CBC43D0fC0EBed5e9';
-  await testGetRewardSolver(address);
+  log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
+  const amount = 31333333333333333330
+  await testUserMpcDeposit({ wallet, amount }); 
+  // const address = '0xbac113cebd9CB2fBD2a01B5CBC43D0fC0EBed5e9';
+  // await testGetRewardSolver(address);
 
   // 4) Simple deposit test (intent only, no signature)
   // log(`\n🧪 Test 2: Simple deposit (intent only, no signature)`, 'blue');
