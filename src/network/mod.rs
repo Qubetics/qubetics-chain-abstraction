@@ -479,19 +479,9 @@ impl NetworkLayer {
         }
     }
 
-    /// Check if adding peers is allowed (within 5-minute window or existing node restart)
+    /// Check if adding NEW peers is allowed (within 5-minute window)
+    /// Note: This should only be called after checking that the peer is not already in the node manager
     async fn is_peer_addition_allowed(&self) -> bool {
-        // Check if this is an existing node restarting (has DKG data)
-        if let Some(dkg_node) = &self.dkg_node {
-            let has_final_secret = dkg_node.get_final_secret_share().await.is_some();
-            let has_final_public = dkg_node.get_final_public_key().await.is_some();
-            
-            if has_final_secret && has_final_public {
-                info!("✅ Existing node with DKG data - peer addition allowed (bypassing 5-minute rule)");
-                return true;
-            }
-        }
-        
         if let Some(t1) = self.first_node_start_time {
             let current_time = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -500,16 +490,30 @@ impl NetworkLayer {
             let elapsed_since_t1 = current_time.saturating_sub(t1);
             let five_minutes = 5 * 60; // 5 minutes in seconds
             
-            if elapsed_since_t1 > five_minutes {
-                warn!("⏰ Peer addition blocked: More than 5 minutes have passed since first node start time t1 (elapsed: {}s, t1: {})", elapsed_since_t1, t1);
-                return false;
-            }
+            // Determine node type for logging purposes
+            let node_type = if let Some(dkg_node) = &self.dkg_node {
+                let has_final_secret = dkg_node.get_final_secret_share().await.is_some();
+                let has_final_public = dkg_node.get_final_public_key().await.is_some();
+                if has_final_secret && has_final_public {
+                    "existing node with DKG data"
+                } else {
+                    "new node"
+                }
+            } else {
+                "new node"
+            };
             
-            info!("✅ Within 5-minute window - peer addition allowed (elapsed: {}s since t1: {})", elapsed_since_t1, t1);
-            true
+            // Apply the same 5-minute rule regardless of node type
+            if elapsed_since_t1 > five_minutes {
+                warn!("⏰ NEW peer addition blocked by {}: More than 5 minutes have passed since first node start time t1 (elapsed: {}s, t1: {})", node_type, elapsed_since_t1, t1);
+                false
+            } else {
+                info!("✅ {} allowing NEW peer addition - within 5-minute window (elapsed: {}s since t1: {})", node_type, elapsed_since_t1, t1);
+                true
+            }
         } else {
             // If we don't have t1 yet, allow peer addition (for bootstrap process)
-            info!("⚠️ No first node start time available yet - allowing peer addition");
+            info!("⚠️ No first node start time available yet - allowing peer addition for bootstrap");
             true
         }
     }
@@ -708,13 +712,19 @@ impl NetworkLayer {
                         }
                     }
 
-                    // Check 5-minute rule before adding peer to node manager
-                    if self.is_peer_addition_allowed().await {
-                        self.node_manager
-                                .add_node(peer_id)
-                                .map_err(|e| anyhow::anyhow!(e))?;
+                    // Check if peer already exists in node manager
+                    let current_nodes = self.node_manager.get_active_nodes();
+                    if current_nodes.contains(&peer_id) {
+                        info!("ℹ️ Peer {} already exists in node manager, skipping", peer_id);
                     } else {
-                        warn!("🚫 Peer {} not added to node manager - outside 5-minute window", peer_id);
+                        // Check 5-minute rule before adding peer to node manager
+                        if self.is_peer_addition_allowed().await {
+                            self.node_manager
+                                    .add_node(peer_id)
+                                    .map_err(|e| anyhow::anyhow!(e))?;
+                        } else {
+                            warn!("🚫 Peer {} not added to node manager - outside 5-minute window", peer_id);
+                        }
                     }
 
                     
