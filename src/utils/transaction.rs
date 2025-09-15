@@ -618,7 +618,7 @@ pub fn select_utxos_for_amount(
             // Must have valid txid (64 hex characters)
             if utxo.txid.len() != 64 {
                 tracing::warn!(
-                    "⚠️ [UTXO_FILTER] Skipping UTXO with invalid txid length: {}",
+                    "⚠️ [UTXO_FILTER] Skipping UTXO with invalid txid length: <==> {}",
                     utxo.txid
                 );
                 return false;

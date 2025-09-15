@@ -2780,13 +2780,13 @@ impl NetworkLayer {
                                     }
                                 }
                             }
-                            user_registry.store_user_to_vault_tx_id(&intent_hash, &transaction_id).await
+                            user_registry.store_user_to_vault_tx_id(&intent_hash, &transaction_id, Some(&node_id)).await
                         },
                         "network_to_target" => {
-                            user_registry.store_network_to_target_tx_id(&intent_hash, &transaction_id).await
+                            user_registry.store_network_to_target_tx_id(&intent_hash, &transaction_id, Some(&node_id)).await
                         },
                         "vault_to_network" => {
-                            user_registry.store_vault_to_network_tx_id(&intent_hash, &transaction_id).await
+                            user_registry.store_vault_to_network_tx_id(&intent_hash, &transaction_id, Some(&node_id)).await
                         },
                         _ => {
                             warn!("❌ [NETWORK] Unknown transaction type: {}", transaction_type);

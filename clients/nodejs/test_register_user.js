@@ -149,9 +149,9 @@ async function testUserMpcDeposit({ wallet, amount }) {
     // Construct DepositIntent
     const depositIntent = {
       source_address: userInfo.data.derived_eth_address, // Use canonical address
-      target_address: '0x94C8F147767702EC8020E5c616964c72a837C88d',
+      target_address: 'mmDxNaQohXpsJmEt39auGLoUd2jd3wnnuq',
       source_chain: 'qubetics',
-      target_chain: 'qubetics',
+      target_chain: 'bitcoin',
       amount: amount, // Use the passed amount parameter
       source_token: 'TICS',
       target_token: 'BTC',
@@ -538,6 +538,41 @@ async function testUserMpcDepositWithTxId({ wallet, amount, txId, status }) {
   }
 }
 
+// Add this function to your existing client file
+async function testGetRewardSolver(solverAddress) {
+  try {
+    log(`\n🔍 Getting reward for solver: ${solverAddress}`, 'blue');
+
+    const response = await axios.post(
+      `${RPC_BASE_URL}/get_reward_solver`,
+      { solver_address: solverAddress },
+      { headers: { 'Content-Type': 'application/json' }, timeout: 10000 }
+    );
+
+    log(`✅ Request successful!`, 'green');
+    log(`📊 Response:`, 'cyan');
+    log(`   Status: ${response.data.status}`, 'cyan');
+    log(`   Solver Address: ${response.data.solver_address}`, 'cyan');
+    log(`   Reward: ${response.data.reward || '0'}`, 'cyan');
+    log(`   Message: ${response.data.message}`, 'cyan');
+
+    if (response.data.error_message) {
+      log(`   Error: ${response.data.error_message}`, 'red');
+    }
+
+    return { success: true, data: response.data };
+  } catch (error) {
+    // Error handling similar to other functions
+    if (error.response) {
+      log(`❌ Request failed with status ${error.response.status}:`, 'red');
+      log(`   Error: ${error.response.data?.message || error.response.statusText}`, 'red');
+    } else {
+      log(`❌ Unexpected error: ${error.message}`, 'red');
+    }
+    return { success: false, error: error.message };
+  }
+}
+
 // =========================
 async function runTests() {
   log(`\n${colors.bright}🧪 Starting Registration + MPC Deposit Test (Derived Address Only)${colors.reset}`, 'bright');
@@ -563,10 +598,12 @@ async function runTests() {
   //   log(`\n⚠️ Registration failed; continuing to deposit test (is_registered may be false).`, 'yellow');
   // }
 
-  // // 3) MPC deposit test WITHOUT tx_id (should pass Some(signer) to handle_deposit_intent)
-  log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
-  const amount = 21000000000000000000; // keep safe for JSON
-  await testUserMpcDeposit({ wallet, amount }); 
+  // 3) MPC deposit test WITHOUT tx_id (should pass Some(signer) to handle_deposit_intent)
+  // log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
+  // const amount = 2111000000000000; // keep safe for JSON
+  // await testUserMpcDeposit({ wallet, amount }); 
+  const address = '0xbac113cebd9CB2fBD2a01B5CBC43D0fC0EBed5e9';
+  await testGetRewardSolver(address);
 
   // 4) Simple deposit test (intent only, no signature)
   // log(`\n🧪 Test 2: Simple deposit (intent only, no signature)`, 'blue');

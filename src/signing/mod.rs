@@ -3759,10 +3759,10 @@ impl SigningNode {
             .unwrap_or(1);
 
         // Skip if using default/placeholder values
-        if contract_address == "0x0000000000000000000000000000000000000000" {
-            info!("⏭️ [SOLVER] Skipping solver amount update - using placeholder contract address");
-            return Ok(());
-        }
+        // if contract_address == "0x0000000000000000000000000000000000000000" {
+        //     info!("⏭️ [SOLVER] Skipping solver amount update - using placeholder contract address");
+        //     return Ok(());
+        // }
 
         info!("🔄 [SOLVER] Updating solver amounts for UserToVault transaction: {}", _intent_hash);
 

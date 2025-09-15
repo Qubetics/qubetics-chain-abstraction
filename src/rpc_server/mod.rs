@@ -63,7 +63,7 @@ pub struct DepositIntent {
     pub amount: u128,
     pub source_token: String,
     pub target_token: String,
-    pub timestamp: u64, // Unix timestamp in seconds
+    pub timestamp: u128, // Unix timestamp in seconds
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
