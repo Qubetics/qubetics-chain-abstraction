@@ -509,9 +509,9 @@ impl SigningNode {
 
     async fn broadcast_transaction(raw_tx_hex: &str, mainnet: bool) -> Result<Option<String>> {
         let default_url = if mainnet {
-            "https://api.blockcypher.com/v1/btc/main/txs/push"
+            "https://mempool.space/api/tx"
         } else {
-            "https://api.blockcypher.com/v1/btc/test3/txs/push"
+            "https://mempool.space/testnet/api/tx"
         };
 
         let url = std::env::var("MPC_BITCOIN_RPC_URL").unwrap_or_else(|_| default_url.to_string());
@@ -519,35 +519,23 @@ impl SigningNode {
 
         let client = reqwest::Client::new();
 
-        // Use BlockCypher API format (JSON with tx field)
-        let payload = serde_json::json!({
-            "tx": raw_tx_hex
-        });
-
-        let response = client.post(&url)
-            .header("Content-Type", "application/json")
+        // Esplora expects raw tx hex in text/plain body and returns txid as plain text
+        let response = client
+            .post(&url)
+            .header("Content-Type", "text/plain")
             .header("User-Agent", "mpc-node/0.1.0")
-            .json(&payload)
+            .body(raw_tx_hex.to_string())
             .send()
             .await?;
 
         if response.status().is_success() {
-            let response_data: serde_json::Value = response.json().await?;
-            
-            if let Some(txid) = response_data["tx"]["hash"].as_str() {
+            let txid = response.text().await?.trim().to_string();
+            if !txid.is_empty() {
                 info!("✅ Transaction broadcasted successfully! TXID: {}", txid);
-                Ok(Some(txid.to_string()))
+                Ok(Some(txid))
             } else {
-                // Fallback to get hash from response
-                let response_text = serde_json::to_string(&response_data)?;
-                info!("✅ Transaction broadcasted successfully! Response: {}", response_text);
-                
-                // Try to extract hash from the response
-                if let Some(hash) = response_data.get("hash").and_then(|h| h.as_str()) {
-                    Ok(Some(hash.to_string()))
-                } else {
-                    Ok(Some("broadcast_success".to_string()))
-                }
+                info!("✅ Transaction broadcasted successfully, but empty txid returned.");
+                Ok(Some("broadcast_success".to_string()))
             }
         } else {
             let error_text = response.text().await?;
@@ -1080,7 +1068,7 @@ impl SigningNode {
         let h160 = hash160(pubkey33);
         let mut script_code = Vec::with_capacity(26);
         script_code.push(0x19); // length 25
-        script_code.extend_from_slice(&[0x76, 0xa9, 0x14]); // OP_DUP OP_HASH160 PUSH20
+        script_code.extend_from_slice(&[0x76, 0xa9, 0x14]); // OP_DUP OP_HASH160 OP_PUSH20
         script_code.extend_from_slice(&h160);
         script_code.extend_from_slice(&[0x88, 0xac]); // OP_EQUALVERIFY OP_CHECKSIG
 

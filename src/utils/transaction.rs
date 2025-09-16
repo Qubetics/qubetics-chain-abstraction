@@ -141,7 +141,7 @@ pub fn amount_to_hex_string(amount: u128) -> String {
     if amount == 0 {
         return "0x0".to_string();
     }
-    
+
     // Convert to hex and remove leading zeros
     let hex_str = format!("{:x}", amount);
     format!("0x{}", hex_str)
@@ -151,16 +151,19 @@ pub fn amount_to_hex_string(amount: u128) -> String {
 /// Ensures proper 0x prefix and removes unnecessary leading zeros
 pub fn validate_and_normalize_hex_amount(hex_str: &str) -> Result<String> {
     let clean_hex = hex_str.strip_prefix("0x").unwrap_or(hex_str);
-    
+
     // Validate hex characters
     if !clean_hex.chars().all(|c| c.is_ascii_hexdigit()) {
-        return Err(anyhow::anyhow!("Invalid hex characters in amount: {}", hex_str));
+        return Err(anyhow::anyhow!(
+            "Invalid hex characters in amount: {}",
+            hex_str
+        ));
     }
-    
+
     // Remove leading zeros but keep at least one digit
     let trimmed = clean_hex.trim_start_matches('0');
     let normalized = if trimmed.is_empty() { "0" } else { trimmed };
-    
+
     Ok(format!("0x{}", normalized))
 }
 
@@ -169,32 +172,37 @@ pub fn validate_transaction_hex_fields(tx: &crate::rpc_server::DummyTransaction)
     // Validate value field
     validate_and_normalize_hex_amount(&tx.value)
         .map_err(|e| anyhow::anyhow!("Invalid value field: {}", e))?;
-    
+
     // Validate gas_price field
     validate_and_normalize_hex_amount(&tx.gas_price)
         .map_err(|e| anyhow::anyhow!("Invalid gas_price field: {}", e))?;
-    
+
     Ok(())
 }
 
 /// Validate that a contract transaction has proper hex formatting
-pub fn validate_contract_transaction_hex_fields(tx: &crate::rpc_server::ContractTransaction) -> Result<()> {
+pub fn validate_contract_transaction_hex_fields(
+    tx: &crate::rpc_server::ContractTransaction,
+) -> Result<()> {
     // Validate value field
     validate_and_normalize_hex_amount(&tx.value)
         .map_err(|e| anyhow::anyhow!("Invalid value field: {}", e))?;
-    
+
     // Validate gas_price field
     validate_and_normalize_hex_amount(&tx.gas_price)
         .map_err(|e| anyhow::anyhow!("Invalid gas_price field: {}", e))?;
-    
+
     // Validate data field (should be hex if not empty)
     if !tx.data.is_empty() && tx.data != "0x" {
         let clean_data = tx.data.strip_prefix("0x").unwrap_or(&tx.data);
         if !clean_data.chars().all(|c| c.is_ascii_hexdigit()) {
-            return Err(anyhow::anyhow!("Invalid hex characters in data field: {}", tx.data));
+            return Err(anyhow::anyhow!(
+                "Invalid hex characters in data field: {}",
+                tx.data
+            ));
         }
     }
-    
+
     Ok(())
 }
 
@@ -218,15 +226,15 @@ pub fn is_evm_chain(chain_name: &str) -> bool {
     get_chain_id_from_name(chain_name).is_some()
 }
 
-/// Fetch UTXOs for a Bitcoin address from BlockCypher API
+/// Fetch UTXOs for a Bitcoin address from Mempool.space Esplora API
 pub async fn fetch_bitcoin_utxos(address: &str, is_testnet: bool) -> Result<Vec<BitcoinUtxo>> {
     let base_url = if is_testnet {
-        "https://api.blockcypher.com/v1/btc/test3"
+        "https://mempool.space/testnet/api"
     } else {
-        "https://api.blockcypher.com/v1/btc/main"
+        "https://mempool.space/api"
     };
 
-    let url = format!("{}/addrs/{}", base_url, address);
+    let url = format!("{}/address/{}/utxo", base_url, address);
     let client = reqwest::Client::new();
     let response = client.get(&url).send().await?;
 
@@ -237,52 +245,8 @@ pub async fn fetch_bitcoin_utxos(address: &str, is_testnet: bool) -> Result<Vec<
         ));
     }
 
-    let addr_data: serde_json::Value = response.json().await?;
-    
-    // BlockCypher returns UTXOs in the "txrefs" array for unconfirmed and "unconfirmed_txrefs" for unconfirmed
-    let mut utxos = Vec::new();
-    
-    // Add confirmed UTXOs
-    if let Some(txrefs) = addr_data["txrefs"].as_array() {
-        for txref in txrefs {
-            if txref["spent"].as_bool().unwrap_or(false) {
-                continue; // Skip spent UTXOs
-            }
-            
-            utxos.push(BitcoinUtxo {
-                txid: txref["tx_hash"].as_str().unwrap_or_default().to_string(),
-                vout: txref["tx_output_n"].as_u64().unwrap_or_default() as u32,
-                value: txref["value"].as_u64().unwrap_or_default(),
-                status: UtxoStatus {
-                    confirmed: txref["confirmations"].as_u64().unwrap_or(0) > 0,
-                    block_height: txref["block_height"].as_u64(),
-                    block_hash: txref["block_hash"].as_str().map(|s| s.to_string()),
-                    block_time: None, // BlockCypher doesn't provide block_time in this endpoint
-                },
-            });
-        }
-    }
-    
-    // Add unconfirmed UTXOs
-    if let Some(unconfirmed_txrefs) = addr_data["unconfirmed_txrefs"].as_array() {
-        for txref in unconfirmed_txrefs {
-            if txref["spent"].as_bool().unwrap_or(false) {
-                continue; // Skip spent UTXOs
-            }
-            
-            utxos.push(BitcoinUtxo {
-                txid: txref["tx_hash"].as_str().unwrap_or_default().to_string(),
-                vout: txref["tx_output_n"].as_u64().unwrap_or_default() as u32,
-                value: txref["value"].as_u64().unwrap_or_default(),
-                status: UtxoStatus {
-                    confirmed: false,
-                    block_height: None,
-                    block_hash: None,
-                    block_time: None,
-                },
-            });
-        }
-    }
+    // Esplora returns an array of UTXOs with fields compatible with our structs
+    let utxos: Vec<BitcoinUtxo> = response.json().await?;
     Ok(utxos)
 }
 
@@ -298,19 +262,19 @@ pub struct EnhancedUtxo {
     pub scriptpubkey_address: Option<String>,
 }
 
-/// Fetch detailed UTXO information including script details
+/// Fetch detailed UTXO information including script details (Esplora)
 pub async fn fetch_detailed_bitcoin_utxo(
     txid: &str,
     vout: u32,
     is_testnet: bool,
 ) -> Result<EnhancedUtxo> {
     let base_url = if is_testnet {
-        "https://api.blockcypher.com/v1/btc/test3"
+        "https://mempool.space/testnet/api"
     } else {
-        "https://api.blockcypher.com/v1/btc/main"
+        "https://mempool.space/api"
     };
 
-    let url = format!("{}/txs/{}", base_url, txid);
+    let url = format!("{}/tx/{}", base_url, txid);
     let client = reqwest::Client::new();
     let response = client.get(&url).send().await?;
 
@@ -322,7 +286,7 @@ pub async fn fetch_detailed_bitcoin_utxo(
     }
 
     let tx_data: serde_json::Value = response.json().await?;
-    let outputs = tx_data["outputs"]
+    let outputs = tx_data["vout"]
         .as_array()
         .ok_or_else(|| anyhow::anyhow!("Invalid transaction format"))?;
 
@@ -335,32 +299,25 @@ pub async fn fetch_detailed_bitcoin_utxo(
     }
 
     let output_data = &outputs[vout as usize];
+    let status = &tx_data["status"];
 
     Ok(EnhancedUtxo {
         txid: txid.to_string(),
         vout,
         value: output_data["value"].as_u64().unwrap_or(0),
         status: UtxoStatus {
-            confirmed: tx_data["confirmations"].as_u64().unwrap_or(0) > 0,
-            block_height: tx_data["block_height"].as_u64(),
-            block_hash: tx_data["block_hash"].as_str().map(|s| s.to_string()),
-            block_time: tx_data["confirmed"].as_str().map(|s| s.to_string()).and_then(|s| {
-                // BlockCypher returns ISO 8601 timestamp, we'll just store as string for now
-                Some(s)
-            }).map(|_| 0u64), // Placeholder - would need proper timestamp parsing
+            confirmed: status["confirmed"].as_bool().unwrap_or(false),
+            block_height: status["block_height"].as_u64(),
+            block_hash: status["block_hash"].as_str().map(|s| s.to_string()),
+            block_time: status["block_time"].as_u64(),
         },
-        scriptpubkey: output_data["script"].as_str().map(|s| s.to_string()),
-        scriptpubkey_type: output_data["script_type"]
+        scriptpubkey: output_data["scriptpubkey"].as_str().map(|s| s.to_string()),
+        scriptpubkey_type: output_data["scriptpubkey_type"]
             .as_str()
             .map(|s| s.to_string()),
-        scriptpubkey_address: {
-            // BlockCypher stores addresses in the "addresses" array
-            if let Some(addresses) = output_data["addresses"].as_array() {
-                addresses.first().and_then(|addr| addr.as_str()).map(|s| s.to_string())
-            } else {
-                None
-            }
-        },
+        scriptpubkey_address: output_data["scriptpubkey_address"]
+            .as_str()
+            .map(|s| s.to_string()),
     })
 }
 
@@ -456,50 +413,52 @@ fn derive_p2pkh_address_from_pubkey(pubkey: &[u8], is_testnet: bool) -> Result<S
     Ok(address.to_string())
 }
 
-/// Verify that a UTXO actually exists and is spendable
+/// Verify that a UTXO actually exists and is spendable (Esplora)
 pub async fn verify_utxo_exists(txid: &str, vout: u32, is_testnet: bool) -> Result<bool> {
     let base_url = if is_testnet {
-        "https://api.blockcypher.com/v1/btc/test3"
+        "https://mempool.space/testnet/api"
     } else {
-        "https://api.blockcypher.com/v1/btc/main"
+        "https://mempool.space/api"
     };
 
-    let url = format!("{}/txs/{}", base_url, txid);
+    // Use outspends endpoint to determine whether the specific output is spent
+    let url = format!("{}/tx/{}/outspends", base_url, txid);
 
     let client = reqwest::Client::new();
     let response = client.get(&url).send().await?;
 
     match response.status().as_u16() {
         200 => {
-            let tx_data: serde_json::Value = response.json().await?;
-            
-            // Check if the transaction has the specified output
-            if let Some(outputs) = tx_data["outputs"].as_array() {
-                if vout as usize >= outputs.len() {
-                    tracing::warn!("⚠️ [UTXO_VERIFY] UTXO {}:{} output index out of range", txid, vout);
+            let outspends: serde_json::Value = response.json().await?;
+            if let Some(arr) = outspends.as_array() {
+                if vout as usize >= arr.len() {
+                    tracing::warn!(
+                        "⚠️ [UTXO_VERIFY] UTXO {}:{} output index out of range",
+                        txid,
+                        vout
+                    );
                     return Ok(false);
                 }
-                
-                let output = &outputs[vout as usize];
-                
-                // Check if this output has been spent
-                let is_spent = output["spent_by"].is_string(); // If spent_by exists, it's spent
-                
-                if is_spent {
+                let entry = &arr[vout as usize];
+                let spent = entry["spent"].as_bool().unwrap_or(false);
+                if spent {
                     tracing::info!("ℹ️ [UTXO_VERIFY] UTXO {}:{} is already spent", txid, vout);
                     Ok(false)
                 } else {
-                    tracing::info!("✅ [UTXO_VERIFY] UTXO {}:{} is unspent and available", txid, vout);
+                    tracing::info!(
+                        "✅ [UTXO_VERIFY] UTXO {}:{} is unspent and available",
+                        txid,
+                        vout
+                    );
                     Ok(true)
                 }
             } else {
-                tracing::warn!("⚠️ [UTXO_VERIFY] Transaction {} has no outputs", txid);
+                tracing::warn!("⚠️ [UTXO_VERIFY] Invalid outspends format for tx {}", txid);
                 Ok(false)
             }
         }
         404 => {
-            // Transaction doesn't exist
-            tracing::warn!("⚠️ [UTXO_VERIFY] Transaction {} does not exist", txid);
+            tracing::warn!("⚠️ [UTXO_VERIFY] Transaction {} not found", txid);
             Ok(false)
         }
         _ => {
@@ -1349,7 +1308,7 @@ pub async fn create_chain_transaction_from_contract_call(
     let calldata = match transaction_type {
         crate::types::TransactionType::UserToVault => {
             info!("🔧 [CONTRACT] Using depositIntent calldata for UserToVault transaction");
-                encode_deposit_intent_calldata(
+            encode_deposit_intent_calldata(
                 &intent.source_address,
                 &intent.target_address,
                 &intent.source_chain,
@@ -2001,20 +1960,29 @@ mod tests {
     fn test_amount_to_hex_string() {
         // Test zero amount
         assert_eq!(amount_to_hex_string(0), "0x0");
-        
+
         // Test small amounts
         assert_eq!(amount_to_hex_string(1), "0x1");
         assert_eq!(amount_to_hex_string(15), "0xf");
         assert_eq!(amount_to_hex_string(16), "0x10");
         assert_eq!(amount_to_hex_string(255), "0xff");
         assert_eq!(amount_to_hex_string(256), "0x100");
-        
+
         // Test larger amounts (common in crypto)
-        assert_eq!(amount_to_hex_string(1000000000000000000u128), "0xde0b6b3a7640000"); // 1 ETH in wei
-        assert_eq!(amount_to_hex_string(21000000000000000000u128), "0x1236efcbcbb340000"); // 21 ETH in wei
-        
+        assert_eq!(
+            amount_to_hex_string(1000000000000000000u128),
+            "0xde0b6b3a7640000"
+        ); // 1 ETH in wei
+        assert_eq!(
+            amount_to_hex_string(21000000000000000000u128),
+            "0x1236efcbcbb340000"
+        ); // 21 ETH in wei
+
         // Test very large amounts
-        assert_eq!(amount_to_hex_string(u128::MAX), "0xffffffffffffffffffffffffffffffff");
+        assert_eq!(
+            amount_to_hex_string(u128::MAX),
+            "0xffffffffffffffffffffffffffffffff"
+        );
     }
 
     #[test]
@@ -2024,17 +1992,23 @@ mod tests {
         assert_eq!(validate_and_normalize_hex_amount("0x1").unwrap(), "0x1");
         assert_eq!(validate_and_normalize_hex_amount("0xff").unwrap(), "0xff");
         assert_eq!(validate_and_normalize_hex_amount("0xFF").unwrap(), "0xFF");
-        
+
         // Test normalization of leading zeros
         assert_eq!(validate_and_normalize_hex_amount("0x00").unwrap(), "0x0");
-        assert_eq!(validate_and_normalize_hex_amount("0x000001").unwrap(), "0x1");
-        assert_eq!(validate_and_normalize_hex_amount("0x0000ff").unwrap(), "0xff");
-        
+        assert_eq!(
+            validate_and_normalize_hex_amount("0x000001").unwrap(),
+            "0x1"
+        );
+        assert_eq!(
+            validate_and_normalize_hex_amount("0x0000ff").unwrap(),
+            "0xff"
+        );
+
         // Test hex without 0x prefix
         assert_eq!(validate_and_normalize_hex_amount("1").unwrap(), "0x1");
         assert_eq!(validate_and_normalize_hex_amount("ff").unwrap(), "0xff");
         assert_eq!(validate_and_normalize_hex_amount("0001").unwrap(), "0x1");
-        
+
         // Test invalid hex strings
         assert!(validate_and_normalize_hex_amount("0xgg").is_err());
         assert!(validate_and_normalize_hex_amount("0x12g3").is_err());
@@ -2044,7 +2018,7 @@ mod tests {
     #[test]
     fn test_validate_transaction_hex_fields() {
         use crate::rpc_server::DummyTransaction;
-        
+
         // Test valid transaction
         let valid_tx = DummyTransaction {
             to: "0x1234567890123456789012345678901234567890".to_string(),
@@ -2055,7 +2029,7 @@ mod tests {
             chain_id: 1,
         };
         assert!(validate_transaction_hex_fields(&valid_tx).is_ok());
-        
+
         // Test invalid value field
         let invalid_value_tx = DummyTransaction {
             to: "0x1234567890123456789012345678901234567890".to_string(),
@@ -2066,7 +2040,7 @@ mod tests {
             chain_id: 1,
         };
         assert!(validate_transaction_hex_fields(&invalid_value_tx).is_err());
-        
+
         // Test invalid gas_price field
         let invalid_gas_price_tx = DummyTransaction {
             to: "0x1234567890123456789012345678901234567890".to_string(),
@@ -2082,7 +2056,7 @@ mod tests {
     #[test]
     fn test_validate_contract_transaction_hex_fields() {
         use crate::rpc_server::ContractTransaction;
-        
+
         // Test valid contract transaction
         let valid_contract_tx = ContractTransaction {
             to: "0x1234567890123456789012345678901234567890".to_string(),
@@ -2094,7 +2068,7 @@ mod tests {
             data: "0xa9059cbb".to_string(), // transfer function selector
         };
         assert!(validate_contract_transaction_hex_fields(&valid_contract_tx).is_ok());
-        
+
         // Test invalid data field
         let invalid_data_tx = ContractTransaction {
             to: "0x1234567890123456789012345678901234567890".to_string(),
@@ -2106,7 +2080,7 @@ mod tests {
             data: "invalid_hex".to_string(),
         };
         assert!(validate_contract_transaction_hex_fields(&invalid_data_tx).is_err());
-        
+
         // Test empty data field (should be valid)
         let empty_data_tx = ContractTransaction {
             to: "0x1234567890123456789012345678901234567890".to_string(),
@@ -2125,13 +2099,13 @@ mod tests {
         // Test common Ethereum amounts in wei
         let one_eth_wei = 1000000000000000000u128; // 1 ETH = 10^18 wei
         assert_eq!(amount_to_hex_string(one_eth_wei), "0xde0b6b3a7640000");
-        
+
         let one_gwei = 1000000000u128; // 1 Gwei = 10^9 wei
         assert_eq!(amount_to_hex_string(one_gwei), "0x3b9aca00");
-        
+
         let half_eth_wei = 500000000000000000u128; // 0.5 ETH
         assert_eq!(amount_to_hex_string(half_eth_wei), "0x6f05b59d3b20000");
-        
+
         // Test that these values are properly handled by the RLP encoder
         let mut encoder = RlpEncoder::new();
         encoder.encode_hex_string(&amount_to_hex_string(one_eth_wei));
@@ -2241,7 +2215,7 @@ pub fn create_signed_transaction(
     encoder = RlpEncoder::new();
     encoder.encode_address(&tx.to);
     content.extend_from_slice(&encoder.finalize());
-    
+
     info!("🔍 [SIGNING] Value: {}", tx.value);
     // Value
     encoder = RlpEncoder::new();
