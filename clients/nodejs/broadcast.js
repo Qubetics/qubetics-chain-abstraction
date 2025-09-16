@@ -3,7 +3,7 @@
  * Simple script to broadcast raw transactions to Qubetics testnet
  */
 
-const RPC_URL = "https://rpc-testnet.qubetics.work";
+const RPC_URL = "http://114.119.184.52:8545";
 
 /**
  * Broadcast raw transaction
