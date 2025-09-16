@@ -509,28 +509,46 @@ impl SigningNode {
 
     async fn broadcast_transaction(raw_tx_hex: &str, mainnet: bool) -> Result<Option<String>> {
         let default_url = if mainnet {
-            format!("{}/tx", "https://blockstream.info/api")
+            "https://api.blockcypher.com/v1/btc/main/txs/push"
         } else {
-            format!("{}/tx", "https://blockstream.info/testnet/api")
+            "https://api.blockcypher.com/v1/btc/test3/txs/push"
         };
 
-        let url = std::env::var("MPC_BITCOIN_RPC_URL").unwrap_or(default_url);
+        let url = std::env::var("MPC_BITCOIN_RPC_URL").unwrap_or_else(|_| default_url.to_string());
         info!("Broadcasting transaction to: {}", url);
 
         let client = reqwest::Client::new();
 
-        // Use Blockstream API format (raw transaction hex in body)
+        // Use BlockCypher API format (JSON with tx field)
+        let payload = serde_json::json!({
+            "tx": raw_tx_hex
+        });
+
         let response = client.post(&url)
-            .header("Content-Type", "text/plain")
-            .header("User-Agent", "sigg_gen_agg/0.1.0")
-            .body(raw_tx_hex.to_string())
+            .header("Content-Type", "application/json")
+            .header("User-Agent", "mpc-node/0.1.0")
+            .json(&payload)
             .send()
             .await?;
 
         if response.status().is_success() {
-            let txid = response.text().await?;
-            info!("✅ Transaction broadcasted successfully! TXID: {}", txid);
-            Ok(Some(txid.trim().to_string()))
+            let response_data: serde_json::Value = response.json().await?;
+            
+            if let Some(txid) = response_data["tx"]["hash"].as_str() {
+                info!("✅ Transaction broadcasted successfully! TXID: {}", txid);
+                Ok(Some(txid.to_string()))
+            } else {
+                // Fallback to get hash from response
+                let response_text = serde_json::to_string(&response_data)?;
+                info!("✅ Transaction broadcasted successfully! Response: {}", response_text);
+                
+                // Try to extract hash from the response
+                if let Some(hash) = response_data.get("hash").and_then(|h| h.as_str()) {
+                    Ok(Some(hash.to_string()))
+                } else {
+                    Ok(Some("broadcast_success".to_string()))
+                }
+            }
         } else {
             let error_text = response.text().await?;
             error!("❌ Failed to broadcast transaction: {}", error_text);

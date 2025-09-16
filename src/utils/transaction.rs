@@ -218,15 +218,15 @@ pub fn is_evm_chain(chain_name: &str) -> bool {
     get_chain_id_from_name(chain_name).is_some()
 }
 
-/// Fetch UTXOs for a Bitcoin address from Blockstream API
+/// Fetch UTXOs for a Bitcoin address from BlockCypher API
 pub async fn fetch_bitcoin_utxos(address: &str, is_testnet: bool) -> Result<Vec<BitcoinUtxo>> {
     let base_url = if is_testnet {
-        "https://blockstream.info/testnet/api"
+        "https://api.blockcypher.com/v1/btc/test3"
     } else {
-        "https://blockstream.info/api"
+        "https://api.blockcypher.com/v1/btc/main"
     };
 
-    let url = format!("{}/address/{}/utxo", base_url, address);
+    let url = format!("{}/addrs/{}", base_url, address);
     let client = reqwest::Client::new();
     let response = client.get(&url).send().await?;
 
@@ -237,7 +237,52 @@ pub async fn fetch_bitcoin_utxos(address: &str, is_testnet: bool) -> Result<Vec<
         ));
     }
 
-    let utxos: Vec<BitcoinUtxo> = response.json().await?;
+    let addr_data: serde_json::Value = response.json().await?;
+    
+    // BlockCypher returns UTXOs in the "txrefs" array for unconfirmed and "unconfirmed_txrefs" for unconfirmed
+    let mut utxos = Vec::new();
+    
+    // Add confirmed UTXOs
+    if let Some(txrefs) = addr_data["txrefs"].as_array() {
+        for txref in txrefs {
+            if txref["spent"].as_bool().unwrap_or(false) {
+                continue; // Skip spent UTXOs
+            }
+            
+            utxos.push(BitcoinUtxo {
+                txid: txref["tx_hash"].as_str().unwrap_or_default().to_string(),
+                vout: txref["tx_output_n"].as_u64().unwrap_or_default() as u32,
+                value: txref["value"].as_u64().unwrap_or_default(),
+                status: UtxoStatus {
+                    confirmed: txref["confirmations"].as_u64().unwrap_or(0) > 0,
+                    block_height: txref["block_height"].as_u64(),
+                    block_hash: txref["block_hash"].as_str().map(|s| s.to_string()),
+                    block_time: None, // BlockCypher doesn't provide block_time in this endpoint
+                },
+            });
+        }
+    }
+    
+    // Add unconfirmed UTXOs
+    if let Some(unconfirmed_txrefs) = addr_data["unconfirmed_txrefs"].as_array() {
+        for txref in unconfirmed_txrefs {
+            if txref["spent"].as_bool().unwrap_or(false) {
+                continue; // Skip spent UTXOs
+            }
+            
+            utxos.push(BitcoinUtxo {
+                txid: txref["tx_hash"].as_str().unwrap_or_default().to_string(),
+                vout: txref["tx_output_n"].as_u64().unwrap_or_default() as u32,
+                value: txref["value"].as_u64().unwrap_or_default(),
+                status: UtxoStatus {
+                    confirmed: false,
+                    block_height: None,
+                    block_hash: None,
+                    block_time: None,
+                },
+            });
+        }
+    }
     Ok(utxos)
 }
 
@@ -260,12 +305,12 @@ pub async fn fetch_detailed_bitcoin_utxo(
     is_testnet: bool,
 ) -> Result<EnhancedUtxo> {
     let base_url = if is_testnet {
-        "https://blockstream.info/testnet/api"
+        "https://api.blockcypher.com/v1/btc/test3"
     } else {
-        "https://blockstream.info/api"
+        "https://api.blockcypher.com/v1/btc/main"
     };
 
-    let url = format!("{}/tx/{}", base_url, txid);
+    let url = format!("{}/txs/{}", base_url, txid);
     let client = reqwest::Client::new();
     let response = client.get(&url).send().await?;
 
@@ -277,11 +322,11 @@ pub async fn fetch_detailed_bitcoin_utxo(
     }
 
     let tx_data: serde_json::Value = response.json().await?;
-    let vouts = tx_data["vout"]
+    let outputs = tx_data["outputs"]
         .as_array()
         .ok_or_else(|| anyhow::anyhow!("Invalid transaction format"))?;
 
-    if vout as usize >= vouts.len() {
+    if vout as usize >= outputs.len() {
         return Err(anyhow::anyhow!(
             "VOUT {} not found in transaction {}",
             vout,
@@ -289,25 +334,33 @@ pub async fn fetch_detailed_bitcoin_utxo(
         ));
     }
 
-    let vout_data = &vouts[vout as usize];
+    let output_data = &outputs[vout as usize];
 
     Ok(EnhancedUtxo {
         txid: txid.to_string(),
         vout,
-        value: vout_data["value"].as_u64().unwrap_or(0),
+        value: output_data["value"].as_u64().unwrap_or(0),
         status: UtxoStatus {
-            confirmed: true, // We'll check this separately
-            block_height: None,
-            block_hash: None,
-            block_time: None,
+            confirmed: tx_data["confirmations"].as_u64().unwrap_or(0) > 0,
+            block_height: tx_data["block_height"].as_u64(),
+            block_hash: tx_data["block_hash"].as_str().map(|s| s.to_string()),
+            block_time: tx_data["confirmed"].as_str().map(|s| s.to_string()).and_then(|s| {
+                // BlockCypher returns ISO 8601 timestamp, we'll just store as string for now
+                Some(s)
+            }).map(|_| 0u64), // Placeholder - would need proper timestamp parsing
         },
-        scriptpubkey: vout_data["scriptpubkey"].as_str().map(|s| s.to_string()),
-        scriptpubkey_type: vout_data["scriptpubkey_type"]
+        scriptpubkey: output_data["script"].as_str().map(|s| s.to_string()),
+        scriptpubkey_type: output_data["script_type"]
             .as_str()
             .map(|s| s.to_string()),
-        scriptpubkey_address: vout_data["scriptpubkey_address"]
-            .as_str()
-            .map(|s| s.to_string()),
+        scriptpubkey_address: {
+            // BlockCypher stores addresses in the "addresses" array
+            if let Some(addresses) = output_data["addresses"].as_array() {
+                addresses.first().and_then(|addr| addr.as_str()).map(|s| s.to_string())
+            } else {
+                None
+            }
+        },
     })
 }
 
@@ -406,29 +459,47 @@ fn derive_p2pkh_address_from_pubkey(pubkey: &[u8], is_testnet: bool) -> Result<S
 /// Verify that a UTXO actually exists and is spendable
 pub async fn verify_utxo_exists(txid: &str, vout: u32, is_testnet: bool) -> Result<bool> {
     let base_url = if is_testnet {
-        "https://blockstream.info/testnet/api"
+        "https://api.blockcypher.com/v1/btc/test3"
     } else {
-        "https://blockstream.info/api"
+        "https://api.blockcypher.com/v1/btc/main"
     };
 
-    let url = format!("{}/tx/{}/outspend/{}", base_url, txid, vout);
+    let url = format!("{}/txs/{}", base_url, txid);
 
     let client = reqwest::Client::new();
     let response = client.get(&url).send().await?;
 
     match response.status().as_u16() {
         200 => {
-            // UTXO exists, check if it's spent
-            let outspend: serde_json::Value = response.json().await?;
-            let is_spent = outspend
-                .get("spent")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            Ok(!is_spent) // Return true if not spent (spendable)
+            let tx_data: serde_json::Value = response.json().await?;
+            
+            // Check if the transaction has the specified output
+            if let Some(outputs) = tx_data["outputs"].as_array() {
+                if vout as usize >= outputs.len() {
+                    tracing::warn!("⚠️ [UTXO_VERIFY] UTXO {}:{} output index out of range", txid, vout);
+                    return Ok(false);
+                }
+                
+                let output = &outputs[vout as usize];
+                
+                // Check if this output has been spent
+                let is_spent = output["spent_by"].is_string(); // If spent_by exists, it's spent
+                
+                if is_spent {
+                    tracing::info!("ℹ️ [UTXO_VERIFY] UTXO {}:{} is already spent", txid, vout);
+                    Ok(false)
+                } else {
+                    tracing::info!("✅ [UTXO_VERIFY] UTXO {}:{} is unspent and available", txid, vout);
+                    Ok(true)
+                }
+            } else {
+                tracing::warn!("⚠️ [UTXO_VERIFY] Transaction {} has no outputs", txid);
+                Ok(false)
+            }
         }
         404 => {
-            // UTXO doesn't exist
-            tracing::warn!("⚠️ [UTXO_VERIFY] UTXO {}:{} does not exist", txid, vout);
+            // Transaction doesn't exist
+            tracing::warn!("⚠️ [UTXO_VERIFY] Transaction {} does not exist", txid);
             Ok(false)
         }
         _ => {
