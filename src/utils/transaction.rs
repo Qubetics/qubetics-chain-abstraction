@@ -815,7 +815,7 @@ pub fn calculate_bitcoin_fee(num_inputs: usize, num_outputs: usize) -> u64 {
 pub async fn fetch_ethereum_nonce(address: &str, chain_id: u64) -> Result<u64> {
     let rpc_url = match chain_id {
         9029 => std::env::var("MPC_ETHEREUM_RPC_URL")
-            .unwrap_or_else(|_| "http://114.119.184.52:8545".to_string()),
+            .unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string()),
         1 => "https://mainnet.infura.io/v3/YOUR_PROJECT_ID".to_string(), // Ethereum mainnet
         _ => {
             return Err(anyhow::anyhow!(
@@ -899,7 +899,7 @@ async fn estimate_gas_for_deposit_intent(
 ) -> Result<u64> {
     let rpc_url = match chain_id {
         9029 => std::env::var("MPC_ETHEREUM_RPC_URL")
-            .unwrap_or_else(|_| "http://114.119.184.52:8545".to_string()),
+            .unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string()),
         1 => "https://mainnet.infura.io/v3/YOUR_PROJECT_ID".to_string(),
         _ => {
             return Err(anyhow::anyhow!(

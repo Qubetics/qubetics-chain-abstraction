@@ -542,7 +542,7 @@ impl SigningNode {
     pub async fn fetch_ethereum_nonce(address: &str, chain_id: u64) -> Result<u64> {
         let rpc_url = match chain_id {
             9029 => std::env::var("MPC_ETHEREUM_RPC_URL")
-                .unwrap_or_else(|_| "http://114.119.184.52:8545".to_string()),
+                .unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string()),
             1 => "https://mainnet.infura.io/v3/YOUR_PROJECT_ID".to_string(), // Ethereum mainnet
             _ => return Err(anyhow!("Unsupported chain ID for nonce fetching: {}", chain_id)),
         };
@@ -588,7 +588,7 @@ impl SigningNode {
     async fn broadcast_ethereum_transaction(raw_tx_hex: &str, chain_id: u64) -> Result<Option<String>> {
         let rpc_url = match chain_id {
             9029 => std::env::var("MPC_ETHEREUM_RPC_URL")
-                .unwrap_or_else(|_| "http://114.119.184.52:8545".to_string()),
+                .unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string()),
             1 => "https://mainnet.infura.io/v3/YOUR_PROJECT_ID".to_string(), // Ethereum mainnet
             _ => return Err(anyhow!("Unsupported chain ID for broadcasting: {}", chain_id)),
         };
@@ -4158,7 +4158,7 @@ impl BroadcastConfig {
         // Load chain-specific configurations
         if let Some(eth_config) = config.chain_configs.get_mut("ethereum") {
             eth_config.rpc_url = std::env::var("MPC_ETHEREUM_RPC_URL")
-                .unwrap_or_else(|_| "http://114.119.184.52:8545".to_string());
+                .unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string());
         }
 
         if let Ok(chain_id) = std::env::var("MPC_ETHEREUM_CHAIN_ID") {
