@@ -1463,10 +1463,25 @@ async fn handle_user_mpc_deposit(
 
     let transaction_type = if transaction_ids.len() == 1 {
         crate::types::TransactionType::NetworkToTarget
-    } else if transaction_ids.len() == 2 {
-        crate::types::TransactionType::VaultToNetwork
-    } else {
+    } else if transaction_ids.len() == 0 {
         crate::types::TransactionType::UserToVault
+    } else {
+        // More than 2 transactions indicates a duplicate intent
+        return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+            status: "error".to_string(),
+            signer_address: "".to_string(),
+            is_registered: false,
+            amount: 0,
+            user_to_network_tx_id: tx_mapping
+                .as_ref()
+                .and_then(|tx| tx.user_to_network_tx_id.clone()),
+            network_to_target_tx_id: tx_mapping
+                .as_ref()
+                .and_then(|tx| tx.network_to_target_tx_id.clone()),
+            vault_to_network_tx_id: None,
+            final_solver_id: None,
+            error_message: Some("Duplicate intent detected - this intent has already been processed".to_string()),
+        }));
     };
 
     // if let Some(ref tx_id) = req.tx_id {

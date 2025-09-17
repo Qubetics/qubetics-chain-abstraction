@@ -820,14 +820,6 @@ async fn create_chain_transaction_from_deposit_intent_internal(
 
         let is_testnet = is_testnet_p2pkh_address(&from_address);
 
-        // Fetch UTXOs for the source address
-        let raw_utxos = fetch_bitcoin_utxos(&from_address, is_testnet).await?;
-        tracing::info!(
-            "Fetched {} UTXOs for address {}",
-            raw_utxos.len(),
-            from_address
-        );
-
         // Fetch raw UTXOs without external verification
         let utxos = fetch_bitcoin_utxos(&from_address, is_testnet).await?;
         tracing::info!(
