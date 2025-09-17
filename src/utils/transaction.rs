@@ -29,6 +29,16 @@ pub struct UtxoStatus {
     pub block_time: Option<u64>,
 }
 
+/// Wrapper for custom UTXO API responses
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CustomApiUtxoResponse {
+    error: bool,
+    #[serde(rename = "statuscode")]
+    status_code: u16,
+    message: String,
+    data: Vec<BitcoinUtxo>,
+}
+
 /// RLP encoder for Ethereum transaction signing (EIP-155)
 pub struct RlpEncoder {
     pub data: Vec<u8>,
@@ -228,6 +238,33 @@ pub fn is_evm_chain(chain_name: &str) -> bool {
 
 /// Fetch UTXOs for a Bitcoin address from Mempool.space Esplora API
 pub async fn fetch_bitcoin_utxos(address: &str, is_testnet: bool) -> Result<Vec<BitcoinUtxo>> {
+    // Prefer custom API if provided: BTC_UTXO_API_BASE=http://host:port
+    if let Ok(custom_base) = std::env::var("BTC_UTXO_API_BASE") {
+        let base = custom_base.trim_end_matches('/');
+        let url = format!("{}/api/v1/utxos?address={}", base, address);
+        let client = reqwest::Client::new();
+        let response = client.get(&url).send().await?;
+
+        if !response.status().is_success() {
+            return Err(anyhow::anyhow!(
+                "Failed to fetch UTXOs from custom API: HTTP {}",
+                response.status()
+            ));
+        }
+
+        let wrapper: CustomApiUtxoResponse = response.json().await?;
+        if wrapper.error {
+            return Err(anyhow::anyhow!(
+                "Custom API error (status {}): {}",
+                wrapper.status_code,
+                wrapper.message
+            ));
+        }
+
+        return Ok(wrapper.data);
+    }
+
+    // Fallback to mempool.space Esplora API
     let base_url = if is_testnet {
         "https://mempool.space/testnet/api"
     } else {
@@ -245,7 +282,6 @@ pub async fn fetch_bitcoin_utxos(address: &str, is_testnet: bool) -> Result<Vec<
         ));
     }
 
-    // Esplora returns an array of UTXOs with fields compatible with our structs
     let utxos: Vec<BitcoinUtxo> = response.json().await?;
     Ok(utxos)
 }
@@ -260,360 +296,6 @@ pub struct EnhancedUtxo {
     pub scriptpubkey: Option<String>,
     pub scriptpubkey_type: Option<String>,
     pub scriptpubkey_address: Option<String>,
-}
-
-/// Fetch detailed UTXO information including script details (Esplora)
-pub async fn fetch_detailed_bitcoin_utxo(
-    txid: &str,
-    vout: u32,
-    is_testnet: bool,
-) -> Result<EnhancedUtxo> {
-    let base_url = if is_testnet {
-        "https://mempool.space/testnet/api"
-    } else {
-        "https://mempool.space/api"
-    };
-
-    let url = format!("{}/tx/{}", base_url, txid);
-    let client = reqwest::Client::new();
-    let response = client.get(&url).send().await?;
-
-    if !response.status().is_success() {
-        return Err(anyhow::anyhow!(
-            "Failed to fetch transaction details: HTTP {}",
-            response.status()
-        ));
-    }
-
-    let tx_data: serde_json::Value = response.json().await?;
-    let outputs = tx_data["vout"]
-        .as_array()
-        .ok_or_else(|| anyhow::anyhow!("Invalid transaction format"))?;
-
-    if vout as usize >= outputs.len() {
-        return Err(anyhow::anyhow!(
-            "VOUT {} not found in transaction {}",
-            vout,
-            txid
-        ));
-    }
-
-    let output_data = &outputs[vout as usize];
-    let status = &tx_data["status"];
-
-    Ok(EnhancedUtxo {
-        txid: txid.to_string(),
-        vout,
-        value: output_data["value"].as_u64().unwrap_or(0),
-        status: UtxoStatus {
-            confirmed: status["confirmed"].as_bool().unwrap_or(false),
-            block_height: status["block_height"].as_u64(),
-            block_hash: status["block_hash"].as_str().map(|s| s.to_string()),
-            block_time: status["block_time"].as_u64(),
-        },
-        scriptpubkey: output_data["scriptpubkey"].as_str().map(|s| s.to_string()),
-        scriptpubkey_type: output_data["scriptpubkey_type"]
-            .as_str()
-            .map(|s| s.to_string()),
-        scriptpubkey_address: output_data["scriptpubkey_address"]
-            .as_str()
-            .map(|s| s.to_string()),
-    })
-}
-
-/// Validate P2PKH prevout ownership and log comprehensive details
-pub async fn validate_p2pkh_prevout(
-    utxo: &BitcoinUtxo,
-    expected_address: &str,
-    signing_pubkey: &[u8], // 33-byte compressed pubkey
-    is_testnet: bool,
-    vin: usize,
-) -> Result<()> {
-    // Fetch detailed prevout information
-    let enhanced_utxo = fetch_detailed_bitcoin_utxo(&utxo.txid, utxo.vout, is_testnet).await?;
-
-    // Log prevout checkpoint
-    tracing::info!(
-        "🔍 [PREVOUT_CHECKPOINT] vin={}, prevout={}:{}, scriptpubkey_type={:?}, scriptpubkey={:?}, value={} sats",
-        vin,
-        enhanced_utxo.txid,
-        enhanced_utxo.vout,
-        enhanced_utxo.scriptpubkey_type,
-        enhanced_utxo.scriptpubkey,
-        enhanced_utxo.value
-    );
-
-    // Validate script type is P2PKH
-    if enhanced_utxo.scriptpubkey_type.as_deref() != Some("p2pkh") {
-        return Err(anyhow::anyhow!(
-            "Input vin={} is {:?}; this path supports only P2PKH.",
-            vin,
-            enhanced_utxo.scriptpubkey_type
-        ));
-    }
-
-    // Derive P2PKH address from our signing pubkey
-    let derived_address = derive_p2pkh_address_from_pubkey(signing_pubkey, is_testnet)?;
-
-    tracing::info!(
-        "🔍 [PREVOUT_CHECKPOINT] derived_p2pkh_from_pubkey={}, prevout_address={:?}",
-        derived_address,
-        enhanced_utxo.scriptpubkey_address
-    );
-
-    // Check if prevout belongs to our key
-    let matches_prevout = enhanced_utxo.scriptpubkey_address.as_deref() == Some(&derived_address);
-
-    tracing::info!(
-        "🔍 [PREVOUT_CHECKPOINT] matches_prevout_address={}",
-        matches_prevout
-    );
-
-    if !matches_prevout {
-        return Err(anyhow::anyhow!(
-            "Prevout doesn't belong to our key. Expected: {}, Got: {:?}",
-            derived_address,
-            enhanced_utxo.scriptpubkey_address
-        ));
-    }
-
-    // Also validate against the expected address parameter
-    if derived_address != expected_address {
-        return Err(anyhow::anyhow!(
-            "Derived address {} doesn't match expected address {}",
-            derived_address,
-            expected_address
-        ));
-    }
-
-    Ok(())
-}
-
-/// Derive P2PKH address from compressed public key
-fn derive_p2pkh_address_from_pubkey(pubkey: &[u8], is_testnet: bool) -> Result<String> {
-    use bitcoin::hashes::{hash160, Hash};
-    use bitcoin::{Address, Network};
-
-    if pubkey.len() != 33 {
-        return Err(anyhow::anyhow!("Public key must be 33 bytes (compressed)"));
-    }
-
-    // Hash160 = RIPEMD160(SHA256(pubkey))
-    let hash160_result = hash160::Hash::hash(pubkey);
-
-    let network = if is_testnet {
-        Network::Testnet
-    } else {
-        Network::Bitcoin
-    };
-
-    // Create P2PKH address from hash160
-    let pubkey_hash = bitcoin::PubkeyHash::from(hash160_result);
-    let address = Address::p2pkh(pubkey_hash, network);
-    Ok(address.to_string())
-}
-
-/// Verify that a UTXO actually exists and is spendable (Esplora)
-pub async fn verify_utxo_exists(txid: &str, vout: u32, is_testnet: bool) -> Result<bool> {
-    let base_url = if is_testnet {
-        "https://mempool.space/testnet/api"
-    } else {
-        "https://mempool.space/api"
-    };
-
-    // Use outspends endpoint to determine whether the specific output is spent
-    let url = format!("{}/tx/{}/outspends", base_url, txid);
-
-    let client = reqwest::Client::new();
-    let response = client.get(&url).send().await?;
-
-    match response.status().as_u16() {
-        200 => {
-            let outspends: serde_json::Value = response.json().await?;
-            if let Some(arr) = outspends.as_array() {
-                if vout as usize >= arr.len() {
-                    tracing::warn!(
-                        "⚠️ [UTXO_VERIFY] UTXO {}:{} output index out of range",
-                        txid,
-                        vout
-                    );
-                    return Ok(false);
-                }
-                let entry = &arr[vout as usize];
-                let spent = entry["spent"].as_bool().unwrap_or(false);
-                if spent {
-                    tracing::info!("ℹ️ [UTXO_VERIFY] UTXO {}:{} is already spent", txid, vout);
-                    Ok(false)
-                } else {
-                    tracing::info!(
-                        "✅ [UTXO_VERIFY] UTXO {}:{} is unspent and available",
-                        txid,
-                        vout
-                    );
-                    Ok(true)
-                }
-            } else {
-                tracing::warn!("⚠️ [UTXO_VERIFY] Invalid outspends format for tx {}", txid);
-                Ok(false)
-            }
-        }
-        404 => {
-            tracing::warn!("⚠️ [UTXO_VERIFY] Transaction {} not found", txid);
-            Ok(false)
-        }
-        _ => {
-            tracing::error!(
-                "❌ [UTXO_VERIFY] Failed to verify UTXO {}:{}: HTTP {}",
-                txid,
-                vout,
-                response.status()
-            );
-            Err(anyhow::anyhow!(
-                "Failed to verify UTXO: HTTP {}",
-                response.status()
-            ))
-        }
-    }
-}
-
-/// Verify multiple UTXOs in parallel
-pub async fn verify_utxos_exist(
-    utxos: &[BitcoinUtxo],
-    is_testnet: bool,
-) -> Result<Vec<BitcoinUtxo>> {
-    use futures::future::join_all;
-
-    let verification_futures: Vec<_> = utxos
-        .iter()
-        .map(|utxo| verify_utxo_exists(&utxo.txid, utxo.vout, is_testnet))
-        .collect();
-
-    let results = join_all(verification_futures).await;
-
-    let mut verified_utxos = Vec::new();
-    for (utxo, result) in utxos.iter().zip(results.iter()) {
-        match result {
-            Ok(true) => {
-                tracing::debug!(
-                    "✅ [UTXO_VERIFY] UTXO {}:{} is spendable",
-                    utxo.txid,
-                    utxo.vout
-                );
-                verified_utxos.push(utxo.clone());
-            }
-            Ok(false) => {
-                tracing::warn!(
-                    "⚠️ [UTXO_VERIFY] UTXO {}:{} is spent or doesn't exist",
-                    utxo.txid,
-                    utxo.vout
-                );
-            }
-            Err(e) => {
-                tracing::error!(
-                    "❌ [UTXO_VERIFY] Failed to verify UTXO {}:{}: {}",
-                    utxo.txid,
-                    utxo.vout,
-                    e
-                );
-            }
-        }
-    }
-
-    tracing::info!(
-        "🔍 [UTXO_VERIFY] Verified {} spendable UTXOs out of {} checked",
-        verified_utxos.len(),
-        utxos.len()
-    );
-
-    Ok(verified_utxos)
-}
-
-/// Fetch and verify UTXOs with retry logic
-pub async fn fetch_and_verify_utxos_with_retry(
-    address: &str,
-    is_testnet: bool,
-    max_retries: u32,
-) -> Result<Vec<BitcoinUtxo>> {
-    let mut last_error = None;
-
-    for attempt in 1..=max_retries {
-        tracing::info!(
-            "🔄 [UTXO_RETRY] Attempt {}/{} to fetch spendable UTXOs for {}",
-            attempt,
-            max_retries,
-            address
-        );
-
-        match fetch_and_verify_utxos_once(address, is_testnet).await {
-            Ok(utxos) if !utxos.is_empty() => {
-                tracing::info!(
-                    "✅ [UTXO_RETRY] Successfully found {} spendable UTXOs on attempt {}",
-                    utxos.len(),
-                    attempt
-                );
-                return Ok(utxos);
-            }
-            Ok(_) => {
-                let error_msg = format!(
-                    "No spendable UTXOs available for address {} on attempt {}",
-                    address, attempt
-                );
-                tracing::warn!("⚠️ [UTXO_RETRY] {}", error_msg);
-                last_error = Some(anyhow::anyhow!(error_msg));
-            }
-            Err(e) => {
-                tracing::error!("❌ [UTXO_RETRY] Error on attempt {}: {}", attempt, e);
-                last_error = Some(e);
-            }
-        }
-
-        if attempt < max_retries {
-            let delay_seconds = attempt * 2; // Exponential backoff: 2s, 4s, 6s
-            tracing::info!(
-                "⏳ [UTXO_RETRY] Waiting {} seconds before retry...",
-                delay_seconds
-            );
-            tokio::time::sleep(tokio::time::Duration::from_secs(delay_seconds as u64)).await;
-        }
-    }
-
-    // All retries failed
-    let final_error =
-        last_error.unwrap_or_else(|| anyhow::anyhow!("Unknown error during UTXO fetch"));
-    tracing::error!(
-        "❌ [UTXO_RETRY] All {} attempts failed for address {}. Final error: {}",
-        max_retries,
-        address,
-        final_error
-    );
-
-    Err(anyhow::anyhow!(
-        "Failed to fetch spendable UTXOs for address {} after {} attempts. Last error: {}",
-        address,
-        max_retries,
-        final_error
-    ))
-}
-
-/// Single attempt to fetch and verify UTXOs
-async fn fetch_and_verify_utxos_once(address: &str, is_testnet: bool) -> Result<Vec<BitcoinUtxo>> {
-    // Fetch UTXOs from API
-    let raw_utxos = fetch_bitcoin_utxos(address, is_testnet).await?;
-    tracing::debug!("🔍 [UTXO_FETCH] Fetched {} raw UTXOs", raw_utxos.len());
-
-    if raw_utxos.is_empty() {
-        return Ok(vec![]); // No UTXOs available
-    }
-
-    // Verify UTXOs exist and are spendable
-    let verified_utxos = verify_utxos_exist(&raw_utxos, is_testnet).await?;
-    tracing::debug!(
-        "🔍 [UTXO_VERIFY] Verified {} spendable UTXOs out of {} raw",
-        verified_utxos.len(),
-        raw_utxos.len()
-    );
-
-    Ok(verified_utxos)
 }
 
 /// Select and combine UTXOs to meet the required amount
@@ -743,9 +425,8 @@ pub async fn create_utxo_consolidation_transaction(
 
     let is_testnet = is_testnet_p2pkh_address(from_address);
 
-    // Fetch UTXOs for the address
-    let raw_utxos = fetch_bitcoin_utxos(from_address, is_testnet).await?;
-    let utxos = verify_utxos_exist(&raw_utxos, is_testnet).await?;
+    // Fetch UTXOs for the address (skip external verification)
+    let utxos = fetch_bitcoin_utxos(from_address, is_testnet).await?;
 
     if utxos.is_empty() {
         return Err(anyhow::anyhow!(
@@ -896,31 +577,6 @@ pub async fn fetch_ethereum_nonce(address: &str, chain_id: u64) -> Result<u64> {
     }
 }
 
-/// Create a chain-specific transaction from a deposit intent with optional UTXO conflict prevention
-// pub async fn create_chain_transaction_from_deposit_intent_with_utxo_check(
-//     intent: &DepositIntent,
-//     group_public_key: Option<k256::ProjectivePoint>,
-//     derived_eth_addr: Option<&String>,
-//     derived_btc_addr: Option<&String>,
-//     transaction_type: crate::types::TransactionType,
-//     vault_eth_address: Option<&String>,
-//     vault_btc_address: Option<&String>,
-//     user_registry: Option<&crate::user_registry::DatabaseUserRegistry>,
-// ) -> Result<ChainTransaction> {
-//     create_chain_transaction_from_deposit_intent_internal(
-//         intent,
-//         group_public_key,
-//         derived_eth_addr,
-//         derived_btc_addr,
-//         transaction_type,
-//         vault_eth_address,
-//         vault_btc_address,
-//         user_registry,
-//     ).await
-// }
-
-/// Create a chain-specific transaction from a deposit intent (legacy function for backward compatibility)
-/// Estimate gas for a call using eth_estimateGas
 async fn estimate_gas_for_deposit_intent(
     from: &str,
     to: &str,
@@ -1172,8 +828,8 @@ async fn create_chain_transaction_from_deposit_intent_internal(
             from_address
         );
 
-        // Verify UTXOs actually exist and are spendable to prevent -25 errors with retry logic
-        let utxos = fetch_and_verify_utxos_with_retry(&from_address, is_testnet, 3).await?;
+        // Fetch raw UTXOs without external verification
+        let utxos = fetch_bitcoin_utxos(&from_address, is_testnet).await?;
         tracing::info!(
             "Final verified {} spendable UTXOs for address {}",
             utxos.len(),
@@ -1241,22 +897,6 @@ async fn create_chain_transaction_from_deposit_intent_internal(
                 script_pubkey: create_bitcoin_script_pubkey(&from_address)?, // Send change back to source address
             });
         }
-
-        // P2PKH transactions don't use witness data
-        //         // Determine if we need witness data based on input address types
-        //         let needs_witness = inputs.iter().any(|input| input.witness_utxo.is_some());
-        //         let witness = if needs_witness {
-        //             Some(BitcoinWitness {
-        //                 inputs: inputs
-        //                     .iter()
-        //                     .map(|_| BitcoinWitnessInput {
-        //                         stack: vec![], // Will be filled during signing
-        //                     })
-        //                     .collect(),
-        //             })
-        //         } else {
-        //             None
-        //         };
 
         let bitcoin_tx = BitcoinTransaction {
             inputs,
