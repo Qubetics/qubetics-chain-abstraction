@@ -11,7 +11,9 @@ use super::ECDSASignature;
 use crate::chain::{ChainHandler, ChainHandlerFactory, ChainTransaction};
 use crate::consensus::ConsensusNode;
 use crate::contract::{ContractClient, ContractConfig, SolverManagerContract};
-use crate::database::{key_utils, ConsensusStorage, Database, SigningStorage};
+use crate::database::{ConsensusStorage, Database, SigningStorage};
+use crate::database::keys::{SolverAmountsKey, AllSolverAmountsKey};
+use crate::database::traits::{KvStorage, DBKey};
 use crate::types::ChannelMessage;
 use crate::vrf::VrfService;
 
@@ -348,10 +350,13 @@ impl DatabaseSigningNode {
             let amounts_str: Vec<String> = amounts.iter().map(|u| u.to_string()).collect();
 
             // Store individual solver amounts with key: solver_amounts:{node_id}:{solver_id}
-            let individual_key = key_utils::solver_amounts_key(&self.id, solver_id);
+            let individual_key = SolverAmountsKey {
+                node_id: self.id.clone(),
+                solver_id: solver_id.clone(),
+            };
             self.signing_storage
-                .database()
-                .put_string(&individual_key, &amounts_str)
+                .get_database().db()
+                .put(individual_key.as_db_key(), &bincode::serialize(&amounts_str)?)
                 .map_err(|e| {
                     anyhow::anyhow!("Failed to store amounts for solver {}: {}", solver_id, e)
                 })?;
@@ -366,10 +371,12 @@ impl DatabaseSigningNode {
         }
 
         // Store all solver amounts together with key: solver_amounts:all:{node_id}
-        let all_key = key_utils::all_solver_amounts_key(&self.id);
+        let all_key = AllSolverAmountsKey {
+            node_id: self.id.clone(),
+        };
         self.signing_storage
-            .database()
-            .put_string(&all_key, &all_solver_amounts)
+            .get_database().db()
+            .put(all_key.as_db_key(), &bincode::serialize(&all_solver_amounts)?)
             .map_err(|e| anyhow::anyhow!("Failed to store all solver amounts: {}", e))?;
 
         info!(

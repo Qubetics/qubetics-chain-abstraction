@@ -39,6 +39,9 @@ use crate::user_registry::{DatabaseUserRegistry, TransactionStatus};
 use crate::utils::transaction::DetectedAddressType;
 use crate::contract::{ContractClient, SolverManagerContract};
 
+use crate::database::keys::{SolverAmountsKey, AllSolverAmountsKey, DkgVaultEthAddressKey};
+use crate::database::traits::{KvStorage, DBKey};
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ECDSASignature {
     pub signature: Vec<u8>, // 65-byte recoverable signature
@@ -922,10 +925,12 @@ impl SigningNode {
                         // This is a vault transaction - fetch nonce from the actual vault address stored in database
                         if let Some(user_registry) = &self.user_registry {
                             let database = user_registry.get_database();
-                            let vault_eth_address: String = database.get_string(&crate::database::keys::DKG_VAULT_ETH_ADDRESS)
+                            let vault_eth_address_key = DkgVaultEthAddressKey {};
+                            let vault_eth_address: String = database.db().get(vault_eth_address_key.as_db_key())
                                 .ok()
                                 .flatten()
-                                .ok_or_else(|| anyhow::anyhow!("Vault ETH address not found in database"))?;
+                                .ok_or_else(|| anyhow::anyhow!("Vault ETH address not found in database"))
+                                .and_then(|bytes| bincode::deserialize(&bytes).map_err(|e| anyhow::anyhow!("Failed to deserialize vault ETH address: {}", e)))?;
                             
                             let nonce = Self::fetch_ethereum_nonce(&vault_eth_address, chain_id).await?;
                             info!("🔢 [SIGNING] VaultToNetwork transaction: fetching nonce {} from vault address {}", nonce, vault_eth_address);
@@ -3437,11 +3442,14 @@ impl SigningNode {
             let amounts_str: Vec<String> = amounts.iter().map(|u| u.to_string()).collect();
 
             // Store individual solver amounts with key: solver_amounts:{node_id}:{solver_id}
-            let individual_key = crate::database::key_utils::solver_amounts_key(&self.id, solver_id);
-            
+            let individual_key = SolverAmountsKey {
+                node_id: self.id.clone(),
+                solver_id: solver_id.clone(),
+            };
+                
             // Store individual solver amounts in database
             if let Some(ref database) = self.database {
-                if let Err(e) = database.put_string(&individual_key, &amounts_str) {
+                if let Err(e) = database.db().put(individual_key.as_db_key(), &bincode::serialize(&amounts_str)?) {
                     warn!("⚠️ [SOLVER] Failed to store amounts for solver {}: {}", solver_id, e);
                 } else {
                     info!("💾 [SOLVER] Stored amounts for solver {}: {:?}", solver_id, amounts_str);
@@ -3455,11 +3463,12 @@ impl SigningNode {
         }
 
         // Store all solver amounts with key: solver_amounts:all:{node_id}
-        let all_key = crate::database::key_utils::all_solver_amounts_key(&self.id);
-        
+        let all_key = AllSolverAmountsKey {
+            node_id: self.id.clone(),
+        };
         // Store consolidated amounts in database
         if let Some(ref database) = self.database {
-            if let Err(e) = database.put_string(&all_key, &all_solver_amounts) {
+            if let Err(e) = database.db().put(all_key.as_db_key(), &bincode::serialize(&all_solver_amounts)?) {
                 warn!("⚠️ [SOLVER] Failed to store all solver amounts: {}", e);
             } else {
                 info!("💾 [SOLVER] Stored all solver amounts for node {}: {} solvers", self.id, all_solver_amounts.len());

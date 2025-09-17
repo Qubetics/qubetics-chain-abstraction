@@ -23,7 +23,7 @@ use tokio::sync::{mpsc};
 use tracing::{debug, error, info, warn};
 use ff::PrimeField;
 
-use crate::commands::CommandProcessor;
+use crate::{commands::CommandProcessor, database::keys::{DkgVaultBtcAddressKey, DkgVaultEthAddressKey}};
 use crate::consensus::ConsensusNode;
 use crate::adkg_secp256k1::DKGNode;
 use crate::node_management::NodeMembership;
@@ -41,6 +41,7 @@ use crate::{
         ChannelMessage, GossipsubMessage, PeerInfo,
     },
 };
+use crate::database::traits::KvStorage;
 
 #[derive(NetworkBehaviour)]
 #[behaviour(out_event = "NetworkEvent")]
@@ -1439,15 +1440,21 @@ impl NetworkLayer {
                     };
                     
                     // Get vault addresses from database
-                    let (vault_eth_addr, vault_btc_addr) = if let Some(registry) = &self.user_registry {
-                        let database = registry.get_database();
-                        let vault_eth = database.get_string(&crate::database::keys::DKG_VAULT_ETH_ADDRESS).ok().flatten();
-                        let vault_btc = database.get_string(&crate::database::keys::DKG_VAULT_BTC_ADDRESS).ok().flatten();
-                        (vault_eth, vault_btc)
+                    let (vault_eth_addr, vault_btc_addr) = if let Some(dkg_node) = &self.dkg_node {
+                        match dkg_node.storage.get_vault_addresses().await {
+                            Ok(Some((eth_addr, btc_addr))) => (Some(eth_addr), Some(btc_addr)),
+                            Err(e) => {
+                                return Err(anyhow::anyhow!("Failed to get vault addresses from database: {}", e));
+                            }
+                            Ok(None) => {
+                                return Err(anyhow::anyhow!("Vault addresses not found in database"));
+                            }
+                        }
                     } else {
-                        return Err(anyhow::anyhow!("User registry not available"));
+                        return Err(anyhow::anyhow!("DKG node not available to get vault addresses"));
                     };
                     
+
                     let chain_transaction_result = crate::utils::transaction::create_chain_transaction_from_deposit_intent(&intent, group_public_key, derived_eth_addr.as_ref(), derived_btc_addr.as_ref(), transaction_type.clone(), vault_eth_addr.as_ref(), vault_btc_addr.as_ref(), amount).await;
                     
                     match chain_transaction_result {
@@ -1895,15 +1902,21 @@ impl NetworkLayer {
                     };
                     
                     // Get vault addresses from database
-                    let (vault_eth_addr, vault_btc_addr) = if let Some(registry) = &self.user_registry {
-                        let database = registry.get_database();
-                        let vault_eth = database.get_string(&crate::database::keys::DKG_VAULT_ETH_ADDRESS).ok().flatten();
-                        let vault_btc = database.get_string(&crate::database::keys::DKG_VAULT_BTC_ADDRESS).ok().flatten();
-                        (vault_eth, vault_btc)
+                    let (vault_eth_addr, vault_btc_addr) = if let Some(dkg_node) = &self.dkg_node {
+                        match dkg_node.storage.get_vault_addresses().await {
+                            Ok(Some((eth_addr, btc_addr))) => (Some(eth_addr), Some(btc_addr)),
+                            Err(e) => {
+                                return Err(anyhow::anyhow!("Failed to get vault addresses from database: {}", e));
+                            }
+                            Ok(None) => {
+                                return Err(anyhow::anyhow!("Vault addresses not found in database"));
+                            }
+                        }
                     } else {
-                        return Err(anyhow::anyhow!("User registry not available"));
+                        return Err(anyhow::anyhow!("DKG node not available to get vault addresses"));
                     };
                     
+
                     let chain_transaction_result = crate::utils::transaction::create_chain_transaction_from_deposit_intent(&intent, group_public_key, derived_eth_addr.as_ref(), derived_btc_addr.as_ref(), transaction_type.clone(), vault_eth_addr.as_ref(), vault_btc_addr.as_ref(), amount).await;
                     
                     match chain_transaction_result {
