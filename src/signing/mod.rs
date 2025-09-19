@@ -481,10 +481,10 @@ impl SigningNode {
             let mut signatures_by_round = self.signatures_by_round.write().await;
             let round_signatures = signatures_by_round.entry(current_round).or_default();
             let stored_signature = ECDSASignature {
-                signature: signature_bytes.to_vec(), // ✅ 64 bytes (consistent with broadcast)
+                signature: signature_bytes.to_vec(), 
                 signer_id: self.id.clone(),
                 recovery_id: recovery_id.to_i32() as u8,
-                user_eth_address: user_eth_address_clone.clone(), // Clone to avoid borrow checker issues
+                user_eth_address: user_eth_address_clone.clone(), 
             };
             round_signatures.insert(self.id.clone(), stored_signature);
             info!(
@@ -681,7 +681,8 @@ impl SigningNode {
                 let mut s32 = [0u8; 32];
                 r32.copy_from_slice(r);
                 s32.copy_from_slice(s);
-                let signature = Self::create_der_signature_p2wpkh(&r32, &s32);
+                let mut signature = Self::create_der_signature_p2wpkh(&r32, &s32);
+                signature.push(0x01); // SIGHASH_ALL
                 info!("  DER-encoded P2WPKH signature: {}", hex::encode(&signature));
 
                 // Create the complete signed transaction
@@ -900,47 +901,6 @@ impl SigningNode {
         }
     }
 
-    // /// Create DER-encoded signature for Bitcoin
-    // fn create_der_signature(&self, r: &[u8], s: &[u8]) -> Result<Vec<u8>> {
-    //     let mut der_sig = Vec::new();
-    //     der_sig.push(0x30); // SEQUENCE tag
-        
-    //     // Calculate and add the total length later
-    //     let length_pos = der_sig.len();
-    //     der_sig.push(0x00); // Placeholder for length
-        
-    //     // Add r value
-    //     der_sig.push(0x02); // INTEGER tag
-    //     if r[0] & 0x80 != 0 {
-    //         // If high bit is set, prepend 0x00 to make it positive
-    //         der_sig.push((r.len() + 1) as u8);
-    //         der_sig.push(0x00);
-    //     } else {
-    //         der_sig.push(r.len() as u8);
-    //     }
-    //     der_sig.extend_from_slice(r);
-        
-    //     // Add s value  
-    //     der_sig.push(0x02); // INTEGER tag
-    //     if s[0] & 0x80 != 0 {
-    //         // If high bit is set, prepend 0x00 to make it positive
-    //         der_sig.push((s.len() + 1) as u8);
-    //         der_sig.push(0x00);
-    //     } else {
-    //         der_sig.push(s.len() as u8);
-    //     }
-    //     der_sig.extend_from_slice(s);
-        
-    //     // Update the total length
-    //     let content_length = der_sig.len() - 2; // Exclude the SEQUENCE tag and length byte
-    //     der_sig[length_pos] = content_length as u8;
-        
-    //     // Add SIGHASH_ALL flag
-    //     der_sig.push(0x01); // SIGHASH_ALL
-        
-    //     Ok(der_sig)
-    // }
-
     fn der_encode_int_be(raw: &[u8]) -> Vec<u8> {
         // 1) Strip leading zeros (minimal encoding)
         let mut i = 0;
@@ -1122,7 +1082,7 @@ impl SigningNode {
         der.push(0x02); // INTEGER tag for s
         der.push(s.len() as u8);
         der.extend_from_slice(&s);
-        der.push(0x01); // SIGHASH_ALL
+        // der.push(0x01); // SIGHASH_ALL
         
         der
     }
@@ -2213,9 +2173,6 @@ impl SigningNode {
                             );
                             info!("📄 Raw signed transaction: {}", signed_tx_hex);
                             
-                            
-                            // info!("Broadcasting transaction to Bitcoin network...");
-                            // Self::broadcast_transaction(&signed_tx_hex, false).await?;
                         }
                     }
                     Err(e) => {
