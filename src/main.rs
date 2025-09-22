@@ -3,6 +3,7 @@ use libp2p::identity::Keypair;
 use mpc_node::node_management::{DefaultThresholdCalculator, NodeMembership, VrfNodeManager};
 use mpc_node::{
     adkg_secp256k1::DKGNode,
+    cli::Cli,
     commands::CommandProcessor,
     consensus::{ConsensusNode, DatabaseConsensusNode},
     database::{Database, DatabaseConfig, DkgStorage},
@@ -27,8 +28,17 @@ use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    // Load environment variables from .env file
+    // Parse CLI arguments
+    let cli = Cli::parse_args();
+    
     dotenv().ok();
+    
+    start_node_with_cli_args(cli).await?;
+    
+    Ok(())
+}
+
+async fn start_node_with_cli_args(cli: Cli) -> Result<(), Box<dyn Error>> {
 
     let node_start_time = Instant::now();
     let rand_num: u32 = thread_rng().gen_range(1000..9999);
@@ -83,21 +93,36 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     info!("Initial node count: {}, threshold: {}", total, threshold);
 
+
+    // Prepare database path
+    let db_path = cli.data_dir.join(format!(
+        "rocksdb-{}",
+        local_peer_id
+            .to_string()
+            .chars()
+            .take(8)
+            .collect::<String>()
+    ));
+
+    // Reset database if in dev mode
+    if cli.is_dev_mode() {
+        info!("🔧 [DEV] Resetting database at: {:?}", db_path);
+        if db_path.exists() {
+            std::fs::remove_dir_all(&db_path)?;
+            info!("🗑️ [DEV] Database directory removed successfully");
+        } else {
+            info!("ℹ️ [DEV] Database directory does not exist, nothing to reset");
+        }
+    }
+
     // Initialize database
     let db_config = DatabaseConfig {
-        path: format!(
-            "./data/rocksdb-{}",
-            local_peer_id
-                .to_string()
-                .chars()
-                .take(8)
-                .collect::<String>()
-        ),
+        path: db_path.to_string_lossy().to_string(),
         create_if_missing: true,
         max_open_files: 1000,
     };
     let database = Arc::new(Database::new(db_config)?);
-    info!("🗄️ [MAIN] Database initialized successfully");
+    info!("🗄️ [MAIN] Database initialized successfully at: {:?}", cli.data_dir);
 
     let mut network = NetworkLayer::new(node_manager).await?;
 
@@ -157,10 +182,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // Start RPC server in a separate task
     let message_tx = network.get_msg_tx();
-    let rpc_port = std::env::var("RPC_PORT")
-        .unwrap_or_else(|_| "8081".to_string())
-        .parse::<u16>()
-        .unwrap_or(8081);
+    let rpc_port = cli.get_rpc_port();
     let node_id = network.get_local_peer_id().to_string();
 
     let start_time = node_start_time;
@@ -201,8 +223,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         )
     );
 
-    // Start the network
-    network.start().await?;
+    network.start(cli.bootstrap_nodes).await?;
 
     Ok(())
 }
