@@ -17,6 +17,10 @@ use crate::database::traits::{KvStorage, DBKey};
 use crate::types::ChannelMessage;
 use crate::vrf::VrfService;
 
+use crate::config;
+use crate::config::EnvVars;
+
+
 /// Database-backed signing node that stores state in RocksDB
 #[derive(Clone)]
 pub struct DatabaseSigningNode {
@@ -295,14 +299,12 @@ impl DatabaseSigningNode {
     /// This overrides the default no-op implementation in SigningNode
     async fn update_solver_amounts_for_user_to_vault(&self, _intent_hash: &str) -> Result<()> {
         // Configuration for contract interaction - you may want to make this configurable
-        let rpc_url = std::env::var("SOLVER_CONTRACT_RPC_URL")
-            .unwrap_or_else(|_| "http://localhost:8545".to_string());
-        let contract_address = std::env::var("SOLVER_CONTRACT_ADDRESS")
-            .unwrap_or_else(|_| "0x0000000000000000000000000000000000000000".to_string());
-        let chain_id = std::env::var("SOLVER_CONTRACT_CHAIN_ID")
-            .unwrap_or_else(|_| "1".to_string())
-            .parse::<u64>()
-            .unwrap_or(1);
+        let env_vars = EnvVars::load_with_dotenv()
+            .map_err(|e| anyhow::anyhow!("Failed to load environment variables: {}", e))?;
+
+        let rpc_url = env_vars.solver_contract_rpc_url;
+        let contract_address = env_vars.solver_contract_address;
+        let chain_id = env_vars.solver_contract_chain_id;
 
         // Parse contract address
         let addr: ethers::types::Address = contract_address

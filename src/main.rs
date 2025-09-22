@@ -1,10 +1,10 @@
-use dotenv::dotenv;
 use libp2p::identity::Keypair;
 use mpc_node::node_management::{DefaultThresholdCalculator, NodeMembership, VrfNodeManager};
 use mpc_node::{
     adkg_secp256k1::DKGNode,
     cli::Cli,
     commands::CommandProcessor,
+    config::EnvVars,
     consensus::{ConsensusNode, DatabaseConsensusNode},
     database::{Database, DatabaseConfig, DkgStorage},
     network::NetworkLayer,
@@ -31,7 +31,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Parse CLI arguments
     let cli = Cli::parse_args();
     
-    dotenv().ok();
+    let env_vars = EnvVars::load_with_dotenv().map_err(|e| {
+        eprintln!("❌ Failed to load environment variables: {}", e);
+        e
+    })?;
     
     start_node_with_cli_args(cli).await?;
     

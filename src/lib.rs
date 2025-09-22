@@ -6,6 +6,7 @@ pub mod adkg_secp256k1;
 pub mod chain;
 pub mod cli;
 pub mod commands;
+pub mod config;
 pub mod consensus;
 pub mod contract;
 pub mod database;
@@ -20,6 +21,8 @@ pub mod vrf;
 
 pub use adkg_secp256k1::DKGNode;
 pub use cli::Cli;
+pub use config::EnvVars;
+
 pub use commands::CommandProcessor;
 pub use consensus::{ConsensusNode, DatabaseConsensusNode};
 pub use database::{
