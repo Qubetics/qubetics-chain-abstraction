@@ -9,7 +9,7 @@ import { Wallet } from 'ethers';
 const RPC_BASE_URL = 'http://127.0.0.1:8082';
 
 // 👉 Private key you provided (hex, no 0x prefix needed)
-const TEST_PRIVKEY = '415c01d63918df986d1d537f9b5974f383cac3b4fe9edc44f58f09bdfc5f672a';
+const TEST_PRIVKEY = '2f1765e04f0a5c394eb3b07ee38bf210008473f6e679a4f901f554905f7f3f89';
 let TEST_TX_ID = "0x0942448ca6f6517c05c361e249cdaf9f5e054e6290236c43f6537705ef2a7885";
 
 // =========================
@@ -25,7 +25,7 @@ const colors = {
   green: '\x1b[32m'
 };
 
-const oooo = 43222211121
+const oooo = 454165212222
 
 function log(message, color = 'reset') {
   console.log(`${colors[color]}${message}${colors.reset}`);
@@ -149,7 +149,7 @@ async function testUserMpcDeposit({ wallet, amount }) {
     // Construct DepositIntent
     const depositIntent = {
       source_address: userInfo.data.derived_eth_address, // Use canonical address
-      target_address: 'mmDxNaQohXpsJmEt39auGLoUd2jd3wnnuq',
+      target_address: 'tb1q2nd0utgnrseanclhq2tr7hqhqtuc389mmjm2fs',
       source_chain: 'qubetics',
       target_chain: 'bitcoin',
       amount: amount, // Use the passed amount parameter
@@ -584,10 +584,10 @@ async function runTests() {
   const signerAddr = await wallet.getAddress();
   log(`\n🔑 Derived signer address from TEST_PRIVKEY: ${signerAddr}`, 'blue');
 
-  // // // 1) DKG status
+  // // 1) DKG status
   // await testDKGStatus();
 
-  // // 2) Register ONLY the derived address 
+  // // // 2) Register ONLY the derived address 
   // const reg = await testRegisterUser(signerAddr);
 
   // if (reg.success) {
@@ -600,7 +600,7 @@ async function runTests() {
 
   // 3) MPC deposit test WITHOUT tx_id (should pass Some(signer) to handle_deposit_intent)
   log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
-  const amount = 21891892000000000000
+  const amount = 25143341220000000000
   await testUserMpcDeposit({ wallet, amount }); 
   
   // const address = '0xbac113cebd9CB2fBD2a01B5CBC43D0fC0EBed5e9';

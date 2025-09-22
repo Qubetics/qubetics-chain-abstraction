@@ -529,12 +529,34 @@ impl SigningNode {
             .await?;
 
         if response.status().is_success() {
-            let txid = response.text().await?.trim().to_string();
-            if !txid.is_empty() {
+            // Read body as text first to support multiple provider formats
+            let body_text = response.text().await?;
+            let body_trimmed = body_text.trim();
+
+            // Try JSON parse first (handles { txid: ... } and { data: { txid: ... } })
+            let txid_opt = serde_json::from_str::<serde_json::Value>(body_trimmed)
+                .ok()
+                .and_then(|v| {
+                    v.get("txid")
+                        .and_then(|t| t.as_str().map(|s| s.to_string()))
+                        .or_else(|| {
+                            v.get("data")
+                                .and_then(|d| d.get("txid"))
+                                .and_then(|t| t.as_str().map(|s| s.to_string()))
+                        })
+                })
+                .or_else(|| {
+                    // If not JSON, some providers return plain txid text
+                    let t = body_trimmed;
+                    let is_hex64 = t.len() == 64 && t.chars().all(|c| c.is_ascii_hexdigit());
+                    if is_hex64 { Some(t.to_string()) } else { None }
+                });
+
+            if let Some(txid) = txid_opt {
                 info!("✅ Transaction broadcasted successfully! TXID: {}", txid);
                 Ok(Some(txid))
             } else {
-                info!("✅ Transaction broadcasted successfully, but empty txid returned.");
+                info!("✅ Transaction broadcasted successfully, but no txid found in response: {}", body_trimmed);
                 Ok(Some("broadcast_success".to_string()))
             }
         } else {
