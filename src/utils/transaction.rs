@@ -1,5 +1,5 @@
 use crate::chain::{
-    BitcoinInput, BitcoinOutput, BitcoinTransaction, BitcoinWitnessUtxo, ChainTransaction,
+    BitcoinInput, BitcoinOutput, BitcoinTransaction, ChainTransaction,
     EthereumTransaction,
 };
 use crate::rpc_server::{ContractTransaction, DepositIntent, DummyTransaction};
@@ -403,109 +403,6 @@ pub fn extract_utxo_identifiers(utxos: &[BitcoinUtxo]) -> Vec<(String, u32)> {
         .collect()
 }
 
-/// Create a UTXO consolidation transaction to merge small UTXOs
-pub async fn create_utxo_consolidation_transaction(
-    from_address: &str,
-    _group_public_key: Option<k256::ProjectivePoint>,
-    max_inputs: usize,
-    min_utxo_value: u64,
-) -> Result<ChainTransaction> {
-    tracing::info!(
-        "🔄 [CONSOLIDATION] Creating UTXO consolidation transaction for {}",
-        from_address
-    );
-
-    // Validate address format
-    if !is_p2pkh_address(from_address) {
-        return Err(anyhow::anyhow!(
-            "Only P2PKH addresses (1.../m.../n...) are supported for consolidation, got: {}",
-            from_address
-        ));
-    }
-
-    let is_testnet = is_testnet_p2pkh_address(from_address);
-
-    // Fetch UTXOs for the address (skip external verification)
-    let utxos = fetch_bitcoin_utxos(from_address, is_testnet).await?;
-
-    if utxos.is_empty() {
-        return Err(anyhow::anyhow!(
-            "No spendable UTXOs available for consolidation"
-        ));
-    }
-
-    // Filter for small UTXOs that should be consolidated
-    let mut small_utxos: Vec<_> = utxos
-        .into_iter()
-        .filter(|utxo| utxo.value <= min_utxo_value && utxo.status.confirmed)
-        .collect();
-
-    if small_utxos.is_empty() {
-        return Err(anyhow::anyhow!("No small UTXOs found for consolidation"));
-    }
-
-    // Sort by value (smallest first) and limit to max_inputs
-    small_utxos.sort_by_key(|utxo| utxo.value);
-    if small_utxos.len() > max_inputs {
-        small_utxos.truncate(max_inputs);
-    }
-
-    let total_input_value: u64 = small_utxos.iter().map(|utxo| utxo.value).sum();
-    let estimated_fee = calculate_bitcoin_fee(small_utxos.len(), 1); // 1 output (consolidation)
-
-    if total_input_value <= estimated_fee {
-        return Err(anyhow::anyhow!(
-            "Total input value ({} sats) is less than estimated fee ({} sats)",
-            total_input_value,
-            estimated_fee
-        ));
-    }
-
-    let consolidation_amount = total_input_value - estimated_fee;
-
-    tracing::info!(
-        "🔄 [CONSOLIDATION] Consolidating {} UTXOs: {} sats -> {} sats (fee: {} sats)",
-        small_utxos.len(),
-        total_input_value,
-        consolidation_amount,
-        estimated_fee
-    );
-
-    // Create inputs from small UTXOs
-    let inputs: Vec<BitcoinInput> = small_utxos
-        .iter()
-        .map(|utxo| {
-            BitcoinInput {
-                txid: utxo.txid.clone(),
-                vout: utxo.vout,
-                script_sig: vec![], // Will be filled during signing with <signature> <pubkey>
-                sequence: 0xFFFFFFFD, // Enable RBF
-                witness_utxo: None, // No witness data for P2PKH
-            }
-        })
-        .collect();
-
-    // Create single consolidation output (back to same address)
-    let outputs = vec![BitcoinOutput {
-        value: consolidation_amount,
-        script_pubkey: create_bitcoin_script_pubkey(from_address)?,
-    }];
-
-    let bitcoin_tx = BitcoinTransaction {
-        inputs,
-        outputs,
-        version: 1, // Use version 1 for legacy transactions
-        lock_time: 0,
-        witness: None, // No witness data for P2PKH
-    };
-
-    tracing::info!(
-        "✅ [CONSOLIDATION] Created consolidation transaction with {} inputs -> 1 output",
-        small_utxos.len()
-    );
-    Ok(ChainTransaction::Bitcoin(bitcoin_tx))
-}
-
 /// Calculate estimated Bitcoin transaction fee based on inputs and outputs
 pub fn calculate_bitcoin_fee(num_inputs: usize, num_outputs: usize) -> u64 {
     // Simple fee calculation:
@@ -804,24 +701,24 @@ async fn create_chain_transaction_from_deposit_intent_internal(
         tracing::info!("Using Bitcoin source address for UTXOs: {}", from_address);
 
         // Validate that both addresses are P2PKH format only
-        if !is_p2pkh_address(&from_address) {
-            return Err(anyhow::anyhow!(
-                "Source address '{}' is not supported. Only P2PKH addresses (1.../m.../n...) are supported.", 
-                from_address
-            ));
-        }
+        // if !is_p2pkh_address(&from_address) {
+        //     return Err(anyhow::anyhow!(
+        //         "Source address '{}' is not supported. Only P2PKH addresses (1.../m.../n...) are supported.", 
+        //         from_address
+        //     ));
+        // }
 
-        if !is_p2pkh_address(&to_address) {
-            return Err(anyhow::anyhow!(
-                "Destination address '{}' is not supported. Only P2PKH addresses (1.../m.../n...) are supported.", 
-                to_address
-            ));
-        }
+        // if !is_p2pkh_address(&to_address) {
+        //     return Err(anyhow::anyhow!(
+        //         "Destination address '{}' is not supported. Only P2PKH addresses (1.../m.../n...) are supported.", 
+        //         to_address
+        //     ));
+        // }
 
-        let is_testnet = is_testnet_p2pkh_address(&from_address);
+        // let is_testnet = is_testnet_p2pkh_address(&from_address);
 
         // Fetch raw UTXOs without external verification
-        let utxos = fetch_bitcoin_utxos(&from_address, is_testnet).await?;
+        let utxos = fetch_bitcoin_utxos(&from_address, true).await?;
         tracing::info!(
             "Final verified {} spendable UTXOs for address {}",
             utxos.len(),
@@ -1219,28 +1116,28 @@ pub enum DetectedAddressType {
 }
 
 /// Detect Bitcoin address type - only P2PKH is supported
-fn detect_bitcoin_address_type(address: &str) -> DetectedAddressType {
-    if is_p2pkh_address(address) {
-        DetectedAddressType::P2PKH
-    } else {
-        DetectedAddressType::Unsupported
-    }
-}
+// fn detect_bitcoin_address_type(address: &str) -> DetectedAddressType {
+//     if is_p2pkh_address(address) {
+//         DetectedAddressType::P2PKH
+//     } else {
+//         DetectedAddressType::Unsupported
+//     }
+// }
 
 /// Check if address is P2PKH format
-fn is_p2pkh_address(address: &str) -> bool {
-    // Mainnet P2PKH: starts with '1'
-    // Testnet P2PKH: starts with 'm' or 'n'
-    (address.starts_with('1') && address.len() >= 26 && address.len() <= 35)
-        || ((address.starts_with('m') || address.starts_with('n'))
-            && address.len() >= 26
-            && address.len() <= 35)
-}
+// fn is_p2pkh_address(address: &str) -> bool {
+//     // Mainnet P2PKH: starts with '1'
+//     // Testnet P2PKH: starts with 'm' or 'n'
+//     (address.starts_with('1') && address.len() >= 26 && address.len() <= 35)
+//         || ((address.starts_with('m') || address.starts_with('n'))
+//             && address.len() >= 26
+//             && address.len() <= 35)
+// }
 
 /// Check if address is testnet P2PKH
-fn is_testnet_p2pkh_address(address: &str) -> bool {
-    address.starts_with('m') || address.starts_with('n')
-}
+// fn is_testnet_p2pkh_address(address: &str) -> bool {
+//     address.starts_with('m') || address.starts_with('n')
+// }
 
 fn create_bitcoin_script_pubkey(address: &str) -> Result<Vec<u8>> {
     use bitcoin::{Address, Network};
@@ -1251,20 +1148,20 @@ fn create_bitcoin_script_pubkey(address: &str) -> Result<Vec<u8>> {
         .map_err(|e| anyhow::anyhow!("Invalid Bitcoin address '{}': {}", address, e))?;
 
     // Only support P2PKH addresses
-    if !is_p2pkh_address(address) {
-        return Err(anyhow::anyhow!(
-            "Only P2PKH addresses (1.../m.../n...) are supported, got: {}",
-            address
-        ));
-    }
+    // if !is_p2pkh_address(address) {
+    //     return Err(anyhow::anyhow!(
+    //         "Only P2PKH addresses (1.../m.../n...) are supported, got: {}",
+    //         address
+    //     ));
+    // }
 
     // Determine network from P2PKH address prefix
-    let network = if is_testnet_p2pkh_address(address) {
-        Network::Testnet
-    } else {
-        Network::Bitcoin
-    };
-
+    // let network = if is_testnet_p2pkh_address(address) {
+    //     Network::Testnet
+    // } else {
+    //     Network::Bitcoin
+    // };
+    let network = Network::Testnet;
     // Require the network to get a checked address
     let checked_address = parsed_address
         .require_network(network)
@@ -1275,243 +1172,25 @@ fn create_bitcoin_script_pubkey(address: &str) -> Result<Vec<u8>> {
     let script_bytes = script_pubkey.to_bytes();
 
     // Log address type for debugging
-    let detected_type = detect_bitcoin_address_type(address);
-    match detected_type {
-        DetectedAddressType::P2PKH => {
-            tracing::info!(
-                "✅ [TRANSACTION] Address {} is P2PKH (Legacy) - supported",
-                address
-            );
-        }
-        DetectedAddressType::Unsupported => {
-            return Err(anyhow::anyhow!(
-                "Unsupported Bitcoin address type: {}. Only P2PKH addresses (1.../m.../n...) are supported.",
-                address
-            ));
-        }
-    }
+    // let detected_type = detect_bitcoin_address_type(address);
+    // match detected_type {
+    //     DetectedAddressType::P2PKH => {
+    //         tracing::info!(
+    //             "✅ [TRANSACTION] Address {} is P2PKH (Legacy) - supported",
+    //             address
+    //         );
+    //     }
+    //     DetectedAddressType::Unsupported => {
+    //         return Err(anyhow::anyhow!(
+    //             "Unsupported Bitcoin address type: {}. Only P2PKH addresses (1.../m.../n...) are supported.",
+    //             address
+    //         ));
+    //     }
+    // }
 
     Ok(script_bytes)
 }
 
-/// Create legacy Bitcoin sighash for P2PKH inputs (pre-SegWit)
-pub fn create_legacy_bitcoin_sighash(
-    tx: &BitcoinTransaction,
-    input_index: usize,
-    script_code: &[u8], // The prevout's scriptPubKey for P2PKH
-    sighash_type: u8,   // Usually 0x01 for SIGHASH_ALL
-) -> Result<[u8; 32]> {
-    use sha2::{Digest, Sha256};
-
-    if input_index >= tx.inputs.len() {
-        return Err(anyhow::anyhow!("Input index {} out of bounds", input_index));
-    }
-
-    let mut preimage = Vec::new();
-
-    // Version (4 bytes, little-endian)
-    preimage.extend_from_slice(&tx.version.to_le_bytes());
-
-    // Number of inputs (varint)
-    preimage.push(tx.inputs.len() as u8);
-
-    // Inputs
-    for (i, input) in tx.inputs.iter().enumerate() {
-        // Previous output hash (32 bytes, little-endian)
-        let txid_bytes =
-            hex::decode(&input.txid).map_err(|e| anyhow::anyhow!("Invalid txid hex: {}", e))?;
-        if txid_bytes.len() != 32 {
-            return Err(anyhow::anyhow!("Invalid txid length: {}", txid_bytes.len()));
-        }
-        preimage.extend_from_slice(&txid_bytes);
-
-        // Previous output index (4 bytes, little-endian)
-        preimage.extend_from_slice(&input.vout.to_le_bytes());
-
-        // Script
-        if i == input_index {
-            // For the input being signed, use the scriptCode (prevout's scriptPubKey)
-            preimage.push(script_code.len() as u8); // Script length
-            preimage.extend_from_slice(script_code);
-        } else {
-            // For other inputs, use empty script
-            preimage.push(0); // Empty script length
-        }
-
-        // Sequence (4 bytes, little-endian)
-        preimage.extend_from_slice(&input.sequence.to_le_bytes());
-    }
-
-    // Number of outputs (varint)
-    preimage.push(tx.outputs.len() as u8);
-
-    // Outputs
-    for output in &tx.outputs {
-        // Value (8 bytes, little-endian)
-        preimage.extend_from_slice(&output.value.to_le_bytes());
-
-        // Script length and script
-        preimage.push(output.script_pubkey.len() as u8);
-        preimage.extend_from_slice(&output.script_pubkey);
-    }
-
-    // Lock time (4 bytes, little-endian)
-    preimage.extend_from_slice(&tx.lock_time.to_le_bytes());
-
-    // Sighash type (4 bytes, little-endian)
-    preimage.extend_from_slice(&(sighash_type as u32).to_le_bytes());
-
-    // Log sighash checkpoint
-    tracing::info!(
-        "🔍 [SIGHASH_CHECKPOINT] vin={}, scriptCode={}, sighash_type=0x{:02x}, sequence=0x{:08x}, locktime={}",
-        input_index,
-        hex::encode(script_code),
-        sighash_type,
-        tx.inputs[input_index].sequence,
-        tx.lock_time
-    );
-
-    // Double SHA256
-    let first_hash = Sha256::digest(&preimage);
-    let second_hash = Sha256::digest(&first_hash);
-    let digest: [u8; 32] = second_hash.into();
-
-    tracing::info!("🔍 [SIGHASH_CHECKPOINT] digest32={}", hex::encode(&digest));
-
-    Ok(digest)
-}
-
-/// Normalize signature to low-S and create minimal DER encoding
-pub fn normalize_and_encode_signature(r: &[u8], s: &[u8]) -> Result<Vec<u8>> {
-    use k256::elliptic_curve::group::ff::PrimeField;
-    use k256::Scalar;
-
-    if r.len() != 32 || s.len() != 32 {
-        return Err(anyhow::anyhow!("r and s must be 32 bytes each"));
-    }
-
-    // Parse s as scalar
-    let mut s_bytes = [0u8; 32];
-    s_bytes.copy_from_slice(s);
-    let s_scalar = Scalar::from_repr(s_bytes.into()).unwrap();
-
-    // Get curve order n (secp256k1 order)
-    let n_bytes = [
-        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-        0xFE, 0xBA, 0xAE, 0xDC, 0xE6, 0xAF, 0x48, 0xA0, 0x3B, 0xBF, 0xD2, 0x5E, 0x8C, 0xD0, 0x36,
-        0x41, 0x41,
-    ];
-    let n = Scalar::from_repr(n_bytes.into()).unwrap();
-
-    // Calculate n/2
-    let n_half = n * Scalar::from(2u32).invert().unwrap();
-
-    // Check if s > n/2 (high-S)
-    let s_bytes = s_scalar.to_bytes();
-    let n_half_bytes = n_half.to_bytes();
-    let is_high_s = s_bytes.as_slice() > n_half_bytes.as_slice();
-
-    let (final_s, low_s_applied) = if is_high_s {
-        // Normalize to low-S: s = n - s
-        let low_s = n - s_scalar;
-        (low_s.to_bytes(), true)
-    } else {
-        (s_bytes, false)
-    };
-
-    tracing::info!(
-        "🔍 [SIGNATURE_CHECKPOINT] r={}, s_original={}, s_low={}, lowS_applied={}",
-        hex::encode(r),
-        hex::encode(s),
-        hex::encode(&final_s),
-        low_s_applied
-    );
-
-    // Create minimal DER encoding
-    let der_encoded = create_minimal_der_signature(r, &final_s)?;
-
-    tracing::info!(
-        "🔍 [SIGNATURE_CHECKPOINT] DER_total_len={}, sighash_byte=0x01",
-        der_encoded.len()
-    );
-
-    Ok(der_encoded)
-}
-
-/// Create minimal DER encoding for ECDSA signature (BIP-66 compliant)
-fn create_minimal_der_signature(r: &[u8], s: &[u8]) -> Result<Vec<u8>> {
-    // Remove leading zeros but keep one if MSB would be set
-    let trim_leading_zeros = |bytes: &[u8]| -> Vec<u8> {
-        let mut start = 0;
-        while start < bytes.len() - 1 && bytes[start] == 0 {
-            start += 1;
-        }
-        // If MSB is set, we need a leading zero
-        if bytes[start] & 0x80 != 0 && start > 0 {
-            start -= 1;
-        }
-        bytes[start..].to_vec()
-    };
-
-    let r_trimmed = trim_leading_zeros(r);
-    let s_trimmed = trim_leading_zeros(s);
-
-    let mut der = Vec::new();
-
-    // SEQUENCE tag
-    der.push(0x30);
-
-    // Calculate total length
-    let r_len = r_trimmed.len();
-    let s_len = s_trimmed.len();
-    let total_len = 2 + r_len + 2 + s_len; // 2 bytes for each INTEGER header
-
-    if total_len > 255 {
-        return Err(anyhow::anyhow!("DER signature too long: {}", total_len));
-    }
-
-    der.push(total_len as u8);
-
-    // R INTEGER
-    der.push(0x02); // INTEGER tag
-    der.push(r_len as u8);
-    der.extend_from_slice(&r_trimmed);
-
-    // S INTEGER
-    der.push(0x02); // INTEGER tag
-    der.push(s_len as u8);
-    der.extend_from_slice(&s_trimmed);
-
-    tracing::info!("🔍 [SIGNATURE_CHECKPOINT] R_len={}, S_len={}", r_len, s_len);
-
-    Ok(der)
-}
-
-/// Log comprehensive pre-broadcast transaction details
-pub fn log_pre_broadcast_details(tx: &BitcoinTransaction, tx_bytes: &[u8]) -> String {
-    use sha2::{Digest, Sha256};
-
-    // Calculate txid (double SHA256 of raw transaction)
-    let first_hash = Sha256::digest(tx_bytes);
-    let second_hash = Sha256::digest(&first_hash);
-    let mut txid_bytes = second_hash.to_vec();
-    txid_bytes.reverse(); // Convert to big-endian for display
-    let txid = hex::encode(&txid_bytes);
-
-    // Calculate total fee (assuming we have input values available)
-    let total_output_value: u64 = tx.outputs.iter().map(|o| o.value).sum();
-
-    tracing::info!(
-        "🚀 [PRE_BROADCAST] txid={}, raw_tx_byte_length={}, num_inputs={}, num_outputs={}, total_output_value={}",
-        txid,
-        tx_bytes.len(),
-        tx.inputs.len(),
-        tx.outputs.len(),
-        total_output_value
-    );
-
-    txid
-}
 
 pub fn create_transaction_for_signing(tx: &DummyTransaction) -> Vec<u8> {
     // Log transaction details before creating raw transaction
