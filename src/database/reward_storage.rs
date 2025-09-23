@@ -48,19 +48,50 @@ impl RewardStorage {
         Ok(())
     }
 
-    /// Store reward for a specific solver
-    pub async fn set_solver_reward(&self, solver_address: &str, reward: U256) -> Result<()> {
-        let key = key_utils::solver_reward_key(solver_address);
-        self.db.put_string(&key, &reward.to_string())?;
-        Ok(())
-    }
-
-    /// Get reward for a specific solver
+    /// Get reward for a specific solver (legacy single-metric key - kept for BC)
     pub async fn get_solver_reward(&self, solver_address: &str) -> Result<Option<U256>> {
         let key = key_utils::solver_reward_key(solver_address);
         if let Some(value) = self.db.get_string::<String>(&key)? {
             let reward = U256::from_dec_str(&value)
                 .map_err(|e| anyhow::anyhow!("Failed to parse reward: {}", e))?;
+            Ok(Some(reward))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Store TICS reward for a specific solver
+    pub async fn set_solver_reward_tics(&self, solver_address: &str, reward_tics: U256) -> Result<()> {
+        let key = key_utils::solver_reward_tics_key(solver_address);
+        self.db.put_string(&key, &reward_tics.to_string())?;
+        Ok(())
+    }
+
+    /// Get TICS reward for a specific solver
+    pub async fn get_solver_reward_tics(&self, solver_address: &str) -> Result<Option<U256>> {
+        let key = key_utils::solver_reward_tics_key(solver_address);
+        if let Some(value) = self.db.get_string::<String>(&key)? {
+            let reward = U256::from_dec_str(&value)
+                .map_err(|e| anyhow::anyhow!("Failed to parse tics reward: {}", e))?;
+            Ok(Some(reward))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Store BTC reward for a specific solver (in satoshis as U256)
+    pub async fn set_solver_reward_btc(&self, solver_address: &str, reward_btc_sats: U256) -> Result<()> {
+        let key = key_utils::solver_reward_btc_key(solver_address);
+        self.db.put_string(&key, &reward_btc_sats.to_string())?;
+        Ok(())
+    }
+
+    /// Get BTC reward for a specific solver (in satoshis as U256)
+    pub async fn get_solver_reward_btc(&self, solver_address: &str) -> Result<Option<U256>> {
+        let key = key_utils::solver_reward_btc_key(solver_address);
+        if let Some(value) = self.db.get_string::<String>(&key)? {
+            let reward = U256::from_dec_str(&value)
+                .map_err(|e| anyhow::anyhow!("Failed to parse btc reward: {}", e))?;
             Ok(Some(reward))
         } else {
             Ok(None)

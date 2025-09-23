@@ -378,9 +378,36 @@ impl NetworkLayer {
 
         let args: Vec<String> = env::args().collect();
         if args.len() >= 2 {
-            let server_addr: Multiaddr = args[1].parse()?;
-            info!("Dialing address: {}", server_addr);
-            swarm.dial(server_addr.clone())?;
+            // Parse all addresses from command line arguments
+            let addresses: Vec<Multiaddr> = args[1..]
+                .iter()
+                .filter_map(|arg| {
+                    match arg.parse::<Multiaddr>() {
+                        Ok(addr) => {
+                            info!("Parsed address: {}", addr);
+                            Some(addr)
+                        }
+                        Err(e) => {
+                            error!("Failed to parse address '{}': {}", arg, e);
+                            None
+                        }
+                    }
+                })
+                .collect();
+
+            if addresses.is_empty() {
+                warn!("No valid addresses provided to dial");
+            } else {
+                info!("Dialing {} addresses:", addresses.len());
+                for (i, addr) in addresses.iter().enumerate() {
+                    info!("  {}. {}", i + 1, addr);
+                    if let Err(e) = swarm.dial(addr.clone()) {
+                        error!("Failed to dial address {}: {}", addr, e);
+                    } else {
+                        info!("Successfully initiated dial to: {}", addr);
+                    }
+                }
+            }
         }
 
         info!("Local Peer ID: {}", self.local_peer_id);

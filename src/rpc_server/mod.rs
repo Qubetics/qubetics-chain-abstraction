@@ -171,7 +171,8 @@ pub struct GetRewardSolverRequest {
 pub struct GetRewardSolverResponse {
     pub status: String,
     pub solver_address: String,
-    pub reward: Option<String>,
+    pub reward_btc: Option<String>,
+    pub reward_tics: Option<String>,
     pub message: String,
     pub error_message: Option<String>,
 }
@@ -428,8 +429,8 @@ pub async fn start_http_server(
 
     // POST /get_reward_solver
     let get_reward_solver = warp::path("get_reward_solver")
-        .and(warp::post())
-        .and(warp::body::json())
+        .and(warp::get())
+        .and(warp::query::<GetRewardSolverRequest>())
         .and(with_user_registry(user_registry.clone()))
         .and_then(handle_get_reward_solver);
 
@@ -2207,7 +2208,7 @@ async fn handle_solver_reward(
     }
 
     // Use user registry's reward storage instead of direct reward storage
-    let reward_opt = user_registry.get_solver_reward(&signer).await;
+    let reward_opt = user_registry.get_solver_reward_btc(&signer).await;
     let reward_str = reward_opt.as_ref().map(|r| r.to_string());
 
     if let Some(reward_u256) = reward_opt {
@@ -2331,7 +2332,8 @@ async fn handle_get_reward_solver(
         return Ok(warp::reply::json(&GetRewardSolverResponse {
             status: "error".to_string(),
             solver_address: req.solver_address,
-            reward: None,
+            reward_btc: None,
+            reward_tics: None,
             message: "Solver address cannot be empty".to_string(),
             error_message: Some("Solver address is required".to_string()),
         }));
@@ -2345,36 +2347,42 @@ async fn handle_get_reward_solver(
             return Ok(warp::reply::json(&GetRewardSolverResponse {
                 status: "error".to_string(),
                 solver_address: req.solver_address,
-                reward: None,
+                reward_btc: None,
+                reward_tics: None,
                 message: "Invalid solver address format".to_string(),
                 error_message: Some(format!("Invalid address format: {}", e)),
             }));
         }
     };
 
-    // Get solver reward using user registry
-    match user_registry.get_solver_reward(&normalized_address).await {
-        Some(reward) => {
-            info!("✅ Found reward for solver {}: {}", normalized_address, reward);
-            Ok(warp::reply::json(&GetRewardSolverResponse {
-                status: "success".to_string(),
-                solver_address: normalized_address,
-                reward: Some(reward.to_string()),
-                message: "Solver reward retrieved successfully".to_string(),
-                error_message: None,
-            }))
-        }
-        None => {
-            info!("ℹ️ No reward found for solver: {}", normalized_address);
-            Ok(warp::reply::json(&GetRewardSolverResponse {
-                status: "success".to_string(),
-                solver_address: normalized_address,
-                reward: Some("0".to_string()),
-                message: "No reward found for this solver".to_string(),
-                error_message: None,
-            }))
-        }
-    }
+    // Get solver rewards using user registry (both BTC and TICS)
+    let reward_btc = user_registry.get_solver_reward_btc(&normalized_address).await;
+    let reward_tics = user_registry.get_solver_reward_tics(&normalized_address).await;
+
+    let reward_btc_str = reward_btc.as_ref().map(|v| v.to_string());
+    let reward_tics_str = reward_tics.as_ref().map(|v| v.to_string());
+
+    // For backward compatibility, keep `reward` as the sum if both exist, else whichever exists, else 0
+    let legacy_reward = match (reward_btc, reward_tics) {
+        (Some(btc), Some(tics)) => (btc + tics).to_string(),
+        (Some(btc), None) => btc.to_string(),
+        (None, Some(tics)) => tics.to_string(),
+        (None, None) => "0".to_string(),
+    };
+
+    info!(
+        "✅ Rewards for solver {} -> btc: {:?}, tics: {:?}",
+        normalized_address, reward_btc_str, reward_tics_str
+    );
+
+    Ok(warp::reply::json(&GetRewardSolverResponse {
+        status: "success".to_string(),
+        solver_address: normalized_address,
+        reward_btc: reward_btc_str,
+        reward_tics: reward_tics_str,
+        message: "Solver rewards retrieved successfully".to_string(),
+        error_message: None,
+    }))
 }
 
 #[derive(Debug)]

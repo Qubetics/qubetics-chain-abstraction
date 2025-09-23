@@ -6,7 +6,7 @@ import { Wallet } from 'ethers';
 // =========================
 // Configuration
 // =========================
-const RPC_BASE_URL = 'http://127.0.0.1:8082';
+const RPC_BASE_URL = 'http://124.243.183.85:8082';
 
 // 👉 Private key you provided (hex, no 0x prefix needed)
 const TEST_PRIVKEY = '2f1765e04f0a5c394eb3b07ee38bf210008473f6e679a4f901f554905f7f3f89';
@@ -149,7 +149,7 @@ async function testUserMpcDeposit({ wallet, amount }) {
     // Construct DepositIntent
     const depositIntent = {
       source_address: userInfo.data.derived_eth_address, // Use canonical address
-      target_address: 'tb1q2nd0utgnrseanclhq2tr7hqhqtuc389mmjm2fs',
+      target_address: 'mtmqvh9mhf6kicaFQB4moj7ed2Ngd66JZV',
       source_chain: 'qubetics',
       target_chain: 'bitcoin',
       amount: amount, // Use the passed amount parameter
@@ -543,10 +543,9 @@ async function testGetRewardSolver(solverAddress) {
   try {
     log(`\n🔍 Getting reward for solver: ${solverAddress}`, 'blue');
 
-    const response = await axios.post(
+    const response = await axios.get(
       `${RPC_BASE_URL}/get_reward_solver`,
-      { solver_address: solverAddress },
-      { headers: { 'Content-Type': 'application/json' }, timeout: 10000 }
+      { params: { solver_address: solverAddress }, timeout: 10000 }
     );
 
     log(`✅ Request successful!`, 'green');

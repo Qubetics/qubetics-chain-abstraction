@@ -8,6 +8,7 @@ use sha2::Digest as _;
 use sha3::Keccak256;
 use std::collections::HashMap;
 use uuid::Uuid;
+use ethers::types::U256 as EthersU256;
 
 use super::{
     checksum_from_any, to_checksum_address, IntentStatus, IntentTransactionIds, TransactionStatus,
@@ -833,51 +834,68 @@ impl DatabaseUserRegistry {
         Ok(())
     }
 
-    /// Store reward for a specific solver
-    pub async fn set_solver_reward(
+    /// Store TICS reward for a specific solver
+    pub async fn set_solver_reward_tics(
         &self,
         solver_address: &str,
-        reward: U256,
+        reward_tics: U256,
     ) -> Result<(), String> {
-        info!("💰 [DB_USER_REGISTRY] Processing solver reward storage:");
-        info!("  🤖 Solver address: {}", solver_address);
-        info!("  💰 Reward amount: {}", reward);
-
+        let reward_ethers = EthersU256::from_dec_str(&reward_tics.to_string())
+            .map_err(|e| e.to_string())?;
         match self
             .reward_storage
-            .set_solver_reward(solver_address, reward)
+            .set_solver_reward_tics(solver_address, reward_ethers)
             .await
         {
-            Ok(()) => {
-                info!("✅ [DB_USER_REGISTRY] Successfully stored solver reward");
-                info!("  🤖 Solver: {}", solver_address);
-                info!("  💰 Reward: {}", reward);
-                Ok(())
-            }
+            Ok(()) => Ok(()),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    /// Store BTC reward (satoshis) for a specific solver
+    pub async fn set_solver_reward_btc(
+        &self,
+        solver_address: &str,
+        reward_btc_sats: U256,
+    ) -> Result<(), String> {
+        let reward_ethers = EthersU256::from_dec_str(&reward_btc_sats.to_string())
+            .map_err(|e| e.to_string())?;
+        match self
+            .reward_storage
+            .set_solver_reward_btc(solver_address, reward_ethers)
+            .await
+        {
+            Ok(()) => Ok(()),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+
+    /// Get TICS reward for a specific solver
+    pub async fn get_solver_reward_tics(&self, solver_address: &str) -> Option<U256> {
+        match self
+            .reward_storage
+            .get_solver_reward_tics(solver_address)
+            .await
+        {
+            Ok(v) => v.and_then(|x| U256::from_dec_str(&x.to_string()).ok()),
             Err(e) => {
-                error!("❌ [DB_USER_REGISTRY] Failed to store solver reward");
-                error!("  🤖 Solver address: {}", solver_address);
-                error!("  💰 Reward amount: {}", reward);
-                error!("  💥 Error: {}", e);
-                Err(e.to_string())
+                tracing::error!("Failed to get TICS reward for {}: {}", solver_address, e);
+                None
             }
         }
     }
 
-    /// Get reward for a specific solver
-    pub async fn get_solver_reward(&self, solver_address: &str) -> Option<U256> {
-        match self.reward_storage.get_solver_reward(solver_address).await {
-            Ok(reward) => {
-                if reward.is_some() {
-                    info!(
-                        "🔍 [DB_USER_REGISTRY] Retrieved solver reward for: {}",
-                        solver_address
-                    );
-                }
-                reward
-            }
+    /// Get BTC reward (satoshis) for a specific solver
+    pub async fn get_solver_reward_btc(&self, solver_address: &str) -> Option<U256> {
+        match self
+            .reward_storage
+            .get_solver_reward_btc(solver_address)
+            .await
+        {
+            Ok(v) => v.and_then(|x| U256::from_dec_str(&x.to_string()).ok()),
             Err(e) => {
-                tracing::error!("Failed to get solver reward for {}: {}", solver_address, e);
+                tracing::error!("Failed to get BTC reward for {}: {}", solver_address, e);
                 None
             }
         }
