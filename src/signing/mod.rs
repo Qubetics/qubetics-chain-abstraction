@@ -3958,54 +3958,59 @@ impl SigningNode {
             .ok_or_else(|| anyhow!("Intent not found: {}", intent_hash))?;
 
         let source_chain = intent.source_chain.to_lowercase();
-        let intent_amount = U256::from(intent.amount);
-        let base_reward = intent_amount / U256::from(10u8); // 10% of intent amount
+        let intent_amount = EthereumU256::from(intent.amount);
+        let base_reward = intent_amount / EthereumU256::from(10u8); // 10% of intent amount
 
         // Fetch total liquidity values using user registry
         let total_tics = user_registry
-            .get_total_liquidity_tics()
+            .get_total_liquidity_tics_u256()
             .await
-            .unwrap_or(0);
+            .unwrap_or(EthereumU256::zero());
         let total_btc = user_registry
-            .get_total_liquidity_btc()
+            .get_total_liquidity_btc_u256()
             .await
-            .unwrap_or(0.0);
+            .unwrap_or(EthereumU256::zero());
 
-        // Convert to U256 for calculations
-        let total_tics_u256 = U256::from(total_tics);
-        let total_btc_u256 = U256::from((total_btc * 1e8) as u64); // Convert BTC to satoshis
+        info!("💰 [SOLVER] Total tics: {}", total_tics);
+        info!("💰 [SOLVER] Total btc: {}", total_btc);
+
+        // Use U256 directly for calculations
+        let total_tics_u256 = total_tics;
+        let total_btc_u256 = total_btc;
 
         // Fetch liquidity for all solvers
         let all_key = "solver_liquidity:all";
-        let solver_liquidity_map: HashMap<String, Vec<String>> = database
+        let solver_liquidity_map: std::collections::HashMap<String, Vec<String>> = database
             .get_string(all_key)?
             .unwrap_or_default();
 
         for (solver, amounts) in solver_liquidity_map.iter() {
-            let reward = if source_chain == "btc" {
+            let reward = if source_chain == "btc" || source_chain == "bitcoin" {
                 let solver_btc = amounts
                     .get(0)
-                    .and_then(|v| U256::from_dec_str(v).ok())
-                    .unwrap_or_else(U256::zero);
+                    .and_then(|v| EthereumU256::from_dec_str(v).ok())
+                    .unwrap_or_else(EthereumU256::zero);
                 if total_btc_u256.is_zero() {
-                    U256::zero()
+                    EthereumU256::zero()
                 } else {
                     solver_btc * base_reward / total_btc_u256
                 }
             } else {
                 let solver_tics = amounts
                     .get(1)
-                    .and_then(|v| U256::from_dec_str(v).ok())
-                    .unwrap_or_else(U256::zero);
+                    .and_then(|v| EthereumU256::from_dec_str(v).ok())
+                    .unwrap_or_else(EthereumU256::zero);
                 if total_tics_u256.is_zero() {
-                    U256::zero()
+                    EthereumU256::zero()
                 } else {
                     solver_tics * base_reward / total_tics_u256
                 }
             };
 
+            info!("💰 [SOLVER] Reward for {}: {}", solver, reward);
+
             // Get current reward by currency and update accordingly
-            let current_currency_reward = if source_chain == "btc" {
+            let current_currency_reward = if source_chain == "btc" || source_chain == "bitcoin" {
                 user_registry
                     .get_solver_reward_btc(solver)
                     .await
@@ -4016,22 +4021,26 @@ impl SigningNode {
                     .await
                     .unwrap_or_else(|| EthereumU256::zero())
             };
-            
+
+            info!("💰 [SOLVER] Current reward for {}: {}", solver, current_currency_reward);
+
             // Convert ethereum_types::U256 to ethers::types::U256 for calculation
-            let current_ethers = U256::from_dec_str(&current_currency_reward.to_string())
+            let current_ethers = EthereumU256::from_dec_str(&current_currency_reward.to_string())
                 .map_err(|e| anyhow!("Failed to convert current reward: {}", e))?;
-            let updated_ethers = current_ethers + reward;
-            
+            let reward_ethers = EthereumU256::from_dec_str(&reward.to_string())
+                .map_err(|e| anyhow!("Failed to convert reward: {}", e))?;
+            let updated_ethers = current_ethers + reward_ethers;
+
             // Convert back to ethereum_types::U256 for user registry
             let updated_ethereum_types = EthereumU256::from_dec_str(&updated_ethers.to_string())
                 .map_err(|e| anyhow!("Failed to convert updated reward: {}", e))?;
-            
-            if source_chain == "btc" {
+
+            if source_chain == "btc" || source_chain == "bitcoin" {
                 let _ = user_registry.set_solver_reward_btc(solver, updated_ethereum_types).await;
             } else {
                 let _ = user_registry.set_solver_reward_tics(solver, updated_ethereum_types).await;
             }
-            
+
             info!("💰 [SOLVER] Reward for {} updated to {}", solver, updated_ethers);
         }
 
@@ -4039,7 +4048,7 @@ impl SigningNode {
             "✅ [SOLVER] Calculated rewards for {} solvers",
             solver_liquidity_map.len()
         );
-        
+
         // Mark intent reward status as calculated using user registry
         user_registry
             .set_intent_reward_status(intent_hash, true)
@@ -4049,7 +4058,6 @@ impl SigningNode {
         Ok(())
     }
 }
-
 // Dynamic configuration structures for flexible broadcast behavior
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BroadcastConfig {

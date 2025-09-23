@@ -782,33 +782,45 @@ impl DatabaseUserRegistry {
         Ok(())
     }
 
-    /// Get total liquidity in tics
+    /// Get total liquidity in tics (as u64 legacy)
     pub async fn get_total_liquidity_tics(&self) -> Option<u64> {
         match self.reward_storage.get_total_liquidity_tics().await {
-            Ok(tics) => tics,
+            Ok(t) => t,
             Err(e) => {
-                tracing::error!("Failed to get total liquidity tics: {}", e);
+                tracing::error!("Failed to get total liquidity TICS: {}", e);
                 None
             }
         }
     }
 
-    /// Store total liquidity in BTC (as f64)
-    pub async fn set_total_liquidity_btc(&self, btc: f64) -> Result<(), String> {
-        self.reward_storage
-            .set_total_liquidity_btc(btc)
-            .await
-            .map_err(|e| e.to_string())?;
-        info!("✅ [DB_USER_REGISTRY] Set total liquidity BTC: {}", btc);
-        Ok(())
+    /// Get total liquidity in TICS as U256 (string-backed)
+    pub async fn get_total_liquidity_tics_u256(&self) -> Option<U256> {
+        match self.reward_storage.get_total_liquidity_tics_u256().await {
+            Ok(v) => v.and_then(|x| U256::from_dec_str(&x.to_string()).ok()),
+            Err(e) => {
+                tracing::error!("Failed to get total liquidity TICS (u256): {}", e);
+                None
+            }
+        }
     }
 
-    /// Get total liquidity in BTC (as f64)
+    /// Get total liquidity in btc (legacy f64)
     pub async fn get_total_liquidity_btc(&self) -> Option<f64> {
         match self.reward_storage.get_total_liquidity_btc().await {
             Ok(btc) => btc,
             Err(e) => {
                 tracing::error!("Failed to get total liquidity BTC: {}", e);
+                None
+            }
+        }
+    }
+
+    /// Get total liquidity in BTC as U256 satoshis (string-backed)
+    pub async fn get_total_liquidity_btc_u256(&self) -> Option<U256> {
+        match self.reward_storage.get_total_liquidity_btc_u256().await {
+            Ok(v) => v.and_then(|x| U256::from_dec_str(&x.to_string()).ok()),
+            Err(e) => {
+                tracing::error!("Failed to get total liquidity BTC (u256): {}", e);
                 None
             }
         }
