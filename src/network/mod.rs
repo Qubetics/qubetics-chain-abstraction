@@ -259,7 +259,7 @@ impl NetworkLayer {
         Ok(())
     }
 
-    pub async fn start(&mut self) -> Result<()> {
+    pub async fn start(&mut self, bootstrap_nodes: Vec<String>) -> Result<()> {
         let mut swarm = libp2p::SwarmBuilder::with_existing_identity(self.local_key.clone())
             .with_tokio()
             .with_tcp(
@@ -376,11 +376,13 @@ impl NetworkLayer {
         swarm.listen_on("/ip4/0.0.0.0/udp/0/quic-v1".parse()?)?;
 
 
-        let args: Vec<String> = env::args().collect();
-        if args.len() >= 2 {
-            let server_addr: Multiaddr = args[1].parse()?;
-            info!("Dialing address: {}", server_addr);
-            swarm.dial(server_addr.clone())?;
+        for node_addr in &bootstrap_nodes {
+            if let Ok(addr) = node_addr.parse::<Multiaddr>() {
+                info!("Connecting to bootstrap node: {}", addr);
+                swarm.dial(addr.clone())?;
+            } else {
+                warn!("Invalid bootstrap node address: {}", node_addr);
+            }
         }
 
         info!("Local Peer ID: {}", self.local_peer_id);

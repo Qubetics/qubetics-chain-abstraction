@@ -57,6 +57,7 @@ dotenv = "0.15"
 rust_decimal = "1"
 rust_decimal_macros = "1"
 ethabi = "18.0.0"
+clap = { version = "4.5", default-features = false, features = ["std", "derive", "string"] }
 
 [build-dependencies]
 tonic-build = "0.13.0"
