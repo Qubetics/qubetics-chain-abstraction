@@ -149,7 +149,7 @@ async function testUserMpcDeposit({ wallet, amount }) {
     // Construct DepositIntent
     const depositIntent = {
       source_address: userInfo.data.derived_eth_address, // Use canonical address
-      target_address: 'tb1q2nd0utgnrseanclhq2tr7hqhqtuc389mmjm2fs',
+      target_address: 'mtmqvh9mhf6kicaFQB4moj7ed2Ngd66JZV',
       source_chain: 'qubetics',
       target_chain: 'bitcoin',
       amount: amount, // Use the passed amount parameter
@@ -543,10 +543,9 @@ async function testGetRewardSolver(solverAddress) {
   try {
     log(`\n🔍 Getting reward for solver: ${solverAddress}`, 'blue');
 
-    const response = await axios.post(
+    const response = await axios.get(
       `${RPC_BASE_URL}/get_reward_solver`,
-      { solver_address: solverAddress },
-      { headers: { 'Content-Type': 'application/json' }, timeout: 10000 }
+      { params: { solver_address: solverAddress }, timeout: 10000 }
     );
 
     log(`✅ Request successful!`, 'green');
@@ -598,11 +597,11 @@ async function runTests() {
   //   log(`\n⚠️ Registration failed; continuing to deposit test (is_registered may be false).`, 'yellow');
   // }
 
-  // 3) MPC deposit test WITHOUT tx_id (should pass Some(signer) to handle_deposit_intent)
-  log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
-  const amount = 25143341220000000000
-  await testUserMpcDeposit({ wallet, amount }); 
-  
+      // // 3) MPC deposit test WITHOUT tx_id (should pass Some(signer) to handle_deposit_intent)
+      log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
+      const amount = 25143341220000000000
+      await testUserMpcDeposit({ wallet, amount }); 
+      
   // const address = '0xbac113cebd9CB2fBD2a01B5CBC43D0fC0EBed5e9';
   // await testGetRewardSolver(address);
 

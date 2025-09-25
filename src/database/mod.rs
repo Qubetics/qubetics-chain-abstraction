@@ -427,6 +427,8 @@ pub mod keys {
     pub const TOTAL_LIQUIDITY_TICS: &str = "total_liquidity_tics";
     pub const TOTAL_LIQUIDITY_BTC: &str = "total_liquidity_btc";
     pub const SOLVER_REWARD: &str = "solver_reward:";
+    pub const SOLVER_REWARD_TICS: &str = "solver_reward_tics:";
+    pub const SOLVER_REWARD_BTC: &str = "solver_reward_btc:";
     pub const CLAIMED_REQUEST_AMOUNT: &str = "claimed_request_amount:";
     pub const INTENT_REWARD_STATUS: &str = "intent_reward_status:";
     pub const PEER_KEYPAIR: &str = "peer_keypair";
@@ -511,6 +513,14 @@ pub mod key_utils {
 
     pub fn solver_reward_key(solver_address: &str) -> String {
         format!("{}{}", keys::SOLVER_REWARD, solver_address.to_lowercase())
+    }
+
+    pub fn solver_reward_tics_key(solver_address: &str) -> String {
+        format!("{}{}", keys::SOLVER_REWARD_TICS, solver_address.to_lowercase())
+    }
+
+    pub fn solver_reward_btc_key(solver_address: &str) -> String {
+        format!("{}{}", keys::SOLVER_REWARD_BTC, solver_address.to_lowercase())
     }
 
     pub fn claimed_request_amount_key(solver_address: &str) -> String {
