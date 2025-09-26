@@ -162,6 +162,21 @@ impl NetworkLayer {
         }
     }
 
+    /// Synchronize signing node thresholds with current node manager state
+    /// This should be called after peer discovery to ensure thresholds are correct
+    pub async fn sync_signing_node_thresholds(&mut self) {
+        let current_threshold = self.node_manager.get_threshold();
+        let total_nodes = self.node_manager.get_total_nodes();
+        
+        info!("🔄 [THRESHOLD] Syncing signing node thresholds - Total nodes: {}, Threshold: {}", total_nodes, current_threshold);
+        
+        // Update signing node threshold
+        if let Some(signing_node) = &mut self.signing_node {
+            signing_node.set_threshold(current_threshold);
+            info!("✅ [THRESHOLD] Updated signing node threshold to {}", current_threshold);
+        }
+    }
+
     pub fn set_database(&mut self, database: Arc<crate::database::Database>) {
         info!("🗄️ [NETWORK] Setting database on signing node for solver amount storage");
         
@@ -372,8 +387,8 @@ impl NetworkLayer {
         let mut peerlist_logger = tokio::time::interval(Duration::from_secs(300));
 
 
-        swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
-        swarm.listen_on("/ip4/0.0.0.0/udp/0/quic-v1".parse()?)?;
+        swarm.listen_on("/ip4/0.0.0.0/tcp/4001".parse()?)?;
+        swarm.listen_on("/ip4/0.0.0.0/udp/4002/quic-v1".parse()?)?;
 
 
         for node_addr in &bootstrap_nodes {
@@ -385,6 +400,20 @@ impl NetworkLayer {
             }
         }
 
+            if addresses.is_empty() {
+                warn!("No valid addresses provided to dial");
+            } else {
+                info!("Dialing {} addresses:", addresses.len());
+                for (i, addr) in addresses.iter().enumerate() {
+                    info!("  {}. {}", i + 1, addr);
+                    if let Err(e) = swarm.dial(addr.clone()) {
+                        error!("Failed to dial address {}: {}", addr, e);
+                    } else {
+                        info!("Successfully initiated dial to: {}", addr);
+                    }
+                }
+            }
+        }
         info!("Local Peer ID: {}", self.local_peer_id);
 
         loop {
@@ -455,6 +484,8 @@ impl NetworkLayer {
                     // Also search for random peers to populate routing table
                     let random_peer = PeerId::random();
                     swarm.behaviour_mut().kademlia.get_closest_peers(random_peer);
+
+                    self.sync_signing_node_thresholds().await;
                 }
                 
                 _ = dkg_status_timer.tick() => {
@@ -719,11 +750,17 @@ impl NetworkLayer {
                     if current_nodes.contains(&peer_id) {
                         info!("ℹ️ Peer {} already exists in node manager, skipping", peer_id);
                     } else {
-                        // Check 5-minute rule before adding peer to node manager
                         if self.is_peer_addition_allowed().await {
                             self.node_manager
                                     .add_node(peer_id)
                                     .map_err(|e| anyhow::anyhow!(e))?;
+                            
+                            // Update signing node threshold after adding peer
+                            if let Some(signing_node) = &mut self.signing_node {
+                                let new_threshold = self.node_manager.get_threshold();
+                                signing_node.set_threshold(new_threshold);
+                                info!("🔄 [THRESHOLD] Updated signing node threshold to {} after Kademlia peer addition", new_threshold);
+                            }
                         } else {
                             warn!("🚫 Peer {} not added to node manager - outside 5-minute window", peer_id);
                         }
@@ -1004,6 +1041,13 @@ impl NetworkLayer {
                                     if !self.node_manager.get_active_nodes().contains(&p) {
                                         self.node_manager.add_node(p.clone())
                                             .map_err(|e| anyhow::anyhow!(e))?;
+                                        
+                                        // Update signing node threshold after adding peer
+                                        if let Some(signing_node) = &mut self.signing_node {
+                                            let new_threshold = self.node_manager.get_threshold();
+                                            signing_node.set_threshold(new_threshold);
+                                            info!("🔄 [THRESHOLD] Updated signing node threshold to {} after peer list merge", new_threshold);
+                                        }
                                     }
                                 }
                             },
@@ -2198,6 +2242,12 @@ impl NetworkLayer {
                         let total = self.node_manager.get_total_nodes();
                         let threshold = self.node_manager.get_threshold();
                         info!("📊 Updated node count: {}, threshold: {}", total, threshold);
+                        // Update signing node threshold to match current network state
+                        if let Some(signing_node) = &mut self.signing_node {
+                            let new_threshold = self.node_manager.get_threshold();
+                            signing_node.set_threshold(new_threshold);
+                            info!("🔄 [THRESHOLD] Updated signing node threshold to {} (total nodes: {})", new_threshold, total);
+                        }
                     }
                     Err(e) => {
                         warn!("❌ Failed to add peer {} to node manager: {:?}", peer, e);
@@ -3092,6 +3142,8 @@ impl NetworkLayer {
                 } else if total_nodes > 1 && !self.vrf_round_requested {
                     info!("🔄 Found {} nodes in network - will sync t1 from existing nodes", total_nodes);
                     self.vrf_round_requested = true; // Prevent duplicate requests
+
+                    self.sync_signing_node_thresholds().await;
                     
                     // Request current VRF round from existing nodes for proper initialization
                     let peers: HashSet<PeerId> = self.node_manager.get_active_nodes();
