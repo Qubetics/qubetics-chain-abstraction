@@ -14,7 +14,7 @@ use tracing::info; // for Token::Uint
 
 // use rlp::RlpStream;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SpendKind { P2PKH, P2WPKH }
 /// Bitcoin UTXO structure for fetching from external APIs
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -979,22 +979,29 @@ async fn create_chain_transaction_from_deposit_intent_internal(
 
         // Inputs:
         let inputs: Vec<BitcoinInput> = selection.selected_utxos.iter().map(|u| {
-        match from_kind {
-            SpendKind::P2WPKH => BitcoinInput {
-                txid: u.txid.clone(),
-                vout: u.vout,
-                script_sig: vec![],               // segwit: empty
-                sequence: 0xffff_fffe,
-                witness_utxo: Some(BitcoinWitnessUtxo { value: u.value, script_pubkey: from_spk.clone() }),
-            },
-            SpendKind::P2PKH => BitcoinInput {
-                txid: u.txid.clone(),
-                vout: u.vout,
-                script_sig: vec![],               // filled after signing (legacy scriptSig)
-                sequence: 0xffff_fffe,
-                witness_utxo: None,               // legacy: none
+            match from_kind {
+                SpendKind::P2WPKH => BitcoinInput {
+                    txid: u.txid.clone(),
+                    vout: u.vout,
+                    script_sig: vec![],
+                    sequence: 0xffff_fffe,
+                    witness_utxo: Some(BitcoinWitnessUtxo {
+                        value: u.value,
+                        script_pubkey: from_spk.clone(), // 0x00 0x14 <20>
+                    }),
+                },
+                SpendKind::P2PKH => BitcoinInput {
+                    txid: u.txid.clone(),
+                    vout: u.vout,
+                    script_sig: vec![],
+                    sequence: 0xffff_fffe,
+                    // IMPORTANT: stash 25-byte prev script here so final node doesn’t need to reconstruct
+                    witness_utxo: Some(BitcoinWitnessUtxo {
+                        value: u.value,
+                        script_pubkey: from_spk.clone(), // 76 a9 14 <20> 88 ac
+                    }),
+                }
             }
-        }
     }).collect();
 
         // Create outputs (recipient always, change only if not dust)
