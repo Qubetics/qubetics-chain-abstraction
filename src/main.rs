@@ -163,6 +163,7 @@ async fn start_node(cli: Cli) -> Result<(), Box<dyn Error>> {
 	// Start RPC server in a separate task
 	let message_tx = network.get_msg_tx();
 	let rpc_port = cli.get_rpc_port();
+	info!("Get RPC: {}", rpc_port);
 	let node_id = network.get_local_peer_id().to_string();
 
 	let start_time = node_start_time;
@@ -198,6 +199,8 @@ async fn start_node(cli: Cli) -> Result<(), Box<dyn Error>> {
 	);
 
 	// Start the network
+
+	info!("Here:{:?}", cli.bootstrap_nodes);
 	network.start(cli.bootstrap_nodes).await?;
 
 	Ok(())

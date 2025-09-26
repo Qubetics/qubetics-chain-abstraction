@@ -17,6 +17,9 @@ pub struct EnvVars {
 	pub solver_contract_address: String,
 	pub solver_contract_chain_id: u64,
 
+	// Intent 
+	pub intent_manager_contract_address: String, 
+
 	// MPC broadcast configuration
 	pub mpc_continue_on_broadcast_failure: bool,
 	pub mpc_max_broadcast_retries: u32,
@@ -60,6 +63,10 @@ impl EnvVars {
 			.parse()
 			.map_err(|_| "SOLVER_CONTRACT_CHAIN_ID should be a number")?;
 
+
+		let intent_manager_contract_address = env::var("INTENT_MANAGER_CONTRACT_ADDRESS")
+			.map_err(|_| "INTENT_MANAGER_CONTRACT_ADDRESS environment variable is required")?;
+
 		let mpc_continue_on_broadcast_failure =
 			if let Ok(val) = env::var("MPC_CONTINUE_ON_BROADCAST_FAILURE") {
 				val.parse().unwrap_or(true)
@@ -95,6 +102,7 @@ impl EnvVars {
 			solver_contract_rpc_url,
 			solver_contract_address,
 			solver_contract_chain_id,
+			intent_manager_contract_address,
 			mpc_continue_on_broadcast_failure,
 			mpc_max_broadcast_retries,
 			mpc_retry_delay_ms,

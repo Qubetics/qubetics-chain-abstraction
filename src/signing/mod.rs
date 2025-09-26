@@ -547,7 +547,9 @@ impl SigningNode {
 			"https://mempool.space/testnet/api/tx"
 		};
 
-		let url = std::env::var("MPC_BITCOIN_RPC_URL").unwrap_or_else(|_| default_url.to_string());
+		let vars = EnvVars::load_with_dotenv().map_err(|e| anyhow::anyhow!("Failed to load environment variables: {}", e))?;
+		let url = vars.mpc_bitcoin_rpc_url;
+
 		info!("Broadcasting transaction to: {}", url);
 
 		let client = reqwest::Client::new();
@@ -606,10 +608,12 @@ impl SigningNode {
 
 	/// Fetch nonce for an Ethereum address from the blockchain
 	pub async fn fetch_ethereum_nonce(address: &str, chain_id: u64) -> Result<u64> {
+		let vars = EnvVars::load_with_dotenv().map_err(|e| anyhow::anyhow!("Failed to load environment variables: {}", e))?;
+		let url = vars.mpc_ethereum_rpc_url;
+
+
 		let rpc_url = match chain_id {
-			9029 => std::env::var("MPC_ETHEREUM_RPC_URL")
-				.unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string()),
-			1 => "https://mainnet.infura.io/v3/YOUR_PROJECT_ID".to_string(), // Ethereum mainnet
+			9029 => url,
 			_ => return Err(anyhow!("Unsupported chain ID for nonce fetching: {}", chain_id)),
 		};
 
@@ -657,10 +661,11 @@ impl SigningNode {
 		raw_tx_hex: &str,
 		chain_id: u64,
 	) -> Result<Option<String>> {
+		let vars = EnvVars::load_with_dotenv().map_err(|e| anyhow::anyhow!("Failed to load environment variables: {}", e))?;
+		let url = vars.mpc_ethereum_rpc_url;
+
 		let rpc_url = match chain_id {
-			9029 => std::env::var("MPC_ETHEREUM_RPC_URL")
-				.unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string()),
-			1 => "https://mainnet.infura.io/v3/YOUR_PROJECT_ID".to_string(), // Ethereum mainnet
+			9029 => url, 
 			_ => return Err(anyhow!("Unsupported chain ID for broadcasting: {}", chain_id)),
 		};
 

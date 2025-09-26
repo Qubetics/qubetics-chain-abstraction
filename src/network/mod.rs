@@ -394,21 +394,23 @@ impl NetworkLayer {
 		if let Err(e) = swarm.behaviour_mut().kademlia.bootstrap() {
 			warn!("Failed to start bootstrap: {:?}", e);
 		}
-
+		info!("Go to here 1");
 		// Start a task to check if this is the first node after bootstrap attempts
 		let tx_clone = self.message_tx.clone();
 		tokio::spawn(async move {
 			tokio::time::sleep(Duration::from_secs(3)).await;
 			let _ = tx_clone.send(ChannelMessage::CheckIfFirstNode).await;
 		});
+		info!("Go to here 2");
 		let mut bootstrap_timer = tokio::time::interval(Duration::from_secs(300));
 		let mut discovery_timer = tokio::time::interval(Duration::from_secs(300));
 		let mut dkg_status_timer = tokio::time::interval(Duration::from_secs(300));
 		let mut peerlist_logger = tokio::time::interval(Duration::from_secs(300));
-
+		info!("Go to here 3");
 		swarm.listen_on("/ip4/0.0.0.0/tcp/4001".parse()?)?;
 		swarm.listen_on("/ip4/0.0.0.0/udp/4002/quic-v1".parse()?)?;
-
+		info!("Go to here 4");
+		info!("Bootstrap Node here: {:?}", bootstrap_nodes);
 		for node_addr in &bootstrap_nodes {
 			if let Ok(addr) = node_addr.parse::<Multiaddr>() {
 				info!("Connecting to bootstrap node: {}", addr);

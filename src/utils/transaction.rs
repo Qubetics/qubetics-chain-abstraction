@@ -227,30 +227,32 @@ pub fn is_evm_chain(chain_name: &str) -> bool {
 /// Fetch UTXOs for a Bitcoin address from Mempool.space Esplora API
 pub async fn fetch_bitcoin_utxos(address: &str, is_testnet: bool) -> Result<Vec<BitcoinUtxo>> {
 	// Prefer custom API if provided: BTC_UTXO_API_BASE=http://host:port
-	if let Ok(custom_base) = std::env::var("BTC_UTXO_API_BASE") {
-		let base = custom_base.trim_end_matches('/');
-		let url = format!("{}/api/v1/utxos?address={}", base, address);
-		let client = reqwest::Client::new();
-		let response = client.get(&url).send().await?;
+	let vars = EnvVars::load_with_dotenv()
+		.map_err(|e| anyhow::anyhow!("Failed to load environment variables: {}", e))?;
+	let base_url = vars.btc_utxo_api_base;
 
-		if !response.status().is_success() {
-			return Err(anyhow::anyhow!(
-				"Failed to fetch UTXOs from custom API: HTTP {}",
-				response.status()
-			));
-		}
+	let base = base_url.trim_end_matches('/');
+	let url = format!("{}/api/v1/utxos?address={}", base, address);
+	let client = reqwest::Client::new();
+	let response = client.get(&url).send().await?;
 
-		let wrapper: CustomApiUtxoResponse = response.json().await?;
-		if wrapper.error {
-			return Err(anyhow::anyhow!(
-				"Custom API error (status {}): {}",
-				wrapper.status_code,
-				wrapper.message
-			));
-		}
-
-		return Ok(wrapper.data);
+	if !response.status().is_success() {
+		return Err(anyhow::anyhow!(
+			"Failed to fetch UTXOs from custom API: HTTP {}",
+			response.status()
+		));
 	}
+
+	let wrapper: CustomApiUtxoResponse = response.json().await?;
+	if wrapper.error {
+		return Err(anyhow::anyhow!(
+			"Custom API error (status {}): {}",
+			wrapper.status_code,
+			wrapper.message
+		));
+	}
+
+	return Ok(wrapper.data);
 
 	// Fallback to mempool.space Esplora API
 	let base_url =
@@ -454,10 +456,12 @@ async fn estimate_gas_for_deposit_intent(
 	data_hex: &str,
 	chain_id: u64,
 ) -> Result<u64> {
+
+	let vars = EnvVars::load_with_dotenv().map_err(|e| anyhow::anyhow!("Failed to load environment variables: {}", e))?;
+	let rpc_url = vars.mpc_ethereum_rpc_url;
+
 	let rpc_url = match chain_id {
-		9029 => std::env::var("MPC_ETHEREUM_RPC_URL")
-			.unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string()),
-		1 => "https://mainnet.infura.io/v3/YOUR_PROJECT_ID".to_string(),
+		9029 => rpc_url,
 		_ => return Err(anyhow::anyhow!("Unsupported chain ID for gas estimation: {}", chain_id)),
 	};
 
@@ -777,13 +781,13 @@ pub async fn create_chain_transaction_from_contract_call(
 	tx_hash: &str,
 	transaction_type: crate::types::TransactionType,
 ) -> Result<ChainTransaction> {
+	let env_vars = EnvVars::load_with_dotenv()
+		.map_err(|e| anyhow::anyhow!("Failed to load environment variables: {}", e))?;
+	let intent_manager_address = env_vars.intent_manager_contract_address;
+
 	let network_address = get_eth_address_from_group_key(group_public_key.unwrap());
 	let chain_id = get_chain_id_from_name("qubetics")
 		.ok_or_else(|| anyhow::anyhow!("Unknown EVM chain: {}", "eth"))?;
-
-	// Get contract address from environment variable and normalize to 0x-prefixed
-	let contract_address_env = std::env::var("INTENT_MANAGER_CONTRACT_ADDRESS")
-		.unwrap_or_else(|_| "0x0000000000000000000000000000000000000000".to_string());
 
 	info!(
         "[create_chain_transaction_from_contract_call] encode_deposit_intent_calldata params:\n  source_address: {}\n  target_address: {}\n  source_chain: {}\n  target_chain: {}\n  amount: {}\n  source_token: {}\n  target_token: {}\n  transaction_hash: {}\n  intent_hash: {}",
@@ -844,7 +848,7 @@ pub async fn create_chain_transaction_from_contract_call(
 		.unwrap_or_else(|| "0x".to_string());
 	let estimated_gas = estimate_gas_for_deposit_intent(
 		&network_address,
-		&contract_address_env,
+		&intent_manager_address,
 		&calldata_hex,
 		chain_id,
 	)
@@ -858,7 +862,7 @@ pub async fn create_chain_transaction_from_contract_call(
 	let gas_price = get_default_gas_price_for_chain("qubetics");
 
 	info!("🔧 [CONTRACT] Final transaction details:");
-	info!("  - To: {}", contract_address_env);
+	info!("  - To: {}", intent_manager_address);
 	info!("  - From: {}", network_address);
 	info!("  - Nonce: {}", nonce);
 	info!("  - Gas Limit: {}", gas_limit);
@@ -870,7 +874,7 @@ pub async fn create_chain_transaction_from_contract_call(
 	);
 
 	let ethereum_tx = EthereumTransaction {
-		to: contract_address_env,
+		to: intent_manager_address,
 		value: "0x0".to_string(),
 		gas_limit,
 		gas_price,
