@@ -30,7 +30,6 @@ impl EnvVars {
 	pub fn load() -> Result<Self, String> {
 		dotenv::dotenv().ok();
 
-
 		let mpc_ethereum_rpc_url = env::var("MPC_ETHEREUM_RPC_URL")
 			.map_err(|_| "MPC_ETHEREUM_RPC_URL environment variable is required")?;
 
@@ -44,8 +43,8 @@ impl EnvVars {
 			.map_err(|_| "MPC_BITCOIN_RPC_URL environment variable is required")?;
 
 		// Load Backend API configuration
-		let backend_api_url =
-			env::var("BACKEND_API_URL").map_err(|_| "BACKEND_API_URL environment variable is required")?;
+		let backend_api_url = env::var("BACKEND_API_URL")
+			.map_err(|_| "BACKEND_API_URL environment variable is required")?;
 		let btc_utxo_api_base = env::var("BTC_UTXO_API_BASE")
 			.map_err(|_| "BTC_UTXO_API_BASE environment variable is required")?;
 
@@ -107,4 +106,3 @@ impl EnvVars {
 		Self::load()
 	}
 }
-
