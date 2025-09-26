@@ -399,21 +399,7 @@ impl NetworkLayer {
                 warn!("Invalid bootstrap node address: {}", node_addr);
             }
         }
-
-            if addresses.is_empty() {
-                warn!("No valid addresses provided to dial");
-            } else {
-                info!("Dialing {} addresses:", addresses.len());
-                for (i, addr) in addresses.iter().enumerate() {
-                    info!("  {}. {}", i + 1, addr);
-                    if let Err(e) = swarm.dial(addr.clone()) {
-                        error!("Failed to dial address {}: {}", addr, e);
-                    } else {
-                        info!("Successfully initiated dial to: {}", addr);
-                    }
-                }
-            }
-        }
+        
         info!("Local Peer ID: {}", self.local_peer_id);
 
         loop {

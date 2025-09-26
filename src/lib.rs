@@ -18,10 +18,12 @@ pub mod utils;
 pub mod vrf;
 pub mod intent_manager;
 pub mod cli;
+pub mod config;
 
 pub use adkg_secp256k1::DKGNode;
 pub use commands::CommandProcessor;
 pub use cli::Cli;
+pub use config::EnvVars;
 pub use consensus::{ConsensusNode, DatabaseConsensusNode};
 pub use database::{
     ConsensusStorage, DkgStorage, Database, DatabaseConfig, IntentStorage, SigningStorage,

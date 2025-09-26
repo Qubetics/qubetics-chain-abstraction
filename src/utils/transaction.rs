@@ -4,6 +4,7 @@ use crate::chain::{
 };
 use crate::rpc_server::{ContractTransaction, DepositIntent, DummyTransaction};
 use crate::utils::get_eth_address_from_group_key;
+use crate::EnvVars;
 use anyhow::Result;
 use ethabi::ethereum_types::U256;
 use ethabi::{Function, Param, ParamType, StateMutability, Token};
@@ -421,10 +422,15 @@ pub fn calculate_bitcoin_fee(num_inputs: usize, num_outputs: usize) -> u64 {
 }
 
 pub async fn fetch_ethereum_nonce(address: &str, chain_id: u64) -> Result<u64> {
+
+    let env_vars = EnvVars::load_with_dotenv()
+    .map_err(|e| anyhow::anyhow!("Failed to load environment variables: {}", e))?;
+
+    let rpc_url = env_vars.mpc_ethereum_rpc_url;
+
+
     let rpc_url = match chain_id {
-        9029 => std::env::var("MPC_ETHEREUM_RPC_URL")
-            .unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string()),
-        1 => "https://mainnet.infura.io/v3/YOUR_PROJECT_ID".to_string(), // Ethereum mainnet
+        9029 => rpc_url,
         _ => {
             return Err(anyhow::anyhow!(
                 "Unsupported chain ID for nonce fetching: {}",
