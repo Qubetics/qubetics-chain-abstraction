@@ -13,11 +13,14 @@ use rlp::RlpStream;
 use secp256k1::{self, ecdsa::RecoverableSignature, Message, PublicKey, Secp256k1, SecretKey};
 use serde_json;
 
-// ===== ABI LOADER (keep your ABI file next to this source) =====
+// ===== ABI LOADER (embed ABI from repo `abi/` directory) =====
 static ABI: OnceLock<Abi> = OnceLock::new();
 fn intent_manager_abi() -> &'static Abi {
 	ABI.get_or_init(|| {
-		serde_json::from_str(include_str!("intent_manager_abi.json")).expect("invalid ABI JSON")
+		serde_json::from_str(include_str!(concat!(
+			env!("CARGO_MANIFEST_DIR"),
+			"/abi/contracts/intent_manager.json"
+		))).expect("invalid ABI JSON")
 	})
 }
 
