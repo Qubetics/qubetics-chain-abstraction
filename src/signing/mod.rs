@@ -930,7 +930,6 @@ impl SigningNode {
             Ok(None)
         }
     }
-    
     /// Reconstruct signed Ethereum transaction from aggregated signature
     pub async fn reconstruct_signed_ethereum_transaction(
         &self,
@@ -2104,9 +2103,7 @@ impl SigningNode {
                     self.id, from, round, signatures.len(), user_eth_address
                 );
                 // Process each per-input signature via BTC per-input handler
-                for item in signatures {
-                    self.handle_btc_signature_for_round(from.clone(), item, round).await?;
-                }
+                self.handle_btc_signature_for_round(from.clone(), signatures, round).await?;
             }
             SigningMessage::SignedMessage {
                 from,
@@ -3530,159 +3527,333 @@ impl SigningNode {
     }
 
 
-    /// Bitcoin-only, per-input aware.
+    /// Bitcoin-only, per-input aware (BATCH).
+/// Ingest a whole vector of per-input signatures from one peer, then:
+/// 1) store them under (round → input_index → peer)
+/// 2) aggregate any inputs that have reached threshold
+/// 3) if all inputs aggregated, finalize & broadcast
     pub async fn handle_btc_signature_for_round(
         &mut self,
         from: String,
-        item: BtcIndexedSignature, // <-- now carries input_index
+        items: Vec<BtcIndexedSignature>,
         round: u64,
     ) -> Result<()> {
-        let input_index = item.input_index;
+        use anyhow::{anyhow, bail};
+        use secp256k1::{
+            ecdsa::{RecoverableSignature, RecoveryId},
+            Message, PublicKey, Secp256k1,
+        };
+        use std::collections::HashMap;
 
-        // If we've already broadcast the final tx for this round, ignore.
+        // If this round is already finalized, ignore the whole batch.
         if self.aggregated_rounds.read().await.contains(&round) {
-            info!("⏭️ [BTC] round {} already finalized; ignoring sig from {}", round, from);
+            info!("⏭️ [BTC] round {} already finalized; ignoring batch from {}", round, &from);
             return Ok(());
         }
 
-        // 1) Store this signature under (round → input_index → peer)
+        // ---- 1) BULK STORE THE WHOLE BATCH (no await per item) ----
         {
             let mut by_round = self.btc_sigs_by_round.write().await;
             let rmap = by_round.entry(round).or_insert_with(HashMap::new);
-            let imap = rmap.entry(input_index).or_insert_with(HashMap::new);
-            imap.insert(from.clone(), item.signature.clone());
-            info!(
-                "💾 [BTC] stored sig for round {} input {} from {} (now {} sigs for this input)",
-                round, input_index, from, imap.len()
-            );
-        }
-
-        // 2) If this input is already aggregated, stop here.
-        {
-            let done = self.btc_done_inputs_by_round.read().await;
-            if done.get(&round).map_or(false, |s| s.contains(&input_index)) {
-                info!("⏭️ [BTC] input {} of round {} already aggregated", input_index, round);
-                return Ok(());
+            for it in &items {
+                let imap = rmap.entry(it.input_index).or_insert_with(HashMap::new);
+                // last write wins for (round,input,peer)
+                imap.insert(from.clone(), it.signature.clone());
             }
         }
+        info!(
+            "💾 [BTC] stored {} sigs for round {} from {} (batch)",
+            items.len(), round, from
+        );
 
-        // 3) Check if we have >= threshold sigs for THIS input; if yes, aggregate this input.
-        let maybe_aggregate_for_input = {
-            let by_round = self.btc_sigs_by_round.read().await;
-            if let Some(rmap) = by_round.get(&round) {
-                if let Some(imap) = rmap.get(&input_index) {
-                    if imap.len() >= self.threshold {
-                        // clone map so we can drop lock before heavy ops
-                        Some(imap.clone())
-                    } else {
-                        None
-                    }
-                } else { None }
-            } else { None }
+        // ---- helpers we need below ----
+        fn hash160(data: &[u8]) -> [u8; 20] {
+            use sha2::Digest;
+            let sha = sha2::Sha256::digest(data);
+            let rip = ripemd::Ripemd160::digest(&sha);
+            let mut out = [0u8; 20];
+            out.copy_from_slice(&rip);
+            out
+        }
+
+        // ---- fetch the pending unsigned tx and total inputs ----
+        let (unsigned_tx, tx_type_for_pubkey, total_inputs) = {
+            let pt = self.pending_transactions.read().await;
+            let (chain_tx, _raw, _intent_hash, tx_type_opt) =
+                pt.get(&round).ok_or_else(|| {
+                    error!("[handle_btc_signature_for_round] No pending tx for round {}", round);
+                    anyhow!("no pending tx for round {}", round)
+                })?;
+            let btc_tx = match chain_tx {
+                ChainTransaction::Bitcoin(t) => t.clone(),
+                _ => {
+                    error!("[handle_btc_signature_for_round] Round {} is not a Bitcoin round", round);
+                    bail!("round {} is not a Bitcoin round", round)
+                },
+            };
+            (btc_tx.clone(), tx_type_opt.clone(), btc_tx.inputs.len())
         };
 
-        if let Some(peer_map) = maybe_aggregate_for_input {
-            // Deterministic order
+        let secp: Secp256k1<secp256k1::All> = Secp256k1::new();
+
+        // ---- 2) SWEEP: aggregate *every* input that hit threshold (not just the ones in this batch) ----
+        for idx in 0..total_inputs {
+            // skip if already aggregated
+            let already_done = {
+                let done = self.btc_done_inputs_by_round.read().await;
+                done.get(&round).map_or(false, |s| s.contains(&idx))
+            };
+            if already_done {
+                continue;
+            }
+
+            // get all peer sigs for this input
+            let peer_map: Option<HashMap<String, ECDSASignature>> = {
+                let by_round = self.btc_sigs_by_round.read().await;
+                by_round.get(&round).and_then(|r| r.get(&idx)).cloned()
+            };
+            let Some(peer_map) = peer_map else {
+                continue; // no sigs yet for this input
+            };
+
+            if peer_map.len() < self.threshold {
+                continue; // not enough sigs yet
+            }
+
+            // sort deterministically and take exactly threshold
             let mut items: Vec<(String, ECDSASignature)> = peer_map.into_iter().collect();
             items.sort_by(|a, b| a.0.cmp(&b.0));
+            let items: Vec<(String, ECDSASignature)> =
+                items.into_iter().take(self.threshold).collect();
 
-            // Build inputs for MPC aggregator (take exactly threshold)
+            // sanity: all signatures must share the same r for the same input (prevents mixing across different nonces)
+            let r0 = &items[0].1.signature[0..32];
+            for (_, s) in &items {
+                if s.signature.len() != 64 {
+                    error!("[handle_btc_signature_for_round] round {} input {}: bad sig length (got {})", round, idx, s.signature.len());
+                    bail!("round {} input {}: bad sig length", round, idx);
+                }
+                if &s.signature[0..32] != r0 {
+                    error!("[handle_btc_signature_for_round] round {} input {}: r mismatch across partial sigs", round, idx);
+                    bail!("round {} input {}: r mismatch across partial sigs", round, idx);
+                }
+            }
+
+            // compute the right per-input digest
+            let maybe_prev = unsigned_tx.inputs[idx].witness_utxo.as_ref();
+            let is_p2wpkh = maybe_prev
+                .map(|p| p.script_pubkey.len() == 22 && p.script_pubkey[0] == 0x00 && p.script_pubkey[1] == 0x14)
+                .unwrap_or(false);
+
+            let digest = if is_p2wpkh {
+                // BIP143 with amount and scriptCode=OP_DUP OP_HASH160 PUSH20 <h160> OP_EQUALVERIFY OP_CHECKSIG
+                let prev = maybe_prev.expect("Some");
+                let program20 = &prev.script_pubkey[2..22];
+                match self.compute_bip143_sighash_p2wpkh(&unsigned_tx, idx, prev.value, program20) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        error!("[handle_btc_signature_for_round] Error in compute_bip143_sighash_p2wpkh for round {} input {}: {}", round, idx, e);
+                        return Err(e);
+                    }
+                }
+            } else {
+                // Legacy P2PKH: we must have the prev scriptPubKey (25 bytes)
+                let prev = match maybe_prev.ok_or_else(|| {
+                    error!("[handle_btc_signature_for_round] legacy P2PKH input {} missing prev script_pubkey (25 bytes)", idx);
+                    anyhow!("legacy P2PKH input {} missing prev script_pubkey (25 bytes)", idx)
+                }) {
+                    Ok(p) => p,
+                    Err(e) => return Err(e),
+                };
+                let spk = &prev.script_pubkey;
+                if spk.len() != 25
+                    || !(spk[0] == 0x76 && spk[1] == 0xA9 && spk[2] == 0x14 && spk[23] == 0x88 && spk[24] == 0xAC)
+                {
+                    error!("[handle_btc_signature_for_round] round {} input {} prev script not canonical P2PKH", round, idx);
+                    bail!("round {} input {} prev script not canonical P2PKH", round, idx);
+                }
+                match self.compute_legacy_sighash_all_p2pkh(&unsigned_tx, idx, spk) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        error!("[handle_btc_signature_for_round] Error in compute_legacy_sighash_all_p2pkh for round {} input {}: {}", round, idx, e);
+                        return Err(e);
+                    }
+                }
+            };
+
+            // recover pubkey from the first sig and validate against prevout (safety check)
+            let (first_peer, first_sig) = &items[0];
+            let msg = match Message::from_digest_slice(&digest) {
+                Ok(m) => m,
+                Err(e) => {
+                    error!("[handle_btc_signature_for_round] round {} input {}: error creating secp256k1::Message: {}", round, idx, e);
+                    return Err(e.into());
+                }
+            };
+            let recid = match RecoveryId::from_i32(first_sig.recovery_id as i32) {
+                Ok(r) => r,
+                Err(e) => {
+                    error!("[handle_btc_signature_for_round] round {} input {}: error creating RecoveryId: {}", round, idx, e);
+                    return Err(e.into());
+                }
+            };
+            let rsig = match RecoverableSignature::from_compact(&first_sig.signature, recid) {
+                Ok(r) => r,
+                Err(e) => {
+                    error!("[handle_btc_signature_for_round] round {} input {}: bad compact sig from {}: {}", round, idx, first_peer, e);
+                    return Err(anyhow!("bad compact sig from {}: {}", first_peer, e));
+                }
+            };
+            let rec_pk: PublicKey = match secp.recover_ecdsa(&msg, &rsig) {
+                Ok(pk) => pk,
+                Err(e) => {
+                    error!("[handle_btc_signature_for_round] round {} input {}: error recovering pubkey: {}", round, idx, e);
+                    return Err(e.into());
+                }
+            };
+            let rec_pk33 = rec_pk.serialize();
+
+            if is_p2wpkh {
+                let program20 = &maybe_prev.unwrap().script_pubkey[2..22];
+                if &hash160(&rec_pk33) != program20 {
+                    error!("[handle_btc_signature_for_round] round {} input {}: HASH160(pubkey) != witness program", round, idx);
+                    bail!("round {} input {}: HASH160(pubkey) != witness program", round, idx);
+                }
+            } else {
+                let spk = &maybe_prev.unwrap().script_pubkey;
+                if &hash160(&rec_pk33) != &spk[3..23] {
+                    error!("[handle_btc_signature_for_round] round {} input {}: legacy HASH160(pubkey) mismatch", round, idx);
+                    bail!("round {} input {}: legacy HASH160(pubkey) mismatch", round, idx);
+                }
+            }
+
+            // build inputs for MPC aggregation
             let mut sigs: Vec<RecoverableSignature> = Vec::with_capacity(self.threshold);
             let mut peer_to_dkg_index: Vec<(String, u32)> = Vec::with_capacity(self.threshold);
-            for (peer, ecsig) in items.into_iter().take(self.threshold) {
-                let recid = RecoveryId::from_i32(ecsig.recovery_id as i32)?;
-                let rsig  = RecoverableSignature::from_compact(&ecsig.signature, recid)
-                    .map_err(|e| anyhow!("bad compact sig from {}: {}", peer, e))?;
-                sigs.push(rsig);
+            for (peer, ecsig) in items {
+                let rid = match RecoveryId::from_i32(ecsig.recovery_id as i32) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        error!("[handle_btc_signature_for_round] round {} input {}: error creating RecoveryId for peer {}: {}", round, idx, peer, e);
+                        return Err(e.into());
+                    }
+                };
+                let rs = match RecoverableSignature::from_compact(&ecsig.signature, rid) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        error!("[handle_btc_signature_for_round] round {} input {}: bad compact sig from {}: {}", round, idx, peer, e);
+                        return Err(anyhow!("bad compact sig from {}: {}", peer, e));
+                    }
+                };
+                sigs.push(rs);
 
                 let dkg_idx = self.calculate_dkg_index_for_peer_sync(&peer);
                 peer_to_dkg_index.push((peer, dkg_idx));
             }
 
-            let agg = self.aggregate_signatures(sigs, peer_to_dkg_index).await?;
+            // aggregate this input
+            let agg = match self.aggregate_signatures(sigs, peer_to_dkg_index).await {
+                Ok(a) => a,
+                Err(e) => {
+                    error!("[handle_btc_signature_for_round] round {} input {}: error aggregating signatures: {}", round, idx, e);
+                    return Err(e);
+                }
+            };
             {
                 let mut agg_map = self.btc_agg_by_round.write().await;
-                agg_map.entry(round).or_insert_with(HashMap::new).insert(input_index, agg);
+                agg_map.entry(round).or_insert_with(HashMap::new).insert(idx, agg);
             }
             {
                 let mut done = self.btc_done_inputs_by_round.write().await;
-                done.entry(round).or_insert_with(HashSet::new).insert(input_index);
+                done.entry(round).or_insert_with(std::collections::HashSet::new).insert(idx);
             }
-            info!("✅ [BTC] aggregated input {} for round {}", input_index, round);
+            info!("✅ [BTC] aggregated input {} for round {}", idx, round);
         }
 
-        // 4) If all inputs are aggregated, finalize the tx and broadcast.
-        //    We need the unsigned tx (we stored it when the round began).
-        let (should_finalize, unsigned_tx, tx_type_for_pubkey) = {
-            let pending = self.pending_transactions.read().await;
-            let (chain_tx, _raw, _intent_hash, tx_type_opt) = pending
-                .get(&round)
-                .ok_or_else(|| anyhow!("no pending tx for round {}", round))?;
-
+        // ---- 3) FINALIZE only when *all* inputs aggregated ----
+        let (should_finalize, total_inputs2, unsigned_tx2, tx_type_for_pubkey2) = {
+            let pt = self.pending_transactions.read().await;
+            let (chain_tx, _raw, _intent_hash, tx_type_opt) =
+                pt.get(&round).ok_or_else(|| {
+                    error!("[handle_btc_signature_for_round] No pending tx for round {} (finalize step)", round);
+                    anyhow!("no pending tx for round {}", round)
+                })?;
             let btc_tx = match chain_tx {
                 ChainTransaction::Bitcoin(t) => t.clone(),
-                _ => bail!("round {} is not a Bitcoin round", round),
+                _ => {
+                    error!("[handle_btc_signature_for_round] Round {} is not a Bitcoin round (finalize step)", round);
+                    bail!("round {} is not a Bitcoin round", round)
+                },
             };
-
-            let total_inputs = btc_tx.inputs.len();
             let done = self.btc_done_inputs_by_round.read().await;
             let count_done = done.get(&round).map_or(0, |s| s.len());
-
-            (count_done == total_inputs, btc_tx, tx_type_opt.clone())
+            (count_done == btc_tx.inputs.len(), btc_tx.inputs.len(), btc_tx, tx_type_opt.clone())
         };
 
         if !should_finalize {
+            info!("⏳ [BTC] round {}: waiting for remaining inputs", round);
             return Ok(());
         }
 
-        // Gather aggregated sigs in input order
+        // collect aggregated sigs in input order
         let per_input_sigs: Vec<(usize, RecoverableSignature)> = {
             let agg_map = self.btc_agg_by_round.read().await;
-            let m = agg_map.get(&round).ok_or_else(|| anyhow!("missing agg map for round {}", round))?;
-            let mut v: Vec<(usize, RecoverableSignature)> = Vec::with_capacity(unsigned_tx.inputs.len());
-            for i in 0..unsigned_tx.inputs.len() {
-                let s = *m.get(&i).ok_or_else(|| anyhow!("input {} not aggregated", i))?;
+            let m = match agg_map.get(&round) {
+                Some(m) => m,
+                None => {
+                    error!("[handle_btc_signature_for_round] missing agg map for round {}", round);
+                    return Err(anyhow!("missing agg map for round {}", round));
+                }
+            };
+            let mut v = Vec::with_capacity(total_inputs2);
+            for i in 0..total_inputs2 {
+                let s = match m.get(&i) {
+                    Some(s) => *s,
+                    None => {
+                        error!("[handle_btc_signature_for_round] input {} not aggregated for round {}", i, round);
+                        return Err(anyhow!("input {} not aggregated", i));
+                    }
+                };
                 v.push((i, s));
             }
             v
         };
 
-        // Determine spend kind from the unsigned tx shape (your builder set this)
-        let from_kind = if unsigned_tx.witness.is_some() {
-            SpendKind::P2WPKH
-        } else {
-            SpendKind::P2PKH
+        // decide spend kind from tx shape
+        let from_kind = if unsigned_tx2.witness.is_some() { SpendKind::P2WPKH } else { SpendKind::P2PKH };
+
+        // get wallet/group pubkey for witness/scriptSig assembly
+        let pubkey33 = match self.get_group_public_key_bytes(tx_type_for_pubkey2.clone(), None).await {
+            Ok(pk) => pk,
+            Err(e) => {
+                error!("[handle_btc_signature_for_round] Error getting group public key bytes for round {}: {}", round, e);
+                return Err(e);
+            }
         };
 
-        // Pubkey used by this wallet (same that produced HASH160 for inputs).
-        // We can thread the user addr here if you carried it in ECDSASignature.user_eth_address.
-        let pubkey33 = self
-            .get_group_public_key_bytes(tx_type_for_pubkey.clone(), /* user addr */ None)
-            .await?;
-
-        // Assemble final signed tx bytes
         let (raw, txid, wtxid_opt) =
-            Self::finalize_and_serialize_tx(unsigned_tx, from_kind, &per_input_sigs, &pubkey33)?;
+            match Self::finalize_and_serialize_tx(unsigned_tx2, from_kind, &per_input_sigs, &pubkey33) {
+                Ok(res) => res,
+                Err(e) => {
+                    error!("[handle_btc_signature_for_round] Error finalizing and serializing tx for round {}: {}", round, e);
+                    return Err(e);
+                }
+            };
 
         let raw_hex = hex::encode(&raw);
         info!("🎯 [BTC] round {} finalized: txid={}", round, hex::encode(txid));
-        if let Some(w) = wtxid_opt {
-            info!("wtxid={}", hex::encode(w));
-        }
+        if let Some(w) = wtxid_opt { info!("wtxid={}", hex::encode(w)); }
 
-        // Mark whole round as finalized BEFORE broadcast to avoid re-entry;
-        // if you want retry-on-fail, move this after a successful broadcast.
         {
             let mut aggregated_rounds = self.aggregated_rounds.write().await;
             aggregated_rounds.insert(round);
         }
 
-        // TODO: derive real network from addresses used during build; for now require you pass it from the builder.
-        let is_testnet = true; // FIX ME: plumb the network flag you used to build the tx.
+        // TODO: plumb real network flag from builder
+        let is_testnet = true;
         if let Err(e) = Self::broadcast_transaction(&raw_hex, is_testnet).await {
             error!("❌ [BTC] broadcast failed for round {}: {}", round, e);
-            // Optionally: remove from aggregated_rounds to allow retry.
-            // self.aggregated_rounds.write().await.remove(&round);
+            error!("[handle_btc_signature_for_round] Error broadcasting transaction for round {}: {}", round, e);
             return Err(e);
         }
         info!("✅ [BTC] broadcast ok for round {}", round);
@@ -4275,11 +4446,7 @@ impl SigningNode {
                 self.id, from, round, signatures.len()
             );
             // Process each per-input signature via BTC per-input handler
-            for item in signatures {
-                self.handle_btc_signature_for_round(from.clone(), item, round).await?;
-            }
-            
-            return Ok(());
+            return self.handle_btc_signature_for_round(from.clone(), signatures, round).await;
         }
 
         info!(

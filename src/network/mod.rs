@@ -1365,7 +1365,7 @@ impl NetworkLayer {
                                 info!("📤 [NETWORK] Routing BTC signatures to final node handler from: {} for round: {} (user_eth_address: {:?})", from, round, user_eth_address);
                                 // You may want to implement a similar handler for BTC signatures in signing_node
                                 // For now, just call the generic handler
-                                signing_node.handle_message(crate::signing::SigningMessage::BtcSignaturesMessage { from, signatures, round, timestamp: _timestamp, user_eth_address }).await
+                                signing_node.handle_btc_signatures_to_final_node(from, signatures, round).await
                             }
                             _ => {
                                 info!("📤 [NETWORK] Routing other signing message to normal handler");

@@ -25,7 +25,7 @@ const colors = {
   green: '\x1b[32m'
 };
 
-const oooo = 454165212222
+const oooo = 44325234214
 
 function log(message, color = 'reset') {
   console.log(`${colors[color]}${message}${colors.reset}`);
@@ -597,9 +597,9 @@ async function runTests() {
   //   log(`\n⚠️ Registration failed; continuing to deposit test (is_registered may be false).`, 'yellow');
   // }
 
-      // // 3) MPC deposit test WITHOUT tx_id (should pass Some(signer) to handle_deposit_intent)
+      // 3) MPC deposit test WITHOUT tx_id (should pass Some(signer) to handle_deposit_intent)
       log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
-      const amount = 1200
+      const amount = 1000
       await testUserMpcDeposit({ wallet, amount }); 
       
   // const address = '0xbac113cebd9CB2fBD2a01B5CBC43D0fC0EBed5e9';

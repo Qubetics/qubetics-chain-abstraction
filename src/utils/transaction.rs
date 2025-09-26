@@ -253,14 +253,30 @@ pub fn is_evm_chain(chain_name: &str) -> bool {
 
 /// Fetch UTXOs for a Bitcoin address from Mempool.space Esplora API
 pub async fn fetch_bitcoin_utxos(address: &str, is_testnet: bool) -> Result<Vec<BitcoinUtxo>> {
+    tracing::info!(
+        "🔍 Fetching Bitcoin UTXOs for address: {} (is_testnet: {})",
+        address,
+        is_testnet
+    );
+
     // Prefer custom API if provided: BTC_UTXO_API_BASE=http://host:port
     if let Ok(custom_base) = std::env::var("BTC_UTXO_API_BASE") {
         let base = custom_base.trim_end_matches('/');
         let url = format!("{}/api/v1/utxos?address={}", base, address);
+        tracing::info!("🌐 Using custom UTXO API: {}", url);
         let client = reqwest::Client::new();
         let response = client.get(&url).send().await?;
 
+        tracing::info!(
+            "🔗 Custom API response status: {}",
+            response.status()
+        );
+
         if !response.status().is_success() {
+            tracing::error!(
+                "❌ Failed to fetch UTXOs from custom API: HTTP {}",
+                response.status()
+            );
             return Err(anyhow::anyhow!(
                 "Failed to fetch UTXOs from custom API: HTTP {}",
                 response.status()
@@ -269,12 +285,23 @@ pub async fn fetch_bitcoin_utxos(address: &str, is_testnet: bool) -> Result<Vec<
 
         let wrapper: CustomApiUtxoResponse = response.json().await?;
         if wrapper.error {
+            tracing::error!(
+                "❌ Custom API error (status {}): {}",
+                wrapper.status_code,
+                wrapper.message
+            );
             return Err(anyhow::anyhow!(
                 "Custom API error (status {}): {}",
                 wrapper.status_code,
                 wrapper.message
             ));
         }
+
+        tracing::info!(
+            "✅ Custom API returned {} UTXOs for address {}",
+            wrapper.data.len(),
+            address
+        );
 
         return Ok(wrapper.data);
     }
@@ -287,10 +314,20 @@ pub async fn fetch_bitcoin_utxos(address: &str, is_testnet: bool) -> Result<Vec<
     };
 
     let url = format!("{}/address/{}/utxo", base_url, address);
+    tracing::info!("🌐 Using mempool.space Esplora API: {}", url);
     let client = reqwest::Client::new();
     let response = client.get(&url).send().await?;
 
+    tracing::info!(
+        "🔗 Esplora API response status: {}",
+        response.status()
+    );
+
     if !response.status().is_success() {
+        tracing::error!(
+            "❌ Failed to fetch UTXOs: HTTP {}",
+            response.status()
+        );
         return Err(anyhow::anyhow!(
             "Failed to fetch UTXOs: HTTP {}",
             response.status()
@@ -298,6 +335,11 @@ pub async fn fetch_bitcoin_utxos(address: &str, is_testnet: bool) -> Result<Vec<
     }
 
     let utxos: Vec<BitcoinUtxo> = response.json().await?;
+    tracing::info!(
+        "✅ Esplora API returned {} UTXOs for address {}",
+        utxos.len(),
+        address
+    );
     Ok(utxos)
 }
 
@@ -662,28 +704,66 @@ fn classify_address(addr: &str) -> Result<(SpendKind, bitcoin::Network)> {
     use bitcoin::address::{Address, AddressData, NetworkUnchecked};
     use bitcoin::{Network, WitnessVersion};
 
+    tracing::info!("🔍 Attempting to classify Bitcoin address: {}", addr);
+
     // Parse as *unchecked*
-    let a: Address<NetworkUnchecked> = addr.parse()
-        .map_err(|e| anyhow::anyhow!("Invalid Bitcoin address '{}': {}", addr, e))?;
+    let a: Address<NetworkUnchecked> = match addr.parse() {
+        Ok(address) => {
+            tracing::info!("✅ Successfully parsed address: {}", addr);
+            address
+        },
+        Err(e) => {
+            tracing::error!("❌ Invalid Bitcoin address '{}': {}", addr, e);
+            return Err(anyhow::anyhow!("Invalid Bitcoin address '{}': {}", addr, e));
+        }
+    };
 
     // Figure out which network this string is valid for.
     // (Legacy testnet/regtest/signet are ambiguous by design.)
-    let net = [Network::Bitcoin, Network::Testnet, Network::Signet, Network::Regtest]
+    let net = match [Network::Bitcoin, Network::Testnet, Network::Signet, Network::Regtest]
         .into_iter()
         .find(|n| a.is_valid_for_network(*n))
-        .ok_or_else(|| anyhow::anyhow!("Address '{}' is not valid for any known network", addr))?;
+    {
+        Some(network) => {
+            tracing::info!("✅ Address '{}' is valid for network: {:?}", addr, network);
+            network
+        },
+        None => {
+            tracing::error!("❌ Address '{}' is not valid for any known network", addr);
+            return Err(anyhow::anyhow!("Address '{}' is not valid for any known network", addr));
+        }
+    };
 
     // Now *require* that network to get a checked address.
-    let checked = a.require_network(net)
-        .map_err(|e| anyhow::anyhow!("Network mismatch for '{}': {}", addr, e))?;
+    let checked = match a.require_network(net) {
+        Ok(checked_addr) => {
+            tracing::info!("✅ Address '{}' matches network: {:?}", addr, net);
+            checked_addr
+        },
+        Err(e) => {
+            tracing::error!("❌ Network mismatch for '{}': {}", addr, e);
+            return Err(anyhow::anyhow!("Network mismatch for '{}': {}", addr, e));
+        }
+    };
 
     // Classify by data (or you could use checked.address_type()).
     let kind = match checked.to_address_data() {
-        AddressData::P2pkh { .. } => SpendKind::P2PKH,
+        AddressData::P2pkh { .. } => {
+            tracing::info!("🔎 Address '{}' classified as P2PKH", addr);
+            SpendKind::P2PKH
+        },
         AddressData::Segwit { witness_program: wp }
-            if wp.version() == WitnessVersion::V0 && wp.is_p2wpkh() => SpendKind::P2WPKH,
-        _ => bail!("Unsupported address type for spending: {}", addr),
+            if wp.version() == WitnessVersion::V0 && wp.is_p2wpkh() => {
+            tracing::info!("🔎 Address '{}' classified as P2WPKH", addr);
+            SpendKind::P2WPKH
+        },
+        _ => {
+            tracing::error!("❌ Unsupported address type for spending: {}", addr);
+            bail!("Unsupported address type for spending: {}", addr)
+        },
     };
+
+    tracing::info!("✅ Classification result for '{}': kind={:?}, network={:?}", addr, kind, net);
 
     Ok((kind, net))
 }
