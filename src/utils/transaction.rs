@@ -4,7 +4,9 @@ use crate::chain::{
 };
 use crate::rpc_server::{ContractTransaction, DepositIntent, DummyTransaction};
 use crate::utils::get_eth_address_from_group_key;
-use anyhow::Result;
+use anyhow::{bail, Result};
+use bitcoin::address::NetworkUnchecked;
+use bitcoin::{Address, WitnessVersion};
 use ethabi::ethereum_types::U256;
 use ethabi::{Function, Param, ParamType, StateMutability, Token};
 use serde::{Deserialize, Serialize};
@@ -12,6 +14,8 @@ use tracing::info; // for Token::Uint
 
 // use rlp::RlpStream;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpendKind { P2PKH, P2WPKH }
 /// Bitcoin UTXO structure for fetching from external APIs
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BitcoinUtxo {
@@ -20,6 +24,14 @@ pub struct BitcoinUtxo {
     pub value: u64,
     pub status: UtxoStatus,
 }
+
+pub type WitnessItem  = Vec<u8>;
+pub type WitnessStack = Vec<WitnessItem>;
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct BitcoinWitness {
+    pub stacks: Vec<WitnessStack>, // len must equal inputs.len() for segwit spends
+}
+
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UtxoStatus {
@@ -311,13 +323,15 @@ pub struct UtxoSelectionResult {
     pub change_output: bool,
 }
 
-fn estimate_vbytes(num_inputs: usize, num_outputs: usize) -> u64 {
-    // n_out = 2 → recipient + change, n_out = 1 → recipient only (no change).
-    10 + 68 * num_inputs as u64 + 31 * num_outputs as u64
+fn estimate_vbytes(kind: SpendKind, n_in: usize, n_out: usize) -> usize {
+    match kind {
+        SpendKind::P2WPKH => 10 + 68 * n_in + 31 * n_out,   // segwit approx
+        SpendKind::P2PKH  => 10 + 148 * n_in + 34 * n_out,  // legacy approx
+    }
 }
 
-fn estimate_fee_sat(num_inputs: usize, num_outputs: usize, fee_rate_sat_vb: u64) -> u64 {
-    estimate_vbytes(num_inputs, num_outputs) * fee_rate_sat_vb
+fn estimate_fee_sat(kind: SpendKind, n_in: usize, n_out: usize, fee_rate_sat_vb: u64) -> u64 {
+    (estimate_vbytes(kind, n_in, n_out) as u64) * fee_rate_sat_vb
 }
 
 /// Select and combine SegWit (P2WPKH) UTXOs to meet the required amount.
@@ -353,6 +367,7 @@ pub fn select_utxos_for_amount(
     utxos: &[BitcoinUtxo],
     required_amount: u64,
     fee_rate_sat_vb: u64,
+    kind: SpendKind,
 ) -> Result<UtxoSelectionResult> {
     if required_amount == 0 {
         return Err(anyhow::anyhow!("Required amount must be greater than zero"));
@@ -418,7 +433,7 @@ pub fn select_utxos_for_amount(
         let n_inputs = selected.len();
 
         // Start by assuming a change output (n_out = 2 → recipient + change).
-        let mut fee = estimate_fee_sat(n_inputs, 2, fee_rate_sat_vb);
+        let mut fee = estimate_fee_sat(kind, n_inputs, 2, fee_rate_sat_vb);
         let mut required_total = required_amount + fee;
 
         if total_value < required_total {
@@ -431,7 +446,7 @@ pub fn select_utxos_for_amount(
 
         if change < DUST_LIMIT_SATS {
             // Would-be change is dust; collapse to a single output (recipient only).
-            fee = estimate_fee_sat(n_inputs, 1, fee_rate_sat_vb);
+            fee = estimate_fee_sat(kind, n_inputs, 1, fee_rate_sat_vb);
             required_total = required_amount + fee;
 
             if total_value < required_total {
@@ -475,19 +490,15 @@ pub fn select_utxos_for_amount(
         });
     }
 
+    // error tail (optional: keep as-is)
     let n_inputs = selected.len().max(1);
-    let required_with_change = required_amount
-        .checked_add(estimate_fee_sat(n_inputs, 2, fee_rate_sat_vb))
-        .unwrap_or(u64::MAX);
-    let required_no_change = required_amount
-        .checked_add(estimate_fee_sat(n_inputs, 1, fee_rate_sat_vb))
-        .unwrap_or(u64::MAX);
-    let min_required = required_with_change.min(required_no_change);
+    let needed_with_change   = required_amount.saturating_add(estimate_fee_sat(kind, n_inputs, 2, fee_rate_sat_vb));
+    let needed_without_change= required_amount.saturating_add(estimate_fee_sat(kind, n_inputs, 1, fee_rate_sat_vb));
+    let min_needed = needed_with_change.min(needed_without_change);
 
     Err(anyhow::anyhow!(
         "Insufficient confirmed funds: gathered {} sats but need at least {} sats (amount + fees)",
-        total_value,
-        min_required
+        total_value, min_needed
     ))
 }
 
@@ -647,6 +658,36 @@ pub async fn create_chain_transaction_from_deposit_intent(
     .await
 }
 
+fn classify_address(addr: &str) -> Result<(SpendKind, bitcoin::Network)> {
+    use bitcoin::address::{Address, AddressData, NetworkUnchecked};
+    use bitcoin::{Network, WitnessVersion};
+
+    // Parse as *unchecked*
+    let a: Address<NetworkUnchecked> = addr.parse()
+        .map_err(|e| anyhow::anyhow!("Invalid Bitcoin address '{}': {}", addr, e))?;
+
+    // Figure out which network this string is valid for.
+    // (Legacy testnet/regtest/signet are ambiguous by design.)
+    let net = [Network::Bitcoin, Network::Testnet, Network::Signet, Network::Regtest]
+        .into_iter()
+        .find(|n| a.is_valid_for_network(*n))
+        .ok_or_else(|| anyhow::anyhow!("Address '{}' is not valid for any known network", addr))?;
+
+    // Now *require* that network to get a checked address.
+    let checked = a.require_network(net)
+        .map_err(|e| anyhow::anyhow!("Network mismatch for '{}': {}", addr, e))?;
+
+    // Classify by data (or you could use checked.address_type()).
+    let kind = match checked.to_address_data() {
+        AddressData::P2pkh { .. } => SpendKind::P2PKH,
+        AddressData::Segwit { witness_program: wp }
+            if wp.version() == WitnessVersion::V0 && wp.is_p2wpkh() => SpendKind::P2WPKH,
+        _ => bail!("Unsupported address type for spending: {}", addr),
+    };
+
+    Ok((kind, net))
+}
+
 /// Internal implementation of transaction creation with optional UTXO checking
 async fn create_chain_transaction_from_deposit_intent_internal(
     intent: &DepositIntent,
@@ -795,9 +836,19 @@ async fn create_chain_transaction_from_deposit_intent_internal(
         // }
 
         // let is_testnet = is_testnet_p2pkh_address(&from_address);
-
+        let (from_kind, from_net) = classify_address(&from_address)?;   
+        let (to_kind,   to_net)   = classify_address(&to_address)?; 
         // Fetch raw UTXOs without external verification
-        let utxos = fetch_bitcoin_utxos(&from_address, true).await?;
+        // Sanity: prevent net mismatch
+        if from_net != to_net {
+            anyhow::bail!("From/To network mismatch: {:?} vs {:?}", from_net, to_net);
+        }
+
+        let is_testnet = matches!(from_net, bitcoin::Network::Testnet | bitcoin::Network::Signet | bitcoin::Network::Regtest);
+
+// Fetch UTXOs for the right network
+        let utxos = fetch_bitcoin_utxos(&from_address, is_testnet).await?;
+
         tracing::info!(
             "Final verified {} spendable UTXOs for address {}",
             utxos.len(),
@@ -818,7 +869,7 @@ async fn create_chain_transaction_from_deposit_intent_internal(
         );
 
         // Select UTXOs that provide enough value using SegWit-aware fee estimation.
-        let selection = select_utxos_for_amount(&utxos, amount_satoshis, fee_rate_sat_vb)?;
+        let selection = select_utxos_for_amount(&utxos, amount_satoshis, fee_rate_sat_vb, from_kind)?;
 
         tracing::info!(
             "Selected {} UTXOs with total value {} satoshis for transaction of {} satoshis (fee: {}, change: {}, change_output: {})",
@@ -843,44 +894,57 @@ async fn create_chain_transaction_from_deposit_intent_internal(
             );
         }
 
-        let to_script_pubkey = create_bitcoin_script_pubkey(&to_address)?;
-        let from_script_pubkey = create_bitcoin_script_pubkey(&from_address)?;
+        let to_spk   = create_bitcoin_script_pubkey(&to_address)?;
+        let from_spk = create_bitcoin_script_pubkey(&from_address)?;
 
-        // Create inputs from selected UTXOs (SegWit P2WPKH)
-        let inputs: Vec<BitcoinInput> = selection
-            .selected_utxos
-            .iter()
-            .map(|utxo| BitcoinInput {
-                txid: utxo.txid.clone(),
-                vout: utxo.vout,
-                script_sig: vec![],   // Empty for P2WPKH
-                sequence: 0xfffffffe, // Enable RBF (Replace-By-Fee)
-                witness_utxo: Some(BitcoinWitnessUtxo {
-                    value: utxo.value,
-                    script_pubkey: from_script_pubkey.clone(),
-                }),
-            })
-            .collect();
+        // Inputs:
+        let inputs: Vec<BitcoinInput> = selection.selected_utxos.iter().map(|u| {
+        match from_kind {
+            SpendKind::P2WPKH => BitcoinInput {
+                txid: u.txid.clone(),
+                vout: u.vout,
+                script_sig: vec![],               // segwit: empty
+                sequence: 0xffff_fffe,
+                witness_utxo: Some(BitcoinWitnessUtxo { value: u.value, script_pubkey: from_spk.clone() }),
+            },
+            SpendKind::P2PKH => BitcoinInput {
+                txid: u.txid.clone(),
+                vout: u.vout,
+                script_sig: vec![],               // filled after signing (legacy scriptSig)
+                sequence: 0xffff_fffe,
+                witness_utxo: None,               // legacy: none
+            }
+        }
+    }).collect();
 
         // Create outputs (recipient always, change only if not dust)
-        let mut outputs = vec![BitcoinOutput {
-            value: amount_satoshis,
-            script_pubkey: to_script_pubkey,
-        }];
-
+       // Outputs (change script MUST match the from-address type; using from_spk is correct):
+        let mut outputs = vec![BitcoinOutput { value: amount_satoshis, script_pubkey: to_spk }];
         if selection.change_output {
-            outputs.push(BitcoinOutput {
-                value: selection.change,
-                script_pubkey: from_script_pubkey,
-            });
+            outputs.push(BitcoinOutput { value: selection.change, script_pubkey: from_spk });
         }
 
+        let (version, witness_opt) = match from_kind {
+            SpendKind::P2WPKH => {
+                // placeholder: one empty stack per input; fill after signing
+                (
+                    2,
+                    Some(crate::chain::BitcoinWitness {
+                        inputs: (0..inputs.len())
+                            .map(|_| crate::chain::BitcoinWitnessInput { stack: vec![] })
+                            .collect(),
+                    }),
+                )
+            }
+            SpendKind::P2PKH => (1, None),
+        };
+        
         let bitcoin_tx = BitcoinTransaction {
             inputs,
             outputs,
-            version: 1, // Use version 1 for legacy transactions
+            version,
             lock_time: 0,
-            witness: None, // No witness data for P2PKH
+            witness: witness_opt,
         };
 
         Ok(ChainTransaction::Bitcoin(bitcoin_tx))
@@ -1245,7 +1309,7 @@ fn create_bitcoin_script_pubkey(address: &str) -> Result<Vec<u8>> {
 
     // Require the network to get a checked address. This preserves the network encoded
     // in the string (mainnet vs testnet/regtest) and prevents silent mismatches.
-    let network = parsed_address.network;
+    let network = bitcoin::Network::Testnet;
     let checked_address = parsed_address
         .require_network(network)
         .map_err(|e| anyhow::anyhow!("Address network mismatch for '{}': {}", address, e))?;

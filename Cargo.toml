@@ -37,7 +37,7 @@ libp2p-grpc-rs = "0.1.2"
 tracing-appender = "0.2.3"
 warp = "0.3"
 k256 = "0.13.4"
-bitcoin = "0.32.6"
+bitcoin = { version = "0.32.6", default-features = true }
 bip39 = "2.2.0"
 bip32 = "0.5.3"
 ethers-core = "2.0.14"
