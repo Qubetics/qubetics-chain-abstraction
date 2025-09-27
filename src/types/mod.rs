@@ -8,6 +8,12 @@ pub enum TransactionType {
     VaultToNetwork,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum TransactionNetwork {
+    TICS,  // EVM/TICS transactions
+    BTC,   // Bitcoin transactions
+}
+
 mod secp;
 pub use secp::{SerializablePoint, SerializableScalar};
 

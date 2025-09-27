@@ -2684,14 +2684,26 @@ pub async fn sign_bitcoin_transaction(
     }
 
     /// Store transaction ID for a round if intent hash is available and broadcast to other nodes
-    async fn store_transaction_id_for_round(&self, round: u64, tx_id: &str, user_eth_address: Option<String>) {
-        // Get intent hash and transaction type from pending transactions
-        let (intent_hash, transaction_type) = {
-            let pending_transactions = self.pending_transactions.read().await;
-            if let Some((_tx, _tx_bytes, intent_hash, transaction_type)) = pending_transactions.get(&round) {
-                (intent_hash.clone(), transaction_type.clone())
-            } else {
-                (None, None)
+    async fn store_transaction_id_for_round(&self, round: u64, tx_id: &str, user_eth_address: Option<String>, txn_network: crate::types::TransactionNetwork) {
+        // Get intent hash and transaction type from the appropriate pending transactions mapping
+        let (intent_hash, transaction_type) = match txn_network {
+            crate::types::TransactionNetwork::TICS => {
+                // Check EVM pending transactions
+                let pending_transactions = self.pending_transactions.read().await;
+                if let Some((_tx, _tx_bytes, intent_hash, transaction_type)) = pending_transactions.get(&round) {
+                    (intent_hash.clone(), transaction_type.clone())
+                } else {
+                    (None, None)
+                }
+            },
+            crate::types::TransactionNetwork::BTC => {
+                // Check Bitcoin pending transactions
+                let pending_transactions_btc = self.pending_transactions_btc.read().await;
+                if let Some((_tx, _tx_bytes, intent_hash, transaction_type, _extras)) = pending_transactions_btc.get(&round) {
+                    (intent_hash.clone(), transaction_type.clone())
+                } else {
+                    (None, None)
+                }
             }
         };
 
@@ -3526,7 +3538,7 @@ pub async fn sign_bitcoin_transaction(
                                     match Self::broadcast_transaction(&signed_tx_hex, false).await {
                                         Ok(Some(txid)) => {
                                             info!("✅ [SIGNING] Bitcoin transaction broadcasted successfully: {}", txid);
-                                            self.store_transaction_id_for_round(round, &txid, signature.user_eth_address.clone()).await;
+                                            self.store_transaction_id_for_round(round, &txid, signature.user_eth_address.clone(), crate::types::TransactionNetwork::BTC).await;
                                         },
                                         Ok(None) => {
                                             warn!("⚠️ [SIGNING] Bitcoin transaction broadcasted but no txid returned");
@@ -3570,7 +3582,7 @@ pub async fn sign_bitcoin_transaction(
                                         Ok(Some(tx_hash)) => {
                                             info!("✅ [SIGNING] Ethereum transaction broadcasted successfully: {}", tx_hash);
                                             // Store transaction ID if we have intent hash and user registry
-                                            self.store_transaction_id_for_round(round, &tx_hash, signature.user_eth_address.clone()).await;
+                                            self.store_transaction_id_for_round(round, &tx_hash, signature.user_eth_address.clone(), crate::types::TransactionNetwork::TICS).await;
                                         },
                                         Ok(None) => {
                                             warn!("⚠️ [SIGNING] Ethereum transaction broadcasted but no tx_hash returned");
@@ -3893,7 +3905,7 @@ pub async fn handle_btc_signature_for_round(
     match Self::broadcast_transaction(&raw_hex, is_testnet).await {
         Ok(Some(txid)) => {
             info!("✅ [BTC] Bitcoin transaction broadcasted successfully: {}", txid);
-            self.store_transaction_id_for_round(round, &txid, user_eth_address).await;
+            self.store_transaction_id_for_round(round, &txid, user_eth_address, crate::types::TransactionNetwork::BTC).await;
         },
         Ok(None) => {
             warn!("⚠️ [BTC] Bitcoin transaction broadcasted but no txid returned");
