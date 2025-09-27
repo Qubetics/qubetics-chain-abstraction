@@ -456,8 +456,8 @@ pub fn select_utxos_for_amount(
         ));
     }
 
-    // Sort ascending (smallest first) to minimise change output bloat.
-    confirmed_utxos.sort_by_key(|utxo| utxo.value);
+    // Sort descending (largest first) to minimize the number of inputs needed
+    confirmed_utxos.sort_by_key(|utxo| std::cmp::Reverse(utxo.value));
 
     tracing::info!(
         "🔍 [UTXO_SELECTION] {} confirmed UTXOs remain after filtering ({} fetched)",
@@ -465,6 +465,7 @@ pub fn select_utxos_for_amount(
         utxos.len()
     );
 
+    // Simple greedy algorithm: add UTXOs until we have enough, then choose best path
     let mut selected = Vec::new();
     let mut total_value = 0u64;
 
@@ -474,65 +475,57 @@ pub fn select_utxos_for_amount(
 
         let n_inputs = selected.len();
 
-        // Start by assuming a change output (n_out = 2 → recipient + change).
-        let mut fee = estimate_fee_sat(kind, n_inputs, 2, fee_rate_sat_vb);
-        let mut required_total = required_amount + fee;
+        // Try change path first (2 outputs: recipient + change)
+        let fee_with_change = estimate_fee_sat(kind, n_inputs, 2, fee_rate_sat_vb);
+        let required_with_change = required_amount + fee_with_change;
 
-        if total_value < required_total {
-            continue;
+        if total_value >= required_with_change {
+            let change = total_value - required_with_change;
+            
+            if change >= DUST_LIMIT_SATS {
+                // Use change path - this is optimal
+                tracing::info!(
+                    "✅ [UTXO_SELECTION] Using change path with {} inputs (fee {} sats, change {} sats)",
+                    n_inputs,
+                    fee_with_change,
+                    change
+                );
+
+                return Ok(UtxoSelectionResult {
+                    selected_utxos: selected,
+                    total_value,
+                    fee: fee_with_change,
+                    change,
+                    change_output: true,
+                });
+            }
         }
 
-        let mut change = total_value
-            .checked_sub(required_amount + fee)
-            .unwrap_or_default();
+        // Try no-change path (1 output: recipient only)
+        let fee_no_change = estimate_fee_sat(kind, n_inputs, 1, fee_rate_sat_vb);
+        let required_no_change: u64 = required_amount + fee_no_change;
 
-        if change < DUST_LIMIT_SATS {
-            // Would-be change is dust; collapse to a single output (recipient only).
-            fee = estimate_fee_sat(kind, n_inputs, 1, fee_rate_sat_vb);
-            required_total = required_amount + fee;
-
-            if total_value < required_total {
-                continue;
-            }
-
-            // Fold the dust into the miner fee.
-            change = 0;
-            fee = total_value
-                .checked_sub(required_amount)
-                .ok_or_else(|| anyhow::anyhow!("Overflow computing no-change fee"))?;
-
+        if total_value >= required_no_change {
+            // Use no-change path
             tracing::info!(
                 "✅ [UTXO_SELECTION] Using no-change path with {} inputs (fee {} sats)",
                 n_inputs,
-                fee
+                fee_no_change
             );
 
             return Ok(UtxoSelectionResult {
                 selected_utxos: selected,
                 total_value,
-                fee,
-                change,
+                fee: fee_no_change,
+                change: 0,
                 change_output: false,
             });
         }
 
-        tracing::info!(
-            "✅ [UTXO_SELECTION] Using change path with {} inputs (fee {} sats, change {} sats)",
-            n_inputs,
-            fee,
-            change
-        );
-
-        return Ok(UtxoSelectionResult {
-            selected_utxos: selected,
-            total_value,
-            fee,
-            change,
-            change_output: true,
-        });
+        // If we don't have enough, continue adding UTXOs
     }
 
-    // error tail (optional: keep as-is)
+    // error tail - no valid combination found
     let n_inputs = selected.len().max(1);
     let needed_with_change   = required_amount.saturating_add(estimate_fee_sat(kind, n_inputs, 2, fee_rate_sat_vb));
     let needed_without_change= required_amount.saturating_add(estimate_fee_sat(kind, n_inputs, 1, fee_rate_sat_vb));
@@ -1657,6 +1650,80 @@ mod tests {
         // Should not be empty and should be properly encoded
         assert!(!encoded.is_empty());
         assert_ne!(encoded, vec![0x80]); // Should not be the "zero" encoding
+    }
+
+    #[test]
+    fn test_utxo_selection_optimal() {
+        // Test case: 2 UTXOs of 1400 sats each, want to send 1540 sats
+        let utxos = vec![
+            BitcoinUtxo {
+                txid: "a1b2c3d4e5f6789012345678901234567890123456789012345678901234567890".to_string(),
+                vout: 0,
+                value: 1400,
+                status: UtxoStatus {
+                    confirmed: true,
+                    block_height: Some(100),
+                    block_hash: Some("block1".to_string()),
+                    block_time: Some(1234567890),
+                },
+            },
+            BitcoinUtxo {
+                txid: "b2c3d4e5f6789012345678901234567890123456789012345678901234567890a1".to_string(),
+                vout: 0,
+                value: 1400,
+                status: UtxoStatus {
+                    confirmed: true,
+                    block_height: Some(100),
+                    block_hash: Some("block2".to_string()),
+                    block_time: Some(1234567890),
+                },
+            },
+        ];
+
+        let result = select_utxos_for_amount(&utxos, 1540, 2, SpendKind::P2WPKH).unwrap();
+        
+        println!("Selected {} UTXOs", result.selected_utxos.len());
+        println!("Total value: {} sats", result.total_value);
+        println!("Fee: {} sats", result.fee);
+        println!("Change: {} sats", result.change);
+        println!("Change output: {}", result.change_output);
+        
+        // Should use change path with reasonable fee
+        assert!(result.change_output, "Should use change output");
+        assert!(result.fee < 500, "Fee should be reasonable (< 500 sats)");
+        assert!(result.change > 0, "Should have change");
+    }
+
+    #[test]
+    fn test_utxo_selection_single_utxo() {
+        // Test case: 1 UTXO of 2000 sats, want to send 1000 sats
+        let utxos = vec![
+            BitcoinUtxo {
+                txid: "c3d4e5f6789012345678901234567890123456789012345678901234567890a1b2".to_string(),
+                vout: 0,
+                value: 2000,
+                status: UtxoStatus {
+                    confirmed: true,
+                    block_height: Some(100),
+                    block_hash: Some("block1".to_string()),
+                    block_time: Some(1234567890),
+                },
+            },
+        ];
+
+        let result = select_utxos_for_amount(&utxos, 1000, 2, SpendKind::P2WPKH).unwrap();
+        
+        println!("Selected {} UTXOs", result.selected_utxos.len());
+        println!("Total value: {} sats", result.total_value);
+        println!("Fee: {} sats", result.fee);
+        println!("Change: {} sats", result.change);
+        println!("Change output: {}", result.change_output);
+        
+        // Should use single UTXO with change
+        assert_eq!(result.selected_utxos.len(), 1, "Should use only 1 UTXO");
+        assert!(result.change_output, "Should use change output");
+        assert!(result.fee < 200, "Fee should be reasonable (< 200 sats)");
+        assert!(result.change > 500, "Should have substantial change");
     }
 }
 

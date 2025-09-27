@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Repo root; override by passing a path as arg1
-ROOT="${1:-/data/qubetics-chain-abstraction}"
+ROOT="${1:-/data/company/qubetics-chain-abstraction}"
 BINARY_NAME="${BINARY_NAME:-mpc-node}"
 LOG_DIR="$ROOT/logs"
 

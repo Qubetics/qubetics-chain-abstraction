@@ -148,9 +148,9 @@ async function testUserMpcDeposit({ wallet, amount }) {
 
     // Construct DepositIntent
     const depositIntent = {
-      source_address: userInfo.data.derived_btc_address, // Use canonical address
+      source_address: userInfo.data.derived_eth_address, // Use canonical address
       target_address: '0xc6dA53bCa90753699cd19521Dd559964490C6822',
-      source_chain: 'bitcoin',
+      source_chain: 'qubetics',
       target_chain: 'qubetics',
       amount: amount, // Use the passed amount parameter
       source_token: 'BTC',
@@ -597,11 +597,11 @@ async function runTests() {
   //   log(`\n⚠️ Registration failed; continuing to deposit test (is_registered may be false).`, 'yellow');
   // }
 
-      // 3) MPC deposit test WITHOUT tx_id (should pass Some(signer) to handle_deposit_intent)
-      log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
-      const amount = 800
-      await testUserMpcDeposit({ wallet, amount }); 
-      
+  // 3) MPC deposit test WITHOUT tx_id (should pass Some(signer) to handle_deposit_intent)
+  log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
+  const amount = 1300
+  await testUserMpcDeposit({ wallet, amount }); 
+  
   // const address = '0xbac113cebd9CB2fBD2a01B5CBC43D0fC0EBed5e9';
   // await testGetRewardSolver(address);
 
