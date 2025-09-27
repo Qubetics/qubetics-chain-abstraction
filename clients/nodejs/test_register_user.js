@@ -586,7 +586,7 @@ async function runTests() {
   // // 1) DKG status
   // await testDKGStatus();
 
-  // // // 2) Register ONLY the derived address 
+  // // // // 2) Register ONLY the derived address 
   // const reg = await testRegisterUser(signerAddr);
 
   // if (reg.success) {

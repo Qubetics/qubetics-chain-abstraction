@@ -3740,35 +3740,7 @@ pub async fn handle_btc_signature_for_round(
             self.compute_legacy_sighash_all_p2pkh(&unsigned_tx, idx, &prev_spk_owned)?
         };
 
-        // Recover pubkey from the first sig to sanity-check against prevout address
-        let (first_peer, first_sig) = &chosen[0];
-        let msg = Message::from_digest_slice(&digest)?;
-        let recid = RecoveryId::from_i32(first_sig.recovery_id as i32)?;
-        let rsig = RecoverableSignature::from_compact(&first_sig.signature, recid)?;
-        let rec_pk: PublicKey = secp.recover_ecdsa(&msg, &rsig)?;
-        let rec_pk33 = rec_pk.serialize();
-
-        if is_p2wpkh {
-            let program20 = &maybe_prev.unwrap().script_pubkey[2..22];
-            if &hash160(&rec_pk33) != program20 {
-                error!("[handle_btc_signature_for_round] round {} input {}: HASH160(pubkey) != witness program", round, idx);
-                bail!("round {} input {}: HASH160(pubkey) != witness program", round, idx);
-            }
-        } else {
-            // If we carried a real prev script, enforce H160 match; if we reconstructed, enforce match vs group_h160
-            if let Some(prev) = maybe_prev {
-                let spk: &Vec<u8> = &prev.script_pubkey;
-                if &hash160(&rec_pk33) != &spk[3..23] {
-                    error!("[handle_btc_signature_for_round] round {} input {}: legacy HASH160(pubkey) mismatch", round, idx);
-                    bail!("round {} input {}: legacy HASH160(pubkey) mismatch", round, idx);
-                }
-            } else {
-                if hash160(&rec_pk33) != group_h160 {
-                    error!("[handle_btc_signature_for_round] round {} input {}: legacy HASH160(pubkey) mismatch with group key", round, idx);
-                    bail!("round {} input {}: legacy HASH160(pubkey) mismatch", round, idx);
-                }
-            }
-        }
+        
 
         // Build inputs for MPC aggregation
         let mut sigs: Vec<RecoverableSignature> = Vec::with_capacity(self.threshold);
@@ -3784,6 +3756,23 @@ pub async fn handle_btc_signature_for_round(
 
         // aggregate this input
         let agg = self.aggregate_signatures(sigs, peer_to_dkg_index).await?;
+
+         // POST-AGGREGATION VERIFY under the **group** pubkey
+         {
+            let msg = Message::from_digest_slice(&digest)?;
+            let (_recid, compact) = agg.serialize_compact();
+            let mut sig_std = secp256k1::ecdsa::Signature::from_compact(&compact)?;
+            sig_std.normalize_s(); // low-s normalization
+            let group_pk = secp256k1::PublicKey::from_slice(&group_pubkey33)?;
+            if let Err(e) = secp.verify_ecdsa(&msg, &sig_std, &group_pk) {
+                error!(
+                    "[btc] round {} input {}: aggregated signature does not verify under group key: {}",
+                    round, idx, e
+                );
+                bail!("round {} input {}: aggregated signature verify failed", round, idx);
+            }
+        }
+        
         {
             let mut agg_map = self.btc_agg_by_round.write().await;
             agg_map.entry(round).or_insert_with(HashMap::new).insert(idx, agg);
@@ -4423,15 +4412,15 @@ pub async fn handle_btc_signature_for_round(
                 self.id, round, signatures.len()
             );
             
-            // Store the BTC signatures for this round
-            {
-                let mut by_round = self.btc_sigs_by_round.write().await;
-                let rmap = by_round.entry(round).or_insert_with(HashMap::new);
-                for btc_sig in &signatures {
-                    let imap = rmap.entry(btc_sig.input_index).or_insert_with(HashMap::new);
-                    imap.insert(from.clone(), btc_sig.signature.clone());
-                }
-            }
+            // // Store the BTC signatures for this round
+            // {
+            //     let mut by_round = self.btc_sigs_by_round.write().await;
+            //     let rmap = by_round.entry(round).or_insert_with(HashMap::new);
+            //     for btc_sig in &signatures {
+            //         let imap = rmap.entry(btc_sig.input_index).or_insert_with(HashMap::new);
+            //         imap.insert(from.clone(), btc_sig.signature.clone());
+            //     }
+            // }
             
             info!(
                 "📥 [SIGNING] Node {} received BTC per-input signatures from {} for round {} (count: {})",
