@@ -3173,17 +3173,49 @@ pub async fn sign_bitcoin_transaction(
         // Wait a bit for signatures to arrive
         tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
 
-        // Check current signature count for this round
+        // Determine if this is a Bitcoin or EVM round by checking which mapping has data
         let signatures_by_round = self.signatures_by_round.read().await;
-        if let Some(round_signatures) = signatures_by_round.get(&round) {
-            info!(
-                "📊 [SIGNING] Final node {} has {} signatures for round {}",
-                self.id,
-                round_signatures.len(),
-                round
-            );
+        let btc_sigs_by_round = self.btc_sigs_by_round.read().await;
+        
+        let has_evm_sigs = signatures_by_round.contains_key(&round);
+        let has_btc_sigs = btc_sigs_by_round.contains_key(&round);
+        
+        if has_evm_sigs {
+            // This is an EVM round
+            if let Some(round_signatures) = signatures_by_round.get(&round) {
+                info!(
+                    "📊 [SIGNING] Final node {} has {} EVM signatures for round {}",
+                    self.id,
+                    round_signatures.len(),
+                    round
+                );
+            }
+        } else if has_btc_sigs {
+            // This is a Bitcoin round
+            if let Some(round_btc_sigs) = btc_sigs_by_round.get(&round) {
+                let total_btc_sigs: usize = round_btc_sigs.values().map(|input_sigs| input_sigs.len()).sum();
+                let input_count = round_btc_sigs.len();
+                info!(
+                    "📊 [SIGNING] Final node {} has {} Bitcoin signatures across {} inputs for round {}",
+                    self.id,
+                    total_btc_sigs,
+                    input_count,
+                    round
+                );
+                
+                // Check which inputs have been aggregated
+                let btc_done_inputs = self.btc_done_inputs_by_round.read().await;
+                if let Some(done_inputs) = btc_done_inputs.get(&round) {
+                    info!(
+                        "✅ [SIGNING] Bitcoin round {} has {} inputs aggregated out of {} total inputs",
+                        round,
+                        done_inputs.len(),
+                        input_count
+                    );
+                }
+            }
         } else {
-            info!("⚠️ [SIGNING] No signatures found for round {}", round);
+            info!("⚠️ [SIGNING] No signatures found for round {} (neither EVM nor Bitcoin)", round);
         }
 
         Ok(())
@@ -3834,11 +3866,43 @@ pub async fn handle_btc_signature_for_round(
         aggregated_rounds.insert(round);
     }
 
-    if let Err(e) = Self::broadcast_transaction(&raw_hex, is_testnet).await {
-        error!("❌ [BTC] broadcast failed for round {}: {}", round, e);
-        return Err(e);
+    // Get intent hash and user_eth_address for proper error/success handling
+    let (intent_hash, user_eth_address) = {
+        let pt = self.pending_transactions_btc.read().await;
+        if let Some((_chain_tx, _raw, intent_hash, _tx_type_opt, _extras)) = pt.get(&round) {
+            // Get user_eth_address from the first signature we have
+            let user_eth_address = {
+                let btc_sigs = self.btc_sigs_by_round.read().await;
+                if let Some(round_sigs) = btc_sigs.get(&round) {
+                    // Get the first available signature to extract user_eth_address
+                    round_sigs.values()
+                        .flat_map(|input_sigs| input_sigs.values())
+                        .next()
+                        .and_then(|sig| sig.user_eth_address.clone())
+                } else {
+                    None
+                }
+            };
+            (intent_hash.clone(), user_eth_address)
+        } else {
+            (None, None)
+        }
+    };
+
+    // Broadcast with proper error handling and transaction ID storage
+    match Self::broadcast_transaction(&raw_hex, is_testnet).await {
+        Ok(Some(txid)) => {
+            info!("✅ [BTC] Bitcoin transaction broadcasted successfully: {}", txid);
+            self.store_transaction_id_for_round(round, &txid, user_eth_address).await;
+        },
+        Ok(None) => {
+            warn!("⚠️ [BTC] Bitcoin transaction broadcasted but no txid returned");
+        },
+        Err(e) => {
+            error!("❌ [BTC] Failed to broadcast Bitcoin transaction: {}", e);
+            self.store_transaction_error_for_round(round, &e.to_string()).await;
+        }
     }
-    info!("✅ [BTC] broadcast ok for round {}", round);
 
     Ok(())
 }
