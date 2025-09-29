@@ -25,7 +25,7 @@ const colors = {
   green: '\x1b[32m'
 };
 
-const oooo = 454165212222
+const oooo = 46187613123
 
 function log(message, color = 'reset') {
   console.log(`${colors[color]}${message}${colors.reset}`);
@@ -149,12 +149,12 @@ async function testUserMpcDeposit({ wallet, amount }) {
     // Construct DepositIntent
     const depositIntent = {
       source_address: userInfo.data.derived_eth_address, // Use canonical address
-      target_address: 'mtmqvh9mhf6kicaFQB4moj7ed2Ngd66JZV',
+      target_address: '0xc6dA53bCa90753699cd19521Dd559964490C6822',
       source_chain: 'qubetics',
-      target_chain: 'bitcoin',
+      target_chain: 'qubetics',
       amount: amount, // Use the passed amount parameter
-      source_token: 'TICS',
-      target_token: 'BTC',
+      source_token: 'BTC',
+      target_token: 'TICS',
       timestamp: oooo, // Current Unix timestamp in seconds
     };
     console.log(`📊 Deposit Intent: ${JSON.stringify(depositIntent)}`, 'cyan');
@@ -583,10 +583,10 @@ async function runTests() {
   const signerAddr = await wallet.getAddress();
   log(`\n🔑 Derived signer address from TEST_PRIVKEY: ${signerAddr}`, 'blue');
 
-  // // 1) DKG status
+  // 1) DKG status
   // await testDKGStatus();
 
-  // // // 2) Register ONLY the derived address 
+  // // // // 2) Register ONLY the derived address 
   // const reg = await testRegisterUser(signerAddr);
 
   // if (reg.success) {
@@ -597,11 +597,11 @@ async function runTests() {
   //   log(`\n⚠️ Registration failed; continuing to deposit test (is_registered may be false).`, 'yellow');
   // }
 
-      // // 3) MPC deposit test WITHOUT tx_id (should pass Some(signer) to handle_deposit_intent)
-      log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
-      const amount = 25143341220000000000
-      await testUserMpcDeposit({ wallet, amount }); 
-      
+  // 3) MPC deposit test WITHOUT tx_id (should pass Some(signer) to handle_deposit_intent)
+  log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
+  const amount = 1300
+  await testUserMpcDeposit({ wallet, amount }); 
+  
   // const address = '0xbac113cebd9CB2fBD2a01B5CBC43D0fC0EBed5e9';
   // await testGetRewardSolver(address);
 

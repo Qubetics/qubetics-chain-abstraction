@@ -37,7 +37,7 @@ libp2p-grpc-rs = "0.1.2"
 tracing-appender = "0.2.3"
 warp = "0.3"
 k256 = "0.13.4"
-bitcoin = "0.32.6"
+bitcoin = { version = "0.32.6", default-features = true }
 bip39 = "2.2.0"
 bip32 = "0.5.3"
 ethers-core = "2.0.14"
@@ -57,6 +57,7 @@ dotenv = "0.15"
 rust_decimal = "1"
 rust_decimal_macros = "1"
 ethabi = "18.0.0"
+serde-big-array = "0.5.1"
 
 [build-dependencies]
 tonic-build = "0.13.0"

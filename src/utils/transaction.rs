@@ -1,10 +1,12 @@
 use crate::chain::{
-    BitcoinInput, BitcoinOutput, BitcoinTransaction, ChainTransaction,
+    BitcoinInput, BitcoinOutput, BitcoinTransaction, BitcoinWitnessUtxo, ChainTransaction,
     EthereumTransaction,
 };
 use crate::rpc_server::{ContractTransaction, DepositIntent, DummyTransaction};
 use crate::utils::get_eth_address_from_group_key;
-use anyhow::Result;
+use anyhow::{bail, Result};
+use bitcoin::address::NetworkUnchecked;
+use bitcoin::{Address, WitnessVersion};
 use ethabi::ethereum_types::U256;
 use ethabi::{Function, Param, ParamType, StateMutability, Token};
 use serde::{Deserialize, Serialize};
@@ -12,6 +14,8 @@ use tracing::info; // for Token::Uint
 
 // use rlp::RlpStream;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SpendKind { P2PKH, P2WPKH }
 /// Bitcoin UTXO structure for fetching from external APIs
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BitcoinUtxo {
@@ -21,6 +25,14 @@ pub struct BitcoinUtxo {
     pub status: UtxoStatus,
 }
 
+pub type WitnessItem  = Vec<u8>;
+pub type WitnessStack = Vec<WitnessItem>;
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct BitcoinWitness {
+    pub stacks: Vec<WitnessStack>, // len must equal inputs.len() for segwit spends
+}
+
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UtxoStatus {
     pub confirmed: bool,
@@ -28,6 +40,9 @@ pub struct UtxoStatus {
     pub block_hash: Option<String>,
     pub block_time: Option<u64>,
 }
+
+const DEFAULT_FEE_RATE_SAT_PER_VBYTE: u64 = 2;
+const DUST_LIMIT_SATS: u64 = 546;
 
 /// Wrapper for custom UTXO API responses
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -238,14 +253,30 @@ pub fn is_evm_chain(chain_name: &str) -> bool {
 
 /// Fetch UTXOs for a Bitcoin address from Mempool.space Esplora API
 pub async fn fetch_bitcoin_utxos(address: &str, is_testnet: bool) -> Result<Vec<BitcoinUtxo>> {
+    tracing::info!(
+        "🔍 Fetching Bitcoin UTXOs for address: {} (is_testnet: {})",
+        address,
+        is_testnet
+    );
+
     // Prefer custom API if provided: BTC_UTXO_API_BASE=http://host:port
     if let Ok(custom_base) = std::env::var("BTC_UTXO_API_BASE") {
         let base = custom_base.trim_end_matches('/');
         let url = format!("{}/api/v1/utxos?address={}", base, address);
+        tracing::info!("🌐 Using custom UTXO API: {}", url);
         let client = reqwest::Client::new();
         let response = client.get(&url).send().await?;
 
+        tracing::info!(
+            "🔗 Custom API response status: {}",
+            response.status()
+        );
+
         if !response.status().is_success() {
+            tracing::error!(
+                "❌ Failed to fetch UTXOs from custom API: HTTP {}",
+                response.status()
+            );
             return Err(anyhow::anyhow!(
                 "Failed to fetch UTXOs from custom API: HTTP {}",
                 response.status()
@@ -254,12 +285,23 @@ pub async fn fetch_bitcoin_utxos(address: &str, is_testnet: bool) -> Result<Vec<
 
         let wrapper: CustomApiUtxoResponse = response.json().await?;
         if wrapper.error {
+            tracing::error!(
+                "❌ Custom API error (status {}): {}",
+                wrapper.status_code,
+                wrapper.message
+            );
             return Err(anyhow::anyhow!(
                 "Custom API error (status {}): {}",
                 wrapper.status_code,
                 wrapper.message
             ));
         }
+
+        tracing::info!(
+            "✅ Custom API returned {} UTXOs for address {}",
+            wrapper.data.len(),
+            address
+        );
 
         return Ok(wrapper.data);
     }
@@ -272,10 +314,20 @@ pub async fn fetch_bitcoin_utxos(address: &str, is_testnet: bool) -> Result<Vec<
     };
 
     let url = format!("{}/address/{}/utxo", base_url, address);
+    tracing::info!("🌐 Using mempool.space Esplora API: {}", url);
     let client = reqwest::Client::new();
     let response = client.get(&url).send().await?;
 
+    tracing::info!(
+        "🔗 Esplora API response status: {}",
+        response.status()
+    );
+
     if !response.status().is_success() {
+        tracing::error!(
+            "❌ Failed to fetch UTXOs: HTTP {}",
+            response.status()
+        );
         return Err(anyhow::anyhow!(
             "Failed to fetch UTXOs: HTTP {}",
             response.status()
@@ -283,6 +335,11 @@ pub async fn fetch_bitcoin_utxos(address: &str, is_testnet: bool) -> Result<Vec<
     }
 
     let utxos: Vec<BitcoinUtxo> = response.json().await?;
+    tracing::info!(
+        "✅ Esplora API returned {} UTXOs for address {}",
+        utxos.len(),
+        address
+    );
     Ok(utxos)
 }
 
@@ -298,25 +355,70 @@ pub struct EnhancedUtxo {
     pub scriptpubkey_address: Option<String>,
 }
 
-/// Select and combine UTXOs to meet the required amount
+/// Result of the SegWit UTXO selection logic.
+#[derive(Debug, Clone)]
+pub struct UtxoSelectionResult {
+    pub selected_utxos: Vec<BitcoinUtxo>,
+    pub total_value: u64,
+    pub fee: u64,
+    pub change: u64,
+    pub change_output: bool,
+}
+
+fn estimate_vbytes(kind: SpendKind, n_in: usize, n_out: usize) -> usize {
+    match kind {
+        SpendKind::P2WPKH => 10 + 68 * n_in + 31 * n_out,   // segwit approx
+        SpendKind::P2PKH  => 10 + 148 * n_in + 34 * n_out,  // legacy approx
+    }
+}
+
+fn estimate_fee_sat(kind: SpendKind, n_in: usize, n_out: usize, fee_rate_sat_vb: u64) -> u64 {
+    (estimate_vbytes(kind, n_in, n_out) as u64) * fee_rate_sat_vb
+}
+
+/// Select and combine SegWit (P2WPKH) UTXOs to meet the required amount.
+///
+/// # Examples
+///
+/// Assume `fee_rate_sat_vb = 2`.
+///
+/// ## Two tiny UTXOs, no change output
+/// - Inputs: `800 + 800 = 1_600` sats (`n_in = 2`).
+/// - Try with change (`n_out = 2` → recipient + change):
+///   `vbytes = 10 + 68*2 + 31*2 = 208` → `fee ≈ 416` sats and `change = -16` (insufficient).
+/// - Retry without change (`n_out = 1` → recipient only):
+///   `vbytes = 10 + 68*2 + 31 = 177` → `fee ≈ 354` sats.
+/// - `total (1_600) ≥ send (1_200) + fee (354)`. The would-be change `46` is `< 546` dust,
+///   so it is folded into the fee. The actual fee paid on-chain is `1_600 - 1_200 = 400` sats
+///   (~2.26 sat/vB).
+///
+/// ## Three UTXOs with a change output
+/// - Inputs: `30_000 + 50_000 + 70_000 = 150_000` sats (`n_in = 3`).
+/// - With change (`n_out = 2`):
+///   `vbytes = 10 + 68*3 + 31*2 = 276` → `fee ≈ 552` sats.
+/// - Change `= 150_000 - 120_000 - 552 = 29_448` which is `≥ 546` dust, so two outputs are used.
+/// - The loop stops as soon as `total ≥ send + fee`; otherwise the selector keeps adding
+///   the next smallest confirmed UTXO until the target is met or funds are exhausted.
+///
+/// ## Two UTXOs, large send with change (optional)
+/// - Inputs: `60_000 + 70_000 = 130_000` sats (`n_in = 2`).
+/// - With change (`n_out = 2`): `vbytes = 208` → `fee ≈ 416` sats.
+/// - Change `= 130_000 - 120_000 - 416 = 9_584` sats which is above dust, so the selector
+///   keeps both outputs (recipient + change) and stops after two inputs.
 pub fn select_utxos_for_amount(
     utxos: &[BitcoinUtxo],
     required_amount: u64,
-    fee_estimate: u64,
-) -> Result<(Vec<BitcoinUtxo>, u64)> {
-    let total_needed = required_amount + fee_estimate;
-    let mut selected_utxos = Vec::new();
-    let mut total_value = 0u64;
+    fee_rate_sat_vb: u64,
+    kind: SpendKind,
+) -> Result<UtxoSelectionResult> {
+    if required_amount == 0 {
+        return Err(anyhow::anyhow!("Required amount must be greater than zero"));
+    }
 
-    // Sort UTXOs by value (largest first) for efficient selection
-    let mut sorted_utxos = utxos.to_vec();
-    sorted_utxos.sort_by(|a, b| b.value.cmp(&a.value));
-
-    // Filter UTXOs: only confirmed and valid
-    let available_utxos: Vec<_> = sorted_utxos
-        .into_iter()
+    let mut confirmed_utxos: Vec<_> = utxos
+        .iter()
+        .cloned()
         .filter(|utxo| {
-            // Must be confirmed
             if !utxo.status.confirmed {
                 tracing::debug!(
                     "🔍 [UTXO_FILTER] Skipping unconfirmed UTXO: {}:{}",
@@ -326,73 +428,113 @@ pub fn select_utxos_for_amount(
                 return false;
             }
 
-            // Must have valid txid (64 hex characters)
             if utxo.txid.len() != 64 {
                 tracing::warn!(
-                    "⚠️ [UTXO_FILTER] Skipping UTXO with invalid txid length: <==> {}",
+                    "⚠️ [UTXO_FILTER] Skipping UTXO with invalid txid length: {}",
                     utxo.txid
                 );
                 return false;
             }
 
-            // Must have non-zero value
             if utxo.value == 0 {
                 tracing::warn!(
-                    "⚠️ [UTXO_FILTER] Skipping UTXO with zero value: {}:{}",
+                    "⚠️ [UTXO_FILTER] Skipping zero-value UTXO: {}:{}",
                     utxo.txid,
                     utxo.vout
                 );
                 return false;
             }
 
-            tracing::debug!(
-                "✅ [UTXO_FILTER] Valid UTXO: {}:{} ({} sats)",
-                utxo.txid,
-                utxo.vout,
-                utxo.value
-            );
             true
         })
         .collect();
 
-    if available_utxos.is_empty() {
+    if confirmed_utxos.is_empty() {
         return Err(anyhow::anyhow!(
-            "No valid confirmed UTXOs available from {} total UTXOs",
+            "No confirmed UTXOs available from {} fetched entries",
             utxos.len()
         ));
     }
 
+    // Sort descending (largest first) to minimize the number of inputs needed
+    confirmed_utxos.sort_by_key(|utxo| std::cmp::Reverse(utxo.value));
+
     tracing::info!(
-        "🔍 [UTXO_SELECTION] Filtered to {} valid confirmed UTXOs from {} total",
-        available_utxos.len(),
+        "🔍 [UTXO_SELECTION] {} confirmed UTXOs remain after filtering ({} fetched)",
+        confirmed_utxos.len(),
         utxos.len()
     );
 
-    // Select UTXOs until we have enough value
-    for utxo in available_utxos {
-        selected_utxos.push(utxo);
-        total_value += selected_utxos.last().unwrap().value;
+    // Simple greedy algorithm: add UTXOs until we have enough, then choose best path
+    let mut selected = Vec::new();
+    let mut total_value = 0u64;
 
-        if total_value >= total_needed {
-            break;
+    for candidate in confirmed_utxos.into_iter() {
+        total_value += candidate.value;
+        selected.push(candidate);
+
+        let n_inputs = selected.len();
+
+        // Try change path first (2 outputs: recipient + change)
+        let fee_with_change = estimate_fee_sat(kind, n_inputs, 2, fee_rate_sat_vb);
+        let required_with_change = required_amount + fee_with_change;
+
+        if total_value >= required_with_change {
+            let change = total_value - required_with_change;
+            
+            if change >= DUST_LIMIT_SATS {
+                // Use change path - this is optimal
+                tracing::info!(
+                    "✅ [UTXO_SELECTION] Using change path with {} inputs (fee {} sats, change {} sats)",
+                    n_inputs,
+                    fee_with_change,
+                    change
+                );
+
+                return Ok(UtxoSelectionResult {
+                    selected_utxos: selected,
+                    total_value,
+                    fee: fee_with_change,
+                    change,
+                    change_output: true,
+                });
+            }
         }
+
+        // Try no-change path (1 output: recipient only)
+        let fee_no_change = estimate_fee_sat(kind, n_inputs, 1, fee_rate_sat_vb);
+        let required_no_change: u64 = required_amount + fee_no_change;
+
+        if total_value >= required_no_change {
+            // Use no-change path
+            tracing::info!(
+                "✅ [UTXO_SELECTION] Using no-change path with {} inputs (fee {} sats)",
+                n_inputs,
+                fee_no_change
+            );
+
+            return Ok(UtxoSelectionResult {
+                selected_utxos: selected,
+                total_value,
+                fee: fee_no_change,
+                change: 0,
+                change_output: false,
+            });
+        }
+
+        // If we don't have enough, continue adding UTXOs
     }
 
-    if total_value < total_needed {
-        return Err(anyhow::anyhow!(
-            "Insufficient funds: have {} satoshis, need {} satoshis",
-            total_value,
-            total_needed
-        ));
-    }
+    // error tail - no valid combination found
+    let n_inputs = selected.len().max(1);
+    let needed_with_change   = required_amount.saturating_add(estimate_fee_sat(kind, n_inputs, 2, fee_rate_sat_vb));
+    let needed_without_change= required_amount.saturating_add(estimate_fee_sat(kind, n_inputs, 1, fee_rate_sat_vb));
+    let min_needed = needed_with_change.min(needed_without_change);
 
-    tracing::info!(
-        "✅ [UTXO_SELECTION] Selected {} UTXOs with total value {} satoshis",
-        selected_utxos.len(),
-        total_value
-    );
-
-    Ok((selected_utxos, total_value))
+    Err(anyhow::anyhow!(
+        "Insufficient confirmed funds: gathered {} sats but need at least {} sats (amount + fees)",
+        total_value, min_needed
+    ))
 }
 
 /// Extract UTXO identifiers from selected UTXOs for tracking
@@ -401,23 +543,6 @@ pub fn extract_utxo_identifiers(utxos: &[BitcoinUtxo]) -> Vec<(String, u32)> {
         .iter()
         .map(|utxo| (utxo.txid.clone(), utxo.vout))
         .collect()
-}
-
-/// Calculate estimated Bitcoin transaction fee based on inputs and outputs
-pub fn calculate_bitcoin_fee(num_inputs: usize, num_outputs: usize) -> u64 {
-    // Simple fee calculation:
-    // - Each input ~= 148 bytes (can vary with different script types)
-    // - Each output ~= 34 bytes
-    // - Base transaction ~= 10 bytes
-    let estimated_size = 10 + (num_inputs * 148) + (num_outputs * 34);
-
-    // Use 1 sat/byte as default (you might want to make this configurable or fetch from API)
-    let fee_rate = 1usize; // satoshis per byte
-
-    let calculated_fee = estimated_size * fee_rate;
-
-    // Minimum fee of 1000 satoshis
-    std::cmp::max(calculated_fee as u64, 1000)
 }
 
 pub async fn fetch_ethereum_nonce(address: &str, chain_id: u64) -> Result<u64> {
@@ -568,6 +693,74 @@ pub async fn create_chain_transaction_from_deposit_intent(
     .await
 }
 
+fn classify_address(addr: &str) -> Result<(SpendKind, bitcoin::Network)> {
+    use bitcoin::address::{Address, AddressData, NetworkUnchecked};
+    use bitcoin::{Network, WitnessVersion};
+
+    tracing::info!("🔍 Attempting to classify Bitcoin address: {}", addr);
+
+    // Parse as *unchecked*
+    let a: Address<NetworkUnchecked> = match addr.parse() {
+        Ok(address) => {
+            tracing::info!("✅ Successfully parsed address: {}", addr);
+            address
+        },
+        Err(e) => {
+            tracing::error!("❌ Invalid Bitcoin address '{}': {}", addr, e);
+            return Err(anyhow::anyhow!("Invalid Bitcoin address '{}': {}", addr, e));
+        }
+    };
+
+    // Figure out which network this string is valid for.
+    // (Legacy testnet/regtest/signet are ambiguous by design.)
+    let net = match [Network::Bitcoin, Network::Testnet, Network::Signet, Network::Regtest]
+        .into_iter()
+        .find(|n| a.is_valid_for_network(*n))
+    {
+        Some(network) => {
+            tracing::info!("✅ Address '{}' is valid for network: {:?}", addr, network);
+            network
+        },
+        None => {
+            tracing::error!("❌ Address '{}' is not valid for any known network", addr);
+            return Err(anyhow::anyhow!("Address '{}' is not valid for any known network", addr));
+        }
+    };
+
+    // Now *require* that network to get a checked address.
+    let checked = match a.require_network(net) {
+        Ok(checked_addr) => {
+            tracing::info!("✅ Address '{}' matches network: {:?}", addr, net);
+            checked_addr
+        },
+        Err(e) => {
+            tracing::error!("❌ Network mismatch for '{}': {}", addr, e);
+            return Err(anyhow::anyhow!("Network mismatch for '{}': {}", addr, e));
+        }
+    };
+
+    // Classify by data (or you could use checked.address_type()).
+    let kind = match checked.to_address_data() {
+        AddressData::P2pkh { .. } => {
+            tracing::info!("🔎 Address '{}' classified as P2PKH", addr);
+            SpendKind::P2PKH
+        },
+        AddressData::Segwit { witness_program: wp }
+            if wp.version() == WitnessVersion::V0 && wp.is_p2wpkh() => {
+            tracing::info!("🔎 Address '{}' classified as P2WPKH", addr);
+            SpendKind::P2WPKH
+        },
+        _ => {
+            tracing::error!("❌ Unsupported address type for spending: {}", addr);
+            bail!("Unsupported address type for spending: {}", addr)
+        },
+    };
+
+    tracing::info!("✅ Classification result for '{}': kind={:?}, network={:?}", addr, kind, net);
+
+    Ok((kind, net))
+}
+
 /// Internal implementation of transaction creation with optional UTXO checking
 async fn create_chain_transaction_from_deposit_intent_internal(
     intent: &DepositIntent,
@@ -703,22 +896,32 @@ async fn create_chain_transaction_from_deposit_intent_internal(
         // Validate that both addresses are P2PKH format only
         // if !is_p2pkh_address(&from_address) {
         //     return Err(anyhow::anyhow!(
-        //         "Source address '{}' is not supported. Only P2PKH addresses (1.../m.../n...) are supported.", 
+        //         "Source address '{}' is not supported. Only P2PKH addresses (1.../m.../n...) are supported.",
         //         from_address
         //     ));
         // }
 
         // if !is_p2pkh_address(&to_address) {
         //     return Err(anyhow::anyhow!(
-        //         "Destination address '{}' is not supported. Only P2PKH addresses (1.../m.../n...) are supported.", 
+        //         "Destination address '{}' is not supported. Only P2PKH addresses (1.../m.../n...) are supported.",
         //         to_address
         //     ));
         // }
 
         // let is_testnet = is_testnet_p2pkh_address(&from_address);
-
+        let (from_kind, from_net) = classify_address(&from_address)?;   
+        let (to_kind,   to_net)   = classify_address(&to_address)?; 
         // Fetch raw UTXOs without external verification
-        let utxos = fetch_bitcoin_utxos(&from_address, true).await?;
+        // Sanity: prevent net mismatch
+        if from_net != to_net {
+            anyhow::bail!("From/To network mismatch: {:?} vs {:?}", from_net, to_net);
+        }
+
+        let is_testnet = matches!(from_net, bitcoin::Network::Testnet | bitcoin::Network::Signet | bitcoin::Network::Regtest);
+
+// Fetch UTXOs for the right network
+        let utxos = fetch_bitcoin_utxos(&from_address, is_testnet).await?;
+
         tracing::info!(
             "Final verified {} spendable UTXOs for address {}",
             utxos.len(),
@@ -727,24 +930,33 @@ async fn create_chain_transaction_from_deposit_intent_internal(
 
         // Convert amount from wei to satoshis (assuming 1:1 conversion for now, you might want to adjust this)
         let amount_satoshis = (amount) as u64;
-        let estimated_fee = calculate_bitcoin_fee(utxos.len(), 2); // 2 outputs (recipient + change)
-
-        // Select UTXOs that provide enough value, excluding any that are pending
-        // Select UTXOs for the transaction
-        let (selected_utxos, total_input_value) =
-            select_utxos_for_amount(&utxos, amount_satoshis, estimated_fee)?;
+        let fee_rate_sat_vb = std::env::var("BTC_FEE_RATE_SAT_VB")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(DEFAULT_FEE_RATE_SAT_PER_VBYTE);
 
         tracing::info!(
-            "Selected {} UTXOs with total value {} satoshis for transaction of {} satoshis (fee: {})",
-            selected_utxos.len(),
-            total_input_value,
+            "Using fee rate of {} sat/vB for Bitcoin transaction from {}",
+            fee_rate_sat_vb,
+            from_address
+        );
+
+        // Select UTXOs that provide enough value using SegWit-aware fee estimation.
+        let selection = select_utxos_for_amount(&utxos, amount_satoshis, fee_rate_sat_vb, from_kind)?;
+
+        tracing::info!(
+            "Selected {} UTXOs with total value {} satoshis for transaction of {} satoshis (fee: {}, change: {}, change_output: {})",
+            selection.selected_utxos.len(),
+            selection.total_value,
             amount_satoshis,
-            estimated_fee
+            selection.fee,
+            selection.change,
+            selection.change_output
         );
 
         // Log the specific UTXOs we're about to spend for debugging
         tracing::info!("📋 [TRANSACTION] UTXOs selected for spending:");
-        for (i, utxo) in selected_utxos.iter().enumerate() {
+        for (i, utxo) in selection.selected_utxos.iter().enumerate() {
             tracing::info!(
                 "  {}. {}:{} - {} sats (confirmed: {})",
                 i + 1,
@@ -755,44 +967,64 @@ async fn create_chain_transaction_from_deposit_intent_internal(
             );
         }
 
-        // Create inputs from selected UTXOs (P2PKH only)
-        let inputs: Vec<BitcoinInput> = selected_utxos
-            .iter()
-            .map(|utxo| {
-                // For P2PKH (legacy) transactions, we don't need witness_utxo
-                // The witness_utxo field should be None for legacy P2PKH inputs
-                BitcoinInput {
-                    txid: utxo.txid.clone(),
-                    vout: utxo.vout,
-                    script_sig: vec![], // Will be filled during signing with <signature> <pubkey>
-                    sequence: 0xfffffffe, // Enable RBF (Replace-By-Fee)
-                    witness_utxo: None, // No witness data for P2PKH legacy transactions
+        let to_spk   = create_bitcoin_script_pubkey(&to_address)?;
+        let from_spk = create_bitcoin_script_pubkey(&from_address)?;
+
+        // Inputs:
+        let inputs: Vec<BitcoinInput> = selection.selected_utxos.iter().map(|u| {
+            match from_kind {
+                SpendKind::P2WPKH => BitcoinInput {
+                    txid: u.txid.clone(),
+                    vout: u.vout,
+                    script_sig: vec![],
+                    sequence: 0xffff_fffe,
+                    witness_utxo: Some(BitcoinWitnessUtxo {
+                        value: u.value,
+                        script_pubkey: from_spk.clone(), // 0x00 0x14 <20>
+                    }),
+                },
+                SpendKind::P2PKH => BitcoinInput {
+                    txid: u.txid.clone(),
+                    vout: u.vout,
+                    script_sig: vec![],
+                    sequence: 0xffff_fffe,
+                    // IMPORTANT: stash 25-byte prev script here so final node doesn’t need to reconstruct
+                    witness_utxo: Some(BitcoinWitnessUtxo {
+                        value: u.value,
+                        script_pubkey: from_spk.clone(), // 76 a9 14 <20> 88 ac
+                    }),
                 }
-            })
-            .collect();
+            }
+    }).collect();
 
-        // Create outputs
-        let mut outputs = vec![BitcoinOutput {
-            value: amount_satoshis,
-            script_pubkey: create_bitcoin_script_pubkey(&to_address)?,
-        }];
-
-        // Add change output if necessary
-        let change_amount = total_input_value - amount_satoshis - estimated_fee;
-        if change_amount > 546 {
-            // Bitcoin dust limit
-            outputs.push(BitcoinOutput {
-                value: change_amount,
-                script_pubkey: create_bitcoin_script_pubkey(&from_address)?, // Send change back to source address
-            });
+        // Create outputs (recipient always, change only if not dust)
+       // Outputs (change script MUST match the from-address type; using from_spk is correct):
+        let mut outputs = vec![BitcoinOutput { value: amount_satoshis, script_pubkey: to_spk }];
+        if selection.change_output {
+            outputs.push(BitcoinOutput { value: selection.change, script_pubkey: from_spk });
         }
 
+        let (version, witness_opt) = match from_kind {
+            SpendKind::P2WPKH => {
+                // placeholder: one empty stack per input; fill after signing
+                (
+                    2,
+                    Some(crate::chain::BitcoinWitness {
+                        inputs: (0..inputs.len())
+                            .map(|_| crate::chain::BitcoinWitnessInput { stack: vec![] })
+                            .collect(),
+                    }),
+                )
+            }
+            SpendKind::P2PKH => (1, None),
+        };
+        
         let bitcoin_tx = BitcoinTransaction {
             inputs,
             outputs,
-            version: 1, // Use version 1 for legacy transactions
+            version,
             lock_time: 0,
-            witness: None, // No witness data for P2PKH
+            witness: witness_opt,
         };
 
         Ok(ChainTransaction::Bitcoin(bitcoin_tx))
@@ -1155,14 +1387,9 @@ fn create_bitcoin_script_pubkey(address: &str) -> Result<Vec<u8>> {
     //     ));
     // }
 
-    // Determine network from P2PKH address prefix
-    // let network = if is_testnet_p2pkh_address(address) {
-    //     Network::Testnet
-    // } else {
-    //     Network::Bitcoin
-    // };
-    let network = Network::Testnet;
-    // Require the network to get a checked address
+    // Require the network to get a checked address. This preserves the network encoded
+    // in the string (mainnet vs testnet/regtest) and prevents silent mismatches.
+    let network = bitcoin::Network::Testnet;
     let checked_address = parsed_address
         .require_network(network)
         .map_err(|e| anyhow::anyhow!("Address network mismatch for '{}': {}", address, e))?;
@@ -1190,7 +1417,6 @@ fn create_bitcoin_script_pubkey(address: &str) -> Result<Vec<u8>> {
 
     Ok(script_bytes)
 }
-
 
 pub fn create_transaction_for_signing(tx: &DummyTransaction) -> Vec<u8> {
     // Log transaction details before creating raw transaction
@@ -1424,6 +1650,80 @@ mod tests {
         // Should not be empty and should be properly encoded
         assert!(!encoded.is_empty());
         assert_ne!(encoded, vec![0x80]); // Should not be the "zero" encoding
+    }
+
+    #[test]
+    fn test_utxo_selection_optimal() {
+        // Test case: 2 UTXOs of 1400 sats each, want to send 1540 sats
+        let utxos = vec![
+            BitcoinUtxo {
+                txid: "a1b2c3d4e5f6789012345678901234567890123456789012345678901234567890".to_string(),
+                vout: 0,
+                value: 1400,
+                status: UtxoStatus {
+                    confirmed: true,
+                    block_height: Some(100),
+                    block_hash: Some("block1".to_string()),
+                    block_time: Some(1234567890),
+                },
+            },
+            BitcoinUtxo {
+                txid: "b2c3d4e5f6789012345678901234567890123456789012345678901234567890a1".to_string(),
+                vout: 0,
+                value: 1400,
+                status: UtxoStatus {
+                    confirmed: true,
+                    block_height: Some(100),
+                    block_hash: Some("block2".to_string()),
+                    block_time: Some(1234567890),
+                },
+            },
+        ];
+
+        let result = select_utxos_for_amount(&utxos, 1540, 2, SpendKind::P2WPKH).unwrap();
+        
+        println!("Selected {} UTXOs", result.selected_utxos.len());
+        println!("Total value: {} sats", result.total_value);
+        println!("Fee: {} sats", result.fee);
+        println!("Change: {} sats", result.change);
+        println!("Change output: {}", result.change_output);
+        
+        // Should use change path with reasonable fee
+        assert!(result.change_output, "Should use change output");
+        assert!(result.fee < 500, "Fee should be reasonable (< 500 sats)");
+        assert!(result.change > 0, "Should have change");
+    }
+
+    #[test]
+    fn test_utxo_selection_single_utxo() {
+        // Test case: 1 UTXO of 2000 sats, want to send 1000 sats
+        let utxos = vec![
+            BitcoinUtxo {
+                txid: "c3d4e5f6789012345678901234567890123456789012345678901234567890a1b2".to_string(),
+                vout: 0,
+                value: 2000,
+                status: UtxoStatus {
+                    confirmed: true,
+                    block_height: Some(100),
+                    block_hash: Some("block1".to_string()),
+                    block_time: Some(1234567890),
+                },
+            },
+        ];
+
+        let result = select_utxos_for_amount(&utxos, 1000, 2, SpendKind::P2WPKH).unwrap();
+        
+        println!("Selected {} UTXOs", result.selected_utxos.len());
+        println!("Total value: {} sats", result.total_value);
+        println!("Fee: {} sats", result.fee);
+        println!("Change: {} sats", result.change);
+        println!("Change output: {}", result.change_output);
+        
+        // Should use single UTXO with change
+        assert_eq!(result.selected_utxos.len(), 1, "Should use only 1 UTXO");
+        assert!(result.change_output, "Should use change output");
+        assert!(result.fee < 200, "Fee should be reasonable (< 200 sats)");
+        assert!(result.change > 500, "Should have substantial change");
     }
 }
 

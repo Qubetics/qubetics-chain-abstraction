@@ -387,8 +387,8 @@ impl NetworkLayer {
         let mut peerlist_logger = tokio::time::interval(Duration::from_secs(300));
 
 
-        swarm.listen_on("/ip4/0.0.0.0/tcp/4001".parse()?)?;
-        swarm.listen_on("/ip4/0.0.0.0/udp/4002/quic-v1".parse()?)?;
+        swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
+        swarm.listen_on("/ip4/0.0.0.0/udp/0/quic-v1".parse()?)?;
 
 
         let args: Vec<String> = env::args().collect();
@@ -1360,6 +1360,12 @@ impl NetworkLayer {
                             crate::signing::SigningMessage::ECDSASignature { from, signature, round, timestamp:_timestamp, user_eth_address } => {
                                 info!("📤 [NETWORK] Routing ECDSA signature to final node handler from: {} for round: {} (user_eth_address: {:?})", from, round, user_eth_address);
                                 signing_node.handle_signature_to_final_node(from, signature, round).await
+                            }
+                            crate::signing::SigningMessage::BtcSignaturesMessage { from, signatures, round, timestamp: _timestamp, user_eth_address } => {
+                                info!("📤 [NETWORK] Routing BTC signatures to final node handler from: {} for round: {} (user_eth_address: {:?})", from, round, user_eth_address);
+                                // You may want to implement a similar handler for BTC signatures in signing_node
+                                // For now, just call the generic handler
+                                signing_node.handle_btc_signatures_to_final_node(from, signatures, round).await
                             }
                             _ => {
                                 info!("📤 [NETWORK] Routing other signing message to normal handler");

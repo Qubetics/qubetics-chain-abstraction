@@ -134,12 +134,6 @@ impl VrfService {
         Ok(selection_result)
     }
 
-    /// Check if current node is selected for a specific round
-    pub async fn is_node_selected(&self, round: u64) -> bool {
-        let selector = self.selector.read().await;
-        selector.is_selected(round)
-    }
-
     /// Get all selected nodes for a round
     pub async fn get_all_selected_nodes_for_round(&self, round: u64) -> Vec<SerializablePeerId> {
         let selector = self.selector.read().await;
