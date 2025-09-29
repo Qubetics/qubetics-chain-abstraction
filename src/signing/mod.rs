@@ -2629,15 +2629,25 @@ pub async fn sign_bitcoin_transaction(
     }
 
     /// Store transaction error for a round if intent hash is available and broadcast to other nodes
-    async fn store_transaction_error_for_round(&self, round: u64, error_message: &str) {
-        // Get intent hash from pending transactions
-        let intent_hash = {
-            let pending_transactions = self.pending_transactions.read().await;
-            if let Some((_tx, _tx_bytes, intent_hash, _)) = pending_transactions.get(&round) {
-                intent_hash.clone()
-            } else {
-                None
-            }
+    async fn store_transaction_error_for_round(&self, round: u64, error_message: &str, txn_network: crate::types::TransactionNetwork) {
+        // Select source map based on provided network enum and extract intent hash + transaction type
+        let (intent_hash, transaction_type) = match txn_network {
+            crate::types::TransactionNetwork::TICS => {
+                let pending = self.pending_transactions.read().await;
+                if let Some((_tx, _tx_bytes, intent_hash, tx_type)) = pending.get(&round) {
+                    (intent_hash.clone(), tx_type.clone())
+                } else {
+                    (None, None)
+                }
+            },
+            crate::types::TransactionNetwork::BTC => {
+                let pending_btc = self.pending_transactions_btc.read().await;
+                if let Some((_tx, _tx_bytes, intent_hash, tx_type, _extras)) = pending_btc.get(&round) {
+                    (intent_hash.clone(), tx_type.clone())
+                } else {
+                    (None, None)
+                }
+            },
         };
 
         match (intent_hash, &self.user_registry) {
@@ -2649,9 +2659,17 @@ pub async fn sign_bitcoin_transaction(
                 {
                     Ok(()) => {
                         info!("💥 [SIGNING] Stored transaction error for intent {} (round {}): {}", intent_hash, round, error_message);
-                        
+
+                        // Derive a transaction type string similar to txn_id storage for broadcasting
+                        let transaction_type_str = match transaction_type {
+                            Some(crate::types::TransactionType::UserToVault) => "user_to_vault",
+                            Some(crate::types::TransactionType::NetworkToTarget) => "network_to_target",
+                            Some(crate::types::TransactionType::VaultToNetwork) => "vault_to_network",
+                            None => "user_to_network",
+                        };
+
                         // Broadcast error to other nodes for synchronization
-                        self.broadcast_transaction_error(intent_hash, error_message, "user_to_network").await;
+                        self.broadcast_transaction_error(intent_hash, error_message, transaction_type_str).await;
                     },
                     Err(e) => {
                         error!("❌ [SIGNING] Failed to store transaction error for intent {}: {}", intent_hash, e);
@@ -3545,7 +3563,7 @@ pub async fn sign_bitcoin_transaction(
                                         },
                                         Err(e) => {
                                             error!("❌ [SIGNING] Failed to broadcast Bitcoin transaction: {}", e);
-                                            self.store_transaction_error_for_round(round, &e.to_string()).await;
+                                            self.store_transaction_error_for_round(round, &e.to_string(), crate::types::TransactionNetwork::BTC).await;
                                         }
                                     }
                                 }
@@ -3590,7 +3608,7 @@ pub async fn sign_bitcoin_transaction(
                                         Err(e) => {
                                             error!("❌ [SIGNING] Failed to broadcast Ethereum transaction: {}", e);
                                             // Store the error message for the user to see
-                                            self.store_transaction_error_for_round(round, &e.to_string()).await;
+                                            self.store_transaction_error_for_round(round, &e.to_string(), crate::types::TransactionNetwork::TICS).await;
                                         }
                                     }
                                 }
@@ -3660,17 +3678,6 @@ pub async fn handle_btc_signature_for_round(
         "💾 [BTC] stored {} sigs for round {} from {} (batch)",
         items.len(), round, from
     );
-
-    // ---- helpers ----
-    fn hash160(data: &[u8]) -> [u8; 20] {
-        use sha2::Digest;
-        let sha = sha2::Sha256::digest(data);
-        let rip = ripemd::Ripemd160::digest(&sha);
-        let mut out = [0u8; 20];
-        out.copy_from_slice(&rip);
-        out
-    }
-
     // ---- 2) Pull unsigned tx + BTC extras from pending_transactions ----
     let (unsigned_tx, extras, total_inputs) = {
         let pt = self.pending_transactions_btc.read().await;
@@ -3912,7 +3919,7 @@ pub async fn handle_btc_signature_for_round(
         },
         Err(e) => {
             error!("❌ [BTC] Failed to broadcast Bitcoin transaction: {}", e);
-            self.store_transaction_error_for_round(round, &e.to_string()).await;
+            self.store_transaction_error_for_round(round, &e.to_string(), crate::types::TransactionNetwork::BTC).await;
         }
     }
 
