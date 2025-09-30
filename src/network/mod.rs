@@ -1,4 +1,4 @@
-use crate::prepare_unsigned_eip1559_tx;
+use crate::{prepare_unsigned_eip1559_tx, Database, DatabaseConfig};
 use anyhow::Result;
 use ethers::{
 	abi::Token,
@@ -111,9 +111,9 @@ pub struct NetworkLayer {
 }
 
 impl NetworkLayer {
-	pub async fn new(node_manager: Box<dyn NodeMembership>) -> Result<Self> {
+	pub async fn new(node_manager: Box<dyn NodeMembership>, db: Database) -> Result<Self> {
 		// Load or create persistent keypair
-		let (local_key, local_peer_id) = Self::load_or_create_keypair().await?;
+		let (local_key, local_peer_id) = Self::load_or_create_keypair(db).await?;
 		let (tx, rx) = mpsc::channel(100);
 
 		Ok(Self {
@@ -228,12 +228,8 @@ impl NetworkLayer {
 	}
 
 	/// Load existing keypair from database or create a new one
-	async fn load_or_create_keypair() -> Result<(Keypair, PeerId)> {
-		use crate::database::{keys, Database, DatabaseConfig};
-
-		// Create database connection
-		let db_config = DatabaseConfig::default();
-		let database = Database::new(db_config)?;
+	async fn load_or_create_keypair(database: Database) -> Result<(Keypair, PeerId)> {
+		use crate::database::{keys, Database};
 
 		// Try to load existing keypair
 		if let Some(keypair_bytes) = database.get_keypair(keys::PEER_KEYPAIR)? {
@@ -394,27 +390,28 @@ impl NetworkLayer {
 		if let Err(e) = swarm.behaviour_mut().kademlia.bootstrap() {
 			warn!("Failed to start bootstrap: {:?}", e);
 		}
-		info!("Go to here 1");
 		// Start a task to check if this is the first node after bootstrap attempts
 		let tx_clone = self.message_tx.clone();
 		tokio::spawn(async move {
 			tokio::time::sleep(Duration::from_secs(3)).await;
 			let _ = tx_clone.send(ChannelMessage::CheckIfFirstNode).await;
 		});
-		info!("Go to here 2");
 		let mut bootstrap_timer = tokio::time::interval(Duration::from_secs(300));
 		let mut discovery_timer = tokio::time::interval(Duration::from_secs(300));
 		let mut dkg_status_timer = tokio::time::interval(Duration::from_secs(300));
 		let mut peerlist_logger = tokio::time::interval(Duration::from_secs(300));
-		info!("Go to here 3");
-		swarm.listen_on("/ip4/0.0.0.0/tcp/4001".parse()?)?;
-		swarm.listen_on("/ip4/0.0.0.0/udp/4002/quic-v1".parse()?)?;
-		info!("Go to here 4");
-		info!("Bootstrap Node here: {:?}", bootstrap_nodes);
+
+		swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
+		swarm.listen_on("/ip4/0.0.0.0/udp/0/quic-v1".parse()?)?;
+
 		for node_addr in &bootstrap_nodes {
 			if let Ok(addr) = node_addr.parse::<Multiaddr>() {
 				info!("Connecting to bootstrap node: {}", addr);
-				swarm.dial(addr.clone())?;
+				if let Err(e) = swarm.dial(addr.clone()) {
+					error!("Failed to dial address {}: {}", addr, e);
+				} else {
+					info!("Successfully initiated dial to: {}", addr);
+				}
 			} else {
 				warn!("Invalid bootstrap node address: {}", node_addr);
 			}

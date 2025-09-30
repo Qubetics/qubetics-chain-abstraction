@@ -101,10 +101,10 @@ async fn start_node(cli: Cli) -> Result<(), Box<dyn Error>> {
 		max_open_files: 1000,
 	};
 
-	let database = Arc::new(Database::new(db_config)?);
+	let database = Arc::new(Database::new(db_config.clone())?);
 	info!("🗄️ [MAIN] Database initialized successfully");
 
-	let mut network = NetworkLayer::new(node_manager).await?;
+	let mut network = NetworkLayer::new(node_manager, database.as_ref().clone()).await?;
 
 	// Create database-backed components
 	let db_signing_node = Arc::new(Mutex::new(DatabaseSigningNode::new(
