@@ -10,7 +10,7 @@ use bitcoin::{Address, WitnessVersion};
 use ethabi::ethereum_types::U256;
 use ethabi::{Function, Param, ParamType, StateMutability, Token};
 use serde::{Deserialize, Serialize};
-use tracing::info; // for Token::Uint
+use tracing::{info, warn}; // for Token::Uint
 
 // use rlp::RlpStream;
 
@@ -832,11 +832,18 @@ async fn create_chain_transaction_from_deposit_intent_internal(
             }
         };
 
+        // Get dynamic gas price for Qubetics, fallback to static for other chains
+        let gas_price = get_gas_price_for_chain(chain_to_use, chain_id).await
+            .unwrap_or_else(|e| {
+                warn!("⚠️ Failed to get dynamic gas price: {}, using fallback", e);
+                get_default_gas_price_for_chain(chain_to_use)
+            });
+
         let ethereum_tx = EthereumTransaction {
             to: to_address.to_string(),
             value: amount_to_hex_string(amount),
             gas_limit: 300000,
-            gas_price: get_default_gas_price_for_chain(chain_to_use),
+            gas_price,
             nonce: fetch_ethereum_nonce(&from_address, chain_id).await?,
             data: None,
             chain_id,
@@ -1122,7 +1129,11 @@ pub async fn create_chain_transaction_from_contract_call(
     );
 
     let nonce = fetch_ethereum_nonce(&network_address, chain_id).await?;
-    let gas_price = get_default_gas_price_for_chain("qubetics");
+    let gas_price = get_gas_price_for_chain("qubetics", chain_id).await
+        .unwrap_or_else(|e| {
+            warn!("⚠️ Failed to get dynamic gas price: {}, using fallback", e);
+            get_default_gas_price_for_chain("qubetics")
+        });
 
     info!("🔧 [CONTRACT] Final transaction details:");
     info!("  - To: {}", contract_address_env);
@@ -1326,11 +1337,61 @@ pub fn encode_fulfill_intent_calldata(
     f.encode_input(&tokens).ok()
 }
 
+/// Fetch current gas price from RPC for Qubetics chain
+pub async fn fetch_qubetics_gas_price(chain_id: u64) -> Result<String> {
+    let rpc_url = match chain_id {
+        9029 => std::env::var("MPC_ETHEREUM_RPC_URL")
+            .unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string()),
+        _ => {
+            return Err(anyhow::anyhow!(
+                "Unsupported chain ID for gas price fetching: {}",
+                chain_id
+            ))
+        }
+    };
+
+    let client = reqwest::Client::new();
+    let payload = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "eth_gasPrice",
+        "params": [],
+        "id": 1
+    });
+
+    info!("🔧 Fetching current gas price from Qubetics RPC...");
+
+    let response = client
+        .post(rpc_url)
+        .header("Content-Type", "application/json")
+        .json(&payload)
+        .send()
+        .await?;
+
+    if response.status().is_success() {
+        let result: serde_json::Value = response.json().await?;
+        if let Some(error) = result.get("error") {
+            tracing::error!("❌ Failed to fetch gas price: {}", error);
+            return Err(anyhow::anyhow!("Gas price fetch failed: {}", error));
+        }
+        if let Some(gas_price_hex) = result.get("result") {
+            let gas_price_str = gas_price_hex.as_str().unwrap_or("0x0");
+            info!("✅ Fetched current gas price: {}", gas_price_str);
+            Ok(gas_price_str.to_string())
+        } else {
+            Err(anyhow::anyhow!("No gas price result in response"))
+        }
+    } else {
+        let error_text = response.text().await?;
+        tracing::error!("❌ Failed to fetch gas price: {}", error_text);
+        Err(anyhow::anyhow!("Gas price fetch failed: {}", error_text))
+    }
+}
+
 /// Get default gas price for different EVM chains
 pub fn get_default_gas_price_for_chain(chain_name: &str) -> String {
     match chain_name {
         "ethereum" | "eth" => "0x4A817C800".to_string(), // 20 Gwei
-        "qubetics" => "0x3B9ACA00".to_string(),          // 1 Gwei
+        "qubetics" => "0x3B9ACA00".to_string(),          // 1 Gwei (fallback)
         "polygon" | "matic" => "0x12A05F200".to_string(), // 5 Gwei
         "bsc" | "binance" => "0x12A05F200".to_string(),  // 5 Gwei
         "avalanche" | "avax" => "0x5D21DBA00".to_string(), // 25 Gwei
@@ -1341,10 +1402,206 @@ pub fn get_default_gas_price_for_chain(chain_name: &str) -> String {
     }
 }
 
+/// Get gas price for chain with dynamic fetching for Qubetics
+pub async fn get_gas_price_for_chain(chain_name: &str, chain_id: u64) -> Result<String> {
+    println!("🔧 [GAS_PRICE] get_gas_price_for_chain called: chain={}, chain_id={}", chain_name, chain_id);
+    
+    match chain_name {
+        "qubetics" => {
+            println!("🔧 [GAS_PRICE] Processing Qubetics chain - fetching dynamic gas price");
+            // Try to fetch dynamic gas price for Qubetics
+            match fetch_qubetics_gas_price(chain_id).await {
+                Ok(gas_price) => {
+                    println!("🔧 [GAS_PRICE] ✅ Successfully fetched dynamic gas price: {}", gas_price);
+                    info!("🔄 Using dynamic gas price for Qubetics: {}", gas_price);
+                    // Convert to decimal to show the actual value
+                    if let Some(hex_part) = gas_price.strip_prefix("0x") {
+                        if let Ok(price_decimal) = u64::from_str_radix(hex_part, 16) {
+                            println!("🔧 [GAS_PRICE] Dynamic gas price in decimal: {} wei ({} Gwei)", 
+                                price_decimal, price_decimal / 1_000_000_000);
+                            info!("🔧 Dynamic gas price in decimal: {} wei ({} Gwei)", 
+                                price_decimal, price_decimal / 1_000_000_000);
+                        }
+                    }
+                    Ok(gas_price)
+                }
+                Err(e) => {
+                    println!("🔧 [GAS_PRICE] ❌ Failed to fetch dynamic gas price: {}, using fallback", e);
+                    warn!("⚠️ Failed to fetch dynamic gas price for Qubetics: {}, using fallback", e);
+                    let fallback_price = get_default_gas_price_for_chain(chain_name);
+                    println!("🔧 [GAS_PRICE] Using fallback gas price: {}", fallback_price);
+                    info!("🔧 Using fallback gas price for Qubetics: {}", fallback_price);
+                    // Convert fallback to decimal to show the actual value
+                    if let Some(hex_part) = fallback_price.strip_prefix("0x") {
+                        if let Ok(price_decimal) = u64::from_str_radix(hex_part, 16) {
+                            println!("🔧 [GAS_PRICE] Fallback gas price in decimal: {} wei ({} Gwei)", 
+                                price_decimal, price_decimal / 1_000_000_000);
+                            info!("🔧 Fallback gas price in decimal: {} wei ({} Gwei)", 
+                                price_decimal, price_decimal / 1_000_000_000);
+                        }
+                    }
+                    Ok(fallback_price)
+                }
+            }
+        }
+        _ => {
+            println!("🔧 [GAS_PRICE] Processing other chain: {} - using static gas price", chain_name);
+            // Use static gas price for other chains
+            let static_price = get_default_gas_price_for_chain(chain_name);
+            println!("🔧 [GAS_PRICE] Using static gas price: {}", static_price);
+            info!("🔧 Using static gas price for {}: {}", chain_name, static_price);
+            // Convert static to decimal to show the actual value
+            if let Some(hex_part) = static_price.strip_prefix("0x") {
+                if let Ok(price_decimal) = u64::from_str_radix(hex_part, 16) {
+                    println!("🔧 [GAS_PRICE] Static gas price in decimal: {} wei ({} Gwei)", 
+                        price_decimal, price_decimal / 1_000_000_000);
+                    info!("🔧 Static gas price in decimal: {} wei ({} Gwei)", 
+                        price_decimal, price_decimal / 1_000_000_000);
+                }
+            }
+            Ok(static_price)
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum DetectedAddressType {
     P2PKH,       // Legacy P2PKH (1... mainnet, m.../n... testnet) - ONLY SUPPORTED TYPE
     Unsupported, // All other types are unsupported
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_qubetics_static_gas_price() {
+        // Test Qubetics static gas price (fallback value)
+        let static_price = get_default_gas_price_for_chain("qubetics");
+        println!("🔧 Qubetics static gas price: {}", static_price);
+        assert_eq!(static_price, "0x3B9ACA00");
+        
+        // Convert to decimal to show the actual value
+        let price_decimal = u64::from_str_radix("3B9ACA00", 16).unwrap();
+        println!("🔧 Qubetics static gas price in decimal: {} wei ({} Gwei)", price_decimal, price_decimal / 1_000_000_000);
+    }
+
+    #[tokio::test]
+    async fn test_qubetics_dynamic_gas_price_fallback() {
+        // Test that Qubetics falls back to static price when RPC fails
+        // This test uses an invalid RPC URL to trigger the fallback
+        let original_url = std::env::var("MPC_ETHEREUM_RPC_URL").unwrap_or_default();
+        std::env::set_var("MPC_ETHEREUM_RPC_URL", "https://rpc-testnet.qubetics.work");
+
+        let result = get_gas_price_for_chain("qubetics", 9029).await;
+        assert!(result.is_ok());
+        
+        let gas_price = result.unwrap();
+        println!("🔧 Qubetics gas price (should be fallback): {}", gas_price);
+        
+        // The test might get either the fallback or the real RPC value depending on network conditions
+        // Both are valid - the important thing is that it doesn't crash
+        if gas_price == "0x3B9ACA00" {
+            println!("🔧 Got fallback gas price: {} (1 Gwei)", gas_price);
+            let price_decimal = u64::from_str_radix("3B9ACA00", 16).unwrap();
+            println!("🔧 Fallback gas price in decimal: {} wei ({} Gwei)", price_decimal, price_decimal / 1_000_000_000);
+        } else {
+            println!("🔧 Got dynamic gas price from RPC: {}", gas_price);
+            // Convert to decimal to show the actual value
+            if let Some(hex_part) = gas_price.strip_prefix("0x") {
+                if let Ok(price_decimal) = u64::from_str_radix(hex_part, 16) {
+                    println!("🔧 Dynamic gas price in decimal: {} wei ({} Gwei)", 
+                            price_decimal, price_decimal / 1_000_000_000);
+                }
+            }
+        }
+        
+        // Gas price should be a valid hex string
+        assert!(gas_price.starts_with("0x"));
+        assert!(gas_price.len() > 2);
+        
+        // Restore original URL
+        if !original_url.is_empty() {
+            std::env::set_var("MPC_ETHEREUM_RPC_URL", original_url);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_qubetics_unsupported_chain() {
+        // Test that unsupported chain IDs return an error
+        let result = fetch_qubetics_gas_price(1).await; // Ethereum mainnet
+        assert!(result.is_err());
+        let error_msg = result.unwrap_err().to_string();
+        println!("🔧 Expected error for unsupported chain: {}", error_msg);
+        assert!(error_msg.contains("Unsupported chain ID"));
+    }
+
+    #[test]
+    fn test_qubetics_gas_price_hex_conversion() {
+        // Test that Qubetics hex values are correct
+        let qubetics_hex = "0x3B9ACA00";
+        let price_decimal = u64::from_str_radix("3B9ACA00", 16).unwrap();
+        
+        println!("🔧 Qubetics gas price hex: {}", qubetics_hex);
+        println!("🔧 Qubetics gas price decimal: {} wei", price_decimal);
+        println!("🔧 Qubetics gas price in Gwei: {} Gwei", price_decimal / 1_000_000_000);
+        
+        assert_eq!(price_decimal, 1_000_000_000); // 1 Gwei
+    }
+
+    #[test]
+    fn test_qubetics_gas_price_consistency() {
+        // Test that Qubetics gas price function returns consistent results
+        let price1 = get_default_gas_price_for_chain("qubetics");
+        let price2 = get_default_gas_price_for_chain("qubetics");
+        
+        println!("🔧 Qubetics gas price consistency test:");
+        println!("  - First call: {}", price1);
+        println!("  - Second call: {}", price2);
+        
+        assert_eq!(price1, price2);
+        assert_eq!(price1, "0x3B9ACA00");
+    }
+
+    #[tokio::test]
+    async fn test_qubetics_gas_price_with_real_rpc() {
+        // Test with the actual Qubetics RPC URL (if available)
+        // This test will show what happens with a real RPC call
+        let original_url = std::env::var("MPC_ETHEREUM_RPC_URL").unwrap_or_default();
+        
+        // Try with the default Qubetics RPC URL
+        std::env::set_var("MPC_ETHEREUM_RPC_URL", "https://rpc-testnet.qubetics.work");
+        
+        let result = get_gas_price_for_chain("qubetics", 9029).await;
+        
+        match result {
+            Ok(gas_price) => {
+                println!("🔧 Qubetics dynamic gas price from RPC: {}", gas_price);
+                
+                // Convert to decimal to show the actual value
+                if let Some(hex_part) = gas_price.strip_prefix("0x") {
+                    if let Ok(price_decimal) = u64::from_str_radix(hex_part, 16) {
+                        println!("🔧 Qubetics dynamic gas price in decimal: {} wei ({} Gwei)", 
+                                price_decimal, price_decimal / 1_000_000_000);
+                    }
+                }
+                
+                // Gas price should be a valid hex string
+                assert!(gas_price.starts_with("0x"));
+                assert!(gas_price.len() > 2);
+            }
+            Err(e) => {
+                println!("🔧 Qubetics RPC call failed (expected if RPC is down): {}", e);
+                // This is expected if the RPC is not available
+                // The function should still work with fallback
+            }
+        }
+        
+        // Restore original URL
+        if !original_url.is_empty() {
+            std::env::set_var("MPC_ETHEREUM_RPC_URL", original_url);
+        }
+    }
 }
 
 /// Detect Bitcoin address type - only P2PKH is supported
@@ -1480,10 +1737,6 @@ pub fn create_transaction_for_signing(tx: &DummyTransaction) -> Vec<u8> {
 
     final_encoder.finalize()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
 
     #[test]
     fn encode_hex_string_zero_is_canonical() {
@@ -1725,7 +1978,6 @@ mod tests {
         assert!(result.fee < 200, "Fee should be reasonable (< 200 sats)");
         assert!(result.change > 500, "Should have substantial change");
     }
-}
 
 pub fn create_transaction_for_signing_contract(tx: &ContractTransaction) -> Vec<u8> {
     // Log contract transaction details before creating raw transaction

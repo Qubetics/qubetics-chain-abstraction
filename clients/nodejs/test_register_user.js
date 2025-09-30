@@ -149,13 +149,13 @@ async function testUserMpcDeposit({ wallet, amount }) {
     // Construct DepositIntent
     const depositIntent = {
       source_address: userInfo.data.derived_eth_address, // Use canonical address
-      target_address: '0xc6dA53bCa90753699cd19521Dd559964490C6822',
+      target_address: 'mpXwgf5b8c6m4r3gE6X5cY3u5r3L5Q2d7g',
       source_chain: 'qubetics',
-      target_chain: 'qubetics',
+      target_chain: 'btc',
       amount: amount, // Use the passed amount parameter
       source_token: 'BTC',
       target_token: 'TICS',
-      timestamp: oooo, // Current Unix timestamp in seconds
+      timestamp: oooo,
     };
     console.log(`📊 Deposit Intent: ${JSON.stringify(depositIntent)}`, 'cyan');
     // Serialize DepositIntent for signing
@@ -599,7 +599,7 @@ async function runTests() {
 
   // 3) MPC deposit test WITHOUT tx_id (should pass Some(signer) to handle_deposit_intent)
   log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
-  const amount = 1300
+  const amount = 44000000000000000000
   await testUserMpcDeposit({ wallet, amount }); 
   
   // const address = '0xbac113cebd9CB2fBD2a01B5CBC43D0fC0EBed5e9';

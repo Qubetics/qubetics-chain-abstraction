@@ -329,6 +329,28 @@ impl Database {
         debug!("🔄 [DATABASE] Flushed database to disk");
         Ok(())
     }
+
+    /// Store the first node start time
+    pub fn put_first_node_start_time(&self, start_time: u64) -> Result<()> {
+        use crate::database::key_utils;
+        let key = key_utils::first_node_start_time_key();
+        self.put_string(&key, &start_time)?;
+        info!("🕐 [DATABASE] Stored first node start time: {}", start_time);
+        Ok(())
+    }
+
+    /// Get the first node start time
+    pub fn get_first_node_start_time(&self) -> Result<Option<u64>> {
+        use crate::database::key_utils;
+        let key = key_utils::first_node_start_time_key();
+        let result = self.get_string::<u64>(&key)?;
+        if result.is_some() {
+            info!("🕐 [DATABASE] Retrieved first node start time: {:?}", result);
+        } else {
+            debug!("🕐 [DATABASE] No first node start time found in database");
+        }
+        Ok(result)
+    }
 }
 
 /// Batch writer for efficient bulk operations
@@ -432,6 +454,7 @@ pub mod keys {
     pub const CLAIMED_REQUEST_AMOUNT: &str = "claimed_request_amount:";
     pub const INTENT_REWARD_STATUS: &str = "intent_reward_status:";
     pub const PEER_KEYPAIR: &str = "peer_keypair";
+    pub const FIRST_NODE_START_TIME: &str = "first_node_start_time";
 }
 
 /// Utility functions for key generation
@@ -537,5 +560,9 @@ pub mod key_utils {
             keys::INTENT_REWARD_STATUS,
             intent_hash.to_lowercase()
         )
+    }
+
+    pub fn first_node_start_time_key() -> String {
+        keys::FIRST_NODE_START_TIME.to_string()
     }
 }

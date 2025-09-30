@@ -31,7 +31,7 @@ use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, error, info, warn};
 use ff::PrimeField;
 
-use crate::{chain::EthereumTransaction, commands::CommandProcessor, rpc_server::DummyTransaction, utils::transaction::get_default_gas_price_for_chain};
+use crate::{chain::EthereumTransaction, commands::CommandProcessor, rpc_server::DummyTransaction, utils::transaction::{get_default_gas_price_for_chain, get_gas_price_for_chain}};
 use crate::consensus::ConsensusNode;
 use crate::adkg_secp256k1::DKGNode;
 use crate::node_management::NodeMembership;
@@ -100,6 +100,7 @@ pub struct NetworkLayer {
     scheduled_dkg_task: Option<JoinHandle<()>>,
     first_node_start_time: Option<u64>, // t1 - Unix timestamp when first node started
     vrf_round_requested: bool, // Flag to prevent duplicate VRF round requests
+    database: Option<Arc<crate::database::Database>>, // Database for persistent storage
 }
 
 impl NetworkLayer {
@@ -124,6 +125,7 @@ impl NetworkLayer {
             scheduled_dkg_task: None,
             first_node_start_time: None,
             vrf_round_requested: false,
+            database: None,
         })
     }
 
@@ -182,10 +184,27 @@ impl NetworkLayer {
         
         // Set the database on the signing node for solver amount storage
         if let Some(signing_node) = &mut self.signing_node {
-            signing_node.set_database(database);
+            signing_node.set_database(database.clone());
             info!("🗄️ [NETWORK] Set database on signing node for solver amount storage");
         } else {
             info!("⚠️ [NETWORK] Signing node not available when setting database");
+        }
+        
+        // Store database reference for first node start time persistence
+        self.database = Some(database.clone());
+        
+        // Load first node start time from database if available
+        match database.get_first_node_start_time() {
+            Ok(Some(start_time)) => {
+                self.first_node_start_time = Some(start_time);
+                info!("🕐 [NETWORK] Loaded first node start time from database: {}", start_time);
+            }
+            Ok(None) => {
+                info!("🕐 [NETWORK] No first node start time found in database");
+            }
+            Err(e) => {
+                warn!("⚠️ [NETWORK] Failed to load first node start time from database: {}", e);
+            }
         }
     }
 
@@ -207,6 +226,23 @@ impl NetworkLayer {
 
     pub fn get_msg_rx(&mut self) -> &mut mpsc::Receiver<ChannelMessage> {
         &mut self.message_rx
+    }
+
+    /// Set the first node start time and persist it to database
+    fn set_first_node_start_time(&mut self, start_time: u64) -> Result<()> {
+        self.first_node_start_time = Some(start_time);
+        
+        // Store in database if available
+        if let Some(database) = &self.database {
+            if let Err(e) = database.put_first_node_start_time(start_time) {
+                warn!("⚠️ [NETWORK] Failed to store first node start time in database: {}", e);
+                return Err(e);
+            }
+        } else {
+            warn!("⚠️ [NETWORK] Database not available when setting first node start time");
+        }
+        
+        Ok(())
     }
 
     pub fn get_local_peer_id<'a>(&'a self) -> &'a PeerId {
@@ -1012,8 +1048,11 @@ impl NetworkLayer {
                                 info!("🕐 Received first node start time: {} from peer {}", first_node_start_time, peer);
                                 // Only update if we don't have a time yet (new node syncing)
                                 if self.first_node_start_time.is_none() {
-                                    self.first_node_start_time = Some(first_node_start_time);
-                                    info!("✅ Synced first node start time (t1) to: {}", first_node_start_time);
+                                    if let Err(e) = self.set_first_node_start_time(first_node_start_time) {
+                                        warn!("⚠️ Failed to set first node start time: {}", e);
+                                    } else {
+                                        info!("✅ Synced first node start time (t1) to: {}", first_node_start_time);
+                                    }
                                 }
                                 RPCResponse::Ack
                             }
@@ -1086,13 +1125,16 @@ impl NetworkLayer {
                                     info!("🕐 Received first node start time response: {} from peer {}", t1, peer);
                                     // Only update if we don't have a time yet (new node syncing)
                                     if self.first_node_start_time.is_none() {
-                                        self.first_node_start_time = Some(t1);
-                                        info!("✅ Synced first node start time (t1) to: {}", t1);
-                                        
-                                        // Subscribe to topics now that we have t1 (with 5-minute check)
-                                        info!("🔔 Attempting to subscribe to topics after syncing t1...");
-                                        if let Err(e) = self.subscribe_to_topics_with_time_check(swarm).await {
-                                            warn!("❌ Failed to subscribe to topics: {:?}", e);
+                                        if let Err(e) = self.set_first_node_start_time(t1) {
+                                            warn!("⚠️ Failed to set first node start time: {}", e);
+                                        } else {
+                                            info!("✅ Synced first node start time (t1) to: {}", t1);
+                                            
+                                            // Subscribe to topics now that we have t1 (with 5-minute check)
+                                            info!("🔔 Attempting to subscribe to topics after syncing t1...");
+                                            if let Err(e) = self.subscribe_to_topics_with_time_check(swarm).await {
+                                                warn!("❌ Failed to subscribe to topics: {:?}", e);
+                                            }
                                         }
                                     }
                                 } else {
@@ -1744,11 +1786,18 @@ impl NetworkLayer {
                 // Use fetch_ethereum_nonce from transaction utils
                 let nonce = crate::utils::transaction::fetch_ethereum_nonce(&from_address, chain_id).await?;
 
+                // Get dynamic gas price for Qubetics, fallback to static for other chains
+                let gas_price = get_gas_price_for_chain(chain_to_use, chain_id).await
+                    .unwrap_or_else(|e| {
+                        warn!("⚠️ Failed to get gas price: {}, using fallback", e);
+                        get_default_gas_price_for_chain(chain_to_use)
+                    });
+
                 let ethereum_tx = EthereumTransaction {
                     to: solver_address.clone(),
                     value: format!("0x{:x}", reward),
                     gas_limit: 300000,
-                    gas_price: get_default_gas_price_for_chain(chain_to_use),
+                    gas_price,
                     nonce,
                     data: None,
                     chain_id,
@@ -2972,11 +3021,18 @@ impl NetworkLayer {
                 // Use fetch_ethereum_nonce from transaction utils
                 let nonce = crate::utils::transaction::fetch_ethereum_nonce(&from_address, chain_id).await?;
 
+                // Get dynamic gas price for Qubetics, fallback to static for other chains
+                let gas_price = get_gas_price_for_chain(chain_to_use, chain_id).await
+                    .unwrap_or_else(|e| {
+                        warn!("⚠️ Failed to get gas price: {}, using fallback", e);
+                        get_default_gas_price_for_chain(chain_to_use)
+                    });
+
                 let ethereum_tx = EthereumTransaction {
                     to: solver_address.clone(),
                     value: format!("0x{:x}", reward),
                     gas_limit: 300000,
-                    gas_price: get_default_gas_price_for_chain(chain_to_use),
+                    gas_price,
                     nonce,
                     data: None,
                     chain_id,
@@ -3145,15 +3201,18 @@ impl NetworkLayer {
                         .duration_since(UNIX_EPOCH)
                         .unwrap()
                         .as_secs();
-                    self.first_node_start_time = Some(t1);
-                    info!("🕐 First node detected after bootstrap timeout (total_nodes=1) - setting t1: {}", t1);
-                    
-                    // First node starts with default round 0 (already initialized in constructor)
-                    
-                    // Subscribe to topics now that we have t1
-                    info!("🔔 Subscribing to topics as first node...");
-                    if let Err(e) = self.subscribe_to_topics_with_time_check(swarm).await {
-                        warn!("❌ Failed to subscribe to topics: {:?}", e);
+                    if let Err(e) = self.set_first_node_start_time(t1) {
+                        warn!("⚠️ Failed to set first node start time: {}", e);
+                    } else {
+                        info!("🕐 First node detected after bootstrap timeout (total_nodes=1) - setting t1: {}", t1);
+                        
+                        // First node starts with default round 0 (already initialized in constructor)
+                        
+                        // Subscribe to topics now that we have t1
+                        info!("🔔 Subscribing to topics as first node...");
+                        if let Err(e) = self.subscribe_to_topics_with_time_check(swarm).await {
+                            warn!("❌ Failed to subscribe to topics: {:?}", e);
+                        }
                     }
                 } else if total_nodes > 1 && !self.vrf_round_requested {
                     info!("🔄 Found {} nodes in network - will sync t1 from existing nodes", total_nodes);
