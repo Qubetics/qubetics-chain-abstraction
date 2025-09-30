@@ -31,7 +31,7 @@ use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, error, info, warn};
 use ff::PrimeField;
 
-use crate::{chain::EthereumTransaction, commands::CommandProcessor, rpc_server::DummyTransaction, utils::transaction::{get_default_gas_price_for_chain, get_gas_price_for_chain}};
+use crate::{chain::EthereumTransaction, commands::CommandProcessor, rpc_server::DummyTransaction, utils::transaction::get_default_gas_price_for_chain};
 use crate::consensus::ConsensusNode;
 use crate::adkg_secp256k1::DKGNode;
 use crate::node_management::NodeMembership;
@@ -100,7 +100,6 @@ pub struct NetworkLayer {
     scheduled_dkg_task: Option<JoinHandle<()>>,
     first_node_start_time: Option<u64>, // t1 - Unix timestamp when first node started
     vrf_round_requested: bool, // Flag to prevent duplicate VRF round requests
-    database: Option<Arc<crate::database::Database>>, // Database for persistent storage
 }
 
 impl NetworkLayer {
@@ -125,7 +124,6 @@ impl NetworkLayer {
             scheduled_dkg_task: None,
             first_node_start_time: None,
             vrf_round_requested: false,
-            database: None,
         })
     }
 
@@ -154,7 +152,7 @@ impl NetworkLayer {
         info!("🔗 [NETWORK] About to clone DatabaseUserRegistry from Arc");
         self.user_registry = Some((*registry).clone());
         info!("🔗 [NETWORK] DatabaseUserRegistry clone stored in network layer");
-        
+
         // Also set the user registry on the signing node for transaction ID storage
         if let Some(signing_node) = &mut self.signing_node {
             signing_node.set_user_registry(registry.clone());
@@ -169,9 +167,9 @@ impl NetworkLayer {
     pub async fn sync_signing_node_thresholds(&mut self) {
         let current_threshold = self.node_manager.get_threshold();
         let total_nodes = self.node_manager.get_total_nodes();
-        
+
         info!("🔄 [THRESHOLD] Syncing signing node thresholds - Total nodes: {}, Threshold: {}", total_nodes, current_threshold);
-        
+
         // Update signing node threshold
         if let Some(signing_node) = &mut self.signing_node {
             signing_node.set_threshold(current_threshold);
@@ -181,30 +179,13 @@ impl NetworkLayer {
 
     pub fn set_database(&mut self, database: Arc<crate::database::Database>) {
         info!("🗄️ [NETWORK] Setting database on signing node for solver amount storage");
-        
+
         // Set the database on the signing node for solver amount storage
         if let Some(signing_node) = &mut self.signing_node {
-            signing_node.set_database(database.clone());
+            signing_node.set_database(database);
             info!("🗄️ [NETWORK] Set database on signing node for solver amount storage");
         } else {
             info!("⚠️ [NETWORK] Signing node not available when setting database");
-        }
-        
-        // Store database reference for first node start time persistence
-        self.database = Some(database.clone());
-        
-        // Load first node start time from database if available
-        match database.get_first_node_start_time() {
-            Ok(Some(start_time)) => {
-                self.first_node_start_time = Some(start_time);
-                info!("🕐 [NETWORK] Loaded first node start time from database: {}", start_time);
-            }
-            Ok(None) => {
-                info!("🕐 [NETWORK] No first node start time found in database");
-            }
-            Err(e) => {
-                warn!("⚠️ [NETWORK] Failed to load first node start time from database: {}", e);
-            }
         }
     }
 
@@ -228,23 +209,6 @@ impl NetworkLayer {
         &mut self.message_rx
     }
 
-    /// Set the first node start time and persist it to database
-    fn set_first_node_start_time(&mut self, start_time: u64) -> Result<()> {
-        self.first_node_start_time = Some(start_time);
-        
-        // Store in database if available
-        if let Some(database) = &self.database {
-            if let Err(e) = database.put_first_node_start_time(start_time) {
-                warn!("⚠️ [NETWORK] Failed to store first node start time in database: {}", e);
-                return Err(e);
-            }
-        } else {
-            warn!("⚠️ [NETWORK] Database not available when setting first node start time");
-        }
-        
-        Ok(())
-    }
-
     pub fn get_local_peer_id<'a>(&'a self) -> &'a PeerId {
         &self.local_peer_id
     }
@@ -252,11 +216,11 @@ impl NetworkLayer {
     /// Load existing keypair from database or create a new one
     async fn load_or_create_keypair() -> Result<(Keypair, PeerId)> {
         use crate::database::{Database, DatabaseConfig, keys};
-        
+
         // Create database connection
         let db_config = DatabaseConfig::default();
         let database = Database::new(db_config)?;
-        
+
         // Try to load existing keypair
         if let Some(keypair_bytes) = database.get_keypair(keys::PEER_KEYPAIR)? {
             match Keypair::from_protobuf_encoding(&keypair_bytes) {
@@ -272,16 +236,16 @@ impl NetworkLayer {
         } else {
             info!("🆕 No existing keypair found. Generating new one.");
         }
-        
+
         // Generate new keypair
         let keypair = Keypair::generate_ed25519();
         let peer_id = PeerId::from(keypair.public());
-        
+
         // Save keypair to database
         let keypair_bytes = keypair.to_protobuf_encoding()
             .map_err(|e| anyhow::anyhow!("Failed to encode keypair: {}", e))?;
         database.put_keypair(keys::PEER_KEYPAIR, &keypair_bytes)?;
-        
+
         info!("✅ Generated and saved new keypair - Peer ID: {}", peer_id);
         Ok((keypair, peer_id))
     }
@@ -380,12 +344,12 @@ impl NetworkLayer {
                 })
             })?
             .build();
-        
+
         // Check if this is an existing node with DKG data - if so, subscribe to topics immediately
         if let Some(dkg_node) = &self.dkg_node {
             let has_final_secret = dkg_node.get_final_secret_share().await.is_some();
             let has_final_public = dkg_node.get_final_public_key().await.is_some();
-            
+
             if has_final_secret && has_final_public {
                 info!("🔄 Existing node detected with DKG data - subscribing to topics immediately");
                 if let Err(e) = self.subscribe_to_default_topics(&mut swarm) {
@@ -397,11 +361,11 @@ impl NetworkLayer {
         } else {
             info!("🆕 No DKG node available - topic subscription will be done later after determining first node start time (t1)");
         }
-        
+
         info!("Starting Kademlia bootstrap...");
-        
+
         // Node manager will determine if this is the first node
-        
+
         self.node_manager
             .add_node(self.local_peer_id.clone())
             .map_err(|e| anyhow::anyhow!(e))?;
@@ -410,7 +374,7 @@ impl NetworkLayer {
         if let Err(e) = swarm.behaviour_mut().kademlia.bootstrap() {
             warn!("Failed to start bootstrap: {:?}", e);
         }
-        
+
         // Start a task to check if this is the first node after bootstrap attempts
         let tx_clone = self.message_tx.clone();
         tokio::spawn(async move {
@@ -533,13 +497,13 @@ impl NetworkLayer {
 
                     self.sync_signing_node_thresholds().await;
                 }
-                
+
                 _ = dkg_status_timer.tick() => {
                     // Periodic DKG status check
                     if let Some(dkg_node) = &self.dkg_node {
                         let status = dkg_node.get_status();
                         info!("📊 DKG Status Check - Current status: {:?}", status);
-                        
+
                         if let DKGStatus::Completed = status {
                             // DKG is completed, log final results
                             if let Some(secret_share) = dkg_node.get_final_secret_share().await {
@@ -568,7 +532,7 @@ impl NetworkLayer {
                 .as_secs();
             let elapsed_since_t1 = current_time.saturating_sub(t1);
             let five_minutes = 5 * 60; // 5 minutes in seconds
-            
+
             // Determine node type for logging purposes
             let node_type = if let Some(dkg_node) = &self.dkg_node {
                 let has_final_secret = dkg_node.get_final_secret_share().await.is_some();
@@ -581,7 +545,7 @@ impl NetworkLayer {
             } else {
                 "new node"
             };
-            
+
             // Apply the same 5-minute rule regardless of node type
             if elapsed_since_t1 > five_minutes {
                 warn!("⏰ NEW peer addition blocked by {}: More than 5 minutes have passed since first node start time t1 (elapsed: {}s, t1: {})", node_type, elapsed_since_t1, t1);
@@ -606,13 +570,13 @@ impl NetworkLayer {
         if let Some(dkg_node) = &self.dkg_node {
             let has_final_secret = dkg_node.get_final_secret_share().await.is_some();
             let has_final_public = dkg_node.get_final_public_key().await.is_some();
-            
+
             if has_final_secret && has_final_public {
                 info!("✅ Existing node with DKG data - topic subscription allowed (bypassing 5-minute rule)");
                 return self.subscribe_to_default_topics(swarm);
             }
         }
-        
+
         // Check if more than 5 minutes have passed since first node start time
         if let Some(t1) = self.first_node_start_time {
             let current_time = std::time::SystemTime::now()
@@ -621,17 +585,17 @@ impl NetworkLayer {
                 .as_secs();
             let elapsed_since_t1 = current_time.saturating_sub(t1);
             let five_minutes = 5 * 60; // 5 minutes in seconds
-            
+
             if elapsed_since_t1 > five_minutes {
                 warn!("⏰ Topic subscription skipped: More than 5 minutes have passed since first node start time t1 (elapsed: {}s, t1: {})", elapsed_since_t1, t1);
                 return Ok(());
             }
-            
+
             info!("✅ Within 5-minute window - proceeding with topic subscription (elapsed: {}s since t1: {})", elapsed_since_t1, t1);
         } else {
             info!("⚠️ No first node start time available yet - proceeding with topic subscription");
         }
-        
+
         self.subscribe_to_default_topics(swarm)
     }
 
@@ -704,7 +668,7 @@ impl NetworkLayer {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        let delay = start_time_unix.saturating_sub(now);    
+        let delay = start_time_unix.saturating_sub(now);
 
         // clone only the sender
         let tx = self.message_tx.clone();
@@ -717,7 +681,7 @@ impl NetworkLayer {
         self.scheduled_dkg_task = Some(handle);
         info!("✅ Scheduled DKG to start at {}", start_time_unix);
     }
-    
+
     async fn handle_swarm_event(
         &mut self,
         event: SwarmEvent<NetworkEvent>,
@@ -800,7 +764,7 @@ impl NetworkLayer {
                             self.node_manager
                                     .add_node(peer_id)
                                     .map_err(|e| anyhow::anyhow!(e))?;
-                            
+
                             // Update signing node threshold after adding peer
                             if let Some(signing_node) = &mut self.signing_node {
                                 let new_threshold = self.node_manager.get_threshold();
@@ -812,7 +776,7 @@ impl NetworkLayer {
                         }
                     }
 
-                    
+
                     let total = self.node_manager.get_total_nodes();
                     let threshold = self.node_manager.get_threshold();
 
@@ -878,7 +842,7 @@ impl NetworkLayer {
 
                 // Try to discover more peers through this connection
                 swarm.behaviour_mut().kademlia.get_closest_peers(peer_id);
-                
+
                 // If this node doesn't have first node start time (t1), request it from the connected peer
                 if self.first_node_start_time.is_none() {
                     info!("🔄 Requesting first node start time (t1) from peer {}", peer_id);
@@ -937,13 +901,13 @@ impl NetworkLayer {
                                 // Handle custom request
                                 RPCResponse::Custom { id, data }
                             },
-                            RPCRequest::StartADKG// {n, threshold } 
+                            RPCRequest::StartADKG// {n, threshold }
                             => {
                                 // handle dkg start
                                 match self.dkg_node.as_mut() {
                                     Some(dkg) => {
                                         info!("🚀 Received DKG start request from peer {}", peer);
-                                        
+
                                         // Update DKG parameters with current network state
                                         let total = self.node_manager.get_total_nodes();
                                         let threshold = self.node_manager.get_threshold();
@@ -955,7 +919,7 @@ impl NetworkLayer {
                                         self.node_manager
                                             .set_threshold(total - 1);
                                         info!("🔄 DKG parameters updated: total_nodes={}, threshold={}", total, threshold);
-                                        
+
                                         match dkg.start_dkg(self.node_manager.clone()).await {
                                             Ok(_) => {
                                                 info!("✅ Successfully started DKG in response to peer request");
@@ -1000,7 +964,7 @@ impl NetworkLayer {
                                         let hash = hasher.finish();
                                         ((hash % 100) + 1) as usize // Use a reasonable default range
                                     };
-                                    
+
                                     if self.dkg_node.as_ref().unwrap().verify_share(&share, share_index, &commitments) {
                                         RPCResponse::ShareAccepted
                                     } else {
@@ -1022,14 +986,14 @@ impl NetworkLayer {
                             RPCRequest::RequestCurrentVrfRound => {
                                 info!("🔄 Received request for current VRF round from peer {}", peer);
                                 let mut current_round = None;
-                                
+
                                 // Check signing_node first
                                 if let Some(signing_node) = &self.signing_node {
                                     if let Some(vrf_service) = &signing_node.vrf_service {
                                         current_round = Some(vrf_service.get_current_round().await);
                                     }
                                 }
-                                
+
                                 // If no round from signing_node, check db_signing_node
                                 if current_round.is_none() {
                                     if let Some(db_signing_node) = &self.db_signing_node {
@@ -1039,7 +1003,7 @@ impl NetworkLayer {
                                         }
                                     }
                                 }
-                                
+
                                 RPCResponse::CurrentVrfRoundResponse {
                                     current_round,
                                 }
@@ -1048,11 +1012,8 @@ impl NetworkLayer {
                                 info!("🕐 Received first node start time: {} from peer {}", first_node_start_time, peer);
                                 // Only update if we don't have a time yet (new node syncing)
                                 if self.first_node_start_time.is_none() {
-                                    if let Err(e) = self.set_first_node_start_time(first_node_start_time) {
-                                        warn!("⚠️ Failed to set first node start time: {}", e);
-                                    } else {
-                                        info!("✅ Synced first node start time (t1) to: {}", first_node_start_time);
-                                    }
+                                    self.first_node_start_time = Some(first_node_start_time);
+                                    info!("✅ Synced first node start time (t1) to: {}", first_node_start_time);
                                 }
                                 RPCResponse::Ack
                             }
@@ -1079,18 +1040,18 @@ impl NetworkLayer {
                         match response {
                             RPCResponse::PeerList { peers } => {
                                 info!("🔄 Merging peer‐set from {}: {:?}", peer, peers);
-                                
+
                                 // Check 5-minute rule before adding peers from peer list
                                 if !self.is_peer_addition_allowed().await {
                                     warn!("🚫 Peer list merging blocked - outside 5-minute window");
                                     return Ok(());
                                 }
-                                
+
                                 for SerializablePeerId(p) in peers {
                                     if !self.node_manager.get_active_nodes().contains(&p) {
                                         self.node_manager.add_node(p.clone())
                                             .map_err(|e| anyhow::anyhow!(e))?;
-                                        
+
                                         // Update signing node threshold after adding peer
                                         if let Some(signing_node) = &mut self.signing_node {
                                             let new_threshold = self.node_manager.get_threshold();
@@ -1119,33 +1080,30 @@ impl NetworkLayer {
 
                             RPCResponse::ShareAccepted => {
                             }
-                            
+
                             RPCResponse::FirstNodeStartTimeResponse { first_node_start_time } => {
                                 if let Some(t1) = first_node_start_time {
                                     info!("🕐 Received first node start time response: {} from peer {}", t1, peer);
                                     // Only update if we don't have a time yet (new node syncing)
                                     if self.first_node_start_time.is_none() {
-                                        if let Err(e) = self.set_first_node_start_time(t1) {
-                                            warn!("⚠️ Failed to set first node start time: {}", e);
-                                        } else {
-                                            info!("✅ Synced first node start time (t1) to: {}", t1);
-                                            
-                                            // Subscribe to topics now that we have t1 (with 5-minute check)
-                                            info!("🔔 Attempting to subscribe to topics after syncing t1...");
-                                            if let Err(e) = self.subscribe_to_topics_with_time_check(swarm).await {
-                                                warn!("❌ Failed to subscribe to topics: {:?}", e);
-                                            }
+                                        self.first_node_start_time = Some(t1);
+                                        info!("✅ Synced first node start time (t1) to: {}", t1);
+
+                                        // Subscribe to topics now that we have t1 (with 5-minute check)
+                                        info!("🔔 Attempting to subscribe to topics after syncing t1...");
+                                        if let Err(e) = self.subscribe_to_topics_with_time_check(swarm).await {
+                                            warn!("❌ Failed to subscribe to topics: {:?}", e);
                                         }
                                     }
                                 } else {
                                     info!("ℹ️ Peer {} doesn't have first node start time either", peer);
                                 }
                             }
-                            
+
                             RPCResponse::CurrentVrfRoundResponse { current_round } => {
                                 if let Some(network_round) = current_round {
                                     info!("🔄 Received current VRF round response: {} from peer {}", network_round, peer);
-                                    
+
                                     // Simple VRF round sync for both signing nodes
                                     if let Some(signing_node) = &mut self.signing_node {
                                         signing_node.sync_vrf_round_with_network(network_round).await;
@@ -1154,14 +1112,14 @@ impl NetworkLayer {
                                         let mut node = db_signing_node.lock().await;
                                         node.sync_vrf_round_with_network(network_round).await;
                                     }
-                                    
+
                                     info!("✅ [NETWORK] VRF round synced to network round: {}", network_round);
                                     // VRF sync successful, don't need to request again
                                 } else {
                                     info!("ℹ️ Peer {} doesn't have current VRF round yet", peer);
                                 }
                             }
-                            
+
                             other => {
                                 info!("ℹ️  RPCResponse::{:?} from {} (no action)", other, peer);
                             }
@@ -1393,7 +1351,7 @@ impl NetworkLayer {
             GossipsubMessage::Signing(signing_msg) => {
                 info!("📥 [NETWORK] Received signing message on topic: {}", message.topic);
                 info!("📋 [NETWORK] Signing message type: {:?}", signing_msg);
-                
+
                 if let Some(signing_node) = &mut self.signing_node {
                     // 🛡️ Error recovery for signing message processing - prevent node crashes
                     let signing_result = if message.topic.to_string() == "signatures-to-final-node" {
@@ -1422,7 +1380,7 @@ impl NetworkLayer {
                             crate::signing::SigningMessage::ECDSASignature { from, signature, round, timestamp:_timestamp, user_eth_address } => {
                                 let tx_type = if user_eth_address.is_some() { "user-to-network" } else { "network-to-target" };
                                 info!("📥 [NETWORK] Received {} ECDSA signature from {} for round {} on topic {} (user_eth_address: {:?})", tx_type, from, round, message.topic, user_eth_address);
-                                info!("🔍 [NETWORK] Signature details - signer_id: {}", 
+                                info!("🔍 [NETWORK] Signature details - signer_id: {}",
                                       signature.signer_id);
                             }
                             _ => {
@@ -1431,7 +1389,7 @@ impl NetworkLayer {
                         }
                         signing_node.handle_message(signing_msg).await
                     };
-                    
+
                     // Handle signing errors gracefully
                     if let Err(e) = signing_result {
                         error!("❌ [NETWORK] Signing message processing failed: {}", e);
@@ -1450,12 +1408,12 @@ impl NetworkLayer {
             }
             GossipsubMessage::Consensus(consensus_msg) => {
                 info!("📥 [CONSENSUS] Received consensus message: {:?}", consensus_msg);
-                
+
                 // Handle consensus message in signing node
                 if let Some(signing_node) = &mut self.signing_node {
                     signing_node.handle_consensus_message(consensus_msg.clone()).await?;
                 }
-                
+
                 // Also handle in standalone consensus node if available
                 if let Some(consensus_node) = &mut self.consensus_node {
                     consensus_node.handle_message(consensus_msg).await?;
@@ -1480,7 +1438,7 @@ impl NetworkLayer {
             }
             GossipsubMessage::VrfSelectedNodes(broadcast_msg) => {
                 info!("📥 [VRF] Received VRF selected nodes broadcast: {:?}", broadcast_msg);
-                
+
                 // Store the received VRF selection in the signing node's VRF selector
                 if let Some(signing_node) = &mut self.signing_node {
                     let selector_node_id = broadcast_msg.selector_node_id.clone();
@@ -1500,13 +1458,13 @@ impl NetworkLayer {
                     // Set available nodes from node manager before signing
                     let available_nodes: Vec<PeerId> = self.node_manager.get_active_nodes().into_iter().collect();
                     signing_node.set_available_nodes(available_nodes);
-                    
+
                     // Generate BLS key pair if not already done
                     if let Some(dkg_node) = &self.dkg_node {
                         if let Some(secret_share) = dkg_node.get_final_secret_share().await {
                             info!("🔐 [NETWORK] Got secret share from DKG: {:?}", secret_share);
                             signing_node.set_private_key_from_scalar(secret_share);
-                            
+
                             // ✅ Also set the DKG group public key
                             if let Some(group_key) = dkg_node.get_final_public_key().await {
                                 signing_node.set_group_public_key(group_key);
@@ -1549,7 +1507,7 @@ impl NetworkLayer {
             }
             GossipsubMessage::UserRegistration { ethereum_address, timestamp, node_id } => {
                 info!("👤 Received user registration via gossipsub: {} from node {} at {}", ethereum_address, node_id, timestamp);
-                
+
                 // Process user registration locally (same pattern as deposit intent)
                 if let Some(user_registry) = &mut self.user_registry {
                     // Get DKG secret share if available
@@ -1558,12 +1516,12 @@ impl NetworkLayer {
                     } else {
                         None
                     };
-                    
+
                     // Register the user locally
                     match user_registry.register_user(&ethereum_address, dkg_secret_share.as_ref(), &node_id).await {
                         Ok(registration) => {
                             info!("✅ [GOSSIPSUB] Successfully registered user {} locally", ethereum_address);
-                            
+
                             // Log tweaked secret share status
                             if registration.tweaked_secret_share.is_some() {
                                 info!("🔑 [GOSSIPSUB] Computed and stored tweaked secret share for user: {}", ethereum_address);
@@ -1786,18 +1744,11 @@ impl NetworkLayer {
                 // Use fetch_ethereum_nonce from transaction utils
                 let nonce = crate::utils::transaction::fetch_ethereum_nonce(&from_address, chain_id).await?;
 
-                // Get dynamic gas price for Qubetics, fallback to static for other chains
-                let gas_price = get_gas_price_for_chain(chain_to_use, chain_id).await
-                    .unwrap_or_else(|e| {
-                        warn!("⚠️ Failed to get gas price: {}, using fallback", e);
-                        get_default_gas_price_for_chain(chain_to_use)
-                    });
-
                 let ethereum_tx = EthereumTransaction {
                     to: solver_address.clone(),
                     value: format!("0x{:x}", reward),
                     gas_limit: 300000,
-                    gas_price,
+                    gas_price: get_default_gas_price_for_chain(chain_to_use),
                     nonce,
                     data: None,
                     chain_id,
@@ -1829,7 +1780,7 @@ impl NetworkLayer {
                     // Set available nodes from node manager before signing
                     let available_nodes: Vec<PeerId> = self.node_manager.get_active_nodes().into_iter().collect();
                     signing_node.set_available_nodes(available_nodes);
-                    
+
                     if let Some(dkg_node) = &self.dkg_node {
                         if let Some(secret_share) = dkg_node.get_final_secret_share().await {
                             info!("🔐 [REWARD] Got secret share from DKG: {:?}", secret_share);
@@ -1845,7 +1796,7 @@ impl NetworkLayer {
                         info!("❌ [REWARD] DKG node not available");
                         return Ok(());
                     }
-                    
+
                 } else {
                     warn!("❌ [REWARD] Signing node not available for solver reward");
                 }
@@ -1872,11 +1823,11 @@ impl NetworkLayer {
             }
             GossipsubMessage::DepositIntent { intent, intent_id, user_eth_address, transaction_type, amount } => {
                 info!("📝 [GOSSIPSUB] Processing deposit intent received via gossipsub: {:?} (ID: {})", intent, intent_id);
-                
+
                 // Calculate intent hash for transaction ID storage
                 let intent_hash = crate::utils::calculate_intent_hash(&intent);
                 info!("🔐 [GOSSIPSUB] Calculated intent hash: {}", intent_hash);
-                
+
                 // Determine chain type based on transaction type:
                 // - UserToVault: use source_chain (user is depositing FROM this chain)
                 // - NetworkToTarget: use target_chain (network is withdrawing TO this chain)
@@ -1886,9 +1837,9 @@ impl NetworkLayer {
                     crate::types::TransactionType::NetworkToTarget => &intent.target_chain.to_lowercase(),
                     crate::types::TransactionType::VaultToNetwork => &intent.source_chain.to_lowercase(),
                 };
-                info!("🔗 [GOSSIPSUB] Processing deposit intent for chain: {} (transaction_type: {:?})", 
+                info!("🔗 [GOSSIPSUB] Processing deposit intent for chain: {} (transaction_type: {:?})",
                       chain_to_use, transaction_type);
-                
+
                 // Get the appropriate signing key based on transaction type
                 let signing_key: Option<k256::Scalar> = match transaction_type {
                     crate::types::TransactionType::UserToVault => {
@@ -1912,7 +1863,7 @@ impl NetworkLayer {
                         }
                     }
                 };
-                
+
                 if let Some(signing_node) = &mut self.signing_node {
                     // Set appropriate chain handler based on the determined chain
                     if crate::utils::transaction::is_evm_chain(chain_to_use) {
@@ -1923,7 +1874,7 @@ impl NetworkLayer {
                         }
                     } else if chain_to_use == "bitcoin" || chain_to_use == "btc" {
                         let mut chain_handler = crate::chain::ChainHandlerFactory::create_bitcoin_handler("testnet".to_string());
-                        
+
                         // Set appropriate group public key in Bitcoin chain handler based on transaction type
                         match transaction_type {
                             crate::types::TransactionType::UserToVault => {
@@ -1935,7 +1886,7 @@ impl NetworkLayer {
                                                 let affine_point = user_group_key.0; // user_group_key is SerializablePoint(AffinePoint)
                                                 let encoded_point = k256::EncodedPoint::from(affine_point);
                                                 let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
-                                                
+
                                                 if let Some(btc_handler) = chain_handler.as_any_mut().downcast_mut::<crate::chain::BitcoinChainHandler>() {
                                                     btc_handler.set_group_public_key(compressed_bytes);
                                                     info!("🔑 [GOSSIPSUB] Set user-specific group public key in Bitcoin chain handler for user: {}", eth_addr);
@@ -1960,7 +1911,7 @@ impl NetworkLayer {
                                         let affine_point = group_key.to_affine();
                                         let encoded_point = k256::EncodedPoint::from(affine_point);
                                         let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
-                                        
+
                                         if let Some(btc_handler) = chain_handler.as_any_mut().downcast_mut::<crate::chain::BitcoinChainHandler>() {
                                             btc_handler.set_group_public_key(compressed_bytes);
                                             info!("🔑 [GOSSIPSUB] Set network DKG group public key in Bitcoin chain handler");
@@ -1975,7 +1926,7 @@ impl NetworkLayer {
                                         let affine_point = vault_group_key.to_affine();
                                         let encoded_point = k256::EncodedPoint::from(affine_point);
                                         let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
-                                        
+
                                         if let Some(btc_handler) = chain_handler.as_any_mut().downcast_mut::<crate::chain::BitcoinChainHandler>() {
                                             btc_handler.set_group_public_key(compressed_bytes);
                                             info!("🔑 [GOSSIPSUB] Set vault group public key in Bitcoin chain handler");
@@ -1984,13 +1935,13 @@ impl NetworkLayer {
                                 }
                             }
                         }
-                        
+
                         signing_node.set_chain_handler(chain_handler.into());
                         info!("🔗 [GOSSIPSUB] Set Bitcoin chain handler");
                     } else {
                         warn!("❌ [GOSSIPSUB] Unsupported chain: {}, using default Ethereum handler", chain_to_use);
                     }
-                    
+
                     // Get derived addresses based on transaction type
                     let (derived_eth_addr, derived_btc_addr) = match transaction_type {
                         crate::types::TransactionType::UserToVault => {
@@ -2023,14 +1974,14 @@ impl NetworkLayer {
                     } else {
                         None
                     };
-                    
+
                     // Get vault group key for vault operations
                     let vault_group_key = if let Some(dkg_node) = &self.dkg_node {
                         dkg_node.get_vault_group_key().await
                     } else {
                         None
                     };
-                    
+
                     // Get vault addresses from database
                     let (vault_eth_addr, vault_btc_addr) = if let Some(registry) = &self.user_registry {
                         let database = registry.get_database();
@@ -2040,22 +1991,22 @@ impl NetworkLayer {
                     } else {
                         return Err(anyhow::anyhow!("User registry not available"));
                     };
-                    
+
                     let chain_transaction_result = crate::utils::transaction::create_chain_transaction_from_deposit_intent(&intent, group_public_key, derived_eth_addr.as_ref(), derived_btc_addr.as_ref(), transaction_type.clone(), vault_eth_addr.as_ref(), vault_btc_addr.as_ref(), amount).await;
-                 
+
                     match chain_transaction_result {
                         Ok(chain_transaction) => {
                             info!("📝 [GOSSIPSUB] Created {} transaction from deposit intent", signing_node.get_chain_type());
-                            
+
                             // Set available nodes from node manager before signing
                             let available_nodes: Vec<PeerId> = self.node_manager.get_active_nodes().into_iter().collect();
                             signing_node.set_available_nodes(available_nodes);
-                            
+
                             // Use the signing key we got earlier
                             if let Some(key) = signing_key {
                                 info!("🔐 [GOSSIPSUB] Got signing key for deposit intent");
                                 signing_node.set_private_key_from_scalar(key);
-                                
+
                                 // Set the appropriate group public key based on transaction type
                                 match transaction_type {
                                     crate::types::TransactionType::UserToVault => {
@@ -2097,14 +2048,14 @@ impl NetworkLayer {
                                 info!("❌ [GOSSIPSUB] Could not get signing key for deposit intent");
                                 return Ok(());
                             }
-                            
+
                             // Create transaction bytes using the chain handler
                             let tx_bytes = signing_node.get_chain_handler().create_transaction_bytes(&chain_transaction)
                                 .unwrap_or_else(|e| {
                                     warn!("Failed to create transaction bytes: {}", e);
                                     vec![]
                                 });
-                            info!("🔐 [GOSSIPSUB] Starting {} signing process for deposit intent: 0x{}", 
+                            info!("🔐 [GOSSIPSUB] Starting {} signing process for deposit intent: 0x{}",
                                   signing_node.get_chain_type(), hex::encode(tx_bytes.clone()));
 
                             // Handle Bitcoin and EVM differently - DummyTransaction is only for EVM!
@@ -2126,7 +2077,7 @@ impl NetworkLayer {
 
                                     let tx_bytes = crate::utils::transaction::create_transaction_for_signing(&dummy_tx);
                                     debug!("→ RLP payload: 0x{}", hex::encode(&tx_bytes));
-                                
+
                                     let user_tweaked_share = match transaction_type {
                                         crate::types::TransactionType::UserToVault => {
                                             // For user deposits, use user's tweaked secret share
@@ -2161,13 +2112,13 @@ impl NetworkLayer {
                                             }
                                         }
                                     };
-                                    
+
                                     signing_node.sign_message(tx_bytes.clone(), &dummy_tx, user_tweaked_share, user_eth_address.clone(), Some(intent_hash.clone()), Some(transaction_type.clone())).await?;
 
                                     // // Only execute contract transaction for UserToVault transaction type
                                     // if matches!(transaction_type, crate::types::TransactionType::UserToVault) {
                                     //     info!("📝 [GOSSIPSUB] UserToVault transaction detected - executing contract call");
-                                        
+
                                     //     let mut hasher: sha2::digest::core_api::CoreWrapper<sha3::Keccak256Core> = sha3::Keccak256::new();
                                     //     hasher.update(&tx_bytes);
                                     //     let tx_hash = hasher.finalize();
@@ -2179,12 +2130,12 @@ impl NetworkLayer {
 
                                     //     match contract_call_result {
                                     //         Ok(contract_transaction) => {
-                        
-                                    //             info!("📝 [GOSSIPSUB] Created contract call transaction");   
+
+                                    //             info!("📝 [GOSSIPSUB] Created contract call transaction");
                                     //             let available_nodes: Vec<PeerId> = self.node_manager.get_active_nodes().into_iter().collect();
                                     //             signing_node.set_available_nodes(available_nodes);
-                                                                            
-                        
+
+
                                     //             match contract_transaction {
                                     //                 crate::chain::ChainTransaction::Ethereum(ref eth_tx) => {
                                     //                     let contract_tx = crate::rpc_server::ContractTransaction {
@@ -2198,7 +2149,7 @@ impl NetworkLayer {
                                     //                     };
                                     //                     let contract_tx_bytes = crate::utils::transaction::create_transaction_for_signing_contract(&contract_tx);
                                     //                     debug!("→ RLP payload contract call: 0x{}", hex::encode(&contract_tx_bytes));
-                        
+
                                     //                     let vault_tweaked_share = if let Some(dkg_node) = &self.dkg_node {
                                     //                         dkg_node.get_vault_tweaked_secret_share().await
                                     //                     } else {
@@ -2217,7 +2168,7 @@ impl NetworkLayer {
                                     //     }
                                     // } else if matches!(transaction_type, crate::types::TransactionType::NetworkToTarget){
                                     //     info!("📝 [GOSSIPSUB] networkToTarget transaction detected - executing contract call");
-                                        
+
                                     //     let mut hasher: sha2::digest::core_api::CoreWrapper<sha3::Keccak256Core> = sha3::Keccak256::new();
                                     //     hasher.update(&tx_bytes);
                                     //     let tx_hash = hasher.finalize();
@@ -2229,12 +2180,12 @@ impl NetworkLayer {
 
                                     //     match contract_call_result {
                                     //         Ok(contract_transaction) => {
-                        
-                                    //             info!("📝 [GOSSIPSUB] Created contract call transaction");   
+
+                                    //             info!("📝 [GOSSIPSUB] Created contract call transaction");
                                     //             let available_nodes: Vec<PeerId> = self.node_manager.get_active_nodes().into_iter().collect();
                                     //             signing_node.set_available_nodes(available_nodes);
-                                                                            
-                        
+
+
                                     //             match contract_transaction {
                                     //                 crate::chain::ChainTransaction::Ethereum(ref eth_tx) => {
                                     //                     let contract_tx = crate::rpc_server::ContractTransaction {
@@ -2248,7 +2199,7 @@ impl NetworkLayer {
                                     //                     };
                                     //                     let contract_tx_bytes = crate::utils::transaction::create_transaction_for_signing_contract(&contract_tx);
                                     //                     debug!("→ RLP payload contract call: 0x{}", hex::encode(&contract_tx_bytes));
-                        
+
                                     //                     let vault_tweaked_share = if let Some(dkg_node) = &self.dkg_node {
                                     //                         dkg_node.get_vault_tweaked_secret_share().await
                                     //                     } else {
@@ -2378,17 +2329,17 @@ impl NetworkLayer {
             // Handle local transaction processing (for the node that receives the HTTP request)
             ChannelMessage::LocalTransaction { transaction } => {
                 info!("🔐 [LOCAL] Processing transaction locally: {:?}", transaction);
-                
+
                 if let Some(signing_node) = &mut self.signing_node {
                     // Set available nodes from node manager before signing
                     let available_nodes: Vec<PeerId> = self.node_manager.get_active_nodes().into_iter().collect();
                     signing_node.set_available_nodes(available_nodes);
-                    
+
                     if let Some(dkg_node) = &self.dkg_node {
                         if let Some(secret_share) = dkg_node.get_final_secret_share().await {
                             info!("🔐 [NETWORK] Got secret share from DKG: {:?}", secret_share);
                             signing_node.set_private_key_from_scalar(secret_share);
-                            
+
                             // ✅ Also set the DKG group public key
                             if let Some(group_key) = dkg_node.get_final_public_key().await {
                                 signing_node.set_group_public_key(group_key);
@@ -2402,7 +2353,7 @@ impl NetworkLayer {
                         info!("❌ [NETWORK] DKG node not available");
                         return Ok(());
                     }
-                    
+
                     // Convert transaction to bytes for signing using RLP encoding
                     let tx_bytes = crate::utils::transaction::create_transaction_for_signing(&transaction);
                     info!("🔐 [LOCAL] Starting local signing process {:?}", hex::encode(tx_bytes.clone()));
@@ -2456,7 +2407,7 @@ impl NetworkLayer {
             }
             ChannelMessage::DepositIntent { intent, intent_id, user_eth_address, transaction_type, amount } => {
                 info!("📝 [NETWORK] Processing deposit intent locally: {:?}", intent);
-                
+
                 // Only broadcast to other nodes via gossipsub when using network share (no user_eth_address)
                 info!("🌐 [NETWORK] Using network share - broadcasting to P2P network");
                 let deposit_intent_msg = GossipsubMessage::DepositIntent {
@@ -2468,20 +2419,20 @@ impl NetworkLayer {
                 };
                 let msg_bytes = serde_json::to_vec(&deposit_intent_msg)
                     .map_err(|e| anyhow::anyhow!("Failed to serialize deposit intent: {}", e))?;
-                
+
 
                 // Broadcast to all peers via gossipsub
                 let topic = gossipsub::IdentTopic::new("deposit-intents");
                 swarm.behaviour_mut().gossipsub.publish(topic, msg_bytes)?;
                 info!("📡 [NETWORK] Broadcasted deposit intent to P2P network");
-                
+
                 // Calculate intent hash for transaction ID storage
                 let intent_hash = crate::utils::calculate_intent_hash(&intent);
                 info!("🔐 [LOCAL] Calculated intent hash: {}", intent_hash);
 
                 // Prepare unsigned transaction for on-chain deposit intent recording
                 // self.prepare_deposit_intent_tx(&intent, &intent_hash).await;
-                
+
                 // Determine chain type based on transaction type:
                 // - UserToVault: use source_chain (user is depositing FROM this chain)
                 // - NetworkToTarget: use target_chain (network is withdrawing TO this chain)
@@ -2491,9 +2442,9 @@ impl NetworkLayer {
                     crate::types::TransactionType::NetworkToTarget => &intent.target_chain.to_lowercase(),
                     crate::types::TransactionType::VaultToNetwork => &intent.source_chain.to_lowercase(),
                 };
-                info!("🔗 [LOCAL] Processing deposit intent for chain: {} (transaction_type: {:?})", 
+                info!("🔗 [LOCAL] Processing deposit intent for chain: {} (transaction_type: {:?})",
                       chain_to_use, transaction_type);
-                
+
                 // Get the appropriate signing key based on transaction type
                 let signing_key: Option<k256::Scalar> = match transaction_type {
                     crate::types::TransactionType::UserToVault => {
@@ -2517,7 +2468,7 @@ impl NetworkLayer {
                         }
                     }
                 };
-                
+
                 // Process locally first (this node will sign it)
                 if let Some(signing_node) = &mut self.signing_node {
                     // Set appropriate chain handler based on the determined chain
@@ -2529,7 +2480,7 @@ impl NetworkLayer {
                         }
                     } else if chain_to_use == "bitcoin" || chain_to_use == "btc" {
                         let mut chain_handler = crate::chain::ChainHandlerFactory::create_bitcoin_handler("testnet".to_string());
-                        
+
                         // Set appropriate group public key in Bitcoin chain handler based on transaction type
                         match transaction_type {
                             crate::types::TransactionType::UserToVault => {
@@ -2541,7 +2492,7 @@ impl NetworkLayer {
                                                 let affine_point = user_group_key.0; // user_group_key is SerializablePoint(AffinePoint)
                                                 let encoded_point = k256::EncodedPoint::from(affine_point);
                                                 let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
-                                                
+
                                                 if let Some(btc_handler) = chain_handler.as_any_mut().downcast_mut::<crate::chain::BitcoinChainHandler>() {
                                                     btc_handler.set_group_public_key(compressed_bytes);
                                                     info!("🔑 [LOCAL] Set user-specific group public key in Bitcoin chain handler for user: {}", eth_addr);
@@ -2566,7 +2517,7 @@ impl NetworkLayer {
                                         let affine_point = group_key.to_affine();
                                         let encoded_point = k256::EncodedPoint::from(affine_point);
                                         let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
-                                        
+
                                         if let Some(btc_handler) = chain_handler.as_any_mut().downcast_mut::<crate::chain::BitcoinChainHandler>() {
                                             btc_handler.set_group_public_key(compressed_bytes);
                                             info!("🔑 [LOCAL] Set network DKG group public key in Bitcoin chain handler");
@@ -2581,7 +2532,7 @@ impl NetworkLayer {
                                         let affine_point = vault_group_key.to_affine();
                                         let encoded_point = k256::EncodedPoint::from(affine_point);
                                         let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
-                                        
+
                                         if let Some(btc_handler) = chain_handler.as_any_mut().downcast_mut::<crate::chain::BitcoinChainHandler>() {
                                             btc_handler.set_group_public_key(compressed_bytes);
                                             info!("🔑 [LOCAL] Set vault group public key in Bitcoin chain handler");
@@ -2590,13 +2541,13 @@ impl NetworkLayer {
                                 }
                             }
                         }
-                        
+
                         signing_node.set_chain_handler(chain_handler.into());
                         info!("🔗 [LOCAL] Set Bitcoin chain handler");
                     } else {
                         warn!("❌ [LOCAL] Unsupported chain: {}, using default Ethereum handler", chain_to_use);
                     }
-                    
+
                     // Get derived addresses based on transaction type
                     let (derived_eth_addr, derived_btc_addr) = match transaction_type {
                         crate::types::TransactionType::UserToVault => {
@@ -2635,7 +2586,7 @@ impl NetworkLayer {
                     } else {
                         None
                     };
-                    
+
                     // Get vault addresses from database
                     let (vault_eth_addr, vault_btc_addr) = if let Some(registry) = &self.user_registry {
                         let database = registry.get_database();
@@ -2645,22 +2596,22 @@ impl NetworkLayer {
                     } else {
                         return Err(anyhow::anyhow!("User registry not available"));
                     };
-                    
+
                     let chain_transaction_result = crate::utils::transaction::create_chain_transaction_from_deposit_intent(&intent, group_public_key, derived_eth_addr.as_ref(), derived_btc_addr.as_ref(), transaction_type.clone(), vault_eth_addr.as_ref(), vault_btc_addr.as_ref(), amount).await;
-                    
+
                     match chain_transaction_result {
                         Ok(chain_transaction) => {
                             info!("📝 [LOCAL] Created {} transaction from deposit intent", signing_node.get_chain_type());
-                            
+
                             // Set available nodes from node manager before signing
                             let available_nodes: Vec<PeerId> = self.node_manager.get_active_nodes().into_iter().collect();
                             signing_node.set_available_nodes(available_nodes);
-                            
+
                             // Use the signing key we got earlier
                             if let Some(key) = signing_key {
                                 info!("🔐 [LOCAL] Got signing key for deposit intent");
                                 signing_node.set_private_key_from_scalar(key);
-                                
+
                                 // Set the appropriate group public key based on transaction type
                                 match transaction_type {
                                     crate::types::TransactionType::UserToVault => {
@@ -2702,16 +2653,16 @@ impl NetworkLayer {
                                 info!("❌ [LOCAL] Could not get signing key for deposit intent");
                                 return Ok(());
                             }
-                            
+
                             // Create transaction bytes using the chain handler
                             let tx_bytes = signing_node.get_chain_handler().create_transaction_bytes(&chain_transaction)
                                 .unwrap_or_else(|e| {
                                     warn!("Failed to create transaction bytes: {}", e);
                                     vec![]
                                 });
-                            info!("🔐 [LOCAL] Starting {} signing process for deposit intent: 0x{}", 
+                            info!("🔐 [LOCAL] Starting {} signing process for deposit intent: 0x{}",
                                   signing_node.get_chain_type(), hex::encode(tx_bytes.clone()));
-                            
+
                             // Handle Bitcoin and EVM differently - DummyTransaction is only for EVM!
                             match chain_transaction {
                                 crate::chain::ChainTransaction::Bitcoin(ref btc_tx) => {
@@ -2766,13 +2717,13 @@ impl NetworkLayer {
                                             }
                                         }
                                     };
-                                    
+
                                     signing_node.sign_message(tx_bytes.clone(), &dummy_tx, user_tweaked_share, user_eth_address.clone(), Some(intent_hash.clone()), Some(transaction_type.clone())).await?;
 
                                     // // Only execute contract transaction for UserToVault transaction type
                                     // if matches!(transaction_type, crate::types::TransactionType::UserToVault) {
                                     //     info!("📝 [LOCAL] UserToVault transaction detected - executing contract call");
-                                        
+
                                     //     let mut hasher: sha2::digest::core_api::CoreWrapper<sha3::Keccak256Core> = sha3::Keccak256::new();
                                     //     hasher.update(&tx_bytes);
                                     //     let tx_hash = hasher.finalize();
@@ -2784,12 +2735,12 @@ impl NetworkLayer {
 
                                     //     match contract_call_result {
                                     //         Ok(contract_transaction) => {
-                        
-                                    //             info!("📝 [LOCAL] Created contract call transaction");   
+
+                                    //             info!("📝 [LOCAL] Created contract call transaction");
                                     //             let available_nodes: Vec<PeerId> = self.node_manager.get_active_nodes().into_iter().collect();
                                     //             signing_node.set_available_nodes(available_nodes);
-                                                                            
-                        
+
+
                                     //             match contract_transaction {
                                     //                 crate::chain::ChainTransaction::Ethereum(ref eth_tx) => {
                                     //                     let contract_tx = crate::rpc_server::ContractTransaction {
@@ -2803,7 +2754,7 @@ impl NetworkLayer {
                                     //                     };
                                     //                     let contract_tx_bytes = crate::utils::transaction::create_transaction_for_signing_contract(&contract_tx);
                                     //                     debug!("→ RLP payload contract call: 0x{}", hex::encode(&contract_tx_bytes));
-                        
+
                                     //                     let vault_tweaked_share = if let Some(dkg_node) = &self.dkg_node {
                                     //                         dkg_node.get_vault_tweaked_secret_share().await
                                     //                     } else {
@@ -2822,7 +2773,7 @@ impl NetworkLayer {
                                     //     }
                                     // } else if matches!(transaction_type, crate::types::TransactionType::NetworkToTarget){
                                     //     info!("📝 [GOSSIPSUB] networkToTarget transaction detected - executing contract call");
-                                        
+
                                     //     let mut hasher: sha2::digest::core_api::CoreWrapper<sha3::Keccak256Core> = sha3::Keccak256::new();
                                     //     hasher.update(&tx_bytes);
                                     //     let tx_hash = hasher.finalize();
@@ -2834,12 +2785,12 @@ impl NetworkLayer {
 
                                     //     match contract_call_result {
                                     //         Ok(contract_transaction) => {
-                        
-                                    //             info!("📝 [GOSSIPSUB] Created contract call transaction");   
+
+                                    //             info!("📝 [GOSSIPSUB] Created contract call transaction");
                                     //             let available_nodes: Vec<PeerId> = self.node_manager.get_active_nodes().into_iter().collect();
                                     //             signing_node.set_available_nodes(available_nodes);
-                                                                            
-                        
+
+
                                     //             match contract_transaction {
                                     //                 crate::chain::ChainTransaction::Ethereum(ref eth_tx) => {
                                     //                     let contract_tx = crate::rpc_server::ContractTransaction {
@@ -2853,7 +2804,7 @@ impl NetworkLayer {
                                     //                     };
                                     //                     let contract_tx_bytes = crate::utils::transaction::create_transaction_for_signing_contract(&contract_tx);
                                     //                     debug!("→ RLP payload contract call: 0x{}", hex::encode(&contract_tx_bytes));
-                        
+
                                     //                     let vault_tweaked_share = if let Some(dkg_node) = &self.dkg_node {
                                     //                         dkg_node.get_vault_tweaked_secret_share().await
                                     //                     } else {
@@ -2870,7 +2821,7 @@ impl NetworkLayer {
                                     //             warn!("❌ [GOSSIPSUB] Failed to create contract call transaction: {}", e);
                                     //         }
                                     //     }
-                                        
+
                                     // }
                                 }
                             }
@@ -2959,7 +2910,7 @@ impl NetworkLayer {
                                     };
 
                                     if let Some(vault_group_key) = vault_group_key {
-                                        
+
                                         // Execute contract call
                                         if let Err(e) = self.execute_contract_call_for_transaction(
                                             &intent,
@@ -3021,18 +2972,11 @@ impl NetworkLayer {
                 // Use fetch_ethereum_nonce from transaction utils
                 let nonce = crate::utils::transaction::fetch_ethereum_nonce(&from_address, chain_id).await?;
 
-                // Get dynamic gas price for Qubetics, fallback to static for other chains
-                let gas_price = get_gas_price_for_chain(chain_to_use, chain_id).await
-                    .unwrap_or_else(|e| {
-                        warn!("⚠️ Failed to get gas price: {}, using fallback", e);
-                        get_default_gas_price_for_chain(chain_to_use)
-                    });
-
                 let ethereum_tx = EthereumTransaction {
                     to: solver_address.clone(),
                     value: format!("0x{:x}", reward),
                     gas_limit: 300000,
-                    gas_price,
+                    gas_price: get_default_gas_price_for_chain(chain_to_use),
                     nonce,
                     data: None,
                     chain_id,
@@ -3064,7 +3008,7 @@ impl NetworkLayer {
                     // Set available nodes from node manager before signing
                     let available_nodes: Vec<PeerId> = self.node_manager.get_active_nodes().into_iter().collect();
                     signing_node.set_available_nodes(available_nodes);
-                    
+
                     if let Some(dkg_node) = &self.dkg_node {
                         if let Some(secret_share) = dkg_node.get_final_secret_share().await {
                             info!("🔐 [REWARD] Got secret share from DKG: {:?}", secret_share);
@@ -3080,7 +3024,7 @@ impl NetworkLayer {
                         info!("❌ [REWARD] DKG node not available");
                         return Ok(());
                     }
-                    
+
                 } else {
                     warn!("❌ [REWARD] Signing node not available for solver reward");
                 }
@@ -3102,7 +3046,7 @@ impl NetworkLayer {
             }
             ChannelMessage::UserRegistration { ethereum_address, node_id } => {
                 info!("👤 [NETWORK] Broadcasting user registration: {} from node {}", ethereum_address, node_id);
-                
+
                 // Directly update commitments locally using the stored HMAC constant
                 if let (Some(user_registry), Some(dkg_node)) = (&self.user_registry, &self.dkg_node) {
                     if let Some(reg) = user_registry.get_user_by_address(&ethereum_address).await {
@@ -3144,7 +3088,7 @@ impl NetworkLayer {
                 };
                 let msg_bytes = serde_json::to_vec(&user_reg_msg)
                     .map_err(|e| anyhow::anyhow!("Failed to serialize user registration: {}", e))?;
-                
+
                 // Broadcast to all peers via gossipsub
                 let topic = gossipsub::IdentTopic::new("user-registrations");
                 swarm.behaviour_mut().gossipsub.publish(topic, msg_bytes)?;
@@ -3155,25 +3099,25 @@ impl NetworkLayer {
                     .duration_since(UNIX_EPOCH)
                     .unwrap()
                     .as_secs();
-                
+
                 // Check if 5 minutes have passed since first node start time (t1)
                 if let Some(t1) = self.first_node_start_time {
                     let elapsed_since_t1 = current_time.saturating_sub(t1);
                     let five_minutes = 5 * 60; // 5 minutes in seconds
-                    
+
                     if elapsed_since_t1 > five_minutes {
-                        warn!("⏰ DKG start skipped: More than 5 minutes have passed since first node start time t1 (elapsed: {}s, t1: {})", 
+                        warn!("⏰ DKG start skipped: More than 5 minutes have passed since first node start time t1 (elapsed: {}s, t1: {})",
                               elapsed_since_t1, t1);
                         return Ok(());
                     }
-                    
-                    info!("🚀 Starting DKG at the exact agreed instant {}! (t1: {}, elapsed: {}s)", 
+
+                    info!("🚀 Starting DKG at the exact agreed instant {}! (t1: {}, elapsed: {}s)",
                           current_time, t1, elapsed_since_t1);
                 } else {
                     warn!("⚠️ No first node start time (t1) available - this shouldn't happen!");
                     info!("🚀 Starting DKG at the exact agreed instant {}!", current_time);
                 }
-                
+
                 let total = self.node_manager.get_total_nodes();
                 let threshold = self.node_manager.get_threshold();
                 if let Some(dkg) = &mut self.dkg_node {
@@ -3201,25 +3145,22 @@ impl NetworkLayer {
                         .duration_since(UNIX_EPOCH)
                         .unwrap()
                         .as_secs();
-                    if let Err(e) = self.set_first_node_start_time(t1) {
-                        warn!("⚠️ Failed to set first node start time: {}", e);
-                    } else {
-                        info!("🕐 First node detected after bootstrap timeout (total_nodes=1) - setting t1: {}", t1);
-                        
-                        // First node starts with default round 0 (already initialized in constructor)
-                        
-                        // Subscribe to topics now that we have t1
-                        info!("🔔 Subscribing to topics as first node...");
-                        if let Err(e) = self.subscribe_to_topics_with_time_check(swarm).await {
-                            warn!("❌ Failed to subscribe to topics: {:?}", e);
-                        }
+                    self.first_node_start_time = Some(t1);
+                    info!("🕐 First node detected after bootstrap timeout (total_nodes=1) - setting t1: {}", t1);
+
+                    // First node starts with default round 0 (already initialized in constructor)
+
+                    // Subscribe to topics now that we have t1
+                    info!("🔔 Subscribing to topics as first node...");
+                    if let Err(e) = self.subscribe_to_topics_with_time_check(swarm).await {
+                        warn!("❌ Failed to subscribe to topics: {:?}", e);
                     }
                 } else if total_nodes > 1 && !self.vrf_round_requested {
                     info!("🔄 Found {} nodes in network - will sync t1 from existing nodes", total_nodes);
                     self.vrf_round_requested = true; // Prevent duplicate requests
 
                     self.sync_signing_node_thresholds().await;
-                    
+
                     // Request current VRF round from existing nodes for proper initialization
                     let peers: HashSet<PeerId> = self.node_manager.get_active_nodes();
                     if let Some(peer) = peers.iter().find(|p| **p != self.local_peer_id) {
@@ -3234,7 +3175,7 @@ impl NetworkLayer {
                             info!("📤 Sent VRF round request to peer {}", peer);
                         } else {
                             warn!("⚠️ Peer {} not connected, cannot request VRF round", peer);
-                            
+
                             // Try to find another connected peer
                             let mut found_connected_peer = false;
                             for other_peer in peers.iter() {
@@ -3250,7 +3191,7 @@ impl NetworkLayer {
                                     break;
                                 }
                             }
-                            
+
                             if !found_connected_peer {
                                 warn!("⚠️ No connected peers found for VRF round sync - will retry later");
                                 self.vrf_round_requested = false; // Allow retry later
@@ -3288,7 +3229,7 @@ impl NetworkLayer {
         if let Some(eth_address) = user_eth_address {
             // Use user-specific tweaked share
             info!("🔑 [NETWORK] Using user-specific tweaked share for signing - User: {}", eth_address);
-            
+
             if let Some(user_registry) = &self.user_registry {
                 match user_registry.get_user_by_address(eth_address).await {
                     Some(user) => {
@@ -3312,7 +3253,7 @@ impl NetworkLayer {
         } else {
             // Use network's original DKG share
             info!("🔑 [NETWORK] Using network's original DKG share for signing");
-            
+
             if let Some(dkg_node) = &self.dkg_node {
                 if let Some(secret_share) = dkg_node.get_final_secret_share().await {
                     info!("✅ [NETWORK] Found network's DKG share");
@@ -3344,20 +3285,20 @@ impl NetworkLayer {
             tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
 
             let contract_call_result = crate::utils::transaction::create_chain_transaction_from_contract_call(
-                vault_group_key, 
-                amount, 
-                intent, 
-                intent_hash, 
-                tx_hash, 
+                vault_group_key,
+                amount,
+                intent,
+                intent_hash,
+                tx_hash,
                 transaction_type.clone()
             ).await;
 
             match contract_call_result {
                 Ok(contract_transaction) => {
-                    info!("📝 [CONTRACT] Created contract call transaction");   
+                    info!("📝 [CONTRACT] Created contract call transaction");
                     let available_nodes: Vec<PeerId> = self.node_manager.get_active_nodes().into_iter().collect();
                     signing_node.set_available_nodes(available_nodes);
-                                        
+
                     match contract_transaction {
                         crate::chain::ChainTransaction::Ethereum(ref eth_tx) => {
                             let contract_tx = crate::rpc_server::ContractTransaction {
@@ -3391,7 +3332,7 @@ impl NetworkLayer {
         } else {
             warn!("❌ [CONTRACT] Signing node not available for contract call execution");
         }
-        
+
         Ok(())
     }
 }

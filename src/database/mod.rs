@@ -3,19 +3,19 @@ use rocksdb::{Options, DB};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing::{debug, error, info};
-
+ 
 pub mod consensus_storage;
 pub mod dkg_storage;
 pub mod reward_storage;
 pub mod signing_storage;
 pub mod user_storage;
-
+ 
 pub use consensus_storage::{ConsensusStats, ConsensusStorage};
 pub use dkg_storage::DkgStorage;
 pub use reward_storage::RewardStorage;
 pub use signing_storage::SigningStorage;
 pub use user_storage::{IntentStorage, TransactionStatusStorage, UserStorage};
-
+ 
 /// Database configuration
 #[derive(Debug, Clone)]
 pub struct DatabaseConfig {
@@ -23,7 +23,7 @@ pub struct DatabaseConfig {
     pub create_if_missing: bool,
     pub max_open_files: i32,
 }
-
+ 
 impl Default for DatabaseConfig {
     fn default() -> Self {
         Self {
@@ -33,13 +33,13 @@ impl Default for DatabaseConfig {
         }
     }
 }
-
+ 
 /// Main database wrapper around RocksDB
 #[derive(Clone)]
 pub struct Database {
     db: Arc<DB>,
 }
-
+ 
 impl Database {
     /// Create a new database instance
     pub fn new(config: DatabaseConfig) -> Result<Self> {
@@ -49,15 +49,15 @@ impl Database {
         opts.set_write_buffer_size(64 * 1024 * 1024); // 64MB
         opts.set_max_write_buffer_number(3);
         opts.set_target_file_size_base(64 * 1024 * 1024); // 64MB
-
+ 
         let db = DB::open(&opts, &config.path)
             .map_err(|e| anyhow!("Failed to open database at {}: {}", config.path, e))?;
-
+ 
         info!("🗄️ [DATABASE] Opened RocksDB at: {}", config.path);
-
+ 
         Ok(Self { db: Arc::new(db) })
     }
-
+ 
     /// Store a key-value pair where both key and value are serializable
     pub fn put<K, V>(&self, key: &K, value: &V) -> Result<()>
     where
@@ -68,11 +68,11 @@ impl Database {
             bincode::serialize(key).map_err(|e| anyhow!("Failed to serialize key: {}", e))?;
         let value_bytes =
             bincode::serialize(value).map_err(|e| anyhow!("Failed to serialize value: {}", e))?;
-
+ 
         self.db
             .put(&key_bytes, &value_bytes)
             .map_err(|e| anyhow!("Failed to put data: {}", e))?;
-
+ 
         debug!(
             "🔧 [DATABASE] Stored key-value pair (key size: {}, value size: {})",
             key_bytes.len(),
@@ -80,7 +80,7 @@ impl Database {
         );
         Ok(())
     }
-
+ 
     /// Store a key-value pair where key is string and value is serializable
     pub fn put_string<V>(&self, key: &str, value: &V) -> Result<()>
     where
@@ -88,15 +88,15 @@ impl Database {
     {
         let value_bytes =
             bincode::serialize(value).map_err(|e| anyhow!("Failed to serialize value: {}", e))?;
-
+ 
         self.db
             .put(key.as_bytes(), &value_bytes)
             .map_err(|e| anyhow!("Failed to put data: {}", e))?;
-
+ 
         debug!("🔧 [DATABASE] Stored string key-value pair: {}", key);
         Ok(())
     }
-
+ 
     /// Get a value by key where both key and value are deserializable
     pub fn get<K, V>(&self, key: &K) -> Result<Option<V>>
     where
@@ -105,7 +105,7 @@ impl Database {
     {
         let key_bytes =
             bincode::serialize(key).map_err(|e| anyhow!("Failed to serialize key: {}", e))?;
-
+ 
         match self.db.get(&key_bytes) {
             Ok(Some(value_bytes)) => {
                 let value: V = bincode::deserialize(&value_bytes)
@@ -123,7 +123,7 @@ impl Database {
             Err(e) => Err(anyhow!("Failed to get data: {}", e)),
         }
     }
-
+ 
     /// Get a value by string key where value is deserializable
     pub fn get_string<V>(&self, key: &str) -> Result<Option<V>>
     where
@@ -143,7 +143,7 @@ impl Database {
             Err(e) => Err(anyhow!("Failed to get data: {}", e)),
         }
     }
-
+ 
     /// Delete a key-value pair
     pub fn delete<K>(&self, key: &K) -> Result<()>
     where
@@ -151,25 +151,25 @@ impl Database {
     {
         let key_bytes =
             bincode::serialize(key).map_err(|e| anyhow!("Failed to serialize key: {}", e))?;
-
+ 
         self.db
             .delete(&key_bytes)
             .map_err(|e| anyhow!("Failed to delete data: {}", e))?;
-
+ 
         debug!("🗑️ [DATABASE] Deleted key-value pair");
         Ok(())
     }
-
+ 
     /// Delete a key-value pair by string key
     pub fn delete_string(&self, key: &str) -> Result<()> {
         self.db
             .delete(key.as_bytes())
             .map_err(|e| anyhow!("Failed to delete data: {}", e))?;
-
+ 
         debug!("🗑️ [DATABASE] Deleted string key: {}", key);
         Ok(())
     }
-
+ 
     /// Store keypair bytes
     pub fn put_keypair(&self, key: &str, keypair_bytes: &[u8]) -> Result<()> {
         self.db.put(key.as_bytes(), keypair_bytes)
@@ -177,7 +177,7 @@ impl Database {
         debug!("🔑 [DATABASE] Stored keypair with key: {}", key);
         Ok(())
     }
-
+ 
     /// Get keypair bytes
     pub fn get_keypair(&self, key: &str) -> Result<Option<Vec<u8>>> {
         match self.db.get(key.as_bytes()) {
@@ -192,7 +192,7 @@ impl Database {
             Err(e) => Err(anyhow!("Failed to get keypair: {}", e)),
         }
     }
-
+ 
     /// Check if a key exists
     pub fn contains_key<K>(&self, key: &K) -> Result<bool>
     where
@@ -200,14 +200,14 @@ impl Database {
     {
         let key_bytes =
             bincode::serialize(key).map_err(|e| anyhow!("Failed to serialize key: {}", e))?;
-
+ 
         match self.db.get(&key_bytes) {
             Ok(Some(_)) => Ok(true),
             Ok(None) => Ok(false),
             Err(e) => Err(anyhow!("Failed to check key existence: {}", e)),
         }
     }
-
+ 
     /// Check if a string key exists
     pub fn contains_string_key(&self, key: &str) -> Result<bool> {
         match self.db.get(key.as_bytes()) {
@@ -216,20 +216,20 @@ impl Database {
             Err(e) => Err(anyhow!("Failed to check key existence: {}", e)),
         }
     }
-
+ 
     /// Get all keys with a specific prefix
     pub fn get_keys_with_prefix(&self, prefix: &str) -> Result<Vec<String>> {
         let mut keys = Vec::new();
         let prefix_bytes = prefix.as_bytes();
-
+ 
         let iter = self.db.iterator(rocksdb::IteratorMode::From(
             prefix_bytes,
             rocksdb::Direction::Forward,
         ));
-
+ 
         for item in iter {
             let (key_bytes, _) = item.map_err(|e| anyhow!("Iterator error: {}", e))?;
-
+ 
             // Check if key starts with prefix
             if key_bytes.starts_with(prefix_bytes) {
                 if let Ok(key_str) = String::from_utf8(key_bytes.to_vec()) {
@@ -243,7 +243,7 @@ impl Database {
                 break;
             }
         }
-
+ 
         debug!(
             "🔍 [DATABASE] Found {} keys with prefix: {}",
             keys.len(),
@@ -251,7 +251,7 @@ impl Database {
         );
         Ok(keys)
     }
-
+ 
     /// Get all values with a specific key prefix
     pub fn get_values_with_prefix<V>(&self, prefix: &str) -> Result<Vec<(String, V)>>
     where
@@ -259,15 +259,15 @@ impl Database {
     {
         let mut results = Vec::new();
         let prefix_bytes = prefix.as_bytes();
-
+ 
         let iter = self.db.iterator(rocksdb::IteratorMode::From(
             prefix_bytes,
             rocksdb::Direction::Forward,
         ));
-
+ 
         for item in iter {
             let (key_bytes, value_bytes) = item.map_err(|e| anyhow!("Iterator error: {}", e))?;
-
+ 
             // Check if key starts with prefix
             if key_bytes.starts_with(prefix_bytes) {
                 if let Ok(key_str) = String::from_utf8(key_bytes.to_vec()) {
@@ -291,7 +291,7 @@ impl Database {
                 break;
             }
         }
-
+ 
         debug!(
             "🔍 [DATABASE] Found {} values with prefix: {}",
             results.len(),
@@ -299,7 +299,7 @@ impl Database {
         );
         Ok(results)
     }
-
+ 
     /// Batch write operations
     pub fn batch_write<F>(&self, operations: F) -> Result<()>
     where
@@ -307,20 +307,20 @@ impl Database {
     {
         let mut batch_writer = BatchWriter::new();
         operations(&mut batch_writer)?;
-
+ 
         let op_count = batch_writer.op_count;
         let batch = batch_writer.build()?;
         self.db
             .write(batch)
             .map_err(|e| anyhow!("Failed to execute batch write: {}", e))?;
-
+ 
         info!(
             "🔧 [DATABASE] Executed batch write with {} operations",
             op_count
         );
         Ok(())
     }
-
+ 
     /// Flush database to disk
     pub fn flush(&self) -> Result<()> {
         self.db
@@ -329,36 +329,14 @@ impl Database {
         debug!("🔄 [DATABASE] Flushed database to disk");
         Ok(())
     }
-
-    /// Store the first node start time
-    pub fn put_first_node_start_time(&self, start_time: u64) -> Result<()> {
-        use crate::database::key_utils;
-        let key = key_utils::first_node_start_time_key();
-        self.put_string(&key, &start_time)?;
-        info!("🕐 [DATABASE] Stored first node start time: {}", start_time);
-        Ok(())
-    }
-
-    /// Get the first node start time
-    pub fn get_first_node_start_time(&self) -> Result<Option<u64>> {
-        use crate::database::key_utils;
-        let key = key_utils::first_node_start_time_key();
-        let result = self.get_string::<u64>(&key)?;
-        if result.is_some() {
-            info!("🕐 [DATABASE] Retrieved first node start time: {:?}", result);
-        } else {
-            debug!("🕐 [DATABASE] No first node start time found in database");
-        }
-        Ok(result)
-    }
 }
-
+ 
 /// Batch writer for efficient bulk operations
 pub struct BatchWriter {
     batch: rocksdb::WriteBatch,
     op_count: usize,
 }
-
+ 
 impl BatchWriter {
     fn new() -> Self {
         Self {
@@ -366,7 +344,7 @@ impl BatchWriter {
             op_count: 0,
         }
     }
-
+ 
     /// Add a put operation to the batch
     pub fn put<K, V>(&mut self, key: &K, value: &V) -> Result<()>
     where
@@ -377,12 +355,12 @@ impl BatchWriter {
             bincode::serialize(key).map_err(|e| anyhow!("Failed to serialize key: {}", e))?;
         let value_bytes =
             bincode::serialize(value).map_err(|e| anyhow!("Failed to serialize value: {}", e))?;
-
+ 
         self.batch.put(&key_bytes, &value_bytes);
         self.op_count += 1;
         Ok(())
     }
-
+ 
     /// Add a put operation with string key to the batch
     pub fn put_string<V>(&mut self, key: &str, value: &V) -> Result<()>
     where
@@ -390,12 +368,12 @@ impl BatchWriter {
     {
         let value_bytes =
             bincode::serialize(value).map_err(|e| anyhow!("Failed to serialize value: {}", e))?;
-
+ 
         self.batch.put(key.as_bytes(), &value_bytes);
         self.op_count += 1;
         Ok(())
     }
-
+ 
     /// Add a delete operation to the batch
     pub fn delete<K>(&mut self, key: &K) -> Result<()>
     where
@@ -403,24 +381,24 @@ impl BatchWriter {
     {
         let key_bytes =
             bincode::serialize(key).map_err(|e| anyhow!("Failed to serialize key: {}", e))?;
-
+ 
         self.batch.delete(&key_bytes);
         self.op_count += 1;
         Ok(())
     }
-
+ 
     /// Add a delete operation with string key to the batch
     pub fn delete_string(&mut self, key: &str) -> Result<()> {
         self.batch.delete(key.as_bytes());
         self.op_count += 1;
         Ok(())
     }
-
+ 
     fn build(self) -> Result<rocksdb::WriteBatch> {
         Ok(self.batch)
     }
 }
-
+ 
 /// Database key prefixes for different data types
 pub mod keys {
     pub const USER_REGISTRATION: &str = "user:";
@@ -454,21 +432,20 @@ pub mod keys {
     pub const CLAIMED_REQUEST_AMOUNT: &str = "claimed_request_amount:";
     pub const INTENT_REWARD_STATUS: &str = "intent_reward_status:";
     pub const PEER_KEYPAIR: &str = "peer_keypair";
-    pub const FIRST_NODE_START_TIME: &str = "first_node_start_time";
 }
-
+ 
 /// Utility functions for key generation
 pub mod key_utils {
     use super::keys;
-
+ 
     pub fn user_key(ethereum_address: &str) -> String {
         format!("{}{}", keys::USER_REGISTRATION, ethereum_address)
     }
-
+ 
     pub fn intent_key(intent_hash: &str) -> String {
         format!("{}{}", keys::INTENT_REGISTRY, intent_hash)
     }
-
+ 
     pub fn user_intent_key(ethereum_address: &str, intent_hash: &str) -> String {
         format!(
             "{}{}:{}",
@@ -477,75 +454,75 @@ pub mod key_utils {
             intent_hash
         )
     }
-
+ 
     pub fn intent_transaction_ids_key(intent_hash: &str) -> String {
         format!("{}{}", keys::INTENT_TRANSACTION_IDS, intent_hash)
     }
-
+ 
     pub fn transaction_status_key(tx_hash: &str) -> String {
         format!("{}{}", keys::TRANSACTION_STATUS, tx_hash)
     }
-
+ 
     pub fn public_key_key(node_id: &str) -> String {
         format!("{}{}", keys::PUBLIC_KEY, node_id)
     }
-
+ 
     pub fn signature_key(node_id: &str) -> String {
         format!("{}{}", keys::SIGNATURE, node_id)
     }
-
+ 
     pub fn signature_round_key(round: u64, node_id: &str) -> String {
         format!("{}{}:{}", keys::SIGNATURE_ROUND, round, node_id)
     }
-
+ 
     pub fn final_node_round_key(round: u64) -> String {
         format!("{}{}", keys::FINAL_NODE_ROUND, round)
     }
-
+ 
     pub fn pending_transaction_key(round: u64) -> String {
         format!("{}{}", keys::PENDING_TRANSACTION, round)
     }
-
+ 
     pub fn consensus_round_key(round: u64) -> String {
         format!("{}{}", keys::CONSENSUS_ROUND, round)
     }
-
+ 
     pub fn consensus_result_key(round: u64) -> String {
         format!("{}{}", keys::CONSENSUS_RESULT, round)
     }
-
+ 
     pub fn selected_nodes_key(round: u64) -> String {
         format!("{}{}", keys::SELECTED_NODES, round)
     }
-
+ 
     pub fn solver_amounts_key(node_id: &str, solver_id: &str) -> String {
         format!("{}{}:{}", keys::SOLVER_AMOUNTS, node_id, solver_id)
     }
-
+ 
     pub fn all_solver_amounts_key(node_id: &str) -> String {
         format!("{}all:{}", keys::SOLVER_AMOUNTS, node_id)
     }
-
+ 
     pub fn total_liquidity_tics_key() -> String {
         keys::TOTAL_LIQUIDITY_TICS.to_string()
     }
-
+ 
     pub fn total_liquidity_btc_key() -> String {
         keys::TOTAL_LIQUIDITY_BTC.to_string()
     }
-
+ 
     pub fn solver_reward_key(solver_address: &str) -> String {
         format!("{}{}", keys::SOLVER_REWARD, solver_address.to_lowercase())
     }
-
+ 
     pub fn solver_reward_tics_key(solver_address: &str) -> String {
         format!("{}{}", keys::SOLVER_REWARD_TICS, solver_address.to_lowercase())
     }
-
+ 
     pub fn solver_reward_btc_key(solver_address: &str) -> String {
         format!("{}{}", keys::SOLVER_REWARD_BTC, solver_address.to_lowercase())
     }
-
+ 
     pub fn claimed_request_amount_key(solver_address: &str) -> String {
         format!(
             "{}{}",
@@ -553,16 +530,12 @@ pub mod key_utils {
             solver_address.to_lowercase()
         )
     }
-
+ 
     pub fn intent_reward_status_key(intent_hash: &str) -> String {
         format!(
             "{}{}",
             keys::INTENT_REWARD_STATUS,
             intent_hash.to_lowercase()
         )
-    }
-
-    pub fn first_node_start_time_key() -> String {
-        keys::FIRST_NODE_START_TIME.to_string()
     }
 }
