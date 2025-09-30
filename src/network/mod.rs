@@ -387,8 +387,8 @@ impl NetworkLayer {
         let mut peerlist_logger = tokio::time::interval(Duration::from_secs(300));
 
 
-        swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
-        swarm.listen_on("/ip4/0.0.0.0/udp/0/quic-v1".parse()?)?;
+        swarm.listen_on("/ip4/0.0.0.0/tcp/4001".parse()?)?;
+        swarm.listen_on("/ip4/0.0.0.0/udp/4002/quic-v1".parse()?)?;
 
 
         let args: Vec<String> = env::args().collect();
