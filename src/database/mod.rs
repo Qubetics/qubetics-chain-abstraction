@@ -24,15 +24,6 @@ pub struct DatabaseConfig {
     pub max_open_files: i32,
 }
 
-impl Default for DatabaseConfig {
-    fn default() -> Self {
-        Self {
-            path: "./data/rocksdb".to_string(),
-            create_if_missing: true,
-            max_open_files: 1000,
-        }
-    }
-}
 
 /// Main database wrapper around RocksDB
 #[derive(Clone)]

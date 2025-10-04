@@ -19,6 +19,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{mpsc, RwLock};
 use tracing::{error, info, warn};
+use crate::EnvVars;
 
 pub mod db_signing;
 pub use db_signing::DatabaseSigningNode;
@@ -568,7 +569,8 @@ pub async fn sign_bitcoin_transaction(
             "https://mempool.space/testnet/api/tx"
         };
 
-        let url = std::env::var("MPC_BITCOIN_RPC_URL").unwrap_or_else(|_| default_url.to_string());
+		let vars = EnvVars::load_with_dotenv().map_err(|e| anyhow::anyhow!("Failed to load environment variables: {}", e))?;
+		let url = vars.mpc_bitcoin_rpc_url;
         info!("Broadcasting transaction to: {}", url);
 
         let client = reqwest::Client::new();
@@ -812,10 +814,12 @@ pub async fn sign_bitcoin_transaction(
     
     /// Fetch nonce for an Ethereum address from the blockchain
     pub async fn fetch_ethereum_nonce(address: &str, chain_id: u64) -> Result<u64> {
+        let vars = EnvVars::load_with_dotenv().map_err(|e| anyhow::anyhow!("Failed to load environment variables: {}", e))?;
+		let url = vars.mpc_ethereum_rpc_url;
+
+
         let rpc_url = match chain_id {
-            9029 => std::env::var("MPC_ETHEREUM_RPC_URL")
-                .unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string()),
-            1 => "https://mainnet.infura.io/v3/YOUR_PROJECT_ID".to_string(), // Ethereum mainnet
+            9029 => url,
             _ => return Err(anyhow!("Unsupported chain ID for nonce fetching: {}", chain_id)),
         };
 
@@ -859,10 +863,13 @@ pub async fn sign_bitcoin_transaction(
 
     /// Broadcast Ethereum transaction to Qubetics chain
     async fn broadcast_ethereum_transaction(raw_tx_hex: &str, chain_id: u64) -> Result<Option<String>> {
+
+        let vars = EnvVars::load_with_dotenv().map_err(|e| anyhow::anyhow!("Failed to load environment variables: {}", e))?;
+		let url = vars.mpc_ethereum_rpc_url;
+
+
         let rpc_url = match chain_id {
-            9029 => std::env::var("MPC_ETHEREUM_RPC_URL")
-                .unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string()),
-            1 => "https://mainnet.infura.io/v3/YOUR_PROJECT_ID".to_string(), // Ethereum mainnet
+            9029 => url,
             _ => return Err(anyhow!("Unsupported chain ID for broadcasting: {}", chain_id)),
         };
 
@@ -4107,15 +4114,12 @@ pub async fn handle_btc_signature_for_round(
 
     /// Update solver amounts for UserToVault transactions
     pub async fn update_solver_amounts_for_user_to_vault(&self, _intent_hash: &str) -> Result<()> {
-        // Configuration for contract interaction
-        let rpc_url = std::env::var("SOLVER_CONTRACT_RPC_URL")
-            .unwrap_or_else(|_| "http://localhost:8545".to_string());
-        let contract_address = std::env::var("SOLVER_CONTRACT_ADDRESS")
-            .unwrap_or_else(|_| "0x0000000000000000000000000000000000000000".to_string());
-        let chain_id = std::env::var("SOLVER_CONTRACT_CHAIN_ID")
-            .unwrap_or_else(|_| "1".to_string())
-            .parse::<u64>()
-            .unwrap_or(1);
+        let env_vars = EnvVars::load_with_dotenv()
+        .map_err(|e| anyhow::anyhow!("Failed to load environment variables: {}", e))?;
+
+        let rpc_url = env_vars.solver_contract_rpc_url;
+        let contract_address = env_vars.solver_contract_address;
+        let chain_id = env_vars.solver_contract_chain_id;
 
         // Skip if using default/placeholder values
         if contract_address == "0x0000000000000000000000000000000000000000" {
@@ -4602,39 +4606,22 @@ impl Default for ChainBroadcastConfig {
 impl BroadcastConfig {
     pub fn from_env() -> Self {
         let mut config = Self::default();
-        
-        // Load from environment variables
-        if let Ok(val) = std::env::var("MPC_CONTINUE_ON_BROADCAST_FAILURE") {
-            config.continue_on_failure = val.parse().unwrap_or(true);
-        }
-        
-        if let Ok(val) = std::env::var("MPC_MAX_BROADCAST_RETRIES") {
-            config.max_retries = val.parse().unwrap_or(3);
-        }
-        
-        if let Ok(val) = std::env::var("MPC_RETRY_DELAY_MS") {
-            config.retry_delay_ms = val.parse().unwrap_or(1000);
-        }
-        
-        if let Ok(val) = std::env::var("MPC_LOG_FAILURES_AS_WARNINGS") {
-            config.log_failures_as_warnings = val.parse().unwrap_or(true);
-        }
+        let env_vars = EnvVars::load_with_dotenv().unwrap();
+
+        config.continue_on_failure = env_vars.mpc_continue_on_broadcast_failure;
+        config.max_retries = env_vars.mpc_max_broadcast_retries;
+        config.retry_delay_ms = env_vars.mpc_retry_delay_ms;
+        config.log_failures_as_warnings = env_vars.mpc_log_failures_as_warnings;
+
         
         // Load chain-specific configurations
         if let Some(eth_config) = config.chain_configs.get_mut("ethereum") {
-            eth_config.rpc_url = std::env::var("MPC_ETHEREUM_RPC_URL")
-                .unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string());
-        }
-
-        if let Ok(chain_id) = std::env::var("MPC_ETHEREUM_CHAIN_ID") {
-            if let Some(eth_config) = config.chain_configs.get_mut("ethereum") {
-                eth_config.chain_id = chain_id.parse().unwrap_or(9029);
-            }
+            eth_config.rpc_url = env_vars.mpc_ethereum_rpc_url;
+            eth_config.chain_id = env_vars.mpc_ethereum_chain_id;
         }
 
         if let Some(btc_config) = config.chain_configs.get_mut("bitcoin") {
-            btc_config.rpc_url = std::env::var("MPC_BITCOIN_RPC_URL")
-                .unwrap_or_else(|_| "https://api.blockcypher.com/v1/btc/test3/txs/push".to_string());
+            btc_config.rpc_url = env_vars.mpc_bitcoin_rpc_url;
         }
         
         config
