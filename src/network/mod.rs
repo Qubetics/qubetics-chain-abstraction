@@ -98,7 +98,6 @@ pub struct NetworkLayer {
     user_registry: Option<DatabaseUserRegistry>,
     node_manager: Box<dyn NodeMembership>,
     scheduled_dkg_task: Option<JoinHandle<()>>,
-    first_node_start_time: Option<u64>, // t1 - Unix timestamp when first node started
     vrf_round_requested: bool, // Flag to prevent duplicate VRF round requests
 }
 
@@ -122,7 +121,6 @@ impl NetworkLayer {
             user_registry: None,
             node_manager,
             scheduled_dkg_task: None,
-            first_node_start_time: None,
             vrf_round_requested: false,
         })
     }
@@ -159,21 +157,6 @@ impl NetworkLayer {
             info!("📋 [NETWORK] Set user registry on signing node for transaction ID storage");
         } else {
             info!("⚠️ [NETWORK] Signing node not available when setting user registry");
-        }
-    }
-
-    /// Synchronize signing node thresholds with current node manager state
-    /// This should be called after peer discovery to ensure thresholds are correct
-    pub async fn sync_signing_node_thresholds(&mut self) {
-        let current_threshold = self.node_manager.get_threshold();
-        let total_nodes = self.node_manager.get_total_nodes();
-
-        info!("🔄 [THRESHOLD] Syncing signing node thresholds - Total nodes: {}, Threshold: {}", total_nodes, current_threshold);
-
-        // Update signing node threshold
-        if let Some(signing_node) = &mut self.signing_node {
-            signing_node.set_threshold(current_threshold);
-            info!("✅ [THRESHOLD] Updated signing node threshold to {}", current_threshold);
         }
     }
 
@@ -346,22 +329,8 @@ impl NetworkLayer {
             .build();
 
         // Check if this is an existing node with DKG data - if so, subscribe to topics immediately
-        if let Some(dkg_node) = &self.dkg_node {
-            let has_final_secret = dkg_node.get_final_secret_share().await.is_some();
-            let has_final_public = dkg_node.get_final_public_key().await.is_some();
-
-            if has_final_secret && has_final_public {
-                info!("🔄 Existing node detected with DKG data - subscribing to topics immediately");
-                if let Err(e) = self.subscribe_to_default_topics(&mut swarm) {
-                    warn!("❌ Failed to subscribe to topics for existing node: {:?}", e);
-                }
-            } else {
-                info!("🆕 New node detected - topic subscription will be done later after determining first node start time (t1)");
-            }
-        } else {
-            info!("🆕 No DKG node available - topic subscription will be done later after determining first node start time (t1)");
-        }
-
+        self.subscribe_to_default_topics(&mut swarm)?;
+        
         info!("Starting Kademlia bootstrap...");
 
         // Node manager will determine if this is the first node
@@ -379,7 +348,6 @@ impl NetworkLayer {
         let tx_clone = self.message_tx.clone();
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_secs(3)).await;
-            let _ = tx_clone.send(ChannelMessage::CheckIfFirstNode).await;
         });
         let mut bootstrap_timer = tokio::time::interval(Duration::from_secs(300));
         let mut discovery_timer = tokio::time::interval(Duration::from_secs(300));
@@ -387,8 +355,8 @@ impl NetworkLayer {
         let mut peerlist_logger = tokio::time::interval(Duration::from_secs(300));
 
 
-        swarm.listen_on("/ip4/0.0.0.0/tcp/4001".parse()?)?;
-        swarm.listen_on("/ip4/0.0.0.0/udp/4002/quic-v1".parse()?)?;
+        swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
+        swarm.listen_on("/ip4/0.0.0.0/udp/0/quic-v1".parse()?)?;
 
 
         let args: Vec<String> = env::args().collect();
@@ -494,8 +462,6 @@ impl NetworkLayer {
                     // Also search for random peers to populate routing table
                     let random_peer = PeerId::random();
                     swarm.behaviour_mut().kademlia.get_closest_peers(random_peer);
-
-                    self.sync_signing_node_thresholds().await;
                 }
 
                 _ = dkg_status_timer.tick() => {
@@ -520,83 +486,6 @@ impl NetworkLayer {
                 }
             };
         }
-    }
-
-    /// Check if adding NEW peers is allowed (within 5-minute window)
-    /// Note: This should only be called after checking that the peer is not already in the node manager
-    async fn is_peer_addition_allowed(&self) -> bool {
-        if let Some(t1) = self.first_node_start_time {
-            let current_time = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs();
-            let elapsed_since_t1 = current_time.saturating_sub(t1);
-            let five_minutes = 5 * 60; // 5 minutes in seconds
-
-            // Determine node type for logging purposes
-            let node_type = if let Some(dkg_node) = &self.dkg_node {
-                let has_final_secret = dkg_node.get_final_secret_share().await.is_some();
-                let has_final_public = dkg_node.get_final_public_key().await.is_some();
-                if has_final_secret && has_final_public {
-                    "existing node with DKG data"
-                } else {
-                    "new node"
-                }
-            } else {
-                "new node"
-            };
-
-            // Apply the same 5-minute rule regardless of node type
-            if elapsed_since_t1 > five_minutes {
-                warn!("⏰ NEW peer addition blocked by {}: More than 5 minutes have passed since first node start time t1 (elapsed: {}s, t1: {})", node_type, elapsed_since_t1, t1);
-                false
-            } else {
-                info!("✅ {} allowing NEW peer addition - within 5-minute window (elapsed: {}s since t1: {})", node_type, elapsed_since_t1, t1);
-                true
-            }
-        } else {
-            // If we don't have t1 yet, allow peer addition (for bootstrap process)
-            info!("⚠️ No first node start time available yet - allowing peer addition for bootstrap");
-            true
-        }
-    }
-
-    /// Subscribe to topics with 5-minute rule check (allows existing nodes)
-    async fn subscribe_to_topics_with_time_check(
-        &mut self,
-        swarm: &mut libp2p::Swarm<MPCBehaviour>,
-    ) -> Result<()> {
-        // Check if this is an existing node restarting (has DKG data)
-        if let Some(dkg_node) = &self.dkg_node {
-            let has_final_secret = dkg_node.get_final_secret_share().await.is_some();
-            let has_final_public = dkg_node.get_final_public_key().await.is_some();
-
-            if has_final_secret && has_final_public {
-                info!("✅ Existing node with DKG data - topic subscription allowed (bypassing 5-minute rule)");
-                return self.subscribe_to_default_topics(swarm);
-            }
-        }
-
-        // Check if more than 5 minutes have passed since first node start time
-        if let Some(t1) = self.first_node_start_time {
-            let current_time = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs();
-            let elapsed_since_t1 = current_time.saturating_sub(t1);
-            let five_minutes = 5 * 60; // 5 minutes in seconds
-
-            if elapsed_since_t1 > five_minutes {
-                warn!("⏰ Topic subscription skipped: More than 5 minutes have passed since first node start time t1 (elapsed: {}s, t1: {})", elapsed_since_t1, t1);
-                return Ok(());
-            }
-
-            info!("✅ Within 5-minute window - proceeding with topic subscription (elapsed: {}s since t1: {})", elapsed_since_t1, t1);
-        } else {
-            info!("⚠️ No first node start time available yet - proceeding with topic subscription");
-        }
-
-        self.subscribe_to_default_topics(swarm)
     }
 
     fn subscribe_to_default_topics(
@@ -760,19 +649,15 @@ impl NetworkLayer {
                     if current_nodes.contains(&peer_id) {
                         info!("ℹ️ Peer {} already exists in node manager, skipping", peer_id);
                     } else {
-                        if self.is_peer_addition_allowed().await {
-                            self.node_manager
-                                    .add_node(peer_id)
-                                    .map_err(|e| anyhow::anyhow!(e))?;
+                        self.node_manager
+                                .add_node(peer_id)
+                                .map_err(|e| anyhow::anyhow!(e))?;
 
-                            // Update signing node threshold after adding peer
-                            if let Some(signing_node) = &mut self.signing_node {
-                                let new_threshold = self.node_manager.get_threshold();
-                                signing_node.set_threshold(new_threshold);
-                                info!("🔄 [THRESHOLD] Updated signing node threshold to {} after Kademlia peer addition", new_threshold);
-                            }
-                        } else {
-                            warn!("🚫 Peer {} not added to node manager - outside 5-minute window", peer_id);
+                        // Update signing node threshold after adding peer
+                        if let Some(signing_node) = &mut self.signing_node {
+                            let new_threshold = self.node_manager.get_threshold();
+                            signing_node.set_threshold(new_threshold);
+                            info!("🔄 [THRESHOLD] Updated signing node threshold to {} after Kademlia peer addition", new_threshold);
                         }
                     }
 
@@ -842,16 +727,6 @@ impl NetworkLayer {
 
                 // Try to discover more peers through this connection
                 swarm.behaviour_mut().kademlia.get_closest_peers(peer_id);
-
-                // If this node doesn't have first node start time (t1), request it from the connected peer
-                if self.first_node_start_time.is_none() {
-                    info!("🔄 Requesting first node start time (t1) from peer {}", peer_id);
-                    let _request_id = swarm.behaviour_mut().request_response.send_request(
-                        &peer_id,
-                        RPCRequest::RequestFirstNodeStartTime
-                    );
-                    info!("📤 Sent request for first node start time to peer {}", peer_id);
-                }
             }
 
             SwarmEvent::Behaviour(NetworkEvent::RequestResponse(ReqRespEvent::Message {
@@ -977,12 +852,6 @@ impl NetworkLayer {
                                 self.schedule_dkg_at(start_time);
                                 RPCResponse::Ack
                             }
-                            RPCRequest::RequestFirstNodeStartTime => {
-                                info!("🕐 Received request for first node start time from peer {}", peer);
-                                RPCResponse::FirstNodeStartTimeResponse {
-                                    first_node_start_time: self.first_node_start_time,
-                                }
-                            }
                             RPCRequest::RequestCurrentVrfRound => {
                                 info!("🔄 Received request for current VRF round from peer {}", peer);
                                 let mut current_round = None;
@@ -1008,15 +877,6 @@ impl NetworkLayer {
                                     current_round,
                                 }
                             }
-                            RPCRequest::ShareFirstNodeStartTime { first_node_start_time } => {
-                                info!("🕐 Received first node start time: {} from peer {}", first_node_start_time, peer);
-                                // Only update if we don't have a time yet (new node syncing)
-                                if self.first_node_start_time.is_none() {
-                                    self.first_node_start_time = Some(first_node_start_time);
-                                    info!("✅ Synced first node start time (t1) to: {}", first_node_start_time);
-                                }
-                                RPCResponse::Ack
-                            }
                             _ => RPCResponse::Ack
                         };
                         // here the following line will send to the other connected peers (incl any testing agent(s))
@@ -1040,13 +900,6 @@ impl NetworkLayer {
                         match response {
                             RPCResponse::PeerList { peers } => {
                                 info!("🔄 Merging peer‐set from {}: {:?}", peer, peers);
-
-                                // Check 5-minute rule before adding peers from peer list
-                                if !self.is_peer_addition_allowed().await {
-                                    warn!("🚫 Peer list merging blocked - outside 5-minute window");
-                                    return Ok(());
-                                }
-
                                 for SerializablePeerId(p) in peers {
                                     if !self.node_manager.get_active_nodes().contains(&p) {
                                         self.node_manager.add_node(p.clone())
@@ -1081,24 +934,6 @@ impl NetworkLayer {
                             RPCResponse::ShareAccepted => {
                             }
 
-                            RPCResponse::FirstNodeStartTimeResponse { first_node_start_time } => {
-                                if let Some(t1) = first_node_start_time {
-                                    info!("🕐 Received first node start time response: {} from peer {}", t1, peer);
-                                    // Only update if we don't have a time yet (new node syncing)
-                                    if self.first_node_start_time.is_none() {
-                                        self.first_node_start_time = Some(t1);
-                                        info!("✅ Synced first node start time (t1) to: {}", t1);
-
-                                        // Subscribe to topics now that we have t1 (with 5-minute check)
-                                        info!("🔔 Attempting to subscribe to topics after syncing t1...");
-                                        if let Err(e) = self.subscribe_to_topics_with_time_check(swarm).await {
-                                            warn!("❌ Failed to subscribe to topics: {:?}", e);
-                                        }
-                                    }
-                                } else {
-                                    info!("ℹ️ Peer {} doesn't have first node start time either", peer);
-                                }
-                            }
 
                             RPCResponse::CurrentVrfRoundResponse { current_round } => {
                                 if let Some(network_round) = current_round {
@@ -2244,12 +2079,6 @@ impl NetworkLayer {
                     return Ok(());
                 }
 
-                // Check 5-minute rule before adding peer to node manager
-                if !self.is_peer_addition_allowed().await {
-                    warn!("🚫 Peer {} not added to node manager - outside 5-minute window", peer);
-                    return Ok(());
-                }
-
                 match self.node_manager.add_node(peer) {
                     Ok(_) => {
                         info!("✅ Successfully added peer {} to node manager", peer);
@@ -3100,24 +2929,6 @@ impl NetworkLayer {
                     .unwrap()
                     .as_secs();
 
-                // Check if 5 minutes have passed since first node start time (t1)
-                if let Some(t1) = self.first_node_start_time {
-                    let elapsed_since_t1 = current_time.saturating_sub(t1);
-                    let five_minutes = 5 * 60; // 5 minutes in seconds
-
-                    if elapsed_since_t1 > five_minutes {
-                        warn!("⏰ DKG start skipped: More than 5 minutes have passed since first node start time t1 (elapsed: {}s, t1: {})",
-                              elapsed_since_t1, t1);
-                        return Ok(());
-                    }
-
-                    info!("🚀 Starting DKG at the exact agreed instant {}! (t1: {}, elapsed: {}s)",
-                          current_time, t1, elapsed_since_t1);
-                } else {
-                    warn!("⚠️ No first node start time (t1) available - this shouldn't happen!");
-                    info!("🚀 Starting DKG at the exact agreed instant {}!", current_time);
-                }
-
                 let total = self.node_manager.get_total_nodes();
                 let threshold = self.node_manager.get_threshold();
                 if let Some(dkg) = &mut self.dkg_node {
@@ -3134,70 +2945,6 @@ impl NetworkLayer {
                     }
                 } else {
                     warn!("❌ DKG node not initialized at scheduled start!");
-                }
-            }
-            ChannelMessage::CheckIfFirstNode => {
-                // Check if this node is the first node after bootstrap attempts
-                let total_nodes = self.node_manager.get_total_nodes();
-                if self.first_node_start_time.is_none() && total_nodes == 1 {
-                    // This is the first node - set the network start time (t1)
-                    let t1 = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .unwrap()
-                        .as_secs();
-                    self.first_node_start_time = Some(t1);
-                    info!("🕐 First node detected after bootstrap timeout (total_nodes=1) - setting t1: {}", t1);
-
-                    // First node starts with default round 0 (already initialized in constructor)
-
-                    // Subscribe to topics now that we have t1
-                    info!("🔔 Subscribing to topics as first node...");
-                    if let Err(e) = self.subscribe_to_topics_with_time_check(swarm).await {
-                        warn!("❌ Failed to subscribe to topics: {:?}", e);
-                    }
-                } else if total_nodes > 1 && !self.vrf_round_requested {
-                    info!("🔄 Found {} nodes in network - will sync t1 from existing nodes", total_nodes);
-                    self.vrf_round_requested = true; // Prevent duplicate requests
-
-                    self.sync_signing_node_thresholds().await;
-
-                    // Request current VRF round from existing nodes for proper initialization
-                    let peers: HashSet<PeerId> = self.node_manager.get_active_nodes();
-                    if let Some(peer) = peers.iter().find(|p| **p != self.local_peer_id) {
-                        // Check if we're connected to this peer
-                        if swarm.is_connected(peer) {
-                            info!("📡 Requesting current VRF round from connected peer: {:?}", peer);
-                            let request = RPCRequest::RequestCurrentVrfRound;
-                            let _request_id = swarm
-                                .behaviour_mut()
-                                .request_response
-                                .send_request(peer, request);
-                            info!("📤 Sent VRF round request to peer {}", peer);
-                        } else {
-                            warn!("⚠️ Peer {} not connected, cannot request VRF round", peer);
-
-                            // Try to find another connected peer
-                            let mut found_connected_peer = false;
-                            for other_peer in peers.iter() {
-                                if *other_peer != self.local_peer_id && swarm.is_connected(other_peer) {
-                                    info!("📡 Requesting current VRF round from alternative connected peer: {:?}", other_peer);
-                                    let request = RPCRequest::RequestCurrentVrfRound;
-                                    let _request_id = swarm
-                                        .behaviour_mut()
-                                        .request_response
-                                        .send_request(other_peer, request);
-                                    info!("📤 Sent VRF round request to peer {}", other_peer);
-                                    found_connected_peer = true;
-                                    break;
-                                }
-                            }
-
-                            if !found_connected_peer {
-                                warn!("⚠️ No connected peers found for VRF round sync - will retry later");
-                                self.vrf_round_requested = false; // Allow retry later
-                            }
-                        }
-                    }
                 }
             }
         }

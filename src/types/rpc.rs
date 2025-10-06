@@ -96,9 +96,6 @@ pub enum RPCResponse {
     NoResponse,
     Ack,
     Verified,
-    FirstNodeStartTimeResponse {
-        first_node_start_time: Option<u64>,
-    },
     CurrentVrfRoundResponse {
         current_round: Option<u64>,
     },

@@ -149,7 +149,7 @@ async function testUserMpcDeposit({ wallet, amount }) {
     // Construct DepositIntent
     const depositIntent = {
       source_address: userInfo.data.derived_eth_address, // Use canonical address
-      target_address: 'mpXwgf5b8c6m4r3gE6X5cY3u5r3L5Q2d7g',
+      target_address: 'mjM7dnr6ssFeKFVMj9i6quhTnD7fy3k3pG',
       source_chain: 'qubetics',
       target_chain: 'btc',
       amount: amount, // Use the passed amount parameter
@@ -599,7 +599,7 @@ async function runTests() {
 
   // 3) MPC deposit test WITHOUT tx_id (should pass Some(signer) to handle_deposit_intent)
   log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
-  const amount = 19000000000000000000
+  const amount = 20000000000000000000
   await testUserMpcDeposit({ wallet, amount }); 
   
   // const address = '0xbac113cebd9CB2fBD2a01B5CBC43D0fC0EBed5e9';
