@@ -554,7 +554,7 @@ async fn handle_submit_transaction(
     tx: DummyTransaction,
     message_tx: std::sync::Arc<tokio::sync::Mutex<mpsc::Sender<ChannelMessage>>>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
-    info!("📝 HTTP: Received transaction: {:?}", tx);
+    info!("📝 HTTP: Received transaction");
 
     let tx_hash = format!(
         "0x{:x}",
@@ -593,7 +593,7 @@ async fn handle_submit_transaction(
         return Err(warp::reject::custom(TransactionError::NetworkError));
     }
 
-    info!("✅ HTTP: Transaction submitted to network: {}", tx_hash);
+    info!("✅ HTTP: Transaction submitted to network");
 
     Ok(warp::reply::json(&TransactionResponse {
         tx_hash,
@@ -719,11 +719,10 @@ pub async fn handle_deposit_intent(
     transaction_type: crate::types::TransactionType,
     dkg_storage: std::sync::Arc<DkgStorage>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
-    info!("📝 HTTP: Received deposit intent request: {:?}", intent);
-    info!(
-        "📝 HTTP: User eth address for signing: {:?}",
-        user_eth_address
-    );
+    info!("📝 HTTP: Received deposit intent request");
+    if let Some(addr) = &user_eth_address {
+        info!("📝 HTTP: User eth address provided for signing");
+    }
     let mut required_amount_u128 = 0;
 
     // Only do price conversion for NetworkToTarget, else just use intent.amount
@@ -754,10 +753,7 @@ pub async fn handle_deposit_intent(
             .get(target_symbol)
             .ok_or_else(|| warp::reject::custom(TransactionError::NetworkError))?;
 
-        info!(
-            "💱 Conversion: {} {} (source chain: {}) @ {} per unit --> {} (target chain: {}) @ {} per unit",
-            intent.amount, source_symbol, intent.source_chain, source_price, target_symbol, intent.target_chain, target_price
-        );
+        info!("💱 Conversion: computed source->target equivalence using current prices");
 
         // Convert the intent amount using the price ratio so we can compare
         // against the balance of the address on the chain we are about to
@@ -771,18 +767,12 @@ pub async fn handle_deposit_intent(
 
         required_amount_u128 = target_smallest;
 
-        info!(
-            "💱 Conversion: {} {} (source) is equivalent to {} {} (target) smallest units",
-            intent.amount, source_symbol, required_amount_u128, target_symbol
-        );
+        info!("💱 Conversion: source amount converted to target smallest units");
     } else {
         // For VaultToNetwork and other types, use the intent amount plus 10%
         let base_amount = intent.amount + (intent.amount / 10);
         required_amount_u128 = base_amount;
-        info!(
-            "💱 No price conversion needed. Using intent amount as required amount: {} -> {} (source chain: {})",
-            base_amount, required_amount_u128, intent.source_chain
-        );
+        info!("💱 No price conversion needed; using adjusted intent amount");
     }
 
     // Additional balance validation for NetworkToTarget and VaultToNetwork
@@ -1058,10 +1048,10 @@ async fn handle_register_user(
 
             // Log derived addresses if available
             if let Some(eth_addr) = &final_registration.derived_eth_address {
-                info!("📬 HTTP: Derived ETH address for {}: {}", addr_cs, eth_addr);
+                info!("📬 HTTP: Derived ETH address stored for {}", addr_cs);
             }
             if let Some(btc_addr) = &final_registration.derived_btc_address {
-                info!("📬 HTTP: Derived BTC address for {}: {}", addr_cs, btc_addr);
+                info!("📬 HTTP: Derived BTC address stored for {}", addr_cs);
             }
 
             // Successful response
@@ -1415,7 +1405,7 @@ async fn handle_user_mpc_deposit(
     message_tx: std::sync::Arc<tokio::sync::Mutex<mpsc::Sender<ChannelMessage>>>,
     dkg_storage: std::sync::Arc<DkgStorage>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
-    info!("🧾 HTTP: user_mpc_deposit: amount={}", req.msg.amount);
+    info!("🧾 HTTP: user_mpc_deposit received");
     // If transaction ID and status are provided, update the database accordingly
 
     // Serialize the DepositIntent to match the client's JSON.stringify() format
@@ -1513,7 +1503,7 @@ async fn handle_user_mpc_deposit(
         "🔐 Processing MPC deposit - Intent hash: {:?}, Amount: {}",
         intent_hash, req.msg.amount
     );
-    info!("📝 Server JSON serialization: {}", intent_json);
+    info!("📝 Server JSON serialization prepared");
     info!(
         "📏 JSON length: {}, First 100 chars: {}",
         intent_json.len(),

@@ -6,10 +6,10 @@ import { Wallet } from 'ethers';
 // =========================
 // Configuration
 // =========================
-const RPC_BASE_URL = 'http://127.0.0.1:8082';
+const RPC_BASE_URL = 'http://111.119.250.67:8082';
 
 // 👉 Private key you provided (hex, no 0x prefix needed)
-const TEST_PRIVKEY = '2f1765e04f0a5c394eb3b07ee38bf210008473f6e679a4f901f554905f7f3f89';
+const TEST_PRIVKEY = '6176c7ad6a70652a202e1e894badaa5690260cfc5fbf148a7411462e40ee4bf8';
 let TEST_TX_ID = "0x0942448ca6f6517c05c361e249cdaf9f5e054e6290236c43f6537705ef2a7885";
 
 // =========================
@@ -25,8 +25,7 @@ const colors = {
   green: '\x1b[32m'
 };
 
-const oooo = 46187613123
-
+const oooo = 4752453535
 function log(message, color = 'reset') {
   console.log(`${colors[color]}${message}${colors.reset}`);
 }
@@ -153,8 +152,8 @@ async function testUserMpcDeposit({ wallet, amount }) {
       source_chain: 'qubetics',
       target_chain: 'btc',
       amount: amount, // Use the passed amount parameter
-      source_token: 'BTC',
-      target_token: 'TICS',
+      source_token: 'TICS',
+      target_token: 'BTC',
       timestamp: oooo,
     };
     console.log(`📊 Deposit Intent: ${JSON.stringify(depositIntent)}`, 'cyan');
@@ -584,9 +583,9 @@ async function runTests() {
   log(`\n🔑 Derived signer address from TEST_PRIVKEY: ${signerAddr}`, 'blue');
 
   // 1) DKG status
-  // await testDKGStatus();
+  await testDKGStatus();
 
-  // // // // 2) Register ONLY the derived address 
+  // // // 2) Register ONLY the derived address 
   // const reg = await testRegisterUser(signerAddr);
 
   // if (reg.success) {
