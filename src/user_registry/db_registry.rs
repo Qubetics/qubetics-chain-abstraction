@@ -113,10 +113,9 @@ impl DatabaseUserRegistry {
         }
 
         // 6) Store in database
-        info!("💾 [DB_USER_REGISTRY] Preparing to store user registration in database:");
+        info!("💾 [DB_USER_REGISTRY] Preparing to store user registration in database");
         info!("  📧 Ethereum address: {}", addr_cs);
         info!("  🆔 User ID: {}", user_id);
-        info!("  🏗️  Registered by node: {}", node_id);
         info!(
             "  🔑 Has tweaked secret share: {}",
             registration.tweaked_secret_share.is_some()
@@ -254,7 +253,7 @@ impl DatabaseUserRegistry {
     ) -> Result<(), String> {
         let intent_hash_hex = hex::encode(&intent_hash);
 
-        info!("🔐 [DB_USER_REGISTRY] Starting intent hash storage process:");
+        info!("🔐 [DB_USER_REGISTRY] Starting intent hash storage process");
         info!("  🔗 Intent hash (hex): {}", intent_hash_hex);
         info!("  👤 User address: {}", user_address);
         info!("  💰 Intent amount: {}", deposit_intent.amount);
@@ -263,7 +262,7 @@ impl DatabaseUserRegistry {
         info!("  📧 Target address: {}", deposit_intent.target_address);
 
         // Store intent status in user registry
-        info!("📋 [DB_USER_REGISTRY] Step 1: Storing intent status for user...");
+        info!("📋 [DB_USER_REGISTRY] Step 1: Storing intent status for user");
         match self
             .user_storage
             .store_user_intent(user_address, &intent_hash_hex, IntentStatus::Pending)
@@ -282,7 +281,7 @@ impl DatabaseUserRegistry {
         }
 
         // Store actual intent in global registry
-        info!("🌐 [DB_USER_REGISTRY] Step 2: Storing intent in global registry...");
+        info!("🌐 [DB_USER_REGISTRY] Step 2: Storing intent in global registry");
         match self
             .intent_storage
             .store_intent(&intent_hash_hex, deposit_intent)

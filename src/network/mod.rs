@@ -1462,7 +1462,7 @@ impl NetworkLayer {
                     // Generate BLS key pair if not already done
                     if let Some(dkg_node) = &self.dkg_node {
                         if let Some(secret_share) = dkg_node.get_final_secret_share().await {
-                            info!("🔐 [NETWORK] Got secret share from DKG: {:?}", secret_share);
+                            info!("🔐 [NETWORK] Got secret share from DKG");
                             signing_node.set_private_key_from_scalar(secret_share);
 
                             // ✅ Also set the DKG group public key
@@ -1540,12 +1540,12 @@ impl NetworkLayer {
                                                     info!("🔑 [GOSSIPSUB] Stored user-specific group key and derived addresses for {}", ethereum_address);
                                                     // Log the derived addresses
                                                     if let Some(user) = user_registry.get_user_by_address(&ethereum_address).await {
-                                                        if let Some(eth_addr) = &user.derived_eth_address {
-                                                            info!("📬 [GOSSIPSUB] Derived ETH address for {}: {}", ethereum_address, eth_addr);
-                                                        }
-                                                        if let Some(btc_addr) = &user.derived_btc_address {
-                                                            info!("📬 [GOSSIPSUB] Derived BTC address for {}: {}", ethereum_address, btc_addr);
-                                                        }
+                                if user.derived_eth_address.is_some() {
+                                    info!("📬 [GOSSIPSUB] Derived ETH address stored for {}", ethereum_address);
+                                }
+                                if user.derived_btc_address.is_some() {
+                                    info!("📬 [GOSSIPSUB] Derived BTC address stored for {}", ethereum_address);
+                                }
                                                     }
                                                 }
                                             }

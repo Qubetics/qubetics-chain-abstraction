@@ -259,7 +259,7 @@ impl SigningNode {
         self.public_key = Some(public_key);
 
         info!("🔐 [SIGNING] Node {} generated ECDSA key pair", self.id);
-        info!("🔑 [SIGNING] Public key: {:?}", public_key);
+        info!("🔑 [SIGNING] Public key set");
         Ok(())
     }
 
@@ -279,16 +279,11 @@ impl SigningNode {
             "🔐 [SIGNING] Node {} private key set from scalar",
             self.id
         );
-        info!("🔐 [SIGNING] scalar bytes: {:?}", scalar_bytes);
-        // info!("🔐 [SIGNING] Derived key bytes: {:?}", final_key_bytes);
-        info!(
-            "🔐 OOKK [SIGNING] Final secret key: {:?}",
-            hex::encode(secret_key.as_ref())
-        );
+        // Redacted sensitive material (scalar bytes and secret key)
 
         let secp = Secp256k1::new();
         let public_key = PublicKey::from_secret_key(&secp, &secret_key);
-        info!("🔑 [SIGNING] Node {} public key: {:?}", self.id, public_key);
+        info!("🔑 [SIGNING] Node {} public key set", self.id);
 
         self.private_key = Some(secret_key);
         self.public_key = Some(public_key);
@@ -939,9 +934,7 @@ pub async fn sign_bitcoin_transaction(
                 let s = &aggregated_signature[32..64];
                 
                 // Debug: Log signature components
-                info!("🔍 [SIGNING] P2WPKH ECDSA signature components:");
-                info!("  Raw R (32 bytes): {}", hex::encode(r));
-                info!("  Raw S (32 bytes): {}", hex::encode(s));
+                info!("🔍 [SIGNING] P2WPKH ECDSA signature components redacted");
                 
                 // Convert raw r,s to DER-encoded ECDSA signature
                 let mut r32 = [0u8; 32];
@@ -961,7 +954,7 @@ pub async fn sign_bitcoin_transaction(
                     "✅ [SIGNING] Node {} successfully reconstructed signed Bitcoin transaction for round {}",
                     self.id, round
                 );
-                info!("📄 [SIGNING] Signed transaction hex: {}", signed_tx_hex);
+                info!("📄 [SIGNING] Signed transaction prepared");
                 info!("📏 [SIGNING] Transaction size: {} bytes", signed_tx.len());
                 
                 Ok(Some(signed_tx_hex))
@@ -1122,7 +1115,7 @@ pub async fn sign_bitcoin_transaction(
                 
                 info!("💰 [SIGNING] Transaction cost: {} wei", original_tx.value);
                 info!("🔍 [SIGNING] Please ensure the address {} has sufficient balance", nonce_address);
-                info!("🔍 [SIGNING] Data: {:?}", original_tx.data.as_deref().unwrap_or(&[]));
+                info!("🔍 [SIGNING] Data present: {} bytes", original_tx.data.as_deref().unwrap_or(&[]).len());
                 info!("🔍 [SIGNING] Original Nonce: {}", original_tx.nonce);
                 
                 // Create signed transaction using the utility function with dynamic nonce
@@ -1147,7 +1140,7 @@ pub async fn sign_bitcoin_transaction(
                     "✅ [SIGNING] Node {} successfully reconstructed signed Ethereum transaction for round {}",
                     self.id, round
                 );
-                info!("📄 [SIGNING] Signed transaction hex: {}", signed_tx_hex);
+                info!("📄 [SIGNING] Signed transaction prepared");
                 info!("📏 [SIGNING] Transaction size: {} bytes", signed_tx.len());
                 info!("🔗 [SIGNING] Chain ID: {}", chain_id);
                 
@@ -1515,7 +1508,7 @@ pub async fn sign_bitcoin_transaction(
                                 let encoded_point = k256::EncodedPoint::from(affine_point);
                                 let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
                                 
-                                info!("🔑 [SIGNING] UserToVault: Using user-specific group public key for {}: {}", user_addr, hex::encode(&compressed_bytes));
+                info!("🔑 [SIGNING] UserToVault: Using user-specific group public key for {}", user_addr);
                                 Ok(compressed_bytes)
                             } else {
                                 Err(anyhow::anyhow!("User {} has no group key available - ensure user registration and key derivation is completed", user_addr))
@@ -1537,7 +1530,7 @@ pub async fn sign_bitcoin_transaction(
                     let encoded_point = k256::EncodedPoint::from(affine_point);
                     let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
                     
-                    info!("🔑 [SIGNING] NetworkToTarget: Using DKG group public key: {}", hex::encode(&compressed_bytes));
+                    info!("🔑 [SIGNING] NetworkToTarget: Using DKG group public key");
                     Ok(compressed_bytes)
                 } else {
                     Err(anyhow::anyhow!("DKG group public key not available for NetworkToTarget transaction - ensure DKG process is completed"))
@@ -1550,7 +1543,7 @@ pub async fn sign_bitcoin_transaction(
                     let encoded_point = k256::EncodedPoint::from(affine_point);
                     let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
                     
-                    info!("🔑 [SIGNING] VaultToNetwork: Using vault group public key: {}", hex::encode(&compressed_bytes));
+                    info!("🔑 [SIGNING] VaultToNetwork: Using vault group public key");
                     Ok(compressed_bytes)
                 } else {
                     Err(anyhow::anyhow!("Vault group public key not available for VaultToNetwork transaction - ensure vault key is set"))
@@ -1563,7 +1556,7 @@ pub async fn sign_bitcoin_transaction(
                     let encoded_point = k256::EncodedPoint::from(affine_point);
                     let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
                     
-                    info!("🔑 [SIGNING] Fallback: Using DKG group public key: {}", hex::encode(&compressed_bytes));
+                    info!("🔑 [SIGNING] Fallback: Using DKG group public key");
                     Ok(compressed_bytes)
                 } else {
                     Err(anyhow::anyhow!("DKG group public key not available - ensure DKG process is completed"))
@@ -1693,7 +1686,7 @@ pub async fn sign_bitcoin_transaction(
         transaction_type: Option<crate::types::TransactionType>,
     ) -> Result<()> {
         // Determine which key to use for signing
-        info!("🔑 [SIGNING] user_tweaked_share: {:?}\n", user_tweaked_share);
+        // Redacted user_tweaked_share from logs
         let signing_key = if let Some(tweaked_share) = user_tweaked_share {
             // Use user's tweaked share for user deposits
             info!("🔑 [SIGNING] Using user-specific tweaked share for signing");
@@ -1834,7 +1827,7 @@ pub async fn sign_bitcoin_transaction(
         user_eth_address: Option<String>,
     ) -> Result<()> {
         // Determine which key to use for signing
-        info!("🔑 [SIGNING] user_tweaked_share: {:?}\n", user_tweaked_share);
+        // Redacted user_tweaked_share from logs
         let signing_key = if let Some(tweaked_share) = user_tweaked_share {
             // Use user's tweaked share for user deposits
             info!("🔑 [SIGNING] Using user-specific tweaked share for signing");

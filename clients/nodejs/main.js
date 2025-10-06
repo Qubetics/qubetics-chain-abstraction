@@ -40,8 +40,7 @@ function createTicsToBtcDepositIntent() {
 // Function to submit deposit intent
 async function submitDepositIntent(depositIntent, intentType) {
     console.log(`🚀 Submitting ${intentType} deposit intent to MPC network...`);
-    console.log('📋 Deposit Intent:');
-    console.log(JSON.stringify(depositIntent, null, 2));
+    // Avoid logging full deposit intent payload in production
     console.log('\n' + '='.repeat(50));
 
     try {

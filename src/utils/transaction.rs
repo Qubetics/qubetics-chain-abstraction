@@ -1404,40 +1404,31 @@ pub fn get_default_gas_price_for_chain(chain_name: &str) -> String {
 
 /// Get gas price for chain with dynamic fetching for Qubetics
 pub async fn get_gas_price_for_chain(chain_name: &str, chain_id: u64) -> Result<String> {
-    println!("🔧 [GAS_PRICE] get_gas_price_for_chain called: chain={}, chain_id={}", chain_name, chain_id);
+    // Reduced noisy stdout logging in production path
     
     match chain_name {
         "qubetics" => {
-            println!("🔧 [GAS_PRICE] Processing Qubetics chain - fetching dynamic gas price");
+            // Reduced noisy stdout logging in production path
             // Try to fetch dynamic gas price for Qubetics
             match fetch_qubetics_gas_price(chain_id).await {
                 Ok(gas_price) => {
-                    println!("🔧 [GAS_PRICE] ✅ Successfully fetched dynamic gas price: {}", gas_price);
-                    info!("🔄 Using dynamic gas price for Qubetics: {}", gas_price);
+                    info!("Using dynamic gas price for Qubetics: {}", gas_price);
                     // Convert to decimal to show the actual value
                     if let Some(hex_part) = gas_price.strip_prefix("0x") {
                         if let Ok(price_decimal) = u64::from_str_radix(hex_part, 16) {
-                            println!("🔧 [GAS_PRICE] Dynamic gas price in decimal: {} wei ({} Gwei)", 
-                                price_decimal, price_decimal / 1_000_000_000);
-                            info!("🔧 Dynamic gas price in decimal: {} wei ({} Gwei)", 
-                                price_decimal, price_decimal / 1_000_000_000);
+                            info!("Dynamic gas price in decimal: {} wei ({} Gwei)", price_decimal, price_decimal / 1_000_000_000);
                         }
                     }
                     Ok(gas_price)
                 }
                 Err(e) => {
-                    println!("🔧 [GAS_PRICE] ❌ Failed to fetch dynamic gas price: {}, using fallback", e);
-                    warn!("⚠️ Failed to fetch dynamic gas price for Qubetics: {}, using fallback", e);
+                    warn!("Failed to fetch dynamic gas price for Qubetics: {}, using fallback", e);
                     let fallback_price = get_default_gas_price_for_chain(chain_name);
-                    println!("🔧 [GAS_PRICE] Using fallback gas price: {}", fallback_price);
-                    info!("🔧 Using fallback gas price for Qubetics: {}", fallback_price);
+                    info!("Using fallback gas price for Qubetics: {}", fallback_price);
                     // Convert fallback to decimal to show the actual value
                     if let Some(hex_part) = fallback_price.strip_prefix("0x") {
                         if let Ok(price_decimal) = u64::from_str_radix(hex_part, 16) {
-                            println!("🔧 [GAS_PRICE] Fallback gas price in decimal: {} wei ({} Gwei)", 
-                                price_decimal, price_decimal / 1_000_000_000);
-                            info!("🔧 Fallback gas price in decimal: {} wei ({} Gwei)", 
-                                price_decimal, price_decimal / 1_000_000_000);
+                            info!("Fallback gas price in decimal: {} wei ({} Gwei)", price_decimal, price_decimal / 1_000_000_000);
                         }
                     }
                     Ok(fallback_price)
@@ -1445,18 +1436,14 @@ pub async fn get_gas_price_for_chain(chain_name: &str, chain_id: u64) -> Result<
             }
         }
         _ => {
-            println!("🔧 [GAS_PRICE] Processing other chain: {} - using static gas price", chain_name);
+            // Reduced noisy stdout logging in production path
             // Use static gas price for other chains
             let static_price = get_default_gas_price_for_chain(chain_name);
-            println!("🔧 [GAS_PRICE] Using static gas price: {}", static_price);
-            info!("🔧 Using static gas price for {}: {}", chain_name, static_price);
+            info!("Using static gas price for {}: {}", chain_name, static_price);
             // Convert static to decimal to show the actual value
             if let Some(hex_part) = static_price.strip_prefix("0x") {
                 if let Ok(price_decimal) = u64::from_str_radix(hex_part, 16) {
-                    println!("🔧 [GAS_PRICE] Static gas price in decimal: {} wei ({} Gwei)", 
-                        price_decimal, price_decimal / 1_000_000_000);
-                    info!("🔧 Static gas price in decimal: {} wei ({} Gwei)", 
-                        price_decimal, price_decimal / 1_000_000_000);
+                    info!("Static gas price in decimal: {} wei ({} Gwei)", price_decimal, price_decimal / 1_000_000_000);
                 }
             }
             Ok(static_price)
