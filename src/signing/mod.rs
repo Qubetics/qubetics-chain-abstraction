@@ -2917,7 +2917,7 @@ pub async fn sign_bitcoin_transaction(
             
             tokio::spawn(async move {
                 // Handle VRF broadcast via service
-                vrf_service_clone.handle_vrf_broadcast(broadcast, total_nodes).await;
+                vrf_service_clone.handle_vrf_broadcast(broadcast, total_nodes).await; ///////////////////////
 
                 // Check if consensus should be triggered after receiving this broadcast
                 if vrf_service_clone.can_start_consensus(round, min_selections).await {
@@ -3036,19 +3036,19 @@ pub async fn sign_bitcoin_transaction(
                             .await?;
 
                         // Start collecting signatures after a short delay
-                        let mut signing_node_clone = self.clone();
-                        tokio::spawn(async move {
-                            tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-                            if let Err(e) = signing_node_clone
-                                .collect_and_aggregate_signatures(round)
-                                .await
-                            {
-                                error!(
-                                    "❌ [SIGNING] Failed to collect and aggregate signatures: {}",
-                                    e
-                                );
-                            }
-                        });
+                        // let mut signing_node_clone = self.clone();
+                        // tokio::spawn(async move {
+                        //     tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+                        //     if let Err(e) = signing_node_clone
+                        //         .collect_and_aggregate_signatures(round)
+                        //         .await
+                        //     {
+                        //         error!(
+                        //             "❌ [SIGNING] Failed to collect and aggregate signatures: {}",
+                        //             e
+                        //         );
+                        //     }
+                        // });
                     } else {
                         info!(
                             "\x1b[31m📋 [CONSENSUS] This node is not the final selected node for round {}\x1b[0m",
@@ -3194,62 +3194,62 @@ pub async fn sign_bitcoin_transaction(
     }
 
     /// Collect signatures and perform aggregation (for final selected node)
-    pub async fn collect_and_aggregate_signatures(&mut self, round: u64) -> Result<()> {
-        info!(
-            "🔍 [SIGNING] Final node {} waiting for signatures for round {}",
-            self.id, round
-        );
+    // pub async fn collect_and_aggregate_signatures(&mut self, round: u64) -> Result<()> {
+    //     info!(
+    //         "🔍 [SIGNING] Final node {} waiting for signatures for round {}",
+    //         self.id, round
+    //     );
 
-        // Wait a bit for signatures to arrive
-        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+    //     // Wait a bit for signatures to arrive
+    //     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
 
-        // Determine if this is a Bitcoin or EVM round by checking which mapping has data
-        let signatures_by_round = self.signatures_by_round.read().await;
-        let btc_sigs_by_round = self.btc_sigs_by_round.read().await;
+    //     // Determine if this is a Bitcoin or EVM round by checking which mapping has data
+    //     let signatures_by_round = self.signatures_by_round.read().await;
+    //     let btc_sigs_by_round = self.btc_sigs_by_round.read().await;
         
-        let has_evm_sigs = signatures_by_round.contains_key(&round);
-        let has_btc_sigs = btc_sigs_by_round.contains_key(&round);
+    //     let has_evm_sigs = signatures_by_round.contains_key(&round);
+    //     let has_btc_sigs = btc_sigs_by_round.contains_key(&round);
         
-        if has_evm_sigs {
-            // This is an EVM round
-            if let Some(round_signatures) = signatures_by_round.get(&round) {
-                info!(
-                    "📊 [SIGNING] Final node {} has {} EVM signatures for round {}",
-                    self.id,
-                    round_signatures.len(),
-                    round
-                );
-            }
-        } else if has_btc_sigs {
-            // This is a Bitcoin round
-            if let Some(round_btc_sigs) = btc_sigs_by_round.get(&round) {
-                let total_btc_sigs: usize = round_btc_sigs.values().map(|input_sigs| input_sigs.len()).sum();
-                let input_count = round_btc_sigs.len();
-                info!(
-                    "📊 [SIGNING] Final node {} has {} Bitcoin signatures across {} inputs for round {}",
-                    self.id,
-                    total_btc_sigs,
-                    input_count,
-                    round
-                );
+    //     if has_evm_sigs {
+    //         // This is an EVM round
+    //         if let Some(round_signatures) = signatures_by_round.get(&round) {
+    //             info!(
+    //                 "📊 [SIGNING] Final node {} has {} EVM signatures for round {}",
+    //                 self.id,
+    //                 round_signatures.len(),
+    //                 round
+    //             );
+    //         }
+    //     } else if has_btc_sigs {
+    //         // This is a Bitcoin round
+    //         if let Some(round_btc_sigs) = btc_sigs_by_round.get(&round) {
+    //             let total_btc_sigs: usize = round_btc_sigs.values().map(|input_sigs| input_sigs.len()).sum();
+    //             let input_count = round_btc_sigs.len();
+    //             info!(
+    //                 "📊 [SIGNING] Final node {} has {} Bitcoin signatures across {} inputs for round {}",
+    //                 self.id,
+    //                 total_btc_sigs,
+    //                 input_count,
+    //                 round
+    //             );
                 
-                // Check which inputs have been aggregated
-                let btc_done_inputs = self.btc_done_inputs_by_round.read().await;
-                if let Some(done_inputs) = btc_done_inputs.get(&round) {
-                    info!(
-                        "✅ [SIGNING] Bitcoin round {} has {} inputs aggregated out of {} total inputs",
-                        round,
-                        done_inputs.len(),
-                        input_count
-                    );
-                }
-            }
-        } else {
-            info!("⚠️ [SIGNING] No signatures found for round {} (neither EVM nor Bitcoin)", round);
-        }
+    //             // Check which inputs have been aggregated
+    //             let btc_done_inputs = self.btc_done_inputs_by_round.read().await;
+    //             if let Some(done_inputs) = btc_done_inputs.get(&round) {
+    //                 info!(
+    //                     "✅ [SIGNING] Bitcoin round {} has {} inputs aggregated out of {} total inputs",
+    //                     round,
+    //                     done_inputs.len(),
+    //                     input_count
+    //                 );
+    //             }
+    //         }
+    //     } else {
+    //         info!("⚠️ [SIGNING] No signatures found for round {} (neither EVM nor Bitcoin)", round);
+    //     }
 
-        Ok(())
-    }
+    //     Ok(())
+    // }
 
     /// Handle signature request from final selected node
     async fn handle_signature_request(
