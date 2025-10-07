@@ -7,7 +7,7 @@ use ethers::{
     types::{Address, U256},
 };
 use std::str::FromStr;
-use crate::prepare_unsigned_eip1559_tx;
+use crate::{prepare_unsigned_eip1559_tx, Database, DatabaseConfig};
 use libp2p::{
     core::ConnectedPoint, gossipsub::{self, Message, TopicHash}, identity::Keypair, kad::{self, store::MemoryStore, BucketInserts, Event as KademliaEvent}, multiaddr::Protocol, noise, request_response::{
         cbor::Behaviour as CborReqRespBehaviour, Event as ReqRespEvent, Message as ReqRespMessage,
@@ -103,9 +103,9 @@ pub struct NetworkLayer {
 }
 
 impl NetworkLayer {
-    pub async fn new(node_manager: Box<dyn NodeMembership>) -> Result<Self> {
+    pub async fn new(node_manager: Box<dyn NodeMembership>, db: Database) -> Result<Self> {
         // Load or create persistent keypair
-        let (local_key, local_peer_id) = Self::load_or_create_keypair().await?;
+        let (local_key, local_peer_id) = Self::load_or_create_keypair(db).await?;
         let (tx, rx) = mpsc::channel(100);
 
         Ok(Self {
@@ -214,13 +214,10 @@ impl NetworkLayer {
     }
 
     /// Load existing keypair from database or create a new one
-    async fn load_or_create_keypair() -> Result<(Keypair, PeerId)> {
+    async fn load_or_create_keypair(database: Database) -> Result<(Keypair, PeerId)> {
         use crate::database::{Database, DatabaseConfig, keys};
         
-        // Create database connection
-        let db_config = DatabaseConfig::default();
-        let database = Database::new(db_config)?;
-        
+  
         // Try to load existing keypair
         if let Some(keypair_bytes) = database.get_keypair(keys::PEER_KEYPAIR)? {
             match Keypair::from_protobuf_encoding(&keypair_bytes) {
@@ -274,7 +271,7 @@ impl NetworkLayer {
         Ok(())
     }
 
-    pub async fn start(&mut self) -> Result<()> {
+    pub async fn start(&mut self, bootstrap_nodes: Vec<String>) -> Result<()> {
         let mut swarm = libp2p::SwarmBuilder::with_existing_identity(self.local_key.clone())
             .with_tokio()
             .with_tcp(
@@ -390,40 +387,15 @@ impl NetworkLayer {
         swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
         swarm.listen_on("/ip4/0.0.0.0/udp/0/quic-v1".parse()?)?;
 
-
-        let args: Vec<String> = env::args().collect();
-        if args.len() >= 2 {
-            // Parse all addresses from command line arguments
-            let addresses: Vec<Multiaddr> = args[1..]
-                .iter()
-                .filter_map(|arg| {
-                    match arg.parse::<Multiaddr>() {
-                        Ok(addr) => {
-                            info!("Parsed address: {}", addr);
-                            Some(addr)
-                        }
-                        Err(e) => {
-                            error!("Failed to parse address '{}': {}", arg, e);
-                            None
-                        }
-                    }
-                })
-                .collect();
-
-            if addresses.is_empty() {
-                warn!("No valid addresses provided to dial");
+        for node_addr in &bootstrap_nodes {
+            if let Ok(addr) = node_addr.parse::<Multiaddr>() {
+                info!("Connecting to bootstrap node: {}", addr);
+                swarm.dial(addr.clone())?;
             } else {
-                info!("Dialing {} addresses:", addresses.len());
-                for (i, addr) in addresses.iter().enumerate() {
-                    info!("  {}. {}", i + 1, addr);
-                    if let Err(e) = swarm.dial(addr.clone()) {
-                        error!("Failed to dial address {}: {}", addr, e);
-                    } else {
-                        info!("Successfully initiated dial to: {}", addr);
-                    }
-                }
+                warn!("Invalid bootstrap node address: {}", node_addr);
             }
         }
+
         info!("Local Peer ID: {}", self.local_peer_id);
 
         loop {

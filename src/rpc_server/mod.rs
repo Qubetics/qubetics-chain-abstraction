@@ -3,6 +3,7 @@ use crate::types::{rpc::RPCRequest, ChannelMessage};
 use crate::user_registry::{
     checksum_from_any, to_checksum_address, DatabaseUserRegistry, TransactionStatus,
 };
+use crate::EnvVars;
 use serde_json::Value;
 use secp256k1::{
     ecdsa::{RecoverableSignature, RecoveryId},
@@ -1222,8 +1223,9 @@ async fn wait_for_transaction_result(
 pub async fn fetch_crypto_prices() -> Result<HashMap<String, Decimal>, String> {
     use tracing::{debug, error, info};
 
-    let base_url = std::env::var("BACKEND_API_URL")
-        .unwrap_or_else(|_| "http://172.16.15.63:7322".to_string());
+	let vars = EnvVars::load_with_dotenv().map_err(|e| format!("Failed to load environment variables: {}", e))?;
+	let base_url = vars.backend_api_url;
+    
     let url = format!("{}/api/v1/cryptos/prices?symbols=BTC,TICS", base_url);
     let client = reqwest::Client::new();
 
