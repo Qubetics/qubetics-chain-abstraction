@@ -2079,6 +2079,9 @@ impl NetworkLayer {
                     return Ok(());
                 }
 
+                // Check if the new peer is us (the local node)
+                let is_new_node_local = peer == self.local_peer_id;
+                
                 match self.node_manager.add_node(peer) {
                     Ok(_) => {
                         info!("✅ Successfully added peer {} to node manager", peer);
@@ -2087,11 +2090,47 @@ impl NetworkLayer {
                         let total = self.node_manager.get_total_nodes();
                         let threshold = self.node_manager.get_threshold();
                         info!("📊 Updated node count: {}, threshold: {}", total, threshold);
+                        
                         // Update signing node threshold to match current network state
                         if let Some(signing_node) = &mut self.signing_node {
                             let new_threshold = self.node_manager.get_threshold();
                             signing_node.set_threshold(new_threshold);
                             info!("🔄 [THRESHOLD] Updated signing node threshold to {} (total nodes: {})", new_threshold, total);
+                        }
+
+                        // If DKG is completed and a new node joined, trigger the share redistribution
+                        if let Some(dkg_node) = &mut self.dkg_node {
+                            if dkg_node.is_completed().await {
+                                info!("🔄 [NEW_NODE] DKG is completed, handling new node join for peer {}", peer);
+                                
+                                // Calculate the new node's index
+                                let mut all_nodes: Vec<String> = self.node_manager
+                                    .get_active_nodes()
+                                    .into_iter()
+                                    .map(|p| p.to_string())
+                                    .collect();
+                                all_nodes.sort();
+                                
+                                let new_node_index = all_nodes
+                                    .iter()
+                                    .position(|id| id == &peer.to_string())
+                                    .map(|i| i + 1)
+                                    .unwrap_or(total);
+                                
+                                info!("🔄 [NEW_NODE] New node {} assigned index {}", peer, new_node_index);
+                                
+                                // If this is the new node (local), request shares from existing nodes
+                                if is_new_node_local {
+                                    info!("🆕 [NEW_NODE] This is the new local node, requesting shares from existing nodes");
+                                    if let Err(e) = dkg_node.request_shares_as_new_node(new_node_index).await {
+                                        warn!("❌ [NEW_NODE] Failed to request shares as new node: {:?}", e);
+                                    }
+                                }
+                                // If this is an existing node, it will handle the NewNodeJoined message
+                                // when the new node broadcasts it
+                            } else {
+                                info!("ℹ️ [NEW_NODE] DKG not yet completed, skipping new node join handling");
+                            }
                         }
                     }
                     Err(e) => {

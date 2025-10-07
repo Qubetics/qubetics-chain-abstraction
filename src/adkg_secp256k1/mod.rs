@@ -33,6 +33,18 @@ pub enum DKGMessage {
         is_valid: bool,
         round : u64,
     },
+    /// Broadcasted when a new node joins and needs shares
+    NewNodeJoined {
+        new_node_id: String,
+        new_node_index: usize,
+    },
+    /// Sent from existing nodes to the new node with a share
+    NewNodeShare {
+        from: String,
+        to: String,
+        share: KeyShare,
+        commitment: Vec<SerializablePoint>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -94,6 +106,9 @@ impl DKGNode {
         }
         if let Err(e) = self.storage.delete_final_public().await {
             warn!("Failed to delete final public key: {}", e);
+        }
+        if let Err(e) = self.storage.delete_polynomial().await {
+            warn!("Failed to delete polynomial: {}", e);
         }
 
         self.status = DKGStatus::New;
@@ -196,6 +211,11 @@ impl DKGNode {
 
         let polynomial = self.generate_polynomial()?;
         info!("🔢 Generated polynomial: {:?}", polynomial);
+        
+        // Store the polynomial for later use when new nodes join
+        self.storage.set_polynomial(&polynomial).await?;
+        info!("💾 Stored polynomial for future share generation");
+        
         let shares = self.generate_shares(&polynomial)?;
         let commitments = self.generate_commitments(&polynomial)?;
 
@@ -206,7 +226,7 @@ impl DKGNode {
             let my_shares = shares.clone();
             let my_commitments = commitments.clone();
             // This will verify, store in database
-            // and even send you a local “validation” message if you want.
+            // and even send you a local "validation" message if you want.
             self.handle_share_distribution(self.id.clone(), my_shares, my_commitments,node_manager)
                 .await?;
         }
@@ -336,6 +356,16 @@ impl DKGNode {
                     from, to, is_valid
                 );
                 self.handle_share_validation(from, to, is_valid,node_manager).await?;
+            }
+            DKGMessage::NewNodeJoined { new_node_id, new_node_index } => {
+                info!("🆕 New node {} joined at index {}", new_node_id, new_node_index);
+                self.handle_new_node_joined(new_node_id, new_node_index).await?;
+            }
+            DKGMessage::NewNodeShare { from, to, share, commitment } => {
+                info!("📨 Received new node share from {} to {}", from, to);
+                if to == self.id {
+                    self.handle_new_node_share_received(from, share, commitment).await?;
+                }
             }
         }
         Ok(())
@@ -870,5 +900,147 @@ impl DKGNode {
                 warn!("Failed to load shares for logging: {}", e);
             }
         }
+    }
+
+    /// Generate a zero-constant polynomial (constant term is 0)
+    /// This is used when a new node joins to re-randomize shares without changing the secret
+    /// Example: 0 + r1*x + r2*x^2 + ... where r1, r2, ... are random
+    fn generate_zero_constant_polynomial(&self) -> Result<Vec<Scalar>> {
+        let mut rng = OsRng;
+        let mut coefficients = Vec::with_capacity(self.threshold);
+        
+        // First coefficient (constant term) is ZERO
+        coefficients.push(Scalar::ZERO);
+        
+        // Remaining coefficients are random
+        for _ in 1..self.threshold {
+            coefficients.push(Scalar::random(&mut rng));
+        }
+        
+        info!(
+            "🔢 [NEW_NODE] Generated zero-constant polynomial with {} coefficients",
+            coefficients.len()
+        );
+        info!("🔢 [NEW_NODE] Constant term (a0) = {:?} (should be ZERO)", coefficients[0]);
+        
+        Ok(coefficients)
+    }
+
+    /// Called by existing nodes when a new node joins
+    /// Uses the existing polynomial to send a share to the new node
+    /// The polynomial is NOT modified - we just evaluate it at the new node's index
+    async fn handle_new_node_joined(&mut self, new_node_id: String, new_node_index: usize) -> Result<()> {
+        info!("🆕 [NEW_NODE] Handling new node join: {} at index {}", new_node_id, new_node_index);
+        
+        // Get the stored polynomial (existing, unmodified)
+        let polynomial = match self.storage.get_polynomial().await? {
+            Some(poly) => poly,
+            None => {
+                warn!("⚠️ [NEW_NODE] No polynomial stored, cannot generate share for new node");
+                return Ok(());
+            }
+        };
+        
+        info!("🔍 [NEW_NODE] Retrieved stored polynomial with {} coefficients", polynomial.len());
+        info!("🔍 [NEW_NODE] Using EXISTING polynomial (unmodified) to generate share");
+        
+        // Evaluate the existing polynomial at the new node's index
+        // For example: If F(x) = 4+2x and new node index is 5, then F(5) = 4+2*5 = 14
+        let x = Scalar::from(new_node_index as u64);
+        let mut y = Scalar::ZERO;
+        
+        info!("🔍 [NEW_NODE] Evaluating polynomial at x = {}", new_node_index);
+        for (j, coeff) in polynomial.iter().enumerate() {
+            let mut x_pow = Scalar::ONE;
+            for _ in 0..j {
+                x_pow *= x;
+            }
+            let term = *coeff * x_pow;
+            y += term;
+            info!("🔍 [NEW_NODE]   Term {}: coeff * x^{} = {:?}", j, j, term);
+        }
+        
+        info!("🔍 [NEW_NODE] Share for new node at index {}: {:?}", new_node_index, y);
+        
+        let share = KeyShare {
+            index: new_node_index,
+            value: SerializableScalar(y),
+        };
+        
+        // Generate commitments for the existing polynomial
+        let commitments = self.generate_commitments(&polynomial)?;
+        
+        // Send the share to the new node
+        let msg = DKGMessage::NewNodeShare {
+            from: self.id.clone(),
+            to: new_node_id.clone(),
+            share,
+            commitment: commitments,
+        };
+        
+        let gossip_wrap = GossipsubMessage::DKG(msg);
+        let msg_bytes = serde_json::to_vec(&gossip_wrap)?;
+        self.broadcast(MSG_TOPIC_DKG, &msg_bytes).await?;
+        
+        info!("✅ [NEW_NODE] Sent share to new node {} using existing polynomial", new_node_id);
+        
+        Ok(())
+    }
+
+    /// Called by the new node when it receives a share from an existing node
+    async fn handle_new_node_share_received(
+        &mut self,
+        from: String,
+        share: KeyShare,
+        commitments: Vec<SerializablePoint>,
+    ) -> Result<()> {
+        info!("📨 [NEW_NODE] Received share from existing node {}", from);
+        info!("📨 [NEW_NODE] Share index: {}, value: {:?}", share.index, share.value.0);
+        
+        // Verify the share
+        if !self.verify_share(&share.value, share.index, &commitments) {
+            warn!("❌ [NEW_NODE] Share verification failed from {}", from);
+            return Ok(());
+        }
+        
+        info!("✅ [NEW_NODE] Share verified successfully from {}", from);
+        
+        // Convert commitments to raw format for storage
+        let raw_commitments: Vec<AffinePoint> = commitments.into_iter().map(|c| c.0).collect();
+        
+        // Store the share
+        self.storage.store_share(&from, &share).await?;
+        self.storage.store_commitments(&from, &raw_commitments).await?;
+        
+        info!("💾 [NEW_NODE] Stored share from {}", from);
+        
+        // Check if we have received shares from all existing nodes
+        let shares = self.storage.get_all_shares().await?;
+        info!("📊 [NEW_NODE] Total shares received: {}", shares.len());
+        
+        // If we have shares from all nodes, calculate the final secret share
+        // The new node needs shares from all existing nodes
+        // This will be checked in the normal DKG completion flow
+        
+        Ok(())
+    }
+
+    /// Broadcast that this node is new and needs shares
+    /// This should be called when a new node joins the network
+    pub async fn request_shares_as_new_node(&self, node_index: usize) -> Result<()> {
+        info!("🆕 [NEW_NODE] Broadcasting new node join request for node {} at index {}", self.id, node_index);
+        
+        let msg = DKGMessage::NewNodeJoined {
+            new_node_id: self.id.clone(),
+            new_node_index: node_index,
+        };
+        
+        let gossip_wrap = GossipsubMessage::DKG(msg);
+        let msg_bytes = serde_json::to_vec(&gossip_wrap)?;
+        self.broadcast(MSG_TOPIC_DKG, &msg_bytes).await?;
+        
+        info!("✅ [NEW_NODE] Broadcasted new node join request");
+        
+        Ok(())
     }
 }

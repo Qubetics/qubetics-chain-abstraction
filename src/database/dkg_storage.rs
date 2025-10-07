@@ -210,5 +210,39 @@ impl DkgStorage {
         tracing::info!("🗑️ [DKG_STORAGE] Deleted vault group key from database");
         Ok(())
     }
+
+    /// Store the polynomial coefficients for this node
+    pub async fn set_polynomial(&self, polynomial: &[Scalar]) -> Result<()> {
+        let serializable: Vec<SerializableScalar> = polynomial
+            .iter()
+            .map(|&s| SerializableScalar(s))
+            .collect();
+        self.db.put_string(keys::DKG_POLYNOMIAL, &serializable)?;
+        tracing::info!("💾 [DKG_STORAGE] Stored polynomial with {} coefficients", polynomial.len());
+        Ok(())
+    }
+
+    /// Get the stored polynomial coefficients
+    pub async fn get_polynomial(&self) -> Result<Option<Vec<Scalar>>> {
+        let result = self
+            .db
+            .get_string::<Vec<SerializableScalar>>(keys::DKG_POLYNOMIAL)?
+            .map(|v| v.into_iter().map(|s| s.0).collect::<Vec<Scalar>>());
+        
+        if let Some(ref poly) = result {
+            tracing::info!("🔍 [DKG_STORAGE] Retrieved polynomial with {} coefficients", poly.len());
+        } else {
+            tracing::debug!("🔍 [DKG_STORAGE] No polynomial found in database");
+        }
+        
+        Ok(result)
+    }
+
+    /// Delete the stored polynomial
+    pub async fn delete_polynomial(&self) -> Result<()> {
+        self.db.delete_string(keys::DKG_POLYNOMIAL)?;
+        tracing::info!("🗑️ [DKG_STORAGE] Deleted polynomial from database");
+        Ok(())
+    }
 }
 
