@@ -77,10 +77,11 @@ mod tests {
 	#[test]
 	fn test_multiple_bootstrap_nodes() {
 		let cli = Cli::try_parse_from(&[
-            "mpc-node",
-            "--mpc-nodes",
-            "/ip4/192.168.1.155/tcp/64135/p2p/12D3KooWRZzptPrcQya5miu1tHPJCXM6tpbbtB4udrgPwQDGUjHV,/ip4/192.168.1.156/tcp/64136/p2p/12D3KooWAnotherPeerIdHere"
-        ]).unwrap();
+			"mpc-node",
+			"--mpc-nodes",
+			"/ip4/192.168.1.155/tcp/64135/p2p/12D3KooWRZzptPrcQya5miu1tHPJCXM6tpbbtB4udrgPwQDGUjHV,/ip4/192.168.1.156/tcp/64136/p2p/12D3KooWAnotherPeerIdHere",
+		])
+		.unwrap();
 		assert_eq!(cli.bootstrap_nodes.len(), 2);
 		assert_eq!(cli.bootstrap_node_count(), 2);
 	}

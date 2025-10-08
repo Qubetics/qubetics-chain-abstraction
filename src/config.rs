@@ -17,8 +17,8 @@ pub struct EnvVars {
 	pub solver_contract_address: String,
 	pub solver_contract_chain_id: u64,
 
-	// Intent 
-	pub intent_manager_contract_address: String, 
+	// Intent
+	pub intent_manager_contract_address: String,
 
 	// MPC broadcast configuration
 	pub mpc_continue_on_broadcast_failure: bool,
@@ -62,7 +62,6 @@ impl EnvVars {
 			.map_err(|_| "SOLVER_CONTRACT_CHAIN_ID environment variable is required")?
 			.parse()
 			.map_err(|_| "SOLVER_CONTRACT_CHAIN_ID should be a number")?;
-
 
 		let intent_manager_contract_address = env::var("INTENT_MANAGER_CONTRACT_ADDRESS")
 			.map_err(|_| "INTENT_MANAGER_CONTRACT_ADDRESS environment variable is required")?;
