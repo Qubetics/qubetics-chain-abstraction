@@ -663,19 +663,30 @@ impl NetworkLayer {
 
 
                     let total = self.node_manager.get_total_nodes();
-                    let threshold = self.node_manager.get_threshold();
 
-                    if total >= threshold + 1 {
+                    // Check if initial DKG has been completed
+                    let initial_dkg_complete = if let Some(dkg) = &self.dkg_node {
+                        dkg.is_initial_dkg_complete().await
+                    } else {
+                        false
+                    };
+
+                    if initial_dkg_complete {
+                        // Initial DKG is complete, new node resharing will be handled via PeerDiscovery gossipsub
+                        info!("🔒 [DKG] Initial DKG already completed with 4 nodes");
+                        info!("🆕 [NEW_NODE] Total nodes: {}, new node resharing will be triggered via PeerDiscovery gossipsub handler", total);
+                        info!("📡 [NEW_NODE] PeerDiscovery message was already broadcast above, gossipsub handler will process it");
+                    } else if total == 4 {
+                        // First time we have 4 nodes, start initial DKG
                         info!(
-                            "🎯 Sufficient nodes connected ({} >= {} + 1), triggering DKG!",
-                            total, threshold
+                            "🎯 Initial 4 nodes connected, triggering first DKG!",
                         );
 
                         let now_secs = SystemTime::now()
                             .duration_since(UNIX_EPOCH).unwrap()
                             .as_secs();
                         let start_time = now_secs + 10;
-                        info!("🕒 Scheduling DKG start at unix time {}", start_time);
+                        info!("🕒 Scheduling initial DKG start at unix time {}", start_time);
 
                         for peer in self.node_manager.get_active_nodes() {
                             if peer != *self.get_local_peer_id() {
@@ -687,14 +698,12 @@ impl NetworkLayer {
                                     );
                             }
                         }
-                        info!("📅 Scheduled DKG start for all peers at {}", start_time);
+                        info!("📅 Scheduled initial DKG start for all peers at {}", start_time);
                         self.schedule_dkg_at(start_time);
-                    } else {
+                    } else if total < 4 {
                         info!(
-                            "⏳ Waiting for more nodes: {}/{} (need {} + 1)",
-                            total,
-                            threshold + 1,
-                            threshold
+                            "⏳ Waiting for initial 4 nodes: {}/4",
+                            total
                         );
                     }
                 }
@@ -910,6 +919,42 @@ impl NetworkLayer {
                                             let new_threshold = self.node_manager.get_threshold();
                                             signing_node.set_threshold(new_threshold);
                                             info!("🔄 [THRESHOLD] Updated signing node threshold to {} after peer list merge", new_threshold);
+                                        }
+                                    }
+                                }
+                                
+                                // After learning about all peers, check if this is a new node joining existing network
+                                if let Some(dkg_node) = &mut self.dkg_node {
+                                    let total = self.node_manager.get_total_nodes();
+                                    let threshold = self.node_manager.get_threshold();
+                                    
+                                    // Update DKG node parameters with current network size
+                                    dkg_node.update_node_params(total, threshold);
+                                    info!("🔄 [NEW_NODE] Updated DKG params: total_nodes={}, threshold={}", total, threshold);
+                                    
+                                    let has_dkg_data = dkg_node.get_final_secret_share().await.is_some();
+                                    info!("🔍 [NEW_NODE] Has DKG data: {}", has_dkg_data);
+                                    // If this node has no DKG data and network has > 4 nodes, it's a new node joining
+                                    if !has_dkg_data && total > 4 {
+                                        info!("🆕 [NEW_NODE] Learned about {} total nodes, triggering share request", total);
+                                        
+                                        let mut all_nodes: Vec<String> = self.node_manager
+                                            .get_active_nodes()
+                                            .into_iter()
+                                            .map(|p| p.to_string())
+                                            .collect();
+                                        all_nodes.sort();
+                                        
+                                        let new_node_index = all_nodes
+                                            .iter()
+                                            .position(|id| id == &self.local_peer_id.to_string())
+                                            .map(|i| i + 1)
+                                            .unwrap_or(total);
+                                        
+                                        info!("🆕 [NEW_NODE] My index: {}, requesting shares from {} nodes", new_node_index, total - 1);
+                                        
+                                        if let Err(e) = dkg_node.request_shares_as_new_node(new_node_index).await {
+                                            warn!("❌ [NEW_NODE] Failed to request shares: {:?}", e);
                                         }
                                     }
                                 }
@@ -2098,38 +2143,17 @@ impl NetworkLayer {
                             info!("🔄 [THRESHOLD] Updated signing node threshold to {} (total nodes: {})", new_threshold, total);
                         }
 
-                        // If DKG is completed and a new node joined, trigger the share redistribution
+                        // If initial DKG is completed, existing nodes are aware of the new node
+                        // Note: The new node itself won't receive this PeerDiscovery message (gossipsub doesn't echo)
+                        // The new node handles resharing in ConnectionEstablished (dialer section)
                         if let Some(dkg_node) = &mut self.dkg_node {
-                            if dkg_node.is_completed().await {
-                                info!("🔄 [NEW_NODE] DKG is completed, handling new node join for peer {}", peer);
-                                
-                                // Calculate the new node's index
-                                let mut all_nodes: Vec<String> = self.node_manager
-                                    .get_active_nodes()
-                                    .into_iter()
-                                    .map(|p| p.to_string())
-                                    .collect();
-                                all_nodes.sort();
-                                
-                                let new_node_index = all_nodes
-                                    .iter()
-                                    .position(|id| id == &peer.to_string())
-                                    .map(|i| i + 1)
-                                    .unwrap_or(total);
-                                
-                                info!("🔄 [NEW_NODE] New node {} assigned index {}", peer, new_node_index);
-                                
-                                // If this is the new node (local), request shares from existing nodes
-                                if is_new_node_local {
-                                    info!("🆕 [NEW_NODE] This is the new local node, requesting shares from existing nodes");
-                                    if let Err(e) = dkg_node.request_shares_as_new_node(new_node_index).await {
-                                        warn!("❌ [NEW_NODE] Failed to request shares as new node: {:?}", e);
-                                    }
-                                }
-                                // If this is an existing node, it will handle the NewNodeJoined message
-                                // when the new node broadcasts it
+                            let initial_dkg_complete = dkg_node.is_initial_dkg_complete().await;
+                            
+                            if initial_dkg_complete {
+                                info!("🔄 [EXISTING_NODE] New peer {} joined network, will respond to share requests", peer);
+                                // Existing nodes will handle the NewNodeJoined DKG message when the new node broadcasts it
                             } else {
-                                info!("ℹ️ [NEW_NODE] DKG not yet completed, skipping new node join handling");
+                                info!("ℹ️ [NEW_NODE] Initial DKG not yet completed (waiting for 4 nodes)");
                             }
                         }
                     }
@@ -2963,14 +2987,25 @@ impl NetworkLayer {
                 info!("📡 [NETWORK] Broadcasted user registration to P2P network");
             }
             ChannelMessage::ScheduledDKGStart => {
-                let current_time = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs();
-
                 let total = self.node_manager.get_total_nodes();
                 let threshold = self.node_manager.get_threshold();
+                
                 if let Some(dkg) = &mut self.dkg_node {
+                    // This should only be called for initial DKG with 4 nodes
+                    let initial_dkg_complete = dkg.is_initial_dkg_complete().await;
+                    
+                    if initial_dkg_complete {
+                        warn!("⚠️ [DKG] ScheduledDKGStart called but initial DKG already complete. This should not happen.");
+                        return Ok(());
+                    }
+                    
+                    // Start the initial DKG with 4 nodes
+                    info!("🚀 [DKG] Starting initial DKG with {} nodes", total);
+                    
+                    if total != 4 {
+                        warn!("⚠️ [DKG] Expected 4 nodes for initial DKG, but have {}", total);
+                    }
+                    
                     dkg.update_node_params(total, threshold);
                     dkg.reset().await;
                     if let Some(signing_node) = &mut self.signing_node {

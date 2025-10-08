@@ -823,6 +823,15 @@ impl DKGNode {
 
         info!("🏦 [DKG] === VAULT GENERATION COMPLETED ===");
 
+        // Mark initial DKG as complete if this is the first DKG with exactly 4 nodes
+        if self.total_nodes == 4 {
+            if let Err(e) = self.storage.set_initial_dkg_complete(true).await {
+                warn!("⚠️ [DKG] Failed to set initial DKG complete flag: {}", e);
+            } else {
+                info!("🎯 [DKG] Marked initial DKG as complete (4-node setup)");
+            }
+        }
+
         Ok(())
     }
 
@@ -856,6 +865,10 @@ impl DKGNode {
 
     pub async fn is_completed(&self) -> bool {
         matches!(self.status, DKGStatus::Completed)
+    }
+
+    pub async fn is_initial_dkg_complete(&self) -> bool {
+        self.storage.is_initial_dkg_complete().await.unwrap_or(false)
     }
 
     // Test function to verify share generation
@@ -1016,11 +1029,135 @@ impl DKGNode {
         
         // Check if we have received shares from all existing nodes
         let shares = self.storage.get_all_shares().await?;
-        info!("📊 [NEW_NODE] Total shares received: {}", shares.len());
+        let commitments_map = self.storage.get_all_commitments().await?;
+        info!("📊 [NEW_NODE] Total shares received: {}/{}", shares.len(), self.total_nodes - 1);
         
-        // If we have shares from all nodes, calculate the final secret share
-        // The new node needs shares from all existing nodes
-        // This will be checked in the normal DKG completion flow
+        // If we have shares from all existing nodes (total_nodes - 1), calculate the final secret share
+        if shares.len() >= self.total_nodes - 1 {
+            info!("🎉 [NEW_NODE] Received all shares from existing nodes! Calculating final secret share...");
+            
+            // Calculate final secret share by summing all received shares
+            let mut final_secret_share = Scalar::ZERO;
+            
+            info!("🔍 [NEW_NODE] === FINAL SECRET SHARE CALCULATION ===");
+            info!("🔍 [NEW_NODE] Starting with final_secret_share = {:?}", final_secret_share);
+            
+            for (from_node, share) in shares.iter() {
+                info!("✅ [NEW_NODE] Adding share from {} - value: {:?}", from_node, share.value.0);
+                final_secret_share += share.value.0;
+                info!("🔍 [NEW_NODE] New final_secret_share = {:?}", final_secret_share);
+            }
+            
+            info!("🔍 [NEW_NODE] === END FINAL SECRET SHARE CALCULATION ===");
+            
+            // Calculate final public key (sum of all commitment constant terms)
+            let mut final_public_key = ProjectivePoint::IDENTITY;
+            let mut keys: Vec<_> = commitments_map.keys().collect();
+            keys.sort();
+            
+            info!("🔍 [NEW_NODE] Calculating final public key from {} commitment sets", commitments_map.len());
+            
+            for key in keys {
+                if let Some(comms) = commitments_map.get(key) {
+                    if !comms.is_empty() {
+                        info!("✅ [NEW_NODE] Adding commitment C0 from {}: {:?}", key, comms[0]);
+                        final_public_key += ProjectivePoint::from(comms[0]);
+                    }
+                }
+            }
+            
+            // Store the results
+            self.storage.set_final_secret(final_secret_share).await?;
+            self.storage.set_final_public(final_public_key).await?;
+            
+            // Update status
+            self.status = DKGStatus::Completed;
+            
+            // Log the final results
+            info!("🎯 [NEW_NODE] DKG COMPLETED for new node {}!", self.id);
+            info!("🔐 [NEW_NODE] Final secret share: {:?}", final_secret_share);
+            info!("🔑 [NEW_NODE] Final public key: {:?}", final_public_key);
+            info!("📊 [NEW_NODE] Total shares collected: {}", shares.len());
+            info!("✅ [NEW_NODE] DKG status: {:?}", self.status);
+            
+            // Call completion callback if set
+            if let Some(callback) = self.completion_callback.take() {
+                callback(final_secret_share, final_public_key);
+            }
+            
+            // Generate and log addresses
+            let eth_address = utils::get_eth_address_from_group_key(final_public_key);
+            let btc_address = utils::get_btc_address_from_group_key(final_public_key);
+            
+            info!("📬 [NEW_NODE] Ethereum Address from Group Key: {}", eth_address);
+            info!("📬 [NEW_NODE] Bitcoin Address from Group Key: {}", btc_address);
+            
+            // Derive vault addresses using the same flow as regular DKG
+            let vault_hmac = hmac256_from_addr(&eth_address, &self.chain_code)
+                .map_err(|e| anyhow!("Failed to generate vault HMAC: {}", e))?;
+            
+            info!("🏦 [NEW_NODE] === VAULT GENERATION STARTED ===");
+            info!("🏦 [NEW_NODE] Main ETH address: {}", eth_address);
+            info!("🏦 [NEW_NODE] Vault HMAC: {:?}", vault_hmac);
+            
+            let tweak_scalar = k256::Scalar::from_repr(vault_hmac.into()).unwrap();
+            info!("🏦 [NEW_NODE] Vault tweak scalar: {:?}", tweak_scalar);
+            
+            // Calculate and store the vault tweaked secret share
+            match self.calculate_vault_tweaked_secret_share(tweak_scalar).await {
+                Ok(vault_tweaked_secret) => {
+                    info!("🔐 [NEW_NODE] Successfully calculated vault tweaked secret share: {:?}", vault_tweaked_secret);
+                    if let Err(e) = self.storage.set_vault_tweaked_secret(vault_tweaked_secret).await {
+                        warn!("⚠️ [NEW_NODE] Failed to store vault tweaked secret share: {}", e);
+                    } else {
+                        info!("✅ [NEW_NODE] Successfully stored vault tweaked secret share in database");
+                    }
+                }
+                Err(e) => {
+                    warn!("⚠️ [NEW_NODE] Failed to calculate vault tweaked secret share: {}", e);
+                }
+            }
+            
+            // Derive and store the vault group key and addresses
+            match self
+                .derive_user_specific_group_key_from_commitments(tweak_scalar)
+                .await
+            {
+                Ok(vault_group_key) => {
+                    let vault_eth = utils::get_eth_address_from_group_key(vault_group_key);
+                    let vault_btc = utils::get_btc_address_from_group_key(vault_group_key);
+                    info!("🏦 [NEW_NODE] Derived vault group key: {:?}", vault_group_key);
+                    info!("🏦 [NEW_NODE] Vault ETH address: {}", vault_eth);
+                    info!("🏦 [NEW_NODE] Vault BTC address: {}", vault_btc);
+                    
+                    if let Err(e) = self
+                        .storage
+                        .set_vault_addresses(&vault_eth, &vault_btc)
+                        .await
+                    {
+                        warn!("⚠️ [NEW_NODE] Failed to store vault addresses: {}", e);
+                    } else {
+                        info!("✅ [NEW_NODE] Successfully stored vault addresses in database");
+                        info!(
+                            "📦 [NEW_NODE] Vault addresses - ETH: {}, BTC: {}",
+                            vault_eth, vault_btc
+                        );
+                    }
+                    
+                    // Store the vault group key
+                    if let Err(e) = self.storage.set_vault_group_key(vault_group_key).await {
+                        warn!("⚠️ [NEW_NODE] Failed to store vault group key: {}", e);
+                    } else {
+                        info!("✅ [NEW_NODE] Successfully stored vault group key in database");
+                    }
+                }
+                Err(e) => {
+                    warn!("⚠️ [NEW_NODE] Failed to derive vault group key: {}", e);
+                }
+            }
+            
+            info!("🏦 [NEW_NODE] === VAULT GENERATION COMPLETED ===");
+        }
         
         Ok(())
     }

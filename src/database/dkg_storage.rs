@@ -244,5 +244,23 @@ impl DkgStorage {
         tracing::info!("🗑️ [DKG_STORAGE] Deleted polynomial from database");
         Ok(())
     }
+
+    /// Set the initial DKG completion flag (marks that the initial 4-node DKG is complete)
+    pub async fn set_initial_dkg_complete(&self, is_complete: bool) -> Result<()> {
+        self.db.put_string(keys::DKG_INITIAL_COMPLETE, &is_complete)?;
+        tracing::info!("🎯 [DKG_STORAGE] Set initial DKG complete flag: {}", is_complete);
+        Ok(())
+    }
+
+    /// Get the initial DKG completion flag
+    pub async fn is_initial_dkg_complete(&self) -> Result<bool> {
+        let result = self
+            .db
+            .get_string::<bool>(keys::DKG_INITIAL_COMPLETE)?
+            .unwrap_or(false);
+        
+        tracing::debug!("🔍 [DKG_STORAGE] Initial DKG complete flag: {}", result);
+        Ok(result)
+    }
 }
 
