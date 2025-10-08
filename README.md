@@ -74,52 +74,22 @@ cd qubetics-chain-abstraction
 
 2. Build the project:
 ```bash
-make build
-```
-
-Or build individual components:
-```bash
-cargo build --bin mpcn
-cargo build --bin ptp
-cargo build --bin vrf_demo
+cargo build --release --bn mpc-node
 ```
 
 ## Usage
 
 ### Running an MPC Node
 
-Start an MPC node with VRF-based selection:
-```bash
-make runn
+Node 1 
+
+```
+./target/release/mpc-node --data-dir ./data/node1 --dev
 ```
 
-Or directly:
-```bash
-cargo run --bin mpcn
+Node 2 
 ```
-
-### Running a PTP Node
-
-Start a PTP node with optional arguments:
-```bash
-make runt ARGS="--help"
-```
-
-Or directly:
-```bash
-cargo run --bin ptp -- [ARGS]
-```
-
-### VRF Demo
-
-Run the VRF demonstration:
-```bash
-make runvrf
-```
-
-Or directly:
-```bash
-cargo run --bin vrf_demo
+./target/release/mpc-node --data-dir ./data/node2 --mpc-nodes <mpc node id> --dev
 ```
 
 ### Node.js Client
@@ -132,107 +102,6 @@ npm install
 node main.js
 ```
 
-## Project Structure
-
-```
-qubetics-chain-abstraction/
-├── src/
-│   ├── main.rs              # MPC node entry point
-│   ├── bin/
-│   │   ├── ptp.rs           # PTP node entry point
-│   │   └── vrf_demo.rs      # VRF demonstration
-│   ├── network/             # P2P networking layer
-│   ├── dkg/                 # Distributed Key Generation
-│   ├── frost/               # FROST threshold signatures
-│   ├── vrf/                 # VRF-based node selection
-│   ├── chain/               # Blockchain integration
-│   ├── consensus/           # Consensus mechanisms
-│   ├── signing/             # Multi-party signing
-│   ├── settlement/          # Cross-chain settlement
-│   ├── solver/              # Intent solving logic
-│   ├── commands/            # Command processing
-│   ├── node_management/     # Node membership management
-│   │   └── vrf_manager.rs   # VRF-based node manager
-│   ├── types/               # Common type definitions
-│   └── protos/              # Protocol buffer definitions
-├── proto/
-│   └── intent.proto         # Intent service definitions
-├── clients/
-│   └── nodejs/              # Node.js client example
-├── Cargo.toml               # Rust dependencies
-├── Makefile                 # Build and run commands
-└── build.rs                 # Build script
-```
-
-## Protocol
-
-### Intent Submission
-
-Users submit cross-chain intents via gRPC:
-
-```protobuf
-message IntentRequest {
-  string source_chain_id = 1;
-  string destination_chain_id = 2;
-  string source_asset = 3;
-  string destination_asset = 4;
-  string ev_address = 5;
-  uint64 amount = 6;
-  bytes signature = 7;
-}
-```
-
-### DKG Protocol
-
-The DKG protocol follows these steps:
-1. Each node generates a random polynomial
-2. Shares are distributed to all participants
-3. Commitments are broadcast for verification
-4. Valid shares are collected
-5. Group public key is reconstructed
-
-### FROST Signing
-
-The FROST protocol enables threshold signing:
-1. Participants generate nonces and commitments
-2. Commitments are shared
-3. Message is signed using distributed shares
-4. Signature is reconstructed from partial signatures
-
-### VRF Selection Protocol
-
-The VRF-based node selection protocol:
-1. **Round Announcement**: New selection round is announced
-2. **Proof Generation**: Each node generates VRF proof for the round
-3. **Proof Broadcasting**: VRF proofs are shared across the network
-4. **Verification**: All nodes verify received VRF proofs
-5. **Ranking**: Nodes are ranked by VRF output values
-6. **Selection**: Top-ranked nodes are selected for MPC
-
-## Configuration
-
-The system can be configured through environment variables and command-line arguments. Key configuration options include:
-
-- Network ports and addresses
-- DKG threshold and total node count
-- VRF selection interval and parameters
-- Blockchain RPC endpoints
-- Logging levels
-
-## Development
-
-### Building
-
-```bash
-# Build all components
-make build
-
-# Build specific binary
-cargo build --bin mpcn
-cargo build --bin ptp
-cargo build --bin vrf_demo
-```
-
 ### Testing
 
 ```bash
@@ -242,31 +111,6 @@ cargo test
 # Run specific test module
 cargo test test_module_name
 ```
-
-### Logging
-
-The system uses structured logging with tracing. Logs are written to:
-- Console (stdout/stderr)
-- Daily rotating log files in `logs/` directory
-
-Log levels can be configured via `RUST_LOG` environment variable.
-
-## Dependencies
-
-### Rust Dependencies
-- **libp2p**: P2P networking
-- **tokio**: Async runtime
-- **bls12_381**: BLS signature curves
-- **blake3**: VRF implementation and hashing
-- **ethers**: Ethereum integration
-- **tonic**: gRPC framework
-- **serde**: Serialization
-- **tracing**: Logging and observability
-
-### Node.js Dependencies
-- **libp2p**: P2P networking client
-- **cbor-x**: CBOR serialization
-- **@multiformats/multiaddr**: Multiaddress handling
 
 ## Contributing
 
