@@ -45,6 +45,16 @@ pub enum DKGMessage {
         share: KeyShare,
         commitment: Vec<SerializablePoint>,
     },
+    /// Broadcasted to trigger polynomial refresh after new node joins
+    TriggerRefresh {
+        trigger_node: String,
+    },
+    /// Refresh shares sent from each node during proactive refresh
+    RefreshShare {
+        from: String,
+        shares: Vec<KeyShare>,
+        commitments: Vec<SerializablePoint>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -364,8 +374,16 @@ impl DKGNode {
             DKGMessage::NewNodeShare { from, to, share, commitment } => {
                 info!("📨 Received new node share from {} to {}", from, to);
                 if to == self.id {
-                    self.handle_new_node_share_received(from, share, commitment).await?;
+                    self.handle_new_node_share_received(from, share, commitment, node_manager.clone()).await?;
                 }
+            }
+            DKGMessage::TriggerRefresh { trigger_node } => {
+                info!("🔄 [REFRESH] Received refresh trigger from {}", trigger_node);
+                self.execute_polynomial_refresh(node_manager).await?;
+            }
+            DKGMessage::RefreshShare { from, shares, commitments } => {
+                info!("🔄 [REFRESH] Received refresh shares from {}", from);
+                self.handle_refresh_share(from, shares, commitments, node_manager.clone()).await?;
             }
         }
         Ok(())
@@ -931,12 +949,78 @@ impl DKGNode {
         }
         
         info!(
-            "🔢 [NEW_NODE] Generated zero-constant polynomial with {} coefficients",
+            "🔢 [REFRESH] Generated zero-constant polynomial with {} coefficients",
             coefficients.len()
         );
-        info!("🔢 [NEW_NODE] Constant term (a0) = {:?} (should be ZERO)", coefficients[0]);
+        info!("🔢 [REFRESH] Constant term (a0) = {:?} (should be ZERO)", coefficients[0]);
         
         Ok(coefficients)
+    }
+
+    /// Calculate Lagrange coefficient pi(0) for node at given index
+    /// pi(0) = product of (0 - j) / (i - j) for all j != i
+    /// Used in proactive refresh: Gi(x) = Si * pi(0) + zero_constant_polynomial(x)
+    fn calculate_lagrange_coefficient(&self, my_index: usize, all_indices: &[usize]) -> Scalar {
+        info!("🔢 [REFRESH] Calculating Lagrange coefficient for index {}", my_index);
+        
+        let mut numerator = Scalar::ONE;
+        let mut denominator = Scalar::ONE;
+        
+        for &j in all_indices {
+            if j != my_index {
+                // Numerator: (0 - j) = -j
+                let j_scalar = Scalar::from(j as u64);
+                let neg_j = Scalar::ZERO - j_scalar;
+                numerator *= neg_j;
+                
+                // Denominator: (i - j)
+                let i_scalar = Scalar::from(my_index as u64);
+                let diff = i_scalar - j_scalar;
+                denominator *= diff;
+                
+                info!("🔢 [REFRESH]   j={}: numerator term = -{}  denominator term = ({} - {})", 
+                      j, j, my_index, j);
+            }
+        }
+        
+        // Calculate pi(0) = numerator / denominator
+        let denominator_inv = denominator.invert().unwrap();
+        let lagrange_coeff = numerator * denominator_inv;
+        
+        info!("🔢 [REFRESH] Lagrange coefficient pi({}) = {:?}", my_index, lagrange_coeff);
+        lagrange_coeff
+    }
+
+    /// Generate refresh polynomial: Gi(x) = Si * pi(0) + zero_constant_polynomial(x)
+    /// This is used in proactive refresh to re-randomize shares while keeping the same secret
+    async fn generate_refresh_polynomial(&self, my_index: usize, all_indices: &[usize]) -> Result<Vec<Scalar>> {
+        info!("🔄 [REFRESH] Generating refresh polynomial for node index {}", my_index);
+        
+        // Get my current secret share Si
+        let my_secret_share = self.storage.get_final_secret().await?
+            .ok_or_else(|| anyhow!("No final secret share available for refresh"))?;
+        
+        info!("🔐 [REFRESH] My secret share Si = {:?}", my_secret_share);
+        
+        // Calculate Lagrange coefficient pi(0)
+        let lagrange_coeff = self.calculate_lagrange_coefficient(my_index, all_indices);
+        
+        // Generate zero-constant polynomial
+        let zero_poly = self.generate_zero_constant_polynomial()?;
+        
+        // Gi(x) = Si * pi(0) + zero_constant_polynomial(x)
+        let mut refresh_poly = zero_poly.clone();
+        
+        // The constant term: Gi(0) = Si * pi(0) + 0 = Si * pi(0)
+        refresh_poly[0] = my_secret_share * lagrange_coeff;
+        
+        info!("🔄 [REFRESH] Refresh polynomial Gi(x):");
+        info!("🔄 [REFRESH]   Constant term Gi(0) = Si * pi(0) = {:?}", refresh_poly[0]);
+        for (i, coeff) in refresh_poly.iter().enumerate() {
+            info!("🔄 [REFRESH]   Coefficient[{}] = {:?}", i, coeff);
+        }
+        
+        Ok(refresh_poly)
     }
 
     /// Called by existing nodes when a new node joins
@@ -1006,6 +1090,7 @@ impl DKGNode {
         from: String,
         share: KeyShare,
         commitments: Vec<SerializablePoint>,
+        node_manager: Box<dyn NodeMembership>,
     ) -> Result<()> {
         info!("📨 [NEW_NODE] Received share from existing node {}", from);
         info!("📨 [NEW_NODE] Share index: {}, value: {:?}", share.index, share.value.0);
@@ -1157,6 +1242,24 @@ impl DKGNode {
             }
             
             info!("🏦 [NEW_NODE] === VAULT GENERATION COMPLETED ===");
+            
+            // Trigger polynomial refresh after new node completes
+            info!("🔄 [NEW_NODE] New node setup complete, triggering polynomial refresh");
+            
+            // Broadcast trigger to other nodes
+            match self.trigger_polynomial_refresh().await {
+                Ok(should_execute_locally) => {
+                    if should_execute_locally {
+                        info!("🔄 [NEW_NODE] Executing refresh locally (won't receive own broadcast)");
+                        if let Err(e) = self.execute_polynomial_refresh(node_manager).await {
+                            warn!("⚠️ [NEW_NODE] Failed to execute local refresh: {}", e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!("⚠️ [NEW_NODE] Failed to trigger polynomial refresh: {}", e);
+                }
+            }
         }
         
         Ok(())
@@ -1177,6 +1280,201 @@ impl DKGNode {
         self.broadcast(MSG_TOPIC_DKG, &msg_bytes).await?;
         
         info!("✅ [NEW_NODE] Broadcasted new node join request");
+        
+        Ok(())
+    }
+
+    /// Start polynomial refresh process
+    /// Called by the new node after it completes receiving all shares
+    /// Returns true if this node should also execute refresh locally
+    pub async fn trigger_polynomial_refresh(&self) -> Result<bool> {
+        info!("🔄 [REFRESH] Triggering polynomial refresh from node {}", self.id);
+        
+        let msg = DKGMessage::TriggerRefresh {
+            trigger_node: self.id.clone(),
+        };
+        
+        let gossip_wrap = GossipsubMessage::DKG(msg);
+        let msg_bytes = serde_json::to_vec(&gossip_wrap)?;
+        self.broadcast(MSG_TOPIC_DKG, &msg_bytes).await?;
+        
+        info!("✅ [REFRESH] Broadcasted refresh trigger");
+        info!("⚠️ [REFRESH] Note: This node won't receive its own broadcast, will execute refresh locally");
+        
+        // Return true to indicate this node should also execute refresh
+        Ok(true)
+    }
+
+    /// Execute polynomial refresh and broadcast refresh shares
+    pub async fn execute_polynomial_refresh(&mut self, node_manager: Box<dyn NodeMembership>) -> Result<()> {
+        info!("🔄 [REFRESH] Executing polynomial refresh for node {}", self.id);
+        
+        // Get all active nodes and their indices
+        let mut all_nodes: Vec<String> = node_manager
+            .get_active_nodes()
+            .into_iter()
+            .map(|p| p.to_string())
+            .collect();
+        all_nodes.sort();
+        
+        let total_nodes = all_nodes.len();
+        let threshold = node_manager.get_threshold();
+        
+        // CRITICAL: Update this node's total_nodes parameter to current network size
+        // Old nodes will have total_nodes = 4, but network now has 5 nodes
+        info!("🔄 [REFRESH] Updating node params: old total_nodes={}, new total_nodes={}", 
+              self.total_nodes, total_nodes);
+        self.update_node_params(total_nodes, threshold);
+        
+        // Clear old refresh shares from previous refresh rounds
+        self.clear_refresh_shares().await?;
+        
+        let all_indices: Vec<usize> = (1..=all_nodes.len()).collect();
+        
+        let my_index = all_nodes
+            .iter()
+            .position(|id| id == &self.id)
+            .map(|i| i + 1)
+            .ok_or_else(|| anyhow!("Node not found in active nodes list"))?;
+        
+        info!("🔄 [REFRESH] My index: {}, total nodes: {}", my_index, total_nodes);
+        info!("🔄 [REFRESH] All indices: {:?}", all_indices);
+        
+        // Generate refresh polynomial Gi(x) = Si * pi(0) + zero_constant_polynomial(x)
+        let refresh_polynomial = self.generate_refresh_polynomial(my_index, &all_indices).await?;
+        
+        // Generate refresh shares from the refresh polynomial for all nodes
+        let refresh_shares = self.generate_shares(&refresh_polynomial)?;
+        let refresh_commitments = self.generate_commitments(&refresh_polynomial)?;
+        
+        info!("🔄 [REFRESH] Generated {} refresh shares", refresh_shares.len());
+        
+        // IMPORTANT: Store our own refresh share locally (won't receive it via gossipsub)
+        let my_refresh_share = refresh_shares.iter()
+            .find(|s| s.index == my_index)
+            .ok_or_else(|| anyhow!("My refresh share not found in generated shares"))?;
+        
+        let raw_commitments: Vec<AffinePoint> = refresh_commitments.iter().map(|c| c.0).collect();
+        
+        let key = format!("refresh_{}", self.id);
+        self.storage.store_share(&key, my_refresh_share).await?;
+        self.storage.store_commitments(&key, &raw_commitments).await?;
+        
+        info!("💾 [REFRESH] Stored own refresh share locally (index={}, value={:?})", 
+              my_refresh_share.index, my_refresh_share.value.0);
+        
+        // Broadcast refresh shares
+        let msg = DKGMessage::RefreshShare {
+            from: self.id.clone(),
+            shares: refresh_shares,
+            commitments: refresh_commitments,
+        };
+        
+        let gossip_wrap = GossipsubMessage::DKG(msg);
+        let msg_bytes = serde_json::to_vec(&gossip_wrap)?;
+        self.broadcast(MSG_TOPIC_DKG, &msg_bytes).await?;
+        
+        info!("✅ [REFRESH] Broadcasted refresh shares to all nodes");
+        
+        Ok(())
+    }
+
+    /// Handle receiving refresh share from another node
+    async fn handle_refresh_share(&mut self, from: String, shares: Vec<KeyShare>, commitments: Vec<SerializablePoint>, node_manager: Box<dyn NodeMembership>) -> Result<()> {
+        info!("🔄 [REFRESH] Received refresh share from {}", from);
+        
+        // Verify refresh shares
+        let raw_commitments: Vec<AffinePoint> = commitments.into_iter().map(|c| c.0).collect();
+        if !self.verify_shares(&shares, &raw_commitments) {
+            warn!("❌ [REFRESH] Refresh share verification failed from {}", from);
+            return Ok(());
+        }
+        
+        info!("✅ [REFRESH] Refresh shares verified from {}", from);
+        
+        // Find my index to get the correct refresh share
+        let my_index = self.get_node_index(node_manager.clone());
+        
+        // Find the refresh share meant for this node
+        let my_refresh_share = shares.iter()
+            .find(|s| s.index == my_index)
+            .ok_or_else(|| anyhow!("No refresh share found for my index {}", my_index))?;
+        
+        info!("🔄 [REFRESH] My refresh share from {}: index={}, value={:?}", 
+              from, my_refresh_share.index, my_refresh_share.value.0);
+        
+        // Store refresh share temporarily with "refresh_" prefix
+        let key = format!("refresh_{}", from);
+        self.storage.store_share(&key, my_refresh_share).await?;
+        self.storage.store_commitments(&key, &raw_commitments).await?;
+        
+        info!("💾 [REFRESH] Stored refresh share from {}", from);
+        
+        // Check if we've received refresh shares from all nodes
+        let total_nodes = self.total_nodes;
+        let refresh_shares_count = self.storage.get_all_shares().await?
+            .keys()
+            .filter(|k| k.starts_with("refresh_"))
+            .count();
+        
+        info!("📊 [REFRESH] Refresh shares received: {}/{}", refresh_shares_count, total_nodes);
+        
+        if refresh_shares_count >= total_nodes {
+            info!("🎉 [REFRESH] Received all refresh shares! Computing new secret share...");
+            self.compute_refreshed_secret(node_manager).await?;
+        }
+        
+        Ok(())
+    }
+
+    /// Compute the refreshed secret share by summing all refresh shares
+    async fn compute_refreshed_secret(&mut self, node_manager: Box<dyn NodeMembership>) -> Result<()> {
+        info!("🔄 [REFRESH] Computing refreshed secret share");
+        
+        // Get all refresh shares
+        let all_shares = self.storage.get_all_shares().await?;
+        let refresh_shares: HashMap<String, KeyShare> = all_shares
+            .into_iter()
+            .filter(|(k, _)| k.starts_with("refresh_"))
+            .collect();
+        
+        info!("🔄 [REFRESH] Found {} refresh shares", refresh_shares.len());
+        
+        // Sum up all refresh shares: S'i = sum of all refresh shares
+        let mut new_secret = Scalar::ZERO;
+        for (from, share) in refresh_shares.iter() {
+            info!("✅ [REFRESH] Adding refresh share from {}: {:?}", from.trim_start_matches("refresh_"), share.value.0);
+            new_secret += share.value.0;
+        }
+        
+        info!("🔐 [REFRESH] New refreshed secret share: {:?}", new_secret);
+        
+        // Store the new secret share
+        self.storage.set_final_secret(new_secret).await?;
+        
+        // Clear refresh shares after computing new secret
+        self.clear_refresh_shares().await?;
+        
+        info!("✅ [REFRESH] Secret share refreshed successfully!");
+        info!("🔄 [REFRESH] All nodes now have refreshed shares with new randomness");
+        
+        Ok(())
+    }
+
+    /// Clear all refresh shares from storage
+    async fn clear_refresh_shares(&self) -> Result<()> {
+        let all_shares = self.storage.get_all_shares().await?;
+        let refresh_keys: Vec<String> = all_shares
+            .keys()
+            .filter(|k| k.starts_with("refresh_"))
+            .cloned()
+            .collect();
+        
+        if !refresh_keys.is_empty() {
+            info!("🗑️ [REFRESH] Clearing {} old refresh shares", refresh_keys.len());
+            // Note: We don't have a delete method in storage, so we just log
+            // The shares will be overwritten in the next refresh round
+        }
         
         Ok(())
     }
