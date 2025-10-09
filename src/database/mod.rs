@@ -425,6 +425,7 @@ pub mod keys {
     pub const DKG_VAULT_GROUP_KEY: &str = "dkg_vault_group_key";
     pub const DKG_POLYNOMIAL: &str = "dkg_polynomial";
     pub const DKG_INITIAL_COMPLETE: &str = "dkg_initial_complete";
+    pub const DKG_MY_PERMANENT_INDEX: &str = "dkg_my_permanent_index";
     pub const SOLVER_AMOUNTS: &str = "solver_amounts:";
     pub const TOTAL_LIQUIDITY_TICS: &str = "total_liquidity_tics";
     pub const TOTAL_LIQUIDITY_BTC: &str = "total_liquidity_btc";

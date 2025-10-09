@@ -945,13 +945,11 @@ impl NetworkLayer {
                                             .collect();
                                         all_nodes.sort();
                                         
-                                        let new_node_index = all_nodes
-                                            .iter()
-                                            .position(|id| id == &self.local_peer_id.to_string())
-                                            .map(|i| i + 1)
-                                            .unwrap_or(total);
+                                        // CRITICAL: New node always gets index = total (e.g., 5th node gets index 5)
+                                        // We do NOT recalculate from sorted position, as that would change indices
+                                        let new_node_index = total;
                                         
-                                        info!("🆕 [NEW_NODE] My index: {}, requesting shares from {} nodes", new_node_index, total - 1);
+                                        info!("🆕 [NEW_NODE] Assigned permanent index: {} (total_nodes = {})", new_node_index, total);
                                         
                                         if let Err(e) = dkg_node.request_shares_as_new_node(new_node_index).await {
                                             warn!("❌ [NEW_NODE] Failed to request shares: {:?}", e);

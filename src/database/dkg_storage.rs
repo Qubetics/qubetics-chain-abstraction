@@ -262,5 +262,25 @@ impl DkgStorage {
         tracing::debug!("🔍 [DKG_STORAGE] Initial DKG complete flag: {}", result);
         Ok(result)
     }
+
+    /// Store the node's permanent index (assigned during initial DKG or resharing)
+    pub async fn set_my_permanent_index(&self, index: usize) -> Result<()> {
+        self.db.put_string(keys::DKG_MY_PERMANENT_INDEX, &index)?;
+        tracing::info!("🔢 [DKG_STORAGE] Stored permanent index: {}", index);
+        Ok(())
+    }
+
+    /// Get the node's permanent index
+    pub async fn get_my_permanent_index(&self) -> Result<Option<usize>> {
+        let result = self.db.get_string::<usize>(keys::DKG_MY_PERMANENT_INDEX)?;
+        
+        if let Some(idx) = result {
+            tracing::debug!("🔍 [DKG_STORAGE] Retrieved permanent index: {}", idx);
+        } else {
+            tracing::debug!("🔍 [DKG_STORAGE] No permanent index found in database");
+        }
+        
+        Ok(result)
+    }
 }
 

@@ -20,7 +20,7 @@ use std::error::Error;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::Mutex;
-use tracing::info;
+use tracing::{info, warn};
 use tracing::level_filters::LevelFilter;
 use tracing_appender::non_blocking;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
@@ -119,7 +119,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let dkg_storage = DkgStorage::new(database.as_ref().clone());
     let reward_storage = RewardStorage::new(database.as_ref().clone());
     let chain_code = [42u8; 32]; // Placeholder chain code
-    let dkg_node = DKGNode::new(
+    let mut dkg_node = DKGNode::new(
         network.get_local_peer_id().to_string(),
         threshold,
         total,
@@ -127,6 +127,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
         dkg_storage.clone(),
         chain_code,
     );
+    
+    // Load permanent index from storage if it exists
+    if let Err(e) = dkg_node.load_permanent_index().await {
+        warn!("⚠️ Failed to load permanent index: {:?}", e);
+    }
 
     let db_consensus_node = DatabaseConsensusNode::new(database.as_ref().clone());
     let consensus_node = ConsensusNode::new(); // Keep legacy for compatibility

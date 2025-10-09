@@ -77,6 +77,7 @@ pub struct DKGNode {
     completion_callback: Option<DKGCompletionCallback>,
     round: u64,
     chain_code: [u8; 32],
+    my_permanent_index: Option<usize>, // Index assigned during initial DKG, never changes
 }
 
 impl DKGNode {
@@ -98,7 +99,17 @@ impl DKGNode {
             completion_callback: None,
             round: 0,
             chain_code,
+            my_permanent_index: None, // Will be set during DKG completion or when joining
         }
+    }
+
+    /// Load permanent index from storage
+    pub async fn load_permanent_index(&mut self) -> Result<()> {
+        if let Some(index) = self.storage.get_my_permanent_index().await? {
+            self.my_permanent_index = Some(index);
+            info!("🔢 [DKG] Loaded permanent index: {}", index);
+        }
+        Ok(())
     }
 
     pub async fn reset(&mut self) {
@@ -740,6 +751,11 @@ impl DKGNode {
         // Store the results
         self.storage.set_final_secret(final_secret_share).await?;
         self.storage.set_final_public(final_public_key).await?;
+        
+        // Store the permanent index (will never change after this)
+        self.storage.set_my_permanent_index(node_index).await?;
+        self.my_permanent_index = Some(node_index);
+        info!("🔢 [DKG] Stored permanent index: {}", node_index);
 
         // Update status
         self.status = DKGStatus::Completed;
@@ -1155,6 +1171,12 @@ impl DKGNode {
             self.storage.set_final_secret(final_secret_share).await?;
             self.storage.set_final_public(final_public_key).await?;
             
+            // Store the permanent index for the new node (always gets the next index = total_nodes)
+            let new_node_index = self.total_nodes;
+            self.storage.set_my_permanent_index(new_node_index).await?;
+            self.my_permanent_index = Some(new_node_index);
+            info!("🔢 [NEW_NODE] Stored permanent index: {} (new node gets index = total_nodes)", new_node_index);
+            
             // Update status
             self.status = DKGStatus::Completed;
             
@@ -1331,13 +1353,12 @@ impl DKGNode {
         
         let all_indices: Vec<usize> = (1..=all_nodes.len()).collect();
         
-        let my_index = all_nodes
-            .iter()
-            .position(|id| id == &self.id)
-            .map(|i| i + 1)
-            .ok_or_else(|| anyhow!("Node not found in active nodes list"))?;
+        // CRITICAL: Use permanent index instead of recalculating from sorted nodes
+        // The permanent index never changes after initial DKG/join, even if new nodes join
+        let my_index = self.my_permanent_index
+            .ok_or_else(|| anyhow!("Permanent index not set - should have been set during DKG completion"))?;
         
-        info!("🔄 [REFRESH] My index: {}, total nodes: {}", my_index, total_nodes);
+        info!("🔄 [REFRESH] Using PERMANENT index: {}, total nodes: {}", my_index, total_nodes);
         info!("🔄 [REFRESH] All indices: {:?}", all_indices);
         
         // Generate refresh polynomial Gi(x) = Si * pi(0) + zero_constant_polynomial(x)
@@ -1392,8 +1413,9 @@ impl DKGNode {
         
         info!("✅ [REFRESH] Refresh shares verified from {}", from);
         
-        // Find my index to get the correct refresh share
-        let my_index = self.get_node_index(node_manager.clone());
+        // CRITICAL: Use permanent index, not recalculated sorted position!
+        let my_index = self.my_permanent_index
+            .ok_or_else(|| anyhow!("Permanent index not set during refresh share handling"))?;
         
         // Find the refresh share meant for this node
         let my_refresh_share = shares.iter()
