@@ -1,4 +1,4 @@
-use crate::{prepare_unsigned_eip1559_tx, Database, DatabaseConfig};
+use crate::{database::Keystorage, prepare_unsigned_eip1559_tx, Database, DatabaseConfig};
 use anyhow::Result;
 use ethers::{
 	abi::Token,
@@ -229,10 +229,11 @@ impl NetworkLayer {
 
 	/// Load existing keypair from database or create a new one
 	async fn load_or_create_keypair(database: Database) -> Result<(Keypair, PeerId)> {
-		use crate::database::{keys, Database, DatabaseConfig};
+		let keystore = Keystorage::new(database);
+
 
 		// Try to load existing keypair
-		if let Some(keypair_bytes) = database.get_keypair(keys::PEER_KEYPAIR)? {
+		if let Some(keypair_bytes) = keystore.get_keypair()? {
 			match Keypair::from_protobuf_encoding(&keypair_bytes) {
 				Ok(keypair) => {
 					let peer_id = PeerId::from(keypair.public());
@@ -255,7 +256,7 @@ impl NetworkLayer {
 		let keypair_bytes = keypair
 			.to_protobuf_encoding()
 			.map_err(|e| anyhow::anyhow!("Failed to encode keypair: {}", e))?;
-		database.put_keypair(keys::PEER_KEYPAIR, &keypair_bytes)?;
+		keystore.put_keypair(&keypair_bytes)?;
 
 		info!("✅ Generated and saved new keypair - Peer ID: {}", peer_id);
 		Ok((keypair, peer_id))
@@ -2122,18 +2123,16 @@ impl NetworkLayer {
 					};
 
 					// Get vault addresses from database
-					let (vault_eth_addr, vault_btc_addr) =
-						if let Some(registry) = &self.user_registry {
-							let database = registry.get_database();
-							let vault_eth = database
-								.get_string(&crate::database::keys::DKG_VAULT_ETH_ADDRESS)
-								.ok()
-								.flatten();
-							let vault_btc = database
-								.get_string(&crate::database::keys::DKG_VAULT_BTC_ADDRESS)
-								.ok()
-								.flatten();
-							(vault_eth, vault_btc)
+                    let (vault_eth_addr, vault_btc_addr) = if let Some(dkg_node) = &self.dkg_node {
+                        match dkg_node.storage.get_vault_addresses().await {
+                            Ok(Some((eth_addr, btc_addr))) => (Some(eth_addr), Some(btc_addr)),
+                            Err(e) => {
+                                return Err(anyhow::anyhow!("Failed to get vault addresses from database: {}", e));
+                            }
+                            Ok(None) => {
+                                return Err(anyhow::anyhow!("Vault addresses not found in database"));
+                            }
+                        }
 						} else {
 							return Err(anyhow::anyhow!("User registry not available"));
 						};
@@ -2885,18 +2884,16 @@ impl NetworkLayer {
 					};
 
 					// Get vault addresses from database
-					let (vault_eth_addr, vault_btc_addr) =
-						if let Some(registry) = &self.user_registry {
-							let database = registry.get_database();
-							let vault_eth = database
-								.get_string(&crate::database::keys::DKG_VAULT_ETH_ADDRESS)
-								.ok()
-								.flatten();
-							let vault_btc = database
-								.get_string(&crate::database::keys::DKG_VAULT_BTC_ADDRESS)
-								.ok()
-								.flatten();
-							(vault_eth, vault_btc)
+                    let (vault_eth_addr, vault_btc_addr) = if let Some(dkg_node) = &self.dkg_node {
+                        match dkg_node.storage.get_vault_addresses().await {
+                            Ok(Some((eth_addr, btc_addr))) => (Some(eth_addr), Some(btc_addr)),
+                            Err(e) => {
+                                return Err(anyhow::anyhow!("Failed to get vault addresses from database: {}", e));
+                            }
+                            Ok(None) => {
+                                return Err(anyhow::anyhow!("Vault addresses not found in database"));
+                            }
+                        }
 						} else {
 							return Err(anyhow::anyhow!("User registry not available"));
 						};

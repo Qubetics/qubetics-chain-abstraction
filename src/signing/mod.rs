@@ -1,4 +1,4 @@
-use crate::{rpc_server::DummyTransaction, utils::transaction::SpendKind};
+use crate::{database::{AllSolverLiquidityKey, SolverLiquidity, TotalLiquidityBtcKey, TotalLiquidityTicsKey}, rpc_server::DummyTransaction, utils::transaction::SpendKind};
 use anyhow::{anyhow, Result};
 use k256::Scalar;
 // use ethereum_types::U64; // Removed unused import
@@ -47,6 +47,11 @@ use crate::{
 use anyhow::bail;
 use ethereum_types::U256 as EthereumU256;
 use ethers::types::U256;
+
+use crate::database::{
+	keys::{AllSolverAmountsKey, DkgVaultEthAddressKey, SolverAmountsKey},
+	traits::{DBKey, KvStorage},
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ECDSASignature {
@@ -1116,12 +1121,23 @@ impl SigningNode {
 						// stored in database
 						if let Some(user_registry) = &self.user_registry {
 							let database = user_registry.get_database();
+							let vault_eth_address_key = DkgVaultEthAddressKey {};
+
 							let vault_eth_address: String = database
-								.get_string(&crate::database::keys::DKG_VAULT_ETH_ADDRESS)
+								.db()
+								.get(vault_eth_address_key.as_db_key())
 								.ok()
 								.flatten()
 								.ok_or_else(|| {
 									anyhow::anyhow!("Vault ETH address not found in database")
+								})
+								.and_then(|bytes| {
+									bincode::deserialize(&bytes).map_err(|e| {
+										anyhow::anyhow!(
+											"Failed to deserialize vault ETH address: {}",
+											e
+										)
+									})
 								})?;
 
 							let nonce =
@@ -4286,12 +4302,23 @@ impl SigningNode {
 			let liquidity_amounts: Vec<String> = amounts.iter().map(|u| u.to_string()).collect();
 
 			// Store solver liquidity with key: solver_liquidity:{solver_evm_address}
-			let solver_liquidity_key =
-				format!("solver_liquidity:{}", format!("{:?}", solver_evm_address).to_lowercase());
+			let solver_liquidity_key = SolverLiquidity {
+				address: solver_evm_address.to_string(),
+			};
 
 			// Store individual solver liquidity in database
 			if let Some(ref database) = self.database {
-				if let Err(e) = database.put_string(&solver_liquidity_key, &liquidity_amounts) {
+				let bytes = match bincode::serialize(&liquidity_amounts) {
+					Ok(b) => b,
+					Err(e) => {
+						warn!(
+							"⚠️ [SOLVER] Failed to serialize liquidity for solver {} (address: {:?}): {}",
+							solver_id, solver_evm_address, e
+						);
+						continue;
+					}
+				};
+				if let Err(e) = database.db().put(solver_liquidity_key.as_db_key(), &bytes) {
 					warn!(
 						"⚠️ [SOLVER] Failed to store liquidity for solver {} (address: {:?}): {}",
 						solver_id, solver_evm_address, e
@@ -4314,11 +4341,18 @@ impl SigningNode {
 		}
 
 		// Store all solver liquidity with key: solver_liquidity:all
-		let all_solver_liquidity_key = "solver_liquidity:all";
+		let all_solver_liquidity_key = AllSolverLiquidityKey {};
 
 		// Store consolidated liquidity and totals in database
 		if let Some(ref database) = self.database {
-			if let Err(e) = database.put_string(all_solver_liquidity_key, &solver_liquidity_map) {
+			let bytes = match bincode::serialize(&solver_liquidity_map) {
+				Ok(b) => b,
+				Err(e) => {
+					warn!("⚠️ [SOLVER] Failed to serialize all solver liquidity: {}", e);
+					return Err(anyhow::anyhow!("Failed to serialize all solver liquidity: {}", e));
+				}
+			};
+			if let Err(e) = database.db().put(all_solver_liquidity_key.as_db_key(), &bytes) {
 				warn!("⚠️ [SOLVER] Failed to store all solver liquidity: {}", e);
 			} else {
 				info!(
@@ -4328,15 +4362,17 @@ impl SigningNode {
 			}
 
 			// Store total liquidity values (index 0 = tics, index 1 = btc)
-			let tics_key = crate::database::key_utils::total_liquidity_tics_key();
-			if let Err(e) = database.put_string(&tics_key, &total_tics.to_string()) {
+			let tics_key = TotalLiquidityTicsKey {};
+			if let Err(e) = database.db().put(tics_key.as_db_key(), &total_tics.to_string()) {
 				warn!("⚠️ [SOLVER] Failed to store total tics liquidity: {}", e);
 			} else {
 				info!("💾 [SOLVER] Stored total tics liquidity: {}", total_tics);
 			}
 
-			let btc_key = crate::database::key_utils::total_liquidity_btc_key();
-			if let Err(e) = database.put_string(&btc_key, &total_btc.to_string()) {
+			let btc_key = TotalLiquidityBtcKey {};
+
+
+			if let Err(e) = database.db().put(btc_key.as_db_key(), &total_btc.to_string()) {
 				warn!("⚠️ [SOLVER] Failed to store total btc liquidity: {}", e);
 			} else {
 				info!("💾 [SOLVER] Stored total btc liquidity: {}", total_btc);
@@ -4396,9 +4432,12 @@ impl SigningNode {
 		let total_btc_u256 = total_btc;
 
 		// Fetch liquidity for all solvers
-		let all_key = "solver_liquidity:all";
-		let solver_liquidity_map: std::collections::HashMap<String, Vec<String>> =
-			database.get_string(all_key)?.unwrap_or_default();
+		let all_key = AllSolverLiquidityKey {};
+		let solver_liquidity_map: std::collections::HashMap<String, Vec<String>> = 
+			match database.db().get(all_key.as_db_key())? {
+				Some(bytes) => bincode::deserialize(&bytes).unwrap_or_default(),
+				None => std::collections::HashMap::new(),
+			};
 
 		for (solver, amounts) in solver_liquidity_map.iter() {
 			let reward = if source_chain == "btc" || source_chain == "bitcoin" {
