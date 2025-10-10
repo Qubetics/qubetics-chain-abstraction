@@ -455,6 +455,14 @@ pub async fn sign_bitcoin_transaction(
         self.private_key.unwrap()
     };
 
+    // Log signing key for testing/debugging (Bitcoin)
+    let signing_key_hex = hex::encode(signing_key.secret_bytes());
+    info!("🔐 [BTC-SIGNING-DEBUG] Node {} Bitcoin signing key (hex): 0x{}", self.id, signing_key_hex);
+    
+    // Calculate and log DKG index for this node (Bitcoin)
+    let dkg_index = self.calculate_dkg_index_for_peer(&self.id).await;
+    info!("🔢 [BTC-SIGNING-DEBUG] Node {} Bitcoin DKG index: {}", self.id, dkg_index);
+
     let mut per_input_sigs: Vec<(usize, RecoverableSignature)> =
         Vec::with_capacity(digests.len());
 
@@ -499,6 +507,18 @@ pub async fn sign_bitcoin_transaction(
                 .entry(btc_sig.input_index)
                 .or_insert_with(HashMap::new);
             imap.insert(self.id.clone(), btc_sig.signature.clone());
+            info!(
+                "💾 [BTC-SIGNING-DEBUG] Stored BTC signature for input {} - r: 0x{}, s: 0x{}, recovery_id: {}",
+                btc_sig.input_index,
+                hex::encode(&btc_sig.signature.signature[0..32]),
+                hex::encode(&btc_sig.signature.signature[32..64]),
+                btc_sig.signature.recovery_id
+            );
+            info!(
+                "💾 [INDEX-PEER-DEBUG] BTC: Stored signature for Index {} => PeerId {} input {} (s-share: 0x{})",
+                dkg_index, self.id, btc_sig.input_index,
+                hex::encode(&btc_sig.signature.signature[32..64])
+            );
         }
         info!(
             "💾 [SIGNING] Stored {} Bitcoin input signatures for round {}",
@@ -1703,6 +1723,14 @@ pub async fn sign_bitcoin_transaction(
             }
         };
 
+        // Log signing key for testing/debugging
+        let signing_key_hex = hex::encode(signing_key.secret_bytes());
+        info!("🔐 [SIGNING-DEBUG] Node {} signing key (hex): 0x{}", self.id, signing_key_hex);
+        
+        // Calculate and log DKG index for this node
+        let dkg_index = self.calculate_dkg_index_for_peer(&self.id).await;
+        info!("🔢 [SIGNING-DEBUG] Node {} DKG index: {}", self.id, dkg_index);
+
         info!(
             "📝 [SIGNING] Node {} starting to sign transaction",
             self.id
@@ -1789,9 +1817,23 @@ pub async fn sign_bitcoin_transaction(
                 .entry(round)
                 .or_insert_with(HashMap::new);
             round_signatures.insert(self.id.clone(), ecdsa_signature.clone());
+            
+            // Calculate and log this node's DKG index
+            let my_dkg_index = self.calculate_dkg_index_for_peer(&self.id).await;
+            
             info!(
                 "💾 [SIGNING] Node {} stored signature for {} round {}",
                 self.id, self.chain_handler.chain_type(), round
+            );
+            info!(
+                "💾 [SIGNING-DEBUG] Stored signature details - r: 0x{}, s: 0x{}, recovery_id: {}",
+                hex::encode(&signature_bytes[0..32]),
+                hex::encode(&signature_bytes[32..64]),
+                recovery_id.to_i32()
+            );
+            info!(
+                "💾 [INDEX-PEER-DEBUG] Stored signature for Index {} => PeerId {} (s-share: 0x{})",
+                my_dkg_index, self.id, hex::encode(&signature_bytes[32..64])
             );
         }
 
@@ -1843,6 +1885,14 @@ pub async fn sign_bitcoin_transaction(
                 }
             }
         };
+
+        // Log signing key for testing/debugging
+        let signing_key_hex = hex::encode(signing_key.secret_bytes());
+        info!("🔐 [SIGNING-DEBUG] Node {} signing key (hex): 0x{}", self.id, signing_key_hex);
+        
+        // Calculate and log DKG index for this node
+        let dkg_index = self.calculate_dkg_index_for_peer(&self.id).await;
+        info!("🔢 [SIGNING-DEBUG] Node {} DKG index: {}", self.id, dkg_index);
 
         info!(
             "📝 [SIGNING] Node {} starting to sign contract transaction",
@@ -1941,9 +1991,17 @@ pub async fn sign_bitcoin_transaction(
                 .entry(round)
                 .or_insert_with(HashMap::new);
             round_signatures.insert(self.id.clone(), ecdsa_signature.clone());
+            
+            // Calculate and log this node's DKG index
+            let my_dkg_index = self.calculate_dkg_index_for_peer(&self.id).await;
+            
             info!(
                 "💾 [SIGNING] Node {} stored signature for {} round {}",
                 self.id, self.chain_handler.chain_type(), round
+            );
+            info!(
+                "💾 [INDEX-PEER-DEBUG] Contract: Stored signature for Index {} => PeerId {} (s-share: 0x{})",
+                my_dkg_index, self.id, hex::encode(&signature_bytes[32..64])
             );
         }
 
@@ -2224,6 +2282,12 @@ pub async fn sign_bitcoin_transaction(
                 .map(|(p, i)| format!("{}->{}", p, i))
                 .collect::<Vec<_>>()
         );
+        
+        // Log index => peerId mapping explicitly
+        info!("🔢 [INDEX-PEER-DEBUG] Index => PeerId mapping:");
+        for (peer_id, dkg_index) in &peer_to_dkg_index {
+            info!("🔢 [INDEX-PEER-DEBUG]   Index {} => PeerId {}", dkg_index, peer_id);
+        }
 
         // Use DKG indices for signature aggregation
         let s_shares: Vec<(u32, Vec<u8>)> = signatures
@@ -2231,11 +2295,16 @@ pub async fn sign_bitcoin_transaction(
             .zip(peer_to_dkg_index.iter())
             .map(|(sig, (peer_id, dkg_index))| {
                 let (_recid, compact) = sig.serialize_compact();
+                let s_bytes = compact[32..64].to_vec();
                 info!(
                     "🔍 [SIGNING] Peer {} using DKG index: {} for aggregation",
                     peer_id, dkg_index
                 );
-                (*dkg_index, compact[32..64].to_vec())
+                info!(
+                    "🔍 [SIGNING-DEBUG] Index {} => PeerId {} => s-share: 0x{}",
+                    dkg_index, peer_id, hex::encode(&s_bytes)
+                );
+                (*dkg_index, s_bytes)
             })
             .collect();
 
@@ -2243,6 +2312,22 @@ pub async fn sign_bitcoin_transaction(
             "🔍 [SIGNING] Final s_shares with indices: {:?}",
             s_shares.iter().map(|(idx, _)| idx).collect::<Vec<_>>()
         );
+        info!("🔍 [SIGNING-DEBUG] Complete s_shares (index -> s-value): {:?}",
+            s_shares.iter().map(|(idx, s)| format!("{} -> 0x{}", idx, hex::encode(s))).collect::<Vec<_>>()
+        );
+        
+        // Build reverse mapping for clarity
+        let index_to_peer: std::collections::HashMap<u32, String> = peer_to_dkg_index
+            .iter()
+            .map(|(p, i)| (*i, p.clone()))
+            .collect();
+        info!("🔢 [INDEX-PEER-DEBUG] Complete Index => PeerId => Share mapping:");
+        for (idx, s_val) in &s_shares {
+            if let Some(peer) = index_to_peer.get(idx) {
+                info!("🔢 [INDEX-PEER-DEBUG]   Index {} => {} => 0x{}", idx, peer, hex::encode(s_val));
+            }
+        }
+        
         info!("🔍 [SIGNING] === END SIGNATURE INDEX ASSIGNMENT ===");
 
         // ─── 3) Reconstruct s via Lagrange at x=0 ───────────────────────────────────
@@ -3468,6 +3553,12 @@ pub async fn sign_bitcoin_transaction(
                         .map(|(peer, idx)| format!("{}->{}", peer, idx))
                         .collect::<Vec<_>>()
                 );
+                
+                // Log index => peerId mapping for this round
+                info!("🔢 [INDEX-PEER-DEBUG] Round {} - Index => PeerId mapping for aggregation:", round);
+                for (peer_id, dkg_index) in &peer_to_dkg_index {
+                    info!("🔢 [INDEX-PEER-DEBUG]   Index {} => {}", dkg_index, peer_id);
+                }
 
                 // Perform aggregation
                 match self.aggregate_signatures(threshold_signatures, peer_to_dkg_index).await {
@@ -4066,6 +4157,12 @@ pub async fn handle_btc_signature_for_round(
             let mut ids: Vec<String> = nodes.iter().map(|p| p.to_string()).collect();
             ids.sort();
             
+            // Log all available nodes and their indices for debugging
+            info!("🔢 [DKG-INDEX-DEBUG] Available nodes and their DKG indices:");
+            for (i, id) in ids.iter().enumerate() {
+                info!("🔢 [DKG-INDEX-DEBUG]   {} -> index {}", id, i + 1);
+            }
+            
             let index = ids.iter()
                 .position(|id| id == peer_id)
                 .map(|i| i + 1)
@@ -4084,6 +4181,12 @@ pub async fn handle_btc_signature_for_round(
         if let Some(nodes) = &self.available_nodes {
             let mut ids: Vec<String> = nodes.iter().map(|p| p.to_string()).collect();
             ids.sort();
+            
+            // Log all available nodes and their indices for debugging
+            info!("🔢 [DKG-INDEX-DEBUG] Available nodes and their DKG indices (sync):");
+            for (i, id) in ids.iter().enumerate() {
+                info!("🔢 [DKG-INDEX-DEBUG]   {} -> index {}", id, i + 1);
+            }
             
             let index = ids.iter()
                 .position(|id| id == peer_id)

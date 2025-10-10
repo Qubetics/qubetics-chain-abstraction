@@ -1335,12 +1335,15 @@ impl NetworkLayer {
                 if let Some(signing_node) = &mut self.signing_node {
                     // Set available nodes from node manager before signing
                     let available_nodes: Vec<PeerId> = self.node_manager.get_active_nodes().into_iter().collect();
+                    info!("🔢 [NETWORK-DEBUG] Available nodes count: {}", available_nodes.len());
+                    info!("🔢 [NETWORK-DEBUG] Available nodes: {:?}", available_nodes);
                     signing_node.set_available_nodes(available_nodes);
 
                     // Generate BLS key pair if not already done
                     if let Some(dkg_node) = &self.dkg_node {
                         if let Some(secret_share) = dkg_node.get_final_secret_share().await {
                             info!("🔐 [NETWORK] Got secret share from DKG");
+                            info!("🔐 [NETWORK-DEBUG] Secret share (hex): 0x{}", hex::encode(secret_share.to_bytes()));
                             signing_node.set_private_key_from_scalar(secret_share);
 
                             // ✅ Also set the DKG group public key
@@ -2223,11 +2226,14 @@ impl NetworkLayer {
                 if let Some(signing_node) = &mut self.signing_node {
                     // Set available nodes from node manager before signing
                     let available_nodes: Vec<PeerId> = self.node_manager.get_active_nodes().into_iter().collect();
+                    info!("🔢 [LOCAL-DEBUG] Available nodes count: {}", available_nodes.len());
+                    info!("🔢 [LOCAL-DEBUG] Available nodes: {:?}", available_nodes);
                     signing_node.set_available_nodes(available_nodes);
 
                     if let Some(dkg_node) = &self.dkg_node {
                         if let Some(secret_share) = dkg_node.get_final_secret_share().await {
                             info!("🔐 [NETWORK] Got secret share from DKG: {:?}", secret_share);
+                            info!("🔐 [LOCAL-DEBUG] Secret share (hex): 0x{}", hex::encode(secret_share.to_bytes()));
                             signing_node.set_private_key_from_scalar(secret_share);
 
                             // ✅ Also set the DKG group public key
