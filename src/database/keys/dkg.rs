@@ -2,16 +2,7 @@ use crate::database::traits::DBKey;
 use crate::database::constants::*;
 
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct CurrentRoundKey {}
-impl DBKey for CurrentRoundKey {
-    fn prefix(&self) -> &'static [u8] {
-        CURRENT_ROUND_PREFIX
-    }
-    fn key_bytes(&self) -> Vec<u8> {
-        vec![]
-    }
-}
+
 
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
