@@ -59,5 +59,8 @@ rust_decimal_macros = "1"
 ethabi = "18.0.0"
 serde-big-array = "0.5.1"
 
+[dev-dependencies]
+tempfile = "3.8"
+
 [build-dependencies]
 tonic-build = "0.13.0"

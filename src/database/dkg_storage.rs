@@ -70,6 +70,30 @@ impl DkgStorage {
         Ok(())
     }
 
+    /// Store original DKG commitments (these NEVER change after initial DKG)
+    pub async fn store_original_commitments(&self, from: &str, commitments: &[AffinePoint]) -> Result<()> {
+        let key = format!("{}{}", keys::DKG_ORIGINAL_COMMITMENT, from);
+        let serializable: Vec<SerializablePoint> = commitments.iter().cloned().map(SerializablePoint).collect();
+        self.db.put_string(&key, &serializable)?;
+        tracing::info!("💾 [DKG_STORAGE] Stored ORIGINAL commitments for {} (count: {})", from, commitments.len());
+        Ok(())
+    }
+
+    /// Get all original DKG commitments (used for vault address derivation)
+    pub async fn get_all_original_commitments(&self) -> Result<HashMap<String, Vec<AffinePoint>>> {
+        let prefix = keys::DKG_ORIGINAL_COMMITMENT;
+        let results: Vec<(String, Vec<SerializablePoint>)> = self.db.get_values_with_prefix(prefix)?;
+        let mut map = HashMap::new();
+        for (key, ser_vec) in results {
+            if let Some(id) = key.strip_prefix(prefix) {
+                let vec: Vec<AffinePoint> = ser_vec.into_iter().map(|p| p.0).collect();
+                map.insert(id.to_string(), vec);
+            }
+        }
+        tracing::debug!("🔍 [DKG_STORAGE] Retrieved {} original commitment sets", map.len());
+        Ok(map)
+    }
+
     pub async fn add_validation(&self, to: &str, is_valid: bool) -> Result<()> {
         let key = format!("{}{}", keys::DKG_VALIDATION, to);
         let mut current: Vec<bool> = self.db.get_string(&key)?.unwrap_or_default();

@@ -1,6 +1,6 @@
 import { ethers } from "ethers";
 
-const tx = ethers.Transaction.from("0xf86f80843b9aca00830493e094c9b6a913d243e217feacc0d44aef80f42871c44089014e312fc3ad566000808246ada024653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1ca021eb9f722b44c5bebcb5273d3088322018b8b4f0d34d33469169b56c0730c43c");
+const tx = ethers.Transaction.from("0xf86b8007830493e09404cb44cfd8bbac13bfc25dc00d64bd6b7212815189017da3a04c7b3e0000808246ada024653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1ca018a425d984a7c525fccf8463ec5839513364f4fa48a612306848766adbc2e3a8");
 
 console.log("Signer Address:", tx.from);
 console.log("Chain ID:", tx.chainId);

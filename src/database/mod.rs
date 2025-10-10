@@ -416,6 +416,7 @@ pub mod keys {
     pub const SELECTED_NODES: &str = "selected_nodes:";
     pub const DKG_SHARE: &str = "dkg_share:";
     pub const DKG_COMMITMENT: &str = "dkg_commitment:";
+    pub const DKG_ORIGINAL_COMMITMENT: &str = "dkg_original_commitment:";
     pub const DKG_VALIDATION: &str = "dkg_validation:";
     pub const DKG_FINAL_SECRET: &str = "dkg_final_secret";
     pub const DKG_FINAL_PUBLIC: &str = "dkg_final_public";
