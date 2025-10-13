@@ -1,4 +1,3 @@
-
 pub const USER_REGISTRATION_PREFIX: &[u8] = b"user:";
 pub const INTENT_REGISTRY_PREFIX: &[u8] = b"intent:";
 pub const USER_INTENT_HASH_PREFIX: &[u8] = b"user_intent:";
@@ -36,5 +35,3 @@ pub const PEER_KEYPAIR_PREFIX: &[u8] = b"peer_keypair";
 pub const ALL_SOLVER_AMOUNTS_PREFIX: &[u8] = b"solver_amounts:all";
 pub const ALL_SOLVER_LIQUIDITY_PREFIX: &[u8] = b"solver_liquidity:all";
 pub const SOLVER_LIQUIDITY_PREFIX: &[u8] = b"solver_liquidity:";
-
-

@@ -450,16 +450,15 @@ impl IntentStorage {
 	) -> Result<Vec<(String, DepositIntent, IntentTransactionIds)>> {
 		let mut completed = Vec::new();
 		let all_tx = self.tx_ids.get_all()?;
-	
-		for tx in all_tx
-			.into_iter()
-			.filter(|t| t.1.user_to_network_tx_id.is_some() && t.1.network_to_target_tx_id.is_some())
-		{
+
+		for tx in all_tx.into_iter().filter(|t| {
+			t.1.user_to_network_tx_id.is_some() && t.1.network_to_target_tx_id.is_some()
+		}) {
 			if let Some(intent) = self.get_intent(&tx.1.intent_hash).await? {
 				completed.push((tx.1.intent_hash.clone(), intent, tx.1));
 			}
 		}
-	
+
 		debug!("🔍 [INTENT_STORAGE] Found {} completed intents", completed.len());
 		Ok(completed)
 	}

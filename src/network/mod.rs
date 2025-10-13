@@ -231,7 +231,6 @@ impl NetworkLayer {
 	async fn load_or_create_keypair(database: Database) -> Result<(Keypair, PeerId)> {
 		let keystore = Keystorage::new(database);
 
-
 		// Try to load existing keypair
 		if let Some(keypair_bytes) = keystore.get_keypair()? {
 			match Keypair::from_protobuf_encoding(&keypair_bytes) {
@@ -2123,19 +2122,24 @@ impl NetworkLayer {
 					};
 
 					// Get vault addresses from database
-                    let (vault_eth_addr, vault_btc_addr) = if let Some(dkg_node) = &self.dkg_node {
-                        match dkg_node.storage.get_vault_addresses().await {
-                            Ok(Some((eth_addr, btc_addr))) => (Some(eth_addr), Some(btc_addr)),
-                            Err(e) => {
-                                return Err(anyhow::anyhow!("Failed to get vault addresses from database: {}", e));
-                            }
-                            Ok(None) => {
-                                return Err(anyhow::anyhow!("Vault addresses not found in database"));
-                            }
-                        }
-						} else {
-							return Err(anyhow::anyhow!("User registry not available"));
-						};
+					let (vault_eth_addr, vault_btc_addr) = if let Some(dkg_node) = &self.dkg_node {
+						match dkg_node.storage.get_vault_addresses().await {
+							Ok(Some((eth_addr, btc_addr))) => (Some(eth_addr), Some(btc_addr)),
+							Err(e) => {
+								return Err(anyhow::anyhow!(
+									"Failed to get vault addresses from database: {}",
+									e
+								));
+							},
+							Ok(None) => {
+								return Err(anyhow::anyhow!(
+									"Vault addresses not found in database"
+								));
+							},
+						}
+					} else {
+						return Err(anyhow::anyhow!("User registry not available"));
+					};
 
 					let chain_transaction_result =
 						crate::utils::transaction::create_chain_transaction_from_deposit_intent(
@@ -2884,19 +2888,24 @@ impl NetworkLayer {
 					};
 
 					// Get vault addresses from database
-                    let (vault_eth_addr, vault_btc_addr) = if let Some(dkg_node) = &self.dkg_node {
-                        match dkg_node.storage.get_vault_addresses().await {
-                            Ok(Some((eth_addr, btc_addr))) => (Some(eth_addr), Some(btc_addr)),
-                            Err(e) => {
-                                return Err(anyhow::anyhow!("Failed to get vault addresses from database: {}", e));
-                            }
-                            Ok(None) => {
-                                return Err(anyhow::anyhow!("Vault addresses not found in database"));
-                            }
-                        }
-						} else {
-							return Err(anyhow::anyhow!("User registry not available"));
-						};
+					let (vault_eth_addr, vault_btc_addr) = if let Some(dkg_node) = &self.dkg_node {
+						match dkg_node.storage.get_vault_addresses().await {
+							Ok(Some((eth_addr, btc_addr))) => (Some(eth_addr), Some(btc_addr)),
+							Err(e) => {
+								return Err(anyhow::anyhow!(
+									"Failed to get vault addresses from database: {}",
+									e
+								));
+							},
+							Ok(None) => {
+								return Err(anyhow::anyhow!(
+									"Vault addresses not found in database"
+								));
+							},
+						}
+					} else {
+						return Err(anyhow::anyhow!("User registry not available"));
+					};
 
 					let chain_transaction_result =
 						crate::utils::transaction::create_chain_transaction_from_deposit_intent(

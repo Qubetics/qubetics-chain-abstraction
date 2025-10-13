@@ -1,4 +1,3 @@
-
 use anyhow::{anyhow, Result};
 use rocksdb::{Options, DB};
 use std::sync::Arc;
@@ -12,7 +11,6 @@ pub struct DatabaseConfig {
 	pub max_open_files: i32,
 }
 
-
 /// Main database wrapper around RocksDB
 #[derive(Clone)]
 pub struct Database {
@@ -20,12 +18,10 @@ pub struct Database {
 }
 
 impl Database {
+	pub fn db(&self) -> &Arc<DB> {
+		&self.db
+	}
 
-    pub fn db(&self) -> &Arc<DB> {
-        &self.db
-    }
-
-    
 	/// Create a new database instance
 	pub fn new(config: DatabaseConfig) -> Result<Self> {
 		let mut opts = Options::default();
@@ -43,4 +39,3 @@ impl Database {
 		Ok(Self { db: Arc::new(db) })
 	}
 }
-

@@ -1,4 +1,10 @@
-use crate::{database::{AllSolverLiquidityKey, SolverLiquidity, TotalLiquidityBtcKey, TotalLiquidityTicsKey}, rpc_server::DummyTransaction, utils::transaction::SpendKind};
+use crate::{
+	database::{
+		AllSolverLiquidityKey, SolverLiquidity, TotalLiquidityBtcKey, TotalLiquidityTicsKey,
+	},
+	rpc_server::DummyTransaction,
+	utils::transaction::SpendKind,
+};
 use anyhow::{anyhow, Result};
 use k256::Scalar;
 // use ethereum_types::U64; // Removed unused import
@@ -50,7 +56,7 @@ use ethers::types::U256;
 
 use crate::database::{
 	keys::{AllSolverAmountsKey, DkgVaultEthAddressKey, SolverAmountsKey},
-	traits::{DBKey},
+	traits::DBKey,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1121,36 +1127,36 @@ impl SigningNode {
 						// stored in database
 						// TODO
 						if let Some(_) = &self.user_registry {
-
 							let vault_eth_address_key = DkgVaultEthAddressKey {};
 
 							if let Some(database) = &self.database {
 								let vault_eth_address: String = database
-								.db()
-								.get(vault_eth_address_key.as_db_key())
-								.ok()
-								.flatten()
-								.ok_or_else(|| {
-									anyhow::anyhow!("Vault ETH address not found in database")
-								})
-								.and_then(|bytes| {
-									bincode::deserialize(&bytes).map_err(|e| {
-										anyhow::anyhow!(
-											"Failed to deserialize vault ETH address: {}",
-											e
-										)
+									.db()
+									.get(vault_eth_address_key.as_db_key())
+									.ok()
+									.flatten()
+									.ok_or_else(|| {
+										anyhow::anyhow!("Vault ETH address not found in database")
 									})
-								})?;
+									.and_then(|bytes| {
+										bincode::deserialize(&bytes).map_err(|e| {
+											anyhow::anyhow!(
+												"Failed to deserialize vault ETH address: {}",
+												e
+											)
+										})
+									})?;
 
-							let nonce =
-								Self::fetch_ethereum_nonce(&vault_eth_address, chain_id).await?;
-							info!("🔢 [SIGNING] VaultToNetwork transaction: fetching nonce {} from vault address {}", nonce, vault_eth_address);
-							(vault_eth_address, nonce)
+								let nonce =
+									Self::fetch_ethereum_nonce(&vault_eth_address, chain_id)
+										.await?;
+								info!("🔢 [SIGNING] VaultToNetwork transaction: fetching nonce {} from vault address {}", nonce, vault_eth_address);
+								(vault_eth_address, nonce)
+							} else {
+								return Err(anyhow::anyhow!(
+									"Database not available for vault transaction"
+								));
 							}
-							else {
-								return Err(anyhow::anyhow!("Database not available for vault transaction"));
-							}
-
 						} else {
 							return Err(anyhow::anyhow!(
 								"User registry not available for vault transaction"
@@ -4309,9 +4315,7 @@ impl SigningNode {
 			let liquidity_amounts: Vec<String> = amounts.iter().map(|u| u.to_string()).collect();
 
 			// Store solver liquidity with key: solver_liquidity:{solver_evm_address}
-			let solver_liquidity_key = SolverLiquidity {
-				address: solver_evm_address.to_string(),
-			};
+			let solver_liquidity_key = SolverLiquidity { address: solver_evm_address.to_string() };
 
 			// Store individual solver liquidity in database
 			if let Some(ref database) = self.database {
@@ -4323,7 +4327,7 @@ impl SigningNode {
 							solver_id, solver_evm_address, e
 						);
 						continue;
-					}
+					},
 				};
 				if let Err(e) = database.db().put(solver_liquidity_key.as_db_key(), &bytes) {
 					warn!(
@@ -4357,7 +4361,7 @@ impl SigningNode {
 				Err(e) => {
 					warn!("⚠️ [SOLVER] Failed to serialize all solver liquidity: {}", e);
 					return Err(anyhow::anyhow!("Failed to serialize all solver liquidity: {}", e));
-				}
+				},
 			};
 			if let Err(e) = database.db().put(all_solver_liquidity_key.as_db_key(), &bytes) {
 				warn!("⚠️ [SOLVER] Failed to store all solver liquidity: {}", e);
@@ -4377,7 +4381,6 @@ impl SigningNode {
 			}
 
 			let btc_key = TotalLiquidityBtcKey {};
-
 
 			if let Err(e) = database.db().put(btc_key.as_db_key(), &total_btc.to_string()) {
 				warn!("⚠️ [SOLVER] Failed to store total btc liquidity: {}", e);
@@ -4440,7 +4443,7 @@ impl SigningNode {
 
 		// Fetch liquidity for all solvers
 		let all_key = AllSolverLiquidityKey {};
-		let solver_liquidity_map: std::collections::HashMap<String, Vec<String>> = 
+		let solver_liquidity_map: std::collections::HashMap<String, Vec<String>> =
 			match database.db().get(all_key.as_db_key())? {
 				Some(bytes) => bincode::deserialize(&bytes).unwrap_or_default(),
 				None => std::collections::HashMap::new(),

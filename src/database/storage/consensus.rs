@@ -1,8 +1,8 @@
 use crate::{
 	consensus::ConsensusResult,
 	database::{
-		ConsensusResultKey, CurrentRoundKey, Database, SelectedNodesKey,
-		CONSENSUS_RESULT_PREFIX, CURRENT_ROUND_PREFIX, SELECTED_NODES_PREFIX, traits::Storage
+		traits::Storage, ConsensusResultKey, CurrentRoundKey, Database, SelectedNodesKey,
+		CONSENSUS_RESULT_PREFIX, CURRENT_ROUND_PREFIX, SELECTED_NODES_PREFIX,
 	},
 	define_storage_adapter,
 	types::p2p::SerializablePeerId,
@@ -11,12 +11,11 @@ use anyhow::Result;
 use std::{collections::HashMap, convert::TryInto};
 use tracing::{debug, info};
 
-
 define_storage_adapter!(
-    ConsensusResultAdapter,
-    ConsensusResultKey,
-    ConsensusResult,
-    CONSENSUS_RESULT_PREFIX
+	ConsensusResultAdapter,
+	ConsensusResultKey,
+	ConsensusResult,
+	CONSENSUS_RESULT_PREFIX
 );
 
 define_storage_adapter!(
@@ -28,12 +27,9 @@ define_storage_adapter!(
 
 define_storage_adapter!(CurrentRoundAdapter, CurrentRoundKey, u64, CURRENT_ROUND_PREFIX);
 
-
 pub type ConsensusResultStorage = Storage<ConsensusResultAdapter>;
 pub type SelectedNodesStorage = Storage<SelectedNodesAdapter>;
 pub type CurrentRoundStorage = Storage<CurrentRoundAdapter>;
-
-
 
 #[derive(Clone)]
 pub struct ConsensusStorage {
@@ -164,7 +160,6 @@ impl ConsensusStorage {
 		info!("✅ [CONSENSUS_STORAGE] Incremented round from {} to {}", current, new_round);
 		Ok(new_round)
 	}
-
 
 	/// Get consensus statistics
 	pub async fn get_consensus_stats(&self) -> Result<ConsensusStats> {
