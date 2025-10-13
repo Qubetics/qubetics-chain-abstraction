@@ -427,6 +427,7 @@ pub mod keys {
     pub const DKG_POLYNOMIAL: &str = "dkg_polynomial";
     pub const DKG_INITIAL_COMPLETE: &str = "dkg_initial_complete";
     pub const DKG_MY_PERMANENT_INDEX: &str = "dkg_my_permanent_index";
+    pub const PEER_INDEX: &str = "peer_index:"; // key = peer_index:<peer_id_str>
     pub const SOLVER_AMOUNTS: &str = "solver_amounts:";
     pub const TOTAL_LIQUIDITY_TICS: &str = "total_liquidity_tics";
     pub const TOTAL_LIQUIDITY_BTC: &str = "total_liquidity_btc";
@@ -541,5 +542,9 @@ pub mod key_utils {
             keys::INTENT_REWARD_STATUS,
             intent_hash.to_lowercase()
         )
+    }
+
+    pub fn peer_index_key(peer_id: &str) -> String {
+        format!("{}{}", keys::PEER_INDEX, peer_id)
     }
 }

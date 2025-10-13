@@ -90,6 +90,7 @@ pub enum GossipsubMessage {
     PeerDiscovered {
         peer: PeerId,
         sequence: Option<u64>,
+        index: Option<usize>,
     },
     Transaction(crate::rpc_server::DummyTransaction),
     DepositIntent {

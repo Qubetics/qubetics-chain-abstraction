@@ -32,6 +32,7 @@ use tracing::{debug, error, info, warn};
 use ff::PrimeField;
 
 use crate::{chain::EthereumTransaction, commands::CommandProcessor, rpc_server::DummyTransaction, utils::transaction::get_default_gas_price_for_chain};
+use crate::database::{Database, DatabaseConfig, key_utils, keys};
 use crate::consensus::ConsensusNode;
 use crate::adkg_secp256k1::DKGNode;
 use crate::node_management::NodeMembership;
@@ -99,15 +100,62 @@ pub struct NetworkLayer {
     node_manager: Box<dyn NodeMembership>,
     scheduled_dkg_task: Option<JoinHandle<()>>,
     vrf_round_requested: bool, // Flag to prevent duplicate VRF round requests
+    // In-memory mapping of peers to their assigned indices
+    peer_indices: std::collections::HashMap<PeerId, usize>,
+    // Database for persisting peer indices
+    db: Database,
 }
 
 impl NetworkLayer {
+    fn get_max_peer_index_from_db(&self) -> usize {
+        if let Ok(keys) = self.db.get_keys_with_prefix(crate::database::keys::PEER_INDEX) {
+            let mut max_idx = 0usize;
+            for k in keys {
+                if let Ok(Some(idx)) = self.db.get_string::<usize>(&k) {
+                    if idx > max_idx { max_idx = idx; }
+                }
+            }
+            max_idx
+        } else { 0 }
+    }
+
+    fn get_index_from_db(&self, pid: &PeerId) -> Option<usize> {
+        let key = crate::database::key_utils::peer_index_key(&pid.to_string());
+        self.db.get_string::<usize>(&key).ok().flatten()
+    }
+
+    fn assign_and_persist_index(&mut self, pid: &PeerId) -> usize {
+        if let Some(idx) = self.get_index_from_db(pid) {
+            return idx;
+        }
+        // Determine next index strictly from DB state
+        let next = self.get_max_peer_index_from_db().saturating_add(1);
+        let key = crate::database::key_utils::peer_index_key(&pid.to_string());
+        if let Err(e) = self.db.put_string(&key, &next) { warn!("Failed to persist peer index: {:?}", e); }
+        self.peer_indices.insert(pid.clone(), next);
+        next
+    }
+
+    fn ensure_local_index(&mut self) -> usize {
+        if let Some(idx) = self.get_index_from_db(&self.local_peer_id) {
+            self.peer_indices.insert(self.local_peer_id.clone(), idx);
+            return idx;
+        }
+        // If no peers indexed yet, start at 1; otherwise next max+1
+        let current_max = self.get_max_peer_index_from_db();
+        let idx = if current_max == 0 { 1 } else { current_max + 1 };
+        let key = crate::database::key_utils::peer_index_key(&self.local_peer_id.to_string());
+        if let Err(e) = self.db.put_string(&key, &idx) { warn!("Failed to persist local index: {:?}", e); }
+        self.peer_indices.insert(self.local_peer_id.clone(), idx);
+        idx
+    }
     pub async fn new(node_manager: Box<dyn NodeMembership>) -> Result<Self> {
         // Load or create persistent keypair
         let (local_key, local_peer_id) = Self::load_or_create_keypair().await?;
+        let db = Database::new(DatabaseConfig::default())?;
         let (tx, rx) = mpsc::channel(100);
 
-        Ok(Self {
+        let mut this = Self {
             local_key,
             local_peer_id,
             message_tx: tx,
@@ -122,7 +170,27 @@ impl NetworkLayer {
             node_manager,
             scheduled_dkg_task: None,
             vrf_round_requested: false,
-        })
+            peer_indices: std::collections::HashMap::new(),
+            db,
+        };
+
+        // Preload any persisted peer indices into memory
+        if let Ok(keys) = this.db.get_keys_with_prefix(keys::PEER_INDEX) {
+            for k in keys {
+                if let Some(peer_str) = k.strip_prefix(keys::PEER_INDEX) {
+                    if let Ok(Some(idx)) = this.db.get_string::<usize>(&k) {
+                        if let Ok(pid) = peer_str.parse() {
+                            this.peer_indices.insert(pid, idx);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Ensure we have our own index persisted
+        this.ensure_local_index();
+
+        Ok(this)
     }
 
     pub fn set_dkg_node(&mut self, dkg_node: DKGNode) {
@@ -352,7 +420,7 @@ impl NetworkLayer {
         let mut bootstrap_timer = tokio::time::interval(Duration::from_secs(300));
         let mut discovery_timer = tokio::time::interval(Duration::from_secs(300));
         let mut dkg_status_timer = tokio::time::interval(Duration::from_secs(300));
-        let mut peerlist_logger = tokio::time::interval(Duration::from_secs(300));
+        let mut peerlist_logger = tokio::time::interval(Duration::from_secs(30));
 
 
         swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
@@ -421,10 +489,22 @@ impl NetworkLayer {
 
                 _ = peerlist_logger.tick() => {
                     let peers = self.node_manager.get_active_nodes();
+                    let mut entries: Vec<String> = Vec::new();
+                    for p in &peers {
+                        let idx = match self.peer_indices.get(p).cloned() {
+                            Some(i) => Some(i),
+                            None => {
+                                let key = crate::database::key_utils::peer_index_key(&p.to_string());
+                                match self.db.get_string::<usize>(&key) { Ok(Some(i)) => Some(i), _ => None }
+                            }
+                        };
+                        match idx { Some(i) => entries.push(format!("{}=>{}", p, i)), None => entries.push(format!("{}=>?", p)) }
+                    }
+                    let display_str = entries.join(", ");
                     info!(
-                        "🕒 PeerList snapshot ({} peers): {:?}",
+                        "🕒 PeerList snapshot ({} peers): {}",
                         peers.len(),
-                        peers
+                        display_str
                     );
                 }
                  _ = bootstrap_timer.tick() => {
@@ -462,6 +542,21 @@ impl NetworkLayer {
                     // Also search for random peers to populate routing table
                     let random_peer = PeerId::random();
                     swarm.behaviour_mut().kademlia.get_closest_peers(random_peer);
+
+                    // Proactively request indices from peers we lack index for
+                    let active = self.node_manager.get_active_nodes();
+                    for p in active {
+                        let known = self.peer_indices.contains_key(&p) || {
+                            let key = crate::database::key_utils::peer_index_key(&p.to_string());
+                            self.db.get_string::<usize>(&key).ok().flatten().is_some()
+                        };
+                        if !known {
+                            info!("🔎 Requesting PeerList from {} to learn indices", p);
+                            swarm.behaviour_mut()
+                                .request_response
+                                .send_request(&p, RPCRequest::GetPeerList);
+                        }
+                    }
                 }
 
                 _ = dkg_status_timer.tick() => {
@@ -616,9 +711,13 @@ impl NetworkLayer {
 
                 if is_listener && !already_known {
                     info!("📡 New peer {} connected; announcing to mesh", peer_id);
+                    // Assign and persist index based on DB state
+                    let tentative_index = self.assign_and_persist_index(&peer_id);
+                    info!("assigned_index : {:?}", tentative_index);
                     let msg = GossipsubMessage::PeerDiscovered {
                         peer: peer_id.clone(),
                         sequence: Some(1),
+                        index: Some(tentative_index),
                     };
                     let payload = serde_json::to_vec(&msg)
                         .expect("serialize PeerDiscovered");
@@ -713,6 +812,7 @@ impl NetworkLayer {
                     swarm.behaviour_mut()
                         .request_response
                         .send_request(&peer_id, RPCRequest::GetPeerList);
+                    //receive the peer list with corrosponding index
                 }
 
                 // Debug: Log current Kademlia routing table size
@@ -763,15 +863,32 @@ impl NetworkLayer {
                                     .map(SerializablePeerId)
                                     .collect();
 
+                                // Map indices in the same order, also load from DB if not in-memory
+                                let indices: Vec<Option<usize>> = peers
+                                    .iter()
+                                    .map(|SerializablePeerId(pid)| {
+                                        if let Some(idx) = self.peer_indices.get(pid).cloned() {
+                                            Some(idx)
+                                        } else {
+                                            let key = key_utils::peer_index_key(&pid.to_string());
+                                            match self.db.get_string::<usize>(&key) {
+                                                Ok(Some(idx)) => Some(idx),
+                                                _ => None,
+                                            }
+                                        }
+                                    })
+                                    .collect();
+
                                 // Log how many peers we're returning (and list them if you like)
                                 info!(
-                                    "📋 Sending PeerList response to {}: {} entries: {:?}",
+                                    "📋 Sending PeerList response to {}: {} entries: {:?} {:?}",
                                     peer,
                                     peers.len(),
-                                    peers
+                                    peers,
+                                    indices
                                 );
 
-                                RPCResponse::PeerList { peers }
+                                RPCResponse::PeerList { peers, indices }
                             }
                             RPCRequest::Ping => RPCResponse::Pong,
                             RPCRequest::GetPeerInfo => {
@@ -907,9 +1024,9 @@ impl NetworkLayer {
                         info!("📥 Got RPC response {:?} from {}", response, peer);
                         // peer.r
                         match response {
-                            RPCResponse::PeerList { peers } => {
+                            RPCResponse::PeerList { peers, indices } => {
                                 info!("🔄 Merging peer‐set from {}: {:?}", peer, peers);
-                                for SerializablePeerId(p) in peers {
+                                for (i, SerializablePeerId(p)) in peers.into_iter().enumerate() {
                                     if !self.node_manager.get_active_nodes().contains(&p) {
                                         self.node_manager.add_node(p.clone())
                                             .map_err(|e| anyhow::anyhow!(e))?;
@@ -919,6 +1036,19 @@ impl NetworkLayer {
                                             let new_threshold = self.node_manager.get_threshold();
                                             signing_node.set_threshold(new_threshold);
                                             info!("🔄 [THRESHOLD] Updated signing node threshold to {} after peer list merge", new_threshold);
+                                        }
+                                    }
+                                    if let Some(idx) = indices.get(i).cloned().flatten() {
+                                        self.peer_indices.insert(p.clone(), idx);
+                                        let key = key_utils::peer_index_key(&p.to_string());
+                                        if let Err(e) = self.db.put_string(&key, &idx) { warn!("Failed to persist peer index: {:?}", e); }
+                                    } else {
+                                        // If no index provided and we have none, assign the next available index locally and persist it
+                                        if !self.peer_indices.contains_key(&p) {
+                                            let next_idx = self.peer_indices.values().copied().max().unwrap_or(0) + 1;
+                                            self.peer_indices.insert(p.clone(), next_idx);
+                                            let key = key_utils::peer_index_key(&p.to_string());
+                                            if let Err(e) = self.db.put_string(&key, &next_idx) { warn!("Failed to persist assigned peer index: {:?}", e); }
                                         }
                                     }
                                 }
@@ -1134,9 +1264,17 @@ impl NetworkLayer {
                     // tokio::time::sleep(Duration::from_millis(50)).await;
 
                     // Broadcast our presence to this newly subscribed peer
+                    //attach the corresponding index of that peer
+                    let my_index = self.peer_indices.get(&self.local_peer_id).cloned().unwrap_or(self.node_manager.get_total_nodes());
+                    // Persist my own index if known
+                    if let Some(idx) = self.peer_indices.get(&self.local_peer_id).cloned() {
+                        let key = key_utils::peer_index_key(&self.local_peer_id.to_string());
+                        if let Err(e) = self.db.put_string(&key, &idx) { warn!("Failed to persist my index: {:?}", e); }
+                    }
                     let msg = GossipsubMessage::PeerDiscovered {
                         peer: self.local_peer_id.clone(),
                         sequence: Some(1), // Add sequence number
+                        index: Some(my_index),
                     };
                     if let Ok(payload) = serde_json::to_vec(&msg) {
                         if let Err(e) = self.broadcast(MSG_TOPIC_PEER_DISCOVERY, &payload).await {
@@ -2112,10 +2250,10 @@ impl NetworkLayer {
                 }
             }
 
-            GossipsubMessage::PeerDiscovered { peer, sequence } => {
+            GossipsubMessage::PeerDiscovered { peer, sequence, index } => {
                 info!(
-                    "🎯 Peer discovered via gossipsub: {:?} (seq: {:?})",
-                    peer, sequence
+                    "🎯 Peer discovered via gossipsub: {:?} (seq: {:?}, idx: {:?})",
+                    peer, sequence, index
                 );
 
                 // Check if we already have this peer to avoid duplicates
@@ -2125,8 +2263,12 @@ impl NetworkLayer {
                     return Ok(());
                 }
 
-                // Check if the new peer is us (the local node)
-                let is_new_node_local = peer == self.local_peer_id;
+                // If index provided, store and persist it
+                if let Some(idx) = index {
+                    self.peer_indices.insert(peer.clone(), idx);
+                    let key = key_utils::peer_index_key(&peer.to_string());
+                    if let Err(e) = self.db.put_string(&key, &idx) { warn!("Failed to persist peer index: {:?}", e); }
+                }
                 
                 match self.node_manager.add_node(peer) {
                     Ok(_) => {
