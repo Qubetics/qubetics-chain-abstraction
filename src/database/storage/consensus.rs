@@ -1,32 +1,39 @@
 use crate::{
 	consensus::ConsensusResult,
 	database::{
-		ConsensusResultKey, CurrentRoundKey, Database, KvStorage, SelectedNodesKey,
-		CONSENSUS_RESULT_PREFIX, CURRENT_ROUND_PREFIX, SELECTED_NODES_PREFIX,
+		ConsensusResultKey, CurrentRoundKey, Database, SelectedNodesKey,
+		CONSENSUS_RESULT_PREFIX, CURRENT_ROUND_PREFIX, SELECTED_NODES_PREFIX, traits::Storage
 	},
-	define_storage,
+	define_storage_adapter,
 	types::p2p::SerializablePeerId,
 };
 use anyhow::Result;
-use rocksdb::DB;
-use std::{collections::HashMap, convert::TryInto, sync::Arc};
+use std::{collections::HashMap, convert::TryInto};
 use tracing::{debug, info};
 
-define_storage!(
-	ConsensusResultStorage,
-	ConsensusResultKey,
-	ConsensusResult,
-	CONSENSUS_RESULT_PREFIX
+
+define_storage_adapter!(
+    ConsensusResultAdapter,
+    ConsensusResultKey,
+    ConsensusResult,
+    CONSENSUS_RESULT_PREFIX
 );
 
-define_storage!(
-	SelectedNodesStorage,
+define_storage_adapter!(
+	SelectedNodesAdapter,
 	SelectedNodesKey,
 	Vec<SerializablePeerId>,
 	SELECTED_NODES_PREFIX
 );
 
-define_storage!(CurrentRoundStorage, CurrentRoundKey, u64, CURRENT_ROUND_PREFIX);
+define_storage_adapter!(CurrentRoundAdapter, CurrentRoundKey, u64, CURRENT_ROUND_PREFIX);
+
+
+pub type ConsensusResultStorage = Storage<ConsensusResultAdapter>;
+pub type SelectedNodesStorage = Storage<SelectedNodesAdapter>;
+pub type CurrentRoundStorage = Storage<CurrentRoundAdapter>;
+
+
 
 #[derive(Clone)]
 pub struct ConsensusStorage {
@@ -73,7 +80,7 @@ impl ConsensusStorage {
 	pub async fn get_all_selected_nodes_by_round(
 		&self,
 	) -> Result<HashMap<u64, Vec<SerializablePeerId>>> {
-		let selected_nodes = self.selected_nodes.get_all_by_key()?;
+		let selected_nodes = self.selected_nodes.get_all()?;
 
 		debug!(
 			"🔍 [CONSENSUS_STORAGE] Retrieved selected nodes for {} rounds",

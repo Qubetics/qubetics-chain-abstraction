@@ -2,40 +2,38 @@
 
 use crate::{
     database::{
-        constants::*,
+        constants::TRANSACTION_STATUS_PREFIX,
         db::Database,
         keys::TransactionStatusKey,
-        traits::KvStorage,
+        traits::Storage,
     },
-    user_registry::{
-        TransactionStatus,
-    },
+    define_storage_adapter,
+    user_registry::TransactionStatus,
 };
 use anyhow::Result;
-use rocksdb::DB;
-use std::sync::Arc;
 use tracing::info;
 
+// Storage adapter for transaction status data
+define_storage_adapter!(
+    TransactionStatusAdapter,
+    TransactionStatusKey,
+    TransactionStatus,
+    TRANSACTION_STATUS_PREFIX
+);
 
-
+pub type TransactionStatusStorageTyped = Storage<TransactionStatusAdapter>;
 
 /// Storage for tracking transaction status by hash
 #[derive(Clone)]
 pub struct TransactionStatusStorage {
-	db: Database,
+    transaction_status: TransactionStatusStorageTyped,
 }
-
-impl KvStorage for TransactionStatusStorage {
-    fn db(&self) -> &Arc<DB> {
-        self.db.db()
-    }
-}
-
-
 
 impl TransactionStatusStorage {
 	pub fn new(db: Database) -> Self {
-		Self { db }
+		Self {
+            transaction_status: TransactionStatusStorageTyped::new(db),
+        }
 	}
 
 	/// Store status for a transaction hash
@@ -47,7 +45,7 @@ impl TransactionStatusStorage {
             "💾 [TX_STATUS_STORAGE] Storing status for tx {}: {:?}",
             tx_hash, status
         );
-        self.put(key, &status)
+        self.transaction_status.put(key, &status)
 	}
 
 	/// Get status for a transaction hash
@@ -55,7 +53,7 @@ impl TransactionStatusStorage {
         let key = TransactionStatusKey {
             tx_hash: tx_hash.to_string(),
         };
-        self.get(key)
+        self.transaction_status.get(key)
     }
 
 	/// Update status for a transaction hash

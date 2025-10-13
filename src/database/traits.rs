@@ -19,78 +19,81 @@ pub trait DBKey {
 }
 
 
-pub trait KvStorage {
+use std::marker::PhantomData;
 
-    fn db(&self) -> &Arc<DB>;
+use crate::Database;
 
-    fn put<K, V>(&self, key: K, value: &V) -> Result<()>
-    where
-        K: DBKey,
-        V: Serialize,
-    {
-        self.db()
-            .put(&key.as_db_key(), &bincode::serialize(value)?)?;
+pub trait StorageAdapter {
+    type Key: DBKey;
+    type Value: Serialize + DeserializeOwned;
+    const PREFIX: &'static [u8];
+}
+
+
+#[derive(Clone)]
+pub struct Storage<T: StorageAdapter> {
+    db: Database,
+    _marker: PhantomData<T>,
+}
+
+
+impl<T: StorageAdapter> Storage<T> {
+    pub fn new(db: Database) -> Self {
+        Self { db, _marker: PhantomData }
+    }
+
+    pub fn put(&self, key: T::Key, value: &T::Value) -> Result<()> {
+        self.db.db().put(key.as_db_key(), bincode::serialize(value)?)?;
         Ok(())
     }
 
-    fn get<K, V>(&self, key: K) -> Result<Option<V>>
-    where
-        K: DBKey,
-        V: DeserializeOwned,
-    {
-        match self.db().get(&key.as_db_key())? {
-            Some(encoded) => {
-                let value = bincode::deserialize(&encoded)?;
-                Ok(Some(value))
-            }
+    pub fn get(&self, key: T::Key) -> Result<Option<T::Value>> {
+        match self.db.db().get(key.as_db_key())? {
+            Some(bytes) => Ok(Some(bincode::deserialize(&bytes)?)),
             None => Ok(None),
         }
     }
 
-    fn delete<K>(&self, key: K) -> Result<()>
-    where
-        K: DBKey,
-    {
-        self.db().delete(&key.as_db_key())?;
+    pub fn delete(&self, key: T::Key) -> Result<()> {
+        self.db.db().delete(key.as_db_key())?;
         Ok(())
     }
 
-    fn get_all<V>(&self, prefix: &[u8]) -> Result<Vec<V>>
-    where
-        V: DeserializeOwned,
-    {
-        let mut values = Vec::new();
-        let iter = self.db().prefix_iterator(prefix);
+
+    pub fn get_all(&self) -> anyhow::Result<std::collections::HashMap<Vec<u8>, T::Value>> {
+        let mut map = std::collections::HashMap::new();
+        let iter = self.db.db().prefix_iterator(T::PREFIX);
         for item in iter {
-            let (_key, value) = item?;
-            let value = bincode::deserialize(&value)?;
-            values.push(value);
+            let (key, value) = item?;
+            if let Ok(deserialized_value) = bincode::deserialize(&value) {
+                map.insert(key.to_vec(), deserialized_value);
+            }
         }
-        Ok(values)
+        Ok(map)
     }
 
-    /// Check if a key exists
-    fn contains_key<K>(&self, key: &K) -> Result<bool>
-    where
-        K: DBKey,
-    {
-        match self.db().get(&key.as_db_key()) {
+
+
+    pub fn contains_key(&self, key: &T::Key) -> Result<bool> {
+        match self.db.db().get(key.as_db_key()) {
             Ok(Some(_)) => Ok(true),
             Ok(None) => Ok(false),
             Err(e) => Err(anyhow!("Failed to check key existence: {}", e)),
         }
     }
 
-    /// Flush database to disk
-    fn flush(&self) -> Result<()> {
-        self.db()
+    pub fn flush(&self) -> Result<()> {
+        self.db.db()
             .flush()
             .map_err(|e| anyhow!("Failed to flush database: {}", e))?;
         debug!("🔄 [DATABASE] Flushed database to disk");
         Ok(())
     }
 
-
-
 }
+
+
+
+
+
 

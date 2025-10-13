@@ -1,55 +1,55 @@
-
 use crate::{
-    database::{
-        constants::*,
-        db::Database,
-        keys::{
-            IntentRegistryKey, IntentTransactionIdsKey,
-        },
-        traits::KvStorage,
-    },
-    rpc_server::DepositIntent,
-    user_registry::{
-        IntentStatus, IntentTransactionIds,
-    },
-    UserStorage
+	database::{
+		constants::*,
+		db::Database,
+		keys::{IntentRegistryKey, IntentTransactionIdsKey},
+		traits::Storage,
+	},
+	define_storage_adapter,
+	rpc_server::DepositIntent,
+	user_registry::{IntentStatus, IntentTransactionIds},
+	UserStorage,
 };
 use anyhow::Result;
 use chrono::Utc;
-use rocksdb::DB;
-use std::{collections::HashMap, sync::Arc};
+use std::collections::HashMap;
 use tracing::{debug, error, info};
 
+define_storage_adapter!(
+	IntentRegistryAdapter,
+	IntentRegistryKey,
+	DepositIntent,
+	INTENT_REGISTRY_PREFIX
+);
+
+define_storage_adapter!(
+	IntentTransactionIdsAdapter,
+	IntentTransactionIdsKey,
+	IntentTransactionIds,
+	INTENT_TRANSACTION_IDS_PREFIX
+);
+
+pub type IntentRegistryStorage = Storage<IntentRegistryAdapter>;
+pub type IntentTransactionIdsStorage = Storage<IntentTransactionIdsAdapter>;
 
 /// Database-backed intent storage
 #[derive(Clone)]
 pub struct IntentStorage {
-	db: Database,
+	intents: IntentRegistryStorage,
+	tx_ids: IntentTransactionIdsStorage,
 }
-
-
-impl KvStorage for IntentStorage {
-    fn db(&self) -> &Arc<DB> {
-        self.db.db()
-    }
-}
-
-
-
-
 
 impl IntentStorage {
 	pub fn new(db: Database) -> Self {
-		Self { db }
+		Self {
+			intents: IntentRegistryStorage::new(db.clone()),
+			tx_ids: IntentTransactionIdsStorage::new(db.clone()),
+		}
 	}
 
 	/// Store a deposit intent
 	pub async fn store_intent(&self, intent_hash: &str, intent: &DepositIntent) -> Result<()> {
-        let key = IntentRegistryKey {
-            intent_hash: intent_hash.to_string(),
-        };
-
-
+		let key = IntentRegistryKey { intent_hash: intent_hash.to_string() };
 
 		info!("💾 [INTENT_STORAGE] Starting to store deposit intent:");
 		info!("  🔗 Intent hash: {}", intent_hash);
@@ -59,97 +59,80 @@ impl IntentStorage {
 		info!("  📧 Target address: {}", intent.target_address);
 		info!("  🗄️  Database key: {:?}", key);
 
-
-        match self.put(key.clone(), intent) {
-            Ok(()) => {
-                info!(
-                    "✅ [INTENT_STORAGE] Successfully stored deposit intent: {}",
-                    intent_hash
-                );
-                info!(
-                    "  💰 Stored amount: {} for {} -> {}",
-                    intent.amount, intent.source_chain, intent.target_chain
-                );
-                Ok(())
-            }
-            Err(e) => {
-                error!(
-                    "❌ [INTENT_STORAGE] Failed to store deposit intent: {}",
-                    intent_hash
-                );
-                error!("  🗄️  Database key: {:?}", key);
-                error!("  💥 Error: {}", e);
-                Err(e)
-            }
-        }
+		match self.intents.put(key.clone(), intent) {
+			Ok(()) => {
+				info!("✅ [INTENT_STORAGE] Successfully stored deposit intent: {}", intent_hash);
+				info!(
+					"  💰 Stored amount: {} for {} -> {}",
+					intent.amount, intent.source_chain, intent.target_chain
+				);
+				Ok(())
+			},
+			Err(e) => {
+				error!("❌ [INTENT_STORAGE] Failed to store deposit intent: {}", intent_hash);
+				error!("  🗄️  Database key: {:?}", key);
+				error!("  💥 Error: {}", e);
+				Err(e)
+			},
+		}
 	}
 
 	/// Get a deposit intent by hash
-    pub async fn get_intent(&self, intent_hash: &str) -> Result<Option<DepositIntent>> {
-        let key = IntentRegistryKey {
-            intent_hash: intent_hash.to_string(),
-        };
-        let intent = self.get(key)?;
-        if intent.is_some() {
-            debug!("🔍 [INTENT_STORAGE] Retrieved intent: {}", intent_hash);
-        }
-        Ok(intent)
-    }
+
+	pub async fn get_intent(&self, intent_hash: &str) -> Result<Option<DepositIntent>> {
+		let key = IntentRegistryKey { intent_hash: intent_hash.to_string() };
+		let intent = self.intents.get(key)?;
+		if intent.is_some() {
+			debug!("🔍 [INTENT_STORAGE] Retrieved intent: {}", intent_hash);
+		}
+		Ok(intent)
+	}
 
 	/// Get all intents
-    pub async fn get_all_intents(&self) -> Result<HashMap<String, DepositIntent>> {
-        let mut intents = HashMap::new();
-        let iter = self.db().prefix_iterator(INTENT_REGISTRY_PREFIX);
-        for item in iter {
-            let (key_bytes, value_bytes) = item?;
-            if let Ok(intent) = bincode::deserialize(&value_bytes) {
-                if let Some(hash_bytes) = key_bytes.strip_prefix(INTENT_REGISTRY_PREFIX) {
-                    if let Ok(hash) = String::from_utf8(hash_bytes.to_vec()) {
-                        intents.insert(hash, intent);
-                    }
-                }
-            }
-        }
-        debug!("🔍 [INTENT_STORAGE] Retrieved {} intents", intents.len());
-        Ok(intents)
-    }
+	pub async fn get_all_intents(&self) -> Result<HashMap<String, DepositIntent>> {
+		let intents = self.intents.get_all();
+		intents.map(|intents| {
+			intents
+				.into_iter()
+				.map(|(key, value)| (String::from_utf8(key).unwrap(), value))
+				.collect()
+		})
+	}
 
 	/// Delete an intent
-    pub async fn delete_intent(&self, intent_hash: &str) -> Result<()> {
-        let key = IntentRegistryKey {
-            intent_hash: intent_hash.to_string(),
-        };
-        self.delete(key)?;
-        info!("🗑️ [INTENT_STORAGE] Deleted intent: {}", intent_hash);
-        Ok(())
-    }
+	pub async fn delete_intent(&self, intent_hash: &str) -> Result<()> {
+		let key = IntentRegistryKey { intent_hash: intent_hash.to_string() };
+		self.intents.delete(key)?;
+		info!("🗑️ [INTENT_STORAGE] Deleted intent: {}", intent_hash);
+		Ok(())
+	}
 
 	/// Get intents by status (requires checking user registrations)
-    pub async fn get_intents_by_status_with_users(
-        &self,
-        user_storage: &UserStorage,
-        status: IntentStatus,
-    ) -> Result<Vec<(String, DepositIntent)>> {
-        let all_users = user_storage.get_all_users().await?;
-        let mut matching_intents = Vec::new();
+	pub async fn get_intents_by_status_with_users(
+		&self,
+		user_storage: &UserStorage,
+		status: IntentStatus,
+	) -> Result<Vec<(String, DepositIntent)>> {
+		let all_users = user_storage.get_all_users().await?;
+		let mut matching_intents = Vec::new();
 
-        for (_user_addr, user) in all_users {
-            for (intent_hash, intent_status) in user.intent_hashes {
-                if intent_status == status {
-                    if let Some(intent) = self.get_intent(&intent_hash).await? {
-                        matching_intents.push((intent_hash, intent));
-                    }
-                }
-            }
-        }
+		for (_user_addr, user) in all_users {
+			for (intent_hash, intent_status) in user.intent_hashes {
+				if intent_status == status {
+					if let Some(intent) = self.get_intent(&intent_hash).await? {
+						matching_intents.push((intent_hash, intent));
+					}
+				}
+			}
+		}
 
-        debug!(
-            "🔍 [INTENT_STORAGE] Found {} intents with status: {:?}",
-            matching_intents.len(),
-            status
-        );
-        Ok(matching_intents)
-    }
+		debug!(
+			"🔍 [INTENT_STORAGE] Found {} intents with status: {:?}",
+			matching_intents.len(),
+			status
+		);
+		Ok(matching_intents)
+	}
 
 	/// Store transaction IDs for an intent hash
 	pub async fn store_intent_transaction_ids(
@@ -160,9 +143,7 @@ impl IntentStorage {
 		vault_to_network_tx_id: Option<String>,
 		final_solver_id: Option<String>,
 	) -> Result<()> {
-        let key = IntentTransactionIdsKey {
-            intent_hash: intent_hash.to_string(),
-        };
+		let key = IntentTransactionIdsKey { intent_hash: intent_hash.to_string() };
 
 		info!("💾 [INTENT_STORAGE] Starting to store transaction IDs:");
 		info!("  🔗 Intent hash: {}", intent_hash);
@@ -271,7 +252,7 @@ impl IntentStorage {
 		}
 
 		// Store the updated transaction IDs
-        match self.put(key.clone(), &tx_ids) {
+		match self.tx_ids.put(key.clone(), &tx_ids) {
 			Ok(()) => {
 				info!(
 					"✅ [INTENT_STORAGE] Successfully stored transaction IDs for intent: {}",
@@ -310,23 +291,17 @@ impl IntentStorage {
 	}
 
 	/// Get transaction IDs for an intent hash
-    pub async fn get_intent_transaction_ids(
-        &self,
-        intent_hash: &str,
-    ) -> Result<Option<IntentTransactionIds>> {
-        let key = IntentTransactionIdsKey {
-            intent_hash: intent_hash.to_string()
-        };
-        let tx_ids = self.get(key)?;
-        if tx_ids.is_some() {
-            debug!(
-                "🔍 [INTENT_STORAGE] Retrieved transaction IDs for intent: {}",
-                intent_hash
-            );
-        }
-        Ok(tx_ids)
-    }
-
+	pub async fn get_intent_transaction_ids(
+		&self,
+		intent_hash: &str,
+	) -> Result<Option<IntentTransactionIds>> {
+		let key = IntentTransactionIdsKey { intent_hash: intent_hash.to_string() };
+		let tx_ids = self.tx_ids.get(key)?;
+		if tx_ids.is_some() {
+			debug!("🔍 [INTENT_STORAGE] Retrieved transaction IDs for intent: {}", intent_hash);
+		}
+		Ok(tx_ids)
+	}
 
 	/// Store user_to_network transaction ID
 	pub async fn store_user_to_network_tx_id(
@@ -400,10 +375,8 @@ impl IntentStorage {
 
 		tx_ids.set_final_solver(Some(solver.to_string()));
 
-        let key = IntentTransactionIdsKey {
-            intent_hash: intent_hash.to_string(),
-        };
-		self.put(key.clone(), &tx_ids)?;
+		let key = IntentTransactionIdsKey { intent_hash: intent_hash.to_string() };
+		self.tx_ids.put(key.clone(), &tx_ids)?;
 
 		info!("✅ [INTENT_STORAGE] Final solver stored for intent {}: {}", intent_hash, solver);
 
@@ -445,60 +418,51 @@ impl IntentStorage {
 		tx_ids.updated_at = Utc::now();
 
 		// Store updated transaction IDs
-        let key = IntentTransactionIdsKey {
-            intent_hash: intent_hash.to_string(),
-        };
-		self.put(key, &tx_ids)?;
+		let key = IntentTransactionIdsKey { intent_hash: intent_hash.to_string() };
+		self.tx_ids.put(key, &tx_ids)?;
 
 		info!("✅ [INTENT_STORAGE] Error message stored for intent {}", intent_hash);
 		Ok(())
 	}
 
 	/// Get all intents with their transaction IDs
-    pub async fn get_all_intents_with_transaction_ids(
-        &self,
-    ) -> Result<HashMap<String, (DepositIntent, Option<IntentTransactionIds>)>> {
-        let all_intents = self.get_all_intents().await?;
-        let mut intents_with_tx_ids = HashMap::new();
+	pub async fn get_all_intents_with_transaction_ids(
+		&self,
+	) -> Result<HashMap<String, (DepositIntent, Option<IntentTransactionIds>)>> {
+		let all_intents = self.get_all_intents().await?;
+		let mut intents_with_tx_ids = HashMap::new();
 
-        for (intent_hash, intent) in all_intents {
-            let tx_ids = self.get_intent_transaction_ids(&intent_hash).await?;
-            intents_with_tx_ids.insert(intent_hash, (intent, tx_ids));
-        }
+		for (intent_hash, intent) in all_intents {
+			let tx_ids = self.get_intent_transaction_ids(&intent_hash).await?;
+			intents_with_tx_ids.insert(intent_hash, (intent, tx_ids));
+		}
 
-        debug!(
-            "🔍 [INTENT_STORAGE] Retrieved {} intents with transaction IDs",
-            intents_with_tx_ids.len()
-        );
-        Ok(intents_with_tx_ids)
-    }
+		debug!(
+			"🔍 [INTENT_STORAGE] Retrieved {} intents with transaction IDs",
+			intents_with_tx_ids.len()
+		);
+		Ok(intents_with_tx_ids)
+	}
 
 	/// Get intents that have completed both transactions
-    pub async fn get_completed_intents(
-        &self,
-    ) -> Result<Vec<(String, DepositIntent, IntentTransactionIds)>> {
-        let mut completed_intents = Vec::new();
-        let iter = self.db().prefix_iterator(INTENT_TRANSACTION_IDS_PREFIX);
-
-        for item in iter {
-            let (_key_bytes, value_bytes) = item?;
-            if let Ok(tx_ids) = bincode::deserialize::<IntentTransactionIds>(&value_bytes) {
-                // Check if both transaction IDs are present
-                if tx_ids.user_to_network_tx_id.is_some() && tx_ids.network_to_target_tx_id.is_some() {
-                    if let Some(intent) = self.get_intent(&tx_ids.intent_hash).await? {
-                        completed_intents.push((tx_ids.intent_hash.clone(), intent, tx_ids));
-                    }
-                }
-            }
-        }
-
-        debug!(
-            "🔍 [INTENT_STORAGE] Found {} completed intents",
-            completed_intents.len()
-        );
-        Ok(completed_intents)
-    }
-
+	pub async fn get_completed_intents(
+		&self,
+	) -> Result<Vec<(String, DepositIntent, IntentTransactionIds)>> {
+		let mut completed = Vec::new();
+		let all_tx = self.tx_ids.get_all()?;
+	
+		for tx in all_tx
+			.into_iter()
+			.filter(|t| t.1.user_to_network_tx_id.is_some() && t.1.network_to_target_tx_id.is_some())
+		{
+			if let Some(intent) = self.get_intent(&tx.1.intent_hash).await? {
+				completed.push((tx.1.intent_hash.clone(), intent, tx.1));
+			}
+		}
+	
+		debug!("🔍 [INTENT_STORAGE] Found {} completed intents", completed.len());
+		Ok(completed)
+	}
 
 	/// Get intents that are missing transaction IDs
 	pub async fn get_pending_transaction_intents(
@@ -529,4 +493,3 @@ impl IntentStorage {
 		Ok(pending_intents)
 	}
 }
-

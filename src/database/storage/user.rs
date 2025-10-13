@@ -1,45 +1,48 @@
 use crate::{
     database::{
-        constants::*,
+        constants::{USER_REGISTRATION_PREFIX, USER_INTENT_HASH_PREFIX},
         db::Database,
-        keys::{
-            UserIntentHashKey, UserRegistrationKey,
-        },
-        traits::KvStorage,
+        keys::{UserIntentHashKey, UserRegistrationKey},
+        traits::Storage,
     },
-    user_registry::{
-        IntentStatus, UserRegistration,
-    },
+    define_storage_adapter,
+    user_registry::{IntentStatus, UserRegistration},
 };
-use chrono::Utc;
-use tracing::{debug, error, info};
-use rocksdb::DB;
-use std::{collections::HashMap, sync::Arc};
 use anyhow::{anyhow, Result};
+use tracing::{debug, error, info};
+use std::collections::HashMap;
 
+
+define_storage_adapter!(
+    UserRegistrationAdapter,
+    UserRegistrationKey,
+    UserRegistration,
+    USER_REGISTRATION_PREFIX
+);
+
+define_storage_adapter!(
+    UserIntentAdapter,
+    UserIntentHashKey,
+    IntentStatus,
+    USER_INTENT_HASH_PREFIX
+);
+
+pub type UserRegistrationStorage = Storage<UserRegistrationAdapter>;
+pub type UserIntentStorage = Storage<UserIntentAdapter>;
 
 /// Database-backed user storage
 #[derive(Clone)]
 pub struct UserStorage {
-	db: Database,
+    user_registrations: UserRegistrationStorage,
+    user_intents: UserIntentStorage,
 }
-
-impl KvStorage for UserStorage {
-    fn db(&self) -> &Arc<DB> {
-        self.db.db()
-    }
-}
-
-
 
 impl UserStorage {
 	pub fn new(db: Database) -> Self {
-		Self { db }
-	}
-
-	/// Get access to the underlying database
-	pub fn get_database(&self) -> &Database {
-		&self.db
+		Self {
+            user_registrations: UserRegistrationStorage::new(db.clone()),
+            user_intents: UserIntentStorage::new(db),
+        }
 	}
 
 	/// Store a user registration
@@ -59,13 +62,12 @@ impl UserStorage {
 		info!("  🪙 Has derived BTC address: {}", user.derived_btc_address.is_some());
 		info!("  📋 Intent hashes count: {}", user.intent_hashes.len());
 
-        self.put(key, user)?;
+        self.user_registrations.put(key, user)?;
         info!(
             "✅ [USER_STORAGE] Stored user registration for: {}",
             ethereum_address
         );
         Ok(())
-
 	}
 
 	/// Get a user registration by ethereum address
@@ -73,7 +75,7 @@ impl UserStorage {
         let key = UserRegistrationKey {
             ethereum_address: ethereum_address.to_string(),
         };
-        let user = self.get(key)?;
+        let user = self.user_registrations.get(key)?;
         if user.is_some() {
             debug!("🔍 [USER_STORAGE] Retrieved user: {}", ethereum_address);
         }
@@ -85,22 +87,17 @@ impl UserStorage {
         let key = UserRegistrationKey {
             ethereum_address: ethereum_address.to_string(),
         };
-        self.get::<_, UserRegistration>(key).map(|u| u.is_some())
+        Ok(self.user_registrations.get(key)?.is_some())
     }
 
 
 	/// Get all users
     pub async fn get_all_users(&self) -> Result<HashMap<String, UserRegistration>> {
         let mut users = HashMap::new();
-        let iter = self.db().prefix_iterator(USER_REGISTRATION_PREFIX);
-        for item in iter {
-            let (key_bytes, value_bytes) = item?;
-            if let Ok(user) = bincode::deserialize(&value_bytes) {
-                if let Some(address_bytes) = key_bytes.strip_prefix(USER_REGISTRATION_PREFIX) {
-                    if let Ok(address) = String::from_utf8(address_bytes.to_vec()) {
-                        users.insert(address, user);
-                    }
-                }
+        let kvs = self.user_registrations.get_all()?;
+        for (key_bytes, user) in kvs {
+            if let Ok(address) = String::from_utf8(key_bytes) {
+                users.insert(address, user);
             }
         }
         debug!("🔍 [USER_STORAGE] Retrieved {} users", users.len());
@@ -169,7 +166,7 @@ impl UserStorage {
 		info!("  📊 Status: {:?}", status);
 		info!("  🗄️  Database key: {:?}", key);
 
-        self.put(key.clone(), &status)?;
+        self.user_intents.put(key.clone(), &status)?;
 
 		// Also update the user's intent_hashes map
 		info!("🔄 [USER_STORAGE] Updating user's intent_hashes map...");
@@ -179,8 +176,10 @@ impl UserStorage {
 			user.intent_hashes.insert(intent_hash.to_string(), status.clone());
 			let new_count = user.intent_hashes.len();
 
-            
-			match self.put(key, &user) {
+            let user_key = UserRegistrationKey {
+                ethereum_address: ethereum_address.to_string(),
+            };
+			match self.user_registrations.put(user_key, &user) {
 				Ok(()) => {
 					info!("✅ [USER_STORAGE] Successfully updated user's intent_hashes map");
 					info!("  📊 Intent count: {} -> {}", old_count, new_count);
@@ -211,7 +210,7 @@ impl UserStorage {
             ethereum_address: ethereum_address.to_string(),
             intent_hash: intent_hash.to_string(),
         };
-        self.get(key)
+        self.user_intents.get(key)
     }
 
 	/// Get all intent hashes for a user

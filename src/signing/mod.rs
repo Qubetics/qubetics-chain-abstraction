@@ -50,7 +50,7 @@ use ethers::types::U256;
 
 use crate::database::{
 	keys::{AllSolverAmountsKey, DkgVaultEthAddressKey, SolverAmountsKey},
-	traits::{DBKey, KvStorage},
+	traits::{DBKey},
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1119,11 +1119,13 @@ impl SigningNode {
 					Some(crate::types::TransactionType::VaultToNetwork) => {
 						// This is a vault transaction - fetch nonce from the actual vault address
 						// stored in database
-						if let Some(user_registry) = &self.user_registry {
-							let database = user_registry.get_database();
+						// TODO
+						if let Some(_) = &self.user_registry {
+
 							let vault_eth_address_key = DkgVaultEthAddressKey {};
 
-							let vault_eth_address: String = database
+							if let Some(database) = &self.database {
+								let vault_eth_address: String = database
 								.db()
 								.get(vault_eth_address_key.as_db_key())
 								.ok()
@@ -1144,6 +1146,11 @@ impl SigningNode {
 								Self::fetch_ethereum_nonce(&vault_eth_address, chain_id).await?;
 							info!("🔢 [SIGNING] VaultToNetwork transaction: fetching nonce {} from vault address {}", nonce, vault_eth_address);
 							(vault_eth_address, nonce)
+							}
+							else {
+								return Err(anyhow::anyhow!("Database not available for vault transaction"));
+							}
+
 						} else {
 							return Err(anyhow::anyhow!(
 								"User registry not available for vault transaction"
