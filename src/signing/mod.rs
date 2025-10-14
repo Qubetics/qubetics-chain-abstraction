@@ -2673,6 +2673,30 @@ pub async fn sign_bitcoin_transaction(
         info!("🗄️ [SIGNING] Node {} database set", self.id);
     }
 
+    /// Get peer index directly from database
+    async fn get_peer_index_from_db(&self, peer_id: &str) -> Option<usize> {
+        if let Some(db) = &self.database {
+            let key = crate::database::key_utils::peer_index_key(peer_id);
+            match db.get_string::<usize>(&key) {
+                Ok(Some(index)) => {
+                    info!("🔢 [SIGNING] Retrieved peer index {} for {} from database", index, peer_id);
+                    Some(index)
+                }
+                Ok(None) => {
+                    info!("🔍 [SIGNING] No peer index found in database for {}", peer_id);
+                    None
+                }
+                Err(e) => {
+                    warn!("❌ [SIGNING] Failed to get peer index from database for {}: {:?}", peer_id, e);
+                    None
+                }
+            }
+        } else {
+            warn!("⚠️ [SIGNING] No database available to get peer index for {}", peer_id);
+            None
+        }
+    }
+
     /// Initialize VrfService with network round synchronization
     /// This should be called only after the node has connected to the network
     /// and received round information from other nodes
@@ -4151,54 +4175,33 @@ pub async fn handle_btc_signature_for_round(
         }
     }
 
-    /// Calculate DKG index for a specific peer ID
+    /// Calculate DKG index for a specific peer ID using database-stored peer indices
     pub async fn calculate_dkg_index_for_peer(&self, peer_id: &str) -> u32 {
-        if let Some(nodes) = &self.available_nodes {
-            let mut ids: Vec<String> = nodes.iter().map(|p| p.to_string()).collect();
-            ids.sort();
-            
-            // Log all available nodes and their indices for debugging
-            info!("🔢 [DKG-INDEX-DEBUG] Available nodes and their DKG indices:");
-            for (i, id) in ids.iter().enumerate() {
-                info!("🔢 [DKG-INDEX-DEBUG]   {} -> index {}", id, i + 1);
-            }
-            
-            let index = ids.iter()
-                .position(|id| id == peer_id)
-                .map(|i| i + 1)
-                .unwrap_or(1);
-            
-            info!("🔢 [SIGNING] Calculated DKG index {} for peer {}", index, peer_id);
-            index as u32
-        } else {
-            info!("⚠️ [SIGNING] No available nodes, using default DKG index 1 for peer {}", peer_id);
-            1
+        // Get the stored peer index from database
+        if let Some(index) = self.get_peer_index_from_db(peer_id).await {
+            info!("🔢 [SIGNING] Using stored DKG index {} for peer {}", index, peer_id);
+            return index as u32;
         }
+
+        // No stored index found - this should not happen in normal operation
+        warn!("❌ [SIGNING] No peer index found in database for peer {}, using default index 1", peer_id);
+        1
     }
 
-    /// Calculate DKG index for a specific peer ID (synchronous version)
+    /// Calculate DKG index for a specific peer ID (synchronous version) using database-stored peer indices
     pub fn calculate_dkg_index_for_peer_sync(&self, peer_id: &str) -> u32 {
-        if let Some(nodes) = &self.available_nodes {
-            let mut ids: Vec<String> = nodes.iter().map(|p| p.to_string()).collect();
-            ids.sort();
-            
-            // Log all available nodes and their indices for debugging
-            info!("🔢 [DKG-INDEX-DEBUG] Available nodes and their DKG indices (sync):");
-            for (i, id) in ids.iter().enumerate() {
-                info!("🔢 [DKG-INDEX-DEBUG]   {} -> index {}", id, i + 1);
+        // Get the stored peer index from database
+        if let Some(db) = &self.database {
+            let key = crate::database::key_utils::peer_index_key(peer_id);
+            if let Ok(Some(index)) = db.get_string::<usize>(&key) {
+                info!("🔢 [SIGNING] Using stored DKG index {} for peer {} (sync)", index, peer_id);
+                return index as u32;
             }
-            
-            let index = ids.iter()
-                .position(|id| id == peer_id)
-                .map(|i| i + 1)
-                .unwrap_or(1);
-            
-            info!("🔢 [SIGNING] Calculated DKG index {} for peer {} (sync)", index, peer_id);
-            index as u32
-        } else {
-            info!("⚠️ [SIGNING] No available nodes, using default DKG index 1 for peer {} (sync)", peer_id);
-            1
         }
+
+        // No stored index found - this should not happen in normal operation
+        warn!("❌ [SIGNING] No peer index found in database for peer {} (sync), using default index 1", peer_id);
+        1
     }
 
     /// Update solver amounts for UserToVault transactions

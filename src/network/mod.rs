@@ -149,10 +149,9 @@ impl NetworkLayer {
         self.peer_indices.insert(self.local_peer_id.clone(), idx);
         idx
     }
-    pub async fn new(node_manager: Box<dyn NodeMembership>) -> Result<Self> {
+    pub async fn new(node_manager: Box<dyn NodeMembership>, db: Database) -> Result<Self> {
         // Load or create persistent keypair
         let (local_key, local_peer_id) = Self::load_or_create_keypair().await?;
-        let db = Database::new(DatabaseConfig::default())?;
         let (tx, rx) = mpsc::channel(100);
 
         let mut this = Self {
@@ -230,7 +229,7 @@ impl NetworkLayer {
 
     pub fn set_database(&mut self, database: Arc<crate::database::Database>) {
         info!("🗄️ [NETWORK] Setting database on signing node for solver amount storage");
-
+        
         // Set the database on the signing node for solver amount storage
         if let Some(signing_node) = &mut self.signing_node {
             signing_node.set_database(database);
@@ -420,7 +419,7 @@ impl NetworkLayer {
         let mut bootstrap_timer = tokio::time::interval(Duration::from_secs(300));
         let mut discovery_timer = tokio::time::interval(Duration::from_secs(300));
         let mut dkg_status_timer = tokio::time::interval(Duration::from_secs(300));
-        let mut peerlist_logger = tokio::time::interval(Duration::from_secs(30));
+        let mut peerlist_logger = tokio::time::interval(Duration::from_secs(3));
 
 
         swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
@@ -1043,13 +1042,9 @@ impl NetworkLayer {
                                         let key = key_utils::peer_index_key(&p.to_string());
                                         if let Err(e) = self.db.put_string(&key, &idx) { warn!("Failed to persist peer index: {:?}", e); }
                                     } else {
-                                        // If no index provided and we have none, assign the next available index locally and persist it
-                                        if !self.peer_indices.contains_key(&p) {
-                                            let next_idx = self.peer_indices.values().copied().max().unwrap_or(0) + 1;
-                                            self.peer_indices.insert(p.clone(), next_idx);
-                                            let key = key_utils::peer_index_key(&p.to_string());
-                                            if let Err(e) = self.db.put_string(&key, &next_idx) { warn!("Failed to persist assigned peer index: {:?}", e); }
-                                        }
+                                        // Index was not provided by the peer list; do not assign locally.
+                                        // Rely strictly on database-propagated indices to avoid divergence.
+                                        warn!("Peer {} missing index in PeerList response; skipping local assignment", p);
                                     }
                                 }
                                 
@@ -1067,14 +1062,6 @@ impl NetworkLayer {
                                     // If this node has no DKG data and network has > 4 nodes, it's a new node joining
                                     if !has_dkg_data && total > 4 {
                                         info!("🆕 [NEW_NODE] Learned about {} total nodes, triggering share request", total);
-                                        
-                                        let mut all_nodes: Vec<String> = self.node_manager
-                                            .get_active_nodes()
-                                            .into_iter()
-                                            .map(|p| p.to_string())
-                                            .collect();
-                                        all_nodes.sort();
-                                        
                                         // CRITICAL: New node always gets index = total (e.g., 5th node gets index 5)
                                         // We do NOT recalculate from sorted position, as that would change indices
                                         let new_node_index = total;
