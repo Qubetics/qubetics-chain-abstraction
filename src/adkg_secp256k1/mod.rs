@@ -187,13 +187,25 @@ impl DKGNode {
             return Err(anyhow!("No commitments available (database is empty)"));
         }
 
-        let mut solver_ids: Vec<String> = commitments.keys().cloned().collect();
-        solver_ids.sort();
+        // Get peer indices from database for deterministic ordering
+        let peer_indices = self.storage.get_peer_indices().await?;
+        if peer_indices.is_empty() {
+            return Err(anyhow!("No peer indices available in database"));
+        }
 
-        // P_base = Σ C0_i
+        // Sort solver IDs by their stored peer indices instead of alphabetically
+        let mut solver_with_indices: Vec<(String, usize)> = commitments.keys()
+            .filter_map(|sid| peer_indices.get(sid).map(|&idx| (sid.clone(), idx)))
+            .collect();
+        solver_with_indices.sort_by_key(|(_, idx)| *idx);
+
+        info!("🔢 [DKG] Processing commitments in peer index order: {:?}", 
+              solver_with_indices.iter().map(|(sid, idx)| format!("{}:{}", sid, idx)).collect::<Vec<_>>());
+
+        // P_base = Σ C0_i (in peer index order)
         let mut p_base = ProjectivePoint::IDENTITY;
         let mut added = 0usize;
-        for sid in &solver_ids {
+        for (sid, _) in &solver_with_indices {
             if let Some(comms) = commitments.get(sid) {
                 if let Some(c0) = comms.get(0) {
                     p_base += ProjectivePoint::from(*c0);
@@ -234,13 +246,25 @@ impl DKGNode {
             return Err(anyhow!("No original commitments available - vault cannot be derived"));
         }
 
-        let mut solver_ids: Vec<String> = commitments.keys().cloned().collect();
-        solver_ids.sort();
+        // Get peer indices from database for deterministic ordering
+        let peer_indices = self.storage.get_peer_indices().await?;
+        if peer_indices.is_empty() {
+            return Err(anyhow!("No peer indices available in database"));
+        }
 
-        // P_base = Σ C0_i from ORIGINAL commitments
+        // Sort solver IDs by their stored peer indices instead of alphabetically
+        let mut solver_with_indices: Vec<(String, usize)> = commitments.keys()
+            .filter_map(|sid| peer_indices.get(sid).map(|&idx| (sid.clone(), idx)))
+            .collect();
+        solver_with_indices.sort_by_key(|(_, idx)| *idx);
+
+        info!("🔢 [VAULT] Processing original commitments in peer index order: {:?}", 
+              solver_with_indices.iter().map(|(sid, idx)| format!("{}:{}", sid, idx)).collect::<Vec<_>>());
+
+        // P_base = Σ C0_i from ORIGINAL commitments (in peer index order)
         let mut p_base = ProjectivePoint::IDENTITY;
         let mut added = 0usize;
-        for sid in &solver_ids {
+        for (sid, _) in &solver_with_indices {
             if let Some(comms) = commitments.get(sid) {
                 if let Some(c0) = comms.get(0) {
                     p_base += ProjectivePoint::from(*c0);
@@ -547,34 +571,27 @@ impl DKGNode {
         Ok(())
     }
 
-    fn get_node_index(&self,node_manager: Box<dyn NodeMembership>) -> usize {
-        // First try to parse as a number
-        let mut ids: Vec<String> = node_manager
-            .get_active_nodes()
-            .into_iter()
-            .map(|p| p.to_string())
-            .collect();
-
-        info!("🔍 [DKG] === NODE INDEX CALCULATION ===");
+    fn get_node_index(&self,_node_manager: Box<dyn NodeMembership>) -> usize {
+        info!("🔍 [DKG] === NODE INDEX LOOKUP (DB-only) ===");
         info!("🔍 [DKG] Current node ID: {}", self.id);
-        info!("🔍 [DKG] All active nodes (before sorting): {:?}", ids);
 
-        ids.sort();
-
-        info!("🔍 [DKG] All active nodes (after sorting): {:?}", ids);
-        
-        let index = ids.iter()
-           .position(|id| id == &self.id)
-           .map(|i| i + 1)
-           .unwrap_or_else(|| {
-               tracing::error!("DKGNode id {} not in NodeManager list", self.id);
-               1
-           });
-        
-        info!("🔍 [DKG] Node {} assigned index: {}", self.id, index);
-        info!("🔍 [DKG] === END NODE INDEX CALCULATION ===");
-        
-        index
+        match self.storage.get_peer_index_for(&self.id) {
+            Ok(Some(idx)) => {
+                info!("🔢 [DKG] Using stored peer index {} for node {}", idx, self.id);
+                info!("🔍 [DKG] === END NODE INDEX LOOKUP ===");
+                idx
+            }
+            Ok(None) => {
+                tracing::warn!("❌ [DKG] No stored peer index found for {}. Using default index 1.", self.id);
+                info!("🔍 [DKG] === END NODE INDEX LOOKUP ===");
+                1
+            }
+            Err(e) => {
+                tracing::warn!("❌ [DKG] Failed to read peer index from DB for {}: {:?}. Using default index 1.", self.id, e);
+                info!("🔍 [DKG] === END NODE INDEX LOOKUP ===");
+                1
+            }
+        }
     }
 
     pub fn verify_share(
@@ -774,19 +791,32 @@ impl DKGNode {
             .filter_map(|comms| comms.get(0).cloned())
             .collect();
 
-        // Calculate final public key (sum of all commitment constant terms)
+        // Calculate final public key (sum of all commitment constant terms) in peer-index order
         let mut final_public_key = ProjectivePoint::IDENTITY;
-        let mut keys: Vec<_> = commitments.keys().collect();
-        keys.sort();
-        // for comms in commitments.values() {
-        //     if !comms.is_empty() {
-        //         final_public_key += ProjectivePoint::from(comms[0]);
-        //     }
-        // }
-        for key in keys {
-            if let Some(comms) = commitments.get(key) {
-                if !comms.is_empty() {
-                    final_public_key += ProjectivePoint::from(comms[0]);
+
+        // Retrieve peer indices from database and order commitments by index
+        let peer_indices = self.storage.get_peer_indices().await?;
+        let mut solver_with_indices: Vec<(String, usize)> = commitments
+            .keys()
+            .cloned()
+            .filter_map(|sid| peer_indices.get(&sid).copied().map(|idx| (sid, idx)))
+            .collect();
+        solver_with_indices.sort_by_key(|(_, idx)| *idx);
+
+        info!(
+            "🔢 [DKG] Summing commitment C0 terms in peer index order: {:?}",
+            solver_with_indices
+                .iter()
+                .map(|(sid, idx)| format!("{}:{}", sid, idx))
+                .collect::<Vec<_>>()
+        );
+
+        for (sid, _) in solver_with_indices {
+            if let Some(comms) = commitments.get(&sid) {
+                if let Some(c0) = comms.get(0) {
+                    final_public_key += ProjectivePoint::from(*c0);
+                } else {
+                    warn!("⚠️ [DKG] Solver {} has no C0 (index 0 missing)", sid);
                 }
             }
         }
@@ -1205,18 +1235,33 @@ impl DKGNode {
             
             info!("🔍 [NEW_NODE] === END FINAL SECRET SHARE CALCULATION ===");
             
-            // Calculate final public key (sum of all commitment constant terms)
+            // Calculate final public key (sum of all commitment constant terms) in peer-index order
             let mut final_public_key = ProjectivePoint::IDENTITY;
-            let mut keys: Vec<_> = commitments_map.keys().collect();
-            keys.sort();
-            
-            info!("🔍 [NEW_NODE] Calculating final public key from {} commitment sets", commitments_map.len());
-            
-            for key in keys {
-                if let Some(comms) = commitments_map.get(key) {
-                    if !comms.is_empty() {
-                        info!("✅ [NEW_NODE] Adding commitment C0 from {}: {:?}", key, comms[0]);
-                        final_public_key += ProjectivePoint::from(comms[0]);
+
+            // Retrieve peer indices and order commitments by stored index
+            let peer_indices = self.storage.get_peer_indices().await?;
+            let mut solver_with_indices: Vec<(String, usize)> = commitments_map
+                .keys()
+                .cloned()
+                .filter_map(|sid| peer_indices.get(&sid).copied().map(|idx| (sid, idx)))
+                .collect();
+            solver_with_indices.sort_by_key(|(_, idx)| *idx);
+
+            info!(
+                "🔢 [NEW_NODE] Summing commitment C0 terms in peer index order: {:?}",
+                solver_with_indices
+                    .iter()
+                    .map(|(sid, idx)| format!("{}:{}", sid, idx))
+                    .collect::<Vec<_>>()
+            );
+
+            for (sid, _) in solver_with_indices {
+                if let Some(comms) = commitments_map.get(&sid) {
+                    if let Some(c0) = comms.get(0) {
+                        info!("✅ [NEW_NODE] Adding commitment C0 from {}: {:?}", sid, c0);
+                        final_public_key += ProjectivePoint::from(*c0);
+                    } else {
+                        warn!("⚠️ [NEW_NODE] Solver {} has no C0 (index 0 missing)", sid);
                     }
                 }
             }
@@ -1396,15 +1441,21 @@ impl DKGNode {
     pub async fn execute_polynomial_refresh(&mut self, node_manager: Box<dyn NodeMembership>) -> Result<()> {
         info!("🔄 [REFRESH] Executing polynomial refresh for node {}", self.id);
         
-        // Get all active nodes and their indices
-        let mut all_nodes: Vec<String> = node_manager
+        // Get all active nodes and their indices from database (DB-first ordering)
+        let active_nodes: Vec<String> = node_manager
             .get_active_nodes()
             .into_iter()
             .map(|p| p.to_string())
             .collect();
-        all_nodes.sort();
-        
-        let total_nodes = all_nodes.len();
+
+        let peer_indices_map = self.storage.get_peer_indices().await?;
+        let mut nodes_with_indices: Vec<(String, usize)> = active_nodes
+            .into_iter()
+            .filter_map(|pid| peer_indices_map.get(&pid).copied().map(|idx| (pid, idx)))
+            .collect();
+        nodes_with_indices.sort_by_key(|(_, idx)| *idx);
+
+        let total_nodes = nodes_with_indices.len();
         let threshold = node_manager.get_threshold();
         
         // CRITICAL: Update this node's total_nodes parameter to current network size
@@ -1416,7 +1467,8 @@ impl DKGNode {
         // Clear old refresh shares from previous refresh rounds
         self.clear_refresh_shares().await?;
         
-        let all_indices: Vec<usize> = (1..=all_nodes.len()).collect();
+        // Use exact indices from database in ascending order
+        let all_indices: Vec<usize> = nodes_with_indices.iter().map(|(_, idx)| *idx).collect();
         
         // CRITICAL: Use permanent index instead of recalculating from sorted nodes
         // The permanent index never changes after initial DKG/join, even if new nodes join
@@ -1554,16 +1606,27 @@ impl DKGNode {
         
         info!("🔄 [REFRESH] Found {} refresh commitment sets", refresh_commitment_entries.len());
         
-        // Calculate new final public key by summing all refresh C0 commitments
+        // Calculate new final public key by summing all refresh C0 commitments in peer-index order
         let mut new_final_public_key = ProjectivePoint::IDENTITY;
-        let mut sorted_keys: Vec<_> = refresh_commitment_entries.keys().collect();
-        sorted_keys.sort();
-        
-        for key in sorted_keys {
-            if let Some(comms) = refresh_commitment_entries.get(key) {
-                if !comms.is_empty() {
-                    new_final_public_key += ProjectivePoint::from(comms[0]);
-                    info!("✅ [REFRESH] Added C0 from {}: {:?}", key.trim_start_matches("refresh_"), comms[0]);
+
+        // Build (peer_id, idx) from DB and order refresh_* commitments by idx
+        let peer_indices = self.storage.get_peer_indices().await?;
+        let mut refresh_with_indices: Vec<(String, usize)> = refresh_commitment_entries
+            .keys()
+            .cloned()
+            .filter_map(|k| {
+                // k is like "refresh_<peer_id>"
+                let pid = k.trim_start_matches("refresh_").to_string();
+                peer_indices.get(&pid).copied().map(|idx| (k, idx))
+            })
+            .collect();
+        refresh_with_indices.sort_by_key(|(_, idx)| *idx);
+
+        for (refresh_key, _) in refresh_with_indices {
+            if let Some(comms) = refresh_commitment_entries.get(&refresh_key) {
+                if let Some(c0) = comms.get(0) {
+                    new_final_public_key += ProjectivePoint::from(*c0);
+                    info!("✅ [REFRESH] Added C0 from {}: {:?}", refresh_key.trim_start_matches("refresh_"), c0);
                 }
             }
         }

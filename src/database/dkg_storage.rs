@@ -3,6 +3,7 @@ use crate::types::{KeyShare, SerializablePoint, SerializableScalar};
 use anyhow::Result;
 use k256::{AffinePoint, ProjectivePoint, Scalar};
 use std::collections::HashMap;
+use tracing::info;
 
 #[derive(Clone)]
 pub struct DkgStorage {
@@ -305,6 +306,51 @@ impl DkgStorage {
         }
         
         Ok(result)
+    }
+
+    /// Get peer indices from database for deterministic ordering
+    pub async fn get_peer_indices(&self) -> Result<HashMap<String, usize>> {
+        let prefix = crate::database::keys::PEER_INDEX;
+        let results: Vec<(String, usize)> = self.db.get_values_with_prefix(prefix)?;
+        let mut indices = HashMap::new();
+        
+        for (key, index) in results {
+            // Extract peer ID from key (format: "peer_index:<peer_id>")
+            if let Some(peer_id) = key.strip_prefix(prefix) {
+                indices.insert(peer_id.to_string(), index);
+            }
+        }
+        
+        info!("🔢 [DKG_STORAGE] Retrieved {} peer indices from database", indices.len());
+        Ok(indices)
+    }
+
+    /// Get a single peer's index from database (synchronous helper)
+    pub fn get_peer_index_for(&self, peer_id: &str) -> Result<Option<usize>> {
+        // Log all peer indices for visibility
+        match self.get_all_peer_indices() {
+            Ok(map) => info!("🔢 [DKG_STORAGE] all peer indices: {:?}", map),
+            Err(e) => info!("⚠️ [DKG_STORAGE] failed to read all peer indices: {:?}", e),
+        }
+
+        // Return the specific peer's index
+        let key = format!("{}{}", crate::database::keys::PEER_INDEX, peer_id);
+        let idx = self.db.get_string::<usize>(&key)?;
+        info!("🔎 [DKG_STORAGE] index for {} => {:?}", peer_id, idx);
+        Ok(idx)
+    }
+
+    /// Get all peer indices from database (synchronous helper)
+    pub fn get_all_peer_indices(&self) -> Result<HashMap<String, usize>> {
+        let prefix = crate::database::keys::PEER_INDEX;
+        let results: Vec<(String, usize)> = self.db.get_values_with_prefix(prefix)?;
+        let mut indices = HashMap::new();
+        for (key, index) in results {
+            if let Some(peer_id) = key.strip_prefix(prefix) {
+                indices.insert(peer_id.to_string(), index);
+            }
+        }
+        Ok(indices)
     }
 }
 

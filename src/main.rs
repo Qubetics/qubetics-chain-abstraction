@@ -99,7 +99,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let database = Arc::new(Database::new(db_config)?);
     info!("🗄️ [MAIN] Database initialized successfully");
 
-    let mut network = NetworkLayer::new(node_manager).await?;
+    let mut network = NetworkLayer::new(node_manager, database.as_ref().clone()).await?;
 
     // Create database-backed components
     let db_signing_node = Arc::new(Mutex::new(DatabaseSigningNode::new(
