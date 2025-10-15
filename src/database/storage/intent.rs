@@ -1,282 +1,55 @@
 use crate::{
-	database::{key_utils, Database},
+	database::{
+		constants::*,
+		db::Database,
+		keys::{IntentRegistryKey, IntentTransactionIdsKey},
+		traits::Storage,
+	},
+	define_storage_adapter,
 	rpc_server::DepositIntent,
-	user_registry::{IntentStatus, IntentTransactionIds, TransactionStatus, UserRegistration},
+	user_registry::{IntentStatus, IntentTransactionIds},
+	UserStorage,
 };
 use anyhow::Result;
 use chrono::Utc;
 use std::collections::HashMap;
 use tracing::{debug, error, info};
 
-/// Database-backed user storage
-#[derive(Clone)]
-pub struct UserStorage {
-	db: Database,
-}
+define_storage_adapter!(
+	IntentRegistryAdapter,
+	IntentRegistryKey,
+	DepositIntent,
+	INTENT_REGISTRY_PREFIX
+);
 
-impl UserStorage {
-	pub fn new(db: Database) -> Self {
-		Self { db }
-	}
+define_storage_adapter!(
+	IntentTransactionIdsAdapter,
+	IntentTransactionIdsKey,
+	IntentTransactionIds,
+	INTENT_TRANSACTION_IDS_PREFIX
+);
 
-	/// Get access to the underlying database
-	pub fn get_database(&self) -> &Database {
-		&self.db
-	}
-
-	/// Store a user registration
-	pub async fn store_user(&self, ethereum_address: &str, user: &UserRegistration) -> Result<()> {
-		let key = key_utils::user_key(ethereum_address);
-
-		info!("💾 [USER_STORAGE] Starting to store user registration:");
-		info!("  📧 Address: {}", ethereum_address);
-		info!("  🆔 User ID: {}", user.user_id);
-		info!("  🏗️  Registered by node: {}", user.registered_by_node);
-		info!("  📅 Created at: {}", user.created_at);
-		info!("  🔑 Has tweaked secret share: {:?}", user.tweaked_secret_share);
-		info!("  🔑 Has user group key: {}", user.user_group_key.is_some());
-		info!("  🏠 Has derived ETH address: {}", user.derived_eth_address.is_some());
-		info!("  🪙 Has derived BTC address: {}", user.derived_btc_address.is_some());
-		info!("  📋 Intent hashes count: {}", user.intent_hashes.len());
-
-		match self.db.put_string(&key, user) {
-			Ok(()) => {
-				info!(
-					"✅ [USER_STORAGE] Successfully stored user registration for: {}",
-					ethereum_address
-				);
-				info!("  🗄️  Database key: {}", key);
-				Ok(())
-			},
-			Err(e) => {
-				error!(
-					"❌ [USER_STORAGE] Failed to store user registration for: {}",
-					ethereum_address
-				);
-				error!("  🗄️  Database key: {}", key);
-				error!("  💥 Error: {}", e);
-				Err(e)
-			},
-		}
-	}
-
-	/// Get a user registration by ethereum address
-	pub async fn get_user(&self, ethereum_address: &str) -> Result<Option<UserRegistration>> {
-		let key = key_utils::user_key(ethereum_address);
-		let user = self.db.get_string(&key)?;
-		if user.is_some() {
-			debug!("🔍 [USER_STORAGE] Retrieved user: {}", ethereum_address);
-		}
-		Ok(user)
-	}
-
-	/// Check if user exists
-	pub async fn contains_user(&self, ethereum_address: &str) -> Result<bool> {
-		let key = key_utils::user_key(ethereum_address);
-		self.db.contains_string_key(&key)
-	}
-
-	/// Get all users
-	pub async fn get_all_users(&self) -> Result<HashMap<String, UserRegistration>> {
-		let prefix = crate::database::keys::USER_REGISTRATION;
-		let results: Vec<(String, UserRegistration)> = self.db.get_values_with_prefix(prefix)?;
-
-		let mut users = HashMap::new();
-		for (key, user) in results {
-			// Extract ethereum address from key by removing prefix
-			if let Some(ethereum_address) = key.strip_prefix(prefix) {
-				users.insert(ethereum_address.to_string(), user);
-			}
-		}
-
-		debug!("🔍 [USER_STORAGE] Retrieved {} users", users.len());
-		Ok(users)
-	}
-
-	/// Update user group key
-	pub async fn update_user_group_key(
-		&self,
-		ethereum_address: &str,
-		group_key: &crate::types::SerializablePoint,
-	) -> Result<()> {
-		let key = key_utils::user_key(ethereum_address);
-		if let Some(mut user) = self.get_user(ethereum_address).await? {
-			user.user_group_key = Some(group_key.clone());
-			self.db.put_string(&key, &user)?;
-			info!("✅ [USER_STORAGE] Updated group key for user: {}", ethereum_address);
-			Ok(())
-		} else {
-			Err(anyhow::anyhow!("User not found: {}", ethereum_address))
-		}
-	}
-
-	/// Update user derived addresses
-	pub async fn update_derived_addresses(
-		&self,
-		ethereum_address: &str,
-		eth_addr: Option<String>,
-		btc_addr: Option<String>,
-	) -> Result<()> {
-		let key = key_utils::user_key(ethereum_address);
-		if let Some(mut user) = self.get_user(ethereum_address).await? {
-			if let Some(eth) = eth_addr {
-				user.derived_eth_address = Some(eth);
-			}
-			if let Some(btc) = btc_addr {
-				user.derived_btc_address = Some(btc);
-			}
-			self.db.put_string(&key, &user)?;
-			info!("✅ [USER_STORAGE] Updated derived addresses for user: {}", ethereum_address);
-			Ok(())
-		} else {
-			Err(anyhow::anyhow!("User not found: {}", ethereum_address))
-		}
-	}
-
-	/// Store an intent hash for a user
-	pub async fn store_user_intent(
-		&self,
-		ethereum_address: &str,
-		intent_hash: &str,
-		status: IntentStatus,
-	) -> Result<()> {
-		let key = key_utils::user_intent_key(ethereum_address, intent_hash);
-
-		info!("💾 [USER_STORAGE] Starting to store user intent:");
-		info!("  👤 User address: {}", ethereum_address);
-		info!("  🔗 Intent hash: {}", intent_hash);
-		info!("  📊 Status: {:?}", status);
-		info!("  🗄️  Database key: {}", key);
-
-		match self.db.put_string(&key, &status) {
-			Ok(()) => {
-				info!("✅ [USER_STORAGE] Successfully stored intent status in separate record");
-			},
-			Err(e) => {
-				error!("❌ [USER_STORAGE] Failed to store intent status in separate record: {}", e);
-				return Err(e);
-			},
-		}
-
-		// Also update the user's intent_hashes map
-		let user_key = key_utils::user_key(ethereum_address);
-		info!("🔄 [USER_STORAGE] Updating user's intent_hashes map...");
-
-		if let Some(mut user) = self.get_user(ethereum_address).await? {
-			let old_count = user.intent_hashes.len();
-			user.intent_hashes.insert(intent_hash.to_string(), status.clone());
-			let new_count = user.intent_hashes.len();
-
-			match self.db.put_string(&user_key, &user) {
-				Ok(()) => {
-					info!("✅ [USER_STORAGE] Successfully updated user's intent_hashes map");
-					info!("  📊 Intent count: {} -> {}", old_count, new_count);
-					info!("  🔗 Added intent: {} -> {:?}", intent_hash, status);
-					Ok(())
-				},
-				Err(e) => {
-					error!("❌ [USER_STORAGE] Failed to update user's intent_hashes map: {}", e);
-					Err(e)
-				},
-			}
-		} else {
-			error!(
-				"❌ [USER_STORAGE] User not found when trying to update intent_hashes: {}",
-				ethereum_address
-			);
-			Err(anyhow::anyhow!("User not found: {}", ethereum_address))
-		}
-	}
-
-	/// Get intent status for a user
-	pub async fn get_user_intent_status(
-		&self,
-		ethereum_address: &str,
-		intent_hash: &str,
-	) -> Result<Option<IntentStatus>> {
-		let key = key_utils::user_intent_key(ethereum_address, intent_hash);
-		self.db.get_string(&key)
-	}
-
-	/// Get all intent hashes for a user
-	pub async fn get_user_intent_hashes(
-		&self,
-		ethereum_address: &str,
-	) -> Result<Option<HashMap<String, IntentStatus>>> {
-		if let Some(user) = self.get_user(ethereum_address).await? {
-			Ok(Some(user.intent_hashes))
-		} else {
-			Ok(None)
-		}
-	}
-	/// Get user details by intent hash
-	pub async fn get_user_by_intent_hash(
-		&self,
-		intent_hash: &str,
-	) -> Result<Option<UserRegistration>> {
-		// Use the USER_REGISTRATION prefix from the keys module
-		let user_prefix = crate::database::keys::USER_REGISTRATION;
-		// List all user keys (assuming db has a list_keys method)
-		let user_keys = self.db.get_keys_with_prefix(user_prefix)?;
-		for user_key in user_keys {
-			// user_key is like "user:0xabc...", so strip the prefix to get the address
-			let address = user_key.strip_prefix(user_prefix).unwrap_or(&user_key);
-			if let Some(user) = self.get_user(address).await? {
-				if user.intent_hashes.contains_key(intent_hash) {
-					return Ok(Some(user));
-				}
-			}
-		}
-		Ok(None)
-	}
-	/// Update intent status for a user
-	pub async fn update_intent_status(
-		&self,
-		ethereum_address: &str,
-		intent_hash: &str,
-		status: IntentStatus,
-	) -> Result<()> {
-		// Update the separate intent status record
-		let intent_key = key_utils::user_intent_key(ethereum_address, intent_hash);
-		self.db.put_string(&intent_key, &status)?;
-
-		// Update the user's intent_hashes map
-		let user_key = key_utils::user_key(ethereum_address);
-		if let Some(mut user) = self.get_user(ethereum_address).await? {
-			user.intent_hashes.insert(intent_hash.to_string(), status.clone());
-			self.db.put_string(&user_key, &user)?;
-			info!(
-				"✅ [USER_STORAGE] Updated intent status for user {}: {} -> {:?}",
-				ethereum_address, intent_hash, status
-			);
-			Ok(())
-		} else {
-			Err(anyhow::anyhow!("User not found: {}", ethereum_address))
-		}
-	}
-	/// Get user registration details by Ethereum address
-	pub async fn get_user_by_address(
-		&self,
-		ethereum_address: &str,
-	) -> Result<Option<UserRegistration>> {
-		self.get_user(ethereum_address).await
-	}
-}
+pub type IntentRegistryStorage = Storage<IntentRegistryAdapter>;
+pub type IntentTransactionIdsStorage = Storage<IntentTransactionIdsAdapter>;
 
 /// Database-backed intent storage
 #[derive(Clone)]
 pub struct IntentStorage {
-	db: Database,
+	intents: IntentRegistryStorage,
+	tx_ids: IntentTransactionIdsStorage,
 }
 
 impl IntentStorage {
 	pub fn new(db: Database) -> Self {
-		Self { db }
+		Self {
+			intents: IntentRegistryStorage::new(db.clone()),
+			tx_ids: IntentTransactionIdsStorage::new(db.clone()),
+		}
 	}
 
 	/// Store a deposit intent
 	pub async fn store_intent(&self, intent_hash: &str, intent: &DepositIntent) -> Result<()> {
-		let key = key_utils::intent_key(intent_hash);
+		let key = IntentRegistryKey { intent_hash: intent_hash.to_string() };
 
 		info!("💾 [INTENT_STORAGE] Starting to store deposit intent:");
 		info!("  🔗 Intent hash: {}", intent_hash);
@@ -284,9 +57,9 @@ impl IntentStorage {
 		info!("  🔗 Source chain: {}", intent.source_chain);
 		info!("  🎯 Target chain: {}", intent.target_chain);
 		info!("  📧 Target address: {}", intent.target_address);
-		info!("  🗄️  Database key: {}", key);
+		info!("  🗄️  Database key: {:?}", key);
 
-		match self.db.put_string(&key, intent) {
+		match self.intents.put(key.clone(), intent) {
 			Ok(()) => {
 				info!("✅ [INTENT_STORAGE] Successfully stored deposit intent: {}", intent_hash);
 				info!(
@@ -297,7 +70,7 @@ impl IntentStorage {
 			},
 			Err(e) => {
 				error!("❌ [INTENT_STORAGE] Failed to store deposit intent: {}", intent_hash);
-				error!("  🗄️  Database key: {}", key);
+				error!("  🗄️  Database key: {:?}", key);
 				error!("  💥 Error: {}", e);
 				Err(e)
 			},
@@ -305,9 +78,10 @@ impl IntentStorage {
 	}
 
 	/// Get a deposit intent by hash
+
 	pub async fn get_intent(&self, intent_hash: &str) -> Result<Option<DepositIntent>> {
-		let key = key_utils::intent_key(intent_hash);
-		let intent = self.db.get_string(&key)?;
+		let key = IntentRegistryKey { intent_hash: intent_hash.to_string() };
+		let intent = self.intents.get(key)?;
 		if intent.is_some() {
 			debug!("🔍 [INTENT_STORAGE] Retrieved intent: {}", intent_hash);
 		}
@@ -316,25 +90,19 @@ impl IntentStorage {
 
 	/// Get all intents
 	pub async fn get_all_intents(&self) -> Result<HashMap<String, DepositIntent>> {
-		let prefix = crate::database::keys::INTENT_REGISTRY;
-		let results: Vec<(String, DepositIntent)> = self.db.get_values_with_prefix(prefix)?;
-
-		let mut intents = HashMap::new();
-		for (key, intent) in results {
-			// Extract intent hash from key by removing prefix
-			if let Some(intent_hash) = key.strip_prefix(prefix) {
-				intents.insert(intent_hash.to_string(), intent);
-			}
-		}
-
-		debug!("🔍 [INTENT_STORAGE] Retrieved {} intents", intents.len());
-		Ok(intents)
+		let intents = self.intents.get_all();
+		intents.map(|intents| {
+			intents
+				.into_iter()
+				.map(|(key, value)| (String::from_utf8(key).unwrap(), value))
+				.collect()
+		})
 	}
 
 	/// Delete an intent
 	pub async fn delete_intent(&self, intent_hash: &str) -> Result<()> {
-		let key = key_utils::intent_key(intent_hash);
-		self.db.delete_string(&key)?;
+		let key = IntentRegistryKey { intent_hash: intent_hash.to_string() };
+		self.intents.delete(key)?;
 		info!("🗑️ [INTENT_STORAGE] Deleted intent: {}", intent_hash);
 		Ok(())
 	}
@@ -375,7 +143,7 @@ impl IntentStorage {
 		vault_to_network_tx_id: Option<String>,
 		final_solver_id: Option<String>,
 	) -> Result<()> {
-		let key = key_utils::intent_transaction_ids_key(intent_hash);
+		let key = IntentTransactionIdsKey { intent_hash: intent_hash.to_string() };
 
 		info!("💾 [INTENT_STORAGE] Starting to store transaction IDs:");
 		info!("  🔗 Intent hash: {}", intent_hash);
@@ -383,7 +151,7 @@ impl IntentStorage {
 		info!("  📥 Network->Target TX ID: {:?}", network_to_target_tx_id);
 		info!("  🏦 Vault->Network TX ID: {:?}", vault_to_network_tx_id);
 		info!("  🧮 Final solver ID: {:?}", final_solver_id);
-		info!("  🗄️  Database key: {}", key);
+		info!("  🗄️  Database key: {:?}", key);
 
 		// Check if transaction IDs already exist
 		let existing_tx_ids = self.get_intent_transaction_ids(intent_hash).await?;
@@ -484,7 +252,7 @@ impl IntentStorage {
 		}
 
 		// Store the updated transaction IDs
-		match self.db.put_string(&key, &tx_ids) {
+		match self.tx_ids.put(key.clone(), &tx_ids) {
 			Ok(()) => {
 				info!(
 					"✅ [INTENT_STORAGE] Successfully stored transaction IDs for intent: {}",
@@ -516,7 +284,6 @@ impl IntentStorage {
 					"❌ [INTENT_STORAGE] Failed to store transaction IDs for intent: {}",
 					intent_hash
 				);
-				error!("  🗄️  Database key: {}", key);
 				error!("  💥 Error: {}", e);
 				Err(e)
 			},
@@ -528,8 +295,8 @@ impl IntentStorage {
 		&self,
 		intent_hash: &str,
 	) -> Result<Option<IntentTransactionIds>> {
-		let key = key_utils::intent_transaction_ids_key(intent_hash);
-		let tx_ids = self.db.get_string(&key)?;
+		let key = IntentTransactionIdsKey { intent_hash: intent_hash.to_string() };
+		let tx_ids = self.tx_ids.get(key)?;
 		if tx_ids.is_some() {
 			debug!("🔍 [INTENT_STORAGE] Retrieved transaction IDs for intent: {}", intent_hash);
 		}
@@ -608,8 +375,8 @@ impl IntentStorage {
 
 		tx_ids.set_final_solver(Some(solver.to_string()));
 
-		let key = key_utils::intent_transaction_ids_key(intent_hash);
-		self.db.put_string(&key, &tx_ids)?;
+		let key = IntentTransactionIdsKey { intent_hash: intent_hash.to_string() };
+		self.tx_ids.put(key.clone(), &tx_ids)?;
 
 		info!("✅ [INTENT_STORAGE] Final solver stored for intent {}: {}", intent_hash, solver);
 
@@ -651,8 +418,8 @@ impl IntentStorage {
 		tx_ids.updated_at = Utc::now();
 
 		// Store updated transaction IDs
-		let key = key_utils::intent_transaction_ids_key(intent_hash);
-		self.db.put_string(&key, &tx_ids)?;
+		let key = IntentTransactionIdsKey { intent_hash: intent_hash.to_string() };
+		self.tx_ids.put(key, &tx_ids)?;
 
 		info!("✅ [INTENT_STORAGE] Error message stored for intent {}", intent_hash);
 		Ok(())
@@ -681,23 +448,19 @@ impl IntentStorage {
 	pub async fn get_completed_intents(
 		&self,
 	) -> Result<Vec<(String, DepositIntent, IntentTransactionIds)>> {
-		let prefix = crate::database::keys::INTENT_TRANSACTION_IDS;
-		let tx_results: Vec<(String, IntentTransactionIds)> =
-			self.db.get_values_with_prefix(prefix)?;
+		let mut completed = Vec::new();
+		let all_tx = self.tx_ids.get_all()?;
 
-		let mut completed_intents = Vec::new();
-
-		for (_key, tx_ids) in tx_results {
-			// Check if both transaction IDs are present
-			if tx_ids.user_to_network_tx_id.is_some() && tx_ids.network_to_target_tx_id.is_some() {
-				if let Some(intent) = self.get_intent(&tx_ids.intent_hash).await? {
-					completed_intents.push((tx_ids.intent_hash.clone(), intent, tx_ids));
-				}
+		for tx in all_tx.into_iter().filter(|t| {
+			t.1.user_to_network_tx_id.is_some() && t.1.network_to_target_tx_id.is_some()
+		}) {
+			if let Some(intent) = self.get_intent(&tx.1.intent_hash).await? {
+				completed.push((tx.1.intent_hash.clone(), intent, tx.1));
 			}
 		}
 
-		debug!("🔍 [INTENT_STORAGE] Found {} completed intents", completed_intents.len());
-		Ok(completed_intents)
+		debug!("🔍 [INTENT_STORAGE] Found {} completed intents", completed.len());
+		Ok(completed)
 	}
 
 	/// Get intents that are missing transaction IDs
@@ -727,36 +490,5 @@ impl IntentStorage {
 			pending_intents.len()
 		);
 		Ok(pending_intents)
-	}
-}
-
-/// Storage for tracking transaction status by hash
-#[derive(Clone)]
-pub struct TransactionStatusStorage {
-	db: Database,
-}
-
-impl TransactionStatusStorage {
-	pub fn new(db: Database) -> Self {
-		Self { db }
-	}
-
-	/// Store status for a transaction hash
-	pub async fn store_status(&self, tx_hash: &str, status: TransactionStatus) -> Result<()> {
-		let key = key_utils::transaction_status_key(tx_hash);
-		info!("💾 [TX_STATUS_STORAGE] Storing status for tx {}: {:?}", tx_hash, status);
-		self.db.put_string(&key, &status)?;
-		Ok(())
-	}
-
-	/// Get status for a transaction hash
-	pub async fn get_status(&self, tx_hash: &str) -> Result<Option<TransactionStatus>> {
-		let key = key_utils::transaction_status_key(tx_hash);
-		self.db.get_string(&key)
-	}
-
-	/// Update status for a transaction hash
-	pub async fn update_status(&self, tx_hash: &str, status: TransactionStatus) -> Result<()> {
-		self.store_status(tx_hash, status).await
 	}
 }

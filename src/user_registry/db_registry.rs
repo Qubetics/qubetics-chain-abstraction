@@ -33,11 +33,6 @@ pub struct DatabaseUserRegistry {
 }
 
 impl DatabaseUserRegistry {
-	/// Get access to the underlying database
-	pub fn get_database(&self) -> &Database {
-		self.user_storage.get_database()
-	}
-
 	/// Create a new database-backed user registry
 	pub fn new(database: Database, chain_code: [u8; 32]) -> Self {
 		let user_storage = UserStorage::new(database.clone());

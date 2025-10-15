@@ -39,15 +39,15 @@ pub enum DKGStatus {
 pub type DKGCompletionCallback = Box<dyn Fn(Scalar, ProjectivePoint) + Send + Sync>;
 
 pub struct DKGNode {
-	id: String,
-	status: DKGStatus,
-	threshold: usize,
-	total_nodes: usize,
-	storage: DkgStorage,
-	message_tx: mpsc::Sender<ChannelMessage>,
-	completion_callback: Option<DKGCompletionCallback>,
-	round: u64,
-	chain_code: [u8; 32],
+	pub id: String,
+	pub status: DKGStatus,
+	pub threshold: usize,
+	pub total_nodes: usize,
+	pub storage: DkgStorage,
+	pub message_tx: mpsc::Sender<ChannelMessage>,
+	pub completion_callback: Option<DKGCompletionCallback>,
+	pub round: u64,
+	pub chain_code: [u8; 32],
 }
 
 impl DKGNode {

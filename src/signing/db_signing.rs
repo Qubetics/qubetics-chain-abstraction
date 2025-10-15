@@ -10,7 +10,7 @@ use crate::{
 	chain::{ChainHandler, ChainHandlerFactory, ChainTransaction},
 	consensus::ConsensusNode,
 	contract::{ContractClient, ContractConfig, SolverManagerContract},
-	database::{key_utils, ConsensusStorage, Database, SigningStorage},
+	database::{ConsensusStorage, Database, SigningStorage},
 	types::ChannelMessage,
 	vrf::VrfService,
 };
