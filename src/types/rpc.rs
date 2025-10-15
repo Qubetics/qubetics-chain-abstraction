@@ -71,6 +71,17 @@ pub enum RPCRequest {
         from: SerializablePeerId,
         share: SerializableScalar,
     },
+
+    /// Request database snapshot from a peer
+    RequestDatabaseSync {
+        requester_id: SerializablePeerId,
+    },
+
+    /// Request specific batch of database entries
+    RequestDatabaseBatch {
+        batch_index: usize,
+        batch_size: usize,
+    },
 }
 
 /// RPC response variants.
@@ -111,6 +122,29 @@ pub enum RPCResponse {
         share: SerializableScalar,
         commitments: Vec<SerializablePoint>,
     },
+
+    /// Response to database sync request with metadata
+    DatabaseSyncMetadata {
+        total_entries: usize,
+        recommended_batch_size: usize,
+    },
+
+    /// Response with a batch of database entries
+    DatabaseBatch {
+        batch_index: usize,
+        entries: Vec<DatabaseEntry>,
+        is_last_batch: bool,
+    },
+
+    /// Database sync completed
+    DatabaseSyncComplete,
+}
+
+/// A single database entry for syncing
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DatabaseEntry {
+    pub key: Vec<u8>,
+    pub value: Vec<u8>,
 }
 
 /// CBOR + serde codec for our MPC protocol.

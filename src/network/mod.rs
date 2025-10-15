@@ -85,6 +85,59 @@ impl From<ReqRespEvent<RPCRequest, RPCResponse>> for NetworkEvent {
     }
 }
 
+/// Database sync state for tracking synchronization progress
+#[derive(Debug, Clone)]
+pub struct DatabaseSyncState {
+    pub in_progress: bool,
+    pub source_peer: Option<PeerId>,
+    pub total_entries: usize,
+    pub batch_size: usize,
+    pub current_batch: usize,
+    pub total_batches: usize,
+    pub entries_synced: usize,
+}
+
+impl DatabaseSyncState {
+    pub fn new() -> Self {
+        Self {
+            in_progress: false,
+            source_peer: None,
+            total_entries: 0,
+            batch_size: 0,
+            current_batch: 0,
+            total_batches: 0,
+            entries_synced: 0,
+        }
+    }
+
+    pub fn start_sync(&mut self, peer: PeerId, total_entries: usize, batch_size: usize) {
+        self.in_progress = true;
+        self.source_peer = Some(peer);
+        self.total_entries = total_entries;
+        self.batch_size = batch_size;
+        self.current_batch = 0;
+        self.total_batches = (total_entries + batch_size - 1) / batch_size;
+        self.entries_synced = 0;
+    }
+
+    pub fn complete_batch(&mut self, entries_count: usize) {
+        self.current_batch += 1;
+        self.entries_synced += entries_count;
+    }
+
+    pub fn finish_sync(&mut self) {
+        self.in_progress = false;
+        self.source_peer = None;
+    }
+
+    pub fn progress_percentage(&self) -> f32 {
+        if self.total_entries == 0 {
+            return 100.0;
+        }
+        (self.entries_synced as f32 / self.total_entries as f32) * 100.0
+    }
+}
+
 pub struct NetworkLayer {
     local_key: Keypair,
     local_peer_id: PeerId,
@@ -104,6 +157,8 @@ pub struct NetworkLayer {
     peer_indices: std::collections::HashMap<PeerId, usize>,
     // Database for persisting peer indices
     db: Database,
+    // Database sync state tracking
+    db_sync_state: DatabaseSyncState,
 }
 
 impl NetworkLayer {
@@ -171,6 +226,7 @@ impl NetworkLayer {
             vrf_round_requested: false,
             peer_indices: std::collections::HashMap::new(),
             db,
+            db_sync_state: DatabaseSyncState::new(),
         };
 
         // Preload any persisted peer indices into memory
@@ -321,6 +377,142 @@ impl NetworkLayer {
             .map_err(|e| anyhow::anyhow!("Failed to send user registration broadcast: {}", e))?;
 
         info!("📡 Broadcasted user registration for {} from node {} to P2P network", ethereum_address, node_id);
+        Ok(())
+    }
+
+    /// Sync database from an existing peer when joining the network
+    /// This method should be called by new nodes after connecting to the network
+    pub async fn sync_database_from_peer(
+        &self,
+        swarm: &mut libp2p::Swarm<MPCBehaviour>,
+        peer_id: PeerId,
+    ) -> Result<()> {
+        info!("📦 [DB_SYNC] Starting database sync from peer {}", peer_id);
+        
+        // Step 1: Request database metadata
+        let request = RPCRequest::RequestDatabaseSync {
+            requester_id: SerializablePeerId(self.local_peer_id),
+        };
+        
+        let request_id = swarm
+            .behaviour_mut()
+            .request_response
+            .send_request(&peer_id, request);
+        
+        info!("📦 [DB_SYNC] Sent sync metadata request (ID: {:?})", request_id);
+        
+        // Note: The actual response handling happens in the swarm event loop
+        // We need to handle DatabaseSyncMetadata and DatabaseBatch responses there
+        Ok(())
+    }
+
+    /// Handle database sync metadata response and start batch requests
+    pub async fn handle_database_sync_metadata(
+        &mut self,
+        swarm: &mut libp2p::Swarm<MPCBehaviour>,
+        peer_id: PeerId,
+        total_entries: usize,
+        batch_size: usize,
+    ) -> Result<()> {
+        if total_entries == 0 {
+            info!("📦 [DB_SYNC] Peer has no data to sync");
+            return Ok(());
+        }
+        
+        // Initialize sync state
+        self.db_sync_state.start_sync(peer_id, total_entries, batch_size);
+        
+        let total_batches = (total_entries + batch_size - 1) / batch_size;
+        info!(
+            "📦 [DB_SYNC] Starting batch sync: {} entries in {} batches from peer {}",
+            total_entries, total_batches, peer_id
+        );
+        info!(
+            "📊 [DB_SYNC] Progress: 0/{} entries (0.00%)",
+            total_entries
+        );
+        
+        // Request first batch - subsequent batches will be requested after receiving responses
+        let request = RPCRequest::RequestDatabaseBatch {
+            batch_index: 0,
+            batch_size,
+        };
+        
+        swarm
+            .behaviour_mut()
+            .request_response
+            .send_request(&peer_id, request);
+        
+        info!("📦 [DB_SYNC] Requested batch 0/{}", total_batches - 1);
+        Ok(())
+    }
+
+    /// Handle a batch of database entries
+    pub async fn handle_database_batch(
+        &mut self,
+        swarm: &mut libp2p::Swarm<MPCBehaviour>,
+        peer_id: PeerId,
+        batch_index: usize,
+        entries: Vec<crate::types::rpc::DatabaseEntry>,
+        is_last_batch: bool,
+        batch_size: usize,
+    ) -> Result<()> {
+        let entries_count = entries.len();
+        
+        info!(
+            "📦 [DB_SYNC] Received batch {} with {} entries (last: {})",
+            batch_index, entries_count, is_last_batch
+        );
+        
+        // Convert entries to tuple format
+        let db_entries: Vec<(Vec<u8>, Vec<u8>)> = entries
+            .into_iter()
+            .map(|e| (e.key, e.value))
+            .collect();
+        
+        // Import batch into database
+        self.db.import_batch(db_entries)?;
+        
+        // Update sync state
+        self.db_sync_state.complete_batch(entries_count);
+        
+        let progress = self.db_sync_state.progress_percentage();
+        info!(
+            "✅ [DB_SYNC] Successfully imported batch {} - Progress: {}/{} entries ({:.2}%)",
+            batch_index,
+            self.db_sync_state.entries_synced,
+            self.db_sync_state.total_entries,
+            progress
+        );
+        
+        // Request next batch if not last
+        if !is_last_batch {
+            let request = RPCRequest::RequestDatabaseBatch {
+                batch_index: batch_index + 1,
+                batch_size,
+            };
+            
+            swarm
+                .behaviour_mut()
+                .request_response
+                .send_request(&peer_id, request);
+            
+            info!(
+                "📦 [DB_SYNC] Requested batch {}/{} from peer {}",
+                batch_index + 1,
+                self.db_sync_state.total_batches - 1,
+                peer_id
+            );
+        } else {
+            // Finish sync
+            self.db_sync_state.finish_sync();
+            info!("🎉 [DB_SYNC] Database synchronization completed!");
+            info!(
+                "📊 [DB_SYNC] Total synced: {} entries from peer {}",
+                self.db_sync_state.entries_synced, peer_id
+            );
+        }
+        
         Ok(())
     }
 
@@ -1002,6 +1194,57 @@ impl NetworkLayer {
                                     current_round,
                                 }
                             }
+                            RPCRequest::RequestDatabaseSync { requester_id } => {
+                                info!("📦 [DB_SYNC] Received database sync request from peer: {:?}", requester_id);
+                                
+                                match self.db.count_entries() {
+                                    Ok(total_entries) => {
+                                        let recommended_batch_size = 100; // Entries per batch
+                                        info!(
+                                            "📦 [DB_SYNC] Database has {} entries, recommending batch size of {}",
+                                            total_entries, recommended_batch_size
+                                        );
+                                        RPCResponse::DatabaseSyncMetadata {
+                                            total_entries,
+                                            recommended_batch_size,
+                                        }
+                                    }
+                                    Err(e) => {
+                                        error!("❌ [DB_SYNC] Failed to count database entries: {}", e);
+                                        RPCResponse::Error(format!("Failed to count database entries: {}", e))
+                                    }
+                                }
+                            }
+                            RPCRequest::RequestDatabaseBatch { batch_index, batch_size } => {
+                                info!(
+                                    "📦 [DB_SYNC] Received database batch request: batch {} with size {} from peer {}",
+                                    batch_index, batch_size, peer
+                                );
+                                
+                                match self.db.export_batch(batch_index * batch_size, batch_size) {
+                                    Ok((entries, is_last_batch)) => {
+                                        let db_entries: Vec<crate::types::rpc::DatabaseEntry> = entries
+                                            .into_iter()
+                                            .map(|(key, value)| crate::types::rpc::DatabaseEntry { key, value })
+                                            .collect();
+                                        
+                                        info!(
+                                            "📦 [DB_SYNC] Sending batch {} with {} entries (last batch: {})",
+                                            batch_index, db_entries.len(), is_last_batch
+                                        );
+                                        
+                                        RPCResponse::DatabaseBatch {
+                                            batch_index,
+                                            entries: db_entries,
+                                            is_last_batch,
+                                        }
+                                    }
+                                    Err(e) => {
+                                        error!("❌ [DB_SYNC] Failed to export batch: {}", e);
+                                        RPCResponse::Error(format!("Failed to export batch: {}", e))
+                                    }
+                                }
+                            }
                             _ => RPCResponse::Ack
                         };
                         // here the following line will send to the other connected peers (incl any testing agent(s))
@@ -1025,6 +1268,10 @@ impl NetworkLayer {
                         match response {
                             RPCResponse::PeerList { peers, indices } => {
                                 info!("🔄 Merging peer‐set from {}: {:?}", peer, peers);
+                                
+                                // Clone peers list before consuming it
+                                let peers_clone = peers.clone();
+                                
                                 for (i, SerializablePeerId(p)) in peers.into_iter().enumerate() {
                                     if !self.node_manager.get_active_nodes().contains(&p) {
                                         self.node_manager.add_node(p.clone())
@@ -1049,7 +1296,7 @@ impl NetworkLayer {
                                 }
                                 
                                 // After learning about all peers, check if this is a new node joining existing network
-                                if let Some(dkg_node) = &mut self.dkg_node {
+                                let (should_sync, sync_peer_opt, new_node_index_opt) = if let Some(dkg_node) = &mut self.dkg_node {
                                     let total = self.node_manager.get_total_nodes();
                                     let threshold = self.node_manager.get_threshold();
                                     
@@ -1059,15 +1306,45 @@ impl NetworkLayer {
                                     
                                     let has_dkg_data = dkg_node.get_final_secret_share().await.is_some();
                                     info!("🔍 [NEW_NODE] Has DKG data: {}", has_dkg_data);
+                                    
                                     // If this node has no DKG data and network has > 4 nodes, it's a new node joining
                                     if !has_dkg_data && total > 4 {
-                                        info!("🆕 [NEW_NODE] Learned about {} total nodes, triggering share request", total);
-                                        // CRITICAL: New node always gets index = total (e.g., 5th node gets index 5)
-                                        // We do NOT recalculate from sorted position, as that would change indices
-                                        let new_node_index = total;
+                                        info!("🆕 [NEW_NODE] Learned about {} total nodes, triggering database sync and share request", total);
                                         
+                                        // Get first peer for sync
+                                        let sync_peer = if !peers_clone.is_empty() {
+                                            Some(peers_clone[0].0.clone())
+                                        } else {
+                                            None
+                                        };
+                                        
+                                        // CRITICAL: New node always gets index = total (e.g., 5th node gets index 5)
+                                        let new_node_index = total;
                                         info!("🆕 [NEW_NODE] Assigned permanent index: {} (total_nodes = {})", new_node_index, total);
                                         
+                                        (true, sync_peer, Some(new_node_index))
+                                    } else {
+                                        (false, None, None)
+                                    }
+                                } else {
+                                    (false, None, None)
+                                };
+                                
+                                // Now handle sync and DKG request outside of the dkg_node borrow
+                                if should_sync {
+                                    // First, sync database from an existing peer
+                                    if let Some(sync_peer) = sync_peer_opt {
+                                        info!("📦 [NEW_NODE] Initiating database sync from peer: {}", sync_peer);
+                                        
+                                        if let Err(e) = self.sync_database_from_peer(swarm, sync_peer).await {
+                                            warn!("❌ [NEW_NODE] Failed to start database sync: {:?}", e);
+                                        } else {
+                                            info!("✅ [NEW_NODE] Database sync initiated");
+                                        }
+                                    }
+                                    
+                                    // Request DKG shares
+                                    if let (Some(dkg_node), Some(new_node_index)) = (&mut self.dkg_node, new_node_index_opt) {
                                         if let Err(e) = dkg_node.request_shares_as_new_node(new_node_index).await {
                                             warn!("❌ [NEW_NODE] Failed to request shares: {:?}", e);
                                         }
@@ -1112,6 +1389,50 @@ impl NetworkLayer {
                                     // VRF sync successful, don't need to request again
                                 } else {
                                     info!("ℹ️ Peer {} doesn't have current VRF round yet", peer);
+                                }
+                            }
+
+                            RPCResponse::DatabaseSyncMetadata {
+                                total_entries,
+                                recommended_batch_size,
+                            } => {
+                                info!(
+                                    "📦 [DB_SYNC] Received sync metadata: {} entries, batch size {}",
+                                    total_entries, recommended_batch_size
+                                );
+                                
+                                if let Err(e) = self.handle_database_sync_metadata(
+                                    swarm,
+                                    peer,
+                                    total_entries,
+                                    recommended_batch_size,
+                                ).await {
+                                    error!("❌ [DB_SYNC] Failed to handle sync metadata: {}", e);
+                                }
+                            }
+
+                            RPCResponse::DatabaseBatch {
+                                batch_index,
+                                entries,
+                                is_last_batch,
+                            } => {
+                                info!(
+                                    "📦 [DB_SYNC] Received batch {} with {} entries",
+                                    batch_index, entries.len()
+                                );
+                                
+                                // Use the recommended batch size from metadata (default 100)
+                                let batch_size = 100;
+                                
+                                if let Err(e) = self.handle_database_batch(
+                                    swarm,
+                                    peer,
+                                    batch_index,
+                                    entries,
+                                    is_last_batch,
+                                    batch_size,
+                                ).await {
+                                    error!("❌ [DB_SYNC] Failed to handle batch: {}", e);
                                 }
                             }
 
