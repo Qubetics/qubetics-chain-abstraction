@@ -6,7 +6,7 @@ import { Wallet } from 'ethers';
 // =========================
 // Configuration
 // =========================
-const RPC_BASE_URL = 'http://127.0.0.1:8083';
+const RPC_BASE_URL = 'http://127.0.0.1:8081';
 
 // 👉 Private key you provided (hex, no 0x prefix needed)
 const TEST_PRIVKEY = '6176c7ad6a70652a202e1e894badaa5690260cfc5fbf148a7411462e40ee4bf8';
@@ -598,7 +598,7 @@ async function runTests() {
 
   // 3) MPC deposit test WITHOUT tx_id (should pass Some(signer) to handle_deposit_intent)
   // log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
-  // const amount = 25000000000000000000
+  // const amount = 25000000000000000
   // await testUserMpcDeposit({ wallet, amount }); 
   
   // const address = '0xbac113cebd9CB2fBD2a01B5CBC43D0fC0EBed5e9';

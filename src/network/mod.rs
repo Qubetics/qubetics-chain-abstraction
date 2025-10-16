@@ -281,6 +281,14 @@ impl NetworkLayer {
         } else {
             info!("⚠️ [NETWORK] Signing node not available when setting user registry");
         }
+
+        // Attach user registry to DKG node so it can refresh user shares after secret updates
+        if let Some(dkg_node) = &mut self.dkg_node {
+            dkg_node.set_user_registry(registry.clone());
+            info!("🔗 [NETWORK] Attached user registry to DKG node");
+        } else {
+            info!("⚠️ [NETWORK] DKG node not available when setting user registry");
+        }
     }
 
     pub fn set_database(&mut self, database: Arc<crate::database::Database>) {
@@ -611,7 +619,7 @@ impl NetworkLayer {
         let mut bootstrap_timer = tokio::time::interval(Duration::from_secs(300));
         let mut discovery_timer = tokio::time::interval(Duration::from_secs(300));
         let mut dkg_status_timer = tokio::time::interval(Duration::from_secs(300));
-        let mut peerlist_logger = tokio::time::interval(Duration::from_secs(3));
+        let mut peerlist_logger = tokio::time::interval(Duration::from_secs(300));
 
 
         swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;

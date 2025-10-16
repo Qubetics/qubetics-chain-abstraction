@@ -16,6 +16,7 @@ use super::{
 };
 use crate::database::RewardStorage;
 use crate::database::{Database, IntentStorage, TransactionStatusStorage, UserStorage};
+use crate::database::DkgStorage;
 use crate::rpc_server::DepositIntent;
 use crate::types::{SerializablePoint, SerializableScalar};
 use crate::utils::hmac_helper::hmac256_from_addr;
@@ -36,6 +37,56 @@ impl DatabaseUserRegistry {
     /// Get access to the underlying database
     pub fn get_database(&self) -> &Database {
         self.user_storage.get_database()
+    }
+
+    /// Recompute and update tweaked secret shares for all users using the latest final secret
+    pub async fn refresh_all_user_tweaked_shares(&self) -> Result<()> {
+        info!("🔄 [DB_USER_REGISTRY] Starting refresh_all_user_tweaked_shares for all users");
+
+        // Access latest final secret share from DKG storage
+        let dkg_storage = DkgStorage::new(self.get_database().clone());
+        let final_secret_share = match dkg_storage.get_final_secret().await? {
+            Some(s) => s,
+            None => {
+                return Err(anyhow::anyhow!(
+                    "No final secret share found in DKG storage"
+                ))
+            }
+        };
+
+        // Fetch all users
+        let users = self.user_storage.get_all_users().await?;
+        info!("👥 [DB_USER_REGISTRY] Users loaded for refresh: {}", users.len());
+
+        let mut success_count: usize = 0;
+        let mut failure_count: usize = 0;
+
+        // Iterate and recompute tweaked share for each user based on their HMAC constant
+        for (address, mut user) in users.into_iter() {
+            info!("🧮 [DB_USER_REGISTRY] Recomputing tweaked share for {} (user_id: {})", address, user.user_id);
+            let new_tweaked = self.compute_tweaked_share(&final_secret_share, &user.hmac_constant);
+            user.tweaked_secret_share = Some(new_tweaked);
+
+            // Persist updated user
+            if let Err(e) = self.user_storage.store_user(&address, &user).await {
+                error!(
+                    "❌ [DB_USER_REGISTRY] Failed to update tweaked share for {}: {}",
+                    address,
+                    e
+                );
+                failure_count += 1;
+            } else {
+                info!("✅ [DB_USER_REGISTRY] Updated tweaked secret share for {}", address);
+                success_count += 1;
+            }
+        }
+
+        info!(
+            "🎉 [DB_USER_REGISTRY] Completed refresh_all_user_tweaked_shares: {} success, {} failed",
+            success_count,
+            failure_count
+        );
+        Ok(())
     }
 
     /// Create a new database-backed user registry
@@ -117,7 +168,7 @@ impl DatabaseUserRegistry {
         info!("  📧 Ethereum address: {}", addr_cs);
         info!("  🆔 User ID: {}", user_id);
         info!(
-            "  🔑 Has tweaked secret share: {}",
+            "  🔑 Has tweaked secret share: {:?}",
             registration.tweaked_secret_share.is_some()
         );
         info!(
