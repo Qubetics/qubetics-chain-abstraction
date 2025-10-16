@@ -6,7 +6,7 @@ import { Wallet } from 'ethers';
 // =========================
 // Configuration
 // =========================
-const RPC_BASE_URL = 'http://127.0.0.1:8083';
+const RPC_BASE_URL = 'http://127.0.0.1:8082';
 
 // 👉 Private key you provided (hex, no 0x prefix needed)
 const TEST_PRIVKEY = '6176c7ad6a70652a202e1e894badaa5690260cfc5fbf148a7411462e40ee4bf8';

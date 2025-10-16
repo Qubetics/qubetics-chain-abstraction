@@ -181,10 +181,41 @@ curl -X POST http://localhost:8081/rpc \
 - Verify node has no existing DKG data
 - Check logs for peer discovery messages
 
+### DialFailure Error on Sync Start
+**Symptom**: Logs show `OutboundFailure` with `DialFailure` immediately after sync starts
+```
+📦 [DB_SYNC] Starting database sync from peer 12D3KooW...
+Outbound failure to peer 12D3KooW...: DialFailure
+```
+
+**Causes**:
+1. **Node trying to sync from itself** - Fixed: Code now filters out local peer ID
+2. **No active connection to peer** - **Most Common**: The peer is in the routing table but not yet connected
+
+**Fix**: The code now:
+1. Only selects **connected peers** for database sync (not just peers in routing table)
+2. Automatically retries sync when a connection is established
+3. Logs `🔗 [NEW_NODE] Currently connected to X peers` to show available peers
+
+**Expected Behavior**:
+- If no peers are connected yet: `⚠️ [NEW_NODE] No connected peers available for database sync!`
+- Node will wait and retry: `⚠️ [NEW_NODE] Will retry database sync when a connection is established`
+- When connection is made: `🔄 [DB_SYNC] Connection established, retrying database sync with peer...`
+
 ### Sync Fails Mid-way
 - Check network connectivity to source peer
 - Verify source peer has data (not also a new node)
 - Check for sufficient disk space
+
+### No Peers Available for Sync
+**Symptom**: Log shows `⚠️ [NEW_NODE] No other peers available for database sync!`
+
+**Cause**: All peers in the network are unavailable or the peer list only contains the local node
+
+**Solution**: 
+- Ensure other nodes are online and accessible
+- Check network connectivity
+- Verify bootstrap nodes are reachable
 
 ### Data Inconsistency
 - Re-sync by clearing data directory and restarting node
