@@ -3,7 +3,7 @@ use crate::{
 		BitcoinInput, BitcoinOutput, BitcoinTransaction, BitcoinWitnessUtxo, ChainTransaction,
 		EthereumTransaction,
 	},
-	rpc_server::{ContractTransaction, DepositIntent, DummyTransaction},
+	rpc_server::common::{ContractTransaction, DepositIntent, DummyTransaction},
 	utils::get_eth_address_from_group_key,
 	EnvVars,
 };
@@ -186,7 +186,7 @@ pub fn validate_and_normalize_hex_amount(hex_str: &str) -> Result<String> {
 }
 
 /// Validate that a transaction has proper hex formatting for value and gas_price
-pub fn validate_transaction_hex_fields(tx: &crate::rpc_server::DummyTransaction) -> Result<()> {
+pub fn validate_transaction_hex_fields(tx: &DummyTransaction) -> Result<()> {
 	// Validate value field
 	validate_and_normalize_hex_amount(&tx.value)
 		.map_err(|e| anyhow::anyhow!("Invalid value field: {}", e))?;
@@ -200,7 +200,7 @@ pub fn validate_transaction_hex_fields(tx: &crate::rpc_server::DummyTransaction)
 
 /// Validate that a contract transaction has proper hex formatting
 pub fn validate_contract_transaction_hex_fields(
-	tx: &crate::rpc_server::ContractTransaction,
+	tx: &ContractTransaction,
 ) -> Result<()> {
 	// Validate value field
 	validate_and_normalize_hex_amount(&tx.value)
@@ -1409,7 +1409,7 @@ mod tests {
 
 	#[test]
 	fn test_validate_transaction_hex_fields() {
-		use crate::rpc_server::DummyTransaction;
+
 
 		// Test valid transaction
 		let valid_tx = DummyTransaction {
@@ -1447,7 +1447,7 @@ mod tests {
 
 	#[test]
 	fn test_validate_contract_transaction_hex_fields() {
-		use crate::rpc_server::ContractTransaction;
+		
 
 		// Test valid contract transaction
 		let valid_contract_tx = ContractTransaction {

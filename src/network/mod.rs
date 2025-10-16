@@ -1,4 +1,4 @@
-use crate::{prepare_unsigned_eip1559_tx, Database, DatabaseConfig};
+use crate::{prepare_unsigned_eip1559_tx, rpc_server::common::{ContractTransaction, DepositIntent}, Database, DatabaseConfig};
 use anyhow::Result;
 use ethers::{
 	abi::Token,
@@ -43,7 +43,7 @@ use crate::{
 	commands::CommandProcessor,
 	consensus::ConsensusNode,
 	node_management::NodeMembership,
-	rpc_server::DummyTransaction,
+	rpc_server::common::DummyTransaction,
 	signing::{DatabaseSigningNode, SigningNode},
 	types::{
 		dkg::{MSG_TOPIC_DKG, MSG_TOPIC_PEER_DISCOVERY},
@@ -1839,7 +1839,7 @@ impl NetworkLayer {
 				}
 
 				// Create DummyTransaction from EthereumTransaction
-				let dummy_tx = crate::rpc_server::DummyTransaction {
+				let dummy_tx = DummyTransaction {
 					to: ethereum_tx.to.clone(),
 					value: ethereum_tx.value.clone(),
 					nonce: ethereum_tx.nonce,
@@ -2252,7 +2252,7 @@ impl NetworkLayer {
 								},
 								crate::chain::ChainTransaction::Ethereum(ref eth_tx) => {
 									// For EVM chains, use your proven DummyTransaction logic
-									let dummy_tx = crate::rpc_server::DummyTransaction {
+									let dummy_tx = DummyTransaction {
 										to: eth_tx.to.clone(),
 										value: eth_tx.value.clone(),
 										nonce: eth_tx.nonce,
@@ -3019,7 +3019,7 @@ impl NetworkLayer {
 								},
 								crate::chain::ChainTransaction::Ethereum(ref eth_tx) => {
 									// For EVM chains, use your proven DummyTransaction logic
-									let dummy_tx = crate::rpc_server::DummyTransaction {
+									let dummy_tx = DummyTransaction {
 										to: eth_tx.to.clone(),
 										value: eth_tx.value.clone(),
 										nonce: eth_tx.nonce,
@@ -3432,7 +3432,7 @@ impl NetworkLayer {
 				}
 
 				// Create DummyTransaction from EthereumTransaction
-				let dummy_tx = crate::rpc_server::DummyTransaction {
+				let dummy_tx = DummyTransaction {
 					to: ethereum_tx.to.clone(),
 					value: ethereum_tx.value.clone(),
 					nonce: ethereum_tx.nonce,
@@ -3753,7 +3753,7 @@ impl NetworkLayer {
 	/// Execute contract call for a given transaction type and intent
 	async fn execute_contract_call_for_transaction(
 		&mut self,
-		intent: &crate::rpc_server::DepositIntent,
+		intent: &DepositIntent,
 		intent_hash: &str,
 		transaction_type: crate::types::TransactionType,
 		tx_hash: &str,
@@ -3788,7 +3788,7 @@ impl NetworkLayer {
 
 					match contract_transaction {
 						crate::chain::ChainTransaction::Ethereum(ref eth_tx) => {
-							let contract_tx = crate::rpc_server::ContractTransaction {
+							let contract_tx = ContractTransaction {
 								to: eth_tx.to.clone(),
 								value: eth_tx.value.clone(),
 								nonce: eth_tx.nonce,

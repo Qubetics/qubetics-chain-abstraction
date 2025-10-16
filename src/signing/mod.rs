@@ -1,4 +1,4 @@
-use crate::{rpc_server::DummyTransaction, utils::transaction::SpendKind};
+use crate::{rpc_server::common::{ContractTransaction, DummyTransaction}, utils::transaction::SpendKind};
 use anyhow::{anyhow, Result};
 use k256::Scalar;
 // use ethereum_types::U64; // Removed unused import
@@ -1193,7 +1193,7 @@ impl SigningNode {
 
 				// Create signed transaction using the utility function with dynamic nonce
 				let signed_tx = crate::utils::transaction::create_signed_transaction(
-					&crate::rpc_server::DummyTransaction {
+					&DummyTransaction {
 						to: original_tx.to.clone(),
 						value: original_tx.value.clone(),
 						nonce: original_tx.nonce,
@@ -1939,7 +1939,7 @@ impl SigningNode {
 	pub async fn sign_contract_message(
 		&mut self,
 		_message: Vec<u8>,
-		transaction: &crate::rpc_server::ContractTransaction,
+		transaction: &ContractTransaction,
 		user_tweaked_share: Option<k256::Scalar>,
 		user_eth_address: Option<String>,
 	) -> Result<()> {
@@ -2021,7 +2021,7 @@ impl SigningNode {
 		let msg = Message::from_digest_slice(&tx_hash)?;
 		let signature = self.create_ecdsa_signature_with_key_contract(
 			&msg,
-			&crate::rpc_server::ContractTransaction {
+			&ContractTransaction {
 				to: transaction.to.clone(),
 				value: transaction.value.clone(),
 				nonce: transaction.nonce,
@@ -2161,7 +2161,7 @@ impl SigningNode {
 	pub fn create_ecdsa_signature_with_key_contract(
 		&self,
 		message: &Message,
-		_transaction: &crate::rpc_server::ContractTransaction,
+		_transaction: &ContractTransaction,
 		signing_key: &SecretKey,
 	) -> Result<RecoverableSignature> {
 		// 1) Use provided signing key and context

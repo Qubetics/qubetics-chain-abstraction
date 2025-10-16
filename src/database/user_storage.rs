@@ -1,6 +1,6 @@
 use crate::{
 	database::{key_utils, Database},
-	rpc_server::DepositIntent,
+	rpc_server::common::DepositIntent,
 	user_registry::{IntentStatus, IntentTransactionIds, TransactionStatus, UserRegistration},
 };
 use anyhow::Result;

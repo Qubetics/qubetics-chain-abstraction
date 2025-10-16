@@ -17,6 +17,8 @@ pub enum TransactionNetwork {
 mod secp;
 pub use secp::{SerializablePoint, SerializableScalar};
 
+use crate::rpc_server::common::{DepositIntent, DummyTransaction};
+
 pub mod dkg;
 pub mod p2p;
 pub mod rpc;
@@ -38,10 +40,10 @@ pub enum ChannelMessage {
 		data: Vec<u8>,
 	},
 	LocalTransaction {
-		transaction: crate::rpc_server::DummyTransaction,
+		transaction: DummyTransaction,
 	},
 	DepositIntent {
-		intent: crate::rpc_server::DepositIntent,
+		intent: DepositIntent,
 		intent_id: String,
 		user_eth_address: Option<String>, /* If provided, use user's tweaked share; otherwise
 		                                   * use network's DKG share */
@@ -51,7 +53,7 @@ pub enum ChannelMessage {
 	IntentHash {
 		intent_hash: Vec<u8>,
 		signer: String,
-		intent: crate::rpc_server::DepositIntent,
+		intent: DepositIntent,
 	},
 	TransactionIdBroadcast {
 		intent_hash: String,
@@ -93,9 +95,9 @@ pub enum GossipsubMessage {
 		peer: PeerId,
 		sequence: Option<u64>,
 	},
-	Transaction(crate::rpc_server::DummyTransaction),
+	Transaction(DummyTransaction),
 	DepositIntent {
-		intent: crate::rpc_server::DepositIntent,
+		intent: DepositIntent,
 		intent_id: String,
 		user_eth_address: Option<String>, /* If provided, use user's tweaked share; otherwise
 		                                   * use network's DKG share */
@@ -105,7 +107,7 @@ pub enum GossipsubMessage {
 	IntentHash {
 		intent_hash: String,
 		signer: String,
-		intent: crate::rpc_server::DepositIntent,
+		intent: DepositIntent,
 	},
 	SolverReward {
 		solver_address: String,

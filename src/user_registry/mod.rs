@@ -9,7 +9,7 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use crate::{
-	rpc_server::DepositIntent,
+	rpc_server::common::DepositIntent,
 	types::{SerializablePoint, SerializableScalar},
 	utils::hmac_helper::hmac256_from_addr,
 };
