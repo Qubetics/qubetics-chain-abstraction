@@ -6,14 +6,17 @@ use rust_decimal_macros::dec;
 use std::collections::HashMap;
 use tracing::{info, warn};
 
-use crate::{rpc_server::types::errors::{RpcError, TransactionError}, user_registry::{checksum_from_any, to_checksum_address}, DatabaseUserRegistry, DkgStorage};
+use crate::{
+	rpc_server::types::errors::{RpcError, TransactionError},
+	user_registry::{checksum_from_any, to_checksum_address},
+	DatabaseUserRegistry, DkgStorage,
+};
 use secp256k1::{
 	ecdsa::{RecoverableSignature, RecoveryId},
 	Message, PublicKey, Secp256k1,
 };
 use sha2::Digest;
 use sha3::Keccak256;
-
 
 fn symbol_for(chain: &str) -> &'static str {
 	match chain.to_lowercase().as_str() {
@@ -111,7 +114,6 @@ pub fn convert_src_smallest_to_dst_smallest(
 	Ok(result)
 }
 
-
 // Input validation helper
 pub fn validate_ethereum_address(address: &str) -> Result<String, RpcError> {
 	if address.trim().is_empty() {
@@ -130,7 +132,6 @@ pub fn validate_ethereum_address(address: &str) -> Result<String, RpcError> {
 	}
 }
 
-
 // Helper function to get the actual DKG secret share from shared state
 pub async fn get_actual_dkg_secret_share(
 	dkg_storage: std::sync::Arc<DkgStorage>,
@@ -147,7 +148,6 @@ pub async fn get_actual_dkg_secret_share(
 		},
 	}
 }
-
 
 pub fn normalize_eth_signature(sig_hex: &str) -> anyhow::Result<([u8; 64], u8)> {
 	let s = sig_hex.strip_prefix("0x").unwrap_or(sig_hex);
@@ -210,7 +210,6 @@ pub fn recover_eth_address_secp(
 	Ok(to_checksum_address(&addr20))
 }
 
-
 /// Wait for a transaction ID or chain error associated with the given intent hash.
 /// Polls the database frequently to return as soon as possible and times out
 /// after the provided number of seconds. Tries to get all transaction IDs when possible,
@@ -269,7 +268,6 @@ pub async fn wait_for_transaction_result(
 	best_result
 }
 
-
 // Helper function to get transaction ID from intent hash
 pub async fn get_transaction_id_for_intent(
 	user_registry: &DatabaseUserRegistry,
@@ -311,4 +309,3 @@ pub async fn get_transaction_id_for_intent(
 
 	(None, None, None, None)
 }
-

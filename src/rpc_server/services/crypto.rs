@@ -1,7 +1,7 @@
 use crate::EnvVars;
 use rust_decimal::Decimal;
-use std::{collections::HashMap, str::FromStr};
 use serde_json::Value;
+use std::{collections::HashMap, str::FromStr};
 
 pub async fn fetch_crypto_prices() -> Result<HashMap<String, Decimal>, String> {
 	use tracing::{debug, error, info};

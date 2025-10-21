@@ -1,7 +1,13 @@
-use crate::{rpc_server::{errors::TransactionError, responses::{DKGStatusResponse, TransactionResponse}}, types::{rpc::RPCRequest, ChannelMessage}, DkgStorage};
-use tracing::{info, warn};
+use crate::{
+	rpc_server::{
+		errors::TransactionError,
+		responses::{DKGStatusResponse, TransactionResponse},
+	},
+	types::{rpc::RPCRequest, ChannelMessage},
+	DkgStorage,
+};
 use tokio::sync::mpsc;
-
+use tracing::{info, warn};
 
 pub async fn handle_get_dkg_status(
 	dkg_storage: std::sync::Arc<DkgStorage>,
@@ -39,7 +45,6 @@ pub async fn handle_get_dkg_status(
 	}))
 }
 
-
 pub async fn handle_start_dkg(
 	message_tx: std::sync::Arc<tokio::sync::Mutex<mpsc::Sender<ChannelMessage>>>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
@@ -69,4 +74,3 @@ pub async fn handle_start_dkg(
 		message: "DKG start request sent to P2P network".to_string(),
 	}))
 }
-

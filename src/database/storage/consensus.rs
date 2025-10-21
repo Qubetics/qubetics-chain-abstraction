@@ -1,21 +1,50 @@
 use crate::{
 	consensus::ConsensusResult,
-	database::{key_utils, Database},
+	database::{
+		traits::Storage, ConsensusResultKey, CurrentRoundKey, Database, SelectedNodesKey,
+		CONSENSUS_RESULT_PREFIX, CURRENT_ROUND_PREFIX, SELECTED_NODES_PREFIX,
+	},
+	define_storage_adapter,
 	types::p2p::SerializablePeerId,
 };
 use anyhow::Result;
-use std::collections::HashMap;
+use std::{collections::HashMap, convert::TryInto};
 use tracing::{debug, info};
 
-/// Database-backed consensus storage
+define_storage_adapter!(
+	ConsensusResultAdapter,
+	ConsensusResultKey,
+	ConsensusResult,
+	CONSENSUS_RESULT_PREFIX
+);
+
+define_storage_adapter!(
+	SelectedNodesAdapter,
+	SelectedNodesKey,
+	Vec<SerializablePeerId>,
+	SELECTED_NODES_PREFIX
+);
+
+define_storage_adapter!(CurrentRoundAdapter, CurrentRoundKey, u64, CURRENT_ROUND_PREFIX);
+
+pub type ConsensusResultStorage = Storage<ConsensusResultAdapter>;
+pub type SelectedNodesStorage = Storage<SelectedNodesAdapter>;
+pub type CurrentRoundStorage = Storage<CurrentRoundAdapter>;
+
 #[derive(Clone)]
 pub struct ConsensusStorage {
-	db: Database,
+	consensus_results: ConsensusResultStorage,
+	selected_nodes: SelectedNodesStorage,
+	consensus_round: CurrentRoundStorage,
 }
 
 impl ConsensusStorage {
 	pub fn new(db: Database) -> Self {
-		Self { db }
+		Self {
+			consensus_results: ConsensusResultStorage::new(db.clone()),
+			selected_nodes: SelectedNodesStorage::new(db.clone()),
+			consensus_round: CurrentRoundStorage::new(db.clone()),
+		}
 	}
 
 	/// Store selected nodes for a specific round
@@ -24,64 +53,54 @@ impl ConsensusStorage {
 		round: u64,
 		selected_nodes: &[SerializablePeerId],
 	) -> Result<()> {
-		let key = key_utils::selected_nodes_key(round);
-		let nodes_vec = selected_nodes.to_vec();
-		self.db.put_string(&key, &nodes_vec)?;
 		info!(
 			"✅ [CONSENSUS_STORAGE] Stored {} selected nodes for round: {}",
 			selected_nodes.len(),
 			round
 		);
+		self.selected_nodes.put(SelectedNodesKey { round }, &selected_nodes.to_vec());
 		Ok(())
 	}
 
 	/// Get selected nodes for a specific round
 	pub async fn get_selected_nodes(&self, round: u64) -> Result<Option<Vec<SerializablePeerId>>> {
-		let key = key_utils::selected_nodes_key(round);
-		let nodes = self.db.get_string(&key)?;
+		let key = SelectedNodesKey { round };
+
+		let nodes = self.selected_nodes.get(key)?;
 		if nodes.is_some() {
 			debug!("🔍 [CONSENSUS_STORAGE] Retrieved selected nodes for round: {}", round);
 		}
 		Ok(nodes)
 	}
 
-	/// Get all selected nodes by round
 	pub async fn get_all_selected_nodes_by_round(
 		&self,
 	) -> Result<HashMap<u64, Vec<SerializablePeerId>>> {
-		let prefix = crate::database::keys::SELECTED_NODES;
-		let results: Vec<(String, Vec<SerializablePeerId>)> =
-			self.db.get_values_with_prefix(prefix)?;
-
-		let mut selected_nodes = HashMap::new();
-		for (key, nodes) in results {
-			// Extract round from key by removing prefix
-			if let Some(round_str) = key.strip_prefix(prefix) {
-				if let Ok(round) = round_str.parse::<u64>() {
-					selected_nodes.insert(round, nodes);
-				}
-			}
-		}
+		let selected_nodes = self.selected_nodes.get_all()?;
 
 		debug!(
 			"🔍 [CONSENSUS_STORAGE] Retrieved selected nodes for {} rounds",
 			selected_nodes.len()
 		);
-		Ok(selected_nodes)
+		Ok(selected_nodes
+			.into_iter()
+			.map(|(key, value)| (u64::from_be_bytes(key.try_into().unwrap()), value))
+			.collect())
 	}
 
 	/// Store a consensus result for a specific round
 	pub async fn store_consensus_result(&self, round: u64, result: &ConsensusResult) -> Result<()> {
-		let key = key_utils::consensus_result_key(round);
-		self.db.put_string(&key, result)?;
+		let key = ConsensusResultKey { round };
+		self.consensus_results.put(key, result)?;
 		info!("✅ [CONSENSUS_STORAGE] Stored consensus result for round: {}", round);
 		Ok(())
 	}
 
 	/// Get a consensus result for a specific round
 	pub async fn get_consensus_result(&self, round: u64) -> Result<Option<ConsensusResult>> {
-		let key = key_utils::consensus_result_key(round);
-		let result = self.db.get_string(&key)?;
+		let key = ConsensusResultKey { round };
+
+		let result = self.consensus_results.get(key)?;
 		if result.is_some() {
 			debug!("🔍 [CONSENSUS_STORAGE] Retrieved consensus result for round: {}", round);
 		}
@@ -90,62 +109,45 @@ impl ConsensusStorage {
 
 	/// Get all consensus results by round
 	pub async fn get_all_consensus_results(&self) -> Result<HashMap<u64, ConsensusResult>> {
-		let prefix = crate::database::keys::CONSENSUS_RESULT;
-		let results: Vec<(String, ConsensusResult)> = self.db.get_values_with_prefix(prefix)?;
-
-		let mut consensus_results = HashMap::new();
-		for (key, result) in results {
-			// Extract round from key by removing prefix
-			if let Some(round_str) = key.strip_prefix(prefix) {
-				if let Ok(round) = round_str.parse::<u64>() {
-					consensus_results.insert(round, result);
-				}
-			}
-		}
-
+		let consensus_results = self.consensus_results.get_all()?;
 		debug!(
 			"🔍 [CONSENSUS_STORAGE] Retrieved consensus results for {} rounds",
 			consensus_results.len()
 		);
-		Ok(consensus_results)
+		Ok(consensus_results
+			.into_iter()
+			.map(|(key, value)| {
+				(u64::from_be_bytes(key.try_into().expect("Key must be 8 bytes")), value)
+			})
+			.collect())
 	}
 
 	/// Delete selected nodes for a specific round
 	pub async fn delete_selected_nodes(&self, round: u64) -> Result<()> {
-		let key = key_utils::selected_nodes_key(round);
-		self.db.delete_string(&key)?;
+		let key = SelectedNodesKey { round };
+		self.selected_nodes.delete(key)?;
 		info!("🗑️ [CONSENSUS_STORAGE] Deleted selected nodes for round: {}", round);
 		Ok(())
 	}
 
 	/// Delete consensus result for a specific round
 	pub async fn delete_consensus_result(&self, round: u64) -> Result<()> {
-		let key = key_utils::consensus_result_key(round);
-		self.db.delete_string(&key)?;
+		let key = ConsensusResultKey { round };
+		self.consensus_results.delete(key)?;
 		info!("🗑️ [CONSENSUS_STORAGE] Deleted consensus result for round: {}", round);
 		Ok(())
 	}
 
 	/// Get the current round number (stored as metadata)
 	pub async fn get_current_round(&self) -> Result<u64> {
-		let key = "current_round";
-		match self.db.get_string::<u64>(key)? {
-			Some(round) => {
-				debug!("🔍 [CONSENSUS_STORAGE] Retrieved current round: {}", round);
-				Ok(round)
-			},
-			None => {
-				// Initialize to 0 if not found
-				self.set_current_round(0).await?;
-				Ok(0)
-			},
-		}
+		let key = CurrentRoundKey {};
+		Ok(self.consensus_round.get(key)?.unwrap_or(0))
 	}
 
 	/// Set the current round number
 	pub async fn set_current_round(&self, round: u64) -> Result<()> {
-		let key = "current_round";
-		self.db.put_string(key, &round)?;
+		let key = CurrentRoundKey {};
+		self.consensus_round.put(key, &round)?;
 		info!("✅ [CONSENSUS_STORAGE] Set current round to: {}", round);
 		Ok(())
 	}
@@ -157,56 +159,6 @@ impl ConsensusStorage {
 		self.set_current_round(new_round).await?;
 		info!("✅ [CONSENSUS_STORAGE] Incremented round from {} to {}", current, new_round);
 		Ok(new_round)
-	}
-
-	/// Clean up old consensus data (keep only last N rounds)
-	pub async fn cleanup_old_rounds(&self, keep_rounds: u64) -> Result<()> {
-		let current_round = self.get_current_round().await?;
-
-		if current_round <= keep_rounds {
-			debug!(
-				"🧹 [CONSENSUS_STORAGE] No old rounds to clean up (current: {}, keep: {})",
-				current_round, keep_rounds
-			);
-			return Ok(());
-		}
-
-		let cleanup_before = current_round - keep_rounds;
-		let mut deleted_count = 0;
-
-		// Clean up selected nodes
-		let selected_nodes_prefix = crate::database::keys::SELECTED_NODES;
-		let selected_keys = self.db.get_keys_with_prefix(selected_nodes_prefix)?;
-		for key in selected_keys {
-			if let Some(round_str) = key.strip_prefix(selected_nodes_prefix) {
-				if let Ok(round) = round_str.parse::<u64>() {
-					if round < cleanup_before {
-						self.db.delete_string(&key)?;
-						deleted_count += 1;
-					}
-				}
-			}
-		}
-
-		// Clean up consensus results
-		let results_prefix = crate::database::keys::CONSENSUS_RESULT;
-		let result_keys = self.db.get_keys_with_prefix(results_prefix)?;
-		for key in result_keys {
-			if let Some(round_str) = key.strip_prefix(results_prefix) {
-				if let Ok(round) = round_str.parse::<u64>() {
-					if round < cleanup_before {
-						self.db.delete_string(&key)?;
-						deleted_count += 1;
-					}
-				}
-			}
-		}
-
-		info!(
-			"🧹 [CONSENSUS_STORAGE] Cleaned up {} old consensus records (kept last {} rounds)",
-			deleted_count, keep_rounds
-		);
-		Ok(())
 	}
 
 	/// Get consensus statistics

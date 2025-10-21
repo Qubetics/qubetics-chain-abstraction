@@ -105,7 +105,6 @@ impl RpcError {
 
 impl warp::reject::Reject for RpcError {}
 
-
 #[derive(Debug)]
 pub enum TransactionError {
 	SerializationError,
@@ -116,4 +115,3 @@ pub enum TransactionError {
 }
 
 impl warp::reject::Reject for TransactionError {}
-

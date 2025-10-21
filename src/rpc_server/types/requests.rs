@@ -2,8 +2,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::rpc_server::types::common::DepositIntent;
 
-
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserRegistrationRequest {
 	pub ethereum_address: String,
@@ -28,4 +26,3 @@ pub struct SolverRewardRequest {
 pub struct GetRewardSolverRequest {
 	pub solver_address: String,
 }
-

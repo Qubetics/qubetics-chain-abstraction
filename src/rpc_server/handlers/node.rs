@@ -1,12 +1,15 @@
 use crate::{
 	rpc_server::{
-		common::DummyTransaction, errors::TransactionError, responses::{NodeIdResponse, NodeStatusResponse, TransactionResponse}, types::responses::{HeartbeatResponse, UptimeResponse}
+		common::DummyTransaction,
+		errors::TransactionError,
+		responses::{NodeIdResponse, NodeStatusResponse, TransactionResponse},
+		types::responses::{HeartbeatResponse, UptimeResponse},
 	},
 	types::ChannelMessage,
 };
+use sha2::Digest;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
-use sha2::Digest;
 
 pub async fn handle_heartbeat() -> Result<impl warp::Reply, warp::Rejection> {
 	Ok(warp::reply::json(&HeartbeatResponse { status: "alive".to_string() }))
@@ -34,7 +37,6 @@ pub async fn handle_get_status(
 		is_ready: true,
 	}))
 }
-
 
 pub async fn handle_submit_transaction(
 	tx: DummyTransaction,
@@ -79,4 +81,3 @@ pub async fn handle_submit_transaction(
 		message: "Transaction submitted to P_2_P network".to_string(),
 	}))
 }
-

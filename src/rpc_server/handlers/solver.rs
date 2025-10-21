@@ -1,9 +1,17 @@
-use crate::{rpc_server::{common::DummyTransaction, requests::{GetRewardSolverRequest, SolverRewardRequest}, responses::{GetRewardSolverResponse, SolverRewardResponse}, utils::{normalize_eth_signature, recover_eth_address_secp}}, types::ChannelMessage, user_registry::checksum_from_any, DatabaseUserRegistry, DkgStorage};
+use crate::{
+	rpc_server::{
+		common::DummyTransaction,
+		requests::{GetRewardSolverRequest, SolverRewardRequest},
+		responses::{GetRewardSolverResponse, SolverRewardResponse},
+		utils::{normalize_eth_signature, recover_eth_address_secp},
+	},
+	types::ChannelMessage,
+	user_registry::checksum_from_any,
+	DatabaseUserRegistry, DkgStorage,
+};
 
 use tokio::sync::mpsc;
-use tracing::{info, warn, error};
-
-
+use tracing::{error, info, warn};
 
 pub async fn handle_solver_reward(
 	req: SolverRewardRequest,
@@ -112,7 +120,6 @@ pub async fn handle_solver_reward(
 	}))
 }
 
-
 pub async fn handle_get_reward_solver(
 	req: GetRewardSolverRequest,
 	user_registry: std::sync::Arc<DatabaseUserRegistry>,
@@ -177,5 +184,3 @@ pub async fn handle_get_reward_solver(
 		error_message: None,
 	}))
 }
-
-

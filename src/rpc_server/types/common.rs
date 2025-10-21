@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-
 // Define the transaction types for the RPC server
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DummyTransaction {
@@ -42,4 +41,3 @@ pub struct DepositIntent {
 	pub target_token: String,
 	pub timestamp: u128, // Unix timestamp in seconds
 }
-

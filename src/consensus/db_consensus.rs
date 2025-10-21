@@ -162,9 +162,9 @@ impl DatabaseConsensusNode {
 	}
 
 	/// Clean up old consensus data (keep only last N rounds)
-	pub async fn cleanup_old_rounds(&self, keep_rounds: u64) -> Result<()> {
-		self.consensus_storage.cleanup_old_rounds(keep_rounds).await
-	}
+	// pub async fn cleanup_old_rounds(&self, keep_rounds: u64) -> Result<()> {
+	// 	self.consensus_storage.cleanup_old_rounds(keep_rounds).await
+	// }
 
 	/// Get consensus statistics
 	pub async fn get_consensus_stats(&self) -> Result<crate::database::ConsensusStats> {

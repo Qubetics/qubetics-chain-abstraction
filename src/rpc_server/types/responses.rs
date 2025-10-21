@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use super::errors::ErrorResponse;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TransactionResponse {
@@ -64,7 +64,7 @@ pub struct UserMpcDepositVerifyResponse {
 	pub user_to_network_tx_id: Option<String>,
 	pub network_to_target_tx_id: Option<String>,
 	pub vault_to_network_tx_id: Option<String>,
-    pub final_solver_id: Option<String>,
+	pub final_solver_id: Option<String>,
 	pub error_message: Option<String>,
 }
 
@@ -108,4 +108,3 @@ pub struct EnhancedUserRegistrationResponse {
 	pub derived_btc_address: Option<String>,
 	pub error: Option<ErrorResponse>,
 }
-

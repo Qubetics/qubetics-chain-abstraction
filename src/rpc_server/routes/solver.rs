@@ -1,6 +1,8 @@
 use crate::{
 	rpc_server::{
-		handlers::{handle_get_reward_solver, handle_solver_reward}, requests::GetRewardSolverRequest, routes::{with_dkg_storage, with_message_tx, with_user_registry}
+		handlers::{handle_get_reward_solver, handle_solver_reward},
+		requests::GetRewardSolverRequest,
+		routes::{with_dkg_storage, with_message_tx, with_user_registry},
 	},
 	types::ChannelMessage,
 	DatabaseUserRegistry, DkgStorage,

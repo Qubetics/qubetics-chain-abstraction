@@ -199,9 +199,7 @@ pub fn validate_transaction_hex_fields(tx: &DummyTransaction) -> Result<()> {
 }
 
 /// Validate that a contract transaction has proper hex formatting
-pub fn validate_contract_transaction_hex_fields(
-	tx: &ContractTransaction,
-) -> Result<()> {
+pub fn validate_contract_transaction_hex_fields(tx: &ContractTransaction) -> Result<()> {
 	// Validate value field
 	validate_and_normalize_hex_amount(&tx.value)
 		.map_err(|e| anyhow::anyhow!("Invalid value field: {}", e))?;
@@ -1409,8 +1407,6 @@ mod tests {
 
 	#[test]
 	fn test_validate_transaction_hex_fields() {
-
-
 		// Test valid transaction
 		let valid_tx = DummyTransaction {
 			to: "0x1234567890123456789012345678901234567890".to_string(),
@@ -1447,8 +1443,6 @@ mod tests {
 
 	#[test]
 	fn test_validate_contract_transaction_hex_fields() {
-		
-
 		// Test valid contract transaction
 		let valid_contract_tx = ContractTransaction {
 			to: "0x1234567890123456789012345678901234567890".to_string(),
