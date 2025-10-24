@@ -1,4 +1,4 @@
-use crate::rpc_server::DepositIntent;
+use crate::rpc_server::common::DepositIntent;
 use bitcoin::{key::CompressedPublicKey, secp256k1::PublicKey as SecpPublicKey, Network};
 use ethers_core::utils::keccak256;
 use k256::{

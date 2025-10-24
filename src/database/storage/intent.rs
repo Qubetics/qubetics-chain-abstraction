@@ -1,12 +1,12 @@
 use crate::{
 	database::{
 		constants::*,
-		db::Database,
 		keys::{IntentRegistryKey, IntentTransactionIdsKey},
 		traits::Storage,
+		Database,
 	},
 	define_storage_adapter,
-	rpc_server::DepositIntent,
+	rpc_server::common::DepositIntent,
 	user_registry::{IntentStatus, IntentTransactionIds},
 	UserStorage,
 };

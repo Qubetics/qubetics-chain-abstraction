@@ -15,7 +15,7 @@ use super::{
 };
 use crate::{
 	database::{Database, IntentStorage, RewardStorage, TransactionStatusStorage, UserStorage},
-	rpc_server::DepositIntent,
+	rpc_server::common::DepositIntent,
 	types::{SerializablePoint, SerializableScalar},
 	utils::hmac_helper::hmac256_from_addr,
 };
