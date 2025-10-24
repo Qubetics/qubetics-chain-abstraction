@@ -1,12 +1,10 @@
 use crate::chain::{
-    BitcoinInput, BitcoinOutput, BitcoinTransaction, BitcoinWitnessUtxo, ChainTransaction,
+    BitcoinInput, BitcoinOutput, BitcoinTransaction, BitcoinWitness, BitcoinWitnessUtxo, ChainTransaction,
     EthereumTransaction,
 };
 use crate::rpc_server::{ContractTransaction, DepositIntent, DummyTransaction};
 use crate::utils::get_eth_address_from_group_key;
 use anyhow::{bail, Result};
-use bitcoin::address::NetworkUnchecked;
-use bitcoin::{Address, WitnessVersion};
 use ethabi::ethereum_types::U256;
 use ethabi::{Function, Param, ParamType, StateMutability, Token};
 use serde::{Deserialize, Serialize};
@@ -27,10 +25,6 @@ pub struct BitcoinUtxo {
 
 pub type WitnessItem  = Vec<u8>;
 pub type WitnessStack = Vec<WitnessItem>;
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct BitcoinWitness {
-    pub stacks: Vec<WitnessStack>, // len must equal inputs.len() for segwit spends
-}
 
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,6 +37,196 @@ pub struct UtxoStatus {
 
 const DEFAULT_FEE_RATE_SAT_PER_VBYTE: u64 = 2;
 const DUST_LIMIT_SATS: u64 = 546;
+
+/// Helper function to create an Ethereum transaction
+/// Takes a target address and amount to create a simple ETH transfer transaction
+pub async fn create_ethereum_transaction(
+    from_address: &str,
+    to_address: &str,
+    amount: u128,
+    chain_name: &str,
+) -> Result<EthereumTransaction> {
+    info!("🎁 [ETH_TX] Creating Ethereum transaction: {} -> {} (amount: {})", 
+          from_address, to_address, amount);
+    
+    // Get chain ID for the specified chain
+    let chain_id = get_chain_id_from_name(chain_name)
+        .ok_or_else(|| anyhow::anyhow!("Unknown EVM chain: {}", chain_name))?;
+    
+    // Get dynamic gas price for the chain, fallback to static if needed
+    let gas_price = get_gas_price_for_chain(chain_name, chain_id).await
+        .unwrap_or_else(|e| {
+            warn!("⚠️ Failed to get dynamic gas price for {}: {}, using fallback", chain_name, e);
+            get_default_gas_price_for_chain(chain_name)
+        });
+    
+    // Fetch nonce for the from address
+    let nonce = fetch_ethereum_nonce(from_address, chain_id).await?;
+    
+    info!("🎁 [ETH_TX] Transaction details - Chain: {}, Chain ID: {}, Gas Price: {}, Nonce: {}", 
+          chain_name, chain_id, gas_price, nonce);
+    
+    let ethereum_tx = EthereumTransaction {
+        to: to_address.to_string(),
+        value: amount_to_hex_string(amount),
+        gas_limit: 21000, // Standard ETH transfer gas limit
+        gas_price,
+        nonce,
+        data: None, // No calldata for simple ETH transfer
+        chain_id,
+    };
+    
+    info!("✅ [ETH_TX] Created Ethereum transaction successfully");
+    Ok(ethereum_tx)
+}
+
+/// Helper function to create a Bitcoin transaction
+/// Takes source and target addresses, amount, and creates a Bitcoin transaction with UTXO selection
+pub async fn create_bitcoin_transaction(
+    from_address: &str,
+    to_address: &str,
+    amount: u128,
+) -> Result<BitcoinTransaction> {
+    tracing::info!("₿ [BTC_TX] Creating Bitcoin transaction: {} -> {} (amount: {})", 
+                   from_address, to_address, amount);
+
+    // Validate that both addresses are P2PKH format only
+    // if !is_p2pkh_address(&from_address) {
+    //     return Err(anyhow::anyhow!(
+    //         "Source address '{}' is not supported. Only P2PKH addresses (1.../m.../n...) are supported.",
+    //         from_address
+    //     ));
+    // }
+
+    // if !is_p2pkh_address(&to_address) {
+    //     return Err(anyhow::anyhow!(
+    //         "Destination address '{}' is not supported. Only P2PKH addresses (1.../m.../n...) are supported.",
+    //         to_address
+    //     ));
+    // }
+
+    // let is_testnet = is_testnet_p2pkh_address(&from_address);
+    let (from_kind, from_net) = classify_address(from_address)?;   
+    let (_to_kind,   to_net)   = classify_address(to_address)?; 
+    
+    // Sanity: prevent net mismatch
+    if from_net != to_net {
+        anyhow::bail!("From/To network mismatch: {:?} vs {:?}", from_net, to_net);
+    }
+
+    let is_testnet = matches!(from_net, bitcoin::Network::Testnet | bitcoin::Network::Signet | bitcoin::Network::Regtest);
+
+    // Fetch UTXOs for the right network
+    let utxos = fetch_bitcoin_utxos(from_address, is_testnet).await?;
+
+    tracing::info!(
+        "Final verified {} spendable UTXOs for address {}",
+        utxos.len(),
+        from_address
+    );
+
+    // Convert amount from wei to satoshis (assuming 1:1 conversion for now, you might want to adjust this)
+    let amount_satoshis = (amount) as u64;
+    let fee_rate_sat_vb = std::env::var("BTC_FEE_RATE_SAT_VB")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_FEE_RATE_SAT_PER_VBYTE);
+
+    tracing::info!(
+        "Using fee rate of {} sat/vB for Bitcoin transaction from {}",
+        fee_rate_sat_vb,
+        from_address
+    );
+
+    // Select UTXOs that provide enough value using SegWit-aware fee estimation.
+    let selection = select_utxos_for_amount(&utxos, amount_satoshis, fee_rate_sat_vb, from_kind)?;
+
+    tracing::info!(
+        "Selected {} UTXOs with total value {} satoshis for transaction of {} satoshis (fee: {}, change: {}, change_output: {})",
+        selection.selected_utxos.len(),
+        selection.total_value,
+        amount_satoshis,
+        selection.fee,
+        selection.change,
+        selection.change_output
+    );
+
+    // Log the specific UTXOs we're about to spend for debugging
+    tracing::info!("📋 [TRANSACTION] UTXOs selected for spending:");
+    for (i, utxo) in selection.selected_utxos.iter().enumerate() {
+        tracing::info!(
+            "  {}. {}:{} - {} sats (confirmed: {})",
+            i + 1,
+            utxo.txid,
+            utxo.vout,
+            utxo.value,
+            utxo.status.confirmed
+        );
+    }
+
+    let to_spk   = create_bitcoin_script_pubkey(to_address)?;
+    let from_spk = create_bitcoin_script_pubkey(from_address)?;
+
+    // Inputs:
+    let inputs: Vec<BitcoinInput> = selection.selected_utxos.iter().map(|u| {
+        match from_kind {
+            SpendKind::P2WPKH => BitcoinInput {
+                txid: u.txid.clone(),
+                vout: u.vout,
+                script_sig: vec![],
+                sequence: 0xffff_fffe,
+                witness_utxo: Some(BitcoinWitnessUtxo {
+                    value: u.value,
+                    script_pubkey: from_spk.clone(), // 0x00 0x14 <20>
+                }),
+            },
+            SpendKind::P2PKH => BitcoinInput {
+                txid: u.txid.clone(),
+                vout: u.vout,
+                script_sig: vec![],
+                sequence: 0xffff_fffe,
+                // IMPORTANT: stash 25-byte prev script here so final node doesn't need to reconstruct
+                witness_utxo: Some(BitcoinWitnessUtxo {
+                    value: u.value,
+                    script_pubkey: from_spk.clone(), // 76 a9 14 <20> 88 ac
+                }),
+            }
+        }
+    }).collect();
+
+    // Create outputs (recipient always, change only if not dust)
+    // Outputs (change script MUST match the from-address type; using from_spk is correct):
+    let mut outputs = vec![BitcoinOutput { value: amount_satoshis, script_pubkey: to_spk }];
+    if selection.change_output {
+        outputs.push(BitcoinOutput { value: selection.change, script_pubkey: from_spk });
+    }
+
+    let (version, witness_opt) = match from_kind {
+        SpendKind::P2WPKH => {
+            // placeholder: one empty stack per input; fill after signing
+            (
+                2,
+                Some(BitcoinWitness {
+                    inputs: (0..inputs.len())
+                        .map(|_| crate::chain::BitcoinWitnessInput { stack: vec![] })
+                        .collect(),
+                }),
+            )
+        }
+        SpendKind::P2PKH => (1, None),
+    };
+    
+    let bitcoin_tx = BitcoinTransaction {
+        inputs,
+        outputs,
+        version,
+        lock_time: 0,
+        witness: witness_opt,
+    };
+
+    tracing::info!("✅ [BTC_TX] Created Bitcoin transaction successfully");
+    Ok(bitcoin_tx)
+}
 
 /// Wrapper for custom UTXO API responses
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -786,9 +970,6 @@ async fn create_chain_transaction_from_deposit_intent_internal(
     info!("amount::::: {}", amount);
 
     if is_evm_chain(chain_to_use) {
-        // Create Ethereum-compatible transaction
-        let chain_id = get_chain_id_from_name(chain_to_use)
-            .ok_or_else(|| anyhow::anyhow!("Unknown EVM chain: {}", chain_to_use))?;
         // Get vault address from parameter
         let vault_address =
             vault_eth_address.ok_or_else(|| anyhow::anyhow!("Vault ETH address not provided"))?;
@@ -832,22 +1013,12 @@ async fn create_chain_transaction_from_deposit_intent_internal(
             }
         };
 
-        // Get dynamic gas price for Qubetics, fallback to static for other chains
-        let gas_price = get_gas_price_for_chain(chain_to_use, chain_id).await
-            .unwrap_or_else(|e| {
-                warn!("⚠️ Failed to get dynamic gas price: {}, using fallback", e);
-                get_default_gas_price_for_chain(chain_to_use)
-            });
-
-        let ethereum_tx = EthereumTransaction {
-            to: to_address.to_string(),
-            value: amount_to_hex_string(amount),
-            gas_limit: 300000,
-            gas_price,
-            nonce: fetch_ethereum_nonce(&from_address, chain_id).await?,
-            data: None,
-            chain_id,
-        };
+        let ethereum_tx = create_ethereum_transaction(
+            &from_address,
+            to_address,
+            amount,
+            chain_to_use,
+        ).await?;
 
         Ok(ChainTransaction::Ethereum(ethereum_tx))
     } else if chain_to_use == "bitcoin" || chain_to_use == "btc" {
@@ -900,139 +1071,11 @@ async fn create_chain_transaction_from_deposit_intent_internal(
 
         tracing::info!("Using Bitcoin source address for UTXOs: {}", from_address);
 
-        // Validate that both addresses are P2PKH format only
-        // if !is_p2pkh_address(&from_address) {
-        //     return Err(anyhow::anyhow!(
-        //         "Source address '{}' is not supported. Only P2PKH addresses (1.../m.../n...) are supported.",
-        //         from_address
-        //     ));
-        // }
-
-        // if !is_p2pkh_address(&to_address) {
-        //     return Err(anyhow::anyhow!(
-        //         "Destination address '{}' is not supported. Only P2PKH addresses (1.../m.../n...) are supported.",
-        //         to_address
-        //     ));
-        // }
-
-        // let is_testnet = is_testnet_p2pkh_address(&from_address);
-        let (from_kind, from_net) = classify_address(&from_address)?;   
-        let (to_kind,   to_net)   = classify_address(&to_address)?; 
-        // Fetch raw UTXOs without external verification
-        // Sanity: prevent net mismatch
-        if from_net != to_net {
-            anyhow::bail!("From/To network mismatch: {:?} vs {:?}", from_net, to_net);
-        }
-
-        let is_testnet = matches!(from_net, bitcoin::Network::Testnet | bitcoin::Network::Signet | bitcoin::Network::Regtest);
-
-// Fetch UTXOs for the right network
-        let utxos = fetch_bitcoin_utxos(&from_address, is_testnet).await?;
-
-        tracing::info!(
-            "Final verified {} spendable UTXOs for address {}",
-            utxos.len(),
-            from_address
-        );
-
-        // Convert amount from wei to satoshis (assuming 1:1 conversion for now, you might want to adjust this)
-        let amount_satoshis = (amount) as u64;
-        let fee_rate_sat_vb = std::env::var("BTC_FEE_RATE_SAT_VB")
-            .ok()
-            .and_then(|value| value.parse::<u64>().ok())
-            .unwrap_or(DEFAULT_FEE_RATE_SAT_PER_VBYTE);
-
-        tracing::info!(
-            "Using fee rate of {} sat/vB for Bitcoin transaction from {}",
-            fee_rate_sat_vb,
-            from_address
-        );
-
-        // Select UTXOs that provide enough value using SegWit-aware fee estimation.
-        let selection = select_utxos_for_amount(&utxos, amount_satoshis, fee_rate_sat_vb, from_kind)?;
-
-        tracing::info!(
-            "Selected {} UTXOs with total value {} satoshis for transaction of {} satoshis (fee: {}, change: {}, change_output: {})",
-            selection.selected_utxos.len(),
-            selection.total_value,
-            amount_satoshis,
-            selection.fee,
-            selection.change,
-            selection.change_output
-        );
-
-        // Log the specific UTXOs we're about to spend for debugging
-        tracing::info!("📋 [TRANSACTION] UTXOs selected for spending:");
-        for (i, utxo) in selection.selected_utxos.iter().enumerate() {
-            tracing::info!(
-                "  {}. {}:{} - {} sats (confirmed: {})",
-                i + 1,
-                utxo.txid,
-                utxo.vout,
-                utxo.value,
-                utxo.status.confirmed
-            );
-        }
-
-        let to_spk   = create_bitcoin_script_pubkey(&to_address)?;
-        let from_spk = create_bitcoin_script_pubkey(&from_address)?;
-
-        // Inputs:
-        let inputs: Vec<BitcoinInput> = selection.selected_utxos.iter().map(|u| {
-            match from_kind {
-                SpendKind::P2WPKH => BitcoinInput {
-                    txid: u.txid.clone(),
-                    vout: u.vout,
-                    script_sig: vec![],
-                    sequence: 0xffff_fffe,
-                    witness_utxo: Some(BitcoinWitnessUtxo {
-                        value: u.value,
-                        script_pubkey: from_spk.clone(), // 0x00 0x14 <20>
-                    }),
-                },
-                SpendKind::P2PKH => BitcoinInput {
-                    txid: u.txid.clone(),
-                    vout: u.vout,
-                    script_sig: vec![],
-                    sequence: 0xffff_fffe,
-                    // IMPORTANT: stash 25-byte prev script here so final node doesn’t need to reconstruct
-                    witness_utxo: Some(BitcoinWitnessUtxo {
-                        value: u.value,
-                        script_pubkey: from_spk.clone(), // 76 a9 14 <20> 88 ac
-                    }),
-                }
-            }
-    }).collect();
-
-        // Create outputs (recipient always, change only if not dust)
-       // Outputs (change script MUST match the from-address type; using from_spk is correct):
-        let mut outputs = vec![BitcoinOutput { value: amount_satoshis, script_pubkey: to_spk }];
-        if selection.change_output {
-            outputs.push(BitcoinOutput { value: selection.change, script_pubkey: from_spk });
-        }
-
-        let (version, witness_opt) = match from_kind {
-            SpendKind::P2WPKH => {
-                // placeholder: one empty stack per input; fill after signing
-                (
-                    2,
-                    Some(crate::chain::BitcoinWitness {
-                        inputs: (0..inputs.len())
-                            .map(|_| crate::chain::BitcoinWitnessInput { stack: vec![] })
-                            .collect(),
-                    }),
-                )
-            }
-            SpendKind::P2PKH => (1, None),
-        };
-        
-        let bitcoin_tx = BitcoinTransaction {
-            inputs,
-            outputs,
-            version,
-            lock_time: 0,
-            witness: witness_opt,
-        };
+        let bitcoin_tx = create_bitcoin_transaction(
+            &from_address,
+            &to_address,
+            amount,
+        ).await?;
 
         Ok(ChainTransaction::Bitcoin(bitcoin_tx))
     } else {
@@ -1662,7 +1705,7 @@ fn create_bitcoin_script_pubkey(address: &str) -> Result<Vec<u8>> {
     Ok(script_bytes)
 }
 
-pub fn create_transaction_for_signing(tx: &DummyTransaction) -> Vec<u8> {
+pub fn create_transaction_for_signing(tx: &EthereumTransaction) -> Vec<u8> {
     // Log transaction details before creating raw transaction
     info!(
         "🔧 [ETH_RAW_TXN] Creating raw Ethereum transaction - To: {}, Value: {}, Nonce: {}, GasLimit: {}, GasPrice: {}, ChainId: {}",

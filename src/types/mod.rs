@@ -37,9 +37,6 @@ pub enum ChannelMessage {
         peer_id: String,
         data: Vec<u8>,
     },
-    LocalTransaction {
-        transaction: crate::rpc_server::DummyTransaction,
-    },
     DepositIntent {
         intent: crate::rpc_server::DepositIntent,
         intent_id: String,
@@ -61,6 +58,13 @@ pub enum ChannelMessage {
     SolverReward {
         solver_address: String,
         reward: u128,
+    },
+    ClaimReward {
+        solver_address: String,
+        btc_address: Option<String>,
+        eth_address: Option<String>,
+        reward_btc: Option<String>,
+        reward_tics: Option<String>,
     },
     UserRegistration {
         ethereum_address: String,
@@ -92,7 +96,6 @@ pub enum GossipsubMessage {
         sequence: Option<u64>,
         index: Option<usize>,
     },
-    Transaction(crate::rpc_server::DummyTransaction),
     DepositIntent {
         intent: crate::rpc_server::DepositIntent,
         intent_id: String,
@@ -108,6 +111,13 @@ pub enum GossipsubMessage {
     SolverReward {
         solver_address: String,
         reward: u128,
+    },
+    ClaimReward {
+        solver_address: String,
+        btc_address: Option<String>,
+        eth_address: Option<String>,
+        reward_btc: Option<String>,
+        reward_tics: Option<String>,
     },
     DKGCommand(crate::types::rpc::RPCRequest),
     UserRegistration {

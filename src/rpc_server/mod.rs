@@ -177,6 +177,26 @@ pub struct GetRewardSolverResponse {
     pub error_message: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClaimRewardRequest {
+    pub signature: String,
+    pub message: String,
+    pub ethereum_address: Option<String>,
+    pub btc_address: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClaimRewardResponse {
+    pub status: String,
+    pub ethereum_address: Option<String>,
+    pub btc_address: Option<String>,
+    pub reward_btc: Option<String>,
+    pub reward_tics: Option<String>,
+    pub total_reward: Option<String>,
+    pub message: String,
+    pub error_message: Option<String>,
+}
+
 // Enhanced error types for better error handling
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErrorResponse {
@@ -385,13 +405,6 @@ pub async fn start_http_server(
     let reward_storage = std::sync::Arc::new(reward_storage);
     let start_time = std::sync::Arc::new(start_time);
 
-    // POST /submit_transaction
-    let submit_tx = warp::path("submit_transaction")
-        .and(warp::post())
-        .and(warp::body::json())
-        .and(with_message_tx(message_tx.clone()))
-        .and_then(handle_submit_transaction);
-
     // POST /deposit_intent
     // let deposit_intent = warp::path("deposit_intent")
     //     .and(warp::post())
@@ -418,21 +431,21 @@ pub async fn start_http_server(
         .and(with_dkg_storage(dkg_storage.clone()))
         .and_then(handle_user_mpc_deposit);
 
-    // POST /solver_reward
-    let solver_reward = warp::path("solver_reward")
-        .and(warp::post())
-        .and(warp::body::json())
-        .and(with_user_registry(user_registry.clone()))
-        .and(with_dkg_storage(dkg_storage.clone()))
-        .and(with_message_tx(message_tx.clone()))
-        .and_then(handle_solver_reward);
-
     // POST /get_reward_solver
     let get_reward_solver = warp::path("get_reward_solver")
         .and(warp::get())
         .and(warp::query::<GetRewardSolverRequest>())
         .and(with_user_registry(user_registry.clone()))
         .and_then(handle_get_reward_solver);
+
+    // POST /claim_reward
+    let claim_reward = warp::path("claim_reward")
+        .and(warp::post())
+        .and(warp::body::json())
+        .and(with_user_registry(user_registry.clone()))
+        .and(with_reward_storage(reward_storage.clone()))
+        .and(with_message_tx(message_tx.clone()))
+        .and_then(handle_claim_reward);
 
     // GET /user_info/{ethereum_address}
     let get_user_info = warp::path("user_info")
@@ -476,16 +489,15 @@ pub async fn start_http_server(
         .and(with_message_tx(message_tx))
         .and_then(|message_tx| handle_start_dkg(message_tx));
 
-    let routes = submit_tx
-        .or(register_user)
+    let routes = register_user
         .or(get_user_info)
         .or(get_node_id)
         .or(get_status)
         .or(get_dkg_status)
         .or(start_dkg)
         .or(user_mpc_deposit)
-        .or(solver_reward)
         .or(get_reward_solver)
+        .or(claim_reward)
         .or(heartbeat)
         .or(uptime);
 
@@ -548,58 +560,6 @@ fn with_start_time(
 ) -> impl Filter<Extract = (std::sync::Arc<std::time::Instant>,), Error = std::convert::Infallible> + Clone
 {
     warp::any().map(move || start_time.clone())
-}
-
-async fn handle_submit_transaction(
-    tx: DummyTransaction,
-    message_tx: std::sync::Arc<tokio::sync::Mutex<mpsc::Sender<ChannelMessage>>>,
-) -> Result<impl warp::Reply, warp::Rejection> {
-    info!("📝 HTTP: Received transaction");
-
-    let tx_hash = format!(
-        "0x{:x}",
-        sha2::Sha256::digest(format!("{:?}", tx).as_bytes())
-    );
-
-    // First, process the transaction locally (this node will sign it)
-    info!("🔐 [LOCAL] Processing transaction locally for signing");
-
-    // Send a special local processing message
-    let local_msg = ChannelMessage::LocalTransaction {
-        transaction: tx.clone(),
-    };
-
-    let tx_sender = message_tx.lock().await;
-    if let Err(e) = tx_sender.send(local_msg).await {
-        warn!("Failed to send transaction for local processing: {:?}", e);
-        return Err(warp::reject::custom(TransactionError::NetworkError));
-    }
-
-    // Then broadcast to other nodes
-    let gossipsub_msg = crate::types::GossipsubMessage::Transaction(tx.clone());
-    let tx_data = serde_json::to_vec(&gossipsub_msg).map_err(|e| {
-        warn!("Failed to serialize transaction: {}", e);
-        warp::reject::custom(TransactionError::SerializationError)
-    })?;
-
-    if let Err(e) = tx_sender
-        .send(ChannelMessage::Broadcast {
-            topic: "transactions".to_string(),
-            data: tx_data,
-        })
-        .await
-    {
-        warn!("Failed to send transaction to network: {:?}", e);
-        return Err(warp::reject::custom(TransactionError::NetworkError));
-    }
-
-    info!("✅ HTTP: Transaction submitted to network");
-
-    Ok(warp::reply::json(&TransactionResponse {
-        tx_hash,
-        status: "submitted".to_string(),
-        message: "Transaction submitted to P_2_P network".to_string(),
-    }))
 }
 
 // async fn handle_deposit_intent_wrapper(
@@ -2132,116 +2092,6 @@ async fn handle_get_uptime(
     }))
 }
 
-async fn handle_solver_reward(
-    req: SolverRewardRequest,
-    user_registry: std::sync::Arc<DatabaseUserRegistry>,
-    dkg_storage: std::sync::Arc<DkgStorage>,
-    message_tx: std::sync::Arc<tokio::sync::Mutex<mpsc::Sender<ChannelMessage>>>,
-) -> Result<impl warp::Reply, warp::Rejection> {
-    info!("🔍 HTTP: solver_reward request");
-
-    let (compact, v) = match normalize_eth_signature(&req.signature) {
-        Ok(t) => t,
-        Err(e) => {
-            warn!("❌ Invalid signature: {}", e);
-            return Ok(warp::reply::json(&SolverRewardResponse {
-                status: "error".to_string(),
-                solver_address: "".to_string(),
-                reward: None,
-                error_message: Some(format!("Invalid signature: {}", e)),
-            }));
-        }
-    };
-
-    let msg_bytes = req.msg.as_bytes();
-    let signer = match recover_eth_address_secp(msg_bytes, &compact, v, true) {
-        Ok(addr) => addr,
-        Err(e1) => match recover_eth_address_secp(msg_bytes, &compact, v, false) {
-            Ok(addr) => addr,
-            Err(e2) => {
-                error!(
-                    "❌ Failed to recover address: personal_sign={}, raw={}",
-                    e1, e2
-                );
-                return Ok(warp::reply::json(&SolverRewardResponse {
-                    status: "error".to_string(),
-                    solver_address: "".to_string(),
-                    reward: None,
-                    error_message: Some(format!(
-                        "Failed to recover signature: personal_sign={}, raw={}",
-                        e1, e2
-                    )),
-                }));
-            }
-        },
-    };
-
-    let provided = match checksum_from_any(&req.address) {
-        Ok(a) => a,
-        Err(e) => {
-            return Ok(warp::reply::json(&SolverRewardResponse {
-                status: "error".to_string(),
-                solver_address: signer,
-                reward: None,
-                error_message: Some(format!("Invalid address: {}", e)),
-            }));
-        }
-    };
-
-    if signer != provided {
-        return Ok(warp::reply::json(&SolverRewardResponse {
-            status: "error".to_string(),
-            solver_address: signer,
-            reward: None,
-            error_message: Some("Recovered address does not match provided address".to_string()),
-        }));
-    }
-
-    // Use user registry's reward storage instead of direct reward storage
-    let reward_opt = user_registry.get_solver_reward_btc(&signer).await;
-    let reward_str = reward_opt.as_ref().map(|r| r.to_string());
-
-    if let Some(reward_u256) = reward_opt {
-        let reward_u128 = reward_u256.as_u128();
-
-        // Create dummy transaction representing solver reward
-        let from_addr = match dkg_storage.get_final_public().await {
-            Ok(Some(pk)) => crate::utils::get_eth_address_from_group_key(pk),
-            _ => "0x0".to_string(),
-        };
-
-        let dummy_tx = DummyTransaction {
-            to: signer.clone(),
-            value: format!("0x{:x}", reward_u128),
-            nonce: 0,
-            gas_limit: 21_000,
-            gas_price: "0x0".to_string(),
-            chain_id: 1,
-        };
-        info!(
-            "🧾 [HTTP] Created solver reward tx from {} to {} amount {}",
-            from_addr, signer, reward_u128
-        );
-
-        let mut tx_sender = message_tx.lock().await;
-        if let Err(e) = tx_sender
-            .send(ChannelMessage::SolverReward {
-                solver_address: signer.clone(),
-                reward: reward_u128,
-            })
-            .await
-        {
-            warn!("Failed to send solver reward message: {}", e);
-        }
-    }
-    Ok(warp::reply::json(&SolverRewardResponse {
-        status: "success".to_string(),
-        solver_address: signer,
-        reward: reward_str,
-        error_message: None,
-    }))
-}
-
 async fn handle_get_dkg_status(
     dkg_storage: std::sync::Arc<DkgStorage>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
@@ -2371,6 +2221,177 @@ async fn handle_get_reward_solver(
         reward_btc: reward_btc_str,
         reward_tics: reward_tics_str,
         message: "Solver rewards retrieved successfully".to_string(),
+        error_message: None,
+    }))
+}
+
+async fn handle_claim_reward(
+    req: ClaimRewardRequest,
+    user_registry: std::sync::Arc<DatabaseUserRegistry>,
+    reward_storage: std::sync::Arc<RewardStorage>,
+    message_tx: std::sync::Arc<tokio::sync::Mutex<mpsc::Sender<ChannelMessage>>>,
+) -> Result<impl warp::Reply, warp::Rejection> {
+    info!("🎁 HTTP: claim_reward request for ETH: {:?}, BTC: {:?}", req.ethereum_address, req.btc_address);
+
+    // Validate that at least one address is provided
+    if req.ethereum_address.is_none() && req.btc_address.is_none() {
+        warn!("❌ Both addresses are None - at least one address must be provided");
+        return Ok(warp::reply::json(&ClaimRewardResponse {
+            status: "error".to_string(),
+            ethereum_address: None,
+            btc_address: None,
+            reward_btc: None,
+            reward_tics: None,
+            total_reward: None,
+            message: "At least one address must be provided".to_string(),
+            error_message: Some("Both ethereum_address and btc_address cannot be None".to_string()),
+        }));
+    }
+
+    // Validate Ethereum address format if provided
+    let normalized_eth_address = if let Some(eth_addr) = &req.ethereum_address {
+        match validate_ethereum_address(eth_addr) {
+            Ok(addr) => Some(addr),
+            Err(e) => {
+                warn!("❌ Invalid Ethereum address format: {:?}", e);
+                return Ok(warp::reply::json(&ClaimRewardResponse {
+                    status: "error".to_string(),
+                    ethereum_address: req.ethereum_address,
+                    btc_address: req.btc_address,
+                    reward_btc: None,
+                    reward_tics: None,
+                    total_reward: None,
+                    message: "Invalid Ethereum address format".to_string(),
+                    error_message: Some(format!("Invalid Ethereum address: {:?}", e)),
+                }));
+            }
+        }
+    } else {
+        None
+    };
+
+    // Validate signature format
+    let (compact, v) = match normalize_eth_signature(&req.signature) {
+        Ok(t) => t,
+        Err(e) => {
+            warn!("❌ Invalid signature format: {}", e);
+            return Ok(warp::reply::json(&ClaimRewardResponse {
+                status: "error".to_string(),
+                ethereum_address: normalized_eth_address,
+                btc_address: req.btc_address,
+                reward_btc: None,
+                reward_tics: None,
+                total_reward: None,
+                message: "Invalid signature format".to_string(),
+                error_message: Some(format!("Invalid signature: {:?}", e)),
+            }));
+        }
+    };
+
+    // Recover signer address from signature
+    let msg_bytes = req.message.as_bytes();
+    let signer_address = match recover_eth_address_secp(msg_bytes, &compact, v, true) {
+        Ok(addr) => addr,
+        Err(e1) => match recover_eth_address_secp(msg_bytes, &compact, v, false) {
+            Ok(addr) => addr,
+            Err(e2) => {
+                error!("❌ Failed to recover address: personal_sign={}, raw={}", e1, e2);
+                return Ok(warp::reply::json(&ClaimRewardResponse {
+                    status: "error".to_string(),
+                    ethereum_address: normalized_eth_address,
+                    btc_address: req.btc_address,
+                    reward_btc: None,
+                    reward_tics: None,
+                    total_reward: None,
+                    message: "Failed to recover signature".to_string(),
+                    error_message: Some(format!("Failed to recover signature: personal_sign={}, raw={}", e1, e2)),
+                }));
+            }
+        },
+    };
+
+    // Verify that the recovered address matches the provided Ethereum address (if provided)
+    if let Some(ref eth_addr) = normalized_eth_address {
+        if signer_address != *eth_addr {
+            warn!("❌ Signature verification failed: recovered {} != provided {}", signer_address, eth_addr);
+            return Ok(warp::reply::json(&ClaimRewardResponse {
+                status: "error".to_string(),
+                ethereum_address: normalized_eth_address,
+                btc_address: req.btc_address,
+                reward_btc: None,
+                reward_tics: None,
+                total_reward: None,
+                message: "Signature verification failed".to_string(),
+                error_message: Some("Recovered address does not match provided Ethereum address".to_string()),
+            }));
+        }
+    }
+
+    // Get rewards for the solver - use normalized_eth_address if provided, otherwise use signer_address
+    let solver_address = normalized_eth_address.as_ref().unwrap_or(&signer_address);
+    let reward_btc = user_registry.get_solver_reward_btc(solver_address).await;
+    let reward_tics = user_registry.get_solver_reward_tics(solver_address).await;
+
+    let reward_btc_str = reward_btc.as_ref().map(|v| v.to_string());
+    let reward_tics_str = reward_tics.as_ref().map(|v| v.to_string());
+
+    // Calculate total reward
+    let total_reward = match (reward_btc, reward_tics) {
+        (Some(btc), Some(tics)) => Some((btc + tics).to_string()),
+        (Some(btc), None) => Some(btc.to_string()),
+        (None, Some(tics)) => Some(tics.to_string()),
+        (None, None) => None,
+    };
+
+    // Check if there are any rewards to claim - at least one must be present
+    if reward_btc.is_none() && reward_tics.is_none() {
+        info!("💰 No rewards available for address: {}", solver_address);
+        return Ok(warp::reply::json(&ClaimRewardResponse {
+            status: "success".to_string(),
+            ethereum_address: normalized_eth_address,
+            btc_address: req.btc_address,
+            reward_btc: None,
+            reward_tics: None,
+            total_reward: None,
+            message: "No rewards available to claim".to_string(),
+            error_message: None,
+        }));
+    }
+
+    // If there are rewards, send a claim message to the network
+    let claim_msg = ChannelMessage::ClaimReward {
+        solver_address: solver_address.clone(),
+        btc_address: req.btc_address.clone(),
+        eth_address: req.ethereum_address.clone(),
+        reward_btc: reward_btc_str.clone(),
+        reward_tics: reward_tics_str.clone(),
+    };
+
+    let mut tx_sender = message_tx.lock().await;
+    if let Err(e) = tx_sender.send(claim_msg).await {
+        warn!("Failed to send claim reward message: {}", e);
+        return Ok(warp::reply::json(&ClaimRewardResponse {
+            status: "error".to_string(),
+            ethereum_address: normalized_eth_address,
+            btc_address: req.btc_address,
+            reward_btc: reward_btc_str,
+            reward_tics: reward_tics_str,
+            total_reward,
+            message: "Failed to process reward claim".to_string(),
+            error_message: Some(format!("Network error: {}", e)),
+        }));
+    }
+
+    info!("✅ Reward claim processed successfully for solver: {}, BTC: {:?}", solver_address, req.btc_address);
+
+    Ok(warp::reply::json(&ClaimRewardResponse {
+        status: "success".to_string(),
+        ethereum_address: normalized_eth_address,
+        btc_address: req.btc_address,
+        reward_btc: reward_btc_str,
+        reward_tics: reward_tics_str,
+        total_reward,
+        message: "Reward claim processed successfully".to_string(),
         error_message: None,
     }))
 }
