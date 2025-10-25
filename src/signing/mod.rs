@@ -4681,89 +4681,101 @@ pub async fn handle_btc_signature_for_round(
             return Ok(());
         }
 
+        // Check if liquidity update is needed (cache for 5 minutes)
+        if let Some(ref database) = self.database {
+            let last_update_key = "liquidity_last_update";
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            
+            if let Ok(Some(last_update_str)) = database.get_string::<String>(last_update_key) {
+                if let Ok(last_update) = last_update_str.parse::<u64>() {
+                    let update_interval = 300; // 5 minutes
+                    if now - last_update < update_interval {
+                        info!("⏭️ [SOLVER] Skipping liquidity update - updated {}s ago (cache valid)", now - last_update);
+                        return Ok(());
+                    }
+                }
+            }
+        }
+
         info!("🔄 [SOLVER] Updating solver amounts for UserToVault transaction: {}", _intent_hash);
 
-        // Parse contract address
-        let contract_addr = contract_address.parse::<ethers::types::Address>()
-            .map_err(|e| anyhow::anyhow!("Invalid contract address: {}", e))?;
-
-        // Create contract configuration
-        let config = crate::contract::ContractConfig {
-            rpc_url: rpc_url.clone(),
-            contract_address: contract_addr,
-            chain_id,
-        };
-
-        // Initialize contract client
-        let client = crate::contract::ContractClient::new(config.clone())
-            .map_err(|e| anyhow::anyhow!("Failed to create contract client: {}", e))?;
-
-        let solver_contract = crate::contract::SolverManagerContract::new(&config, client.provider())
-            .map_err(|e| anyhow::anyhow!("Failed to create solver contract: {}", e))?;
-
-        // Get all active solvers
-        let active_solvers = solver_contract
-            .get_active_solvers()
+        // Use API instead of contract calls for better efficiency
+        let api_url = "https://dev-solver-api.qubetics.work/amount";
+        
+        // Make HTTP request to get all solver liquidity data
+        let response = reqwest::get(api_url)
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to get active solvers: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to fetch solver liquidity from API: {}", e))?;
+        
+        if !response.status().is_success() {
+            return Err(anyhow::anyhow!("API request failed with status: {}", response.status()));
+        }
 
-        info!(
-            "🔍 [SOLVER] Found {} active solvers: {:?}",
-            active_solvers.len(),
-            active_solvers
-        );
+        let api_response: serde_json::Value = response.json()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to parse API response: {}", e))?;
 
-        // Store amounts for each solver by EVM address
+        // Parse the API response structure
+        let solver_data = api_response["data"]["data"].as_array()
+            .ok_or_else(|| anyhow::anyhow!("Invalid API response structure"))?;
+
+        info!("🔍 [SOLVER] Found {} solvers from API", solver_data.len());
+
+        // Store amounts for each solver
         let mut solver_liquidity_map = std::collections::HashMap::new();
         let mut total_tics = U256::zero();
         let mut total_btc = U256::zero();
 
-        for solver_id in &active_solvers {
-            // Get solver EVM address
-            let solver_evm_address = solver_contract
-                .get_solver_evm_address(solver_id)
-                .await
-                .map_err(|e| {
-                    anyhow::anyhow!("Failed to get EVM address for solver {}: {}", solver_id, e)
-                })?;
+        for solver_info in solver_data {
+            let solver_id = solver_info["solver_id"].as_str()
+                .ok_or_else(|| anyhow::anyhow!("Missing solver_id in API response"))?;
+            
+            let chains = solver_info["chains"].as_array()
+                .ok_or_else(|| anyhow::anyhow!("Missing chains array for solver {}", solver_id))?;
 
-            // Call getSolverAllChainAmounts for each solver
-            let amounts = solver_contract
-                .get_all_chain_amounts(solver_id)
-                .await
-                .map_err(|e| {
-                    anyhow::anyhow!("Failed to get amounts for solver {}: {}", solver_id, e)
-                })?;
+            // Extract amounts: chain_id 0 = BTC, chain_id 9029 = TICS
+            let mut btc_amount = U256::zero();
+            let mut tics_amount = U256::zero();
 
-            // Track totals: index 0 = btc, index 1 = tics
-            // According to the contract, amounts[0] = btc, amounts[1] = tics
-            if let Some(btc_amount) = amounts.get(0) {
-                total_btc = total_btc + *btc_amount;
+            for chain in chains {
+                let chain_id = chain["chain_id"].as_u64()
+                    .ok_or_else(|| anyhow::anyhow!("Invalid chain_id for solver {}", solver_id))?;
+                let amount = chain["amount"].as_f64()
+                    .ok_or_else(|| anyhow::anyhow!("Invalid amount for solver {} chain {}", solver_id, chain_id))?;
+
+                match chain_id {
+                    0 => btc_amount = U256::from(amount as u64), // Convert BTC to satoshis
+                    9029 => tics_amount = U256::from((amount * 1e18) as u128), // Convert TICS to wei
+                    _ => warn!("⚠️ [SOLVER] Unknown chain_id {} for solver {}", chain_id, solver_id),
+                }
             }
-            if let Some(tics_amount) = amounts.get(1) {
-                total_tics = total_tics + *tics_amount;
-            }
+
+            // Track totals
+            total_btc = total_btc + btc_amount;
+            total_tics = total_tics + tics_amount;
 
             // Convert amounts to strings for storage: [btc, tics]
-            // To ensure the liquidity of the solver gets updated, always overwrite the value in the database for this solver
-            let liquidity_amounts: Vec<String> = amounts.iter().map(|u| u.to_string()).collect();
+            let liquidity_amounts = vec![btc_amount.to_string(), tics_amount.to_string()];
 
-            // Store solver liquidity with key: solver_liquidity:{solver_evm_address}
-            let solver_liquidity_key = format!("solver_liquidity:{}", format!("{:?}", solver_evm_address).to_lowercase());
+            // Store solver liquidity with key: solver_liquidity:{solver_id}
+            let solver_liquidity_key = format!("solver_liquidity:{}", solver_id.to_lowercase());
 
             // Store individual solver liquidity in database
             if let Some(ref database) = self.database {
                 if let Err(e) = database.put_string(&solver_liquidity_key, &liquidity_amounts) {
-                    warn!("⚠️ [SOLVER] Failed to store liquidity for solver {} (address: {:?}): {}", solver_id, solver_evm_address, e);
+                    warn!("⚠️ [SOLVER] Failed to store liquidity for solver {}: {}", solver_id, e);
                 } else {
-                    info!("💾 [SOLVER] Stored liquidity for solver {} (address: {:?}): {:?}", solver_id, solver_evm_address, liquidity_amounts);
+                    info!("💾 [SOLVER] Stored liquidity for solver {}: BTC={}, TICS={}", solver_id, btc_amount, tics_amount);
                 }
             } else {
                 warn!("⚠️ [SOLVER] No database available to store solver liquidity");
             }
 
-            // Add to solver liquidity map: solver_address -> [tics, btc]
-            solver_liquidity_map.insert(format!("{:?}", solver_evm_address).to_lowercase(), liquidity_amounts.clone());
+            // Add to solver liquidity map: solver_id -> [btc, tics]
+            solver_liquidity_map.insert(solver_id.to_lowercase(), liquidity_amounts);
         }
 
         // Store all solver liquidity with key: solver_liquidity:all
@@ -4791,6 +4803,17 @@ pub async fn handle_btc_signature_for_round(
             } else {
                 info!("💾 [SOLVER] Stored total btc liquidity: {}", total_btc);
             }
+
+            // Update cache timestamp
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            if let Err(e) = database.put_string("liquidity_last_update", &now.to_string()) {
+                warn!("⚠️ [SOLVER] Failed to update liquidity cache timestamp: {}", e);
+            } else {
+                info!("💾 [SOLVER] Updated liquidity cache timestamp: {}", now);
+            }
         } else {
             warn!("⚠️ [SOLVER] No database available to store solver liquidity");
         }
@@ -4803,7 +4826,7 @@ pub async fn handle_btc_signature_for_round(
 
         info!(
             "✅ [SOLVER] Updated all solver liquidity: {} solvers",
-            active_solvers.len()
+            solver_data.len()
         );
 
         Ok(())
