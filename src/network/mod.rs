@@ -851,9 +851,15 @@ impl NetworkLayer {
         // clone only the sender
         let tx = self.message_tx.clone();
         let handle = tokio::spawn(async move {
+            info!("⏰ [DKG] Scheduled task waiting {} seconds before starting DKG", delay);
             tokio::time::sleep(Duration::from_secs(delay)).await;
+            info!("⏰ [DKG] Scheduled task timeout reached, sending ScheduledDKGStart message");
             // send the one "start now" message back into your main loop
-            let _ = tx.send(ChannelMessage::ScheduledDKGStart).await;
+            if let Err(e) = tx.send(ChannelMessage::ScheduledDKGStart).await {
+                error!("❌ [DKG] Failed to send ScheduledDKGStart message: {}", e);
+            } else {
+                info!("✅ [DKG] ScheduledDKGStart message sent successfully");
+            }
         });
 
         self.scheduled_dkg_task = Some(handle);
@@ -3264,12 +3270,16 @@ impl NetworkLayer {
                 info!("📡 [NETWORK] Broadcasted user registration to P2P network");
             }
             ChannelMessage::ScheduledDKGStart => {
+                info!("📨 [DKG] Received ScheduledDKGStart message");
                 let total = self.node_manager.get_total_nodes();
                 let threshold = self.node_manager.get_threshold();
+                info!("📊 [DKG] Current state: total_nodes={}, threshold={}", total, threshold);
                 
                 if let Some(dkg) = &mut self.dkg_node {
+                    info!("✅ [DKG] DKG node is available");
                     // This should only be called for initial DKG with 4 nodes
                     let initial_dkg_complete = dkg.is_initial_dkg_complete().await;
+                    info!("🔍 [DKG] Initial DKG complete status: {}", initial_dkg_complete);
                     
                     if initial_dkg_complete {
                         warn!("⚠️ [DKG] ScheduledDKGStart called but initial DKG already complete. This should not happen.");
@@ -3293,6 +3303,8 @@ impl NetworkLayer {
                     info!("🔄 DKG parameters updated: total_nodes={}, threshold={}", total, threshold);
                     if let Err(e) = dkg.start_dkg(self.node_manager.clone()).await {
                         warn!("❌ Scheduled DKG start failed: {:?}", e);
+                    } else {
+                        info!("✅ [DKG] DKG start initiated successfully");
                     }
                 } else {
                     warn!("❌ DKG node not initialized at scheduled start!");

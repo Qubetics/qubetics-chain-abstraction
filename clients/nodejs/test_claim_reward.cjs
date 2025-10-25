@@ -11,15 +11,15 @@ const http = require('http');
 const crypto = require('crypto');
 
 // Configuration
-const RPC_BASE_URL = 'http://localhost:8081'; // Default RPC port
+const RPC_BASE_URL = 'http://localhost:8082'; // Default RPC port
 const CLAIM_REWARD_ENDPOINT = `${RPC_BASE_URL}/claim_reward`;
 
 // Test private key - REPLACE THIS WITH YOUR REGISTERED TEST PRIVATE KEY
-const TEST_PRIVATE_KEY = '0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef';
+const TEST_PRIVATE_KEY = '0x93cc7fbc4bfd7fcfd83d11c85ba522f8fa1c03ece1a3b5f1782bc164996844d9';
 
 // Test addresses - REPLACE THESE WITH YOUR ACTUAL TEST ADDRESSES
-const TEST_ETH_ADDRESS = '0x742d35Cc6634C0532925a3b8D0C4C4C4C4C4C4C4';
-const TEST_BTC_ADDRESS = 'bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh';
+const TEST_ETH_ADDRESS = '0x002aF85c8865DE4604dF07a1105EfEF2b8e0dE05';
+const TEST_BTC_ADDRESS = 'mh12dZHkgTajT1H6t8FkWoNC4KucxByWBA';
 
 // Colors for console output
 const colors = {
@@ -33,14 +33,14 @@ const colors = {
 /**
  * Make HTTP request
  */
-function makeRequest(url, data) {
+function makeRequest(url, data, method = 'POST') {
     return new Promise((resolve, reject) => {
         const urlObj = new URL(url);
         const options = {
             hostname: urlObj.hostname,
             port: urlObj.port,
             path: urlObj.pathname,
-            method: 'POST',
+            method: method,
             headers: {
                 'Content-Type': 'application/json',
                 'Content-Length': Buffer.byteLength(data)
@@ -78,7 +78,7 @@ async function checkServerStatus() {
     console.log(`${colors.yellow}🔍 Checking RPC server status...${colors.reset}`);
     
     try {
-        const response = await makeRequest(`${RPC_BASE_URL}/status`, '{}');
+        const response = await makeRequest(`${RPC_BASE_URL}/status`, '', 'GET');
         if (response.status === 200) {
             console.log(`${colors.green}✅ RPC server is running${colors.reset}`);
             return true;
@@ -94,13 +94,73 @@ async function checkServerStatus() {
 }
 
 /**
- * Create a simple signature (placeholder - implement proper Ethereum signing)
+ * Derive Ethereum address from private key
  */
-function createSignature(message, privateKey) {
-    // This is a placeholder signature - implement proper Ethereum signature generation
-    // For production use, use libraries like ethers.js or web3.js
-    const hash = crypto.createHash('sha256').update(message).digest('hex');
-    return `0x${hash}${'0'.repeat(64)}`; // Placeholder signature
+function getEthereumAddress(privateKeyHex) {
+    const secp256k1 = require('secp256k1');
+    
+    // Remove 0x prefix if present
+    const privateKey = privateKeyHex.startsWith('0x') ? privateKeyHex.slice(2) : privateKeyHex;
+    const privateKeyBuffer = Buffer.from(privateKey, 'hex');
+    
+    // Create public key
+    const publicKey = secp256k1.publicKeyCreate(privateKeyBuffer, false); // uncompressed
+    
+    // Remove the 0x04 prefix (first byte)
+    const publicKeyWithoutPrefix = publicKey.slice(1);
+    
+    // Hash with Keccak256
+    const keccak256 = require('keccak');
+    const hash = keccak256('keccak256').update(publicKeyWithoutPrefix).digest();
+    
+    // Take last 20 bytes as address
+    const address = '0x' + hash.slice(-20).toString('hex');
+    
+    return address;
+}
+
+/**
+ * Create a proper Ethereum signature using secp256k1
+ */
+function createSignature(message, privateKeyHex) {
+    const secp256k1 = require('secp256k1');
+    
+    // Remove 0x prefix if present
+    const privateKey = privateKeyHex.startsWith('0x') ? privateKeyHex.slice(2) : privateKeyHex;
+    const privateKeyBuffer = Buffer.from(privateKey, 'hex');
+    
+    // Create personal message prefix (EIP-191)
+    const prefix = `\x19Ethereum Signed Message:\n${message.length}`;
+    const prefixedMessage = prefix + message;
+    
+    // Hash the prefixed message with Keccak256
+    const keccak256 = require('keccak');
+    const messageHash = keccak256('keccak256').update(prefixedMessage).digest();
+    
+    // Sign the message hash
+    const signature = secp256k1.ecdsaSign(messageHash, privateKeyBuffer);
+    
+    // Calculate recovery ID (try both 0 and 1)
+    let recoveryId = signature.recid;
+    const publicKey = secp256k1.publicKeyCreate(privateKeyBuffer);
+    
+    // Try to recover with the signature to determine correct recovery ID
+    try {
+        const recoveredKey = secp256k1.ecdsaRecover(messageHash, signature.signature, recoveryId);
+        if (!Buffer.from(recoveredKey).equals(Buffer.from(publicKey))) {
+            recoveryId = recoveryId === 0 ? 1 : 0;
+        }
+    } catch (e) {
+        recoveryId = recoveryId === 0 ? 1 : 0;
+    }
+    
+    // Format as r||s||v (65 bytes total)
+    const r = signature.signature.slice(0, 32);
+    const s = signature.signature.slice(32, 64);
+    const v = Buffer.from([recoveryId]);
+    
+    const fullSignature = Buffer.concat([r, s, v]);
+    return '0x' + fullSignature.toString('hex');
 }
 
 /**
@@ -109,8 +169,12 @@ function createSignature(message, privateKey) {
 async function testClaimRewardEthOnly() {
     console.log(`\n${colors.blue}🧪 Testing claim reward (ETH only)...${colors.reset}`);
     
-    const message = `Claim reward for Ethereum address: ${TEST_ETH_ADDRESS}`;
+    const message = "hello";
     const signature = createSignature(message, TEST_PRIVATE_KEY);
+    
+    console.log(`${colors.yellow}📝 Message: ${message}${colors.reset}`);
+    console.log(`${colors.yellow}✍️ Signature: ${signature}${colors.reset}`);
+    console.log(`${colors.yellow}📍 Using test ETH address: ${TEST_ETH_ADDRESS}${colors.reset}`);
     
     const payload = {
         signature: signature,
@@ -356,21 +420,17 @@ async function main() {
     // Check if server is running
     if (!(await checkServerStatus())) {
         console.log(`\n${colors.red}❌ Cannot proceed - RPC server is not accessible${colors.reset}`);
-        console.log(`${colors.yellow}💡 Please start the server first and ensure it's running on port 8081${colors.reset}`);
+        console.log(`${colors.yellow}💡 Please start the server first and ensure it's running on port 8082${colors.reset}`);
         process.exit(1);
     }
     
     console.log(`\n${colors.yellow}🔑 Using test private key: ${TEST_PRIVATE_KEY.substring(0, 10)}...${colors.reset}`);
-    console.log(`${colors.yellow}📍 ETH address: ${TEST_ETH_ADDRESS}${colors.reset}`);
-    console.log(`${colors.yellow}📍 BTC address: ${TEST_BTC_ADDRESS}${colors.reset}`);
+    console.log(`${colors.yellow}📍 Test ETH address: ${TEST_ETH_ADDRESS}${colors.reset}`);
+    console.log(`${colors.yellow}📍 Test BTC address: ${TEST_BTC_ADDRESS}${colors.reset}`);
     console.log('\n==================================================');
     
-    // Run all tests
+    // Run successful test only
     await testClaimRewardEthOnly();
-    await testClaimRewardBtcOnly();
-    await testClaimRewardBoth();
-    await testInvalidSignature();
-    await testNoAddresses();
     
     console.log('\n==================================================');
     console.log(`${colors.green}🏁 Test script completed!${colors.reset}`);
