@@ -3046,7 +3046,7 @@ pub async fn sign_bitcoin_transaction(
     }
 
     /// Store transaction ID for a round if intent hash is available and broadcast to other nodes
-    async fn store_transaction_id_for_round(&self, round: u64, tx_id: &str, txn_network: crate::types::TransactionNetwork) {
+    async fn store_transaction_id_for_round(&mut self, round: u64, tx_id: &str, txn_network: crate::types::TransactionNetwork) {
         // Check if this round is a reward round first
         let is_reward_round = {
             let reward_rounds = self.reward_rounds.read().await;
@@ -3110,6 +3110,18 @@ pub async fn sign_bitcoin_transaction(
                         match &result {
                             Ok(()) => {
                                 info!("💾 [SIGNING] Stored user-to-network transaction ID {} for intent {} (round {})", tx_id, intent_hash, round);
+                                
+                                // Update solver amounts and calculate rewards for user_to_vault transactions
+                                if let Err(e) = self.update_solver_amounts_for_user_to_vault(intent_hash).await {
+                                    warn!("⚠️ [SIGNING] Failed to update solver amounts for UserToVault transaction: {}", e);
+                                } else {
+                                    // Calculate rewards after successfully updating solver amounts
+                                    if let Err(e) = self.calculate_reward_per_solver(intent_hash).await {
+                                        warn!("⚠️ [SIGNING] Failed to calculate rewards for UserToVault transaction: {}", e);
+                                    } else {
+                                        info!("✅ [SIGNING] Successfully calculated rewards for UserToVault transaction: {}", intent_hash);
+                                    }
+                                }
                             },
                             Err(e) => {
                                 error!("❌ [SIGNING] Failed to store user-to-network transaction ID for intent {}: {}", intent_hash, e);
@@ -3234,11 +3246,110 @@ pub async fn sign_bitcoin_transaction(
                             tx_id, e
                         );
                     }
-                    self.broadcast_transaction_id(&intent_hash, tx_id, transaction_type_str).await;
+                    
+                    info!(
+                        "✅ [SIGNING] Successfully synchronized transaction ID {} for intent {} (type: {})",
+                        tx_id, intent_hash, transaction_type_str
+                    );
+
+                    // Execute contract call when transaction ID is received
+                    if let Some(intent) = user_registry.get_intent(&intent_hash).await {
+                        // Convert transaction type string to enum
+                        let tx_type_enum = match transaction_type_str {
+                            "user_to_vault" => crate::types::TransactionType::UserToVault,
+                            "network_to_target" => crate::types::TransactionType::NetworkToTarget,
+                            "vault_to_network" => crate::types::TransactionType::VaultToNetwork,
+                            _ => {
+                                warn!("❌ [CONTRACT] Unknown transaction type for contract call: {}", transaction_type_str);
+                                return;
+                            }
+                        };
+
+                        // Get vault group key
+                        let vault_group_key = self.vault_group_key;
+
+                        if let Some(vault_group_key) = vault_group_key {
+                            // Execute contract call
+                            if let Err(e) = self.execute_contract_call_for_transaction(
+                                &intent,
+                                &intent_hash,
+                                tx_type_enum,
+                                tx_id,
+                                Some(vault_group_key),
+                                intent.amount,
+                            ).await {
+                                warn!("❌ [CONTRACT] Failed to execute contract call for transaction ID {}: {}", tx_id, e);
+                            } else {
+                                info!("✅ [CONTRACT] Successfully executed contract call for transaction ID {}", tx_id);
+                            }
+                        } else {
+                            warn!("❌ [CONTRACT] No vault group key available for contract call execution");
+                        }
+                    } else {
+                        warn!("❌ [CONTRACT] Could not retrieve intent {} for contract call execution", intent_hash);
+                    }
+                    
+                    self.broadcast_transaction_id(Some(&intent_hash), tx_id, transaction_type_str, None).await;
                 }
             },
-            (None, _) => {
-                info!("ℹ️ [SIGNING] No intent hash available for round {}, skipping transaction ID storage", round);
+            (None, Some(user_registry)) => {
+                // This is a reward transaction - handle solver address case
+                if let Some(solver_addr) = retrieved_solver_address.as_ref() {
+                    let (transaction_type_str, storage_result) = match txn_network {
+                        crate::types::TransactionNetwork::TICS => {
+                            let result = user_registry
+                                .add_solver_tics_txn_hash(solver_addr, tx_id.to_string())
+                                .await
+                                .map_err(|e| e.to_string());
+                            match &result {
+                                Ok(()) => {
+                                    info!("💾 [SIGNING] Stored TICS reward transaction hash {} for solver {} (round {})", tx_id, solver_addr, round);
+                                },
+                                Err(e) => {
+                                    error!("❌ [SIGNING] Failed to store TICS reward transaction hash for solver {}: {}", solver_addr, e);
+                                }
+                            }
+                            ("tics_reward", result)
+                        },
+                        crate::types::TransactionNetwork::BTC => {
+                            let result = user_registry
+                                .add_solver_btc_txn_hash(solver_addr, tx_id.to_string())
+                                .await
+                                .map_err(|e| e.to_string());
+                            match &result {
+                                Ok(()) => {
+                                    info!("💾 [SIGNING] Stored BTC reward transaction hash {} for solver {} (round {})", tx_id, solver_addr, round);
+                                },
+                                Err(e) => {
+                                    error!("❌ [SIGNING] Failed to store BTC reward transaction hash for solver {}: {}", solver_addr, e);
+                                }
+                            }
+                            ("btc_reward", result)
+                        }
+                    };
+
+                    if storage_result.is_ok() {
+                        if let Err(e) = user_registry
+                            .store_transaction_status(tx_id, TransactionStatus::Pending)
+                            .await
+                        {
+                            error!(
+                                "❌ [SIGNING] Failed to store transaction status for reward tx {}: {}",
+                                tx_id, e
+                            );
+                        }
+                        
+                        info!(
+                            "✅ [SIGNING] Successfully synchronized reward transaction ID {} for solver {} (type: {})",
+                            tx_id, solver_addr, transaction_type_str
+                        );
+
+                        // Broadcast the reward transaction ID
+                        self.broadcast_transaction_id(None, tx_id, transaction_type_str, Some(solver_addr)).await;
+                    }
+                } else {
+                    info!("ℹ️ [SIGNING] No solver address available for reward transaction in round {}", round);
+                }
             },
             (_, None) => {
                 info!("ℹ️ [NETWORK] No user registry available, skipping transaction ID storage");
@@ -3247,12 +3358,13 @@ pub async fn sign_bitcoin_transaction(
     }
 
     /// Broadcast transaction ID to other nodes for synchronization
-    async fn broadcast_transaction_id(&self, intent_hash: &str, tx_id: &str, transaction_type: &str) {
+    async fn broadcast_transaction_id(&self, intent_hash: Option<&str>, tx_id: &str, transaction_type: &str, solver_address: Option<&str>) {
         let broadcast_message = crate::types::GossipsubMessage::TransactionIdBroadcast {
-            intent_hash: intent_hash.to_string(),
+            intent_hash: intent_hash.map(|s| s.to_string()),
             transaction_id: tx_id.to_string(),
             transaction_type: transaction_type.to_string(),
             node_id: self.id.clone(),
+            solver_address: solver_address.map(|s| s.to_string()),
         };
 
         let channel_message = crate::types::ChannelMessage::Broadcast {
@@ -3262,8 +3374,10 @@ pub async fn sign_bitcoin_transaction(
 
         // Call update_solver_amounts_for_user_to_vault only for user_to_vault transaction type
         if transaction_type == "user_to_vault" {
-            if let Err(e) = self.update_solver_amounts_for_user_to_vault(intent_hash).await {
-                warn!("⚠️ [SIGNING] Failed to update solver amounts for UserToVault transaction: {}", e);
+            if let Some(intent_hash) = intent_hash {
+                if let Err(e) = self.update_solver_amounts_for_user_to_vault(intent_hash).await {
+                    warn!("⚠️ [SIGNING] Failed to update solver amounts for UserToVault transaction: {}", e);
+                }
             }
         }
 
@@ -3271,8 +3385,67 @@ pub async fn sign_bitcoin_transaction(
         if let Err(e) = self.message_tx.send(channel_message).await {
             error!("❌ [SIGNING] Failed to broadcast transaction ID to other nodes: {}", e);
         } else {
-            info!("📡 [SIGNING] Broadcasted transaction ID {} for intent {} (type: {}) to other nodes", tx_id, intent_hash, transaction_type);
+            info!("📡 [SIGNING] Broadcasted transaction ID {} for intent {:?} (type: {}) to other nodes", tx_id, intent_hash, transaction_type);
         }
+    }
+
+    /// Execute contract call for transaction (simplified version for signing module)
+    async fn execute_contract_call_for_transaction(
+        &mut self,
+        intent: &crate::rpc_server::DepositIntent,
+        intent_hash: &str,
+        transaction_type: crate::types::TransactionType,
+        tx_hash: &str,
+        vault_group_key: Option<k256::ProjectivePoint>,
+        amount: u128,
+    ) -> Result<()> {
+        info!("📝 [CONTRACT] Executing contract call for transaction type: {:?}", transaction_type);
+
+        // Wait a bit before executing contract call
+        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+
+        let contract_call_result = crate::utils::transaction::create_chain_transaction_from_contract_call(
+            vault_group_key,
+            amount,
+            intent,
+            intent_hash,
+            tx_hash,
+            transaction_type.clone()
+        ).await;
+
+        match contract_call_result {
+            Ok(contract_transaction) => {
+                info!("📝 [CONTRACT] Created contract call transaction");
+
+                match contract_transaction {
+                    crate::chain::ChainTransaction::Ethereum(ref eth_tx) => {
+                        let contract_tx = crate::rpc_server::ContractTransaction {
+                            to: eth_tx.to.clone(),
+                            value: eth_tx.value.clone(),
+                            nonce: eth_tx.nonce,
+                            gas_limit: eth_tx.gas_limit,
+                            gas_price: eth_tx.gas_price.clone(),
+                            chain_id: eth_tx.chain_id,
+                            data: eth_tx.data.as_ref().map(|d| format!("0x{}", hex::encode(d))).unwrap_or_else(|| "0x".to_string()),
+                        };
+                        let contract_tx_bytes = crate::utils::transaction::create_transaction_for_signing_contract(&contract_tx);
+                        
+                        // For signing module, we'll use the vault group key directly since we don't have DKG access
+                        let vault_tweaked_share = None; // Simplified - no DKG tweaking in signing module
+                        self.sign_contract_message(contract_tx_bytes, &contract_tx, vault_tweaked_share, None).await?;
+                    }
+                    _ => {
+                        info!("📝 [CONTRACT] Contract call transaction is not Ethereum type, skipping");
+                    }
+                }
+            }
+            Err(e) => {
+                warn!("❌ [CONTRACT] Failed to create contract call transaction: {}", e);
+                return Err(e);
+            }
+        }
+
+        Ok(())
     }
 
     /// Broadcast transaction error to other nodes for synchronization

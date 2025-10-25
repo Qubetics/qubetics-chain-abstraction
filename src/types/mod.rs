@@ -49,12 +49,6 @@ pub enum ChannelMessage {
         signer: String,
         intent: crate::rpc_server::DepositIntent,
     },
-    TransactionIdBroadcast {
-        intent_hash: String,
-        transaction_id: String,
-        transaction_type: String,
-        node_id: String,
-    },
     ClaimReward {
         solver_address: String,
         btc_address: Option<String>,
@@ -114,10 +108,11 @@ pub enum GossipsubMessage {
         node_id: String,
     },
     TransactionIdBroadcast {
-        intent_hash: String,
+        intent_hash: Option<String>, // None for reward transactions
         transaction_id: String,
-        transaction_type: String, // "user_to_network", "network_to_target", or "vault_to_network"
+        transaction_type: String, // "user_to_vault", "network_to_target", "vault_to_network", "tics_reward", or "btc_reward"
         node_id: String,          // Node that broadcasted the transaction
+        solver_address: Option<String>, // Required for reward transactions when intent_hash is None
     },
     TransactionErrorBroadcast {
         intent_hash: String,
