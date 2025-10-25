@@ -55,10 +55,6 @@ pub enum ChannelMessage {
         transaction_type: String,
         node_id: String,
     },
-    SolverReward {
-        solver_address: String,
-        reward: u128,
-    },
     ClaimReward {
         solver_address: String,
         btc_address: Option<String>,
@@ -68,10 +64,6 @@ pub enum ChannelMessage {
     },
     UserRegistration {
         ethereum_address: String,
-        node_id: String,
-    },
-    IntentHashBroadcast {
-        intent_hash: String,
         node_id: String,
     },
     ScheduledDKGStart,
@@ -108,10 +100,6 @@ pub enum GossipsubMessage {
         signer: String,
         intent: crate::rpc_server::DepositIntent,
     },
-    SolverReward {
-        solver_address: String,
-        reward: u128,
-    },
     ClaimReward {
         solver_address: String,
         btc_address: Option<String>,
@@ -136,9 +124,5 @@ pub enum GossipsubMessage {
         error_message: String,
         transaction_type: String, // "user_to_network", "network_to_target", or "vault_to_network"
         node_id: String,          // Node that encountered the error
-    },
-    IntentHashBroadcast {
-        intent_hash: String,
-        node_id: String,
-    },
+    }
 }

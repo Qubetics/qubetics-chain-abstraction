@@ -2037,16 +2037,6 @@ impl NetworkLayer {
                     warn!("❌ [NETWORK] No user registry available to store synchronized transaction error");
                 }
             }
-            GossipsubMessage::IntentHashBroadcast { intent_hash, node_id } => {
-                info!(
-                    "📨 [GOSSIPSUB] Received intent hash broadcast {} from node {}",
-                    intent_hash, node_id
-                );
-            }
-            GossipsubMessage::SolverReward { solver_address, reward } => {
-                info!("💰 [REWARD] Received solver reward for {}: {}", solver_address, reward);
-                // Create dummy transaction paying the solver
-            }
             GossipsubMessage::IntentHash { intent_hash, signer, intent } => {
                 info!("📝 [GOSSIPSUB] Received intent hash {} from {}", intent_hash, signer);
 
@@ -3203,6 +3193,34 @@ impl NetworkLayer {
                 info!("🔗 [NETWORK] Intent hash: {}", intent_hash);
                 info!("💳 [NETWORK] Transaction ID: {}", transaction_id);
                 info!("🔄 [NETWORK] Transaction type: {}", transaction_type);
+                // Broadcast the transaction ID to other peers via gossipsub
+                let broadcast_msg = GossipsubMessage::TransactionIdBroadcast {
+                    intent_hash: intent_hash.clone(),
+                    transaction_id: transaction_id.clone(),
+                    transaction_type: transaction_type.clone(),
+                    node_id: node_id.clone(),
+                };
+
+                let msg_bytes = match serde_json::to_vec(&broadcast_msg) {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        error!("❌ [NETWORK] Failed to serialize transaction ID broadcast: {}", e);
+                        return Ok(());
+                    }
+                };
+
+                // Send via the message channel to be broadcast by the swarm
+                if let Err(e) = self.message_tx
+                    .send(ChannelMessage::Broadcast {
+                        topic: "transaction-id-sync".to_string(),
+                        data: msg_bytes,
+                    })
+                    .await
+                {
+                    error!("❌ [NETWORK] Failed to send transaction ID broadcast: {}", e);
+                } else {
+                    info!("📡 [NETWORK] Broadcasted transaction ID {} to P2P network", transaction_id);
+                }
 
                 // Store the transaction ID in our local user registry
                 if let Some(user_registry) = &self.user_registry {
@@ -3302,35 +3320,6 @@ impl NetworkLayer {
                 } else {
                     warn!("❌ [NETWORK] No user registry available to store synchronized transaction ID");
                 }
-            }
-
-            ChannelMessage::SolverReward { solver_address, reward } => {
-                info!("💰 [NETWORK] Broadcasting solver reward: {} -> {}", solver_address, reward);
-                let reward_msg = GossipsubMessage::SolverReward {
-                    solver_address: solver_address.clone(),
-                    reward,
-                };
-                let msg_bytes = serde_json::to_vec(&reward_msg)
-                    .map_err(|e| anyhow::anyhow!("Failed to serialize solver reward: {}", e))?;
-
-                let topic = gossipsub::IdentTopic::new("solver-rewards");
-                swarm.behaviour_mut().gossipsub.publish(topic, msg_bytes)?;
-                info!("📡 [NETWORK] Broadcasted solver reward to P2P network");
-            }
-            ChannelMessage::IntentHashBroadcast { intent_hash, node_id } => {
-                info!(
-                    "📡 [NETWORK] Broadcasting intent hash {} from node {}",
-                    intent_hash, node_id
-                );
-                let broadcast_msg = GossipsubMessage::IntentHashBroadcast {
-                    intent_hash: intent_hash.clone(),
-                    node_id: node_id.clone(),
-                };
-                let msg_bytes = serde_json::to_vec(&broadcast_msg)
-                    .map_err(|e| anyhow::anyhow!("Failed to serialize intent hash broadcast: {}", e))?;
-                let topic = gossipsub::IdentTopic::new("intent-hashes");
-                swarm.behaviour_mut().gossipsub.publish(topic, msg_bytes)?;
-                info!("📡 [NETWORK] Broadcasted intent hash to P2P network");
             }
             ChannelMessage::UserRegistration { ethereum_address, node_id } => {
                 info!("👤 [NETWORK] Broadcasting user registration: {} from node {}", ethereum_address, node_id);

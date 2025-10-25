@@ -3260,13 +3260,6 @@ pub async fn sign_bitcoin_transaction(
             data: serde_json::to_vec(&broadcast_message).unwrap_or_default(),
         };
 
-        let channel_message_transaction_id_broadcast = crate::types::ChannelMessage::TransactionIdBroadcast {
-            intent_hash: intent_hash.to_string(),
-            transaction_id: tx_id.to_string(),
-            transaction_type: transaction_type.to_string(),
-            node_id: self.id.clone(),
-        };
-
         // Call update_solver_amounts_for_user_to_vault only for user_to_vault transaction type
         if transaction_type == "user_to_vault" {
             if let Err(e) = self.update_solver_amounts_for_user_to_vault(intent_hash).await {
@@ -3274,13 +3267,8 @@ pub async fn sign_bitcoin_transaction(
             }
         }
 
+        // Send the broadcast message to the network module for gossipsub distribution
         if let Err(e) = self.message_tx.send(channel_message).await {
-            error!("❌ [SIGNING] Failed to broadcast transaction ID to other nodes: {}", e);
-        } else {
-            info!("📡 [SIGNING] Broadcasted transaction ID {} for intent {} (type: {}) to other nodes", tx_id, intent_hash, transaction_type);
-        }
-
-        if let Err(e) = self.message_tx.send(channel_message_transaction_id_broadcast).await {
             error!("❌ [SIGNING] Failed to broadcast transaction ID to other nodes: {}", e);
         } else {
             info!("📡 [SIGNING] Broadcasted transaction ID {} for intent {} (type: {}) to other nodes", tx_id, intent_hash, transaction_type);
@@ -4766,7 +4754,6 @@ pub async fn handle_btc_signature_for_round(
             "✅ [SOLVER] Calculated rewards for {} solvers",
             solver_liquidity_map.len()
         );
-
         // Mark intent reward status as calculated using user registry
         user_registry
             .set_intent_reward_status(intent_hash, true)
