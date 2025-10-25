@@ -3265,8 +3265,24 @@ pub async fn sign_bitcoin_transaction(
                             }
                         };
 
-                        // Get vault group key
-                        let vault_group_key = self.vault_group_key;
+                        // Get vault group key from database
+                        let vault_group_key = if let Some(database) = &self.database {
+                            let dkg_storage = crate::database::DkgStorage::new((**database).clone());
+                            match dkg_storage.get_vault_group_key().await {
+                                Ok(Some(key)) => Some(key),
+                                Ok(None) => {
+                                    warn!("❌ [CONTRACT] No vault group key found in database");
+                                    None
+                                },
+                                Err(e) => {
+                                    error!("❌ [CONTRACT] Failed to retrieve vault group key from database: {}", e);
+                                    None
+                                }
+                            }
+                        } else {
+                            warn!("❌ [CONTRACT] No database available for vault group key retrieval");
+                            None
+                        };
 
                         if let Some(vault_group_key) = vault_group_key {
                             // Execute contract call

@@ -2310,21 +2310,23 @@ async fn handle_claim_reward(
         },
     };
 
-    // Verify that the recovered address matches the provided Ethereum address (if provided)
-    if let Some(ref eth_addr) = normalized_eth_address {
-        if signer_address != *eth_addr {
-            warn!("❌ Signature verification failed: recovered {} != provided {}", signer_address, eth_addr);
-            return Ok(warp::reply::json(&ClaimRewardResponse {
-                status: "error".to_string(),
-                ethereum_address: normalized_eth_address,
-                btc_address: req.btc_address,
-                reward_btc: None,
-                reward_tics: None,
-                total_reward: None,
-                message: "Signature verification failed".to_string(),
-                error_message: Some("Recovered address does not match provided Ethereum address".to_string()),
-            }));
-        }
+    // Check if the recovered address (signer) is a registered solver with rewards
+    let reward_btc = user_registry.get_solver_reward_btc(&signer_address).await;
+    let reward_tics = user_registry.get_solver_reward_tics(&signer_address).await;
+
+    // Check if the signer has any rewards to claim
+    if reward_btc.is_none() && reward_tics.is_none() {
+        warn!("❌ Signer {} is not a registered solver or has no rewards available", signer_address);
+        return Ok(warp::reply::json(&ClaimRewardResponse {
+            status: "error".to_string(),
+            ethereum_address: normalized_eth_address,
+            btc_address: req.btc_address,
+            reward_btc: None,
+            reward_tics: None,
+            total_reward: None,
+            message: "Signer is not a registered solver or has no rewards".to_string(),
+            error_message: Some(format!("Address {} has no rewards available", signer_address)),
+        }));
     }
 
     // Get rewards for the solver - use normalized_eth_address if provided, otherwise use signer_address
@@ -2360,9 +2362,9 @@ async fn handle_claim_reward(
 
     // If there are rewards, send a claim message to the network
     let claim_msg = ChannelMessage::ClaimReward {
-        solver_address: solver_address.clone(),
+        solver_address: signer_address.clone(), // The solver who is claiming
         btc_address: req.btc_address.clone(),
-        eth_address: req.ethereum_address.clone(),
+        eth_address: req.ethereum_address.clone(), // Destination address for rewards
         reward_btc: reward_btc_str.clone(),
         reward_tics: reward_tics_str.clone(),
     };
