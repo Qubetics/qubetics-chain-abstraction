@@ -10,8 +10,8 @@ pub enum TransactionType {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TransactionNetwork {
-    TICS,  // EVM/TICS transactions
-    BTC,   // Bitcoin transactions
+    TICS, // EVM/TICS transactions
+    BTC,  // Bitcoin transactions
 }
 
 mod secp;
@@ -69,6 +69,10 @@ pub enum ChannelMessage {
     IntentHashBroadcast {
         intent_hash: String,
         node_id: String,
+    },
+    RefundInitiation {
+        intent_hash: String,
+        data: Vec<u8>,
     },
     ScheduledDKGStart,
 }
