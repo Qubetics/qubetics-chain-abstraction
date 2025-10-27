@@ -795,6 +795,7 @@ impl NetworkLayer {
             "signatures-to-final-node",
             "user-registrations",
             "solver-rewards",
+            "claim-rewards",
             "transaction-id-sync",
             "consensus-result",
             "transaction-error-sync",

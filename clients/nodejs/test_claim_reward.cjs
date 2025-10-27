@@ -106,8 +106,8 @@ function getEthereumAddress(privateKeyHex) {
     // Create public key
     const publicKey = secp256k1.publicKeyCreate(privateKeyBuffer, false); // uncompressed
     
-    // Remove the 0x04 prefix (first byte)
-    const publicKeyWithoutPrefix = publicKey.slice(1);
+    // Remove the 0x04 prefix (first byte) and convert Uint8Array to Buffer
+    const publicKeyWithoutPrefix = Buffer.from(publicKey.slice(1));
     
     // Hash with Keccak256
     const keccak256 = require('keccak');
@@ -133,26 +133,16 @@ function createSignature(message, privateKeyHex) {
     const prefix = `\x19Ethereum Signed Message:\n${message.length}`;
     const prefixedMessage = prefix + message;
     
-    // Hash the prefixed message with Keccak256
+    // Hash the prefixed message with Keccak256 (convert string to Buffer)
     const keccak256 = require('keccak');
-    const messageHash = keccak256('keccak256').update(prefixedMessage).digest();
+    const messageHash = keccak256('keccak256').update(Buffer.from(prefixedMessage, 'utf8')).digest();
     
     // Sign the message hash
     const signature = secp256k1.ecdsaSign(messageHash, privateKeyBuffer);
     
-    // Calculate recovery ID (try both 0 and 1)
-    let recoveryId = signature.recid;
-    const publicKey = secp256k1.publicKeyCreate(privateKeyBuffer);
-    
-    // Try to recover with the signature to determine correct recovery ID
-    try {
-        const recoveredKey = secp256k1.ecdsaRecover(messageHash, signature.signature, recoveryId);
-        if (!Buffer.from(recoveredKey).equals(Buffer.from(publicKey))) {
-            recoveryId = recoveryId === 0 ? 1 : 0;
-        }
-    } catch (e) {
-        recoveryId = recoveryId === 0 ? 1 : 0;
-    }
+    // Use the recovery ID from the signature
+    // Note: secp256k1 returns recid as 0 or 1, which is what we need
+    const recoveryId = signature.recid;
     
     // Format as r||s||v (65 bytes total)
     const r = signature.signature.slice(0, 32);
@@ -169,12 +159,16 @@ function createSignature(message, privateKeyHex) {
 async function testClaimRewardEthOnly() {
     console.log(`\n${colors.blue}🧪 Testing claim reward (ETH only)...${colors.reset}`);
     
+    // Derive and display the expected address from the private key
+    const expectedAddress = getEthereumAddress(TEST_PRIVATE_KEY);
+    console.log(`${colors.blue}🔑 Expected address from private key: ${expectedAddress}${colors.reset}`);
+    
     const message = "hello";
     const signature = createSignature(message, TEST_PRIVATE_KEY);
     
     console.log(`${colors.yellow}📝 Message: ${message}${colors.reset}`);
     console.log(`${colors.yellow}✍️ Signature: ${signature}${colors.reset}`);
-    console.log(`${colors.yellow}📍 Using test ETH address: ${TEST_ETH_ADDRESS}${colors.reset}`);
+    console.log(`${colors.yellow}📍 Using test ETH address (destination): ${TEST_ETH_ADDRESS}${colors.reset}`);
     
     const payload = {
         signature: signature,

@@ -2310,7 +2310,10 @@ async fn handle_claim_reward(
         },
     };
 
-    // Check if the recovered address (signer) is a registered solver with rewards
+    info!("🔍 Recovered signer address from signature: {}", signer_address);
+
+    // IMPORTANT: Always use signer_address for fetching rewards, not the ethereum_address parameter
+    // The ethereum_address is only used as the DESTINATION for rewards, not for lookup
     let reward_btc = user_registry.get_solver_reward_btc(&signer_address).await;
     let reward_tics = user_registry.get_solver_reward_tics(&signer_address).await;
 
@@ -2329,11 +2332,6 @@ async fn handle_claim_reward(
         }));
     }
 
-    // Get rewards for the solver - use normalized_eth_address if provided, otherwise use signer_address
-    let solver_address = normalized_eth_address.as_ref().unwrap_or(&signer_address);
-    let reward_btc = user_registry.get_solver_reward_btc(solver_address).await;
-    let reward_tics = user_registry.get_solver_reward_tics(solver_address).await;
-
     let reward_btc_str = reward_btc.as_ref().map(|v| v.to_string());
     let reward_tics_str = reward_tics.as_ref().map(|v| v.to_string());
 
@@ -2345,21 +2343,7 @@ async fn handle_claim_reward(
         (None, None) => None,
     };
 
-    // Check if there are any rewards to claim - at least one must be present
-    if reward_btc.is_none() && reward_tics.is_none() {
-        info!("💰 No rewards available for address: {}", solver_address);
-        return Ok(warp::reply::json(&ClaimRewardResponse {
-            status: "success".to_string(),
-            ethereum_address: normalized_eth_address,
-            btc_address: req.btc_address,
-            reward_btc: None,
-            reward_tics: None,
-            total_reward: None,
-            message: "No rewards available to claim".to_string(),
-            error_message: None,
-        }));
-    }
-
+    
     // If there are rewards, send a claim message to the network
     let claim_msg = ChannelMessage::ClaimReward {
         solver_address: signer_address.clone(), // The solver who is claiming
@@ -2384,7 +2368,7 @@ async fn handle_claim_reward(
         }));
     }
 
-    info!("✅ Reward claim processed successfully for solver: {}, BTC: {:?}", solver_address, req.btc_address);
+    info!("✅ Reward claim processed successfully for solver: {}, BTC: {:?}", signer_address, req.btc_address);
 
     Ok(warp::reply::json(&ClaimRewardResponse {
         status: "success".to_string(),
