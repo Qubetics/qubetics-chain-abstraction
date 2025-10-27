@@ -9,11 +9,6 @@ function usage() {
 }
 
 async function main() {
-  // const solver = process.argv[2];
-  // if (!solver) {
-  //   usage();
-  //   process.exit(1);
-  // }
 
   try {
     const res = await axios.get(`${baseUrl}/get_reward_solver`, {
