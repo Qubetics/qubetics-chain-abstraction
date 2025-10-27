@@ -66,7 +66,7 @@ impl DatabaseUserRegistry {
             info!("🧮 [DB_USER_REGISTRY] Recomputing tweaked share for {} (user_id: {})", address, user.user_id);
             let new_tweaked = self.compute_tweaked_share(&final_secret_share, &user.hmac_constant);
             user.tweaked_secret_share = Some(new_tweaked);
-
+            info!("🧮 [DB_USER_REGISTRY] New tweaked share for {}: {:?}", address, user.tweaked_secret_share);
             // Persist updated user
             if let Err(e) = self.user_storage.store_user(&address, &user).await {
                 error!(
