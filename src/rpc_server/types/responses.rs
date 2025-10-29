@@ -108,3 +108,15 @@ pub struct EnhancedUserRegistrationResponse {
 	pub derived_btc_address: Option<String>,
 	pub error: Option<ErrorResponse>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClaimRewardResponse {
+	pub status: String,
+	pub ethereum_address: Option<String>,
+	pub btc_address: Option<String>,
+	pub reward_btc: Option<String>,
+	pub reward_tics: Option<String>,
+	pub total_reward: Option<String>,
+	pub message: String,
+	pub error_message: Option<String>,
+}
