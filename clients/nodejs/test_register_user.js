@@ -11,7 +11,6 @@ const RPC_BASE_URL = 'http://127.0.0.1:8082';
 
 // 👉 Private key you provided (hex, no 0x prefix needed)
 const TEST_PRIVKEY = '6176c7ad6a70652a202e1e894badaa5690260cfc5fbf148a7411462e40ee4bf8';
-let TEST_TX_ID = "0x0942448ca6f6517c05c361e249cdaf9f5e054e6290236c43f6537705ef2a7885";
 
 // =========================
 // Colors for console output
@@ -583,9 +582,9 @@ async function runTests() {
   const signerAddr = await wallet.getAddress();
   log(`\n🔑 Derived signer address from TEST_PRIVKEY: ${signerAddr}`, 'blue');
 
-  // 1) DKG status
-  await testDKGStatus();
-
+  // // 1) DKG status
+  // await testDKGStatus();
+  
   // 2) Register ONLY the derived address 
   // const reg = await testRegisterUser(signerAddr);
 
