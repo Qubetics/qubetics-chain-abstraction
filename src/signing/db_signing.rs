@@ -278,6 +278,21 @@ impl DatabaseSigningNode {
 		}
 	}
 
+	/// Sync VRF round with network from database (gets current round from consensus storage)
+	pub async fn sync_vrf_round_from_database(&mut self) {
+		if let Some(vrf_service) = &mut self.vrf_service {
+			match self.consensus_storage.get_current_round().await {
+				Ok(network_round) => {
+					vrf_service.set_current_round(network_round).await;
+					info!("🔄 [DB_SIGNING] Synced VRF round from database to: {}", network_round);
+				},
+				Err(e) => {
+					warn!("⚠️ [DB_SIGNING] Failed to get current round from database: {:?}", e);
+				},
+			}
+		}
+	}
+
 	/// Set consensus node
 	pub fn set_consensus_node(&mut self, consensus_node: ConsensusNode) {
 		self.consensus_node = Some(consensus_node);

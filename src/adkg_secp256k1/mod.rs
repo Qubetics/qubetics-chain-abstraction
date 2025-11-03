@@ -80,6 +80,7 @@ pub struct DKGNode {
 	round: u64,
 	chain_code: [u8; 32],
 	my_permanent_index: Option<usize>, // Index assigned during initial DKG, never changes
+	user_registry: Option<std::sync::Arc<crate::user_registry::DatabaseUserRegistry>>, /* optional handle to update users after refresh */
 }
 
 impl DKGNode {
@@ -102,7 +103,18 @@ impl DKGNode {
 			round: 0,
 			chain_code,
 			my_permanent_index: None, // Will be set during DKG completion or when joining
+			user_registry: None,
 		}
+	}
+
+	pub fn set_user_registry(
+		&mut self,
+
+		registry: std::sync::Arc<crate::user_registry::DatabaseUserRegistry>,
+	) {
+		self.user_registry = Some(registry);
+
+		info!("🔗 [DKG] User registry handle attached to DKG node");
 	}
 
 	/// Load permanent index from storage
@@ -1757,7 +1769,18 @@ impl DKGNode {
 		}
 
 		info!("🎉 [REFRESH] Polynomial refresh complete with updated vault secret!");
+		// After updating final secret and vault tweaked secret, refresh all user tweaked shares
+		if let Some(registry) = &self.user_registry {
+			info!("👥 [REFRESH] Refreshing tweaked secret shares for all users");
 
+			if let Err(e) = registry.refresh_all_user_tweaked_shares().await {
+				warn!("⚠️ [REFRESH] Failed to refresh user tweaked shares: {}", e);
+			} else {
+				info!("✅ [REFRESH] Refreshed tweaked secret shares for all users");
+			}
+		} else {
+			warn!("⚠️ [REFRESH] No user registry attached; cannot refresh user tweaked shares");
+		}
 		Ok(())
 	}
 

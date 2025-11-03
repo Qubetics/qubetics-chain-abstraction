@@ -1,6 +1,6 @@
 use crate::{
 	rpc_server::{
-		handlers::{handle_claim_reward, handle_get_reward_solver},
+		handlers::handle_get_reward_solver,
 		requests::GetRewardSolverRequest,
 		routes::{with_dkg_storage, with_message_tx, with_reward_storage, with_user_registry},
 	},
@@ -25,13 +25,13 @@ pub fn solver_routes(
 	// 	.and(with_message_tx(message_tx.clone()))
 	// 	.and_then(handle_solver_reward);
 
-	let claim_reward = warp::path("claim_reward")
-		.and(warp::post())
-		.and(warp::body::json())
-		.and(with_user_registry(user_registry.clone()))
-		.and(with_reward_storage(reward_storage.clone()))
-		.and(with_message_tx(message_tx.clone()))
-		.and_then(handle_claim_reward);
+	// let claim_reward = warp::path("claim_reward")
+	// 	.and(warp::post())
+	// 	.and(warp::body::json())
+	// 	.and(with_user_registry(user_registry.clone()))
+	// 	.and(with_reward_storage(reward_storage.clone()))
+	// 	.and(with_message_tx(message_tx.clone()))
+	// 	.and_then(handle_claim_reward);
 
 	let get_reward_solver = warp::path("get_reward_solver")
 		.and(warp::get())
@@ -39,6 +39,5 @@ pub fn solver_routes(
 		.and(with_user_registry(user_registry.clone()))
 		.and_then(handle_get_reward_solver);
 
-	// solver_reward.or(get_reward_solver)
-	claim_reward.or(get_reward_solver)
+	get_reward_solver
 }

@@ -1597,7 +1597,7 @@ fn create_bitcoin_script_pubkey(address: &str) -> Result<Vec<u8>> {
 	Ok(script_bytes)
 }
 
-pub fn create_transaction_for_signing(tx: &EthereumTransaction) -> Vec<u8> {
+pub fn create_transaction_for_signing(tx: &DummyTransaction) -> Vec<u8> {
 	// Log transaction details before creating raw transaction
 	info!(
         "🔧 [ETH_RAW_TXN] Creating raw Ethereum transaction - To: {}, Value: {}, Nonce: {}, GasLimit: {}, GasPrice: {}, ChainId: {}",

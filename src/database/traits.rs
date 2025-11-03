@@ -2,7 +2,7 @@ use anyhow::{anyhow, Result};
 use rocksdb::DB;
 use serde::{de::DeserializeOwned, Serialize};
 use std::sync::Arc;
-use tracing::debug;
+use tracing::{debug, info};
 
 pub trait DBKey {
 	/// Return the prefix
@@ -55,12 +55,20 @@ impl<T: StorageAdapter> Storage<T> {
 	}
 
 	pub fn get_all(&self) -> anyhow::Result<std::collections::HashMap<Vec<u8>, T::Value>> {
+		use rocksdb::{Direction, IteratorMode};
 		let mut map = std::collections::HashMap::new();
-		let iter = self.db.db().prefix_iterator(T::PREFIX);
+		info!("[Storage Adapter] Getting all for prefix: {:?}", T::PREFIX);
+
+		let iter = self.db.db().iterator(IteratorMode::From(T::PREFIX, Direction::Forward));
+
 		for item in iter {
 			let (key, value) = item?;
+			if !key.starts_with(T::PREFIX) {
+				break;
+			}
+			let logical_key = &key[T::PREFIX.len()..];
 			if let Ok(deserialized_value) = bincode::deserialize(&value) {
-				map.insert(key.to_vec(), deserialized_value);
+				map.insert(logical_key.to_vec(), deserialized_value);
 			}
 		}
 		Ok(map)

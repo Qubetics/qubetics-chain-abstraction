@@ -23,6 +23,7 @@ use crate::{
 use anyhow::Result;
 use k256::{AffinePoint, ProjectivePoint, Scalar};
 use std::collections::HashMap;
+use tracing::info;
 
 define_storage_adapter!(DkgShareAdapter, DkgShareKey, KeyShare, DKG_SHARE_PREFIX);
 
@@ -322,28 +323,56 @@ impl DkgStorage {
 	}
 
 	pub async fn get_vault_tweaked_secret(&self) -> Result<Option<Scalar>> {
-		Ok(self.vault_tweaked_secret.get(DkgVaultTweakedSecretKey {})?.map(|s| s.0))
+		let result = self.vault_tweaked_secret.get(DkgVaultTweakedSecretKey {})?.map(|s| s.0);
+
+		if result.is_some() {
+			tracing::info!(
+				"🔍 [DKG_STORAGE] Retrieved vault tweaked secret share: {:?}",
+				result.unwrap()
+			);
+		} else {
+			tracing::debug!("🔍 [DKG_STORAGE] No vault tweaked secret share found in database");
+		}
+
+		Ok(result)
 	}
 
 	pub async fn delete_vault_tweaked_secret(&self) -> Result<()> {
-		self.vault_tweaked_secret.delete(DkgVaultTweakedSecretKey {})
+		self.vault_tweaked_secret.delete(DkgVaultTweakedSecretKey {});
+
+		tracing::info!("🗑️ [DKG_STORAGE] Deleted vault tweaked secret share from database");
+		Ok(())
 	}
 
 	pub async fn set_vault_group_key(&self, vault_group_key: ProjectivePoint) -> Result<()> {
 		let affine: AffinePoint = vault_group_key.into();
 		let ser = SerializablePoint(affine);
-		self.vault_group_key.put(DkgVaultGroupKey {}, &ser)
+		self.vault_group_key.put(DkgVaultGroupKey {}, &ser);
+		tracing::info!("💾 [DKG_STORAGE] Stored vault group key: {:?}", vault_group_key);
+
+		Ok(())
 	}
 
 	pub async fn get_vault_group_key(&self) -> Result<Option<ProjectivePoint>> {
-		Ok(self
+		let result = self
 			.vault_group_key
 			.get(DkgVaultGroupKey {})?
-			.map(|p| ProjectivePoint::from(p.0)))
+			.map(|p| ProjectivePoint::from(p.0));
+
+		if result.is_some() {
+			tracing::info!("🔍 [DKG_STORAGE] Retrieved vault group key: {:?}", result.unwrap());
+		} else {
+			tracing::debug!("🔍 [DKG_STORAGE] No vault group key found in database");
+		}
+
+		Ok(result)
 	}
 
 	pub async fn delete_vault_group_key(&self) -> Result<()> {
-		self.vault_group_key.delete(DkgVaultGroupKey {})
+		self.vault_group_key.delete(DkgVaultGroupKey {});
+		tracing::info!("🗑️ [DKG_STORAGE] Deleted vault group key from database");
+
+		Ok(())
 	}
 	/// Store the polynomial coefficients for this node
 	pub async fn set_polynomial(&self, polynomial: &[Scalar]) -> Result<()> {
@@ -432,6 +461,7 @@ impl DkgStorage {
 
 	/// Store a peer's index in the database
 	pub fn set_peer_index(&self, peer_id: &str, index: usize) -> Result<()> {
+		info!("🔢 [DKG_STORAGE] Set peer index: {} for {}", index, peer_id);
 		let key = PeerIndexKey { peer_id: peer_id.to_string() };
 		self.peer_indices.put(key, &index)?;
 		tracing::info!("💾 [DKG_STORAGE] Stored peer index {} for {}", index, peer_id);
@@ -457,11 +487,15 @@ impl DkgStorage {
 	pub fn get_all_peer_indices(&self) -> Result<HashMap<String, usize>> {
 		let mut indices = HashMap::new();
 		let kvs = self.peer_indices.get_all()?;
+		tracing::info!("🔢 [DKG_STORAGE] Get all peer indices: {:?}", kvs);
 		for (key_bytes, index) in kvs {
+			tracing::info!("🔢 [DKG_STORAGE] Key bytes: {:?}, index: {}", key_bytes, index);
 			if let Ok(peer_id) = String::from_utf8(key_bytes) {
+				tracing::info!("🔢 [DKG_STORAGE] Peer id: {}, index: {}", peer_id, index);
 				indices.insert(peer_id, index);
 			}
 		}
+		tracing::info!("🔢 [DKG_STORAGE] All peer indices here: {:?}", indices);
 		Ok(indices)
 	}
 

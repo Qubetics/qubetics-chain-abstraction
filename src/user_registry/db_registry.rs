@@ -18,6 +18,7 @@ use crate::{
 	rpc_server::common::DepositIntent,
 	types::{SerializablePoint, SerializableScalar},
 	utils::hmac_helper::hmac256_from_addr,
+	DkgStorage,
 };
 use anyhow::Result;
 use tracing::{error, info};
@@ -29,20 +30,79 @@ pub struct DatabaseUserRegistry {
 	intent_storage: IntentStorage,
 	tx_status_storage: TransactionStatusStorage,
 	reward_storage: RewardStorage,
+	dkg_storage: DkgStorage,
 	chain_code: [u8; 32],
 }
 
 impl DatabaseUserRegistry {
+	/// Recompute and update tweaked secret shares for all users using the latest final secret
+	pub async fn refresh_all_user_tweaked_shares(&self) -> Result<()> {
+		info!("🔄 [DB_USER_REGISTRY] Starting refresh_all_user_tweaked_shares for all users");
+
+		// Access latest final secret share from DKG storage
+		let dkg_storage = self.dkg_storage.clone();
+		let final_secret_share = match dkg_storage.get_final_secret().await? {
+			Some(s) => s,
+			None => return Err(anyhow::anyhow!("No final secret share found in DKG storage")),
+		};
+
+		// Fetch all users
+		let users = self.user_storage.get_all_users().await?;
+		info!("👥 [DB_USER_REGISTRY] Users loaded for refresh: {}", users.len());
+
+		let mut success_count: usize = 0;
+		let mut failure_count: usize = 0;
+
+		// Iterate and recompute tweaked share for each user based on their HMAC constant
+		for (address, mut user) in users.into_iter() {
+			info!(
+				"🧮 [DB_USER_REGISTRY] Recomputing tweaked share for {} (user_id: {})",
+				address, user.user_id
+			);
+			let new_tweaked = self.compute_tweaked_share(&final_secret_share, &user.hmac_constant);
+			user.tweaked_secret_share = Some(new_tweaked);
+			info!(
+				"🧮 [DB_USER_REGISTRY] New tweaked share for {}: {:?}",
+				address, user.tweaked_secret_share
+			);
+			// Persist updated user
+			if let Err(e) = self.user_storage.store_user(&address, &user).await {
+				error!(
+					"❌ [DB_USER_REGISTRY] Failed to update tweaked share for {}: {}",
+					address, e
+				);
+				failure_count += 1;
+			} else {
+				info!("✅ [DB_USER_REGISTRY] Updated tweaked secret share for {}", address);
+				success_count += 1;
+			}
+		}
+
+		info!(
+            "🎉 [DB_USER_REGISTRY] Completed refresh_all_user_tweaked_shares: {} success, {} failed",
+            success_count,
+            failure_count
+        );
+		Ok(())
+	}
+
 	/// Create a new database-backed user registry
 	pub fn new(database: Database, chain_code: [u8; 32]) -> Self {
 		let user_storage = UserStorage::new(database.clone());
 		let intent_storage = IntentStorage::new(database.clone());
 		let tx_status_storage = TransactionStatusStorage::new(database.clone());
-		let reward_storage = RewardStorage::new(database);
-
+		let reward_storage = RewardStorage::new(database.clone());
+		let dkg_storage = DkgStorage::new(database);
 		info!("🏗️ [DB_USER_REGISTRY] Created new DatabaseUserRegistry instance");
 
-		Self { user_storage, intent_storage, tx_status_storage, reward_storage, chain_code }
+		Self {
+			user_storage,
+			intent_storage,
+			tx_status_storage,
+			reward_storage,
+			dkg_storage,
+			chain_code,
+		}
 	}
 	/// Register a new user
 	pub async fn register_user(

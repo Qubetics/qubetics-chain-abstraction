@@ -15,14 +15,14 @@ use tracing::{debug, error, info};
 define_storage_adapter!(
 	SolverLiquidityAdapter,
 	SolverLiquidity,
-	HashMap<String, U256>,
+	Vec<String>,
 	SOLVER_LIQUIDITY_PREFIX
 );
 
 define_storage_adapter!(
 	AllSolverLiquidityAdapter,
 	AllSolverLiquidityKey,
-	HashMap<String, HashMap<String, U256>>,
+	HashMap<String, Vec<String>>,
 	ALL_SOLVER_LIQUIDITY_PREFIX
 );
 
@@ -58,7 +58,7 @@ impl SolverStorage {
 	pub async fn store_solver_liquidity(
 		&self,
 		solver_address: &str,
-		liquidity_amounts: &HashMap<String, U256>,
+		liquidity_amounts: &Vec<String>,
 	) -> Result<()> {
 		let key = SolverLiquidity { address: solver_address.to_string() };
 
@@ -67,7 +67,7 @@ impl SolverStorage {
 		info!("  💰 Liquidity amounts: {:?}", liquidity_amounts);
 		info!("  🗄️  Database key: {:?}", key);
 
-		match self.solver_liquidity.put(key.clone(), liquidity_amounts) {
+		match self.solver_liquidity.put(key.clone(), &liquidity_amounts) {
 			Ok(()) => {
 				info!(
 					"✅ [SOLVER_STORAGE] Successfully stored solver liquidity: {}",
@@ -86,10 +86,7 @@ impl SolverStorage {
 	}
 
 	/// Get liquidity amounts for a specific solver
-	pub async fn get_solver_liquidity(
-		&self,
-		solver_address: &str,
-	) -> Result<Option<HashMap<String, U256>>> {
+	pub async fn get_solver_liquidity(&self, solver_address: &str) -> Result<Option<Vec<String>>> {
 		let key = SolverLiquidity { address: solver_address.to_string() };
 		let liquidity = self.solver_liquidity.get(key)?;
 		if liquidity.is_some() {
@@ -99,7 +96,7 @@ impl SolverStorage {
 	}
 
 	/// Get all solver liquidity data
-	pub async fn get_all_solver_liquidity(&self) -> Result<HashMap<String, HashMap<String, U256>>> {
+	pub async fn get_all_solver_liquidity(&self) -> Result<HashMap<String, Vec<String>>> {
 		let liquidity_data = self.solver_liquidity.get_all();
 		liquidity_data.map(|data| {
 			data.into_iter()
@@ -119,7 +116,7 @@ impl SolverStorage {
 	/// Store all solver liquidity data in a single record
 	pub async fn store_all_solver_liquidity(
 		&self,
-		all_liquidity: &HashMap<String, HashMap<String, U256>>,
+		all_liquidity: &HashMap<String, Vec<String>>,
 	) -> Result<()> {
 		let key = AllSolverLiquidityKey;
 
@@ -145,7 +142,7 @@ impl SolverStorage {
 	/// Get all solver liquidity data from the single record
 	pub async fn get_all_solver_liquidity_record(
 		&self,
-	) -> Result<Option<HashMap<String, HashMap<String, U256>>>> {
+	) -> Result<Option<HashMap<String, Vec<String>>>> {
 		let key = AllSolverLiquidityKey;
 		let all_liquidity = self.all_solver_liquidity.get(key)?;
 		if all_liquidity.is_some() {
@@ -160,173 +157,6 @@ impl SolverStorage {
 		self.all_solver_liquidity.delete(key)?;
 		info!("🗑️ [SOLVER_STORAGE] Deleted all solver liquidity record");
 		Ok(())
-	}
-
-	/// Update liquidity for a specific solver and currency
-	pub async fn update_solver_liquidity_amount(
-		&self,
-		solver_address: &str,
-		currency: &str,
-		amount: U256,
-	) -> Result<()> {
-		info!("🔄 [SOLVER_STORAGE] Updating solver liquidity amount:");
-		info!("  🔗 Solver: {}", solver_address);
-		info!("  💱 Currency: {}", currency);
-		info!("  💰 Amount: {}", amount);
-
-		// Get existing liquidity or create new
-		let mut liquidity =
-			self.get_solver_liquidity(solver_address).await?.unwrap_or_else(HashMap::new);
-
-		// Update the specific currency amount
-		let old_amount = liquidity.get(currency).cloned().unwrap_or(U256::zero());
-		liquidity.insert(currency.to_string(), amount);
-
-		// Store updated liquidity
-		self.store_solver_liquidity(solver_address, &liquidity).await?;
-
-		info!("✅ [SOLVER_STORAGE] Updated solver liquidity amount");
-		info!("  🔄 Old amount: {}", old_amount);
-		info!("  🆕 New amount: {}", amount);
-
-		Ok(())
-	}
-
-	/// Add to existing liquidity amount for a solver and currency
-	pub async fn add_solver_liquidity_amount(
-		&self,
-		solver_address: &str,
-		currency: &str,
-		additional_amount: U256,
-	) -> Result<()> {
-		info!("➕ [SOLVER_STORAGE] Adding to solver liquidity amount:");
-		info!("  🔗 Solver: {}", solver_address);
-		info!("  💱 Currency: {}", currency);
-		info!("  ➕ Additional amount: {}", additional_amount);
-
-		// Get existing liquidity or create new
-		let mut liquidity =
-			self.get_solver_liquidity(solver_address).await?.unwrap_or_else(HashMap::new);
-
-		// Add to existing amount
-		let current_amount = liquidity.get(currency).cloned().unwrap_or(U256::zero());
-		let new_amount = current_amount + additional_amount;
-		liquidity.insert(currency.to_string(), new_amount);
-
-		// Store updated liquidity
-		self.store_solver_liquidity(solver_address, &liquidity).await?;
-
-		info!("✅ [SOLVER_STORAGE] Added to solver liquidity amount");
-		info!("  🔄 Previous amount: {}", current_amount);
-		info!("  ➕ Added amount: {}", additional_amount);
-		info!("  🆕 New total: {}", new_amount);
-
-		Ok(())
-	}
-
-	/// Subtract from existing liquidity amount for a solver and currency
-	pub async fn subtract_solver_liquidity_amount(
-		&self,
-		solver_address: &str,
-		currency: &str,
-		subtract_amount: U256,
-	) -> Result<()> {
-		info!("➖ [SOLVER_STORAGE] Subtracting from solver liquidity amount:");
-		info!("  🔗 Solver: {}", solver_address);
-		info!("  💱 Currency: {}", currency);
-		info!("  ➖ Subtract amount: {}", subtract_amount);
-
-		// Get existing liquidity
-		let mut liquidity = self
-			.get_solver_liquidity(solver_address)
-			.await?
-			.ok_or_else(|| anyhow::anyhow!("No liquidity found for solver: {}", solver_address))?;
-
-		// Subtract from existing amount
-		let current_amount = liquidity.get(currency).cloned().unwrap_or(U256::zero());
-
-		if current_amount < subtract_amount {
-			return Err(anyhow::anyhow!(
-				"Insufficient liquidity: current {} < subtract {}",
-				current_amount,
-				subtract_amount
-			));
-		}
-
-		let new_amount = current_amount - subtract_amount;
-		liquidity.insert(currency.to_string(), new_amount);
-
-		// Store updated liquidity
-		self.store_solver_liquidity(solver_address, &liquidity).await?;
-
-		info!("✅ [SOLVER_STORAGE] Subtracted from solver liquidity amount");
-		info!("  🔄 Previous amount: {}", current_amount);
-		info!("  ➖ Subtracted amount: {}", subtract_amount);
-		info!("  🆕 New total: {}", new_amount);
-
-		Ok(())
-	}
-
-	/// Get liquidity amount for a specific solver and currency
-	pub async fn get_solver_liquidity_amount(
-		&self,
-		solver_address: &str,
-		currency: &str,
-	) -> Result<Option<U256>> {
-		let liquidity = self.get_solver_liquidity(solver_address).await?;
-
-		match liquidity {
-			Some(amounts) => {
-				let amount = amounts.get(currency).cloned();
-				debug!(
-					"🔍 [SOLVER_STORAGE] Retrieved {} liquidity for {}: {:?}",
-					currency, solver_address, amount
-				);
-				Ok(amount)
-			},
-			None => {
-				debug!("🔍 [SOLVER_STORAGE] No liquidity found for solver: {}", solver_address);
-				Ok(None)
-			},
-		}
-	}
-
-	/// Get total liquidity across all solvers for a specific currency
-	pub async fn get_total_liquidity_for_currency(&self, currency: &str) -> Result<U256> {
-		let all_liquidity = self.get_all_solver_liquidity().await?;
-		let mut total = U256::zero();
-
-		for (_solver, amounts) in all_liquidity {
-			if let Some(amount) = amounts.get(currency) {
-				total = total
-					.checked_add(*amount)
-					.ok_or_else(|| anyhow::anyhow!("Overflow adding liquidity"))?;
-			}
-		}
-
-		info!("📊 [SOLVER_STORAGE] Total {} liquidity across all solvers: {}", currency, total);
-		Ok(total)
-	}
-
-	/// Get all solvers that have liquidity for a specific currency
-	pub async fn get_solvers_with_currency(&self, currency: &str) -> Result<Vec<(String, U256)>> {
-		let all_liquidity = self.get_all_solver_liquidity().await?;
-		let mut solvers_with_currency = Vec::new();
-
-		for (solver, amounts) in all_liquidity {
-			if let Some(amount) = amounts.get(currency) {
-				if *amount > U256::zero() {
-					solvers_with_currency.push((solver, *amount));
-				}
-			}
-		}
-
-		debug!(
-			"🔍 [SOLVER_STORAGE] Found {} solvers with {} liquidity",
-			solvers_with_currency.len(),
-			currency
-		);
-		Ok(solvers_with_currency)
 	}
 
 	/// Store the last update timestamp for liquidity
