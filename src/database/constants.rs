@@ -30,8 +30,19 @@ pub const SOLVER_REWARD_TICS_PREFIX: &[u8] = b"solver_reward_tics:";
 pub const SOLVER_REWARD_BTC_PREFIX: &[u8] = b"solver_reward_btc:";
 pub const CLAIMED_REQUEST_AMOUNT_PREFIX: &[u8] = b"claimed_request_amount:";
 pub const INTENT_REWARD_STATUS_PREFIX: &[u8] = b"intent_reward_status:";
+
+pub const SOLVER_TICS_TXN_HASHES_PREFIX: &[u8] = b"solver_tics_txn_hashes:";
+pub const SOLVER_BTC_TXN_HASHES_PREFIX: &[u8] = b"solver_btc_txn_hashes:";
+
 pub const PEER_KEYPAIR_PREFIX: &[u8] = b"peer_keypair";
 
 pub const ALL_SOLVER_AMOUNTS_PREFIX: &[u8] = b"solver_amounts:all";
 pub const ALL_SOLVER_LIQUIDITY_PREFIX: &[u8] = b"solver_liquidity:all";
 pub const SOLVER_LIQUIDITY_PREFIX: &[u8] = b"solver_liquidity:";
+pub const LIQUIDITY_LAST_UPDATE_PREFIX: &[u8] = b"liquidity_last_update";
+
+pub const DKG_POLYNOMIAL_PREFIX: &[u8] = b"dkg_polynomial";
+pub const DKG_INITIAL_COMPLETE_PREFIX: &[u8] = b"dkg_initial_complete";
+pub const DKG_MY_PERMANENT_INDEX_PREFIX: &[u8] = b"dkg_my_permanent_index";
+pub const PEER_INDEX_PREFIX: &[u8] = b"peer_index:"; // key = peer_index:<peer_id_str>
+pub const DKG_ORIGINAL_COMMITMENT_PREFIX: &[u8] = b"dkg_original_commitment:";

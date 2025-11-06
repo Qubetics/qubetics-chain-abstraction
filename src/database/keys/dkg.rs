@@ -27,6 +27,19 @@ impl DBKey for DkgCommitmentKey {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DkgOriginalCommitmentKey {
+	pub from: String,
+}
+impl DBKey for DkgOriginalCommitmentKey {
+	fn prefix(&self) -> &'static [u8] {
+		DKG_ORIGINAL_COMMITMENT_PREFIX
+	}
+	fn key_bytes(&self) -> Vec<u8> {
+		self.from.as_bytes().to_vec()
+	}
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct DkgValidationKey {
 	pub to: String,
 }
@@ -102,5 +115,55 @@ impl DBKey for DkgVaultGroupKey {
 	}
 	fn key_bytes(&self) -> Vec<u8> {
 		vec![]
+	}
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DkgPolynominalKey {}
+
+impl DBKey for DkgPolynominalKey {
+	fn prefix(&self) -> &'static [u8] {
+		DKG_POLYNOMIAL_PREFIX
+	}
+	fn key_bytes(&self) -> Vec<u8> {
+		vec![]
+	}
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DkgInitialCompleteKey {}
+
+impl DBKey for DkgInitialCompleteKey {
+	fn prefix(&self) -> &'static [u8] {
+		DKG_INITIAL_COMPLETE_PREFIX
+	}
+	fn key_bytes(&self) -> Vec<u8> {
+		vec![]
+	}
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DkgMyPermanentIndexKey {}
+
+impl DBKey for DkgMyPermanentIndexKey {
+	fn prefix(&self) -> &'static [u8] {
+		DKG_MY_PERMANENT_INDEX_PREFIX
+	}
+	fn key_bytes(&self) -> Vec<u8> {
+		vec![]
+	}
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct PeerIndexKey {
+	pub peer_id: String,
+}
+
+impl DBKey for PeerIndexKey {
+	fn prefix(&self) -> &'static [u8] {
+		PEER_INDEX_PREFIX
+	}
+	fn key_bytes(&self) -> Vec<u8> {
+		self.peer_id.as_bytes().to_vec()
 	}
 }

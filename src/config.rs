@@ -1,4 +1,7 @@
 use std::env;
+
+const DEFAULT_FEE_RATE_SAT_PER_VBYTE: u64 = 2;
+
 #[derive(Debug, Clone)]
 pub struct EnvVars {
 	// Ethereum configuration
@@ -25,6 +28,8 @@ pub struct EnvVars {
 	pub mpc_max_broadcast_retries: u32,
 	pub mpc_retry_delay_ms: u64,
 	pub mpc_log_failures_as_warnings: bool,
+
+	pub btc_fee_rate_sat_vb: u64,
 }
 
 #[allow(dead_code)]
@@ -92,6 +97,12 @@ impl EnvVars {
 			true
 		};
 
+		let btc_fee_rate_sat_vb = if let Ok(val) = env::var("BTC_FEE_RATE_SAT_VB") {
+			val.parse().unwrap_or(DEFAULT_FEE_RATE_SAT_PER_VBYTE)
+		} else {
+			DEFAULT_FEE_RATE_SAT_PER_VBYTE
+		};
+
 		Ok(EnvVars {
 			mpc_ethereum_rpc_url,
 			mpc_ethereum_chain_id,
@@ -106,6 +117,7 @@ impl EnvVars {
 			mpc_max_broadcast_retries,
 			mpc_retry_delay_ms,
 			mpc_log_failures_as_warnings,
+			btc_fee_rate_sat_vb,
 		})
 	}
 

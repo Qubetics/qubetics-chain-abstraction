@@ -1,14 +1,16 @@
 use crate::{
 	database::{
 		constants::{
-			CLAIMED_REQUEST_AMOUNT_PREFIX, INTENT_REWARD_STATUS_PREFIX, SOLVER_REWARD_BTC_PREFIX,
-			SOLVER_REWARD_PREFIX, SOLVER_REWARD_TICS_PREFIX, TOTAL_LIQUIDITY_BTC_PREFIX,
+			CLAIMED_REQUEST_AMOUNT_PREFIX, INTENT_REWARD_STATUS_PREFIX,
+			SOLVER_BTC_TXN_HASHES_PREFIX, SOLVER_REWARD_BTC_PREFIX, SOLVER_REWARD_PREFIX,
+			SOLVER_REWARD_TICS_PREFIX, SOLVER_TICS_TXN_HASHES_PREFIX, TOTAL_LIQUIDITY_BTC_PREFIX,
 			TOTAL_LIQUIDITY_TICS_PREFIX,
 		},
 		db::Database,
 		keys::{
-			ClaimedRequestAmountKey, IntentRewardStatusKey, SolverRewardBtcKey, SolverRewardKey,
-			SolverRewardTicsKey, TotalLiquidityBtcKey, TotalLiquidityTicsKey,
+			ClaimedRequestAmountKey, IntentRewardStatusKey, SolverBtcTxnHashesKey,
+			SolverRewardBtcKey, SolverRewardKey, SolverRewardTicsKey, SolverTicsTxnHashesKey,
+			TotalLiquidityBtcKey, TotalLiquidityTicsKey,
 		},
 		traits::Storage,
 	},
@@ -61,6 +63,20 @@ define_storage_adapter!(
 	INTENT_REWARD_STATUS_PREFIX
 );
 
+define_storage_adapter!(
+	SolverTicsTxnHashesAdapter,
+	SolverTicsTxnHashesKey,
+	Vec<String>,
+	SOLVER_TICS_TXN_HASHES_PREFIX
+);
+
+define_storage_adapter!(
+	SolverBtcTxnHashesAdapter,
+	SolverBtcTxnHashesKey,
+	Vec<String>,
+	SOLVER_BTC_TXN_HASHES_PREFIX
+);
+
 pub type TotalLiquidityTicsStorage = Storage<TotalLiquidityTicsAdapter>;
 pub type TotalLiquidityBtcStorage = Storage<TotalLiquidityBtcAdapter>;
 pub type SolverRewardStorage = Storage<SolverRewardAdapter>;
@@ -68,6 +84,8 @@ pub type SolverRewardTicsStorage = Storage<SolverRewardTicsAdapter>;
 pub type SolverRewardBtcStorage = Storage<SolverRewardBtcAdapter>;
 pub type ClaimedRequestAmountStorage = Storage<ClaimedRequestAmountAdapter>;
 pub type IntentRewardStatusStorage = Storage<IntentRewardStatusAdapter>;
+pub type SolverTicsTxnHashesStorage = Storage<SolverTicsTxnHashesAdapter>;
+pub type SolverBtcTxnHashesStorage = Storage<SolverBtcTxnHashesAdapter>;
 
 /// Database-backed reward storage
 #[derive(Clone)]
@@ -79,6 +97,8 @@ pub struct RewardStorage {
 	solver_reward_btc: SolverRewardBtcStorage,
 	claimed_request_amount: ClaimedRequestAmountStorage,
 	intent_reward_status: IntentRewardStatusStorage,
+	solver_tics_txn_hashes: SolverTicsTxnHashesStorage,
+	solver_btc_txn_hashes: SolverBtcTxnHashesStorage,
 }
 
 impl RewardStorage {
@@ -90,7 +110,9 @@ impl RewardStorage {
 			solver_reward_tics: SolverRewardTicsStorage::new(db.clone()),
 			solver_reward_btc: SolverRewardBtcStorage::new(db.clone()),
 			claimed_request_amount: ClaimedRequestAmountStorage::new(db.clone()),
-			intent_reward_status: IntentRewardStatusStorage::new(db),
+			intent_reward_status: IntentRewardStatusStorage::new(db.clone()),
+			solver_tics_txn_hashes: SolverTicsTxnHashesStorage::new(db.clone()),
+			solver_btc_txn_hashes: SolverBtcTxnHashesStorage::new(db),
 		}
 	}
 
@@ -285,5 +307,83 @@ impl RewardStorage {
 	pub async fn get_intent_reward_status(&self, intent_hash: &str) -> Result<Option<bool>> {
 		let key = IntentRewardStatusKey { intent_hash: intent_hash.to_string() };
 		self.intent_reward_status.get(key)
+	}
+
+	/// Store TICS transaction hashes for a specific solver
+	pub async fn set_solver_tics_txn_hashes(
+		&self,
+		solver_address: &str,
+		txn_hashes: Vec<String>,
+	) -> Result<()> {
+		let key = SolverTicsTxnHashesKey { solver_address: solver_address.to_string() };
+		self.solver_tics_txn_hashes.put(key, &txn_hashes)?;
+		Ok(())
+	}
+
+	/// Get TICS transaction hashes for a specific solver
+	pub async fn get_solver_tics_txn_hashes(
+		&self,
+		solver_address: &str,
+	) -> Result<Option<Vec<String>>> {
+		let key = SolverTicsTxnHashesKey { solver_address: solver_address.to_string() };
+		self.solver_tics_txn_hashes.get(key)
+	}
+
+	/// Add a single TICS transaction hash to a solver's list
+	pub async fn add_solver_tics_txn_hash(
+		&self,
+		solver_address: &str,
+		txn_hash: String,
+	) -> Result<()> {
+		let mut existing_hashes =
+			self.get_solver_tics_txn_hashes(solver_address).await?.unwrap_or_default();
+		existing_hashes.push(txn_hash);
+		self.set_solver_tics_txn_hashes(solver_address, existing_hashes).await
+	}
+
+	/// Store BTC transaction hashes for a specific solver
+	pub async fn set_solver_btc_txn_hashes(
+		&self,
+		solver_address: &str,
+		txn_hashes: Vec<String>,
+	) -> Result<()> {
+		let key = SolverBtcTxnHashesKey { solver_address: solver_address.to_string() };
+		self.solver_btc_txn_hashes.put(key, &txn_hashes)?;
+		Ok(())
+	}
+
+	/// Get BTC transaction hashes for a specific solver
+	pub async fn get_solver_btc_txn_hashes(
+		&self,
+		solver_address: &str,
+	) -> Result<Option<Vec<String>>> {
+		let key = SolverBtcTxnHashesKey { solver_address: solver_address.to_string() };
+		self.solver_btc_txn_hashes.get(key)
+	}
+
+	/// Add a single BTC transaction hash to a solver's list
+	pub async fn add_solver_btc_txn_hash(
+		&self,
+		solver_address: &str,
+		txn_hash: String,
+	) -> Result<()> {
+		let mut existing_hashes =
+			self.get_solver_btc_txn_hashes(solver_address).await?.unwrap_or_default();
+		existing_hashes.push(txn_hash);
+		self.set_solver_btc_txn_hashes(solver_address, existing_hashes).await
+	}
+
+	/// Clear TICS transaction hashes for a specific solver
+	pub async fn clear_solver_tics_txn_hashes(&self, solver_address: &str) -> Result<()> {
+		let key = SolverTicsTxnHashesKey { solver_address: solver_address.to_string() };
+		self.solver_tics_txn_hashes.delete(key)?;
+		Ok(())
+	}
+
+	/// Clear BTC transaction hashes for a specific solver
+	pub async fn clear_solver_btc_txn_hashes(&self, solver_address: &str) -> Result<()> {
+		let key = SolverBtcTxnHashesKey { solver_address: solver_address.to_string() };
+		self.solver_btc_txn_hashes.delete(key)?;
+		Ok(())
 	}
 }

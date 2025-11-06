@@ -60,5 +60,8 @@ ethabi = "18.0.0"
 serde-big-array = "0.5.1"
 clap = { version = "4.5", default-features = false, features = ["std", "derive", "string"] }
 
+[dev-dependencies]
+tempfile = "3.8"
+
 [build-dependencies]
 tonic-build = "0.13.0"

@@ -93,3 +93,31 @@ impl DBKey for IntentRewardStatusKey {
 		self.intent_hash.to_lowercase().as_bytes().to_vec()
 	}
 }
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct SolverTicsTxnHashesKey {
+	pub solver_address: String,
+}
+
+impl DBKey for SolverTicsTxnHashesKey {
+	fn prefix(&self) -> &'static [u8] {
+		SOLVER_TICS_TXN_HASHES_PREFIX
+	}
+	fn key_bytes(&self) -> Vec<u8> {
+		self.solver_address.to_lowercase().as_bytes().to_vec()
+	}
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct SolverBtcTxnHashesKey {
+	pub solver_address: String,
+}
+
+impl DBKey for SolverBtcTxnHashesKey {
+	fn prefix(&self) -> &'static [u8] {
+		SOLVER_BTC_TXN_HASHES_PREFIX
+	}
+	fn key_bytes(&self) -> Vec<u8> {
+		self.solver_address.to_lowercase().as_bytes().to_vec()
+	}
+}

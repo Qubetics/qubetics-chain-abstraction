@@ -25,3 +25,15 @@ impl DBKey for AllSolverLiquidityKey {
 		Vec::new()
 	}
 }
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct LiquidityLastUpdateKey;
+
+impl DBKey for LiquidityLastUpdateKey {
+	fn prefix(&self) -> &'static [u8] {
+		LIQUIDITY_LAST_UPDATE_PREFIX
+	}
+	fn key_bytes(&self) -> Vec<u8> {
+		Vec::new()
+	}
+}

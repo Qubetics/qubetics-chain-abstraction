@@ -3,7 +3,7 @@ use libp2p::PeerId;
 use secp256k1::{self, PublicKey, Secp256k1, SecretKey};
 use std::{collections::HashMap, str::FromStr, sync::Arc};
 use tokio::sync::{mpsc, RwLock};
-use tracing::info;
+use tracing::{info, warn};
 
 use super::ECDSASignature;
 use crate::{
@@ -275,6 +275,21 @@ impl DatabaseSigningNode {
 		if let Some(vrf_service) = &mut self.vrf_service {
 			vrf_service.set_current_round(network_round).await;
 			info!("🔄 [DB_SIGNING] Synced VRF round to: {}", network_round);
+		}
+	}
+
+	/// Sync VRF round with network from database (gets current round from consensus storage)
+	pub async fn sync_vrf_round_from_database(&mut self) {
+		if let Some(vrf_service) = &mut self.vrf_service {
+			match self.consensus_storage.get_current_round().await {
+				Ok(network_round) => {
+					vrf_service.set_current_round(network_round).await;
+					info!("🔄 [DB_SIGNING] Synced VRF round from database to: {}", network_round);
+				},
+				Err(e) => {
+					warn!("⚠️ [DB_SIGNING] Failed to get current round from database: {:?}", e);
+				},
+			}
 		}
 	}
 

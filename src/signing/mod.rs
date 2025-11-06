@@ -1,14 +1,12 @@
 use crate::{
-	database::{
-		AllSolverLiquidityKey, SolverLiquidity, TotalLiquidityBtcKey, TotalLiquidityTicsKey,
-	},
+	database::{DBKey, DkgVaultEthAddressKey, SolverLiquidity},
 	rpc_server::common::{ContractTransaction, DummyTransaction},
 	utils::transaction::SpendKind,
+	EnvVars,
 };
 use anyhow::{anyhow, Result};
 use k256::Scalar;
 // use ethereum_types::U64; // Removed unused import
-use crate::EnvVars;
 use hex;
 use libp2p::PeerId;
 use num_bigint::BigUint;
@@ -53,11 +51,6 @@ use crate::{
 use anyhow::bail;
 use ethereum_types::U256 as EthereumU256;
 use ethers::types::U256;
-
-use crate::database::{
-	keys::{AllSolverAmountsKey, DkgVaultEthAddressKey, SolverAmountsKey},
-	traits::DBKey,
-};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ECDSASignature {
@@ -178,8 +171,7 @@ pub struct SigningNode {
 				(ChainTransaction, Vec<u8>, Option<String>, Option<crate::types::TransactionType>),
 			>,
 		>,
-	>, /* round -> (original_tx, tx_bytes, intent_hash,
-	    * transaction_type)  // Available nodes
+	>, /* round -> (original_tx, tx_bytes, intent_hash, transaction_type)  // Available nodes
 	    * from node manager */
 	pending_transactions_btc: Arc<RwLock<HashMap<u64, PendingValue>>>,
 	// Store original transaction and bytes for reconstruction
@@ -284,7 +276,7 @@ impl SigningNode {
 		self.public_key = Some(public_key);
 
 		info!("🔐 [SIGNING] Node {} generated ECDSA key pair", self.id);
-		info!("🔑 [SIGNING] Public key: {:?}", public_key);
+		info!("🔑 [SIGNING] Public key set");
 		Ok(())
 	}
 
@@ -301,13 +293,11 @@ impl SigningNode {
 		let secret_key = Self::derive_secp_secret(&scalar);
 
 		info!("🔐 [SIGNING] Node {} private key set from scalar", self.id);
-		info!("🔐 [SIGNING] scalar bytes: {:?}", scalar_bytes);
-		// info!("🔐 [SIGNING] Derived key bytes: {:?}", final_key_bytes);
-		info!("🔐 OOKK [SIGNING] Final secret key: {:?}", hex::encode(secret_key.as_ref()));
+		// Redacted sensitive material (scalar bytes and secret key)
 
 		let secp = Secp256k1::new();
 		let public_key = PublicKey::from_secret_key(&secp, &secret_key);
-		info!("🔑 [SIGNING] Node {} public key: {:?}", self.id, public_key);
+		info!("🔑 [SIGNING] Node {} public key set", self.id);
 
 		self.private_key = Some(secret_key);
 		self.public_key = Some(public_key);
@@ -483,6 +473,17 @@ impl SigningNode {
 			self.private_key.unwrap()
 		};
 
+		// Log signing key for testing/debugging (Bitcoin)
+		let signing_key_hex = hex::encode(signing_key.secret_bytes());
+		info!(
+			"🔐 [BTC-SIGNING-DEBUG] Node {} Bitcoin signing key (hex): 0x{}",
+			self.id, signing_key_hex
+		);
+
+		// Calculate and log DKG index for this node (Bitcoin)
+		let dkg_index = self.calculate_dkg_index_for_peer(&self.id).await;
+		info!("🔢 [BTC-SIGNING-DEBUG] Node {} Bitcoin DKG index: {}", self.id, dkg_index);
+
 		let mut per_input_sigs: Vec<(usize, RecoverableSignature)> =
 			Vec::with_capacity(digests.len());
 
@@ -517,6 +518,18 @@ impl SigningNode {
 			for btc_sig in &btc_sigs {
 				let imap = rmap.entry(btc_sig.input_index).or_insert_with(HashMap::new);
 				imap.insert(self.id.clone(), btc_sig.signature.clone());
+				info!(
+                "💾 [BTC-SIGNING-DEBUG] Stored BTC signature for input {} - r: 0x{}, s: 0x{}, recovery_id: {}",
+                btc_sig.input_index,
+                hex::encode(&btc_sig.signature.signature[0..32]),
+                hex::encode(&btc_sig.signature.signature[32..64]),
+                btc_sig.signature.recovery_id
+            );
+				info!(
+                "💾 [INDEX-PEER-DEBUG] BTC: Stored signature for Index {} => PeerId {} input {} (s-share: 0x{})",
+                dkg_index, self.id, btc_sig.input_index,
+                hex::encode(&btc_sig.signature.signature[32..64])
+            );
 			}
 			info!(
 				"💾 [SIGNING] Stored {} Bitcoin input signatures for round {}",
@@ -574,9 +587,7 @@ impl SigningNode {
 			"https://mempool.space/testnet/api/tx"
 		};
 
-		let vars = EnvVars::load_with_dotenv()
-			.map_err(|e| anyhow::anyhow!("Failed to load environment variables: {}", e))?;
-		let url = vars.mpc_bitcoin_rpc_url;
+		let url = std::env::var("MPC_BITCOIN_RPC_URL").unwrap_or_else(|_| default_url.to_string());
 		info!("Broadcasting transaction to: {}", url);
 
 		let client = reqwest::Client::new();
@@ -830,12 +841,10 @@ impl SigningNode {
 
 	/// Fetch nonce for an Ethereum address from the blockchain
 	pub async fn fetch_ethereum_nonce(address: &str, chain_id: u64) -> Result<u64> {
-		let vars = EnvVars::load_with_dotenv()
-			.map_err(|e| anyhow::anyhow!("Failed to load environment variables: {}", e))?;
-		let url = vars.mpc_ethereum_rpc_url;
-
 		let rpc_url = match chain_id {
-			9029 => url,
+			9029 => std::env::var("MPC_ETHEREUM_RPC_URL")
+				.unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string()),
+			1 => "https://mainnet.infura.io/v3/YOUR_PROJECT_ID".to_string(), // Ethereum mainnet
 			_ => return Err(anyhow!("Unsupported chain ID for nonce fetching: {}", chain_id)),
 		};
 
@@ -883,12 +892,10 @@ impl SigningNode {
 		raw_tx_hex: &str,
 		chain_id: u64,
 	) -> Result<Option<String>> {
-		let vars = EnvVars::load_with_dotenv()
-			.map_err(|e| anyhow::anyhow!("Failed to load environment variables: {}", e))?;
-		let url = vars.mpc_ethereum_rpc_url;
-
 		let rpc_url = match chain_id {
-			9029 => url,
+			9029 => std::env::var("MPC_ETHEREUM_RPC_URL")
+				.unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string()),
+			1 => "https://mainnet.infura.io/v3/YOUR_PROJECT_ID".to_string(), // Ethereum mainnet
 			_ => return Err(anyhow!("Unsupported chain ID for broadcasting: {}", chain_id)),
 		};
 
@@ -970,9 +977,7 @@ impl SigningNode {
 				let s = &aggregated_signature[32..64];
 
 				// Debug: Log signature components
-				info!("🔍 [SIGNING] P2WPKH ECDSA signature components:");
-				info!("  Raw R (32 bytes): {}", hex::encode(r));
-				info!("  Raw S (32 bytes): {}", hex::encode(s));
+				info!("🔍 [SIGNING] P2WPKH ECDSA signature components redacted");
 
 				// Convert raw r,s to DER-encoded ECDSA signature
 				let mut r32 = [0u8; 32];
@@ -995,17 +1000,26 @@ impl SigningNode {
 
 				let signed_tx_hex = hex::encode(&signed_tx);
 
-				info!("✅ [SIGNING] Node {} successfully reconstructed signed Bitcoin transaction for round {}", self.id, round);
-				info!("📄 [SIGNING] Signed transaction hex: {}", signed_tx_hex);
+				info!(
+                    "✅ [SIGNING] Node {} successfully reconstructed signed Bitcoin transaction for round {}",
+                    self.id, round
+                );
+				info!("📄 [SIGNING] Signed transaction prepared");
 				info!("📏 [SIGNING] Transaction size: {} bytes", signed_tx.len());
 
 				Ok(Some(signed_tx_hex))
 			} else {
-				warn!("❌ [SIGNING] Node {} expected Bitcoin transaction for round {} but got different type", self.id, round);
+				warn!(
+                    "❌ [SIGNING] Node {} expected Bitcoin transaction for round {} but got different type",
+                    self.id, round
+                );
 				Ok(None)
 			}
 		} else {
-			warn!("❌ [SIGNING] Node {} cannot reconstruct transaction for round {} - original transaction not found", self.id, round);
+			warn!(
+                "❌ [SIGNING] Node {} cannot reconstruct transaction for round {} - original transaction not found",
+                self.id, round
+            );
 			Ok(None)
 		}
 	}
@@ -1027,7 +1041,10 @@ impl SigningNode {
 				let is_contract_tx =
 					original_tx.data.is_some() && !original_tx.data.as_ref().unwrap().is_empty();
 
-				info!("🔧 [SIGNING] Node {} reconstructing signed Ethereum transaction for round {} (contract: {})", self.id, round, is_contract_tx);
+				info!(
+                    "🔧 [SIGNING] Node {} reconstructing signed Ethereum transaction for round {} (contract: {})",
+                    self.id, round, is_contract_tx
+                );
 
 				if is_contract_tx {
 					info!(
@@ -1217,7 +1234,10 @@ impl SigningNode {
 					"🔍 [SIGNING] Please ensure the address {} has sufficient balance",
 					nonce_address
 				);
-				info!("🔍 [SIGNING] Data: {:?}", original_tx.data.as_deref().unwrap_or(&[]));
+				info!(
+					"🔍 [SIGNING] Data present: {} bytes",
+					original_tx.data.as_deref().unwrap_or(&[]).len()
+				);
 				info!("🔍 [SIGNING] Original Nonce: {}", original_tx.nonce);
 
 				// Create signed transaction using the utility function with dynamic nonce
@@ -1238,18 +1258,27 @@ impl SigningNode {
 
 				let signed_tx_hex = format!("0x{}", hex::encode(&signed_tx));
 
-				info!("✅ [SIGNING] Node {} successfully reconstructed signed Ethereum transaction for round {}", self.id, round);
-				info!("📄 [SIGNING] Signed transaction hex: {}", signed_tx_hex);
+				info!(
+                    "✅ [SIGNING] Node {} successfully reconstructed signed Ethereum transaction for round {}",
+                    self.id, round
+                );
+				info!("📄 [SIGNING] Signed transaction prepared");
 				info!("📏 [SIGNING] Transaction size: {} bytes", signed_tx.len());
 				info!("🔗 [SIGNING] Chain ID: {}", chain_id);
 
 				Ok(Some(signed_tx_hex))
 			} else {
-				warn!("❌ [SIGNING] Node {} expected Ethereum transaction for round {} but got different type", self.id, round);
+				warn!(
+                    "❌ [SIGNING] Node {} expected Ethereum transaction for round {} but got different type",
+                    self.id, round
+                );
 				Ok(None)
 			}
 		} else {
-			warn!("❌ [SIGNING] Node {} cannot reconstruct Ethereum transaction for round {} - original transaction not found", self.id, round);
+			warn!(
+                "❌ [SIGNING] Node {} cannot reconstruct Ethereum transaction for round {} - original transaction not found",
+                self.id, round
+            );
 			Ok(None)
 		}
 	}
@@ -1646,7 +1675,7 @@ impl SigningNode {
 								let encoded_point = k256::EncodedPoint::from(affine_point);
 								let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
 
-								info!("🔑 [SIGNING] UserToVault: Using user-specific group public key for {}: {}", user_addr, hex::encode(&compressed_bytes));
+								info!("🔑 [SIGNING] UserToVault: Using user-specific group public key for {}", user_addr);
 								Ok(compressed_bytes)
 							} else {
 								Err(anyhow::anyhow!("User {} has no group key available - ensure user registration and key derivation is completed", user_addr))
@@ -1670,10 +1699,7 @@ impl SigningNode {
 					let encoded_point = k256::EncodedPoint::from(affine_point);
 					let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
 
-					info!(
-						"🔑 [SIGNING] NetworkToTarget: Using DKG group public key: {}",
-						hex::encode(&compressed_bytes)
-					);
+					info!("🔑 [SIGNING] NetworkToTarget: Using DKG group public key");
 					Ok(compressed_bytes)
 				} else {
 					Err(anyhow::anyhow!("DKG group public key not available for NetworkToTarget transaction - ensure DKG process is completed"))
@@ -1686,10 +1712,7 @@ impl SigningNode {
 					let encoded_point = k256::EncodedPoint::from(affine_point);
 					let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
 
-					info!(
-						"🔑 [SIGNING] VaultToNetwork: Using vault group public key: {}",
-						hex::encode(&compressed_bytes)
-					);
+					info!("🔑 [SIGNING] VaultToNetwork: Using vault group public key");
 					Ok(compressed_bytes)
 				} else {
 					Err(anyhow::anyhow!("Vault group public key not available for VaultToNetwork transaction - ensure vault key is set"))
@@ -1702,10 +1725,7 @@ impl SigningNode {
 					let encoded_point = k256::EncodedPoint::from(affine_point);
 					let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
 
-					info!(
-						"🔑 [SIGNING] Fallback: Using DKG group public key: {}",
-						hex::encode(&compressed_bytes)
-					);
+					info!("🔑 [SIGNING] Fallback: Using DKG group public key");
 					Ok(compressed_bytes)
 				} else {
 					Err(anyhow::anyhow!(
@@ -1831,7 +1851,7 @@ impl SigningNode {
 		transaction_type: Option<crate::types::TransactionType>,
 	) -> Result<()> {
 		// Determine which key to use for signing
-		info!("🔑 [SIGNING] user_tweaked_share: {:?}\n", user_tweaked_share);
+		// Redacted user_tweaked_share from logs
 		let signing_key = if let Some(tweaked_share) = user_tweaked_share {
 			// Use user's tweaked share for user deposits
 			info!("🔑 [SIGNING] Using user-specific tweaked share for signing");
@@ -1847,6 +1867,14 @@ impl SigningNode {
 				},
 			}
 		};
+
+		// Log signing key for testing/debugging
+		let signing_key_hex = hex::encode(signing_key.secret_bytes());
+		info!("🔐 [SIGNING-DEBUG] Node {} signing key (hex): 0x{}", self.id, signing_key_hex);
+
+		// Calculate and log DKG index for this node
+		let dkg_index = self.calculate_dkg_index_for_peer(&self.id).await;
+		info!("🔢 [SIGNING-DEBUG] Node {} DKG index: {}", self.id, dkg_index);
 
 		info!("📝 [SIGNING] Node {} starting to sign transaction", self.id);
 
@@ -1935,11 +1963,27 @@ impl SigningNode {
 			let mut signatures_by_round = self.signatures_by_round.write().await;
 			let round_signatures = signatures_by_round.entry(round).or_insert_with(HashMap::new);
 			round_signatures.insert(self.id.clone(), ecdsa_signature.clone());
+
+			// Calculate and log this node's DKG index
+			let my_dkg_index = self.calculate_dkg_index_for_peer(&self.id).await;
+
 			info!(
 				"💾 [SIGNING] Node {} stored signature for {} round {}",
 				self.id,
 				self.chain_handler.chain_type(),
 				round
+			);
+			info!(
+				"💾 [SIGNING-DEBUG] Stored signature details - r: 0x{}, s: 0x{}, recovery_id: {}",
+				hex::encode(&signature_bytes[0..32]),
+				hex::encode(&signature_bytes[32..64]),
+				recovery_id.to_i32()
+			);
+			info!(
+				"💾 [INDEX-PEER-DEBUG] Stored signature for Index {} => PeerId {} (s-share: 0x{})",
+				my_dkg_index,
+				self.id,
+				hex::encode(&signature_bytes[32..64])
 			);
 		}
 
@@ -1957,7 +2001,10 @@ impl SigningNode {
 			});
 			pending_transactions
 				.insert(round, (chain_tx, tx_bytes.clone(), intent_hash.clone(), transaction_type));
-			info!("💾 [SIGNING] Node {} stored original Ethereum transaction for round {} reconstruction (nonce will be fetched dynamically, intent_hash: {:?})", self.id, round, intent_hash);
+			info!(
+                "💾 [SIGNING] Node {} stored original Ethereum transaction for round {} reconstruction (nonce will be fetched dynamically, intent_hash: {:?})",
+                self.id, round, intent_hash
+            );
 		}
 
 		info!("📤 [SIGNING] Node {} broadcasted ECDSA signature", self.id);
@@ -1973,7 +2020,7 @@ impl SigningNode {
 		user_eth_address: Option<String>,
 	) -> Result<()> {
 		// Determine which key to use for signing
-		info!("🔑 [SIGNING] user_tweaked_share: {:?}\n", user_tweaked_share);
+		// Redacted user_tweaked_share from logs
 		let signing_key = if let Some(tweaked_share) = user_tweaked_share {
 			// Use user's tweaked share for user deposits
 			info!("🔑 [SIGNING] Using user-specific tweaked share for signing");
@@ -1989,6 +2036,14 @@ impl SigningNode {
 				},
 			}
 		};
+
+		// Log signing key for testing/debugging
+		let signing_key_hex = hex::encode(signing_key.secret_bytes());
+		info!("🔐 [SIGNING-DEBUG] Node {} signing key (hex): 0x{}", self.id, signing_key_hex);
+
+		// Calculate and log DKG index for this node
+		let dkg_index = self.calculate_dkg_index_for_peer(&self.id).await;
+		info!("🔢 [SIGNING-DEBUG] Node {} DKG index: {}", self.id, dkg_index);
 
 		info!("📝 [SIGNING] Node {} starting to sign contract transaction", self.id);
 
@@ -2091,12 +2146,20 @@ impl SigningNode {
 			let mut signatures_by_round = self.signatures_by_round.write().await;
 			let round_signatures = signatures_by_round.entry(round).or_insert_with(HashMap::new);
 			round_signatures.insert(self.id.clone(), ecdsa_signature.clone());
+
+			// Calculate and log this node's DKG index
+			let my_dkg_index = self.calculate_dkg_index_for_peer(&self.id).await;
+
 			info!(
 				"💾 [SIGNING] Node {} stored signature for {} round {}",
 				self.id,
 				self.chain_handler.chain_type(),
 				round
 			);
+			info!(
+                "💾 [INDEX-PEER-DEBUG] Contract: Stored signature for Index {} => PeerId {} (s-share: 0x{})",
+                my_dkg_index, self.id, hex::encode(&signature_bytes[32..64])
+            );
 		}
 
 		{
@@ -2111,7 +2174,10 @@ impl SigningNode {
 				chain_id: transaction.chain_id,
 			});
 			pending_transactions.insert(round, (chain_tx, tx_bytes.clone(), None, None));
-			info!("💾 [SIGNING] Node {} stored original Ethereum transaction for round {} reconstruction", self.id, round);
+			info!(
+                "💾 [SIGNING] Node {} stored original Ethereum transaction for round {} reconstruction",
+                self.id, round
+            );
 		}
 
 		info!("📤 [SIGNING] Node {} broadcasted ECDSA signature for contract transaction", self.id);
@@ -2286,7 +2352,10 @@ impl SigningNode {
 				timestamp: _timestamp,
 				user_eth_address,
 			} => {
-				info!("📥 [SIGNING] Node {} received BTC per-input signatures from {} for round {} (count: {}, user_eth_address: {:?})", self.id, from, round, signatures.len(), user_eth_address);
+				info!(
+                    "📥 [SIGNING] Node {} received BTC per-input signatures from {} for round {} (count: {}, user_eth_address: {:?})",
+                    self.id, from, round, signatures.len(), user_eth_address
+                );
 				// Process each per-input signature via BTC per-input handler
 				self.handle_btc_signature_for_round(from.clone(), signatures, round).await?;
 			},
@@ -2295,11 +2364,17 @@ impl SigningNode {
 				self.handle_signed_message(from, signed_message).await?;
 			},
 			SigningMessage::RequestSignatures { round, final_node_id, message } => {
-				info!("📥 [SIGNING] Node {} received signature request for round {} from final node {}", self.id, round, final_node_id);
+				info!(
+                    "📥 [SIGNING] Node {} received signature request for round {} from final node {}",
+                    self.id, round, final_node_id
+                );
 				self.handle_signature_request(round, final_node_id, message).await?;
 			},
 			SigningMessage::RequestBtcSignatures { round, final_node_id, message: _message } => {
-				info!("📥 [SIGNING] Node {} received BTC signature request for round {} from final node {}", self.id, round, final_node_id);
+				info!(
+                    "📥 [SIGNING] Node {} received BTC signature request for round {} from final node {}",
+                    self.id, round, final_node_id
+                );
 				self.handle_btc_signature_request(round, final_node_id).await?;
 			},
 		}
@@ -2341,17 +2416,30 @@ impl SigningNode {
 				.collect::<Vec<_>>()
 		);
 
+		// Log index => peerId mapping explicitly
+		info!("🔢 [INDEX-PEER-DEBUG] Index => PeerId mapping:");
+		for (peer_id, dkg_index) in &peer_to_dkg_index {
+			info!("🔢 [INDEX-PEER-DEBUG]   Index {} => PeerId {}", dkg_index, peer_id);
+		}
+
 		// Use DKG indices for signature aggregation
 		let s_shares: Vec<(u32, Vec<u8>)> = signatures
 			.into_iter()
 			.zip(peer_to_dkg_index.iter())
 			.map(|(sig, (peer_id, dkg_index))| {
 				let (_recid, compact) = sig.serialize_compact();
+				let s_bytes = compact[32..64].to_vec();
 				info!(
 					"🔍 [SIGNING] Peer {} using DKG index: {} for aggregation",
 					peer_id, dkg_index
 				);
-				(*dkg_index, compact[32..64].to_vec())
+				info!(
+					"🔍 [SIGNING-DEBUG] Index {} => PeerId {} => s-share: 0x{}",
+					dkg_index,
+					peer_id,
+					hex::encode(&s_bytes)
+				);
+				(*dkg_index, s_bytes)
 			})
 			.collect();
 
@@ -2359,6 +2447,29 @@ impl SigningNode {
 			"🔍 [SIGNING] Final s_shares with indices: {:?}",
 			s_shares.iter().map(|(idx, _)| idx).collect::<Vec<_>>()
 		);
+		info!(
+			"🔍 [SIGNING-DEBUG] Complete s_shares (index -> s-value): {:?}",
+			s_shares
+				.iter()
+				.map(|(idx, s)| format!("{} -> 0x{}", idx, hex::encode(s)))
+				.collect::<Vec<_>>()
+		);
+
+		// Build reverse mapping for clarity
+		let index_to_peer: std::collections::HashMap<u32, String> =
+			peer_to_dkg_index.iter().map(|(p, i)| (*i, p.clone())).collect();
+		info!("🔢 [INDEX-PEER-DEBUG] Complete Index => PeerId => Share mapping:");
+		for (idx, s_val) in &s_shares {
+			if let Some(peer) = index_to_peer.get(idx) {
+				info!(
+					"🔢 [INDEX-PEER-DEBUG]   Index {} => {} => 0x{}",
+					idx,
+					peer,
+					hex::encode(s_val)
+				);
+			}
+		}
+
 		info!("🔍 [SIGNING] === END SIGNATURE INDEX ASSIGNMENT ===");
 
 		// ─── 3) Reconstruct s via Lagrange at x=0 ───────────────────────────────────
@@ -2699,6 +2810,36 @@ impl SigningNode {
 	pub fn set_database(&mut self, database: Arc<crate::database::Database>) {
 		self.database = Some(database);
 		info!("🗄️ [SIGNING] Node {} database set", self.id);
+	}
+
+	/// Get peer index directly from database
+	async fn get_peer_index_from_db(&self, peer_id: &str) -> Option<usize> {
+		if let Some(db) = &self.database {
+			let dkg_storage = db.dkg_storage();
+			match dkg_storage.get_peer_index_for(peer_id) {
+				Ok(Some(index)) => {
+					info!(
+						"🔢 [SIGNING] Retrieved peer index {} for {} from database",
+						index, peer_id
+					);
+					Some(index)
+				},
+				Ok(None) => {
+					info!("🔍 [SIGNING] No peer index found in database for {}", peer_id);
+					None
+				},
+				Err(e) => {
+					warn!(
+						"❌ [SIGNING] Failed to get peer index from database for {}: {:?}",
+						peer_id, e
+					);
+					None
+				},
+			}
+		} else {
+			warn!("⚠️ [SIGNING] No database available to get peer index for {}", peer_id);
+			None
+		}
 	}
 
 	/// Initialize VrfService with network round synchronization
@@ -3081,11 +3222,14 @@ impl SigningNode {
 
 			tokio::spawn(async move {
 				// Handle VRF broadcast via service
-				vrf_service_clone.handle_vrf_broadcast(broadcast, total_nodes).await;
+				vrf_service_clone.handle_vrf_broadcast(broadcast, total_nodes).await; ///////////////////////
 
 				// Check if consensus should be triggered after receiving this broadcast
 				if vrf_service_clone.can_start_consensus(round, min_selections).await {
-					info!("🎯 [VRF] Enough selections collected for round {}, triggering consensus check", round);
+					info!(
+                        "🎯 [VRF] Enough selections collected for round {}, triggering consensus check",
+                        round
+                    );
 
 					if let Err(e) =
 						signing_node_clone.check_and_trigger_consensus(round, min_selections).await
@@ -3177,25 +3321,32 @@ impl SigningNode {
 
 					// Check if this node is the final selected node
 					if is_final_node {
-						info!("\x1b[32m🏆 [CONSENSUS] This node is the final selected node for round {}!\x1b[0m", round);
+						info!(
+                            "\x1b[32m🏆 [CONSENSUS] This node is the final selected node for round {}!\x1b[0m",
+                            round
+                        );
 						// Trigger aggregate signature for the final node
 						self.trigger_aggregate_signature_for_final_node(round).await?;
 
 						// Start collecting signatures after a short delay
-						let mut signing_node_clone = self.clone();
-						tokio::spawn(async move {
-							tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-							if let Err(e) =
-								signing_node_clone.collect_and_aggregate_signatures(round).await
-							{
-								error!(
-									"❌ [SIGNING] Failed to collect and aggregate signatures: {}",
-									e
-								);
-							}
-						});
+						// let mut signing_node_clone = self.clone();
+						// tokio::spawn(async move {
+						//     tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+						//     if let Err(e) = signing_node_clone
+						//         .collect_and_aggregate_signatures(round)
+						//         .await
+						//     {
+						//         error!(
+						//             "❌ [SIGNING] Failed to collect and aggregate signatures:
+						// {}",             e
+						//         );
+						//     }
+						// });
 					} else {
-						info!("\x1b[31m📋 [CONSENSUS] This node is not the final selected node for round {}\x1b[0m", round);
+						info!(
+                            "\x1b[31m📋 [CONSENSUS] This node is not the final selected node for round {}\x1b[0m",
+                            round
+                        );
 					}
 
 					Ok(Some(result))
@@ -3299,7 +3450,10 @@ impl SigningNode {
 						round, final_node_id
 					),
 					Err(e) => {
-						error!("❌ [SIGNING] Failed to send signature for round {} to final node {}: {}", round, final_node_id, e);
+						error!(
+                            "❌ [SIGNING] Failed to send signature for round {} to final node {}: {}",
+                            round, final_node_id, e
+                        );
 						return Err(e);
 					},
 				}
@@ -3319,49 +3473,62 @@ impl SigningNode {
 	}
 
 	/// Collect signatures and perform aggregation (for final selected node)
-	pub async fn collect_and_aggregate_signatures(&mut self, round: u64) -> Result<()> {
-		info!("🔍 [SIGNING] Final node {} waiting for signatures for round {}", self.id, round);
+	// pub async fn collect_and_aggregate_signatures(&mut self, round: u64) -> Result<()> {
+	//     info!(
+	//         "🔍 [SIGNING] Final node {} waiting for signatures for round {}",
+	//         self.id, round
+	//     );
 
-		// Wait a bit for signatures to arrive
-		tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+	//     // Wait a bit for signatures to arrive
+	//     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
 
-		// Determine if this is a Bitcoin or EVM round by checking which mapping has data
-		let signatures_by_round = self.signatures_by_round.read().await;
-		let btc_sigs_by_round = self.btc_sigs_by_round.read().await;
+	//     // Determine if this is a Bitcoin or EVM round by checking which mapping has data
+	//     let signatures_by_round = self.signatures_by_round.read().await;
+	//     let btc_sigs_by_round = self.btc_sigs_by_round.read().await;
 
-		let has_evm_sigs = signatures_by_round.contains_key(&round);
-		let has_btc_sigs = btc_sigs_by_round.contains_key(&round);
+	//     let has_evm_sigs = signatures_by_round.contains_key(&round);
+	//     let has_btc_sigs = btc_sigs_by_round.contains_key(&round);
 
-		if has_evm_sigs {
-			// This is an EVM round
-			if let Some(round_signatures) = signatures_by_round.get(&round) {
-				info!(
-					"📊 [SIGNING] Final node {} has {} EVM signatures for round {}",
-					self.id,
-					round_signatures.len(),
-					round
-				);
-			}
-		} else if has_btc_sigs {
-			// This is a Bitcoin round
-			if let Some(round_btc_sigs) = btc_sigs_by_round.get(&round) {
-				let total_btc_sigs: usize =
-					round_btc_sigs.values().map(|input_sigs| input_sigs.len()).sum();
-				let input_count = round_btc_sigs.len();
-				info!("📊 [SIGNING] Final node {} has {} Bitcoin signatures across {} inputs for round {}", self.id, total_btc_sigs, input_count, round);
+	//     if has_evm_sigs {
+	//         // This is an EVM round
+	//         if let Some(round_signatures) = signatures_by_round.get(&round) {
+	//             info!(
+	//                 "📊 [SIGNING] Final node {} has {} EVM signatures for round {}",
+	//                 self.id,
+	//                 round_signatures.len(),
+	//                 round
+	//             );
+	//         }
+	//     } else if has_btc_sigs {
+	//         // This is a Bitcoin round
+	//         if let Some(round_btc_sigs) = btc_sigs_by_round.get(&round) {
+	//             let total_btc_sigs: usize = round_btc_sigs.values().map(|input_sigs|
+	// input_sigs.len()).sum();             let input_count = round_btc_sigs.len();
+	//             info!(
+	//                 "📊 [SIGNING] Final node {} has {} Bitcoin signatures across {} inputs for
+	// round {}",                 self.id,
+	//                 total_btc_sigs,
+	//                 input_count,
+	//                 round
+	//             );
 
-				// Check which inputs have been aggregated
-				let btc_done_inputs = self.btc_done_inputs_by_round.read().await;
-				if let Some(done_inputs) = btc_done_inputs.get(&round) {
-					info!("✅ [SIGNING] Bitcoin round {} has {} inputs aggregated out of {} total inputs", round, done_inputs.len(), input_count);
-				}
-			}
-		} else {
-			info!("⚠️ [SIGNING] No signatures found for round {} (neither EVM nor Bitcoin)", round);
-		}
+	//             // Check which inputs have been aggregated
+	//             let btc_done_inputs = self.btc_done_inputs_by_round.read().await;
+	//             if let Some(done_inputs) = btc_done_inputs.get(&round) {
+	//                 info!(
+	//                     "✅ [SIGNING] Bitcoin round {} has {} inputs aggregated out of {} total
+	// inputs",                     round,
+	//                     done_inputs.len(),
+	//                     input_count
+	//                 );
+	//             }
+	//         }
+	//     } else {
+	//         info!("⚠️ [SIGNING] No signatures found for round {} (neither EVM nor Bitcoin)",
+	// round);     }
 
-		Ok(())
-	}
+	//     Ok(())
+	// }
 
 	/// Handle signature request from final selected node
 	async fn handle_signature_request(
@@ -3509,7 +3676,10 @@ impl SigningNode {
 					aggregated_rounds.insert(round);
 				}
 
-				info!("✅ [SIGNING] Threshold reached! {} signatures collected for round {} (threshold: {}), starting aggregation", signatures_vec.len(), round, self.threshold);
+				info!(
+                    "✅ [SIGNING] Threshold reached! {} signatures collected for round {} (threshold: {}), starting aggregation",
+                    signatures_vec.len(), round, self.threshold
+                );
 
 				// Take only threshold number of signatures for aggregation
 				let threshold_signatures = if signatures_vec.len() > self.threshold {
@@ -3538,7 +3708,10 @@ impl SigningNode {
 							.take(self.threshold)
 							.map(|(id, _)| (*id).clone())
 							.collect();
-						info!("🧩 [SIGNING] Selected peers (PeerId sorted) for this aggregation: {:?}", sorted_peer_ids);
+						info!(
+                            "🧩 [SIGNING] Selected peers (PeerId sorted) for this aggregation: {:?}",
+                            sorted_peer_ids
+                        );
 
 						// Calculate DKG indices for each peer
 						let mut dkg_indices = Vec::new();
@@ -3561,10 +3734,22 @@ impl SigningNode {
 						.collect::<Vec<_>>()
 				);
 
+				// Log index => peerId mapping for this round
+				info!(
+					"🔢 [INDEX-PEER-DEBUG] Round {} - Index => PeerId mapping for aggregation:",
+					round
+				);
+				for (peer_id, dkg_index) in &peer_to_dkg_index {
+					info!("🔢 [INDEX-PEER-DEBUG]   Index {} => {}", dkg_index, peer_id);
+				}
+
 				// Perform aggregation
 				match self.aggregate_signatures(threshold_signatures, peer_to_dkg_index).await {
 					Ok(aggregated_signature) => {
-						info!("🎉 [SIGNING] Signature aggregation completed successfully for round {}!", round);
+						info!(
+                            "🎉 [SIGNING] Signature aggregation completed successfully for round {}!",
+                            round
+                        );
 
 						// Log the aggregated signature details
 						let (recovery_id, signature_bytes) =
@@ -3897,7 +4082,10 @@ impl SigningNode {
 
 				// optional safety: validate stashed pubkey matches program
 				if group_h160 != program20 {
-					warn!("[handle_btc_signature_for_round] round {} input {}: group HASH160 != witness program ({} != {})", round, idx, hex::encode(group_h160), hex::encode(program20));
+					warn!(
+                    "[handle_btc_signature_for_round] round {} input {}: group HASH160 != witness program ({} != {})",
+                    round, idx, hex::encode(group_h160), hex::encode(program20)
+                );
 				}
 
 				self.compute_bip143_sighash_p2wpkh(&unsigned_tx, idx, prev.value, program20)?
@@ -3950,7 +4138,10 @@ impl SigningNode {
 				sig_std.normalize_s(); // low-s normalization
 				let group_pk = secp256k1::PublicKey::from_slice(&group_pubkey33)?;
 				if let Err(e) = secp.verify_ecdsa(&msg, &sig_std, &group_pk) {
-					error!("[btc] round {} input {}: aggregated signature does not verify under group key: {}", round, idx, e);
+					error!(
+                    "[btc] round {} input {}: aggregated signature does not verify under group key: {}",
+                    round, idx, e
+                );
 					bail!("round {} input {}: aggregated signature verify failed", round, idx);
 				}
 			}
@@ -4085,7 +4276,10 @@ impl SigningNode {
 		signature: ECDSASignature,
 		round: u64,
 	) -> Result<()> {
-		info!("📥 [SIGNING] Final node {} received signature from {} on signatures-to-final-node topic", self.id, from);
+		info!(
+            "📥 [SIGNING] Final node {} received signature from {} on signatures-to-final-node topic",
+            self.id, from
+        );
 
 		// Check if this node is the final node for the specific round
 		let is_final_node = {
@@ -4098,7 +4292,10 @@ impl SigningNode {
 			return self.handle_signature_for_round(from, signature, round).await;
 		}
 
-		info!("⚠️ [SIGNING] Received signature for round {} but this node is not the final node for that round", round);
+		info!(
+            "⚠️ [SIGNING] Received signature for round {} but this node is not the final node for that round",
+            round
+        );
 		Ok(())
 	}
 
@@ -4200,42 +4397,37 @@ impl SigningNode {
 		}
 	}
 
-	/// Calculate DKG index for a specific peer ID
+	/// Calculate DKG index for a specific peer ID using database-stored peer indices
 	pub async fn calculate_dkg_index_for_peer(&self, peer_id: &str) -> u32 {
-		if let Some(nodes) = &self.available_nodes {
-			let mut ids: Vec<String> = nodes.iter().map(|p| p.to_string()).collect();
-			ids.sort();
-
-			let index = ids.iter().position(|id| id == peer_id).map(|i| i + 1).unwrap_or(1);
-
-			info!("🔢 [SIGNING] Calculated DKG index {} for peer {}", index, peer_id);
-			index as u32
-		} else {
-			info!(
-				"⚠️ [SIGNING] No available nodes, using default DKG index 1 for peer {}",
-				peer_id
-			);
-			1
+		// Get the stored peer index from database
+		if let Some(index) = self.get_peer_index_from_db(peer_id).await {
+			info!("🔢 [SIGNING] Using stored DKG index {} for peer {}", index, peer_id);
+			return index as u32;
 		}
+
+		// No stored index found - this should not happen in normal operation
+		warn!(
+			"❌ [SIGNING] No peer index found in database for peer {}, using default index 1",
+			peer_id
+		);
+		1
 	}
 
-	/// Calculate DKG index for a specific peer ID (synchronous version)
+	/// Calculate DKG index for a specific peer ID (synchronous version) using database-stored peer
+	/// indices
 	pub fn calculate_dkg_index_for_peer_sync(&self, peer_id: &str) -> u32 {
-		if let Some(nodes) = &self.available_nodes {
-			let mut ids: Vec<String> = nodes.iter().map(|p| p.to_string()).collect();
-			ids.sort();
-
-			let index = ids.iter().position(|id| id == peer_id).map(|i| i + 1).unwrap_or(1);
-
-			info!("🔢 [SIGNING] Calculated DKG index {} for peer {} (sync)", index, peer_id);
-			index as u32
-		} else {
-			info!(
-				"⚠️ [SIGNING] No available nodes, using default DKG index 1 for peer {} (sync)",
-				peer_id
-			);
-			1
+		// Get the stored peer index from database
+		if let Some(db) = &self.database {
+			let dkg_storage = db.dkg_storage();
+			if let Ok(Some(index)) = dkg_storage.get_peer_index_for(peer_id) {
+				info!("🔢 [SIGNING] Using stored DKG index {} for peer {} (sync)", index, peer_id);
+				return index as u32;
+			}
 		}
+
+		// No stored index found - this should not happen in normal operation
+		warn!("❌ [SIGNING] No peer index found in database for peer {} (sync), using default index 1", peer_id);
+		1
 	}
 
 	/// Update solver amounts for UserToVault transactions
@@ -4314,22 +4506,15 @@ impl SigningNode {
 			// database for this solver
 			let liquidity_amounts: Vec<String> = amounts.iter().map(|u| u.to_string()).collect();
 
-			// Store solver liquidity with key: solver_liquidity:{solver_evm_address}
-			let solver_liquidity_key = SolverLiquidity { address: solver_evm_address.to_string() };
-
 			// Store individual solver liquidity in database
 			if let Some(ref database) = self.database {
-				let bytes = match bincode::serialize(&liquidity_amounts) {
-					Ok(b) => b,
-					Err(e) => {
-						warn!(
-							"⚠️ [SOLVER] Failed to serialize liquidity for solver {} (address: {:?}): {}",
-							solver_id, solver_evm_address, e
-						);
-						continue;
-					},
-				};
-				if let Err(e) = database.db().put(solver_liquidity_key.as_db_key(), &bytes) {
+				let solver_storage = database.solver_storage();
+				let solver_liquidity_key =
+					SolverLiquidity { address: solver_evm_address.to_string() };
+				if let Err(e) = solver_storage
+					.store_solver_liquidity(&solver_evm_address.to_string(), &liquidity_amounts)
+					.await
+				{
 					warn!(
 						"⚠️ [SOLVER] Failed to store liquidity for solver {} (address: {:?}): {}",
 						solver_id, solver_evm_address, e
@@ -4351,19 +4536,10 @@ impl SigningNode {
 			);
 		}
 
-		// Store all solver liquidity with key: solver_liquidity:all
-		let all_solver_liquidity_key = AllSolverLiquidityKey {};
-
 		// Store consolidated liquidity and totals in database
 		if let Some(ref database) = self.database {
-			let bytes = match bincode::serialize(&solver_liquidity_map) {
-				Ok(b) => b,
-				Err(e) => {
-					warn!("⚠️ [SOLVER] Failed to serialize all solver liquidity: {}", e);
-					return Err(anyhow::anyhow!("Failed to serialize all solver liquidity: {}", e));
-				},
-			};
-			if let Err(e) = database.db().put(all_solver_liquidity_key.as_db_key(), &bytes) {
+			let solver_storage = database.solver_storage();
+			if let Err(e) = solver_storage.store_all_solver_liquidity(&solver_liquidity_map).await {
 				warn!("⚠️ [SOLVER] Failed to store all solver liquidity: {}", e);
 			} else {
 				info!(
@@ -4373,16 +4549,14 @@ impl SigningNode {
 			}
 
 			// Store total liquidity values (index 0 = tics, index 1 = btc)
-			let tics_key = TotalLiquidityTicsKey {};
-			if let Err(e) = database.db().put(tics_key.as_db_key(), &total_tics.to_string()) {
+			let reward_storage = database.reward_storage();
+			if let Err(e) = reward_storage.set_total_liquidity_tics_u256(total_tics).await {
 				warn!("⚠️ [SOLVER] Failed to store total tics liquidity: {}", e);
 			} else {
 				info!("💾 [SOLVER] Stored total tics liquidity: {}", total_tics);
 			}
 
-			let btc_key = TotalLiquidityBtcKey {};
-
-			if let Err(e) = database.db().put(btc_key.as_db_key(), &total_btc.to_string()) {
+			if let Err(e) = reward_storage.set_total_liquidity_btc_u256(total_btc).await {
 				warn!("⚠️ [SOLVER] Failed to store total btc liquidity: {}", e);
 			} else {
 				info!("💾 [SOLVER] Stored total btc liquidity: {}", total_btc);
@@ -4442,12 +4616,12 @@ impl SigningNode {
 		let total_btc_u256 = total_btc;
 
 		// Fetch liquidity for all solvers
-		let all_key = AllSolverLiquidityKey {};
-		let solver_liquidity_map: std::collections::HashMap<String, Vec<String>> =
-			match database.db().get(all_key.as_db_key())? {
-				Some(bytes) => bincode::deserialize(&bytes).unwrap_or_default(),
-				None => std::collections::HashMap::new(),
-			};
+
+		let solver_liquidity_map: std::collections::HashMap<String, Vec<String>> = database
+			.solver_storage()
+			.get_all_solver_liquidity_record()
+			.await?
+			.unwrap_or_default();
 
 		for (solver, amounts) in solver_liquidity_map.iter() {
 			let reward = if source_chain == "btc" || source_chain == "bitcoin" {
@@ -4572,7 +4746,10 @@ impl SigningNode {
 					round, final_node_id
 				),
 				Err(e) => {
-					error!("❌ [SIGNING] Failed to send BTC signatures for round {} to final node {}: {}", round, final_node_id, e);
+					error!(
+                        "❌ [SIGNING] Failed to send BTC signatures for round {} to final node {}: {}",
+                        round, final_node_id, e
+                    );
 					return Err(e);
 				},
 			}
@@ -4616,7 +4793,10 @@ impl SigningNode {
 		signatures: Vec<BtcIndexedSignature>,
 		round: u64,
 	) -> Result<()> {
-		info!("📥 [SIGNING] Final node {} received {} BTC signatures from {} on signatures-to-final-node topic", self.id, signatures.len(), from);
+		info!(
+            "📥 [SIGNING] Final node {} received {} BTC signatures from {} on signatures-to-final-node topic",
+            self.id, signatures.len(), from
+        );
 
 		// Check if this node is the final node for the specific round
 		let is_final_node = {
@@ -4625,7 +4805,10 @@ impl SigningNode {
 		};
 
 		if is_final_node {
-			info!("✅ [SIGNING] This node {} is the final node for round {}, processing {} BTC signatures", self.id, round, signatures.len());
+			info!(
+                "✅ [SIGNING] This node {} is the final node for round {}, processing {} BTC signatures",
+                self.id, round, signatures.len()
+            );
 
 			// // Store the BTC signatures for this round
 			// {
@@ -4637,12 +4820,18 @@ impl SigningNode {
 			//     }
 			// }
 
-			info!("📥 [SIGNING] Node {} received BTC per-input signatures from {} for round {} (count: {})", self.id, from, round, signatures.len());
+			info!(
+                "📥 [SIGNING] Node {} received BTC per-input signatures from {} for round {} (count: {})",
+                self.id, from, round, signatures.len()
+            );
 			// Process each per-input signature via BTC per-input handler
 			return self.handle_btc_signature_for_round(from.clone(), signatures, round).await;
 		}
 
-		info!("⚠️ [SIGNING] Received BTC signatures for round {} but this node is not the final node for that round", round);
+		info!(
+            "⚠️ [SIGNING] Received BTC signatures for round {} but this node is not the final node for that round",
+            round
+        );
 		Ok(())
 	}
 }
@@ -4734,21 +4923,40 @@ impl Default for ChainBroadcastConfig {
 impl BroadcastConfig {
 	pub fn from_env() -> Self {
 		let mut config = Self::default();
-		let env_vars = EnvVars::load_with_dotenv().unwrap();
 
-		config.continue_on_failure = env_vars.mpc_continue_on_broadcast_failure;
-		config.max_retries = env_vars.mpc_max_broadcast_retries;
-		config.retry_delay_ms = env_vars.mpc_retry_delay_ms;
-		config.log_failures_as_warnings = env_vars.mpc_log_failures_as_warnings;
+		// Load from environment variables
+		if let Ok(val) = std::env::var("MPC_CONTINUE_ON_BROADCAST_FAILURE") {
+			config.continue_on_failure = val.parse().unwrap_or(true);
+		}
+
+		if let Ok(val) = std::env::var("MPC_MAX_BROADCAST_RETRIES") {
+			config.max_retries = val.parse().unwrap_or(3);
+		}
+
+		if let Ok(val) = std::env::var("MPC_RETRY_DELAY_MS") {
+			config.retry_delay_ms = val.parse().unwrap_or(1000);
+		}
+
+		if let Ok(val) = std::env::var("MPC_LOG_FAILURES_AS_WARNINGS") {
+			config.log_failures_as_warnings = val.parse().unwrap_or(true);
+		}
 
 		// Load chain-specific configurations
 		if let Some(eth_config) = config.chain_configs.get_mut("ethereum") {
-			eth_config.rpc_url = env_vars.mpc_ethereum_rpc_url;
-			eth_config.chain_id = env_vars.mpc_ethereum_chain_id;
+			eth_config.rpc_url = std::env::var("MPC_ETHEREUM_RPC_URL")
+				.unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string());
+		}
+
+		if let Ok(chain_id) = std::env::var("MPC_ETHEREUM_CHAIN_ID") {
+			if let Some(eth_config) = config.chain_configs.get_mut("ethereum") {
+				eth_config.chain_id = chain_id.parse().unwrap_or(9029);
+			}
 		}
 
 		if let Some(btc_config) = config.chain_configs.get_mut("bitcoin") {
-			btc_config.rpc_url = env_vars.mpc_bitcoin_rpc_url;
+			btc_config.rpc_url = std::env::var("MPC_BITCOIN_RPC_URL").unwrap_or_else(|_| {
+				"https://api.blockcypher.com/v1/btc/test3/txs/push".to_string()
+			});
 		}
 
 		config

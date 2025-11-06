@@ -2,7 +2,6 @@ use crate::{
 	database::Keystorage,
 	prepare_unsigned_eip1559_tx,
 	rpc_server::common::{ContractTransaction, DepositIntent},
-	Database, DatabaseConfig,
 };
 use anyhow::Result;
 use ethers::{
@@ -47,6 +46,7 @@ use crate::{
 	chain::EthereumTransaction,
 	commands::CommandProcessor,
 	consensus::ConsensusNode,
+	database::{Database, DatabaseConfig},
 	node_management::NodeMembership,
 	rpc_server::common::DummyTransaction,
 	signing::{DatabaseSigningNode, SigningNode},
@@ -97,6 +97,59 @@ impl From<ReqRespEvent<RPCRequest, RPCResponse>> for NetworkEvent {
 	}
 }
 
+/// Database sync state for tracking synchronization progress
+#[derive(Debug, Clone)]
+pub struct DatabaseSyncState {
+	pub in_progress: bool,
+	pub source_peer: Option<PeerId>,
+	pub total_entries: usize,
+	pub batch_size: usize,
+	pub current_batch: usize,
+	pub total_batches: usize,
+	pub entries_synced: usize,
+}
+
+impl DatabaseSyncState {
+	pub fn new() -> Self {
+		Self {
+			in_progress: false,
+			source_peer: None,
+			total_entries: 0,
+			batch_size: 0,
+			current_batch: 0,
+			total_batches: 0,
+			entries_synced: 0,
+		}
+	}
+
+	pub fn start_sync(&mut self, peer: PeerId, total_entries: usize, batch_size: usize) {
+		self.in_progress = true;
+		self.source_peer = Some(peer);
+		self.total_entries = total_entries;
+		self.batch_size = batch_size;
+		self.current_batch = 0;
+		self.total_batches = (total_entries + batch_size - 1) / batch_size;
+		self.entries_synced = 0;
+	}
+
+	pub fn complete_batch(&mut self, entries_count: usize) {
+		self.current_batch += 1;
+		self.entries_synced += entries_count;
+	}
+
+	pub fn finish_sync(&mut self) {
+		self.in_progress = false;
+		self.source_peer = None;
+	}
+
+	pub fn progress_percentage(&self) -> f32 {
+		if self.total_entries == 0 {
+			return 100.0;
+		}
+		(self.entries_synced as f32 / self.total_entries as f32) * 100.0
+	}
+}
+
 pub struct NetworkLayer {
 	local_key: Keypair,
 	local_peer_id: PeerId,
@@ -111,17 +164,69 @@ pub struct NetworkLayer {
 	user_registry: Option<DatabaseUserRegistry>,
 	node_manager: Box<dyn NodeMembership>,
 	scheduled_dkg_task: Option<JoinHandle<()>>,
-	first_node_start_time: Option<u64>, // t1 - Unix timestamp when first node started
-	vrf_round_requested: bool,          // Flag to prevent duplicate VRF round requests
+	vrf_round_requested: bool, // Flag to prevent duplicate VRF round requests
+	// In-memory mapping of peers to their assigned indices
+	peer_indices: std::collections::HashMap<PeerId, usize>,
+	// Database for persisting peer indices
+	db: Database,
+	// Database sync state tracking
+	db_sync_state: DatabaseSyncState,
+	// Flag to retry database sync when a connection becomes available
+	needs_database_sync: bool,
 }
 
 impl NetworkLayer {
+	fn get_max_peer_index_from_db(&self) -> usize {
+		self.db.dkg_storage().get_max_peer_index().unwrap_or_else(|e| {
+			tracing::warn!("Failed to get max peer index from DB: {:?}", e);
+			0
+		})
+	}
+
+	fn get_index_from_db(&self, pid: &PeerId) -> Option<usize> {
+		self.db.dkg_storage().get_peer_index_for(&pid.to_string()).unwrap_or_else(|e| {
+			tracing::warn!("Failed to get peer index for {}: {:?}", pid, e);
+			None
+		})
+	}
+
+	fn assign_and_persist_index(&mut self, pid: &PeerId) -> usize {
+		info!("🔢 [NETWORK] Assign and persist index for peer: {}", pid);
+		if let Some(idx) = self.get_index_from_db(pid) {
+			info!("🔢 [NETWORK] Peer index found in database: {}", idx);
+			return idx;
+		}
+		// Determine next index strictly from DB state
+		let next = self.get_max_peer_index_from_db().saturating_add(1);
+		info!("🔢 [NETWORK] Next index: {}", next);
+		if let Err(e) = self.db.dkg_storage().set_peer_index(&pid.to_string(), next) {
+			tracing::warn!("Failed to persist peer index: {:?}", e);
+		}
+		self.peer_indices.insert(pid.clone(), next);
+		info!("🔢 [NETWORK] Peer index inserted: {}", next);
+		next
+	}
+
+	fn ensure_local_index(&mut self) -> usize {
+		if let Some(idx) = self.get_index_from_db(&self.local_peer_id) {
+			self.peer_indices.insert(self.local_peer_id.clone(), idx);
+			return idx;
+		}
+		// If no peers indexed yet, start at 1; otherwise next max+1
+		let current_max = self.get_max_peer_index_from_db();
+		let idx = if current_max == 0 { 1 } else { current_max + 1 };
+		if let Err(e) = self.db.dkg_storage().set_peer_index(&self.local_peer_id.to_string(), idx) {
+			tracing::warn!("Failed to persist local index: {:?}", e);
+		}
+		self.peer_indices.insert(self.local_peer_id.clone(), idx);
+		idx
+	}
 	pub async fn new(node_manager: Box<dyn NodeMembership>, db: Database) -> Result<Self> {
 		// Load or create persistent keypair
-		let (local_key, local_peer_id) = Self::load_or_create_keypair(db).await?;
+		let (local_key, local_peer_id) = Self::load_or_create_keypair(db.clone()).await?;
 		let (tx, rx) = mpsc::channel(100);
 
-		Ok(Self {
+		let mut this = Self {
 			local_key,
 			local_peer_id,
 			message_tx: tx,
@@ -135,9 +240,31 @@ impl NetworkLayer {
 			user_registry: None,
 			node_manager,
 			scheduled_dkg_task: None,
-			first_node_start_time: None,
 			vrf_round_requested: false,
-		})
+			peer_indices: std::collections::HashMap::new(),
+			db,
+			db_sync_state: DatabaseSyncState::new(),
+			needs_database_sync: false,
+		};
+
+		info!("🔢 [NETWORK] Preload any persisted peer indices into memory");
+		// Preload any persisted peer indices into memory
+		if let Ok(indices) = this.db.dkg_storage().get_all_peer_indices() {
+			for (peer_str, index) in indices {
+				if let Ok(pid) = peer_str.parse() {
+					this.peer_indices.insert(pid, index);
+					info!("🔢 [NETWORK] Peer index inserted: {} for {}", index, pid);
+				}
+			}
+		} else {
+			warn!("🔢 [NETWORK] Failed to get all peer indices from database");
+		}
+		info!("🔢 [NETWORK] Peer indices: {:?}", this.peer_indices);
+
+		// Ensure we have our own index persisted
+		this.ensure_local_index();
+
+		Ok(this)
 	}
 
 	pub fn set_dkg_node(&mut self, dkg_node: DKGNode) {
@@ -176,23 +303,13 @@ impl NetworkLayer {
 		} else {
 			info!("⚠️ [NETWORK] Signing node not available when setting user registry");
 		}
-	}
 
-	/// Synchronize signing node thresholds with current node manager state
-	/// This should be called after peer discovery to ensure thresholds are correct
-	pub async fn sync_signing_node_thresholds(&mut self) {
-		let current_threshold = self.node_manager.get_threshold();
-		let total_nodes = self.node_manager.get_total_nodes();
-
-		info!(
-			"🔄 [THRESHOLD] Syncing signing node thresholds - Total nodes: {}, Threshold: {}",
-			total_nodes, current_threshold
-		);
-
-		// Update signing node threshold
-		if let Some(signing_node) = &mut self.signing_node {
-			signing_node.set_threshold(current_threshold);
-			info!("✅ [THRESHOLD] Updated signing node threshold to {}", current_threshold);
+		// Attach user registry to DKG node so it can refresh user shares after secret updates
+		if let Some(dkg_node) = &mut self.dkg_node {
+			dkg_node.set_user_registry(registry.clone());
+			info!("🔗 [NETWORK] Attached user registry to DKG node");
+		} else {
+			info!("⚠️ [NETWORK] DKG node not available when setting user registry");
 		}
 	}
 
@@ -297,6 +414,132 @@ impl NetworkLayer {
 		Ok(())
 	}
 
+	/// Sync database from an existing peer when joining the network
+	/// This method should be called by new nodes after connecting to the network
+	pub async fn sync_database_from_peer(
+		&self,
+		swarm: &mut libp2p::Swarm<MPCBehaviour>,
+		peer_id: PeerId,
+	) -> Result<()> {
+		info!("📦 [DB_SYNC] Starting database sync from peer {}", peer_id);
+
+		// Step 1: Request database metadata
+		let request = RPCRequest::RequestDatabaseSync {
+			requester_id: SerializablePeerId(self.local_peer_id),
+		};
+
+		let request_id = swarm.behaviour_mut().request_response.send_request(&peer_id, request);
+
+		info!("📦 [DB_SYNC] Sent sync metadata request (ID: {:?})", request_id);
+
+		// Note: The actual response handling happens in the swarm event loop
+		// We need to handle DatabaseSyncMetadata and DatabaseBatch responses there
+		Ok(())
+	}
+
+	/// Handle database sync metadata response and start batch requests
+	pub async fn handle_database_sync_metadata(
+		&mut self,
+		swarm: &mut libp2p::Swarm<MPCBehaviour>,
+		peer_id: PeerId,
+		total_entries: usize,
+		batch_size: usize,
+	) -> Result<()> {
+		if total_entries == 0 {
+			info!("📦 [DB_SYNC] Peer has no data to sync");
+			return Ok(());
+		}
+
+		// Initialize sync state
+		self.db_sync_state.start_sync(peer_id, total_entries, batch_size);
+
+		let total_batches = (total_entries + batch_size - 1) / batch_size;
+		info!(
+			"📦 [DB_SYNC] Starting batch sync: {} entries in {} batches from peer {}",
+			total_entries, total_batches, peer_id
+		);
+		info!("📊 [DB_SYNC] Progress: 0/{} entries (0.00%)", total_entries);
+
+		// Request first batch - subsequent batches will be requested after receiving responses
+		let request = RPCRequest::RequestDatabaseBatch { batch_index: 0, batch_size };
+
+		swarm.behaviour_mut().request_response.send_request(&peer_id, request);
+
+		info!("📦 [DB_SYNC] Requested batch 0/{}", total_batches - 1);
+		Ok(())
+	}
+
+	/// Handle a batch of database entries
+	pub async fn handle_database_batch(
+		&mut self,
+		swarm: &mut libp2p::Swarm<MPCBehaviour>,
+		peer_id: PeerId,
+		batch_index: usize,
+		entries: Vec<crate::types::rpc::DatabaseEntry>,
+		is_last_batch: bool,
+		batch_size: usize,
+	) -> Result<()> {
+		let entries_count = entries.len();
+
+		info!(
+			"📦 [DB_SYNC] Received batch {} with {} entries (last: {})",
+			batch_index, entries_count, is_last_batch
+		);
+
+		// Convert entries to tuple format
+		let db_entries: Vec<(Vec<u8>, Vec<u8>)> =
+			entries.into_iter().map(|e| (e.key, e.value)).collect();
+
+		// Import batch into database
+		self.db.import_batch(db_entries)?;
+
+		// Update sync state
+		self.db_sync_state.complete_batch(entries_count);
+
+		let progress = self.db_sync_state.progress_percentage();
+		info!(
+			"✅ [DB_SYNC] Successfully imported batch {} - Progress: {}/{} entries ({:.2}%)",
+			batch_index,
+			self.db_sync_state.entries_synced,
+			self.db_sync_state.total_entries,
+			progress
+		);
+
+		// Request next batch if not last
+		if !is_last_batch {
+			let request =
+				RPCRequest::RequestDatabaseBatch { batch_index: batch_index + 1, batch_size };
+
+			swarm.behaviour_mut().request_response.send_request(&peer_id, request);
+
+			info!(
+				"📦 [DB_SYNC] Requested batch {}/{} from peer {}",
+				batch_index + 1,
+				self.db_sync_state.total_batches - 1,
+				peer_id
+			);
+		} else {
+			// Finish sync
+			self.db_sync_state.finish_sync();
+			info!("🎉 [DB_SYNC] Database synchronization completed!");
+			info!(
+				"📊 [DB_SYNC] Total synced: {} entries from peer {}",
+				self.db_sync_state.entries_synced, peer_id
+			);
+
+			// After database sync completes, sync the VRF round from database
+			if let Some(db_signing_node) = &mut self.db_signing_node {
+				let mut node = db_signing_node.lock().await;
+				node.sync_vrf_round_from_database().await;
+				info!(
+					"🔄 [NEW_NODE] Synced VRF round from database after database sync completion"
+				);
+			}
+		}
+
+		Ok(())
+	}
+
 	pub async fn start(&mut self, bootstrap_nodes: Vec<String>) -> Result<()> {
 		let mut swarm = libp2p::SwarmBuilder::with_existing_identity(self.local_key.clone())
 			.with_tokio()
@@ -365,23 +608,7 @@ impl NetworkLayer {
 			.build();
 
 		// Check if this is an existing node with DKG data - if so, subscribe to topics immediately
-		if let Some(dkg_node) = &self.dkg_node {
-			let has_final_secret = dkg_node.get_final_secret_share().await.is_some();
-			let has_final_public = dkg_node.get_final_public_key().await.is_some();
-
-			if has_final_secret && has_final_public {
-				info!(
-					"🔄 Existing node detected with DKG data - subscribing to topics immediately"
-				);
-				if let Err(e) = self.subscribe_to_default_topics(&mut swarm) {
-					warn!("❌ Failed to subscribe to topics for existing node: {:?}", e);
-				}
-			} else {
-				info!("🆕 New node detected - topic subscription will be done later after determining first node start time (t1)");
-			}
-		} else {
-			info!("🆕 No DKG node available - topic subscription will be done later after determining first node start time (t1)");
-		}
+		self.subscribe_to_default_topics(&mut swarm)?;
 
 		info!("Starting Kademlia bootstrap...");
 
@@ -400,7 +627,6 @@ impl NetworkLayer {
 		let tx_clone = self.message_tx.clone();
 		tokio::spawn(async move {
 			tokio::time::sleep(Duration::from_secs(3)).await;
-			let _ = tx_clone.send(ChannelMessage::CheckIfFirstNode).await;
 		});
 		let mut bootstrap_timer = tokio::time::interval(Duration::from_secs(300));
 		let mut discovery_timer = tokio::time::interval(Duration::from_secs(300));
@@ -448,10 +674,21 @@ impl NetworkLayer {
 
 				_ = peerlist_logger.tick() => {
 					let peers = self.node_manager.get_active_nodes();
+					let mut entries: Vec<String> = Vec::new();
+					for p in &peers {
+						let idx = match self.peer_indices.get(p).cloned() {
+							Some(i) => Some(i),
+							None => {
+								self.db.dkg_storage().get_peer_index_for(&p.to_string()).unwrap_or(None)
+							}
+						};
+						match idx { Some(i) => entries.push(format!("{}=>{}", p, i)), None => entries.push(format!("{}=>?", p)) }
+					}
+					let display_str = entries.join(", ");
 					info!(
-						"🕒 PeerList snapshot ({} peers): {:?}",
+						"🕒 PeerList snapshot ({} peers): {}",
 						peers.len(),
-						peers
+						display_str
 					);
 				}
 				 _ = bootstrap_timer.tick() => {
@@ -490,7 +727,19 @@ impl NetworkLayer {
 					let random_peer = PeerId::random();
 					swarm.behaviour_mut().kademlia.get_closest_peers(random_peer);
 
-					self.sync_signing_node_thresholds().await;
+					// Proactively request indices from peers we lack index for
+					let active = self.node_manager.get_active_nodes();
+					for p in active {
+						let known = self.peer_indices.contains_key(&p) || {
+							self.db.dkg_storage().get_peer_index_for(&p.to_string()).unwrap_or(None).is_some()
+						};
+						if !known {
+							info!("🔎 Requesting PeerList from {} to learn indices", p);
+							swarm.behaviour_mut()
+								.request_response
+								.send_request(&p, RPCRequest::GetPeerList);
+						}
+					}
 				}
 
 				_ = dkg_status_timer.tick() => {
@@ -515,86 +764,6 @@ impl NetworkLayer {
 				}
 			};
 		}
-	}
-
-	/// Check if adding NEW peers is allowed (within 5-minute window)
-	/// Note: This should only be called after checking that the peer is not already in the node
-	/// manager
-	async fn is_peer_addition_allowed(&self) -> bool {
-		if let Some(t1) = self.first_node_start_time {
-			let current_time = std::time::SystemTime::now()
-				.duration_since(std::time::UNIX_EPOCH)
-				.unwrap()
-				.as_secs();
-			let elapsed_since_t1 = current_time.saturating_sub(t1);
-			let five_minutes = 5 * 60; // 5 minutes in seconds
-
-			// Determine node type for logging purposes
-			let node_type = if let Some(dkg_node) = &self.dkg_node {
-				let has_final_secret = dkg_node.get_final_secret_share().await.is_some();
-				let has_final_public = dkg_node.get_final_public_key().await.is_some();
-				if has_final_secret && has_final_public {
-					"existing node with DKG data"
-				} else {
-					"new node"
-				}
-			} else {
-				"new node"
-			};
-
-			// Apply the same 5-minute rule regardless of node type
-			if elapsed_since_t1 > five_minutes {
-				warn!("⏰ NEW peer addition blocked by {}: More than 5 minutes have passed since first node start time t1 (elapsed: {}s, t1: {})", node_type, elapsed_since_t1, t1);
-				false
-			} else {
-				info!("✅ {} allowing NEW peer addition - within 5-minute window (elapsed: {}s since t1: {})", node_type, elapsed_since_t1, t1);
-				true
-			}
-		} else {
-			// If we don't have t1 yet, allow peer addition (for bootstrap process)
-			info!(
-				"⚠️ No first node start time available yet - allowing peer addition for bootstrap"
-			);
-			true
-		}
-	}
-
-	/// Subscribe to topics with 5-minute rule check (allows existing nodes)
-	async fn subscribe_to_topics_with_time_check(
-		&mut self,
-		swarm: &mut libp2p::Swarm<MPCBehaviour>,
-	) -> Result<()> {
-		// Check if this is an existing node restarting (has DKG data)
-		if let Some(dkg_node) = &self.dkg_node {
-			let has_final_secret = dkg_node.get_final_secret_share().await.is_some();
-			let has_final_public = dkg_node.get_final_public_key().await.is_some();
-
-			if has_final_secret && has_final_public {
-				info!("✅ Existing node with DKG data - topic subscription allowed (bypassing 5-minute rule)");
-				return self.subscribe_to_default_topics(swarm);
-			}
-		}
-
-		// Check if more than 5 minutes have passed since first node start time
-		if let Some(t1) = self.first_node_start_time {
-			let current_time = std::time::SystemTime::now()
-				.duration_since(std::time::UNIX_EPOCH)
-				.unwrap()
-				.as_secs();
-			let elapsed_since_t1 = current_time.saturating_sub(t1);
-			let five_minutes = 5 * 60; // 5 minutes in seconds
-
-			if elapsed_since_t1 > five_minutes {
-				warn!("⏰ Topic subscription skipped: More than 5 minutes have passed since first node start time t1 (elapsed: {}s, t1: {})", elapsed_since_t1, t1);
-				return Ok(());
-			}
-
-			info!("✅ Within 5-minute window - proceeding with topic subscription (elapsed: {}s since t1: {})", elapsed_since_t1, t1);
-		} else {
-			info!("⚠️ No first node start time available yet - proceeding with topic subscription");
-		}
-
-		self.subscribe_to_default_topics(swarm)
 	}
 
 	fn subscribe_to_default_topics(
@@ -712,11 +881,32 @@ impl NetworkLayer {
 				swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
 				info!("➕ Added peer {} to gossipsub explicit peers", peer_id);
 
+				// Retry database sync if needed and not already syncing
+				if self.needs_database_sync && !self.db_sync_state.in_progress {
+					info!(
+						"🔄 [DB_SYNC] Connection established, retrying database sync with peer: {}",
+						peer_id
+					);
+					self.needs_database_sync = false; // Clear flag
+
+					if let Err(e) = self.sync_database_from_peer(swarm, peer_id).await {
+						warn!("❌ [DB_SYNC] Failed to start database sync: {:?}", e);
+						// Set flag again to retry with next connection
+						self.needs_database_sync = true;
+					} else {
+						info!("✅ [DB_SYNC] Database sync retry initiated successfully");
+					}
+				}
+
 				if is_listener && !already_known {
 					info!("📡 New peer {} connected; announcing to mesh", peer_id);
+					// Assign and persist index based on DB state
+					let tentative_index = self.assign_and_persist_index(&peer_id);
+					info!("assigned_index : {:?}", tentative_index);
 					let msg = GossipsubMessage::PeerDiscovered {
 						peer: peer_id.clone(),
 						sequence: Some(1),
+						index: Some(tentative_index),
 					};
 					let payload = serde_json::to_vec(&msg).expect("serialize PeerDiscovered");
 					match self.broadcast(MSG_TOPIC_PEER_DISCOVERY, &payload).await {
@@ -743,36 +933,39 @@ impl NetworkLayer {
 					if current_nodes.contains(&peer_id) {
 						info!("ℹ️ Peer {} already exists in node manager, skipping", peer_id);
 					} else {
-						if self.is_peer_addition_allowed().await {
-							self.node_manager.add_node(peer_id).map_err(|e| anyhow::anyhow!(e))?;
+						self.node_manager.add_node(peer_id).map_err(|e| anyhow::anyhow!(e))?;
 
-							// Update signing node threshold after adding peer
-							if let Some(signing_node) = &mut self.signing_node {
-								let new_threshold = self.node_manager.get_threshold();
-								signing_node.set_threshold(new_threshold);
-								info!("🔄 [THRESHOLD] Updated signing node threshold to {} after Kademlia peer addition", new_threshold);
-							}
-						} else {
-							warn!(
-								"🚫 Peer {} not added to node manager - outside 5-minute window",
-								peer_id
-							);
+						// Update signing node threshold after adding peer
+						if let Some(signing_node) = &mut self.signing_node {
+							let new_threshold = self.node_manager.get_threshold();
+							signing_node.set_threshold(new_threshold);
+							info!("🔄 [THRESHOLD] Updated signing node threshold to {} after Kademlia peer addition", new_threshold);
 						}
 					}
 
 					let total = self.node_manager.get_total_nodes();
-					let threshold = self.node_manager.get_threshold();
 
-					if total >= threshold + 1 {
-						info!(
-							"🎯 Sufficient nodes connected ({} >= {} + 1), triggering DKG!",
-							total, threshold
-						);
+					// Check if initial DKG has been completed
+					let initial_dkg_complete = if let Some(dkg) = &self.dkg_node {
+						dkg.is_initial_dkg_complete().await
+					} else {
+						false
+					};
+
+					if initial_dkg_complete {
+						// Initial DKG is complete, new node resharing will be handled via
+						// PeerDiscovery gossipsub
+						info!("🔒 [DKG] Initial DKG already completed with 4 nodes");
+						info!("🆕 [NEW_NODE] Total nodes: {}, new node resharing will be triggered via PeerDiscovery gossipsub handler", total);
+						info!("📡 [NEW_NODE] PeerDiscovery message was already broadcast above, gossipsub handler will process it");
+					} else if total == 4 {
+						// First time we have 4 nodes, start initial DKG
+						info!("🎯 Initial 4 nodes connected, triggering first DKG!",);
 
 						let now_secs =
 							SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
 						let start_time = now_secs + 10;
-						info!("🕒 Scheduling DKG start at unix time {}", start_time);
+						info!("🕒 Scheduling initial DKG start at unix time {}", start_time);
 
 						for peer in self.node_manager.get_active_nodes() {
 							if peer != *self.get_local_peer_id() {
@@ -782,15 +975,10 @@ impl NetworkLayer {
 									.send_request(&peer, RPCRequest::ScheduleADKG { start_time });
 							}
 						}
-						info!("📅 Scheduled DKG start for all peers at {}", start_time);
+						info!("📅 Scheduled initial DKG start for all peers at {}", start_time);
 						self.schedule_dkg_at(start_time);
-					} else {
-						info!(
-							"⏳ Waiting for more nodes: {}/{} (need {} + 1)",
-							total,
-							threshold + 1,
-							threshold
-						);
+					} else if total < 4 {
+						info!("⏳ Waiting for initial 4 nodes: {}/4", total);
 					}
 				}
 
@@ -800,6 +988,7 @@ impl NetworkLayer {
 						.behaviour_mut()
 						.request_response
 						.send_request(&peer_id, RPCRequest::GetPeerList);
+					//receive the peer list with corrosponding index
 				}
 
 				// Debug: Log current Kademlia routing table size
@@ -817,17 +1006,6 @@ impl NetworkLayer {
 
 				// Try to discover more peers through this connection
 				swarm.behaviour_mut().kademlia.get_closest_peers(peer_id);
-
-				// If this node doesn't have first node start time (t1), request it from the
-				// connected peer
-				if self.first_node_start_time.is_none() {
-					info!("🔄 Requesting first node start time (t1) from peer {}", peer_id);
-					let _request_id = swarm
-						.behaviour_mut()
-						.request_response
-						.send_request(&peer_id, RPCRequest::RequestFirstNodeStartTime);
-					info!("📤 Sent request for first node start time to peer {}", peer_id);
-				}
 			},
 
 			SwarmEvent::Behaviour(NetworkEvent::RequestResponse(ReqRespEvent::Message {
@@ -841,185 +1019,207 @@ impl NetworkLayer {
 					// this peer will recieve a request from other peer(s) (incl testing agent(s))
 					ReqRespMessage::Request { request, channel, .. } => {
 						let response = match request {
-							RPCRequest::GetPeerList => {
-								// Log that we received the full‐list request
-								info!("🔄 GetPeerList RPC received from {}", peer);
+                            RPCRequest::GetPeerList => {
+                                // Log that we received the full‐list request
+                                info!("🔄 GetPeerList RPC received from {}", peer);
 
-								// Gather everyone we know
-								let peers: Vec<SerializablePeerId> = self
-									.node_manager
-									.get_active_nodes()
-									.into_iter()
-									.map(SerializablePeerId)
-									.collect();
+                                // Gather everyone we know
+                                let peers: Vec<SerializablePeerId> = self
+                                    .node_manager
+                                    .get_active_nodes()
+                                    .into_iter()
+                                    .map(SerializablePeerId)
+                                    .collect();
 
-								// Log how many peers we're returning (and list them if you like)
-								info!(
-									"📋 Sending PeerList response to {}: {} entries: {:?}",
-									peer,
-									peers.len(),
-									peers
-								);
+                                // Map indices in the same order, also load from DB if not in-memory
+                                let indices: Vec<Option<usize>> = peers
+                                    .iter()
+                                    .map(|SerializablePeerId(pid)| {
+                                        if let Some(idx) = self.peer_indices.get(pid).cloned() {
+                                            Some(idx)
+                                        } else {
+											self.db.dkg_storage().get_peer_index_for(&pid.to_string()).unwrap_or(None)
+                                        }
+                                    })
+                                    .collect();
 
-								RPCResponse::PeerList { peers }
-							},
-							RPCRequest::Ping => RPCResponse::Pong,
-							RPCRequest::GetPeerInfo => {
-								// Provide your implementation to get peer info
-								RPCResponse::PeerInfo(PeerInfo {
-									addresses: vec![],
-									connected: true,
-								})
-							},
-							RPCRequest::Custom { id, data } => {
-								// Handle custom request
-								RPCResponse::Custom { id, data }
-							},
-							RPCRequest::StartADKG => {
-								// handle dkg start
-								match self.dkg_node.as_mut() {
-									Some(dkg) => {
-										info!("🚀 Received DKG start request from peer {}", peer);
+                                // Log how many peers we're returning (and list them if you like)
+                                info!(
+                                    "📋 Sending PeerList response to {}: {} entries: {:?} {:?}",
+                                    peer,
+                                    peers.len(),
+                                    peers,
+                                    indices
+                                );
 
-										// Update DKG parameters with current network state
-										let total = self.node_manager.get_total_nodes();
-										let threshold = self.node_manager.get_threshold();
-										dkg.update_node_params(total, threshold);
-										dkg.reset().await;
-										if let Some(signing_node) = &mut self.signing_node {
-											signing_node.set_threshold(
-												self.node_manager.get_total_nodes() - 1,
-											);
-										}
-										self.node_manager.set_threshold(total - 1);
-										info!("🔄 DKG parameters updated: total_nodes={}, threshold={}", total, threshold);
+                                RPCResponse::PeerList { peers, indices }
+                            }
+                            RPCRequest::Ping => RPCResponse::Pong,
+                            RPCRequest::GetPeerInfo => {
+                                // Provide your implementation to get peer info
+                                RPCResponse::PeerInfo(PeerInfo {
+                                    addresses: vec![],
+                                    connected: true,
+                                })
+                            }
+                            RPCRequest::Custom { id, data } => {
+                                // Handle custom request
+                                RPCResponse::Custom { id, data }
+                            },
+                            RPCRequest::StartADKG// {n, threshold }
+                            => {
+                                // handle dkg start
+                                match self.dkg_node.as_mut() {
+                                    Some(dkg) => {
+                                        info!("🚀 Received DKG start request from peer {}", peer);
 
-										match dkg.start_dkg(self.node_manager.clone()).await {
-											Ok(_) => {
-												info!("✅ Successfully started DKG in response to peer request");
-												RPCResponse::DKGStarted {
-													peer_id: SerializablePeerId(peer),
-												}
-											},
-											Err(e) => {
-												warn!("❌ Failed to start DKG: {:?}", e);
-												RPCResponse::DKGError(format!(
-													"Failed to start DKG: {:?}",
-													e
-												))
-											},
-										}
-									},
-									None => {
-										warn!("❌ DKG node not initialized");
-										RPCResponse::DKGError("DKG is not initialized.".to_string())
-									},
-								}
-							},
-							// This peer node will recieve a request from some external agent that
-							// will connect with this peer to request it to initiate dkg
-							RPCRequest::GetDKGStatus => {
-								// peer.r.dkg.ptp
-								let status = self
-									.dkg_node
-									.as_ref()
-									.map(|dkg| dkg.get_status())
-									.unwrap_or(DKGStatus::New);
+                                        // Update DKG parameters with current network state
+                                        let total = self.node_manager.get_total_nodes();
+                                        let threshold = self.node_manager.get_threshold();
+                                        dkg.update_node_params(total, threshold);
+                                        dkg.reset().await;
+                                        if let Some(signing_node) = &mut self.signing_node {
+                                            signing_node.set_threshold(self.node_manager.get_total_nodes() - 1);
+                                        }
+                                        self.node_manager
+                                            .set_threshold(total - 1);
+                                        info!("🔄 DKG parameters updated: total_nodes={}, threshold={}", total, threshold);
 
-								RPCResponse::DKGStatus { status } // send back to the agent at peer.send.ptp
-							},
-							RPCRequest::SendAVSSShare {
-								share, commitments, receiver_id, ..
-							} => {
-								if self.dkg_node.is_none() {
-									RPCResponse::Error("DKG not initialized".to_string())
-								} else {
-									// Extract share index from receiver_id
-									let share_index = if let Ok(index) =
-										receiver_id.0.to_string().parse::<usize>()
-									{
-										index
-									} else {
-										// Fallback to hash-based index
-										use std::{
-											collections::hash_map::DefaultHasher,
-											hash::{Hash, Hasher},
-										};
-										let mut hasher = DefaultHasher::new();
-										receiver_id.0.to_string().hash(&mut hasher);
-										let hash = hasher.finish();
-										((hash % 100) + 1) as usize // Use a reasonable default range
-									};
+                                        match dkg.start_dkg(self.node_manager.clone()).await {
+                                            Ok(_) => {
+                                                info!("✅ Successfully started DKG in response to peer request");
+                                                RPCResponse::DKGStarted {peer_id: SerializablePeerId(peer)}
+                                            }
+                                            Err(e) => {
+                                                warn!("❌ Failed to start DKG: {:?}", e);
+                                                RPCResponse::DKGError(format!("Failed to start DKG: {:?}", e))
+                                            }
+                                        }
+                                    }
+                                    None => {
+                                        warn!("❌ DKG node not initialized");
+                                        RPCResponse::DKGError("DKG is not initialized.".to_string())
+                                    }
+                                }
+                            },
+                            // This peer node will recieve a request from some external agent that will
+                            // connect with this peer to request it to initiate dkg
+                            RPCRequest::GetDKGStatus => { // peer.r.dkg.ptp
+                                let status = self
+                                    .dkg_node
+                                    .as_ref()
+                                    .map(|dkg| dkg.get_status())
+                                    .unwrap_or(DKGStatus::New);
 
-									if self.dkg_node.as_ref().unwrap().verify_share(
-										&share,
-										share_index,
-										&commitments,
-									) {
-										RPCResponse::ShareAccepted
-									} else {
-										RPCResponse::Error("Invalid share".into())
-									}
-								}
-							},
-							RPCRequest::ScheduleADKG { start_time } => {
-								info!("🕒 Got DKGStartAt({})", start_time);
-								self.schedule_dkg_at(start_time);
-								RPCResponse::Ack
-							},
-							RPCRequest::RequestFirstNodeStartTime => {
-								info!(
-									"🕐 Received request for first node start time from peer {}",
-									peer
-								);
-								RPCResponse::FirstNodeStartTimeResponse {
-									first_node_start_time: self.first_node_start_time,
-								}
-							},
-							RPCRequest::RequestCurrentVrfRound => {
-								info!(
-									"🔄 Received request for current VRF round from peer {}",
-									peer
-								);
-								let mut current_round = None;
+                                RPCResponse::DKGStatus { status } // send back to the agent at peer.send.ptp
+                            },
+                            RPCRequest::SendAVSSShare { share, commitments, receiver_id, .. } => {
+                                if self.dkg_node.is_none() {
+                                    RPCResponse::Error("DKG not initialized".to_string())
+                                } else {
+                                    // Extract share index from receiver_id
+                                    let share_index = if let Ok(index) = receiver_id.0.to_string().parse::<usize>() {
+                                        index
+                                    } else {
+                                        // Fallback to hash-based index
+                                        use std::collections::hash_map::DefaultHasher;
+                                        use std::hash::{Hash, Hasher};
+                                        let mut hasher = DefaultHasher::new();
+                                        receiver_id.0.to_string().hash(&mut hasher);
+                                        let hash = hasher.finish();
+                                        ((hash % 100) + 1) as usize // Use a reasonable default range
+                                    };
 
-								// Check signing_node first
-								if let Some(signing_node) = &self.signing_node {
-									if let Some(vrf_service) = &signing_node.vrf_service {
-										current_round = Some(vrf_service.get_current_round().await);
-									}
-								}
+                                    if self.dkg_node.as_ref().unwrap().verify_share(&share, share_index, &commitments) {
+                                        RPCResponse::ShareAccepted
+                                    } else {
+                                        RPCResponse::Error("Invalid share".into())
+                                    }
+                                }
+                            },
+                            RPCRequest::ScheduleADKG { start_time } => {
+                                info!("🕒 Got DKGStartAt({})", start_time);
+                                self.schedule_dkg_at(start_time);
+                                RPCResponse::Ack
+                            }
+                            RPCRequest::RequestCurrentVrfRound => {
+                                info!("🔄 Received request for current VRF round from peer {}", peer);
+                                let mut current_round = None;
 
-								// If no round from signing_node, check db_signing_node
-								if current_round.is_none() {
-									if let Some(db_signing_node) = &self.db_signing_node {
-										let node = db_signing_node.lock().await;
-										if let Some(vrf_service) = &node.vrf_service {
-											current_round =
-												Some(vrf_service.get_current_round().await);
-										}
-									}
-								}
+                                // Check signing_node first
+                                if let Some(signing_node) = &self.signing_node {
+                                    if let Some(vrf_service) = &signing_node.vrf_service {
+                                        current_round = Some(vrf_service.get_current_round().await);
+                                    }
+                                }
 
-								RPCResponse::CurrentVrfRoundResponse { current_round }
-							},
-							RPCRequest::ShareFirstNodeStartTime { first_node_start_time } => {
-								info!(
-									"🕐 Received first node start time: {} from peer {}",
-									first_node_start_time, peer
-								);
-								// Only update if we don't have a time yet (new node syncing)
-								if self.first_node_start_time.is_none() {
-									self.first_node_start_time = Some(first_node_start_time);
-									info!(
-										"✅ Synced first node start time (t1) to: {}",
-										first_node_start_time
-									);
-								}
-								RPCResponse::Ack
-							},
-							_ => RPCResponse::Ack,
-						};
+                                // If no round from signing_node, check db_signing_node
+                                if current_round.is_none() {
+                                    if let Some(db_signing_node) = &self.db_signing_node {
+                                        let node = db_signing_node.lock().await;
+                                        if let Some(vrf_service) = &node.vrf_service {
+                                            current_round = Some(vrf_service.get_current_round().await);
+                                        }
+                                    }
+                                }
+
+                                RPCResponse::CurrentVrfRoundResponse {
+                                    current_round,
+                                }
+                            }
+                            RPCRequest::RequestDatabaseSync { requester_id } => {
+                                info!("📦 [DB_SYNC] Received database sync request from peer: {:?}", requester_id);
+
+                                match self.db.count_entries() {
+                                    Ok(total_entries) => {
+                                        let recommended_batch_size = 100; // Entries per batch
+                                        info!(
+                                            "📦 [DB_SYNC] Database has {} entries, recommending batch size of {}",
+                                            total_entries, recommended_batch_size
+                                        );
+                                        RPCResponse::DatabaseSyncMetadata {
+                                            total_entries,
+                                            recommended_batch_size,
+                                        }
+                                    }
+                                    Err(e) => {
+                                        error!("❌ [DB_SYNC] Failed to count database entries: {}", e);
+                                        RPCResponse::Error(format!("Failed to count database entries: {}", e))
+                                    }
+                                }
+                            }
+                            RPCRequest::RequestDatabaseBatch { batch_index, batch_size } => {
+                                info!(
+                                    "📦 [DB_SYNC] Received database batch request: batch {} with size {} from peer {}",
+                                    batch_index, batch_size, peer
+                                );
+
+                                match self.db.export_batch(batch_index * batch_size, batch_size) {
+                                    Ok((entries, is_last_batch)) => {
+                                        let db_entries: Vec<crate::types::rpc::DatabaseEntry> = entries
+                                            .into_iter()
+                                            .map(|(key, value)| crate::types::rpc::DatabaseEntry { key, value })
+                                            .collect();
+
+                                        info!(
+                                            "📦 [DB_SYNC] Sending batch {} with {} entries (last batch: {})",
+                                            batch_index, db_entries.len(), is_last_batch
+                                        );
+
+                                        RPCResponse::DatabaseBatch {
+                                            batch_index,
+                                            entries: db_entries,
+                                            is_last_batch,
+                                        }
+                                    }
+                                    Err(e) => {
+                                        error!("❌ [DB_SYNC] Failed to export batch: {}", e);
+                                        RPCResponse::Error(format!("Failed to export batch: {}", e))
+                                    }
+                                }
+                            }
+                            _ => RPCResponse::Ack
+                        };
 						// here the following line will send to the other connected peers (incl any
 						// testing agent(s))
 						let res =
@@ -1035,16 +1235,13 @@ impl NetworkLayer {
 						info!("📥 Got RPC response {:?} from {}", response, peer);
 						// peer.r
 						match response {
-							RPCResponse::PeerList { peers } => {
+							RPCResponse::PeerList { peers, indices } => {
 								info!("🔄 Merging peer‐set from {}: {:?}", peer, peers);
 
-								// Check 5-minute rule before adding peers from peer list
-								if !self.is_peer_addition_allowed().await {
-									warn!("🚫 Peer list merging blocked - outside 5-minute window");
-									return Ok(());
-								}
+								// Clone peers list before consuming it
+								let peers_clone = peers.clone();
 
-								for SerializablePeerId(p) in peers {
+								for (i, SerializablePeerId(p)) in peers.into_iter().enumerate() {
 									if !self.node_manager.get_active_nodes().contains(&p) {
 										self.node_manager
 											.add_node(p.clone())
@@ -1055,6 +1252,123 @@ impl NetworkLayer {
 											let new_threshold = self.node_manager.get_threshold();
 											signing_node.set_threshold(new_threshold);
 											info!("🔄 [THRESHOLD] Updated signing node threshold to {} after peer list merge", new_threshold);
+										}
+									}
+									if let Some(idx) = indices.get(i).cloned().flatten() {
+										self.peer_indices.insert(p.clone(), idx);
+										if let Err(e) = self
+											.db
+											.dkg_storage()
+											.set_peer_index(&p.to_string(), idx)
+										{
+											warn!("Failed to persist peer index: {:?}", e);
+										}
+									} else {
+										// Index was not provided by the peer list; do not assign
+										// locally. Rely strictly on database-propagated
+										// indices to avoid divergence.
+										warn!("Peer {} missing index in PeerList response; skipping local assignment", p);
+									}
+								}
+
+								// After learning about all peers, check if this is a new node
+								// joining existing network
+								let (should_sync, sync_peer_opt, new_node_index_opt, needs_retry) =
+									if let Some(dkg_node) = &mut self.dkg_node {
+										let total = self.node_manager.get_total_nodes();
+										let threshold = self.node_manager.get_threshold();
+
+										// Update DKG node parameters with current network size
+										dkg_node.update_node_params(total, threshold);
+										info!("🔄 [NEW_NODE] Updated DKG params: total_nodes={}, threshold={}", total, threshold);
+
+										let has_dkg_data =
+											dkg_node.get_final_secret_share().await.is_some();
+										info!("🔍 [NEW_NODE] Has DKG data: {}", has_dkg_data);
+
+										// If this node has no DKG data and network has > 4 nodes,
+										// it's a new node joining
+										if !has_dkg_data && total > 4 {
+											info!("🆕 [NEW_NODE] Learned about {} total nodes, triggering database sync and share request", total);
+
+											// Get connected peers from swarm
+											let connected_peers: Vec<PeerId> =
+												swarm.connected_peers().cloned().collect();
+											info!("🔗 [NEW_NODE] Currently connected to {} peers: {:?}", connected_peers.len(), connected_peers);
+
+											// Find first connected peer for sync (excluding
+											// ourselves)
+											let sync_peer = connected_peers
+												.iter()
+												.find(|pid| **pid != self.local_peer_id)
+												.cloned();
+
+											let should_proceed = if let Some(ref peer) = sync_peer {
+												info!("✅ [NEW_NODE] Selected connected peer for sync: {}", peer);
+												true
+											} else {
+												warn!("⚠️ [NEW_NODE] No connected peers available for database sync!");
+												warn!("⚠️ [NEW_NODE] Will retry database sync when a connection is established");
+												// Set flag to retry when connection is available
+												false
+											};
+
+											// CRITICAL: New node always gets index = total (e.g.,
+											// 5th node gets index 5)
+											let new_node_index = total;
+											info!("🆕 [NEW_NODE] Assigned permanent index: {} (total_nodes = {})", new_node_index, total);
+
+											(
+												should_proceed,
+												sync_peer,
+												Some(new_node_index),
+												!should_proceed,
+											)
+										} else {
+											(false, None, None, false)
+										}
+									} else {
+										(false, None, None, false)
+									};
+
+								// Set the flag for retry if needed
+								if needs_retry {
+									self.needs_database_sync = true;
+								}
+
+								// Now handle sync and DKG request outside of the dkg_node borrow
+								if should_sync {
+									// First, sync database from an existing peer
+									if let Some(sync_peer) = sync_peer_opt {
+										info!(
+											"📦 [NEW_NODE] Initiating database sync from peer: {}",
+											sync_peer
+										);
+
+										if let Err(e) =
+											self.sync_database_from_peer(swarm, sync_peer).await
+										{
+											warn!(
+												"❌ [NEW_NODE] Failed to start database sync: {:?}",
+												e
+											);
+										} else {
+											info!("✅ [NEW_NODE] Database sync initiated");
+										}
+									}
+
+									// Request DKG shares
+									if let (Some(dkg_node), Some(new_node_index)) =
+										(&mut self.dkg_node, new_node_index_opt)
+									{
+										if let Err(e) = dkg_node
+											.request_shares_as_new_node(new_node_index)
+											.await
+										{
+											warn!(
+												"❌ [NEW_NODE] Failed to request shares: {:?}",
+												e
+											);
 										}
 									}
 								}
@@ -1076,31 +1390,6 @@ impl NetworkLayer {
 							},
 
 							RPCResponse::ShareAccepted => {},
-
-							RPCResponse::FirstNodeStartTimeResponse { first_node_start_time } => {
-								if let Some(t1) = first_node_start_time {
-									info!("🕐 Received first node start time response: {} from peer {}", t1, peer);
-									// Only update if we don't have a time yet (new node syncing)
-									if self.first_node_start_time.is_none() {
-										self.first_node_start_time = Some(t1);
-										info!("✅ Synced first node start time (t1) to: {}", t1);
-
-										// Subscribe to topics now that we have t1 (with 5-minute
-										// check)
-										info!("🔔 Attempting to subscribe to topics after syncing t1...");
-										if let Err(e) =
-											self.subscribe_to_topics_with_time_check(swarm).await
-										{
-											warn!("❌ Failed to subscribe to topics: {:?}", e);
-										}
-									}
-								} else {
-									info!(
-										"ℹ️ Peer {} doesn't have first node start time either",
-										peer
-									);
-								}
-							},
 
 							RPCResponse::CurrentVrfRoundResponse { current_round } => {
 								if let Some(network_round) = current_round {
@@ -1127,6 +1416,53 @@ impl NetworkLayer {
 									// VRF sync successful, don't need to request again
 								} else {
 									info!("ℹ️ Peer {} doesn't have current VRF round yet", peer);
+								}
+							},
+
+							RPCResponse::DatabaseSyncMetadata {
+								total_entries,
+								recommended_batch_size,
+							} => {
+								info!(
+                                    "📦 [DB_SYNC] Received sync metadata: {} entries, batch size {}",
+                                    total_entries, recommended_batch_size
+                                );
+
+								if let Err(e) = self
+									.handle_database_sync_metadata(
+										swarm,
+										peer,
+										total_entries,
+										recommended_batch_size,
+									)
+									.await
+								{
+									error!("❌ [DB_SYNC] Failed to handle sync metadata: {}", e);
+								}
+							},
+
+							RPCResponse::DatabaseBatch { batch_index, entries, is_last_batch } => {
+								info!(
+									"📦 [DB_SYNC] Received batch {} with {} entries",
+									batch_index,
+									entries.len()
+								);
+
+								// Use the recommended batch size from metadata (default 100)
+								let batch_size = 100;
+
+								if let Err(e) = self
+									.handle_database_batch(
+										swarm,
+										peer,
+										batch_index,
+										entries,
+										is_last_batch,
+										batch_size,
+									)
+									.await
+								{
+									error!("❌ [DB_SYNC] Failed to handle batch: {}", e);
 								}
 							},
 
@@ -1252,9 +1588,28 @@ impl NetworkLayer {
 					// tokio::time::sleep(Duration::from_millis(50)).await;
 
 					// Broadcast our presence to this newly subscribed peer
+					//attach the corresponding index of that peer
+					let my_index = self
+						.peer_indices
+						.get(&self.local_peer_id)
+						.cloned()
+						.unwrap_or(self.node_manager.get_total_nodes());
+					info!("Get total nodes:{}", self.node_manager.get_total_nodes());
+					info!("My index:{:?}", self.peer_indices.get(&self.local_peer_id));
+					// Persist my own index if known
+					if let Some(idx) = self.peer_indices.get(&self.local_peer_id).cloned() {
+						if let Err(e) = self
+							.db
+							.dkg_storage()
+							.set_peer_index(&self.local_peer_id.to_string(), idx)
+						{
+							warn!("Failed to persist my index: {:?}", e);
+						}
+					}
 					let msg = GossipsubMessage::PeerDiscovered {
 						peer: self.local_peer_id.clone(),
 						sequence: Some(1), // Add sequence number
+						index: Some(my_index),
 					};
 					if let Ok(payload) = serde_json::to_vec(&msg) {
 						if let Err(e) = self.broadcast(MSG_TOPIC_PEER_DISCOVERY, &payload).await {
@@ -1418,10 +1773,11 @@ impl NetworkLayer {
 					warn!("❌ [NETWORK] Signing node not available to handle signing message");
 				}
 			},
-			GossipsubMessage::Command(cmd) =>
+			GossipsubMessage::Command(cmd) => {
 				if let Some(cmd_processor) = &mut self.command_processor {
 					cmd_processor.handle_message(cmd).await?;
-				},
+				}
+			},
 			GossipsubMessage::Consensus(consensus_msg) => {
 				info!("📥 [CONSENSUS] Received consensus message: {:?}", consensus_msg);
 
@@ -1477,12 +1833,18 @@ impl NetworkLayer {
 					// Set available nodes from node manager before signing
 					let available_nodes: Vec<PeerId> =
 						self.node_manager.get_active_nodes().into_iter().collect();
+					info!("🔢 [NETWORK-DEBUG] Available nodes count: {}", available_nodes.len());
+					info!("🔢 [NETWORK-DEBUG] Available nodes: {:?}", available_nodes);
 					signing_node.set_available_nodes(available_nodes);
 
 					// Generate BLS key pair if not already done
 					if let Some(dkg_node) = &self.dkg_node {
 						if let Some(secret_share) = dkg_node.get_final_secret_share().await {
-							info!("🔐 [NETWORK] Got secret share from DKG: {:?}", secret_share);
+							info!("🔐 [NETWORK] Got secret share from DKG");
+							info!(
+								"🔐 [NETWORK-DEBUG] Secret share (hex): 0x{}",
+								hex::encode(secret_share.to_bytes())
+							);
 							signing_node.set_private_key_from_scalar(secret_share);
 
 							// ✅ Also set the DKG group public key
@@ -1585,15 +1947,11 @@ impl NetworkLayer {
 													.get_user_by_address(&ethereum_address)
 													.await
 												{
-													if let Some(eth_addr) =
-														&user.derived_eth_address
-													{
-														info!("📬 [GOSSIPSUB] Derived ETH address for {}: {}", ethereum_address, eth_addr);
+													if user.derived_eth_address.is_some() {
+														info!("📬 [GOSSIPSUB] Derived ETH address stored for {}", ethereum_address);
 													}
-													if let Some(btc_addr) =
-														&user.derived_btc_address
-													{
-														info!("📬 [GOSSIPSUB] Derived BTC address for {}: {}", ethereum_address, btc_addr);
+													if user.derived_btc_address.is_some() {
+														info!("📬 [GOSSIPSUB] Derived BTC address stored for {}", ethereum_address);
 													}
 												}
 											}
@@ -1694,9 +2052,15 @@ impl NetworkLayer {
 								)
 								.await
 							{
-								error!("❌ [NETWORK] Failed to store transaction status for broadcast tx {}: {}", transaction_id, e);
+								error!(
+                                    "❌ [NETWORK] Failed to store transaction status for broadcast tx {}: {}",
+                                    transaction_id, e
+                                );
 							}
-							info!("✅ [NETWORK] Successfully synchronized transaction ID {} for intent {} (type: {})", transaction_id, intent_hash, transaction_type);
+							info!(
+                                "✅ [NETWORK] Successfully synchronized transaction ID {} for intent {} (type: {})",
+                                transaction_id, intent_hash, transaction_type
+                            );
 
 							// Execute contract call when transaction ID is received
 							if let Some(user_registry) = &self.user_registry {
@@ -1897,14 +2261,15 @@ impl NetworkLayer {
 
 				if let Some(user_registry) = &self.user_registry {
 					match hex::decode(&intent_hash) {
-						Ok(bytes) =>
+						Ok(bytes) => {
 							if let Err(e) =
 								user_registry.store_intent_hash(bytes, &signer, &intent).await
 							{
 								warn!("❌ [GOSSIPSUB] Failed to store intent hash: {}", e);
 							} else {
 								info!("✅ [GOSSIPSUB] Stored intent hash from {}", signer);
-							},
+							}
+						},
 						Err(e) => {
 							warn!("❌ [GOSSIPSUB] Invalid intent hash {}: {}", intent_hash, e);
 						},
@@ -1939,7 +2304,8 @@ impl NetworkLayer {
 					crate::types::TransactionType::VaultToNetwork =>
 						&intent.source_chain.to_lowercase(),
 				};
-				info!("🔗 [GOSSIPSUB] Processing deposit intent for chain: {} (transaction_type: {:?})", chain_to_use, transaction_type);
+				info!("🔗 [GOSSIPSUB] Processing deposit intent for chain: {} (transaction_type: {:?})",
+                      chain_to_use, transaction_type);
 
 				// Get the appropriate signing key based on transaction type
 				let signing_key: Option<k256::Scalar> = match transaction_type {
@@ -2127,8 +2493,8 @@ impl NetworkLayer {
 					};
 
 					// Get vault addresses from database
-					let (vault_eth_addr, vault_btc_addr) = if let Some(dkg_node) = &self.dkg_node {
-						match dkg_node.storage.get_vault_addresses().await {
+					let (vault_eth_addr, vault_btc_addr) = if let Some(_) = &self.dkg_node {
+						match self.db.dkg_storage().get_vault_addresses().await {
 							Ok(Some((eth_addr, btc_addr))) => (Some(eth_addr), Some(btc_addr)),
 							Err(e) => {
 								return Err(anyhow::anyhow!(
@@ -2239,7 +2605,8 @@ impl NetworkLayer {
 									warn!("Failed to create transaction bytes: {}", e);
 									vec![]
 								});
-							info!("🔐 [GOSSIPSUB] Starting {} signing process for deposit intent: 0x{}", signing_node.get_chain_type(), hex::encode(tx_bytes.clone()));
+							info!("🔐 [GOSSIPSUB] Starting {} signing process for deposit intent: 0x{}",
+                                  signing_node.get_chain_type(), hex::encode(tx_bytes.clone()));
 
 							// Handle Bitcoin and EVM differently - DummyTransaction is only for
 							// EVM!
@@ -2485,8 +2852,11 @@ impl NetworkLayer {
 				}
 			},
 
-			GossipsubMessage::PeerDiscovered { peer, sequence } => {
-				info!("🎯 Peer discovered via gossipsub: {:?} (seq: {:?})", peer, sequence);
+			GossipsubMessage::PeerDiscovered { peer, sequence, index } => {
+				info!(
+					"🎯 Peer discovered via gossipsub: {:?} (seq: {:?}, idx: {:?})",
+					peer, sequence, index
+				);
 
 				// Check if we already have this peer to avoid duplicates
 				let current_nodes = self.node_manager.get_active_nodes();
@@ -2495,10 +2865,12 @@ impl NetworkLayer {
 					return Ok(());
 				}
 
-				// Check 5-minute rule before adding peer to node manager
-				if !self.is_peer_addition_allowed().await {
-					warn!("🚫 Peer {} not added to node manager - outside 5-minute window", peer);
-					return Ok(());
+				// If index provided, store and persist it
+				if let Some(idx) = index {
+					self.peer_indices.insert(peer.clone(), idx);
+					if let Err(e) = self.db.dkg_storage().set_peer_index(&peer.to_string(), idx) {
+						warn!("Failed to persist peer index: {:?}", e);
+					}
 				}
 
 				match self.node_manager.add_node(peer) {
@@ -2509,11 +2881,28 @@ impl NetworkLayer {
 						let total = self.node_manager.get_total_nodes();
 						let threshold = self.node_manager.get_threshold();
 						info!("📊 Updated node count: {}, threshold: {}", total, threshold);
+
 						// Update signing node threshold to match current network state
 						if let Some(signing_node) = &mut self.signing_node {
 							let new_threshold = self.node_manager.get_threshold();
 							signing_node.set_threshold(new_threshold);
 							info!("🔄 [THRESHOLD] Updated signing node threshold to {} (total nodes: {})", new_threshold, total);
+						}
+
+						// If initial DKG is completed, existing nodes are aware of the new node
+						// Note: The new node itself won't receive this PeerDiscovery message
+						// (gossipsub doesn't echo) The new node handles resharing in
+						// ConnectionEstablished (dialer section)
+						if let Some(dkg_node) = &mut self.dkg_node {
+							let initial_dkg_complete = dkg_node.is_initial_dkg_complete().await;
+
+							if initial_dkg_complete {
+								info!("🔄 [EXISTING_NODE] New peer {} joined network, will respond to share requests", peer);
+								// Existing nodes will handle the NewNodeJoined DKG message when the
+								// new node broadcasts it
+							} else {
+								info!("ℹ️ [NEW_NODE] Initial DKG not yet completed (waiting for 4 nodes)");
+							}
 						}
 					},
 					Err(e) => {
@@ -2579,11 +2968,17 @@ impl NetworkLayer {
 					// Set available nodes from node manager before signing
 					let available_nodes: Vec<PeerId> =
 						self.node_manager.get_active_nodes().into_iter().collect();
+					info!("🔢 [LOCAL-DEBUG] Available nodes count: {}", available_nodes.len());
+					info!("🔢 [LOCAL-DEBUG] Available nodes: {:?}", available_nodes);
 					signing_node.set_available_nodes(available_nodes);
 
 					if let Some(dkg_node) = &self.dkg_node {
 						if let Some(secret_share) = dkg_node.get_final_secret_share().await {
 							info!("🔐 [NETWORK] Got secret share from DKG: {:?}", secret_share);
+							info!(
+								"🔐 [LOCAL-DEBUG] Secret share (hex): 0x{}",
+								hex::encode(secret_share.to_bytes())
+							);
 							signing_node.set_private_key_from_scalar(secret_share);
 
 							// ✅ Also set the DKG group public key
@@ -2893,8 +3288,8 @@ impl NetworkLayer {
 					};
 
 					// Get vault addresses from database
-					let (vault_eth_addr, vault_btc_addr) = if let Some(dkg_node) = &self.dkg_node {
-						match dkg_node.storage.get_vault_addresses().await {
+					let (vault_eth_addr, vault_btc_addr) = if let Some(_) = &self.dkg_node {
+						match self.db.dkg_storage().get_vault_addresses().await {
 							Ok(Some((eth_addr, btc_addr))) => (Some(eth_addr), Some(btc_addr)),
 							Err(e) => {
 								return Err(anyhow::anyhow!(
@@ -3322,9 +3717,15 @@ impl NetworkLayer {
 								)
 								.await
 							{
-								error!("❌ [NETWORK] Failed to store transaction status for broadcast tx {}: {}", transaction_id, e);
+								error!(
+                                    "❌ [NETWORK] Failed to store transaction status for broadcast tx {}: {}",
+                                    transaction_id, e
+                                );
 							}
-							info!("✅ [NETWORK] Successfully synchronized transaction ID {} for intent {} (type: {})", transaction_id, intent_hash, transaction_type);
+							info!(
+                                "✅ [NETWORK] Successfully synchronized transaction ID {} for intent {} (type: {})",
+                                transaction_id, intent_hash, transaction_type
+                            );
 
 							// Execute contract call when transaction ID is received
 							if let Some(user_registry) = &self.user_registry {
@@ -3581,30 +3982,25 @@ impl NetworkLayer {
 				info!("📡 [NETWORK] Broadcasted user registration to P2P network");
 			},
 			ChannelMessage::ScheduledDKGStart => {
-				let current_time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+				let total = self.node_manager.get_total_nodes();
+				let threshold = self.node_manager.get_threshold();
 
-				// Check if 5 minutes have passed since first node start time (t1)
-				if let Some(t1) = self.first_node_start_time {
-					let elapsed_since_t1 = current_time.saturating_sub(t1);
-					let five_minutes = 5 * 60; // 5 minutes in seconds
+				if let Some(dkg) = &mut self.dkg_node {
+					// This should only be called for initial DKG with 4 nodes
+					let initial_dkg_complete = dkg.is_initial_dkg_complete().await;
 
-					if elapsed_since_t1 > five_minutes {
-						warn!("⏰ DKG start skipped: More than 5 minutes have passed since first node start time t1 (elapsed: {}s, t1: {})", elapsed_since_t1, t1);
+					if initial_dkg_complete {
+						warn!("⚠️ [DKG] ScheduledDKGStart called but initial DKG already complete. This should not happen.");
 						return Ok(());
 					}
 
-					info!(
-						"🚀 Starting DKG at the exact agreed instant {}! (t1: {}, elapsed: {}s)",
-						current_time, t1, elapsed_since_t1
-					);
-				} else {
-					warn!("⚠️ No first node start time (t1) available - this shouldn't happen!");
-					info!("🚀 Starting DKG at the exact agreed instant {}!", current_time);
-				}
+					// Start the initial DKG with 4 nodes
+					info!("🚀 [DKG] Starting initial DKG with {} nodes", total);
 
-				let total = self.node_manager.get_total_nodes();
-				let threshold = self.node_manager.get_threshold();
-				if let Some(dkg) = &mut self.dkg_node {
+					if total != 4 {
+						warn!("⚠️ [DKG] Expected 4 nodes for initial DKG, but have {}", total);
+					}
+
 					dkg.update_node_params(total, threshold);
 					dkg.reset().await;
 					if let Some(signing_node) = &mut self.signing_node {
@@ -3620,73 +4016,6 @@ impl NetworkLayer {
 					}
 				} else {
 					warn!("❌ DKG node not initialized at scheduled start!");
-				}
-			},
-			ChannelMessage::CheckIfFirstNode => {
-				// Check if this node is the first node after bootstrap attempts
-				let total_nodes = self.node_manager.get_total_nodes();
-				if self.first_node_start_time.is_none() && total_nodes == 1 {
-					// This is the first node - set the network start time (t1)
-					let t1 = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-					self.first_node_start_time = Some(t1);
-					info!("🕐 First node detected after bootstrap timeout (total_nodes=1) - setting t1: {}", t1);
-
-					// First node starts with default round 0 (already initialized in constructor)
-
-					// Subscribe to topics now that we have t1
-					info!("🔔 Subscribing to topics as first node...");
-					if let Err(e) = self.subscribe_to_topics_with_time_check(swarm).await {
-						warn!("❌ Failed to subscribe to topics: {:?}", e);
-					}
-				} else if total_nodes > 1 && !self.vrf_round_requested {
-					info!(
-						"🔄 Found {} nodes in network - will sync t1 from existing nodes",
-						total_nodes
-					);
-					self.vrf_round_requested = true; // Prevent duplicate requests
-
-					self.sync_signing_node_thresholds().await;
-
-					// Request current VRF round from existing nodes for proper initialization
-					let peers: HashSet<PeerId> = self.node_manager.get_active_nodes();
-					if let Some(peer) = peers.iter().find(|p| **p != self.local_peer_id) {
-						// Check if we're connected to this peer
-						if swarm.is_connected(peer) {
-							info!(
-								"📡 Requesting current VRF round from connected peer: {:?}",
-								peer
-							);
-							let request = RPCRequest::RequestCurrentVrfRound;
-							let _request_id =
-								swarm.behaviour_mut().request_response.send_request(peer, request);
-							info!("📤 Sent VRF round request to peer {}", peer);
-						} else {
-							warn!("⚠️ Peer {} not connected, cannot request VRF round", peer);
-
-							// Try to find another connected peer
-							let mut found_connected_peer = false;
-							for other_peer in peers.iter() {
-								if *other_peer != self.local_peer_id &&
-									swarm.is_connected(other_peer)
-								{
-									info!("📡 Requesting current VRF round from alternative connected peer: {:?}", other_peer);
-									let request = RPCRequest::RequestCurrentVrfRound;
-									let _request_id = swarm
-										.behaviour_mut()
-										.request_response
-										.send_request(other_peer, request);
-									info!("📤 Sent VRF round request to peer {}", other_peer);
-									found_connected_peer = true;
-									break;
-								}
-							}
-
-							if !found_connected_peer {
-								warn!("⚠️ No connected peers found for VRF round sync - will retry later");
-								self.vrf_round_requested = false; // Allow retry later
-							}
-						}
-					}
 				}
 			},
 		}

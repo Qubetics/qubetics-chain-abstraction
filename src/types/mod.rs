@@ -65,16 +65,26 @@ pub enum ChannelMessage {
 		solver_address: String,
 		reward: u128,
 	},
+	// ClaimReward {
+	// 	solver_address: String,
+	// 	btc_address: Option<String>,
+	// 	eth_address: Option<String>,
+	// 	reward_btc: Option<String>,
+	// 	reward_tics: Option<String>,
+	// },
 	UserRegistration {
 		ethereum_address: String,
 		node_id: String,
 	},
+	// RefundInitiation {
+	// 	intent_hash: String,
+	// 	data: Vec<u8>,
+	// },
 	IntentHashBroadcast {
 		intent_hash: String,
 		node_id: String,
 	},
 	ScheduledDKGStart,
-	CheckIfFirstNode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -94,6 +104,7 @@ pub enum GossipsubMessage {
 	PeerDiscovered {
 		peer: PeerId,
 		sequence: Option<u64>,
+		index: Option<usize>,
 	},
 	Transaction(DummyTransaction),
 	DepositIntent {
@@ -113,6 +124,13 @@ pub enum GossipsubMessage {
 		solver_address: String,
 		reward: u128,
 	},
+	// ClaimReward {
+	// 	solver_address: String,
+	// 	btc_address: Option<String>,
+	// 	eth_address: Option<String>,
+	// 	reward_btc: Option<String>,
+	// 	reward_tics: Option<String>,
+	// },
 	DKGCommand(crate::types::rpc::RPCRequest),
 	UserRegistration {
 		ethereum_address: String,
@@ -120,10 +138,11 @@ pub enum GossipsubMessage {
 		node_id: String,
 	},
 	TransactionIdBroadcast {
-		intent_hash: String,
+		intent_hash: String, // None for reward transactions
 		transaction_id: String,
-		transaction_type: String, // "user_to_network", "network_to_target", or "vault_to_network"
-		node_id: String,          // Node that broadcasted the transaction
+		transaction_type: String, /* "user_to_vault", "network_to_target", "vault_to_network",
+		                           * "tics_reward", or "btc_reward" */
+		node_id: String, // Node that broadcasted the transaction
 	},
 	TransactionErrorBroadcast {
 		intent_hash: String,

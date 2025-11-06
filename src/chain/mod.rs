@@ -226,6 +226,7 @@ impl ChainHandler for EthereumChainHandler {
 						nonce: eth_tx.nonce,
 						chain_id: eth_tx.chain_id,
 					};
+
 					Ok(crate::utils::transaction::create_transaction_for_signing(&dummy_tx))
 				}
 			},
@@ -253,6 +254,7 @@ impl ChainHandler for EthereumChainHandler {
 					))
 				} else {
 					// Use regular transaction function for simple transfers (no data)
+
 					let dummy_tx = DummyTransaction {
 						to: eth_tx.to.clone(),
 						value: eth_tx.value.clone(),
@@ -557,6 +559,7 @@ impl ChainHandler for BitcoinChainHandler {
 						nonce: eth_tx.nonce,
 						chain_id: eth_tx.chain_id,
 					};
+
 					Ok(crate::utils::transaction::create_transaction_for_signing(&dummy_tx))
 				}
 			},

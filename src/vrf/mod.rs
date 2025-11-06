@@ -99,6 +99,9 @@ impl VrfService {
 		let selection_result = selector.select_mpc_nodes(available_nodes, threshold, round);
 		info!("🧐 Selection result: {:?}", selection_result);
 
+		info!("⏳ Waiting 3 seconds before broadcasting selection...");
+		tokio::time::sleep(std::time::Duration::from_millis(3000)).await;
+
 		info!(
 			"🎯 [VRF] Node {} selected {} nodes for {} operation round {}: {:?}",
 			self.node_id,
@@ -150,6 +153,7 @@ impl VrfService {
 		// Check if consensus can be started
 		let min_selections = total_nodes;
 		if selector.can_start_consensus(round, min_selections) {
+			////////////////////
 			info!(
 				"🎯 [VRF] Enough selections collected for round {}, consensus can be triggered",
 				round
@@ -468,7 +472,12 @@ impl VrfNodeSelector {
 		broadcast: VrfSelectedNodesBroadcast,
 		total_nodes: usize,
 	) {
-		info!("📥 [VRF] Received VRF selected nodes broadcast from node {} for round {}: {} nodes selected", broadcast.selector_node_id.0, broadcast.round, broadcast.selected_nodes.len());
+		info!(
+            "📥 [VRF] Received VRF selected nodes broadcast from node {} for round {}: {} nodes selected",
+            broadcast.selector_node_id.0,
+            broadcast.round,
+            broadcast.selected_nodes.len()
+        );
 
 		let round = broadcast.round;
 		self.received_selections
@@ -595,7 +604,10 @@ impl VrfNodeSelector {
 
 		let total_selections = if own_selection { received_count + 1 } else { received_count };
 
-		info!("🔍 [VRF] Consensus readiness check for round {}: own={}, received={}, total={}, min_required={}", round, own_selection, received_count, total_selections, min_selections);
+		info!(
+            "🔍 [VRF] Consensus readiness check for round {}: own={}, received={}, total={}, min_required={}",
+            round, own_selection, received_count, total_selections, min_selections
+        );
 
 		total_selections >= min_selections
 	}

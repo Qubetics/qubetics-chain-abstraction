@@ -1,7 +1,9 @@
 use anyhow::{anyhow, Result};
 use rocksdb::{Options, DB};
 use std::sync::Arc;
-use tracing::info;
+use tracing::{debug, info};
+
+use crate::database::{DkgStorage, RewardStorage, SolverStorage};
 
 /// Database configuration
 #[derive(Debug, Clone)]
@@ -37,5 +39,84 @@ impl Database {
 		info!("🗄️ [DATABASE] Opened RocksDB at: {}", config.path);
 
 		Ok(Self { db: Arc::new(db) })
+	}
+
+	pub fn dkg_storage(&self) -> DkgStorage {
+		DkgStorage::new(self.clone())
+	}
+
+	/// Get reward storage interface
+	pub fn reward_storage(&self) -> RewardStorage {
+		RewardStorage::new(self.clone())
+	}
+
+	/// Get solver storage interface
+	pub fn solver_storage(&self) -> SolverStorage {
+		SolverStorage::new(self.clone())
+	}
+
+	/// Count total entries in database
+	pub fn count_entries(&self) -> Result<usize> {
+		let iter = self.db.iterator(rocksdb::IteratorMode::Start);
+		let count = iter.count();
+		debug!("🔢 [DATABASE] Total entries: {}", count);
+		Ok(count)
+	}
+
+	/// Import database entries in batch
+	/// This will overwrite existing keys
+	pub fn import_batch(&self, entries: Vec<(Vec<u8>, Vec<u8>)>) -> Result<()> {
+		let batch_size = entries.len();
+		let mut batch = rocksdb::WriteBatch::default();
+
+		for (key, value) in entries {
+			batch.put(&key, &value);
+		}
+
+		self.db.write(batch).map_err(|e| anyhow!("Failed to import batch: {}", e))?;
+
+		info!("📥 [DATABASE] Imported batch of {} entries", batch_size);
+		Ok(())
+	}
+
+	/// Export a batch of database entries
+	/// Returns entries from start_index to start_index + batch_size
+	pub fn export_batch(
+		&self,
+		start_index: usize,
+		batch_size: usize,
+	) -> Result<(Vec<(Vec<u8>, Vec<u8>)>, bool)> {
+		let mut entries = Vec::new();
+		let iter = self.db.iterator(rocksdb::IteratorMode::Start);
+
+		// Skip to start_index
+		for (i, item) in iter.enumerate() {
+			if i < start_index {
+				continue;
+			}
+
+			if i >= start_index + batch_size {
+				// Not the last batch
+				info!(
+					"📦 [DATABASE] Exported batch of {} entries (index {}-{})",
+					entries.len(),
+					start_index,
+					start_index + batch_size - 1
+				);
+				return Ok((entries, false));
+			}
+
+			let (key, value) =
+				item.map_err(|e| anyhow!("Iterator error during batch export: {}", e))?;
+			entries.push((key.to_vec(), value.to_vec()));
+		}
+
+		// If we got here, this is the last batch
+		info!(
+			"📦 [DATABASE] Exported final batch of {} entries (starting at index {})",
+			entries.len(),
+			start_index
+		);
+		Ok((entries, true))
 	}
 }

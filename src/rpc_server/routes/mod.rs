@@ -27,7 +27,12 @@ pub fn api_routes(
 			node_id.clone(),
 		))
 		.or(dkg::dkg_routes(dkg_storage.clone(), message_tx.clone()))
-		.or(solver::solver_routes(user_registry.clone(), dkg_storage.clone(), message_tx.clone()))
+		.or(solver::solver_routes(
+			user_registry.clone(),
+			dkg_storage.clone(),
+			reward_storage.clone(),
+			message_tx.clone(),
+		))
 }
 
 // Helper functions for injecting state into warp filters (moved from server.rs)

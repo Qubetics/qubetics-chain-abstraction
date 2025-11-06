@@ -160,6 +160,53 @@ impl ConsensusStorage {
 		info!("✅ [CONSENSUS_STORAGE] Incremented round from {} to {}", current, new_round);
 		Ok(new_round)
 	}
+	/// Clean up old consensus data (keep only last N rounds)
+
+	pub async fn cleanup_old_rounds(&self, keep_rounds: u64) -> Result<()> {
+		let current_round = self.get_current_round().await?;
+
+		if current_round <= keep_rounds {
+			debug!(
+				"🧹 [CONSENSUS_STORAGE] No old rounds to clean up (current: {}, keep: {})",
+				current_round, keep_rounds
+			);
+
+			return Ok(());
+		}
+
+		let cleanup_before = current_round - keep_rounds;
+
+		let mut deleted_count = 0;
+
+		// Clean up selected nodes - iterate through rounds that should be deleted
+		for round in 0..cleanup_before {
+			let key = SelectedNodesKey { round };
+			// Check if the key exists before attempting to delete
+			if self.selected_nodes.get(key.clone()).is_ok() {
+				if let Ok(_) = self.selected_nodes.delete(key) {
+					deleted_count += 1;
+				}
+			}
+		}
+
+		// Clean up consensus results - iterate through rounds that should be deleted
+		for round in 0..cleanup_before {
+			let key = ConsensusResultKey { round };
+			// Check if the key exists before attempting to delete
+			if self.consensus_results.get(key.clone()).is_ok() {
+				if let Ok(_) = self.consensus_results.delete(key) {
+					deleted_count += 1;
+				}
+			}
+		}
+
+		info!(
+			"🧹 [CONSENSUS_STORAGE] Cleaned up {} old consensus records (kept last {} rounds)",
+			deleted_count, keep_rounds
+		);
+
+		Ok(())
+	}
 
 	/// Get consensus statistics
 	pub async fn get_consensus_stats(&self) -> Result<ConsensusStats> {

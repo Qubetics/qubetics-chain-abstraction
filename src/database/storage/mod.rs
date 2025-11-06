@@ -4,6 +4,7 @@ pub mod intent;
 pub mod keystore;
 pub mod reward;
 pub mod signing;
+pub mod solver;
 pub mod transaction;
 pub mod user;
 
@@ -13,5 +14,6 @@ pub use intent::*;
 pub use keystore::*;
 pub use reward::*;
 pub use signing::*;
+pub use solver::*;
 pub use transaction::*;
 pub use user::*;

@@ -26,3 +26,11 @@ pub struct SolverRewardRequest {
 pub struct GetRewardSolverRequest {
 	pub solver_address: String,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClaimRewardRequest {
+	pub signature: String,
+	pub message: String,
+	pub ethereum_address: Option<String>,
+	pub btc_address: Option<String>,
+}
