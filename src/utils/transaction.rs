@@ -1597,67 +1597,67 @@ fn create_bitcoin_script_pubkey(address: &str) -> Result<Vec<u8>> {
 	Ok(script_bytes)
 }
 
-pub fn create_transaction_for_signing(tx: &DummyTransaction) -> Vec<u8> {
-	// Log transaction details before creating raw transaction
-	info!(
+pub fn create_transaction_for_signing(tx: &EthereumTransaction) -> Vec<u8> {
+    // Log transaction details before creating raw transaction
+    info!(
         "🔧 [ETH_RAW_TXN] Creating raw Ethereum transaction - To: {}, Value: {}, Nonce: {}, GasLimit: {}, GasPrice: {}, ChainId: {}",
         tx.to, tx.value, tx.nonce, tx.gas_limit, tx.gas_price, tx.chain_id
     );
 
-	let mut content = Vec::new();
+    let mut content = Vec::new();
 
-	// Encode transaction fields for signing (EIP-155)
-	let mut encoder = RlpEncoder::new();
+    // Encode transaction fields for signing (EIP-155)
+    let mut encoder = RlpEncoder::new();
 
-	// Nonce
-	encoder.encode_u64(tx.nonce);
-	content.extend_from_slice(&encoder.finalize());
+    // Nonce
+    encoder.encode_u64(tx.nonce);
+    content.extend_from_slice(&encoder.finalize());
 
-	// Gas price
-	encoder = RlpEncoder::new();
-	encoder.encode_hex_string(&tx.gas_price);
-	content.extend_from_slice(&encoder.finalize());
+    // Gas price
+    encoder = RlpEncoder::new();
+    encoder.encode_hex_string(&tx.gas_price);
+    content.extend_from_slice(&encoder.finalize());
 
-	// Gas limit
-	encoder = RlpEncoder::new();
-	encoder.encode_u64(tx.gas_limit);
-	content.extend_from_slice(&encoder.finalize());
+    // Gas limit
+    encoder = RlpEncoder::new();
+    encoder.encode_u64(tx.gas_limit);
+    content.extend_from_slice(&encoder.finalize());
 
-	// To address
-	encoder = RlpEncoder::new();
-	encoder.encode_address(&tx.to);
-	content.extend_from_slice(&encoder.finalize());
+    // To address
+    encoder = RlpEncoder::new();
+    encoder.encode_address(&tx.to);
+    content.extend_from_slice(&encoder.finalize());
 
-	// Value
-	encoder = RlpEncoder::new();
-	encoder.encode_hex_string(&tx.value);
-	content.extend_from_slice(&encoder.finalize());
+    // Value
+    encoder = RlpEncoder::new();
+    encoder.encode_hex_string(&tx.value);
+    content.extend_from_slice(&encoder.finalize());
 
-	// Data (empty)
-	encoder = RlpEncoder::new();
-	encoder.encode_bytes(&[]);
-	content.extend_from_slice(&encoder.finalize());
+    // Data (empty)
+    encoder = RlpEncoder::new();
+    encoder.encode_bytes(&[]);
+    content.extend_from_slice(&encoder.finalize());
 
-	// Chain ID
-	encoder = RlpEncoder::new();
-	encoder.encode_u64(tx.chain_id);
-	content.extend_from_slice(&encoder.finalize());
+    // Chain ID
+    encoder = RlpEncoder::new();
+    encoder.encode_u64(tx.chain_id);
+    content.extend_from_slice(&encoder.finalize());
 
-	// Empty r and s for EIP-155
-	encoder = RlpEncoder::new();
-	encoder.encode_bytes(&[]);
-	content.extend_from_slice(&encoder.finalize());
+    // Empty r and s for EIP-155
+    encoder = RlpEncoder::new();
+    encoder.encode_bytes(&[]);
+    content.extend_from_slice(&encoder.finalize());
 
-	encoder = RlpEncoder::new();
-	encoder.encode_bytes(&[]);
-	content.extend_from_slice(&encoder.finalize());
+    encoder = RlpEncoder::new();
+    encoder.encode_bytes(&[]);
+    content.extend_from_slice(&encoder.finalize());
 
-	// Create final RLP with list header
-	let mut final_encoder = RlpEncoder::new();
-	final_encoder.encode_list_header(content.len());
-	final_encoder.data.extend_from_slice(&content);
+    // Create final RLP with list header
+    let mut final_encoder = RlpEncoder::new();
+    final_encoder.encode_list_header(content.len());
+    final_encoder.data.extend_from_slice(&content);
 
-	final_encoder.finalize()
+    final_encoder.finalize()
 }
 
 #[test]

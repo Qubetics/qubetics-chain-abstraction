@@ -39,9 +39,6 @@ pub enum ChannelMessage {
 		peer_id: String,
 		data: Vec<u8>,
 	},
-	LocalTransaction {
-		transaction: DummyTransaction,
-	},
 	DepositIntent {
 		intent: DepositIntent,
 		intent_id: String,
@@ -55,34 +52,20 @@ pub enum ChannelMessage {
 		signer: String,
 		intent: DepositIntent,
 	},
-	TransactionIdBroadcast {
-		intent_hash: String,
-		transaction_id: String,
-		transaction_type: String,
-		node_id: String,
-	},
-	SolverReward {
+	ClaimReward {
 		solver_address: String,
-		reward: u128,
+		btc_address: Option<String>,
+		eth_address: Option<String>,
+		reward_btc: Option<String>,
+		reward_tics: Option<String>,
 	},
-	// ClaimReward {
-	// 	solver_address: String,
-	// 	btc_address: Option<String>,
-	// 	eth_address: Option<String>,
-	// 	reward_btc: Option<String>,
-	// 	reward_tics: Option<String>,
-	// },
 	UserRegistration {
 		ethereum_address: String,
 		node_id: String,
 	},
-	// RefundInitiation {
-	// 	intent_hash: String,
-	// 	data: Vec<u8>,
-	// },
-	IntentHashBroadcast {
+	RefundInitiation {
 		intent_hash: String,
-		node_id: String,
+		data: Vec<u8>,
 	},
 	ScheduledDKGStart,
 }
@@ -106,7 +89,6 @@ pub enum GossipsubMessage {
 		sequence: Option<u64>,
 		index: Option<usize>,
 	},
-	Transaction(DummyTransaction),
 	DepositIntent {
 		intent: DepositIntent,
 		intent_id: String,
@@ -120,38 +102,30 @@ pub enum GossipsubMessage {
 		signer: String,
 		intent: DepositIntent,
 	},
-	SolverReward {
+	ClaimReward {
 		solver_address: String,
-		reward: u128,
+		btc_address: Option<String>,
+		eth_address: Option<String>,
+		reward_btc: Option<String>,
+		reward_tics: Option<String>,
 	},
-	// ClaimReward {
-	// 	solver_address: String,
-	// 	btc_address: Option<String>,
-	// 	eth_address: Option<String>,
-	// 	reward_btc: Option<String>,
-	// 	reward_tics: Option<String>,
-	// },
 	DKGCommand(crate::types::rpc::RPCRequest),
 	UserRegistration {
 		ethereum_address: String,
 		timestamp: i64,
 		node_id: String,
 	},
-	TransactionIdBroadcast {
-		intent_hash: String, // None for reward transactions
-		transaction_id: String,
-		transaction_type: String, /* "user_to_vault", "network_to_target", "vault_to_network",
-		                           * "tics_reward", or "btc_reward" */
-		node_id: String, // Node that broadcasted the transaction
-	},
+    TransactionIdBroadcast {
+        intent_hash: Option<String>, // None for reward transactions
+        transaction_id: String,
+        transaction_type: String, // "user_to_vault", "network_to_target", "vault_to_network", "tics_reward", or "btc_reward"
+        node_id: String,          // Node that broadcasted the transaction
+        solver_address: Option<String>, // Required for reward transactions when intent_hash is None
+    },
 	TransactionErrorBroadcast {
 		intent_hash: String,
 		error_message: String,
 		transaction_type: String, // "user_to_network", "network_to_target", or "vault_to_network"
 		node_id: String,          // Node that encountered the error
-	},
-	IntentHashBroadcast {
-		intent_hash: String,
-		node_id: String,
 	},
 }

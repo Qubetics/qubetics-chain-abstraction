@@ -217,17 +217,9 @@ impl ChainHandler for EthereumChainHandler {
 						&contract_tx,
 					))
 				} else {
-					// Use regular transaction function for simple transfers (no data)
-					let dummy_tx = DummyTransaction {
-						to: eth_tx.to.clone(),
-						value: eth_tx.value.clone(),
-						gas_limit: eth_tx.gas_limit,
-						gas_price: eth_tx.gas_price.clone(),
-						nonce: eth_tx.nonce,
-						chain_id: eth_tx.chain_id,
-					};
 
-					Ok(crate::utils::transaction::create_transaction_for_signing(&dummy_tx))
+
+					Ok(crate::utils::transaction::create_transaction_for_signing(&eth_tx))
 				}
 			},
 			_ => Err(anyhow::anyhow!("Invalid transaction type for Ethereum handler")),
@@ -254,16 +246,7 @@ impl ChainHandler for EthereumChainHandler {
 					))
 				} else {
 					// Use regular transaction function for simple transfers (no data)
-
-					let dummy_tx = DummyTransaction {
-						to: eth_tx.to.clone(),
-						value: eth_tx.value.clone(),
-						gas_limit: eth_tx.gas_limit,
-						gas_price: eth_tx.gas_price.clone(),
-						nonce: eth_tx.nonce,
-						chain_id: eth_tx.chain_id,
-					};
-					Ok(crate::utils::transaction::create_transaction_for_signing(&dummy_tx))
+					Ok(crate::utils::transaction::create_transaction_for_signing(&eth_tx))
 				}
 			},
 			_ => Err(anyhow::anyhow!("Invalid transaction type for Ethereum handler")),
@@ -551,16 +534,8 @@ impl ChainHandler for BitcoinChainHandler {
 					))
 				} else {
 					// Use regular transaction function for simple transfers (no data)
-					let dummy_tx = DummyTransaction {
-						to: eth_tx.to.clone(),
-						value: eth_tx.value.clone(),
-						gas_limit: eth_tx.gas_limit,
-						gas_price: eth_tx.gas_price.clone(),
-						nonce: eth_tx.nonce,
-						chain_id: eth_tx.chain_id,
-					};
 
-					Ok(crate::utils::transaction::create_transaction_for_signing(&dummy_tx))
+					Ok(crate::utils::transaction::create_transaction_for_signing(&eth_tx))
 				}
 			},
 			_ => Err(anyhow::anyhow!("Invalid transaction type for Ethereum handler")),

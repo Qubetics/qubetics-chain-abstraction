@@ -1,8 +1,5 @@
 use crate::{
-	database::{DBKey, DkgVaultEthAddressKey, SolverLiquidity},
-	rpc_server::common::{ContractTransaction, DummyTransaction},
-	utils::transaction::SpendKind,
-	EnvVars,
+	EnvVars, chain::EthereumTransaction, database::{DBKey, DkgVaultEthAddressKey, LiquidityLastUpdateKey, SolverLiquidity}, rpc_server::common::{ContractTransaction, DepositIntent, DummyTransaction}, utils::transaction::SpendKind
 };
 use anyhow::{anyhow, Result};
 use k256::Scalar;
@@ -174,6 +171,18 @@ pub struct SigningNode {
 	>, /* round -> (original_tx, tx_bytes, intent_hash, transaction_type)  // Available nodes
 	    * from node manager */
 	pending_transactions_btc: Arc<RwLock<HashMap<u64, PendingValue>>>,
+	reward_pending_transactions_tics: Arc<
+		RwLock<
+			HashMap<
+				u64,
+				(ChainTransaction, Vec<u8>, Option<String>, Option<crate::types::TransactionType>),
+			>,
+		>,
+	>, // round -> (original_tx, tx_bytes, solver_address, None) for TICS rewards
+	reward_pending_transactions_btc: Arc<RwLock<HashMap<u64, PendingValue>>>, /* round -> (original_tx, tx_bytes, solver_address, None, extras) for BTC rewards */
+	// Store reward transaction rounds for easy identification
+	reward_rounds: Arc<RwLock<std::collections::HashSet<u64>>>, /* Set of rounds that are reward
+	                                                             * transactions */
 	// Store original transaction and bytes for reconstruction
 	/// round -> input_index -> peer_id -> raw partial sig (r||s, recid in ECDSASignature)
 	btc_sigs_by_round: Arc<RwLock<HashMap<u64, HashMap<usize, HashMap<String, ECDSASignature>>>>>,
@@ -232,6 +241,9 @@ impl SigningNode {
 			available_nodes: None,
 			pending_transactions: Arc::new(RwLock::new(HashMap::new())),
 			pending_transactions_btc: Arc::new(RwLock::new(HashMap::new())),
+			reward_pending_transactions_tics: Arc::new(RwLock::new(HashMap::new())),
+            reward_pending_transactions_btc: Arc::new(RwLock::new(HashMap::new())),
+            reward_rounds: Arc::new(RwLock::new(std::collections::HashSet::new())),
 			btc_sigs_by_round: Arc::new(RwLock::new(HashMap::new())),
 			btc_agg_by_round: Arc::new(RwLock::new(HashMap::new())),
 			btc_done_inputs_by_round: Arc::new(RwLock::new(HashMap::new())),
@@ -356,8 +368,17 @@ impl SigningNode {
 		intent_hash: Option<String>,
 		transaction_type: Option<crate::types::TransactionType>,
 		user_tweaked_share: Option<k256::Scalar>,
+		solver_address: Option<String>,
 	) -> Result<()> {
 		use secp256k1::{ecdsa::RecoverableSignature, Message};
+
+		// Validate parameters: if intent_hash is None, solver_address must be provided
+		if intent_hash.is_none() && solver_address.is_none() {
+			error!("❌ [BTC-SIGNING] Invalid parameters: when intent_hash is None, solver_address must be provided");
+			return Err(anyhow::anyhow!(
+				"When intent_hash is None, solver_address must be provided"
+			));
+		}
 
 		if self.private_key.is_none() {
 			return Err(anyhow::anyhow!("No private key available"));
@@ -554,23 +575,62 @@ impl SigningNode {
 		let extras = BtcRoundExtras { pubkey33: pubkey33_arr, signer_h160, from_kind, is_testnet };
 
 		// Store tx + extras under this round (so final node can reconstruct without re-deriving)
+		// Use reward pending transactions if intent_hash is None, otherwise use regular pending
+		// transactions
 		if let Some(original_tx) = &original_tx {
-			let mut pending = self.pending_transactions_btc.write().await;
-			pending.insert(
-				current_round,
-				(
-					ChainTransaction::Bitcoin(original_tx.clone()),
-					tx_bytes.clone(),
-					intent_hash.clone(),
-					transaction_type.clone(),
-					Some(extras), // <-- critical for aggregation/finalization
-				),
-			);
-			info!(
-				"💾 [SIGNING] Stored original BTC tx + extras for round {} (inputs={})",
-				current_round,
-				original_tx.inputs.len()
-			);
+			if intent_hash.is_none() {
+				// This is a reward transaction - store in reward pending transactions
+				if let Some(solver_addr) = solver_address {
+					// Store in BTC reward pending transactions
+					self.store_reward_transaction_btc(
+						current_round,
+						ChainTransaction::Bitcoin(original_tx.clone()),
+						tx_bytes.clone(),
+						solver_addr.clone(),
+						extras,
+					)
+					.await;
+
+					// Insert round number into reward_rounds for reward transactions
+					{
+						let mut reward_rounds = self.reward_rounds.write().await;
+						reward_rounds.insert(current_round);
+						info!(
+							"🎁 [BTC-SIGNING] Node {} added round {} to reward_rounds",
+							self.id, current_round
+						);
+					}
+
+					info!(
+                    "💾 [BTC-SIGNING] Node {} stored BTC reward transaction for round {} with solver address: {} (inputs={})",
+                    self.id, current_round, solver_addr, original_tx.inputs.len()
+                );
+				} else {
+					error!(
+						"❌ [BTC-SIGNING] Solver address is required for BTC reward transactions"
+					);
+					return Err(anyhow::anyhow!(
+						"Solver address is required for BTC reward transactions"
+					));
+				}
+			} else {
+				// This is an intent-based transaction - store in regular pending transactions
+				let mut pending = self.pending_transactions_btc.write().await;
+				pending.insert(
+					current_round,
+					(
+						ChainTransaction::Bitcoin(original_tx.clone()),
+						tx_bytes.clone(),
+						intent_hash.clone(),
+						transaction_type.clone(),
+						Some(extras), // <-- critical for aggregation/finalization
+					),
+				);
+				info!(
+                "💾 [BTC-SIGNING] Node {} stored intent-based BTC transaction for round {} reconstruction (intent_hash: {:?}, inputs={})",
+                self.id, current_round, intent_hash, original_tx.inputs.len()
+            );
+			}
 		}
 
 		// If you want to immediately broadcast to the final node, uncomment and
@@ -1844,12 +1904,21 @@ impl SigningNode {
 	pub async fn sign_message(
 		&mut self,
 		_message: Vec<u8>,
-		transaction: &DummyTransaction,
+		transaction: &EthereumTransaction,
 		user_tweaked_share: Option<k256::Scalar>,
 		user_eth_address: Option<String>,
 		intent_hash: Option<String>,
 		transaction_type: Option<crate::types::TransactionType>,
+		solver_address: Option<String>,
 	) -> Result<()> {
+		// Validate parameters: if intent_hash is None, solver_address must be provided
+		if intent_hash.is_none() && solver_address.is_none() {
+			error!("❌ [SIGNING] Invalid parameters: when intent_hash is None, solver_address must be provided");
+			return Err(anyhow::anyhow!(
+				"When intent_hash is None, solver_address must be provided"
+			));
+		}
+
 		// Determine which key to use for signing
 		// Redacted user_tweaked_share from logs
 		let signing_key = if let Some(tweaked_share) = user_tweaked_share {
@@ -1880,27 +1949,15 @@ impl SigningNode {
 
 		// Convert DummyTransaction to ChainTransaction for chain-agnostic handling with UTXO error
 		// handling
-		let chain_transaction = match self.chain_handler.from_dummy_transaction(transaction) {
-			Ok(tx) => tx,
-			Err(e) => {
-				// Check if this is a UTXO-related error that should stop VRF
-				let error_msg = e.to_string();
-				if error_msg.contains("No spendable UTXOs") ||
-					error_msg.contains("Failed to fetch spendable UTXOs") ||
-					error_msg.contains("UTXO")
-				{
-					error!("❌ [SIGNING] UTXO error detected, stopping VRF process: {}", e);
-					error!("🛑 [VRF] Stopping VRF selection due to UTXO unavailability");
-					return Err(anyhow::anyhow!(
-						"Transaction creation failed due to UTXO unavailability: {}",
-						e
-					));
-				} else {
-					// For other errors, continue with normal error handling
-					return Err(e);
-				}
-			},
-		};
+		let chain_transaction = ChainTransaction::Ethereum(crate::chain::EthereumTransaction {
+			to: transaction.to.clone(),
+			value: transaction.value.clone(),
+			gas_limit: transaction.gas_limit,
+			gas_price: transaction.gas_price.clone(),
+			nonce: transaction.nonce,
+			data: None,
+			chain_id: transaction.chain_id,
+		});
 
 		// Create transaction bytes using chain handler
 		let tx_bytes = self.chain_handler.create_transaction_bytes(&chain_transaction)?;
@@ -1988,7 +2045,49 @@ impl SigningNode {
 		}
 
 		// Store original transaction for reconstruction after aggregation
-		{
+		// Use reward pending transactions if intent_hash is None, otherwise use regular pending
+		// transactions
+		if intent_hash.is_none() {
+			// This is a reward transaction - store in reward pending transactions
+			if let Some(solver_addr) = solver_address {
+				let chain_tx = ChainTransaction::Ethereum(crate::chain::EthereumTransaction {
+					to: transaction.to.clone(),
+					value: transaction.value.clone(),
+					gas_limit: transaction.gas_limit,
+					gas_price: transaction.gas_price.clone(),
+					nonce: transaction.nonce,
+					data: None,
+					chain_id: transaction.chain_id,
+				});
+
+				// Store in TICS reward pending transactions (assuming TICS for now)
+				// TODO: Determine network type based on transaction context
+				self.store_reward_transaction_tics(
+					round,
+					chain_tx,
+					tx_bytes.clone(),
+					solver_addr.clone(),
+				)
+				.await;
+
+				// Insert round number into reward_rounds for reward transactions
+				{
+					let mut reward_rounds: tokio::sync::RwLockWriteGuard<'_, HashSet<u64>> =
+						self.reward_rounds.write().await;
+					reward_rounds.insert(round);
+					info!("🎁 [SIGNING] Node {} added round {} to reward_rounds", self.id, round);
+				}
+
+				info!(
+                    "💾 [SIGNING] Node {} stored reward transaction for round {} with solver address: {}",
+                    self.id, round, solver_addr
+                );
+			} else {
+				error!("❌ [SIGNING] Solver address is required for reward transactions");
+				return Err(anyhow::anyhow!("Solver address is required for reward transactions"));
+			}
+		} else {
+			// This is an intent-based transaction - store in regular pending transactions
 			let mut pending_transactions = self.pending_transactions.write().await;
 			let chain_tx = ChainTransaction::Ethereum(crate::chain::EthereumTransaction {
 				to: transaction.to.clone(),
@@ -2002,7 +2101,7 @@ impl SigningNode {
 			pending_transactions
 				.insert(round, (chain_tx, tx_bytes.clone(), intent_hash.clone(), transaction_type));
 			info!(
-                "💾 [SIGNING] Node {} stored original Ethereum transaction for round {} reconstruction (nonce will be fetched dynamically, intent_hash: {:?})",
+                "💾 [SIGNING] Node {} stored intent-based transaction for round {} reconstruction (intent_hash: {:?})",
                 self.id, round, intent_hash
             );
 		}
@@ -2184,74 +2283,74 @@ impl SigningNode {
 		Ok(())
 	}
 
-	pub fn create_ecdsa_signature_with_key(
-		&self,
-		message: &Message,
-		_transaction: &DummyTransaction,
-		signing_key: &SecretKey,
-	) -> Result<RecoverableSignature> {
-		// 1) Use provided signing key and context
-		let sk = signing_key;
-		let secp = Secp256k1::new();
+    pub fn create_ecdsa_signature_with_key(
+        &self,
+        message: &Message,
+        _transaction: &EthereumTransaction,
+        signing_key: &SecretKey,
+    ) -> Result<RecoverableSignature> {
+        // 1) Use provided signing key and context
+        let sk = signing_key;
+        let secp = Secp256k1::new();
 
-		// 2) Fixed nonce k = 0x42…42
-		let k_bytes = [0x42u8; 32];
-		let sec_nonce =
-			SecretKey::from_slice(&k_bytes).map_err(|e| anyhow!("invalid nonce slice: {}", e))?;
+        // 2) Fixed nonce k = 0x42…42
+        let k_bytes = [0x42u8; 32];
+        let sec_nonce =
+            SecretKey::from_slice(&k_bytes).map_err(|e| anyhow!("invalid nonce slice: {}", e))?;
 
-		// 3) R = k·G
-		let r = PublicKey::from_secret_key(&secp, &sec_nonce);
-		let rser = r.serialize_uncompressed(); // [0x04 || X(32) || Y(32)]
-		info!("[SIGNING] R serialized: {:?}", rser);
-		if BigUint::from_bytes_be(&rser) == BigUint::from(0u32) {
-			return Err(anyhow!("r is zero, need new nonce"));
-		}
+        // 3) R = k·G
+        let r = PublicKey::from_secret_key(&secp, &sec_nonce);
+        let rser = r.serialize_uncompressed(); // [0x04 || X(32) || Y(32)]
+        info!("[SIGNING] R serialized: {:?}", rser);
+        if BigUint::from_bytes_be(&rser) == BigUint::from(0u32) {
+            return Err(anyhow!("r is zero, need new nonce"));
+        }
 
-		// 4) r = X mod n
-		let mut r_bytes: [u8; 32] = [0u8; 32];
-		r_bytes.copy_from_slice(&rser[1..33]);
-		let r = BigUint::from_bytes_be(&r_bytes);
+        // 4) r = X mod n
+        let mut r_bytes: [u8; 32] = [0u8; 32];
+        r_bytes.copy_from_slice(&rser[1..33]);
+        let r = BigUint::from_bytes_be(&r_bytes);
 
-		// 5) z = message hash as BigUint
-		let z = BigUint::from_bytes_be(message.as_ref());
+        // 5) z = message hash as BigUint
+        let z = BigUint::from_bytes_be(message.as_ref());
 
-		// 6) x = private key as BigUint
-		let sk_bytes = sk.secret_bytes();
-		let x = BigUint::from_bytes_be(&sk_bytes);
+        // 6) x = private key as BigUint
+        let sk_bytes = sk.secret_bytes();
+        let x = BigUint::from_bytes_be(&sk_bytes);
 
-		// 7) Curve order n
-		let n = BigUint::parse_bytes(
-			b"FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141",
-			16,
-		)
-		.unwrap();
+        // 7) Curve order n
+        let n = BigUint::parse_bytes(
+            b"FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141",
+            16,
+        )
+        .unwrap();
 
-		// 8) k⁻¹ mod n
-		let k_inv = BigUint::from_bytes_be(&k_bytes)
-			.modinv(&n)
-			.ok_or_else(|| anyhow!("nonce not invertible"))?;
+        // 8) k⁻¹ mod n
+        let k_inv = BigUint::from_bytes_be(&k_bytes)
+            .modinv(&n)
+            .ok_or_else(|| anyhow!("nonce not invertible"))?;
 
-		// 9) s = k⁻¹·(z + r·x) mod n
-		let s = (&k_inv * (&z + (&r * &x) % &n)) % &n;
+        // 9) s = k⁻¹·(z + r·x) mod n
+        let s = (&k_inv * (&z + (&r * &x) % &n)) % &n;
 
-		// 10) Serialize r‖s into 64-byte array
-		let mut sig_bytes = [0u8; 64];
-		let r_be: Vec<u8> = r.to_bytes_be();
-		let s_be = s.to_bytes_be();
-		sig_bytes[32 - r_be.len()..32].copy_from_slice(&r_be);
-		sig_bytes[64 - s_be.len()..64].copy_from_slice(&s_be);
+        // 10) Serialize r‖s into 64-byte array
+        let mut sig_bytes = [0u8; 64];
+        let r_be: Vec<u8> = r.to_bytes_be();
+        let s_be = s.to_bytes_be();
+        sig_bytes[32 - r_be.len()..32].copy_from_slice(&r_be);
+        sig_bytes[64 - s_be.len()..64].copy_from_slice(&s_be);
 
-		// 11) Compute RecoveryId from R_y parity
-		let y_parity = (rser[64] & 1) as i32;
-		let rid: RecoveryId =
-			RecoveryId::from_i32(y_parity).map_err(|e| anyhow!("invalid recovery ID: {}", e))?;
+        // 11) Compute RecoveryId from R_y parity
+        let y_parity = (rser[64] & 1) as i32;
+        let rid: RecoveryId =
+            RecoveryId::from_i32(y_parity).map_err(|e| anyhow!("invalid recovery ID: {}", e))?;
 
-		// 12) Build the recoverable signature
-		let rec_sig = RecoverableSignature::from_compact(&sig_bytes, rid)
-			.map_err(|e| anyhow!("invalid compact signature: {}", e))?;
+        // 12) Build the recoverable signature
+        let rec_sig = RecoverableSignature::from_compact(&sig_bytes, rid)
+            .map_err(|e| anyhow!("invalid compact signature: {}", e))?;
 
-		Ok(rec_sig)
-	}
+        Ok(rec_sig)
+    }
 
 	pub fn create_ecdsa_signature_with_key_contract(
 		&self,
@@ -2982,36 +3081,289 @@ impl SigningNode {
 		}
 	}
 
-	/// Store transaction ID for a round if intent hash is available and broadcast to other nodes
-	async fn store_transaction_id_for_round(
+	/// Store reward transaction in TICS reward pending transactions mapping
+	async fn store_reward_transaction_tics(
 		&self,
 		round: u64,
-		tx_id: &str,
-		user_eth_address: Option<String>,
-		txn_network: crate::types::TransactionNetwork,
+		chain_tx: ChainTransaction,
+		tx_bytes: Vec<u8>,
+		solver_address: String,
 	) {
-		// Get intent hash and transaction type from the appropriate pending transactions mapping
-		let (intent_hash, transaction_type) = match txn_network {
+		let mut pending = self.reward_pending_transactions_tics.write().await;
+		pending.insert(round, (chain_tx, tx_bytes, Some(solver_address), None));
+		info!(
+			"🎁 [SIGNING] Stored TICS reward transaction for round {} with solver address",
+			round
+		);
+	}
+
+	/// Store reward transaction in BTC reward pending transactions mapping
+	async fn store_reward_transaction_btc(
+		&self,
+		round: u64,
+		chain_tx: ChainTransaction,
+		tx_bytes: Vec<u8>,
+		solver_address: String,
+		extras: BtcRoundExtras,
+	) {
+		let mut pending = self.reward_pending_transactions_btc.write().await;
+		pending.insert(round, (chain_tx, tx_bytes, Some(solver_address), None, Some(extras)));
+		info!("🎁 [SIGNING] Stored BTC reward transaction for round {} with solver address", round);
+	}
+
+	/// Get reward amount from transaction for a specific round and network
+	async fn get_reward_amount_from_transaction(
+		&self,
+		round: u64,
+		network: crate::types::TransactionNetwork,
+	) -> Option<ethers::types::U256> {
+		match network {
 			crate::types::TransactionNetwork::TICS => {
-				// Check EVM pending transactions
-				let pending_transactions = self.pending_transactions.read().await;
-				if let Some((_tx, _tx_bytes, intent_hash, transaction_type)) =
-					pending_transactions.get(&round)
+				let reward_pending_transactions =
+					self.reward_pending_transactions_tics.read().await;
+				if let Some((chain_tx, _tx_bytes, _solver_address, _transaction_type)) =
+					reward_pending_transactions.get(&round)
 				{
-					(intent_hash.clone(), transaction_type.clone())
+					match chain_tx {
+						crate::chain::ChainTransaction::Ethereum(eth_tx) => {
+							// Parse the value from hex string
+							if let Ok(value) = ethers::types::U256::from_str(&eth_tx.value) {
+								Some(value)
+							} else {
+								None
+							}
+						},
+						_ => None,
+					}
 				} else {
-					(None, None)
+					None
 				}
 			},
 			crate::types::TransactionNetwork::BTC => {
-				// Check Bitcoin pending transactions
-				let pending_transactions_btc = self.pending_transactions_btc.read().await;
-				if let Some((_tx, _tx_bytes, intent_hash, transaction_type, _extras)) =
-					pending_transactions_btc.get(&round)
+				let reward_pending_transactions_btc =
+					self.reward_pending_transactions_btc.read().await;
+				if let Some((chain_tx, _tx_bytes, _solver_address, _transaction_type, _extras)) =
+					reward_pending_transactions_btc.get(&round)
 				{
-					(intent_hash.clone(), transaction_type.clone())
+					match chain_tx {
+						crate::chain::ChainTransaction::Bitcoin(btc_tx) => {
+							// For Bitcoin, get the first output value (assuming single output for
+							// rewards)
+							if let Some(output) = btc_tx.outputs.first() {
+								Some(ethers::types::U256::from(output.value))
+							} else {
+								None
+							}
+						},
+						_ => None,
+					}
 				} else {
-					(None, None)
+					None
+				}
+			},
+		}
+	}
+
+	/// Handle successful reward transaction - update claimed amounts and reduce solver rewards
+	async fn handle_reward_transaction_success(
+		&self,
+		solver_address: &str,
+		reward_amount: ethers::types::U256,
+		currency: &str, // "tics" or "btc"
+		tx_id: &str,
+	) -> Result<()> {
+		if let Some(user_registry) = &self.user_registry {
+			// Get current claimed amount
+			let current_claimed = user_registry
+				.get_solver_claimed_request_amount(solver_address)
+				.await
+				.unwrap_or_else(|| ethers::types::U256::zero());
+
+			// Update claimed amount
+			let new_claimed = current_claimed + reward_amount;
+			if let Err(e) = user_registry
+				.set_solver_claimed_request_amount(solver_address, new_claimed)
+				.await
+			{
+				error!(
+					"❌ [REWARD] Failed to update claimed amount for solver {}: {}",
+					solver_address, e
+				);
+				return Err(anyhow::anyhow!("Failed to update claimed amount: {}", e));
+			}
+
+			// Reduce solver reward
+			let current_reward = if currency == "tics" {
+				user_registry
+					.get_solver_reward_tics(solver_address)
+					.await
+					.unwrap_or_else(|| ethers::types::U256::zero())
+			} else {
+				user_registry
+					.get_solver_reward_btc(solver_address)
+					.await
+					.unwrap_or_else(|| ethers::types::U256::zero())
+			};
+
+			if current_reward >= reward_amount {
+				let new_reward = current_reward - reward_amount;
+				let result = if currency == "tics" {
+					user_registry.set_solver_reward_tics(solver_address, new_reward).await
+				} else {
+					user_registry.set_solver_reward_btc(solver_address, new_reward).await
+				};
+
+				if let Err(e) = result {
+					error!(
+						"❌ [REWARD] Failed to reduce {} reward for solver {}: {}",
+						currency, solver_address, e
+					);
+					return Err(anyhow::anyhow!("Failed to reduce reward: {}", e));
+				}
+
+				info!("✅ [REWARD] Successfully processed {} reward transaction {} for solver {}: claimed={}, remaining_reward={}", 
+                      currency, tx_id, solver_address, new_claimed, new_reward);
+			} else {
+				error!("❌ [REWARD] Insufficient {} reward balance for solver {}: current={}, requested={}", 
+                       currency, solver_address, current_reward, reward_amount);
+				return Err(anyhow::anyhow!("Insufficient reward balance"));
+			}
+
+			// Update transaction status to confirmed
+			if let Err(e) = user_registry
+				.update_transaction_status(
+					tx_id,
+					crate::user_registry::TransactionStatus::Confirmed,
+				)
+				.await
+			{
+				error!("❌ [REWARD] Failed to update transaction status for {}: {}", tx_id, e);
+			}
+		} else {
+			return Err(anyhow::anyhow!("User registry not available"));
+		}
+
+		Ok(())
+	}
+
+	/// Handle failed reward transaction - store error following same pattern as regular
+	/// transactions
+	async fn handle_reward_transaction_failure(
+		&self,
+		solver_address: &str,
+		error_message: &str,
+		currency: &str, // "tics" or "btc"
+		tx_id: &str,
+	) -> Result<()> {
+		if let Some(user_registry) = &self.user_registry {
+			// Store transaction error (using solver_address as intent_hash equivalent for rewards)
+			if let Err(e) = user_registry
+				.store_transaction_error(solver_address, error_message, Some(tx_id))
+				.await
+			{
+				error!(
+					"❌ [REWARD] Failed to store transaction error for solver {}: {}",
+					solver_address, e
+				);
+				return Err(anyhow::anyhow!("Failed to store transaction error: {}", e));
+			}
+
+			// Update transaction status to rejected
+			if let Err(e) = user_registry
+				.update_transaction_status(tx_id, crate::user_registry::TransactionStatus::Rejected)
+				.await
+			{
+				error!("❌ [REWARD] Failed to update transaction status for {}: {}", tx_id, e);
+			}
+
+			info!(
+				"❌ [REWARD] Stored {} reward transaction failure for solver {}: {}",
+				currency, solver_address, error_message
+			);
+
+			// Broadcast error to other nodes for synchronization
+			self.broadcast_transaction_error(
+				solver_address,
+				error_message,
+				&format!("{}_reward", currency),
+			)
+			.await;
+		} else {
+			return Err(anyhow::anyhow!("User registry not available"));
+		}
+
+		Ok(())
+	}
+
+	/// Store transaction ID for a round if intent hash is available and broadcast to other nodes
+	async fn store_transaction_id_for_round(
+		&mut self,
+		round: u64,
+		tx_id: &str,
+		txn_network: crate::types::TransactionNetwork,
+	) {
+		// Check if this round is a reward round first
+		let is_reward_round = {
+			let reward_rounds = self.reward_rounds.read().await;
+			reward_rounds.contains(&round)
+		};
+
+		// Get intent hash, transaction type, and solver address from the appropriate pending
+		// transactions mapping For reward transactions (when intent_hash is None), use
+		// reward-specific mappings
+		let (intent_hash, transaction_type, retrieved_solver_address) = match txn_network {
+			crate::types::TransactionNetwork::TICS => {
+				if is_reward_round {
+					// This is a reward round - check reward pending transactions for TICS
+					let reward_pending_transactions =
+						self.reward_pending_transactions_tics.read().await;
+					if let Some((_tx, _tx_bytes, solver_address, transaction_type)) =
+						reward_pending_transactions.get(&round)
+					{
+						// This is a reward transaction - solver_address is stored instead of
+						// intent_hash
+						(None, transaction_type.clone(), solver_address.clone()) // transaction_type should be None
+					                                           // for rewards
+					} else {
+						(None, None, None)
+					}
+				} else {
+					// Check regular EVM pending transactions
+					let pending_transactions = self.pending_transactions.read().await;
+					if let Some((_tx, _tx_bytes, intent_hash, transaction_type)) =
+						pending_transactions.get(&round)
+					{
+						(intent_hash.clone(), transaction_type.clone(), None)
+					} else {
+						(None, None, None)
+					}
+				}
+			},
+			crate::types::TransactionNetwork::BTC => {
+				if is_reward_round {
+					// This is a reward round - check reward pending transactions for BTC
+					let reward_pending_transactions_btc =
+						self.reward_pending_transactions_btc.read().await;
+					if let Some((_tx, _tx_bytes, solver_address, transaction_type, _extras)) =
+						reward_pending_transactions_btc.get(&round)
+					{
+						// This is a reward transaction - solver_address is stored instead of
+						// intent_hash
+						(None, transaction_type.clone(), solver_address.clone()) // transaction_type should be None
+					                                           // for rewards
+					} else {
+						(None, None, None)
+					}
+				} else {
+					// Check regular Bitcoin pending transactions
+					let pending_transactions_btc = self.pending_transactions_btc.read().await;
+					if let Some((_tx, _tx_bytes, intent_hash, transaction_type, _extras)) =
+						pending_transactions_btc.get(&round)
+					{
+						(intent_hash.clone(), transaction_type.clone(), None)
+					} else {
+						(None, None, None)
+					}
 				}
 			},
 		};
@@ -3028,6 +3380,23 @@ impl SigningNode {
 						match &result {
 							Ok(()) => {
 								info!("💾 [SIGNING] Stored user-to-network transaction ID {} for intent {} (round {})", tx_id, intent_hash, round);
+
+								// Update solver amounts and calculate rewards for user_to_vault
+								// transactions
+								if let Err(e) =
+									self.update_solver_amounts_for_user_to_vault(intent_hash).await
+								{
+									warn!("⚠️ [SIGNING] Failed to update solver amounts for UserToVault transaction: {}", e);
+								} else {
+									// Calculate rewards after successfully updating solver amounts
+									if let Err(e) =
+										self.calculate_reward_per_solver(intent_hash).await
+									{
+										warn!("⚠️ [SIGNING] Failed to calculate rewards for UserToVault transaction: {}", e);
+									} else {
+										info!("✅ [SIGNING] Successfully calculated rewards for UserToVault transaction: {}", intent_hash);
+									}
+								}
 							},
 							Err(e) => {
 								error!("❌ [SIGNING] Failed to store user-to-network transaction ID for intent {}: {}", intent_hash, e);
@@ -3066,36 +3435,110 @@ impl SigningNode {
 						("vault_to_network", result)
 					},
 					None => {
-						// Fallback to old logic based on user_eth_address
-						if let Some(eth_addr) = &user_eth_address {
-							// User-to-network transaction
-							let result = user_registry
-								.store_user_to_vault_tx_id(intent_hash, tx_id, None)
-								.await;
-							match &result {
-								Ok(()) => {
-									info!("💾 [SIGNING] Stored user-to-network transaction ID {} for intent {} (round {}) for user {}", tx_id, intent_hash, round, eth_addr);
-								},
-								Err(e) => {
-									error!("❌ [SIGNING] Failed to store user-to-network transaction ID for intent {}: {}", intent_hash, e);
-								},
+						// This is a solver reward transaction - determine if it's TICS or BTC based
+						// on network type
+						let is_tics_reward = match txn_network {
+							crate::types::TransactionNetwork::TICS => true,
+							crate::types::TransactionNetwork::BTC => false,
+						};
+
+						// Use retrieved solver address from pending transactions, fallback to
+						// user_eth_address parameter
+						let solver_address_to_use = retrieved_solver_address.as_ref();
+
+						let result = if is_tics_reward {
+							// Store as TICS reward transaction hash
+							if let Some(eth_addr) = solver_address_to_use {
+								let result = user_registry
+									.add_solver_tics_txn_hash(eth_addr, tx_id.to_string())
+									.await
+									.map_err(|e| e.to_string());
+								match &result {
+									Ok(()) => {
+										info!("💾 [SIGNING] Stored TICS reward transaction hash {} for solver {} (round {})", tx_id, eth_addr, round);
+
+										// Handle reward transaction success - update claimed
+										// amounts and reduce rewards Get the reward
+										// amount from the transaction
+										if let Some(reward_amount) = self
+											.get_reward_amount_from_transaction(
+												round,
+												crate::types::TransactionNetwork::TICS,
+											)
+											.await
+										{
+											if let Err(e) = self
+												.handle_reward_transaction_success(
+													eth_addr,
+													reward_amount,
+													"tics",
+													tx_id,
+												)
+												.await
+											{
+												error!("❌ [REWARD] Failed to handle TICS reward transaction success for solver {}: {}", eth_addr, e);
+											}
+										} else {
+											warn!("⚠️ [REWARD] Could not determine TICS reward amount for solver {} (round {})", eth_addr, round);
+										}
+									},
+									Err(e) => {
+										error!("❌ [SIGNING] Failed to store TICS reward transaction hash for solver {}: {}", eth_addr, e);
+									},
+								}
+								("tics_reward", result)
+							} else {
+								error!("❌ [SIGNING] No solver address available for TICS reward transaction storage (retrieved: {:?})", retrieved_solver_address);
+								("tics_reward", Err("No solver address available".to_string()))
 							}
-							("user_to_network", result)
 						} else {
-							// Network-to-target transaction
-							let result = user_registry
-								.store_network_to_target_tx_id(intent_hash, tx_id, None)
-								.await;
-							match &result {
-								Ok(()) => {
-									info!("💾 [SIGNING] Stored network-to-target transaction ID {} for intent {} (round {})", tx_id, intent_hash, round);
-								},
-								Err(e) => {
-									error!("❌ [SIGNING] Failed to store network-to-target transaction ID for intent {}: {}", intent_hash, e);
-								},
+							// Store as BTC reward transaction hash
+							if let Some(eth_addr) = solver_address_to_use {
+								let result = user_registry
+									.add_solver_btc_txn_hash(eth_addr, tx_id.to_string())
+									.await
+									.map_err(|e| e.to_string());
+								match &result {
+									Ok(()) => {
+										info!("💾 [SIGNING] Stored BTC reward transaction hash {} for solver {} (round {})", tx_id, eth_addr, round);
+
+										// Handle reward transaction success - update claimed
+										// amounts and reduce rewards Get the reward
+										// amount from the transaction
+										if let Some(reward_amount) = self
+											.get_reward_amount_from_transaction(
+												round,
+												crate::types::TransactionNetwork::BTC,
+											)
+											.await
+										{
+											if let Err(e) = self
+												.handle_reward_transaction_success(
+													eth_addr,
+													reward_amount,
+													"btc",
+													tx_id,
+												)
+												.await
+											{
+												error!("❌ [REWARD] Failed to handle BTC reward transaction success for solver {}: {}", eth_addr, e);
+											}
+										} else {
+											warn!("⚠️ [REWARD] Could not determine BTC reward amount for solver {} (round {})", eth_addr, round);
+										}
+									},
+									Err(e) => {
+										error!("❌ [SIGNING] Failed to store BTC reward transaction hash for solver {}: {}", eth_addr, e);
+									},
+								}
+								("btc_reward", result)
+							} else {
+								error!("❌ [SIGNING] No solver address available for BTC reward transaction storage (retrieved: {:?})", retrieved_solver_address);
+								("btc_reward", Err("No solver address available".to_string()))
 							}
-							("network_to_target", result)
-						}
+						};
+
+						result
 					},
 				};
 
@@ -3110,11 +3553,128 @@ impl SigningNode {
 							tx_id, e
 						);
 					}
-					self.broadcast_transaction_id(&intent_hash, tx_id, transaction_type_str).await;
+
+					info!(
+                        "✅ [SIGNING] Successfully synchronized transaction ID {} for intent {} (type: {})",
+                        tx_id, intent_hash, transaction_type_str
+                    );
+
+					// Execute contract call when transaction ID is received
+					if let Some(intent) = user_registry.get_intent(&intent_hash).await {
+						// Convert transaction type string to enum
+						let tx_type_enum = match transaction_type_str {
+							"user_to_vault" => crate::types::TransactionType::UserToVault,
+							"network_to_target" => crate::types::TransactionType::NetworkToTarget,
+							"vault_to_network" => crate::types::TransactionType::VaultToNetwork,
+							_ => {
+								warn!(
+									"❌ [CONTRACT] Unknown transaction type for contract call: {}",
+									transaction_type_str
+								);
+								return;
+							},
+						};
+
+						// Get vault group key
+						let vault_group_key = self.vault_group_key;
+
+						if let Some(vault_group_key) = vault_group_key {
+							// Execute contract call
+							if let Err(e) = self
+								.execute_contract_call_for_transaction(
+									&intent,
+									&intent_hash,
+									tx_type_enum,
+									tx_id,
+									Some(vault_group_key),
+									intent.amount,
+								)
+								.await
+							{
+								warn!("❌ [CONTRACT] Failed to execute contract call for transaction ID {}: {}", tx_id, e);
+							} else {
+								info!("✅ [CONTRACT] Successfully executed contract call for transaction ID {}", tx_id);
+							}
+						} else {
+							warn!("❌ [CONTRACT] No vault group key available for contract call execution");
+						}
+					} else {
+						warn!("❌ [CONTRACT] Could not retrieve intent {} for contract call execution", intent_hash);
+					}
+
+					self.broadcast_transaction_id(
+						Some(&intent_hash),
+						tx_id,
+						transaction_type_str,
+						None,
+					)
+					.await;
 				}
 			},
-			(None, _) => {
-				info!("ℹ️ [SIGNING] No intent hash available for round {}, skipping transaction ID storage", round);
+			(None, Some(user_registry)) => {
+				// This is a reward transaction - handle solver address case
+				if let Some(solver_addr) = retrieved_solver_address.as_ref() {
+					let (transaction_type_str, storage_result) = match txn_network {
+						crate::types::TransactionNetwork::TICS => {
+							let result = user_registry
+								.add_solver_tics_txn_hash(solver_addr, tx_id.to_string())
+								.await
+								.map_err(|e| e.to_string());
+							match &result {
+								Ok(()) => {
+									info!("💾 [SIGNING] Stored TICS reward transaction hash {} for solver {} (round {})", tx_id, solver_addr, round);
+								},
+								Err(e) => {
+									error!("❌ [SIGNING] Failed to store TICS reward transaction hash for solver {}: {}", solver_addr, e);
+								},
+							}
+							("tics_reward", result)
+						},
+						crate::types::TransactionNetwork::BTC => {
+							let result = user_registry
+								.add_solver_btc_txn_hash(solver_addr, tx_id.to_string())
+								.await
+								.map_err(|e| e.to_string());
+							match &result {
+								Ok(()) => {
+									info!("💾 [SIGNING] Stored BTC reward transaction hash {} for solver {} (round {})", tx_id, solver_addr, round);
+								},
+								Err(e) => {
+									error!("❌ [SIGNING] Failed to store BTC reward transaction hash for solver {}: {}", solver_addr, e);
+								},
+							}
+							("btc_reward", result)
+						},
+					};
+
+					if storage_result.is_ok() {
+						if let Err(e) = user_registry
+							.store_transaction_status(tx_id, TransactionStatus::Pending)
+							.await
+						{
+							error!(
+                                "❌ [SIGNING] Failed to store transaction status for reward tx {}: {}",
+                                tx_id, e
+                            );
+						}
+
+						info!(
+                            "✅ [SIGNING] Successfully synchronized reward transaction ID {} for solver {} (type: {})",
+                            tx_id, solver_addr, transaction_type_str
+                        );
+
+						// Broadcast the reward transaction ID
+						self.broadcast_transaction_id(
+							None,
+							tx_id,
+							transaction_type_str,
+							Some(solver_addr),
+						)
+						.await;
+					}
+				} else {
+					info!("ℹ️ [SIGNING] No solver address available for reward transaction in round {}", round);
+				}
 			},
 			(_, None) => {
 				info!("ℹ️ [NETWORK] No user registry available, skipping transaction ID storage");
@@ -3125,15 +3685,17 @@ impl SigningNode {
 	/// Broadcast transaction ID to other nodes for synchronization
 	async fn broadcast_transaction_id(
 		&self,
-		intent_hash: &str,
+		intent_hash: Option<&str>,
 		tx_id: &str,
 		transaction_type: &str,
+		solver_address: Option<&str>,
 	) {
 		let broadcast_message = crate::types::GossipsubMessage::TransactionIdBroadcast {
-			intent_hash: intent_hash.to_string(),
+			intent_hash: intent_hash.map(|s| s.to_string()),
 			transaction_id: tx_id.to_string(),
 			transaction_type: transaction_type.to_string(),
 			node_id: self.id.clone(),
+			solver_address: solver_address.map(|s| s.to_string()),
 		};
 
 		let channel_message = crate::types::ChannelMessage::Broadcast {
@@ -3141,35 +3703,96 @@ impl SigningNode {
 			data: serde_json::to_vec(&broadcast_message).unwrap_or_default(),
 		};
 
-		let channel_message_transaction_id_broadcast =
-			crate::types::ChannelMessage::TransactionIdBroadcast {
-				intent_hash: intent_hash.to_string(),
-				transaction_id: tx_id.to_string(),
-				transaction_type: transaction_type.to_string(),
-				node_id: self.id.clone(),
-			};
-
 		// Call update_solver_amounts_for_user_to_vault only for user_to_vault transaction type
 		if transaction_type == "user_to_vault" {
-			if let Err(e) = self.update_solver_amounts_for_user_to_vault(intent_hash).await {
-				warn!(
-					"⚠️ [SIGNING] Failed to update solver amounts for UserToVault transaction: {}",
-					e
-				);
+			if let Some(intent_hash) = intent_hash {
+				if let Err(e) = self.update_solver_amounts_for_user_to_vault(intent_hash).await {
+					warn!("⚠️ [SIGNING] Failed to update solver amounts for UserToVault transaction: {}", e);
+				}
 			}
 		}
 
+		// Send the broadcast message to the network module for gossipsub distribution
 		if let Err(e) = self.message_tx.send(channel_message).await {
 			error!("❌ [SIGNING] Failed to broadcast transaction ID to other nodes: {}", e);
 		} else {
-			info!("📡 [SIGNING] Broadcasted transaction ID {} for intent {} (type: {}) to other nodes", tx_id, intent_hash, transaction_type);
+			info!("📡 [SIGNING] Broadcasted transaction ID {} for intent {:?} (type: {}) to other nodes", tx_id, intent_hash, transaction_type);
+		}
+	}
+
+	/// Execute contract call for transaction (simplified version for signing module)
+	async fn execute_contract_call_for_transaction(
+		&mut self,
+		intent: &DepositIntent,
+		intent_hash: &str,
+		transaction_type: crate::types::TransactionType,
+		tx_hash: &str,
+		vault_group_key: Option<k256::ProjectivePoint>,
+		amount: u128,
+	) -> Result<()> {
+		info!("📝 [CONTRACT] Executing contract call for transaction type: {:?}", transaction_type);
+
+		// Wait a bit before executing contract call
+		tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+
+		let contract_call_result =
+			crate::utils::transaction::create_chain_transaction_from_contract_call(
+				vault_group_key,
+				amount,
+				intent,
+				intent_hash,
+				tx_hash,
+				transaction_type.clone(),
+			)
+			.await;
+
+		match contract_call_result {
+			Ok(contract_transaction) => {
+				info!("📝 [CONTRACT] Created contract call transaction");
+
+				match contract_transaction {
+					crate::chain::ChainTransaction::Ethereum(ref eth_tx) => {
+						let contract_tx = ContractTransaction {
+							to: eth_tx.to.clone(),
+							value: eth_tx.value.clone(),
+							nonce: eth_tx.nonce,
+							gas_limit: eth_tx.gas_limit,
+							gas_price: eth_tx.gas_price.clone(),
+							chain_id: eth_tx.chain_id,
+							data: eth_tx
+								.data
+								.as_ref()
+								.map(|d| format!("0x{}", hex::encode(d)))
+								.unwrap_or_else(|| "0x".to_string()),
+						};
+						let contract_tx_bytes =
+							crate::utils::transaction::create_transaction_for_signing_contract(
+								&contract_tx,
+							);
+
+						// For signing module, we'll use the vault group key directly since we don't
+						// have DKG access
+						let vault_tweaked_share = None; // Simplified - no DKG tweaking in signing module
+						self.sign_contract_message(
+							contract_tx_bytes,
+							&contract_tx,
+							vault_tweaked_share,
+							None,
+						)
+						.await?;
+					},
+					_ => {
+						info!("📝 [CONTRACT] Contract call transaction is not Ethereum type, skipping");
+					},
+				}
+			},
+			Err(e) => {
+				warn!("❌ [CONTRACT] Failed to create contract call transaction: {}", e);
+				return Err(e);
+			},
 		}
 
-		if let Err(e) = self.message_tx.send(channel_message_transaction_id_broadcast).await {
-			error!("❌ [SIGNING] Failed to broadcast transaction ID to other nodes: {}", e);
-		} else {
-			info!("📡 [SIGNING] Broadcasted transaction ID {} for intent {} (type: {}) to other nodes", tx_id, intent_hash, transaction_type);
-		}
+		Ok(())
 	}
 
 	/// Broadcast transaction error to other nodes for synchronization
@@ -3550,10 +4173,7 @@ impl SigningNode {
 		Ok(())
 	}
 
-	/// Handle signature received by final node for specific round
-
-	/// Handle signature received by final node for specific round
-	/// Handle signature received by final node for specific round
+	/// Handle signature aggregation for Ethereum transactions only (Bitcoin has separate flow)
 	pub async fn handle_signature_for_round(
 		&mut self,
 		from: String,
@@ -3792,142 +4412,117 @@ impl SigningNode {
 
 						// 🚀 NEW: Reconstruct and broadcast signed transaction based on actual
 						// transaction type Check the actual transaction stored for this round
-						// to determine the correct chain type
-						let pending_transactions = self.pending_transactions.read().await;
-						let (chain_type, is_contract_tx) =
+						// to determine the correct chain type First check if this is a reward
+						// round
+						let is_reward_round = {
+							let reward_rounds = self.reward_rounds.read().await;
+							reward_rounds.contains(&round)
+						};
+
+						let is_contract_tx = if is_reward_round {
+							// This is a reward transaction - check reward pending transactions for
+							// TICS (Ethereum)
+							let reward_pending_transactions =
+								self.reward_pending_transactions_tics.read().await;
+							if let Some((chain_tx, _tx_bytes, _solver_address, _transaction_type)) =
+								reward_pending_transactions.get(&round)
+							{
+								match chain_tx {
+									ChainTransaction::Ethereum(eth_tx) =>
+										eth_tx.data.is_some() &&
+											!eth_tx.data.as_ref().unwrap().is_empty(),
+									_ => false, /* Only handle Ethereum transactions in this
+									             * function */
+								}
+							} else {
+								false
+							}
+						} else {
+							// This is a regular transaction - check regular pending transactions
+							// for Ethereum
+							let pending_transactions = self.pending_transactions.read().await;
 							if let Some((chain_tx, _tx_bytes, _intent_hash, _transaction_type)) =
 								pending_transactions.get(&round)
 							{
 								match chain_tx {
-									ChainTransaction::Ethereum(eth_tx) => {
-										let is_contract = eth_tx.data.is_some() &&
-											!eth_tx.data.as_ref().unwrap().is_empty();
-										("ethereum", is_contract)
-									},
-									ChainTransaction::Bitcoin(_) => ("bitcoin", false),
+									ChainTransaction::Ethereum(eth_tx) =>
+										eth_tx.data.is_some() &&
+											!eth_tx.data.as_ref().unwrap().is_empty(),
+									_ => false, /* Only handle Ethereum transactions in this
+									             * function */
 								}
 							} else {
-								// Fallback to chain handler if no transaction found
-								(self.chain_handler.chain_type(), false)
-							};
-						drop(pending_transactions); // Release the lock
+								false
+							}
+						};
 
 						info!(
-							"🔍 [SIGNING] Determined chain type: {}, is_contract: {}",
-							chain_type, is_contract_tx
+							"🔍 [SIGNING] Processing Ethereum transaction (is_contract: {})",
+							is_contract_tx
 						);
 
-						match chain_type {
-							"bitcoin" => {
-								if let Ok(Some(signed_tx_hex)) = self
-									.reconstruct_signed_bitcoin_transaction(
+						// Create canonical signature bytes from normalized r and s components
+						let mut canonical_signature_bytes = [0u8; 64];
+						canonical_signature_bytes[0..32].copy_from_slice(&r);
+						canonical_signature_bytes[32..64].copy_from_slice(&s);
+
+						if let Ok(Some(signed_tx_hex)) = self
+							.reconstruct_signed_ethereum_transaction(
+								round,
+								&canonical_signature_bytes,
+								recovery_id.to_i32() as u8,
+							)
+							.await
+						{
+							info!("🎉 [SIGNING] 🔗 SIGNED ETHEREUM TRANSACTION READY! 🔗");
+							info!("📄 Raw signed transaction: {}", signed_tx_hex);
+
+							// Get chain ID for broadcasting - use contract chain handler for
+							// contract transactions
+							let chain_handler = if is_contract_tx {
+								&self.contract_chain_handler
+							} else {
+								&self.chain_handler
+							};
+							let chain_id = chain_handler
+								.get_chain_params()
+								.get("chain_id")
+								.and_then(|id| id.parse::<u64>().ok())
+								.unwrap_or(9029); // Default to Qubetics
+
+							info!("Broadcasting transaction to chain {} (Qubetics)...", chain_id);
+							match Self::broadcast_ethereum_transaction(&signed_tx_hex, chain_id)
+								.await
+							{
+								Ok(Some(tx_hash)) => {
+									info!("✅ [SIGNING] Ethereum transaction broadcasted successfully: {}", tx_hash);
+									// Store transaction ID if we have intent hash and user registry
+									self.store_transaction_id_for_round(
 										round,
-										&signature_bytes,
-										recovery_id.to_i32() as u8,
+										&tx_hash,
+										crate::types::TransactionNetwork::TICS,
 									)
-									.await
-								{
-									info!("🎉 [SIGNING] 🔗 SIGNED BITCOIN TRANSACTION READY! 🔗");
-									info!("📄 Raw signed transaction: {}", signed_tx_hex);
-									info!("Broadcasting transaction to Bitcoin network...");
-									match Self::broadcast_transaction(&signed_tx_hex, false).await {
-										Ok(Some(txid)) => {
-											info!("✅ [SIGNING] Bitcoin transaction broadcasted successfully: {}", txid);
-											self.store_transaction_id_for_round(
-												round,
-												&txid,
-												signature.user_eth_address.clone(),
-												crate::types::TransactionNetwork::BTC,
-											)
-											.await;
-										},
-										Ok(None) => {
-											warn!("⚠️ [SIGNING] Bitcoin transaction broadcasted but no txid returned");
-										},
-										Err(e) => {
-											error!("❌ [SIGNING] Failed to broadcast Bitcoin transaction: {}", e);
-											self.store_transaction_error_for_round(
-												round,
-												&e.to_string(),
-												crate::types::TransactionNetwork::BTC,
-											)
-											.await;
-										},
-									}
-								}
-							},
-							"ethereum" => {
-								// Create canonical signature bytes from normalized r and s
-								// components
-								let mut canonical_signature_bytes = [0u8; 64];
-								canonical_signature_bytes[0..32].copy_from_slice(&r);
-								canonical_signature_bytes[32..64].copy_from_slice(&s);
-
-								if let Ok(Some(signed_tx_hex)) = self
-									.reconstruct_signed_ethereum_transaction(
-										round,
-										&canonical_signature_bytes,
-										recovery_id.to_i32() as u8,
-									)
-									.await
-								{
-									info!("🎉 [SIGNING] 🔗 SIGNED ETHEREUM TRANSACTION READY! 🔗");
-									info!("📄 Raw signed transaction: {}", signed_tx_hex);
-
-									// Get chain ID for broadcasting - use contract chain handler
-									// for contract transactions
-									let chain_handler = if is_contract_tx {
-										&self.contract_chain_handler
-									} else {
-										&self.chain_handler
-									};
-									let chain_id = chain_handler
-										.get_chain_params()
-										.get("chain_id")
-										.and_then(|id| id.parse::<u64>().ok())
-										.unwrap_or(9029); // Default to Qubetics
-
-									info!(
-										"Broadcasting transaction to chain {} (Qubetics)...",
-										chain_id
+									.await;
+								},
+								Ok(None) => {
+									warn!("⚠️ [SIGNING] Ethereum transaction broadcasted but no tx_hash returned");
+								},
+								Err(e) => {
+									error!(
+										"❌ [SIGNING] Failed to broadcast Ethereum transaction: {}",
+										e
 									);
-									match Self::broadcast_ethereum_transaction(
-										&signed_tx_hex,
-										chain_id,
+									// Store the error message for the user to see
+									self.store_transaction_error_for_round(
+										round,
+										&e.to_string(),
+										crate::types::TransactionNetwork::TICS,
 									)
-									.await
-									{
-										Ok(Some(tx_hash)) => {
-											info!("✅ [SIGNING] Ethereum transaction broadcasted successfully: {}", tx_hash);
-											// Store transaction ID if we have intent hash and user
-											// registry
-											self.store_transaction_id_for_round(
-												round,
-												&tx_hash,
-												signature.user_eth_address.clone(),
-												crate::types::TransactionNetwork::TICS,
-											)
-											.await;
-										},
-										Ok(None) => {
-											warn!("⚠️ [SIGNING] Ethereum transaction broadcasted but no tx_hash returned");
-										},
-										Err(e) => {
-											error!("❌ [SIGNING] Failed to broadcast Ethereum transaction: {}", e);
-											// Store the error message for the user to see
-											self.store_transaction_error_for_round(
-												round,
-												&e.to_string(),
-												crate::types::TransactionNetwork::TICS,
-											)
-											.await;
-										},
-									}
-								}
-							},
-							_ => {
-								warn!("❌ [SIGNING] Unsupported chain type for transaction reconstruction: {}", chain_type);
-							},
+									.await;
+								},
+							}
+						} else {
+							warn!("❌ [SIGNING] Failed to reconstruct Ethereum transaction for round {}", round);
 						}
 					},
 					Err(e) => {
@@ -4246,7 +4841,6 @@ impl SigningNode {
 				self.store_transaction_id_for_round(
 					round,
 					&txid,
-					user_eth_address,
 					crate::types::TransactionNetwork::BTC,
 				)
 				.await;
@@ -4447,82 +5041,114 @@ impl SigningNode {
 
 		info!("🔄 [SOLVER] Updating solver amounts for UserToVault transaction: {}", _intent_hash);
 
-		// Parse contract address
-		let contract_addr = contract_address
-			.parse::<ethers::types::Address>()
-			.map_err(|e| anyhow::anyhow!("Invalid contract address: {}", e))?;
+		// Check if liquidity update is needed (cache for 5 minutes)
+		if let Some(ref database) = self.database {
+			let solver_storage = database.solver_storage();
 
-		// Create contract configuration
-		let config = crate::contract::ContractConfig {
-			rpc_url: rpc_url.clone(),
-			contract_address: contract_addr,
-			chain_id,
-		};
+			let now = std::time::SystemTime::now()
+				.duration_since(std::time::UNIX_EPOCH)
+				.unwrap_or_default()
+				.as_secs();
 
-		// Initialize contract client
-		let client = crate::contract::ContractClient::new(config.clone())
-			.map_err(|e| anyhow::anyhow!("Failed to create contract client: {}", e))?;
+			if let Ok(Some(last_update_str)) = solver_storage.get_liquidity_last_update().await {
+				if let Ok(last_update) = last_update_str.parse::<u64>() {
+					let update_interval = 300; // 5 minutes
+					if now - last_update < update_interval {
+						info!(
+							"⏭️ [SOLVER] Skipping liquidity update - updated {}s ago (cache valid)",
+							now - last_update
+						);
+						return Ok(());
+					}
+				}
+			}
+		}
 
-		let solver_contract =
-			crate::contract::SolverManagerContract::new(&config, client.provider())
-				.map_err(|e| anyhow::anyhow!("Failed to create solver contract: {}", e))?;
+		info!("🔄 [SOLVER] Updating solver amounts for UserToVault transaction: {}", _intent_hash);
+
+		// Use API instead of contract calls for better efficiency
+		let api_url = "https://dev-solver-api.qubetics.work/amount";
+
+		// Make HTTP request to get all solver liquidity data
+		let response = reqwest::get(api_url)
+			.await
+			.map_err(|e| anyhow::anyhow!("Failed to fetch solver liquidity from API: {}", e))?;
+
+		if !response.status().is_success() {
+			return Err(anyhow::anyhow!("API request failed with status: {}", response.status()));
+		}
 
 		// Get all active solvers
-		let active_solvers = solver_contract
-			.get_active_solvers()
+		let api_response: serde_json::Value = response
+			.json()
 			.await
-			.map_err(|e| anyhow::anyhow!("Failed to get active solvers: {}", e))?;
+			.map_err(|e| anyhow::anyhow!("Failed to parse API response: {}", e))?;
 
-		info!("🔍 [SOLVER] Found {} active solvers: {:?}", active_solvers.len(), active_solvers);
+		// Parse the API response structure
+		let solver_data = api_response["data"]["data"]
+			.as_array()
+			.ok_or_else(|| anyhow::anyhow!("Invalid API response structure"))?;
+
+		info!("🔍 [SOLVER] Found {} solvers from API", solver_data.len());
 
 		// Store amounts for each solver by EVM address
 		let mut solver_liquidity_map = std::collections::HashMap::new();
 		let mut total_tics = U256::zero();
 		let mut total_btc = U256::zero();
 
-		for solver_id in &active_solvers {
-			// Get solver EVM address
-			let solver_evm_address =
-				solver_contract.get_solver_evm_address(solver_id).await.map_err(|e| {
-					anyhow::anyhow!("Failed to get EVM address for solver {}: {}", solver_id, e)
+		for solver_info in solver_data {
+			let solver_id = solver_info["solver_id"]
+				.as_str()
+				.ok_or_else(|| anyhow::anyhow!("Missing solver_id in API response"))?;
+
+			let chains = solver_info["chains"]
+				.as_array()
+				.ok_or_else(|| anyhow::anyhow!("Missing chains array for solver {}", solver_id))?;
+
+			// Extract amounts: chain_id 0 = BTC, chain_id 9029 = TICS
+			let mut btc_amount = U256::zero();
+			let mut tics_amount = U256::zero();
+
+			for chain in chains {
+				let chain_id = chain["chain_id"]
+					.as_u64()
+					.ok_or_else(|| anyhow::anyhow!("Invalid chain_id for solver {}", solver_id))?;
+				let amount = chain["amount"].as_f64().ok_or_else(|| {
+					anyhow::anyhow!("Invalid amount for solver {} chain {}", solver_id, chain_id)
 				})?;
 
-			// Call getSolverAllChainAmounts for each solver
-			let amounts = solver_contract.get_all_chain_amounts(solver_id).await.map_err(|e| {
-				anyhow::anyhow!("Failed to get amounts for solver {}: {}", solver_id, e)
-			})?;
+				match chain_id {
+					0 => btc_amount = U256::from(amount as u64), // Convert BTC to satoshis
+					9029 => tics_amount = U256::from((amount * 1e18) as u128), // Convert TICS to wei
+					_ =>
+						warn!("⚠️ [SOLVER] Unknown chain_id {} for solver {}", chain_id, solver_id),
+				}
+			}
 
-			// Track totals: index 0 = btc, index 1 = tics
-			// According to the contract, amounts[0] = btc, amounts[1] = tics
-			if let Some(btc_amount) = amounts.get(0) {
-				total_btc = total_btc + *btc_amount;
-			}
-			if let Some(tics_amount) = amounts.get(1) {
-				total_tics = total_tics + *tics_amount;
-			}
+			// Track totals
+			total_btc = total_btc + btc_amount;
+			total_tics = total_tics + tics_amount;
 
 			// Convert amounts to strings for storage: [btc, tics]
 			// To ensure the liquidity of the solver gets updated, always overwrite the value in the
 			// database for this solver
-			let liquidity_amounts: Vec<String> = amounts.iter().map(|u| u.to_string()).collect();
+			let liquidity_amounts = vec![btc_amount.to_string(), tics_amount.to_string()];
 
 			// Store individual solver liquidity in database
 			if let Some(ref database) = self.database {
 				let solver_storage = database.solver_storage();
-				let solver_liquidity_key =
-					SolverLiquidity { address: solver_evm_address.to_string() };
 				if let Err(e) = solver_storage
-					.store_solver_liquidity(&solver_evm_address.to_string(), &liquidity_amounts)
+					.store_solver_liquidity(&solver_id.to_string(), &liquidity_amounts)
 					.await
 				{
 					warn!(
-						"⚠️ [SOLVER] Failed to store liquidity for solver {} (address: {:?}): {}",
-						solver_id, solver_evm_address, e
+						"⚠️ [SOLVER] Failed to store liquidity for solver {} ): {}",
+						solver_id, e
 					);
 				} else {
 					info!(
-						"💾 [SOLVER] Stored liquidity for solver {} (address: {:?}): {:?}",
-						solver_id, solver_evm_address, liquidity_amounts
+						"💾 [SOLVER] Stored liquidity for solver {}: BTC={}, TICS={}",
+						solver_id, btc_amount, tics_amount
 					);
 				}
 			} else {
@@ -4530,10 +5156,7 @@ impl SigningNode {
 			}
 
 			// Add to solver liquidity map: solver_address -> [tics, btc]
-			solver_liquidity_map.insert(
-				format!("{:?}", solver_evm_address).to_lowercase(),
-				liquidity_amounts.clone(),
-			);
+			solver_liquidity_map.insert(solver_id.to_lowercase(), liquidity_amounts.clone());
 		}
 
 		// Store consolidated liquidity and totals in database
@@ -4561,6 +5184,18 @@ impl SigningNode {
 			} else {
 				info!("💾 [SOLVER] Stored total btc liquidity: {}", total_btc);
 			}
+			// Update cache timestamp
+			let now = std::time::SystemTime::now()
+				.duration_since(std::time::UNIX_EPOCH)
+				.unwrap_or_default()
+				.as_secs();
+			if let Err(e) =
+				database.solver_storage().store_liquidity_last_update(&now.to_string()).await
+			{
+				warn!("⚠️ [SOLVER] Failed to update liquidity cache timestamp: {}", e);
+			} else {
+				info!("💾 [SOLVER] Updated liquidity cache timestamp: {}", now);
+			}
 		} else {
 			warn!("⚠️ [SOLVER] No database available to store solver liquidity");
 		}
@@ -4568,7 +5203,7 @@ impl SigningNode {
 		// Log the consolidated amounts
 		info!("📋 [SOLVER] All solver liquidity by EVM address: {:?}", solver_liquidity_map);
 
-		info!("✅ [SOLVER] Updated all solver liquidity: {} solvers", active_solvers.len());
+		info!("✅ [SOLVER] Updated all solver liquidity: {} solvers", solver_data.len());
 
 		Ok(())
 	}
