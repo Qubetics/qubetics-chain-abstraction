@@ -1,9 +1,11 @@
 use crate::{
-	DatabaseUserRegistry, DkgStorage, RewardStorage, rpc_server::{
+	rpc_server::{
 		handlers::{handle_claim_reward, handle_get_reward_solver},
 		requests::GetRewardSolverRequest,
 		routes::{with_dkg_storage, with_message_tx, with_reward_storage, with_user_registry},
-	}, types::ChannelMessage
+	},
+	types::ChannelMessage,
+	DatabaseUserRegistry, DkgStorage, RewardStorage,
 };
 use std::sync::Arc;
 use tokio::sync::mpsc;

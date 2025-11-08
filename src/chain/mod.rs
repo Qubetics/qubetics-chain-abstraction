@@ -217,8 +217,6 @@ impl ChainHandler for EthereumChainHandler {
 						&contract_tx,
 					))
 				} else {
-
-
 					Ok(crate::utils::transaction::create_transaction_for_signing(&eth_tx))
 				}
 			},

@@ -126,25 +126,26 @@ pub async fn handle_claim_reward(
 		}
 	}
 
-
 	let reward_btc = user_registry.get_solver_reward_btc(&signer_address).await;
 	let reward_tics = user_registry.get_solver_reward_tics(&signer_address).await;
 
-    // Check if the signer has any rewards to claim
-    if reward_btc.is_none() && reward_tics.is_none() {
-        warn!("❌ Signer {} is not a registered solver or has no rewards available", signer_address);
-        return Ok(warp::reply::json(&ClaimRewardResponse {
-            status: "error".to_string(),
-            ethereum_address: normalized_eth_address,
-            btc_address: req.btc_address,
-            reward_btc: None,
-            reward_tics: None,
-            total_reward: None,
-            message: "Signer is not a registered solver or has no rewards".to_string(),
-            error_message: Some(format!("Address {} has no rewards available", signer_address)),
-        }));
-    }
-
+	// Check if the signer has any rewards to claim
+	if reward_btc.is_none() && reward_tics.is_none() {
+		warn!(
+			"❌ Signer {} is not a registered solver or has no rewards available",
+			signer_address
+		);
+		return Ok(warp::reply::json(&ClaimRewardResponse {
+			status: "error".to_string(),
+			ethereum_address: normalized_eth_address,
+			btc_address: req.btc_address,
+			reward_btc: None,
+			reward_tics: None,
+			total_reward: None,
+			message: "Signer is not a registered solver or has no rewards".to_string(),
+			error_message: Some(format!("Address {} has no rewards available", signer_address)),
+		}));
+	}
 
 	let reward_btc_str = reward_btc.as_ref().map(|v| v.to_string());
 	let reward_tics_str = reward_tics.as_ref().map(|v| v.to_string());
@@ -156,7 +157,6 @@ pub async fn handle_claim_reward(
 		(None, Some(tics)) => Some(tics.to_string()),
 		(None, None) => None,
 	};
-
 
 	// If there are rewards, send a claim message to the network
 	let claim_msg = ChannelMessage::ClaimReward {

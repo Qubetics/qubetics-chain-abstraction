@@ -1,5 +1,9 @@
 use crate::{
-	EnvVars, chain::EthereumTransaction, database::{DBKey, DkgVaultEthAddressKey, LiquidityLastUpdateKey, SolverLiquidity}, rpc_server::common::{ContractTransaction, DepositIntent, DummyTransaction}, utils::transaction::SpendKind
+	chain::EthereumTransaction,
+	database::{DBKey, DkgVaultEthAddressKey, LiquidityLastUpdateKey, SolverLiquidity},
+	rpc_server::common::{ContractTransaction, DepositIntent, DummyTransaction},
+	utils::transaction::SpendKind,
+	EnvVars,
 };
 use anyhow::{anyhow, Result};
 use k256::Scalar;
@@ -242,8 +246,8 @@ impl SigningNode {
 			pending_transactions: Arc::new(RwLock::new(HashMap::new())),
 			pending_transactions_btc: Arc::new(RwLock::new(HashMap::new())),
 			reward_pending_transactions_tics: Arc::new(RwLock::new(HashMap::new())),
-            reward_pending_transactions_btc: Arc::new(RwLock::new(HashMap::new())),
-            reward_rounds: Arc::new(RwLock::new(std::collections::HashSet::new())),
+			reward_pending_transactions_btc: Arc::new(RwLock::new(HashMap::new())),
+			reward_rounds: Arc::new(RwLock::new(std::collections::HashSet::new())),
 			btc_sigs_by_round: Arc::new(RwLock::new(HashMap::new())),
 			btc_agg_by_round: Arc::new(RwLock::new(HashMap::new())),
 			btc_done_inputs_by_round: Arc::new(RwLock::new(HashMap::new())),
@@ -2283,74 +2287,74 @@ impl SigningNode {
 		Ok(())
 	}
 
-    pub fn create_ecdsa_signature_with_key(
-        &self,
-        message: &Message,
-        _transaction: &EthereumTransaction,
-        signing_key: &SecretKey,
-    ) -> Result<RecoverableSignature> {
-        // 1) Use provided signing key and context
-        let sk = signing_key;
-        let secp = Secp256k1::new();
+	pub fn create_ecdsa_signature_with_key(
+		&self,
+		message: &Message,
+		_transaction: &EthereumTransaction,
+		signing_key: &SecretKey,
+	) -> Result<RecoverableSignature> {
+		// 1) Use provided signing key and context
+		let sk = signing_key;
+		let secp = Secp256k1::new();
 
-        // 2) Fixed nonce k = 0x42…42
-        let k_bytes = [0x42u8; 32];
-        let sec_nonce =
-            SecretKey::from_slice(&k_bytes).map_err(|e| anyhow!("invalid nonce slice: {}", e))?;
+		// 2) Fixed nonce k = 0x42…42
+		let k_bytes = [0x42u8; 32];
+		let sec_nonce =
+			SecretKey::from_slice(&k_bytes).map_err(|e| anyhow!("invalid nonce slice: {}", e))?;
 
-        // 3) R = k·G
-        let r = PublicKey::from_secret_key(&secp, &sec_nonce);
-        let rser = r.serialize_uncompressed(); // [0x04 || X(32) || Y(32)]
-        info!("[SIGNING] R serialized: {:?}", rser);
-        if BigUint::from_bytes_be(&rser) == BigUint::from(0u32) {
-            return Err(anyhow!("r is zero, need new nonce"));
-        }
+		// 3) R = k·G
+		let r = PublicKey::from_secret_key(&secp, &sec_nonce);
+		let rser = r.serialize_uncompressed(); // [0x04 || X(32) || Y(32)]
+		info!("[SIGNING] R serialized: {:?}", rser);
+		if BigUint::from_bytes_be(&rser) == BigUint::from(0u32) {
+			return Err(anyhow!("r is zero, need new nonce"));
+		}
 
-        // 4) r = X mod n
-        let mut r_bytes: [u8; 32] = [0u8; 32];
-        r_bytes.copy_from_slice(&rser[1..33]);
-        let r = BigUint::from_bytes_be(&r_bytes);
+		// 4) r = X mod n
+		let mut r_bytes: [u8; 32] = [0u8; 32];
+		r_bytes.copy_from_slice(&rser[1..33]);
+		let r = BigUint::from_bytes_be(&r_bytes);
 
-        // 5) z = message hash as BigUint
-        let z = BigUint::from_bytes_be(message.as_ref());
+		// 5) z = message hash as BigUint
+		let z = BigUint::from_bytes_be(message.as_ref());
 
-        // 6) x = private key as BigUint
-        let sk_bytes = sk.secret_bytes();
-        let x = BigUint::from_bytes_be(&sk_bytes);
+		// 6) x = private key as BigUint
+		let sk_bytes = sk.secret_bytes();
+		let x = BigUint::from_bytes_be(&sk_bytes);
 
-        // 7) Curve order n
-        let n = BigUint::parse_bytes(
-            b"FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141",
-            16,
-        )
-        .unwrap();
+		// 7) Curve order n
+		let n = BigUint::parse_bytes(
+			b"FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141",
+			16,
+		)
+		.unwrap();
 
-        // 8) k⁻¹ mod n
-        let k_inv = BigUint::from_bytes_be(&k_bytes)
-            .modinv(&n)
-            .ok_or_else(|| anyhow!("nonce not invertible"))?;
+		// 8) k⁻¹ mod n
+		let k_inv = BigUint::from_bytes_be(&k_bytes)
+			.modinv(&n)
+			.ok_or_else(|| anyhow!("nonce not invertible"))?;
 
-        // 9) s = k⁻¹·(z + r·x) mod n
-        let s = (&k_inv * (&z + (&r * &x) % &n)) % &n;
+		// 9) s = k⁻¹·(z + r·x) mod n
+		let s = (&k_inv * (&z + (&r * &x) % &n)) % &n;
 
-        // 10) Serialize r‖s into 64-byte array
-        let mut sig_bytes = [0u8; 64];
-        let r_be: Vec<u8> = r.to_bytes_be();
-        let s_be = s.to_bytes_be();
-        sig_bytes[32 - r_be.len()..32].copy_from_slice(&r_be);
-        sig_bytes[64 - s_be.len()..64].copy_from_slice(&s_be);
+		// 10) Serialize r‖s into 64-byte array
+		let mut sig_bytes = [0u8; 64];
+		let r_be: Vec<u8> = r.to_bytes_be();
+		let s_be = s.to_bytes_be();
+		sig_bytes[32 - r_be.len()..32].copy_from_slice(&r_be);
+		sig_bytes[64 - s_be.len()..64].copy_from_slice(&s_be);
 
-        // 11) Compute RecoveryId from R_y parity
-        let y_parity = (rser[64] & 1) as i32;
-        let rid: RecoveryId =
-            RecoveryId::from_i32(y_parity).map_err(|e| anyhow!("invalid recovery ID: {}", e))?;
+		// 11) Compute RecoveryId from R_y parity
+		let y_parity = (rser[64] & 1) as i32;
+		let rid: RecoveryId =
+			RecoveryId::from_i32(y_parity).map_err(|e| anyhow!("invalid recovery ID: {}", e))?;
 
-        // 12) Build the recoverable signature
-        let rec_sig = RecoverableSignature::from_compact(&sig_bytes, rid)
-            .map_err(|e| anyhow!("invalid compact signature: {}", e))?;
+		// 12) Build the recoverable signature
+		let rec_sig = RecoverableSignature::from_compact(&sig_bytes, rid)
+			.map_err(|e| anyhow!("invalid compact signature: {}", e))?;
 
-        Ok(rec_sig)
-    }
+		Ok(rec_sig)
+	}
 
 	pub fn create_ecdsa_signature_with_key_contract(
 		&self,

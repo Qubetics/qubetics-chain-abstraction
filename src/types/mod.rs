@@ -115,13 +115,15 @@ pub enum GossipsubMessage {
 		timestamp: i64,
 		node_id: String,
 	},
-    TransactionIdBroadcast {
-        intent_hash: Option<String>, // None for reward transactions
-        transaction_id: String,
-        transaction_type: String, // "user_to_vault", "network_to_target", "vault_to_network", "tics_reward", or "btc_reward"
-        node_id: String,          // Node that broadcasted the transaction
-        solver_address: Option<String>, // Required for reward transactions when intent_hash is None
-    },
+	TransactionIdBroadcast {
+		intent_hash: Option<String>, // None for reward transactions
+		transaction_id: String,
+		transaction_type: String, /* "user_to_vault", "network_to_target", "vault_to_network",
+		                           * "tics_reward", or "btc_reward" */
+		node_id: String,                // Node that broadcasted the transaction
+		solver_address: Option<String>, /* Required for reward transactions when intent_hash is
+		                                 * None */
+	},
 	TransactionErrorBroadcast {
 		intent_hash: String,
 		error_message: String,
