@@ -1062,6 +1062,18 @@ impl NetworkLayer {
                                     .map(SerializablePeerId)
                                     .collect();
 
+                                // 🔧 FIX: Update peer_indices mapping for all peers before sending
+                                // This ensures peer_indices stays in sync with the database
+                                for SerializablePeerId(pid) in &peers {
+                                    if !self.peer_indices.contains_key(pid) {
+                                        // Load from database if not in peer_indices
+                                        if let Some(db_idx) = self.get_index_from_db(pid) {
+                                            info!("🔢 [PEER_LIST_SEND] Loaded index {} for peer {} from database", db_idx, pid);
+                                            self.peer_indices.insert(pid.clone(), db_idx);
+                                        }
+                                    }
+                                }
+
                                 // Map indices in the same order, also load from DB if not in-memory
                                 let indices: Vec<Option<usize>> = peers
                                     .iter()
@@ -1071,7 +1083,12 @@ impl NetworkLayer {
                                         } else {
                                             let key = key_utils::peer_index_key(&pid.to_string());
                                             match self.db.get_string::<usize>(&key) {
-                                                Ok(Some(idx)) => Some(idx),
+                                                Ok(Some(idx)) => {
+                                                    // Update peer_indices with index from database
+                                                    info!("🔢 [PEER_LIST_SEND] Loading index {} for peer {} from database", idx, pid);
+                                                    self.peer_indices.insert(pid.clone(), idx);
+                                                    Some(idx)
+                                                },
                                                 _ => None,
                                             }
                                         }
@@ -1276,11 +1293,13 @@ impl NetworkLayer {
                         match response {
                             RPCResponse::PeerList { peers, indices } => {
                                 info!("🔄 Merging peer‐set from {}: {:?}", peer, peers);
+                                info!("🔄 Received indices: {:?}", indices);
                                 
                                 // Clone peers list before consuming it
                                 let peers_clone = peers.clone();
                                 
                                 for (i, SerializablePeerId(p)) in peers.into_iter().enumerate() {
+                                    // Add peer to node_manager if not already present
                                     if !self.node_manager.get_active_nodes().contains(&p) {
                                         self.node_manager.add_node(p.clone())
                                             .map_err(|e| anyhow::anyhow!(e))?;
@@ -1292,16 +1311,40 @@ impl NetworkLayer {
                                             info!("🔄 [THRESHOLD] Updated signing node threshold to {} after peer list merge", new_threshold);
                                         }
                                     }
-                                    if let Some(idx) = indices.get(i).cloned().flatten() {
+                                    
+                                    // 🔧 FIX: Update peer_indices mapping for ALL peers in the peer list
+                                    // Priority: 1) Index from peer list, 2) Existing in peer_indices, 3) Load from database
+                                    let index_to_use = if let Some(idx) = indices.get(i).cloned().flatten() {
+                                        // Index provided in peer list - use it and persist to database
+                                        info!("🔢 [PEER_LIST] Using index {} for peer {} from peer list", idx, p);
+                                        Some(idx)
+                                    } else if let Some(existing_idx) = self.peer_indices.get(&p).cloned() {
+                                        // Already in peer_indices - keep it
+                                        info!("🔢 [PEER_LIST] Using existing index {} for peer {} from peer_indices", existing_idx, p);
+                                        Some(existing_idx)
+                                    } else if let Some(db_idx) = self.get_index_from_db(&p) {
+                                        // Load from database if available
+                                        info!("🔢 [PEER_LIST] Loaded index {} for peer {} from database", db_idx, p);
+                                        Some(db_idx)
+                                    } else {
+                                        // No index available
+                                        warn!("⚠️  [PEER_LIST] No index found for peer {} (not in peer list, peer_indices, or database)", p);
+                                        None
+                                    };
+                                    
+                                    // Update peer_indices and persist to database if we have an index
+                                    if let Some(idx) = index_to_use {
                                         self.peer_indices.insert(p.clone(), idx);
                                         let key = key_utils::peer_index_key(&p.to_string());
-                                        if let Err(e) = self.db.put_string(&key, &idx) { warn!("Failed to persist peer index: {:?}", e); }
-                                    } else {
-                                        // Index was not provided by the peer list; do not assign locally.
-                                        // Rely strictly on database-propagated indices to avoid divergence.
-                                        warn!("Peer {} missing index in PeerList response; skipping local assignment", p);
+                                        if let Err(e) = self.db.put_string(&key, &idx) { 
+                                            warn!("❌ [PEER_LIST] Failed to persist peer index {} for peer {}: {:?}", idx, p, e); 
+                                        } else {
+                                            info!("✅ [PEER_LIST] Updated and persisted index {} for peer {}", idx, p);
+                                        }
                                     }
                                 }
+                                
+                                info!("📊 [PEER_LIST] Updated peer_indices mapping: {} entries", self.peer_indices.len());
                                 
                                 // After learning about all peers, check if this is a new node joining existing network
                                 let (should_sync, sync_peer_opt, new_node_index_opt) = if let Some(dkg_node) = &mut self.dkg_node {
@@ -1575,10 +1618,57 @@ impl NetworkLayer {
                         "🎯 Peer discovery topic subscription confirmed by: {}",
                         peer_id
                     );
-
-                    // Small delay to ensure subscription is fully processed
-                    // tokio::time::sleep(Duration::from_millis(50)).await;
-
+                    // Log existing peers - fetch from DB if not in memory
+                    // Check once for peers (non-blocking - RPC response will update later)
+                    let active_nodes = self.node_manager.get_active_nodes();
+                    let other_peers_in_manager: Vec<_> = active_nodes
+                        .iter()
+                        .filter(|&pid| pid != self.get_local_peer_id())
+                        .collect();
+                    
+                    // Also check database for other peers
+                    let mut other_peers_in_db = 0;
+                    if let Ok(keys) = self.db.get_keys_with_prefix(keys::PEER_INDEX) {
+                        for k in keys {
+                            if let Some(peer_str) = k.strip_prefix(keys::PEER_INDEX) {
+                                if let Ok(pid) = peer_str.parse::<PeerId>() {
+                                    if pid != *self.get_local_peer_id() {
+                                        other_peers_in_db += 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
+                    if other_peers_in_manager.is_empty() && other_peers_in_db == 0 {
+                        info!("ℹ️ No other peers found yet, proceeding (peers will be added when RPC response arrives)");
+                    } else {
+                        info!("✅ Found {} other peers in node manager, {} in database", 
+                            other_peers_in_manager.len(), other_peers_in_db);
+                    }
+                    
+                    // Update peer_indices mapping for all active peers before logging
+                    // This ensures peer_indices stays in sync with the database
+                    info!("🔢 Active nodes: {:?}", active_nodes);
+                    for pid in &active_nodes {
+                        if !self.peer_indices.contains_key(pid) {
+                            // Load from database if not in peer_indices
+                            if let Some(db_idx) = self.get_index_from_db(pid) {
+                                info!("🔢 Loaded index {} for peer {} from database", db_idx, pid);
+                                self.peer_indices.insert(pid.clone(), db_idx);
+                            }
+                        }
+                    }
+                    // Now log all peers (from memory, which includes those just loaded from DB)
+                    let existing_peer_count = self.peer_indices.len();
+                    info!("📊 Existing peers count: {}", existing_peer_count);
+                    if existing_peer_count > 0 {
+                        let existing_peers: Vec<(String, usize)> = self.peer_indices
+                            .iter()
+                            .map(|(pid, idx)| (pid.to_string(), *idx))
+                            .collect();
+                        info!("📋 Existing peers with indices: {:?}", existing_peers);
+                    }
                     // Broadcast our presence to this newly subscribed peer
                     //attach the corresponding index of that peer
                     let my_index = self.peer_indices.get(&self.local_peer_id).cloned().unwrap_or(self.node_manager.get_total_nodes());
