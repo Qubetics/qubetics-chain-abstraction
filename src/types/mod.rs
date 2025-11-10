@@ -71,6 +71,9 @@ pub enum ChannelMessage {
         node_id: String,
     },
     ScheduledDKGStart,
+    PeerDiscoveryRetry {
+        attempt: u8,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

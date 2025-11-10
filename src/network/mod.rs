@@ -159,9 +159,12 @@ pub struct NetworkLayer {
     db: Database,
     // Database sync state tracking
     db_sync_state: DatabaseSyncState,
+    pending_peer_discovery_retry: bool,
 }
 
 impl NetworkLayer {
+    const MAX_PEER_DISCOVERY_RETRIES: u8 = 10;
+
     fn get_max_peer_index_from_db(&self) -> usize {
         if let Ok(keys) = self.db.get_keys_with_prefix(crate::database::keys::PEER_INDEX) {
             let mut max_idx = 0usize;
@@ -204,6 +207,108 @@ impl NetworkLayer {
         self.peer_indices.insert(self.local_peer_id.clone(), idx);
         idx
     }
+
+    fn has_additional_peers(&self) -> bool {
+        let local = self.get_local_peer_id();
+        if self
+            .node_manager
+            .get_active_nodes()
+            .iter()
+            .any(|pid| pid != local)
+        {
+            return true;
+        }
+
+        if let Ok(keys) = self.db.get_keys_with_prefix(keys::PEER_INDEX) {
+            for k in keys {
+                if let Some(peer_str) = k.strip_prefix(keys::PEER_INDEX) {
+                    if let Ok(pid) = peer_str.parse::<PeerId>() {
+                        if &pid != local {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+
+        false
+    }
+
+    fn schedule_peer_discovery_retry(&mut self, attempt: u8) {
+        if attempt > Self::MAX_PEER_DISCOVERY_RETRIES {
+            warn!(
+                "⚠️ Maximum peer discovery retry attempts ({}) reached; giving up for now",
+                Self::MAX_PEER_DISCOVERY_RETRIES
+            );
+            self.pending_peer_discovery_retry = false;
+            return;
+        }
+
+        if self.pending_peer_discovery_retry {
+            info!(
+                "⏳ Peer discovery retry already scheduled (attempt {})",
+                attempt
+            );
+            return;
+        }
+
+        self.pending_peer_discovery_retry = true;
+        info!(
+            "⏱️ Scheduling peer discovery retry attempt {} in 1 second",
+            attempt
+        );
+        let tx = self.message_tx.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            if let Err(e) = tx
+                .send(ChannelMessage::PeerDiscoveryRetry { attempt })
+                .await
+            {
+                warn!(
+                    "Failed to enqueue peer discovery retry (attempt {}): {:?}",
+                    attempt,
+                    e
+                );
+            }
+        });
+    }
+
+    async fn broadcast_local_presence(&mut self) -> Result<()> {
+        let my_index = self
+            .peer_indices
+            .get(&self.local_peer_id)
+            .cloned()
+            .unwrap_or_else(|| self.node_manager.get_total_nodes());
+
+        if let Some(idx) = self.peer_indices.get(&self.local_peer_id).cloned() {
+            let key = key_utils::peer_index_key(&self.local_peer_id.to_string());
+            if let Err(e) = self.db.put_string(&key, &idx) {
+                warn!("Failed to persist my index: {:?}", e);
+            }
+        }
+
+        let msg = GossipsubMessage::PeerDiscovered {
+            peer: self.local_peer_id.clone(),
+            sequence: Some(1),
+            index: Some(my_index),
+        };
+
+        match serde_json::to_vec(&msg) {
+            Ok(payload) => {
+                if let Err(e) = self.broadcast(MSG_TOPIC_PEER_DISCOVERY, &payload).await {
+                    warn!(
+                        "Failed to broadcast presence during peer discovery retry handling: {:?}",
+                        e
+                    );
+                }
+            }
+            Err(e) => {
+                warn!("Failed to serialize peer discovery message: {:?}", e);
+            }
+        }
+
+        Ok(())
+    }
     pub async fn new(node_manager: Box<dyn NodeMembership>, db: Database) -> Result<Self> {
         // Load or create persistent keypair
         let (local_key, local_peer_id) = Self::load_or_create_keypair().await?;
@@ -227,6 +332,7 @@ impl NetworkLayer {
             peer_indices: std::collections::HashMap::new(),
             db,
             db_sync_state: DatabaseSyncState::new(),
+            pending_peer_discovery_retry: false,
         };
 
         // Preload any persisted peer indices into memory
@@ -1640,11 +1746,20 @@ impl NetworkLayer {
                         }
                     }
                     
-                    if other_peers_in_manager.is_empty() && other_peers_in_db == 0 {
-                        info!("ℹ️ No other peers found yet, proceeding (peers will be added when RPC response arrives)");
+                    let has_other_peers =
+                        !other_peers_in_manager.is_empty() || other_peers_in_db > 0;
+                    if !has_other_peers {
+                        info!(
+                            "ℹ️ No other peers found yet; delaying peer discovery broadcast until another peer is available"
+                        );
+                        self.schedule_peer_discovery_retry(1);
                     } else {
-                        info!("✅ Found {} other peers in node manager, {} in database", 
-                            other_peers_in_manager.len(), other_peers_in_db);
+                        info!(
+                            "✅ Found {} other peers in node manager, {} in database",
+                            other_peers_in_manager.len(),
+                            other_peers_in_db
+                        );
+                        self.pending_peer_discovery_retry = false;
                     }
                     
                     // Update peer_indices mapping for all active peers before logging
@@ -1669,26 +1784,8 @@ impl NetworkLayer {
                             .collect();
                         info!("📋 Existing peers with indices: {:?}", existing_peers);
                     }
-                    // Broadcast our presence to this newly subscribed peer
-                    //attach the corresponding index of that peer
-                    let my_index = self.peer_indices.get(&self.local_peer_id).cloned().unwrap_or(self.node_manager.get_total_nodes());
-                    // Persist my own index if known
-                    if let Some(idx) = self.peer_indices.get(&self.local_peer_id).cloned() {
-                        let key = key_utils::peer_index_key(&self.local_peer_id.to_string());
-                        if let Err(e) = self.db.put_string(&key, &idx) { warn!("Failed to persist my index: {:?}", e); }
-                    }
-                    let msg = GossipsubMessage::PeerDiscovered {
-                        peer: self.local_peer_id.clone(),
-                        sequence: Some(1), // Add sequence number
-                        index: Some(my_index),
-                    };
-                    if let Ok(payload) = serde_json::to_vec(&msg) {
-                        if let Err(e) = self.broadcast(MSG_TOPIC_PEER_DISCOVERY, &payload).await {
-                            warn!(
-                                "Failed to broadcast presence to newly subscribed peer: {:?}",
-                                e
-                            );
-                        }
+                    if has_other_peers {
+                        self.broadcast_local_presence().await?;
                     }
                 }
             }
@@ -2723,6 +2820,37 @@ impl NetworkLayer {
     ) -> Result<()> {
         info!("[handle_channel_message()] {:?}", message);
         match message {
+            ChannelMessage::PeerDiscoveryRetry { attempt } => {
+                if !self.pending_peer_discovery_retry {
+                    info!(
+                        "Received stale peer discovery retry notification (attempt {}), ignoring",
+                        attempt
+                    );
+                    return Ok(());
+                }
+
+                self.pending_peer_discovery_retry = false;
+
+                if self.has_additional_peers() {
+                    info!(
+                        "✅ Additional peers detected (attempt {}); broadcasting local presence",
+                        attempt
+                    );
+                    self.broadcast_local_presence().await?;
+                } else if attempt >= Self::MAX_PEER_DISCOVERY_RETRIES {
+                    warn!(
+                        "⚠️ Peer discovery retry attempt {} reached limit {}; not broadcasting yet",
+                        attempt,
+                        Self::MAX_PEER_DISCOVERY_RETRIES
+                    );
+                } else {
+                    info!(
+                        "⏳ Peer discovery retry attempt {} found no additional peers; rescheduling",
+                        attempt
+                    );
+                    self.schedule_peer_discovery_retry(attempt + 1);
+                }
+            }
             // this is used in the dkg code
             ChannelMessage::Broadcast { topic, data } => {
                 // dkg.s.1
