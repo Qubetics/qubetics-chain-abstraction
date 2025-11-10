@@ -1753,6 +1753,8 @@ impl NetworkLayer {
                             "ℹ️ No other peers found yet; delaying peer discovery broadcast until another peer is available"
                         );
                         self.schedule_peer_discovery_retry(1);
+                        // Exit early to ensure we do not proceed to any broadcast in this path
+                        return Ok(());
                     } else {
                         info!(
                             "✅ Found {} other peers in node manager, {} in database",
@@ -2821,6 +2823,7 @@ impl NetworkLayer {
         info!("[handle_channel_message()] {:?}", message);
         match message {
             ChannelMessage::PeerDiscoveryRetry { attempt } => {
+                info!("Received peer discovery retry notification (attempt {})", attempt);
                 if !self.pending_peer_discovery_retry {
                     info!(
                         "Received stale peer discovery retry notification (attempt {}), ignoring",
@@ -3393,7 +3396,6 @@ impl NetworkLayer {
                                     //             warn!("❌ [GOSSIPSUB] Failed to create contract call transaction: {}", e);
                                     //         }
                                     //     }
-
                                     // }
                                 }
                             }
