@@ -1345,11 +1345,11 @@ impl NetworkLayer {
                             RPCRequest::RequestDatabaseSync { requester_id } => {
                                 info!("📦 [DB_SYNC] Received database sync request from peer: {:?}", requester_id);
                                 
-                                match self.db.count_entries() {
+                                match self.db.count_entries_with_prefix(crate::database::keys::USER_REGISTRATION) {
                                     Ok(total_entries) => {
                                         let recommended_batch_size = 100; // Entries per batch
                                         info!(
-                                            "📦 [DB_SYNC] Database has {} entries, recommending batch size of {}",
+                                            "📦 [DB_SYNC] Database has {} user entries, recommending batch size of {}",
                                             total_entries, recommended_batch_size
                                         );
                                         RPCResponse::DatabaseSyncMetadata {
@@ -1358,8 +1358,8 @@ impl NetworkLayer {
                                         }
                                     }
                                     Err(e) => {
-                                        error!("❌ [DB_SYNC] Failed to count database entries: {}", e);
-                                        RPCResponse::Error(format!("Failed to count database entries: {}", e))
+                                        error!("❌ [DB_SYNC] Failed to count user database entries: {}", e);
+                                        RPCResponse::Error(format!("Failed to count user database entries: {}", e))
                                     }
                                 }
                             }
@@ -1369,7 +1369,7 @@ impl NetworkLayer {
                                     batch_index, batch_size, peer
                                 );
                                 
-                                match self.db.export_batch(batch_index * batch_size, batch_size) {
+                                match self.db.export_batch_with_prefix(crate::database::keys::USER_REGISTRATION, batch_index * batch_size, batch_size) {
                                     Ok((entries, is_last_batch)) => {
                                         let db_entries: Vec<crate::types::rpc::DatabaseEntry> = entries
                                             .into_iter()
@@ -1377,7 +1377,7 @@ impl NetworkLayer {
                                             .collect();
                                         
                                         info!(
-                                            "📦 [DB_SYNC] Sending batch {} with {} entries (last batch: {})",
+                                            "📦 [DB_SYNC] Sending batch {} with {} user entries (last batch: {})",
                                             batch_index, db_entries.len(), is_last_batch
                                         );
                                         

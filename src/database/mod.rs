@@ -398,6 +398,69 @@ impl Database {
         Ok(count)
     }
 
+    /// Export a batch of database entries that match a specific string prefix
+    /// Returns entries from start_index to start_index + batch_size among the filtered set
+    pub fn export_batch_with_prefix(
+        &self,
+        prefix: &str,
+        start_index: usize,
+        batch_size: usize,
+    ) -> Result<(Vec<(Vec<u8>, Vec<u8>)>, bool)> {
+        let mut entries = Vec::new();
+        let prefix_bytes = prefix.as_bytes();
+        let iter = self.db.iterator(rocksdb::IteratorMode::From(
+            prefix_bytes,
+            rocksdb::Direction::Forward,
+        ));
+
+        // We will count only entries that match the prefix
+        let mut matched_index: usize = 0;
+        for item in iter {
+            let (key, value) =
+                item.map_err(|e| anyhow!("Iterator error during filtered batch export: {}", e))?;
+
+            if !key.starts_with(prefix_bytes) {
+                break; // we've passed the prefix range
+            }
+
+            if matched_index < start_index {
+                matched_index += 1;
+                continue;
+            }
+
+            if entries.len() >= batch_size {
+                info!(
+                    "📦 [DATABASE] Exported filtered batch of {} user entries (index {}-{})",
+                    entries.len(),
+                    start_index,
+                    start_index + batch_size.saturating_sub(1)
+                );
+                return Ok((entries, false));
+            }
+
+            entries.push((key.to_vec(), value.to_vec()));
+            matched_index += 1;
+        }
+
+        info!(
+            "📦 [DATABASE] Exported final filtered batch of {} user entries (starting at index {})",
+            entries.len(),
+            start_index
+        );
+        Ok((entries, true))
+    }
+
+    /// Count total entries in database that match a specific string prefix
+    pub fn count_entries_with_prefix(&self, prefix: &str) -> Result<usize> {
+        let keys = self.get_keys_with_prefix(prefix)?;
+        let count = keys.len();
+        debug!(
+            "🔢 [DATABASE] Total entries with prefix '{}': {}",
+            prefix, count
+        );
+        Ok(count)
+    }
+
     /// Import database entries in batch
     /// This will overwrite existing keys
     pub fn import_batch(&self, entries: Vec<(Vec<u8>, Vec<u8>)>) -> Result<()> {
