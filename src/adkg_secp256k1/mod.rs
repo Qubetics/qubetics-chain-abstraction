@@ -1525,6 +1525,10 @@ impl DKGNode {
         let refresh_polynomial = self.generate_refresh_polynomial(my_index, &all_indices).await?;
         info!("✅ [REFRESH] Refresh polynomial generated successfully");
         
+        // Store the refresh polynomial in storage
+        self.storage.set_polynomial(&refresh_polynomial).await?;
+        info!("💾 [REFRESH] Stored refresh polynomial in storage");
+        
         // Generate refresh shares from the refresh polynomial for all nodes
         info!("🔄 [REFRESH] Generating refresh shares for all {} nodes...", self.total_nodes);
         let refresh_shares = self.generate_shares(&refresh_polynomial)?;

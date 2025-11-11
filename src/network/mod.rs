@@ -159,6 +159,7 @@ pub struct NetworkLayer {
     db: Database,
     // Database sync state tracking
     db_sync_state: DatabaseSyncState,
+    needs_database_sync: bool,
     pending_peer_discovery_retry: bool,
 }
 
@@ -333,6 +334,7 @@ impl NetworkLayer {
             db,
             db_sync_state: DatabaseSyncState::new(),
             pending_peer_discovery_retry: false,
+            needs_database_sync: false,
         };
 
         // Preload any persisted peer indices into memory
@@ -1014,6 +1016,21 @@ impl NetworkLayer {
                 swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
                 info!("➕ Added peer {} to gossipsub explicit peers", peer_id);
 
+                 // Retry database sync if needed and not already syncing
+                if self.needs_database_sync && !self.db_sync_state.in_progress {
+                    info!("🔄 [DB_SYNC] Connection established, retrying database sync with peer: {}", peer_id);
+                    self.needs_database_sync = false; // Clear flag
+                    
+                    if let Err(e) = self.sync_database_from_peer(swarm, peer_id).await {
+                        warn!("❌ [DB_SYNC] Failed to start database sync: {:?}", e);
+                        // Set flag again to retry with next connection
+                        self.needs_database_sync = true;
+                    } else {
+                        info!("✅ [DB_SYNC] Database sync retry initiated successfully");
+                    }
+                }
+
+
                 if is_listener && !already_known {
                     info!("📡 New peer {} connected; announcing to mesh", peer_id);
                     // Assign and persist index based on DB state
@@ -1453,7 +1470,7 @@ impl NetworkLayer {
                                 info!("📊 [PEER_LIST] Updated peer_indices mapping: {} entries", self.peer_indices.len());
                                 
                                 // After learning about all peers, check if this is a new node joining existing network
-                                let (should_sync, sync_peer_opt, new_node_index_opt) = if let Some(dkg_node) = &mut self.dkg_node {
+                                let (should_sync, sync_peer_opt, new_node_index_opt, needs_retry) = if let Some(dkg_node) = &mut self.dkg_node {
                                     let total = self.node_manager.get_total_nodes();
                                     let threshold = self.node_manager.get_threshold();
                                     
@@ -1468,25 +1485,40 @@ impl NetworkLayer {
                                     if !has_dkg_data && total > 4 {
                                         info!("🆕 [NEW_NODE] Learned about {} total nodes, triggering database sync and share request", total);
                                         
-                                        // Get first peer for sync
-                                        let sync_peer = if !peers_clone.is_empty() {
-                                            Some(peers_clone[0].0.clone())
+                                        let connected_peers: Vec<PeerId> = swarm.connected_peers().cloned().collect();
+                                        info!("🔗 [NEW_NODE] Currently connected to {} peers: {:?}", connected_peers.len(), connected_peers);
+                                        
+                                        // Find first connected peer for sync (excluding ourselves)
+                                        let sync_peer = connected_peers.iter()
+                                            .find(|pid| **pid != self.local_peer_id)
+                                            .cloned();
+                                        
+                                        let should_proceed = if let Some(ref peer) = sync_peer {
+                                            info!("✅ [NEW_NODE] Selected connected peer for sync: {}", peer);
+                                            true
                                         } else {
-                                            None
+                                            warn!("⚠️ [NEW_NODE] No connected peers available for database sync!");
+                                            warn!("⚠️ [NEW_NODE] Will retry database sync when a connection is established");
+                                            // Set flag to retry when connection is available
+                                            false
                                         };
                                         
                                         // CRITICAL: New node always gets index = total (e.g., 5th node gets index 5)
                                         let new_node_index = total;
                                         info!("🆕 [NEW_NODE] Assigned permanent index: {} (total_nodes = {})", new_node_index, total);
                                         
-                                        (true, sync_peer, Some(new_node_index))
+                                        (should_proceed, sync_peer, Some(new_node_index), !should_proceed)
                                     } else {
-                                        (false, None, None)
+                                        (false, None, None, false)
                                     }
                                 } else {
-                                    (false, None, None)
+                                    (false, None, None, false)
                                 };
                                 
+                                if needs_retry {
+                                    self.needs_database_sync = true;
+                                }
+
                                 // Now handle sync and DKG request outside of the dkg_node borrow
                                 if should_sync {
                                     // First, sync database from an existing peer
