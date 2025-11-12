@@ -2758,29 +2758,57 @@ impl SigningNode {
 
     /// Store transaction error for a round if intent hash is available and broadcast to other nodes
     async fn store_transaction_error_for_round(&self, round: u64, error_message: &str, txn_network: crate::types::TransactionNetwork) {
-        // Select source map based on provided network enum and extract intent hash + transaction type
-        let (intent_hash, transaction_type) = match txn_network {
+        // Check if this round is a reward round first
+        let is_reward_round = {
+            let reward_rounds = self.reward_rounds.read().await;
+            reward_rounds.contains(&round)
+        };
+
+        // Get intent hash, transaction type, and solver address from the appropriate pending transactions mapping
+        let (intent_hash, transaction_type, retrieved_solver_address) = match txn_network {
             crate::types::TransactionNetwork::TICS => {
-                let pending = self.pending_transactions.read().await;
-                if let Some((_tx, _tx_bytes, intent_hash, tx_type)) = pending.get(&round) {
-                    (intent_hash.clone(), tx_type.clone())
+                if is_reward_round {
+                    // This is a reward round - check reward pending transactions for TICS
+                    let reward_pending_transactions = self.reward_pending_transactions_tics.read().await;
+                    if let Some((_tx, _tx_bytes, solver_address, transaction_type)) = reward_pending_transactions.get(&round) {
+                        (None, transaction_type.clone(), solver_address.clone())
+                    } else {
+                        (None, None, None)
+                    }
                 } else {
-                    (None, None)
+                    // Check regular EVM pending transactions
+                    let pending = self.pending_transactions.read().await;
+                    if let Some((_tx, _tx_bytes, intent_hash, tx_type)) = pending.get(&round) {
+                        (intent_hash.clone(), tx_type.clone(), None)
+                    } else {
+                        (None, None, None)
+                    }
                 }
             },
             crate::types::TransactionNetwork::BTC => {
-                let pending_btc = self.pending_transactions_btc.read().await;
-                if let Some((_tx, _tx_bytes, intent_hash, tx_type, _extras)) = pending_btc.get(&round) {
-                    (intent_hash.clone(), tx_type.clone())
+                if is_reward_round {
+                    // This is a reward round - check reward pending transactions for BTC
+                    let reward_pending_transactions_btc = self.reward_pending_transactions_btc.read().await;
+                    if let Some((_tx, _tx_bytes, solver_address, transaction_type, _extras)) = reward_pending_transactions_btc.get(&round) {
+                        (None, transaction_type.clone(), solver_address.clone())
+                    } else {
+                        (None, None, None)
+                    }
                 } else {
-                    (None, None)
+                    // Check regular Bitcoin pending transactions
+                    let pending_btc = self.pending_transactions_btc.read().await;
+                    if let Some((_tx, _tx_bytes, intent_hash, tx_type, _extras)) = pending_btc.get(&round) {
+                        (intent_hash.clone(), tx_type.clone(), None)
+                    } else {
+                        (None, None, None)
+                    }
                 }
             },
         };
 
         match (intent_hash, &self.user_registry) {
             (Some(ref intent_hash), Some(user_registry)) => {
-                // Store error locally
+                // Regular transaction - store error locally with intent hash
                 match user_registry
                     .store_transaction_error(intent_hash, error_message, None)
                     .await
@@ -2797,15 +2825,34 @@ impl SigningNode {
                         };
 
                         // Broadcast error to other nodes for synchronization
-                        self.broadcast_transaction_error(intent_hash, error_message, transaction_type_str).await;
+                        self.broadcast_transaction_error(Some(intent_hash), error_message, transaction_type_str, None).await;
                     },
                     Err(e) => {
                         error!("❌ [SIGNING] Failed to store transaction error for intent {}: {}", intent_hash, e);
                     }
                 }
             },
-            (None, _) => {
-                info!("ℹ️ [SIGNING] No intent hash available for round {}, skipping error storage", round);
+            (None, Some(user_registry)) => {
+                // This is a reward transaction - handle solver address case
+                if let Some(solver_addr) = retrieved_solver_address.as_ref() {
+                    let transaction_type_str = match txn_network {
+                        crate::types::TransactionNetwork::TICS => "tics_reward",
+                        crate::types::TransactionNetwork::BTC => "btc_reward",
+                    };
+
+                    // For reward transactions, we can store the error in a general way
+                    // Note: The user_registry might need a method to store reward transaction errors
+                    // For now, we'll just log and broadcast
+                    info!("💥 [SIGNING] Reward transaction error for solver {} (round {}): {}", solver_addr, round, error_message);
+
+                    // Broadcast reward transaction error to other nodes
+                    self.broadcast_transaction_error(None, error_message, transaction_type_str, Some(solver_addr)).await;
+                } else {
+                    info!("ℹ️ [SIGNING] No solver address available for reward transaction error in round {}", round);
+                }
+            },
+            (None, None) => {
+                warn!("⚠️ [SIGNING] No user registry available, cannot store transaction error for round {}", round);
             },
             (_, None) => {
                 warn!("⚠️ [SIGNING] No user registry available, cannot store transaction error for round {}", round);
@@ -2975,7 +3022,7 @@ impl SigningNode {
             info!("❌ [REWARD] Stored {} reward transaction failure for solver {}: {}", currency, solver_address, error_message);
             
             // Broadcast error to other nodes for synchronization
-            self.broadcast_transaction_error(solver_address, error_message, &format!("{}_reward", currency)).await;
+            self.broadcast_transaction_error(None, error_message, &format!("{}_reward", currency), Some(solver_address)).await;
         } else {
             return Err(anyhow::anyhow!("User registry not available"));
         }
@@ -3320,11 +3367,19 @@ impl SigningNode {
     }
 
     /// Broadcast transaction error to other nodes for synchronization
-    async fn broadcast_transaction_error(&self, intent_hash: &str, error_message: &str, transaction_type: &str) {
+    /// Supports both regular transactions (with intent_hash) and reward transactions (with solver_address)
+    async fn broadcast_transaction_error(
+        &self,
+        intent_hash: Option<&str>,
+        error_message: &str,
+        transaction_type: &str,
+        solver_address: Option<&str>,
+    ) {
         let broadcast_message = crate::types::GossipsubMessage::TransactionErrorBroadcast {
-            intent_hash: intent_hash.to_string(),
+            intent_hash: intent_hash.map(|s| s.to_string()),
             error_message: error_message.to_string(),
             transaction_type: transaction_type.to_string(),
+            solver_address: solver_address.map(|s| s.to_string()),
             node_id: self.id.clone(),
         };
 
@@ -3336,7 +3391,18 @@ impl SigningNode {
         if let Err(e) = self.message_tx.send(channel_message).await {
             error!("❌ [SIGNING] Failed to broadcast transaction error to other nodes: {}", e);
         } else {
-            info!("📡 [SIGNING] Broadcasted transaction error for intent {} (type: {}) to other nodes: {}", intent_hash, transaction_type, error_message);
+            // Log differently based on whether it's a regular or reward transaction
+            match (intent_hash, solver_address) {
+                (Some(hash), _) => {
+                    info!("📡 [SIGNING] Broadcasted transaction error for intent {} (type: {}) to other nodes: {}", hash, transaction_type, error_message);
+                }
+                (None, Some(solver)) => {
+                    info!("📡 [SIGNING] Broadcasted reward transaction error for solver {} (type: {}) to other nodes: {}", solver, transaction_type, error_message);
+                }
+                (None, None) => {
+                    warn!("⚠️ [SIGNING] Broadcasted transaction error without intent hash or solver address (type: {}): {}", transaction_type, error_message);
+                }
+            }
         }
     }
 

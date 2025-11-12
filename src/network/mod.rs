@@ -934,6 +934,7 @@ impl NetworkLayer {
             "signatures-to-final-node",
             "user-registrations",
             "solver-rewards",
+            "claim-rewards",
             "transaction-id-sync",
             "consensus-result",
             "transaction-error-sync",
@@ -2463,30 +2464,50 @@ impl NetworkLayer {
                 intent_hash,
                 error_message,
                 transaction_type,
+                solver_address,
                 node_id,
             } => {
                 info!(
                     "📡 [NETWORK] Received transaction error broadcast from node {}",
                     node_id
                 );
-                info!("🔗 [NETWORK] Intent hash: {}", intent_hash);
                 info!("💥 [NETWORK] Error message: {}", error_message);
                 info!("🔄 [NETWORK] Transaction type: {}", transaction_type);
+                if let Some(hash) = &intent_hash {
+                    info!("🔗 [NETWORK] Intent hash: {}", hash);
+                } else if let Some(solver) = &solver_address {
+                    info!("🧩 [NETWORK] Solver address: {}", solver);
+                } else {
+                    info!("ℹ️ [NETWORK] No intent hash or solver address supplied with transaction error broadcast");
+                }
 
                 // Store the error message in our local user registry
                 if let Some(user_registry) = &self.user_registry {
-                    match user_registry
-                        .store_transaction_error(&intent_hash, &error_message, Some(&node_id))
-                        .await
-                    {
-                        Ok(()) => {
-                            info!("✅ [NETWORK] Successfully synchronized transaction error for intent {}: {}", intent_hash, error_message);
+                    match (intent_hash.as_ref(), solver_address.as_ref()) {
+                        (Some(intent_hash), _) => {
+                            // Regular transaction error - store with intent hash
+                            match user_registry
+                                .store_transaction_error(intent_hash, &error_message, Some(&node_id))
+                                .await
+                            {
+                                Ok(()) => {
+                                    info!("✅ [NETWORK] Successfully synchronized transaction error for intent {}: {}", intent_hash, error_message);
+                                }
+                                Err(e) => {
+                                    error!(
+                                        "❌ [NETWORK] Failed to store synchronized transaction error: {}",
+                                        e
+                                    );
+                                }
+                            }
                         }
-                        Err(e) => {
-                            error!(
-                                "❌ [NETWORK] Failed to store synchronized transaction error: {}",
-                                e
-                            );
+                        (None, Some(solver_addr)) => {
+                            // Reward transaction error - just log for now
+                            // The user_registry might need a method to store reward transaction errors
+                            info!("✅ [NETWORK] Successfully synchronized reward transaction error for solver {}: {}", solver_addr, error_message);
+                        }
+                        _ => {
+                            warn!("⚠️ [NETWORK] Transaction error broadcast missing both intent hash and solver address");
                         }
                     }
                 } else {
@@ -4046,6 +4067,41 @@ impl NetworkLayer {
                     info!("ℹ️ [NETWORK] No intent hash or solver address supplied with transaction ID broadcast");
                 }
 
+                // Gossip the transaction ID broadcast to other peers immediately so everyone can contribute their share in parallel
+                let gossip_message = GossipsubMessage::TransactionIdBroadcast {
+                    intent_hash: intent_hash.clone(),
+                    transaction_id: transaction_id.clone(),
+                    transaction_type: transaction_type.clone(),
+                    solver_address: solver_address.clone(),
+                    node_id: node_id.clone(),
+                };
+
+                let msg_bytes = match serde_json::to_vec(&gossip_message) {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        error!("❌ [NETWORK] Failed to serialize transaction ID broadcast for gossiping: {}", e);
+                        return Ok(());
+                    }
+                };
+
+                let topic = gossipsub::IdentTopic::new("transaction-id-sync");
+                if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic.clone(), msg_bytes) {
+                    error!("❌ [NETWORK] Failed to gossip transaction ID broadcast to other peers: {}", e);
+                } else {
+                    match (intent_hash.as_ref(), solver_address.as_ref()) {
+                        (Some(hash), _) => {
+                            info!("📡 [NETWORK] Gossiped transaction ID {} for intent {} (type: {}) to other peers", transaction_id, hash, transaction_type);
+                        }
+                        (None, Some(solver)) => {
+                            info!("📡 [NETWORK] Gossiped reward transaction ID {} for solver {} (type: {}) to other peers", transaction_id, solver, transaction_type);
+                        }
+                        _ => {
+                            info!("📡 [NETWORK] Gossiped transaction ID {} (type: {}) to other peers", transaction_id, transaction_type);
+                        }
+                    }
+                }
+
+                // Now process locally
                 if let Some(user_registry) = &self.user_registry {
                     match (intent_hash.as_ref(), solver_address.as_ref()) {
                         (Some(intent_hash), _) => {
