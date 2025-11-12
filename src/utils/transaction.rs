@@ -1,6 +1,6 @@
 use crate::chain::{
-    BitcoinInput, BitcoinOutput, BitcoinTransaction, BitcoinWitnessUtxo, ChainTransaction,
-    EthereumTransaction,
+    BitcoinInput, BitcoinOutput, BitcoinTransaction, BitcoinWitness, BitcoinWitnessUtxo,
+    ChainTransaction, EthereumTransaction,
 };
 use crate::rpc_server::{ContractTransaction, DepositIntent, DummyTransaction};
 use crate::utils::get_eth_address_from_group_key;
@@ -15,7 +15,10 @@ use tracing::{info, warn}; // for Token::Uint
 // use rlp::RlpStream;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SpendKind { P2PKH, P2WPKH }
+pub enum SpendKind {
+    P2PKH,
+    P2WPKH,
+}
 /// Bitcoin UTXO structure for fetching from external APIs
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BitcoinUtxo {
@@ -25,13 +28,8 @@ pub struct BitcoinUtxo {
     pub status: UtxoStatus,
 }
 
-pub type WitnessItem  = Vec<u8>;
+pub type WitnessItem = Vec<u8>;
 pub type WitnessStack = Vec<WitnessItem>;
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct BitcoinWitness {
-    pub stacks: Vec<WitnessStack>, // len must equal inputs.len() for segwit spends
-}
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UtxoStatus {
@@ -267,10 +265,7 @@ pub async fn fetch_bitcoin_utxos(address: &str, is_testnet: bool) -> Result<Vec<
         let client = reqwest::Client::new();
         let response = client.get(&url).send().await?;
 
-        tracing::info!(
-            "🔗 Custom API response status: {}",
-            response.status()
-        );
+        tracing::info!("🔗 Custom API response status: {}", response.status());
 
         if !response.status().is_success() {
             tracing::error!(
@@ -318,16 +313,10 @@ pub async fn fetch_bitcoin_utxos(address: &str, is_testnet: bool) -> Result<Vec<
     let client = reqwest::Client::new();
     let response = client.get(&url).send().await?;
 
-    tracing::info!(
-        "🔗 Esplora API response status: {}",
-        response.status()
-    );
+    tracing::info!("🔗 Esplora API response status: {}", response.status());
 
     if !response.status().is_success() {
-        tracing::error!(
-            "❌ Failed to fetch UTXOs: HTTP {}",
-            response.status()
-        );
+        tracing::error!("❌ Failed to fetch UTXOs: HTTP {}", response.status());
         return Err(anyhow::anyhow!(
             "Failed to fetch UTXOs: HTTP {}",
             response.status()
@@ -367,8 +356,8 @@ pub struct UtxoSelectionResult {
 
 fn estimate_vbytes(kind: SpendKind, n_in: usize, n_out: usize) -> usize {
     match kind {
-        SpendKind::P2WPKH => 10 + 68 * n_in + 31 * n_out,   // segwit approx
-        SpendKind::P2PKH  => 10 + 148 * n_in + 34 * n_out,  // legacy approx
+        SpendKind::P2WPKH => 10 + 68 * n_in + 31 * n_out, // segwit approx
+        SpendKind::P2PKH => 10 + 148 * n_in + 34 * n_out, // legacy approx
     }
 }
 
@@ -481,7 +470,7 @@ pub fn select_utxos_for_amount(
 
         if total_value >= required_with_change {
             let change = total_value - required_with_change;
-            
+
             if change >= DUST_LIMIT_SATS {
                 // Use change path - this is optimal
                 tracing::info!(
@@ -527,13 +516,16 @@ pub fn select_utxos_for_amount(
 
     // error tail - no valid combination found
     let n_inputs = selected.len().max(1);
-    let needed_with_change   = required_amount.saturating_add(estimate_fee_sat(kind, n_inputs, 2, fee_rate_sat_vb));
-    let needed_without_change= required_amount.saturating_add(estimate_fee_sat(kind, n_inputs, 1, fee_rate_sat_vb));
+    let needed_with_change =
+        required_amount.saturating_add(estimate_fee_sat(kind, n_inputs, 2, fee_rate_sat_vb));
+    let needed_without_change =
+        required_amount.saturating_add(estimate_fee_sat(kind, n_inputs, 1, fee_rate_sat_vb));
     let min_needed = needed_with_change.min(needed_without_change);
 
     Err(anyhow::anyhow!(
         "Insufficient confirmed funds: gathered {} sats but need at least {} sats (amount + fees)",
-        total_value, min_needed
+        total_value,
+        min_needed
     ))
 }
 
@@ -597,6 +589,221 @@ pub async fn fetch_ethereum_nonce(address: &str, chain_id: u64) -> Result<u64> {
         tracing::error!("❌ Failed to fetch nonce: {}", error_text);
         Err(anyhow::anyhow!("Nonce fetch failed: {}", error_text))
     }
+}
+
+/// Helper function to create an Ethereum transaction
+/// Takes a target address and amount to create a simple ETH transfer transaction
+pub async fn create_ethereum_transaction(
+    from_address: &str,
+    to_address: &str,
+    amount: u128,
+    chain_name: &str,
+) -> Result<EthereumTransaction> {
+    info!(
+        "🎁 [ETH_TX] Creating Ethereum transaction: {} -> {} (amount: {})",
+        from_address, to_address, amount
+    );
+
+    // Get chain ID for the specified chain
+    let chain_id = get_chain_id_from_name(chain_name)
+        .ok_or_else(|| anyhow::anyhow!("Unknown EVM chain: {}", chain_name))?;
+
+    // Get dynamic gas price for the chain, fallback to static if needed
+    let gas_price = get_gas_price_for_chain(chain_name, chain_id)
+        .await
+        .unwrap_or_else(|e| {
+            warn!(
+                "⚠️ Failed to get dynamic gas price for {}: {}, using fallback",
+                chain_name, e
+            );
+            get_default_gas_price_for_chain(chain_name)
+        });
+
+    // Fetch nonce for the from address
+    let nonce = fetch_ethereum_nonce(from_address, chain_id).await?;
+
+    info!(
+        "🎁 [ETH_TX] Transaction details - Chain: {}, Chain ID: {}, Gas Price: {}, Nonce: {}",
+        chain_name, chain_id, gas_price, nonce
+    );
+
+    let ethereum_tx = EthereumTransaction {
+        to: to_address.to_string(),
+        value: amount_to_hex_string(amount),
+        gas_limit: 21000, // Standard ETH transfer gas limit
+        gas_price,
+        nonce,
+        data: None, // No calldata for simple ETH transfer
+        chain_id,
+    };
+
+    info!("✅ [ETH_TX] Created Ethereum transaction successfully");
+    Ok(ethereum_tx)
+}
+
+/// Helper function to create a Bitcoin transaction
+/// Takes source and target addresses, amount, and creates a Bitcoin transaction with UTXO selection
+pub async fn create_bitcoin_transaction(
+    from_address: &str,
+    to_address: &str,
+    amount: u128,
+) -> Result<BitcoinTransaction> {
+    tracing::info!(
+        "₿ [BTC_TX] Creating Bitcoin transaction: {} -> {} (amount: {})",
+        from_address,
+        to_address,
+        amount
+    );
+
+    // Validate that both addresses are P2PKH format only
+    // if !is_p2pkh_address(&from_address) {
+    //     return Err(anyhow::anyhow!(
+    //         "Source address '{}' is not supported. Only P2PKH addresses (1.../m.../n...) are supported.",
+    //         from_address
+    //     ));
+    // }
+
+    // if !is_p2pkh_address(&to_address) {
+    //     return Err(anyhow::anyhow!(
+    //         "Destination address '{}' is not supported. Only P2PKH addresses (1.../m.../n...) are supported.",
+    //         to_address
+    //     ));
+    // }
+
+    // let is_testnet = is_testnet_p2pkh_address(&from_address);
+    let (from_kind, from_net) = classify_address(from_address)?;
+    let (_to_kind, to_net) = classify_address(to_address)?;
+
+    // Sanity: prevent net mismatch
+    if from_net != to_net {
+        anyhow::bail!("From/To network mismatch: {:?} vs {:?}", from_net, to_net);
+    }
+
+    let is_testnet = matches!(
+        from_net,
+        bitcoin::Network::Testnet | bitcoin::Network::Signet | bitcoin::Network::Regtest
+    );
+
+    // Fetch UTXOs for the right network
+    let utxos = fetch_bitcoin_utxos(from_address, is_testnet).await?;
+
+    tracing::info!(
+        "Final verified {} spendable UTXOs for address {}",
+        utxos.len(),
+        from_address
+    );
+
+    // Convert amount from wei to satoshis (assuming 1:1 conversion for now, you might want to adjust this)
+    let amount_satoshis = (amount) as u64;
+    let fee_rate_sat_vb = std::env::var("BTC_FEE_RATE_SAT_VB")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_FEE_RATE_SAT_PER_VBYTE);
+
+    tracing::info!(
+        "Using fee rate of {} sat/vB for Bitcoin transaction from {}",
+        fee_rate_sat_vb,
+        from_address
+    );
+
+    // Select UTXOs that provide enough value using SegWit-aware fee estimation.
+    let selection = select_utxos_for_amount(&utxos, amount_satoshis, fee_rate_sat_vb, from_kind)?;
+
+    tracing::info!(
+        "Selected {} UTXOs with total value {} satoshis for transaction of {} satoshis (fee: {}, change: {}, change_output: {})",
+        selection.selected_utxos.len(),
+        selection.total_value,
+        amount_satoshis,
+        selection.fee,
+        selection.change,
+        selection.change_output
+    );
+
+    // Log the specific UTXOs we're about to spend for debugging
+    tracing::info!("📋 [TRANSACTION] UTXOs selected for spending:");
+    for (i, utxo) in selection.selected_utxos.iter().enumerate() {
+        tracing::info!(
+            "  {}. {}:{} - {} sats (confirmed: {})",
+            i + 1,
+            utxo.txid,
+            utxo.vout,
+            utxo.value,
+            utxo.status.confirmed
+        );
+    }
+
+    let to_spk = create_bitcoin_script_pubkey(to_address)?;
+    let from_spk = create_bitcoin_script_pubkey(from_address)?;
+
+    // Inputs:
+    let inputs: Vec<BitcoinInput> = selection
+        .selected_utxos
+        .iter()
+        .map(|u| {
+            match from_kind {
+                SpendKind::P2WPKH => BitcoinInput {
+                    txid: u.txid.clone(),
+                    vout: u.vout,
+                    script_sig: vec![],
+                    sequence: 0xffff_fffe,
+                    witness_utxo: Some(BitcoinWitnessUtxo {
+                        value: u.value,
+                        script_pubkey: from_spk.clone(), // 0x00 0x14 <20>
+                    }),
+                },
+                SpendKind::P2PKH => BitcoinInput {
+                    txid: u.txid.clone(),
+                    vout: u.vout,
+                    script_sig: vec![],
+                    sequence: 0xffff_fffe,
+                    // IMPORTANT: stash 25-byte prev script here so final node doesn't need to reconstruct
+                    witness_utxo: Some(BitcoinWitnessUtxo {
+                        value: u.value,
+                        script_pubkey: from_spk.clone(), // 76 a9 14 <20> 88 ac
+                    }),
+                },
+            }
+        })
+        .collect();
+
+    // Create outputs (recipient always, change only if not dust)
+    // Outputs (change script MUST match the from-address type; using from_spk is correct):
+    let mut outputs = vec![BitcoinOutput {
+        value: amount_satoshis,
+        script_pubkey: to_spk,
+    }];
+    if selection.change_output {
+        outputs.push(BitcoinOutput {
+            value: selection.change,
+            script_pubkey: from_spk,
+        });
+    }
+
+    let (version, witness_opt) = match from_kind {
+        SpendKind::P2WPKH => {
+            // placeholder: one empty stack per input; fill after signing
+            (
+                2,
+                Some(BitcoinWitness {
+                    inputs: (0..inputs.len())
+                        .map(|_| crate::chain::BitcoinWitnessInput { stack: vec![] })
+                        .collect(),
+                }),
+            )
+        }
+        SpendKind::P2PKH => (1, None),
+    };
+
+    let bitcoin_tx = BitcoinTransaction {
+        inputs,
+        outputs,
+        version,
+        lock_time: 0,
+        witness: witness_opt,
+    };
+
+    tracing::info!("✅ [BTC_TX] Created Bitcoin transaction successfully");
+    Ok(bitcoin_tx)
 }
 
 async fn estimate_gas_for_deposit_intent(
@@ -704,7 +911,7 @@ fn classify_address(addr: &str) -> Result<(SpendKind, bitcoin::Network)> {
         Ok(address) => {
             tracing::info!("✅ Successfully parsed address: {}", addr);
             address
-        },
+        }
         Err(e) => {
             tracing::error!("❌ Invalid Bitcoin address '{}': {}", addr, e);
             return Err(anyhow::anyhow!("Invalid Bitcoin address '{}': {}", addr, e));
@@ -713,17 +920,25 @@ fn classify_address(addr: &str) -> Result<(SpendKind, bitcoin::Network)> {
 
     // Figure out which network this string is valid for.
     // (Legacy testnet/regtest/signet are ambiguous by design.)
-    let net = match [Network::Bitcoin, Network::Testnet, Network::Signet, Network::Regtest]
-        .into_iter()
-        .find(|n| a.is_valid_for_network(*n))
+    let net = match [
+        Network::Bitcoin,
+        Network::Testnet,
+        Network::Signet,
+        Network::Regtest,
+    ]
+    .into_iter()
+    .find(|n| a.is_valid_for_network(*n))
     {
         Some(network) => {
             tracing::info!("✅ Address '{}' is valid for network: {:?}", addr, network);
             network
-        },
+        }
         None => {
             tracing::error!("❌ Address '{}' is not valid for any known network", addr);
-            return Err(anyhow::anyhow!("Address '{}' is not valid for any known network", addr));
+            return Err(anyhow::anyhow!(
+                "Address '{}' is not valid for any known network",
+                addr
+            ));
         }
     };
 
@@ -732,7 +947,7 @@ fn classify_address(addr: &str) -> Result<(SpendKind, bitcoin::Network)> {
         Ok(checked_addr) => {
             tracing::info!("✅ Address '{}' matches network: {:?}", addr, net);
             checked_addr
-        },
+        }
         Err(e) => {
             tracing::error!("❌ Network mismatch for '{}': {}", addr, e);
             return Err(anyhow::anyhow!("Network mismatch for '{}': {}", addr, e));
@@ -744,24 +959,30 @@ fn classify_address(addr: &str) -> Result<(SpendKind, bitcoin::Network)> {
         AddressData::P2pkh { .. } => {
             tracing::info!("🔎 Address '{}' classified as P2PKH", addr);
             SpendKind::P2PKH
-        },
-        AddressData::Segwit { witness_program: wp }
-            if wp.version() == WitnessVersion::V0 && wp.is_p2wpkh() => {
+        }
+        AddressData::Segwit {
+            witness_program: wp,
+        } if wp.version() == WitnessVersion::V0 && wp.is_p2wpkh() => {
             tracing::info!("🔎 Address '{}' classified as P2WPKH", addr);
             SpendKind::P2WPKH
-        },
+        }
         _ => {
             tracing::error!("❌ Unsupported address type for spending: {}", addr);
             bail!("Unsupported address type for spending: {}", addr)
-        },
+        }
     };
 
-    tracing::info!("✅ Classification result for '{}': kind={:?}, network={:?}", addr, kind, net);
+    tracing::info!(
+        "✅ Classification result for '{}': kind={:?}, network={:?}",
+        addr,
+        kind,
+        net
+    );
 
     Ok((kind, net))
 }
 
-/// Internal implementation of transaction creation with optional UTXO checking
+// Internal implementation of transaction creation with optional UTXO checking
 async fn create_chain_transaction_from_deposit_intent_internal(
     intent: &DepositIntent,
     group_public_key: Option<k256::ProjectivePoint>,
@@ -786,9 +1007,6 @@ async fn create_chain_transaction_from_deposit_intent_internal(
     info!("amount::::: {}", amount);
 
     if is_evm_chain(chain_to_use) {
-        // Create Ethereum-compatible transaction
-        let chain_id = get_chain_id_from_name(chain_to_use)
-            .ok_or_else(|| anyhow::anyhow!("Unknown EVM chain: {}", chain_to_use))?;
         // Get vault address from parameter
         let vault_address =
             vault_eth_address.ok_or_else(|| anyhow::anyhow!("Vault ETH address not provided"))?;
@@ -832,22 +1050,8 @@ async fn create_chain_transaction_from_deposit_intent_internal(
             }
         };
 
-        // Get dynamic gas price for Qubetics, fallback to static for other chains
-        let gas_price = get_gas_price_for_chain(chain_to_use, chain_id).await
-            .unwrap_or_else(|e| {
-                warn!("⚠️ Failed to get dynamic gas price: {}, using fallback", e);
-                get_default_gas_price_for_chain(chain_to_use)
-            });
-
-        let ethereum_tx = EthereumTransaction {
-            to: to_address.to_string(),
-            value: amount_to_hex_string(amount),
-            gas_limit: 300000,
-            gas_price,
-            nonce: fetch_ethereum_nonce(&from_address, chain_id).await?,
-            data: None,
-            chain_id,
-        };
+        let ethereum_tx =
+            create_ethereum_transaction(&from_address, to_address, amount, chain_to_use).await?;
 
         Ok(ChainTransaction::Ethereum(ethereum_tx))
     } else if chain_to_use == "bitcoin" || chain_to_use == "btc" {
@@ -900,139 +1104,7 @@ async fn create_chain_transaction_from_deposit_intent_internal(
 
         tracing::info!("Using Bitcoin source address for UTXOs: {}", from_address);
 
-        // Validate that both addresses are P2PKH format only
-        // if !is_p2pkh_address(&from_address) {
-        //     return Err(anyhow::anyhow!(
-        //         "Source address '{}' is not supported. Only P2PKH addresses (1.../m.../n...) are supported.",
-        //         from_address
-        //     ));
-        // }
-
-        // if !is_p2pkh_address(&to_address) {
-        //     return Err(anyhow::anyhow!(
-        //         "Destination address '{}' is not supported. Only P2PKH addresses (1.../m.../n...) are supported.",
-        //         to_address
-        //     ));
-        // }
-
-        // let is_testnet = is_testnet_p2pkh_address(&from_address);
-        let (from_kind, from_net) = classify_address(&from_address)?;   
-        let (to_kind,   to_net)   = classify_address(&to_address)?; 
-        // Fetch raw UTXOs without external verification
-        // Sanity: prevent net mismatch
-        if from_net != to_net {
-            anyhow::bail!("From/To network mismatch: {:?} vs {:?}", from_net, to_net);
-        }
-
-        let is_testnet = matches!(from_net, bitcoin::Network::Testnet | bitcoin::Network::Signet | bitcoin::Network::Regtest);
-
-// Fetch UTXOs for the right network
-        let utxos = fetch_bitcoin_utxos(&from_address, is_testnet).await?;
-
-        tracing::info!(
-            "Final verified {} spendable UTXOs for address {}",
-            utxos.len(),
-            from_address
-        );
-
-        // Convert amount from wei to satoshis (assuming 1:1 conversion for now, you might want to adjust this)
-        let amount_satoshis = (amount) as u64;
-        let fee_rate_sat_vb = std::env::var("BTC_FEE_RATE_SAT_VB")
-            .ok()
-            .and_then(|value| value.parse::<u64>().ok())
-            .unwrap_or(DEFAULT_FEE_RATE_SAT_PER_VBYTE);
-
-        tracing::info!(
-            "Using fee rate of {} sat/vB for Bitcoin transaction from {}",
-            fee_rate_sat_vb,
-            from_address
-        );
-
-        // Select UTXOs that provide enough value using SegWit-aware fee estimation.
-        let selection = select_utxos_for_amount(&utxos, amount_satoshis, fee_rate_sat_vb, from_kind)?;
-
-        tracing::info!(
-            "Selected {} UTXOs with total value {} satoshis for transaction of {} satoshis (fee: {}, change: {}, change_output: {})",
-            selection.selected_utxos.len(),
-            selection.total_value,
-            amount_satoshis,
-            selection.fee,
-            selection.change,
-            selection.change_output
-        );
-
-        // Log the specific UTXOs we're about to spend for debugging
-        tracing::info!("📋 [TRANSACTION] UTXOs selected for spending:");
-        for (i, utxo) in selection.selected_utxos.iter().enumerate() {
-            tracing::info!(
-                "  {}. {}:{} - {} sats (confirmed: {})",
-                i + 1,
-                utxo.txid,
-                utxo.vout,
-                utxo.value,
-                utxo.status.confirmed
-            );
-        }
-
-        let to_spk   = create_bitcoin_script_pubkey(&to_address)?;
-        let from_spk = create_bitcoin_script_pubkey(&from_address)?;
-
-        // Inputs:
-        let inputs: Vec<BitcoinInput> = selection.selected_utxos.iter().map(|u| {
-            match from_kind {
-                SpendKind::P2WPKH => BitcoinInput {
-                    txid: u.txid.clone(),
-                    vout: u.vout,
-                    script_sig: vec![],
-                    sequence: 0xffff_fffe,
-                    witness_utxo: Some(BitcoinWitnessUtxo {
-                        value: u.value,
-                        script_pubkey: from_spk.clone(), // 0x00 0x14 <20>
-                    }),
-                },
-                SpendKind::P2PKH => BitcoinInput {
-                    txid: u.txid.clone(),
-                    vout: u.vout,
-                    script_sig: vec![],
-                    sequence: 0xffff_fffe,
-                    // IMPORTANT: stash 25-byte prev script here so final node doesn’t need to reconstruct
-                    witness_utxo: Some(BitcoinWitnessUtxo {
-                        value: u.value,
-                        script_pubkey: from_spk.clone(), // 76 a9 14 <20> 88 ac
-                    }),
-                }
-            }
-    }).collect();
-
-        // Create outputs (recipient always, change only if not dust)
-       // Outputs (change script MUST match the from-address type; using from_spk is correct):
-        let mut outputs = vec![BitcoinOutput { value: amount_satoshis, script_pubkey: to_spk }];
-        if selection.change_output {
-            outputs.push(BitcoinOutput { value: selection.change, script_pubkey: from_spk });
-        }
-
-        let (version, witness_opt) = match from_kind {
-            SpendKind::P2WPKH => {
-                // placeholder: one empty stack per input; fill after signing
-                (
-                    2,
-                    Some(crate::chain::BitcoinWitness {
-                        inputs: (0..inputs.len())
-                            .map(|_| crate::chain::BitcoinWitnessInput { stack: vec![] })
-                            .collect(),
-                    }),
-                )
-            }
-            SpendKind::P2PKH => (1, None),
-        };
-        
-        let bitcoin_tx = BitcoinTransaction {
-            inputs,
-            outputs,
-            version,
-            lock_time: 0,
-            witness: witness_opt,
-        };
+        let bitcoin_tx = create_bitcoin_transaction(&from_address, &to_address, amount).await?;
 
         Ok(ChainTransaction::Bitcoin(bitcoin_tx))
     } else {
@@ -1129,7 +1201,8 @@ pub async fn create_chain_transaction_from_contract_call(
     );
 
     let nonce = fetch_ethereum_nonce(&network_address, chain_id).await?;
-    let gas_price = get_gas_price_for_chain("qubetics", chain_id).await
+    let gas_price = get_gas_price_for_chain("qubetics", chain_id)
+        .await
         .unwrap_or_else(|e| {
             warn!("⚠️ Failed to get dynamic gas price: {}, using fallback", e);
             get_default_gas_price_for_chain("qubetics")
@@ -1405,7 +1478,7 @@ pub fn get_default_gas_price_for_chain(chain_name: &str) -> String {
 /// Get gas price for chain with dynamic fetching for Qubetics
 pub async fn get_gas_price_for_chain(chain_name: &str, chain_id: u64) -> Result<String> {
     // Reduced noisy stdout logging in production path
-    
+
     match chain_name {
         "qubetics" => {
             // Reduced noisy stdout logging in production path
@@ -1416,19 +1489,30 @@ pub async fn get_gas_price_for_chain(chain_name: &str, chain_id: u64) -> Result<
                     // Convert to decimal to show the actual value
                     if let Some(hex_part) = gas_price.strip_prefix("0x") {
                         if let Ok(price_decimal) = u64::from_str_radix(hex_part, 16) {
-                            info!("Dynamic gas price in decimal: {} wei ({} Gwei)", price_decimal, price_decimal / 1_000_000_000);
+                            info!(
+                                "Dynamic gas price in decimal: {} wei ({} Gwei)",
+                                price_decimal,
+                                price_decimal / 1_000_000_000
+                            );
                         }
                     }
                     Ok(gas_price)
                 }
                 Err(e) => {
-                    warn!("Failed to fetch dynamic gas price for Qubetics: {}, using fallback", e);
+                    warn!(
+                        "Failed to fetch dynamic gas price for Qubetics: {}, using fallback",
+                        e
+                    );
                     let fallback_price = get_default_gas_price_for_chain(chain_name);
                     info!("Using fallback gas price for Qubetics: {}", fallback_price);
                     // Convert fallback to decimal to show the actual value
                     if let Some(hex_part) = fallback_price.strip_prefix("0x") {
                         if let Ok(price_decimal) = u64::from_str_radix(hex_part, 16) {
-                            info!("Fallback gas price in decimal: {} wei ({} Gwei)", price_decimal, price_decimal / 1_000_000_000);
+                            info!(
+                                "Fallback gas price in decimal: {} wei ({} Gwei)",
+                                price_decimal,
+                                price_decimal / 1_000_000_000
+                            );
                         }
                     }
                     Ok(fallback_price)
@@ -1439,11 +1523,18 @@ pub async fn get_gas_price_for_chain(chain_name: &str, chain_id: u64) -> Result<
             // Reduced noisy stdout logging in production path
             // Use static gas price for other chains
             let static_price = get_default_gas_price_for_chain(chain_name);
-            info!("Using static gas price for {}: {}", chain_name, static_price);
+            info!(
+                "Using static gas price for {}: {}",
+                chain_name, static_price
+            );
             // Convert static to decimal to show the actual value
             if let Some(hex_part) = static_price.strip_prefix("0x") {
                 if let Ok(price_decimal) = u64::from_str_radix(hex_part, 16) {
-                    info!("Static gas price in decimal: {} wei ({} Gwei)", price_decimal, price_decimal / 1_000_000_000);
+                    info!(
+                        "Static gas price in decimal: {} wei ({} Gwei)",
+                        price_decimal,
+                        price_decimal / 1_000_000_000
+                    );
                 }
             }
             Ok(static_price)
@@ -1467,10 +1558,14 @@ mod tests {
         let static_price = get_default_gas_price_for_chain("qubetics");
         println!("🔧 Qubetics static gas price: {}", static_price);
         assert_eq!(static_price, "0x3B9ACA00");
-        
+
         // Convert to decimal to show the actual value
         let price_decimal = u64::from_str_radix("3B9ACA00", 16).unwrap();
-        println!("🔧 Qubetics static gas price in decimal: {} wei ({} Gwei)", price_decimal, price_decimal / 1_000_000_000);
+        println!(
+            "🔧 Qubetics static gas price in decimal: {} wei ({} Gwei)",
+            price_decimal,
+            price_decimal / 1_000_000_000
+        );
     }
 
     #[tokio::test]
@@ -1482,31 +1577,38 @@ mod tests {
 
         let result = get_gas_price_for_chain("qubetics", 9029).await;
         assert!(result.is_ok());
-        
+
         let gas_price = result.unwrap();
         println!("🔧 Qubetics gas price (should be fallback): {}", gas_price);
-        
+
         // The test might get either the fallback or the real RPC value depending on network conditions
         // Both are valid - the important thing is that it doesn't crash
         if gas_price == "0x3B9ACA00" {
             println!("🔧 Got fallback gas price: {} (1 Gwei)", gas_price);
             let price_decimal = u64::from_str_radix("3B9ACA00", 16).unwrap();
-            println!("🔧 Fallback gas price in decimal: {} wei ({} Gwei)", price_decimal, price_decimal / 1_000_000_000);
+            println!(
+                "🔧 Fallback gas price in decimal: {} wei ({} Gwei)",
+                price_decimal,
+                price_decimal / 1_000_000_000
+            );
         } else {
             println!("🔧 Got dynamic gas price from RPC: {}", gas_price);
             // Convert to decimal to show the actual value
             if let Some(hex_part) = gas_price.strip_prefix("0x") {
                 if let Ok(price_decimal) = u64::from_str_radix(hex_part, 16) {
-                    println!("🔧 Dynamic gas price in decimal: {} wei ({} Gwei)", 
-                            price_decimal, price_decimal / 1_000_000_000);
+                    println!(
+                        "🔧 Dynamic gas price in decimal: {} wei ({} Gwei)",
+                        price_decimal,
+                        price_decimal / 1_000_000_000
+                    );
                 }
             }
         }
-        
+
         // Gas price should be a valid hex string
         assert!(gas_price.starts_with("0x"));
         assert!(gas_price.len() > 2);
-        
+
         // Restore original URL
         if !original_url.is_empty() {
             std::env::set_var("MPC_ETHEREUM_RPC_URL", original_url);
@@ -1528,11 +1630,14 @@ mod tests {
         // Test that Qubetics hex values are correct
         let qubetics_hex = "0x3B9ACA00";
         let price_decimal = u64::from_str_radix("3B9ACA00", 16).unwrap();
-        
+
         println!("🔧 Qubetics gas price hex: {}", qubetics_hex);
         println!("🔧 Qubetics gas price decimal: {} wei", price_decimal);
-        println!("🔧 Qubetics gas price in Gwei: {} Gwei", price_decimal / 1_000_000_000);
-        
+        println!(
+            "🔧 Qubetics gas price in Gwei: {} Gwei",
+            price_decimal / 1_000_000_000
+        );
+
         assert_eq!(price_decimal, 1_000_000_000); // 1 Gwei
     }
 
@@ -1541,11 +1646,11 @@ mod tests {
         // Test that Qubetics gas price function returns consistent results
         let price1 = get_default_gas_price_for_chain("qubetics");
         let price2 = get_default_gas_price_for_chain("qubetics");
-        
+
         println!("🔧 Qubetics gas price consistency test:");
         println!("  - First call: {}", price1);
         println!("  - Second call: {}", price2);
-        
+
         assert_eq!(price1, price2);
         assert_eq!(price1, "0x3B9ACA00");
     }
@@ -1555,35 +1660,41 @@ mod tests {
         // Test with the actual Qubetics RPC URL (if available)
         // This test will show what happens with a real RPC call
         let original_url = std::env::var("MPC_ETHEREUM_RPC_URL").unwrap_or_default();
-        
+
         // Try with the default Qubetics RPC URL
         std::env::set_var("MPC_ETHEREUM_RPC_URL", "https://rpc-testnet.qubetics.work");
-        
+
         let result = get_gas_price_for_chain("qubetics", 9029).await;
-        
+
         match result {
             Ok(gas_price) => {
                 println!("🔧 Qubetics dynamic gas price from RPC: {}", gas_price);
-                
+
                 // Convert to decimal to show the actual value
                 if let Some(hex_part) = gas_price.strip_prefix("0x") {
                     if let Ok(price_decimal) = u64::from_str_radix(hex_part, 16) {
-                        println!("🔧 Qubetics dynamic gas price in decimal: {} wei ({} Gwei)", 
-                                price_decimal, price_decimal / 1_000_000_000);
+                        println!(
+                            "🔧 Qubetics dynamic gas price in decimal: {} wei ({} Gwei)",
+                            price_decimal,
+                            price_decimal / 1_000_000_000
+                        );
                     }
                 }
-                
+
                 // Gas price should be a valid hex string
                 assert!(gas_price.starts_with("0x"));
                 assert!(gas_price.len() > 2);
             }
             Err(e) => {
-                println!("🔧 Qubetics RPC call failed (expected if RPC is down): {}", e);
+                println!(
+                    "🔧 Qubetics RPC call failed (expected if RPC is down): {}",
+                    e
+                );
                 // This is expected if the RPC is not available
                 // The function should still work with fallback
             }
         }
-        
+
         // Restore original URL
         if !original_url.is_empty() {
             std::env::set_var("MPC_ETHEREUM_RPC_URL", original_url);
@@ -1662,7 +1773,7 @@ fn create_bitcoin_script_pubkey(address: &str) -> Result<Vec<u8>> {
     Ok(script_bytes)
 }
 
-pub fn create_transaction_for_signing(tx: &DummyTransaction) -> Vec<u8> {
+pub fn create_transaction_for_signing(tx: &EthereumTransaction) -> Vec<u8> {
     // Log transaction details before creating raw transaction
     info!(
         "🔧 [ETH_RAW_TXN] Creating raw Ethereum transaction - To: {}, Value: {}, Nonce: {}, GasLimit: {}, GasPrice: {}, ChainId: {}",
@@ -1725,246 +1836,244 @@ pub fn create_transaction_for_signing(tx: &DummyTransaction) -> Vec<u8> {
     final_encoder.finalize()
 }
 
-    #[test]
-    fn encode_hex_string_zero_is_canonical() {
-        let mut encoder = RlpEncoder::new();
-        encoder.encode_hex_string("0x0");
-        // RLP encoding of zero should be a single 0x80 byte
-        assert_eq!(encoder.finalize(), vec![0x80]);
-    }
+#[test]
+fn encode_hex_string_zero_is_canonical() {
+    let mut encoder = RlpEncoder::new();
+    encoder.encode_hex_string("0x0");
+    // RLP encoding of zero should be a single 0x80 byte
+    assert_eq!(encoder.finalize(), vec![0x80]);
+}
 
-    #[test]
-    fn test_amount_to_hex_string() {
-        // Test zero amount
-        assert_eq!(amount_to_hex_string(0), "0x0");
+#[test]
+fn test_amount_to_hex_string() {
+    // Test zero amount
+    assert_eq!(amount_to_hex_string(0), "0x0");
 
-        // Test small amounts
-        assert_eq!(amount_to_hex_string(1), "0x1");
-        assert_eq!(amount_to_hex_string(15), "0xf");
-        assert_eq!(amount_to_hex_string(16), "0x10");
-        assert_eq!(amount_to_hex_string(255), "0xff");
-        assert_eq!(amount_to_hex_string(256), "0x100");
+    // Test small amounts
+    assert_eq!(amount_to_hex_string(1), "0x1");
+    assert_eq!(amount_to_hex_string(15), "0xf");
+    assert_eq!(amount_to_hex_string(16), "0x10");
+    assert_eq!(amount_to_hex_string(255), "0xff");
+    assert_eq!(amount_to_hex_string(256), "0x100");
 
-        // Test larger amounts (common in crypto)
-        assert_eq!(
-            amount_to_hex_string(1000000000000000000u128),
-            "0xde0b6b3a7640000"
-        ); // 1 ETH in wei
-        assert_eq!(
-            amount_to_hex_string(21000000000000000000u128),
-            "0x1236efcbcbb340000"
-        ); // 21 ETH in wei
+    // Test larger amounts (common in crypto)
+    assert_eq!(
+        amount_to_hex_string(1000000000000000000u128),
+        "0xde0b6b3a7640000"
+    ); // 1 ETH in wei
+    assert_eq!(
+        amount_to_hex_string(21000000000000000000u128),
+        "0x1236efcbcbb340000"
+    ); // 21 ETH in wei
 
-        // Test very large amounts
-        assert_eq!(
-            amount_to_hex_string(u128::MAX),
-            "0xffffffffffffffffffffffffffffffff"
-        );
-    }
+    // Test very large amounts
+    assert_eq!(
+        amount_to_hex_string(u128::MAX),
+        "0xffffffffffffffffffffffffffffffff"
+    );
+}
 
-    #[test]
-    fn test_validate_and_normalize_hex_amount() {
-        // Test valid hex strings
-        assert_eq!(validate_and_normalize_hex_amount("0x0").unwrap(), "0x0");
-        assert_eq!(validate_and_normalize_hex_amount("0x1").unwrap(), "0x1");
-        assert_eq!(validate_and_normalize_hex_amount("0xff").unwrap(), "0xff");
-        assert_eq!(validate_and_normalize_hex_amount("0xFF").unwrap(), "0xFF");
+#[test]
+fn test_validate_and_normalize_hex_amount() {
+    // Test valid hex strings
+    assert_eq!(validate_and_normalize_hex_amount("0x0").unwrap(), "0x0");
+    assert_eq!(validate_and_normalize_hex_amount("0x1").unwrap(), "0x1");
+    assert_eq!(validate_and_normalize_hex_amount("0xff").unwrap(), "0xff");
+    assert_eq!(validate_and_normalize_hex_amount("0xFF").unwrap(), "0xFF");
 
-        // Test normalization of leading zeros
-        assert_eq!(validate_and_normalize_hex_amount("0x00").unwrap(), "0x0");
-        assert_eq!(
-            validate_and_normalize_hex_amount("0x000001").unwrap(),
-            "0x1"
-        );
-        assert_eq!(
-            validate_and_normalize_hex_amount("0x0000ff").unwrap(),
-            "0xff"
-        );
+    // Test normalization of leading zeros
+    assert_eq!(validate_and_normalize_hex_amount("0x00").unwrap(), "0x0");
+    assert_eq!(
+        validate_and_normalize_hex_amount("0x000001").unwrap(),
+        "0x1"
+    );
+    assert_eq!(
+        validate_and_normalize_hex_amount("0x0000ff").unwrap(),
+        "0xff"
+    );
 
-        // Test hex without 0x prefix
-        assert_eq!(validate_and_normalize_hex_amount("1").unwrap(), "0x1");
-        assert_eq!(validate_and_normalize_hex_amount("ff").unwrap(), "0xff");
-        assert_eq!(validate_and_normalize_hex_amount("0001").unwrap(), "0x1");
+    // Test hex without 0x prefix
+    assert_eq!(validate_and_normalize_hex_amount("1").unwrap(), "0x1");
+    assert_eq!(validate_and_normalize_hex_amount("ff").unwrap(), "0xff");
+    assert_eq!(validate_and_normalize_hex_amount("0001").unwrap(), "0x1");
 
-        // Test invalid hex strings
-        assert!(validate_and_normalize_hex_amount("0xgg").is_err());
-        assert!(validate_and_normalize_hex_amount("0x12g3").is_err());
-        assert!(validate_and_normalize_hex_amount("xyz").is_err());
-    }
+    // Test invalid hex strings
+    assert!(validate_and_normalize_hex_amount("0xgg").is_err());
+    assert!(validate_and_normalize_hex_amount("0x12g3").is_err());
+    assert!(validate_and_normalize_hex_amount("xyz").is_err());
+}
 
-    #[test]
-    fn test_validate_transaction_hex_fields() {
-        use crate::rpc_server::DummyTransaction;
+#[test]
+fn test_validate_transaction_hex_fields() {
+    use crate::rpc_server::DummyTransaction;
 
-        // Test valid transaction
-        let valid_tx = DummyTransaction {
-            to: "0x1234567890123456789012345678901234567890".to_string(),
-            value: "0x1".to_string(),
-            nonce: 0,
-            gas_limit: 21000,
-            gas_price: "0x3b9aca00".to_string(), // 1 Gwei
-            chain_id: 1,
-        };
-        assert!(validate_transaction_hex_fields(&valid_tx).is_ok());
+    // Test valid transaction
+    let valid_tx = DummyTransaction {
+        to: "0x1234567890123456789012345678901234567890".to_string(),
+        value: "0x1".to_string(),
+        nonce: 0,
+        gas_limit: 21000,
+        gas_price: "0x3b9aca00".to_string(), // 1 Gwei
+        chain_id: 1,
+    };
+    assert!(validate_transaction_hex_fields(&valid_tx).is_ok());
 
-        // Test invalid value field
-        let invalid_value_tx = DummyTransaction {
-            to: "0x1234567890123456789012345678901234567890".to_string(),
-            value: "invalid".to_string(),
-            nonce: 0,
-            gas_limit: 21000,
-            gas_price: "0x3b9aca00".to_string(),
-            chain_id: 1,
-        };
-        assert!(validate_transaction_hex_fields(&invalid_value_tx).is_err());
+    // Test invalid value field
+    let invalid_value_tx = DummyTransaction {
+        to: "0x1234567890123456789012345678901234567890".to_string(),
+        value: "invalid".to_string(),
+        nonce: 0,
+        gas_limit: 21000,
+        gas_price: "0x3b9aca00".to_string(),
+        chain_id: 1,
+    };
+    assert!(validate_transaction_hex_fields(&invalid_value_tx).is_err());
 
-        // Test invalid gas_price field
-        let invalid_gas_price_tx = DummyTransaction {
-            to: "0x1234567890123456789012345678901234567890".to_string(),
-            value: "0x1".to_string(),
-            nonce: 0,
-            gas_limit: 21000,
-            gas_price: "invalid".to_string(),
-            chain_id: 1,
-        };
-        assert!(validate_transaction_hex_fields(&invalid_gas_price_tx).is_err());
-    }
+    // Test invalid gas_price field
+    let invalid_gas_price_tx = DummyTransaction {
+        to: "0x1234567890123456789012345678901234567890".to_string(),
+        value: "0x1".to_string(),
+        nonce: 0,
+        gas_limit: 21000,
+        gas_price: "invalid".to_string(),
+        chain_id: 1,
+    };
+    assert!(validate_transaction_hex_fields(&invalid_gas_price_tx).is_err());
+}
 
-    #[test]
-    fn test_validate_contract_transaction_hex_fields() {
-        use crate::rpc_server::ContractTransaction;
+#[test]
+fn test_validate_contract_transaction_hex_fields() {
+    use crate::rpc_server::ContractTransaction;
 
-        // Test valid contract transaction
-        let valid_contract_tx = ContractTransaction {
-            to: "0x1234567890123456789012345678901234567890".to_string(),
-            value: "0x0".to_string(),
-            nonce: 0,
-            gas_limit: 300000,
-            gas_price: "0x3b9aca00".to_string(),
-            chain_id: 1,
-            data: "0xa9059cbb".to_string(), // transfer function selector
-        };
-        assert!(validate_contract_transaction_hex_fields(&valid_contract_tx).is_ok());
+    // Test valid contract transaction
+    let valid_contract_tx = ContractTransaction {
+        to: "0x1234567890123456789012345678901234567890".to_string(),
+        value: "0x0".to_string(),
+        nonce: 0,
+        gas_limit: 300000,
+        gas_price: "0x3b9aca00".to_string(),
+        chain_id: 1,
+        data: "0xa9059cbb".to_string(), // transfer function selector
+    };
+    assert!(validate_contract_transaction_hex_fields(&valid_contract_tx).is_ok());
 
-        // Test invalid data field
-        let invalid_data_tx = ContractTransaction {
-            to: "0x1234567890123456789012345678901234567890".to_string(),
-            value: "0x0".to_string(),
-            nonce: 0,
-            gas_limit: 300000,
-            gas_price: "0x3b9aca00".to_string(),
-            chain_id: 1,
-            data: "invalid_hex".to_string(),
-        };
-        assert!(validate_contract_transaction_hex_fields(&invalid_data_tx).is_err());
+    // Test invalid data field
+    let invalid_data_tx = ContractTransaction {
+        to: "0x1234567890123456789012345678901234567890".to_string(),
+        value: "0x0".to_string(),
+        nonce: 0,
+        gas_limit: 300000,
+        gas_price: "0x3b9aca00".to_string(),
+        chain_id: 1,
+        data: "invalid_hex".to_string(),
+    };
+    assert!(validate_contract_transaction_hex_fields(&invalid_data_tx).is_err());
 
-        // Test empty data field (should be valid)
-        let empty_data_tx = ContractTransaction {
-            to: "0x1234567890123456789012345678901234567890".to_string(),
-            value: "0x0".to_string(),
-            nonce: 0,
-            gas_limit: 300000,
-            gas_price: "0x3b9aca00".to_string(),
-            chain_id: 1,
-            data: "0x".to_string(),
-        };
-        assert!(validate_contract_transaction_hex_fields(&empty_data_tx).is_ok());
-    }
+    // Test empty data field (should be valid)
+    let empty_data_tx = ContractTransaction {
+        to: "0x1234567890123456789012345678901234567890".to_string(),
+        value: "0x0".to_string(),
+        nonce: 0,
+        gas_limit: 300000,
+        gas_price: "0x3b9aca00".to_string(),
+        chain_id: 1,
+        data: "0x".to_string(),
+    };
+    assert!(validate_contract_transaction_hex_fields(&empty_data_tx).is_ok());
+}
 
-    #[test]
-    fn test_common_ethereum_amounts() {
-        // Test common Ethereum amounts in wei
-        let one_eth_wei = 1000000000000000000u128; // 1 ETH = 10^18 wei
-        assert_eq!(amount_to_hex_string(one_eth_wei), "0xde0b6b3a7640000");
+#[test]
+fn test_common_ethereum_amounts() {
+    // Test common Ethereum amounts in wei
+    let one_eth_wei = 1000000000000000000u128; // 1 ETH = 10^18 wei
+    assert_eq!(amount_to_hex_string(one_eth_wei), "0xde0b6b3a7640000");
 
-        let one_gwei = 1000000000u128; // 1 Gwei = 10^9 wei
-        assert_eq!(amount_to_hex_string(one_gwei), "0x3b9aca00");
+    let one_gwei = 1000000000u128; // 1 Gwei = 10^9 wei
+    assert_eq!(amount_to_hex_string(one_gwei), "0x3b9aca00");
 
-        let half_eth_wei = 500000000000000000u128; // 0.5 ETH
-        assert_eq!(amount_to_hex_string(half_eth_wei), "0x6f05b59d3b20000");
+    let half_eth_wei = 500000000000000000u128; // 0.5 ETH
+    assert_eq!(amount_to_hex_string(half_eth_wei), "0x6f05b59d3b20000");
 
-        // Test that these values are properly handled by the RLP encoder
-        let mut encoder = RlpEncoder::new();
-        encoder.encode_hex_string(&amount_to_hex_string(one_eth_wei));
-        let encoded = encoder.finalize();
-        // Should not be empty and should be properly encoded
-        assert!(!encoded.is_empty());
-        assert_ne!(encoded, vec![0x80]); // Should not be the "zero" encoding
-    }
+    // Test that these values are properly handled by the RLP encoder
+    let mut encoder = RlpEncoder::new();
+    encoder.encode_hex_string(&amount_to_hex_string(one_eth_wei));
+    let encoded = encoder.finalize();
+    // Should not be empty and should be properly encoded
+    assert!(!encoded.is_empty());
+    assert_ne!(encoded, vec![0x80]); // Should not be the "zero" encoding
+}
 
-    #[test]
-    fn test_utxo_selection_optimal() {
-        // Test case: 2 UTXOs of 1400 sats each, want to send 1540 sats
-        let utxos = vec![
-            BitcoinUtxo {
-                txid: "a1b2c3d4e5f6789012345678901234567890123456789012345678901234567890".to_string(),
-                vout: 0,
-                value: 1400,
-                status: UtxoStatus {
-                    confirmed: true,
-                    block_height: Some(100),
-                    block_hash: Some("block1".to_string()),
-                    block_time: Some(1234567890),
-                },
+#[test]
+fn test_utxo_selection_optimal() {
+    // Test case: 2 UTXOs of 1400 sats each, want to send 1540 sats
+    let utxos = vec![
+        BitcoinUtxo {
+            txid: "a1b2c3d4e5f6789012345678901234567890123456789012345678901234567890".to_string(),
+            vout: 0,
+            value: 1400,
+            status: UtxoStatus {
+                confirmed: true,
+                block_height: Some(100),
+                block_hash: Some("block1".to_string()),
+                block_time: Some(1234567890),
             },
-            BitcoinUtxo {
-                txid: "b2c3d4e5f6789012345678901234567890123456789012345678901234567890a1".to_string(),
-                vout: 0,
-                value: 1400,
-                status: UtxoStatus {
-                    confirmed: true,
-                    block_height: Some(100),
-                    block_hash: Some("block2".to_string()),
-                    block_time: Some(1234567890),
-                },
+        },
+        BitcoinUtxo {
+            txid: "b2c3d4e5f6789012345678901234567890123456789012345678901234567890a1".to_string(),
+            vout: 0,
+            value: 1400,
+            status: UtxoStatus {
+                confirmed: true,
+                block_height: Some(100),
+                block_hash: Some("block2".to_string()),
+                block_time: Some(1234567890),
             },
-        ];
+        },
+    ];
 
-        let result = select_utxos_for_amount(&utxos, 1540, 2, SpendKind::P2WPKH).unwrap();
-        
-        println!("Selected {} UTXOs", result.selected_utxos.len());
-        println!("Total value: {} sats", result.total_value);
-        println!("Fee: {} sats", result.fee);
-        println!("Change: {} sats", result.change);
-        println!("Change output: {}", result.change_output);
-        
-        // Should use change path with reasonable fee
-        assert!(result.change_output, "Should use change output");
-        assert!(result.fee < 500, "Fee should be reasonable (< 500 sats)");
-        assert!(result.change > 0, "Should have change");
-    }
+    let result = select_utxos_for_amount(&utxos, 1540, 2, SpendKind::P2WPKH).unwrap();
 
-    #[test]
-    fn test_utxo_selection_single_utxo() {
-        // Test case: 1 UTXO of 2000 sats, want to send 1000 sats
-        let utxos = vec![
-            BitcoinUtxo {
-                txid: "c3d4e5f6789012345678901234567890123456789012345678901234567890a1b2".to_string(),
-                vout: 0,
-                value: 2000,
-                status: UtxoStatus {
-                    confirmed: true,
-                    block_height: Some(100),
-                    block_hash: Some("block1".to_string()),
-                    block_time: Some(1234567890),
-                },
-            },
-        ];
+    println!("Selected {} UTXOs", result.selected_utxos.len());
+    println!("Total value: {} sats", result.total_value);
+    println!("Fee: {} sats", result.fee);
+    println!("Change: {} sats", result.change);
+    println!("Change output: {}", result.change_output);
 
-        let result = select_utxos_for_amount(&utxos, 1000, 2, SpendKind::P2WPKH).unwrap();
-        
-        println!("Selected {} UTXOs", result.selected_utxos.len());
-        println!("Total value: {} sats", result.total_value);
-        println!("Fee: {} sats", result.fee);
-        println!("Change: {} sats", result.change);
-        println!("Change output: {}", result.change_output);
-        
-        // Should use single UTXO with change
-        assert_eq!(result.selected_utxos.len(), 1, "Should use only 1 UTXO");
-        assert!(result.change_output, "Should use change output");
-        assert!(result.fee < 200, "Fee should be reasonable (< 200 sats)");
-        assert!(result.change > 500, "Should have substantial change");
-    }
+    // Should use change path with reasonable fee
+    assert!(result.change_output, "Should use change output");
+    assert!(result.fee < 500, "Fee should be reasonable (< 500 sats)");
+    assert!(result.change > 0, "Should have change");
+}
+
+#[test]
+fn test_utxo_selection_single_utxo() {
+    // Test case: 1 UTXO of 2000 sats, want to send 1000 sats
+    let utxos = vec![BitcoinUtxo {
+        txid: "c3d4e5f6789012345678901234567890123456789012345678901234567890a1b2".to_string(),
+        vout: 0,
+        value: 2000,
+        status: UtxoStatus {
+            confirmed: true,
+            block_height: Some(100),
+            block_hash: Some("block1".to_string()),
+            block_time: Some(1234567890),
+        },
+    }];
+
+    let result = select_utxos_for_amount(&utxos, 1000, 2, SpendKind::P2WPKH).unwrap();
+
+    println!("Selected {} UTXOs", result.selected_utxos.len());
+    println!("Total value: {} sats", result.total_value);
+    println!("Fee: {} sats", result.fee);
+    println!("Change: {} sats", result.change);
+    println!("Change output: {}", result.change_output);
+
+    // Should use single UTXO with change
+    assert_eq!(result.selected_utxos.len(), 1, "Should use only 1 UTXO");
+    assert!(result.change_output, "Should use change output");
+    assert!(result.fee < 200, "Fee should be reasonable (< 200 sats)");
+    assert!(result.change > 500, "Should have substantial change");
+}
 
 pub fn create_transaction_for_signing_contract(tx: &ContractTransaction) -> Vec<u8> {
     // Log contract transaction details before creating raw transaction

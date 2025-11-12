@@ -603,6 +603,8 @@ pub mod keys {
     pub const SOLVER_REWARD_BTC: &str = "solver_reward_btc:";
     pub const CLAIMED_REQUEST_AMOUNT: &str = "claimed_request_amount:";
     pub const INTENT_REWARD_STATUS: &str = "intent_reward_status:";
+    pub const SOLVER_TICS_TXN_HASHES: &str = "solver_tics_txn_hashes:";
+    pub const SOLVER_BTC_TXN_HASHES: &str = "solver_btc_txn_hashes:";
     pub const PEER_KEYPAIR: &str = "peer_keypair";
 }
 
@@ -716,6 +718,22 @@ pub mod key_utils {
             "{}{}",
             keys::INTENT_REWARD_STATUS,
             intent_hash.to_lowercase()
+        )
+    }
+
+    pub fn solver_tics_txn_hashes_key(solver_address: &str) -> String {
+        format!(
+            "{}{}",
+            keys::SOLVER_TICS_TXN_HASHES,
+            solver_address.to_lowercase()
+        )
+    }
+
+    pub fn solver_btc_txn_hashes_key(solver_address: &str) -> String {
+        format!(
+            "{}{}",
+            keys::SOLVER_BTC_TXN_HASHES,
+            solver_address.to_lowercase()
         )
     }
 

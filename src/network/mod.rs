@@ -1,42 +1,45 @@
+use crate::prepare_unsigned_eip1559_tx;
 use anyhow::Result;
-use futures::StreamExt;
-use std::sync::Arc;
 use ethers::{
     abi::Token,
     providers::{Http, Provider},
     types::{Address, U256},
 };
-use std::str::FromStr;
-use crate::prepare_unsigned_eip1559_tx;
+use futures::StreamExt;
 use libp2p::{
-    core::ConnectedPoint, gossipsub::{self, Message, TopicHash}, identity::Keypair, kad::{self, store::MemoryStore, BucketInserts, Event as KademliaEvent}, multiaddr::Protocol, noise, request_response::{
+    core::ConnectedPoint,
+    gossipsub::{self, Message, TopicHash},
+    identity::Keypair,
+    kad::{self, store::MemoryStore, BucketInserts, Event as KademliaEvent},
+    multiaddr::Protocol,
+    noise,
+    request_response::{
         cbor::Behaviour as CborReqRespBehaviour, Event as ReqRespEvent, Message as ReqRespMessage,
-    }, swarm::{ConnectionError, NetworkBehaviour, SwarmEvent}, tcp, yamux, Multiaddr, PeerId
+    },
+    swarm::{ConnectionError, NetworkBehaviour, SwarmEvent},
+    tcp, yamux, Multiaddr, PeerId,
 };
 use sha2::Digest as Sha2Digest;
+use std::str::FromStr;
+use std::sync::Arc;
 
+use ff::PrimeField;
 use std::{
     collections::hash_map::DefaultHasher,
-    hash::{Hash, Hasher}, time::{SystemTime, UNIX_EPOCH},
+    hash::{Hash, Hasher},
+    time::{SystemTime, UNIX_EPOCH},
 };
-use std::{
-    collections::{ HashSet},
-    env,
-    fmt::Debug,
-    time::Duration,
-};
+use std::{collections::HashSet, env, fmt::Debug, time::Duration};
 use tokio::io;
-use tokio::task::JoinHandle;
 use tokio::sync::{mpsc, Mutex};
+use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
-use ff::PrimeField;
 
-use crate::{chain::EthereumTransaction, commands::CommandProcessor, rpc_server::DummyTransaction, utils::transaction::get_default_gas_price_for_chain};
-use crate::database::{Database, DatabaseConfig, key_utils, keys};
-use crate::consensus::ConsensusNode;
 use crate::adkg_secp256k1::DKGNode;
+use crate::consensus::ConsensusNode;
+use crate::database::{key_utils, keys, Database, DatabaseConfig};
 use crate::node_management::NodeMembership;
-use crate::signing::{SigningNode, DatabaseSigningNode};
+use crate::signing::{DatabaseSigningNode, SigningNode};
 use crate::user_registry::{DatabaseUserRegistry, TransactionStatus};
 use crate::{
     adkg_secp256k1::DKGStatus,
@@ -49,6 +52,10 @@ use crate::{
         },
         ChannelMessage, GossipsubMessage, PeerInfo,
     },
+};
+use crate::{
+    chain::EthereumTransaction, commands::CommandProcessor, rpc_server::DummyTransaction,
+    utils::transaction::get_default_gas_price_for_chain,
 };
 
 #[derive(NetworkBehaviour)]
@@ -167,15 +174,22 @@ impl NetworkLayer {
     const MAX_PEER_DISCOVERY_RETRIES: u8 = 10;
 
     fn get_max_peer_index_from_db(&self) -> usize {
-        if let Ok(keys) = self.db.get_keys_with_prefix(crate::database::keys::PEER_INDEX) {
+        if let Ok(keys) = self
+            .db
+            .get_keys_with_prefix(crate::database::keys::PEER_INDEX)
+        {
             let mut max_idx = 0usize;
             for k in keys {
                 if let Ok(Some(idx)) = self.db.get_string::<usize>(&k) {
-                    if idx > max_idx { max_idx = idx; }
+                    if idx > max_idx {
+                        max_idx = idx;
+                    }
                 }
             }
             max_idx
-        } else { 0 }
+        } else {
+            0
+        }
     }
 
     fn get_index_from_db(&self, pid: &PeerId) -> Option<usize> {
@@ -190,7 +204,9 @@ impl NetworkLayer {
         // Determine next index strictly from DB state
         let next = self.get_max_peer_index_from_db().saturating_add(1);
         let key = crate::database::key_utils::peer_index_key(&pid.to_string());
-        if let Err(e) = self.db.put_string(&key, &next) { warn!("Failed to persist peer index: {:?}", e); }
+        if let Err(e) = self.db.put_string(&key, &next) {
+            warn!("Failed to persist peer index: {:?}", e);
+        }
         self.peer_indices.insert(pid.clone(), next);
         next
     }
@@ -204,7 +220,9 @@ impl NetworkLayer {
         let current_max = self.get_max_peer_index_from_db();
         let idx = if current_max == 0 { 1 } else { current_max + 1 };
         let key = crate::database::key_utils::peer_index_key(&self.local_peer_id.to_string());
-        if let Err(e) = self.db.put_string(&key, &idx) { warn!("Failed to persist local index: {:?}", e); }
+        if let Err(e) = self.db.put_string(&key, &idx) {
+            warn!("Failed to persist local index: {:?}", e);
+        }
         self.peer_indices.insert(self.local_peer_id.clone(), idx);
         idx
     }
@@ -267,8 +285,7 @@ impl NetworkLayer {
             {
                 warn!(
                     "Failed to enqueue peer discovery retry (attempt {}): {:?}",
-                    attempt,
-                    e
+                    attempt, e
                 );
             }
         });
@@ -377,7 +394,10 @@ impl NetworkLayer {
     }
 
     pub fn set_user_registry(&mut self, registry: Arc<DatabaseUserRegistry>) {
-        info!("🔗 [NETWORK] Received database user registry - Arc pointer: {:p}", Arc::as_ptr(&registry));
+        info!(
+            "🔗 [NETWORK] Received database user registry - Arc pointer: {:p}",
+            Arc::as_ptr(&registry)
+        );
         info!("🔗 [NETWORK] About to clone DatabaseUserRegistry from Arc");
         self.user_registry = Some((*registry).clone());
         info!("🔗 [NETWORK] DatabaseUserRegistry clone stored in network layer");
@@ -401,7 +421,7 @@ impl NetworkLayer {
 
     pub fn set_database(&mut self, database: Arc<crate::database::Database>) {
         info!("🗄️ [NETWORK] Setting database on signing node for solver amount storage");
-        
+
         // Set the database on the signing node for solver amount storage
         if let Some(signing_node) = &mut self.signing_node {
             signing_node.set_database(database);
@@ -437,7 +457,7 @@ impl NetworkLayer {
 
     /// Load existing keypair from database or create a new one
     async fn load_or_create_keypair() -> Result<(Keypair, PeerId)> {
-        use crate::database::{Database, DatabaseConfig, keys};
+        use crate::database::{keys, Database, DatabaseConfig};
 
         // Create database connection
         let db_config = DatabaseConfig::default();
@@ -452,7 +472,10 @@ impl NetworkLayer {
                     return Ok((keypair, peer_id));
                 }
                 Err(e) => {
-                    warn!("⚠️ Failed to decode existing keypair: {}. Generating new one.", e);
+                    warn!(
+                        "⚠️ Failed to decode existing keypair: {}. Generating new one.",
+                        e
+                    );
                 }
             }
         } else {
@@ -464,7 +487,8 @@ impl NetworkLayer {
         let peer_id = PeerId::from(keypair.public());
 
         // Save keypair to database
-        let keypair_bytes = keypair.to_protobuf_encoding()
+        let keypair_bytes = keypair
+            .to_protobuf_encoding()
             .map_err(|e| anyhow::anyhow!("Failed to encode keypair: {}", e))?;
         database.put_keypair(keys::PEER_KEYPAIR, &keypair_bytes)?;
 
@@ -473,7 +497,11 @@ impl NetworkLayer {
     }
 
     /// Broadcast a user registration to all other nodes in the P2P network
-    pub async fn broadcast_user_registration(&self, ethereum_address: &str, node_id: &str) -> Result<()> {
+    pub async fn broadcast_user_registration(
+        &self,
+        ethereum_address: &str,
+        node_id: &str,
+    ) -> Result<()> {
         let registration_msg = GossipsubMessage::UserRegistration {
             ethereum_address: ethereum_address.to_string(),
             timestamp: chrono::Utc::now().timestamp(),
@@ -492,7 +520,10 @@ impl NetworkLayer {
             .await
             .map_err(|e| anyhow::anyhow!("Failed to send user registration broadcast: {}", e))?;
 
-        info!("📡 Broadcasted user registration for {} from node {} to P2P network", ethereum_address, node_id);
+        info!(
+            "📡 Broadcasted user registration for {} from node {} to P2P network",
+            ethereum_address, node_id
+        );
         Ok(())
     }
 
@@ -504,19 +535,22 @@ impl NetworkLayer {
         peer_id: PeerId,
     ) -> Result<()> {
         info!("📦 [DB_SYNC] Starting database sync from peer {}", peer_id);
-        
+
         // Step 1: Request database metadata
         let request = RPCRequest::RequestDatabaseSync {
             requester_id: SerializablePeerId(self.local_peer_id),
         };
-        
+
         let request_id = swarm
             .behaviour_mut()
             .request_response
             .send_request(&peer_id, request);
-        
-        info!("📦 [DB_SYNC] Sent sync metadata request (ID: {:?})", request_id);
-        
+
+        info!(
+            "📦 [DB_SYNC] Sent sync metadata request (ID: {:?})",
+            request_id
+        );
+
         // Note: The actual response handling happens in the swarm event loop
         // We need to handle DatabaseSyncMetadata and DatabaseBatch responses there
         Ok(())
@@ -534,31 +568,29 @@ impl NetworkLayer {
             info!("📦 [DB_SYNC] Peer has no data to sync");
             return Ok(());
         }
-        
+
         // Initialize sync state
-        self.db_sync_state.start_sync(peer_id, total_entries, batch_size);
-        
+        self.db_sync_state
+            .start_sync(peer_id, total_entries, batch_size);
+
         let total_batches = (total_entries + batch_size - 1) / batch_size;
         info!(
             "📦 [DB_SYNC] Starting batch sync: {} entries in {} batches from peer {}",
             total_entries, total_batches, peer_id
         );
-        info!(
-            "📊 [DB_SYNC] Progress: 0/{} entries (0.00%)",
-            total_entries
-        );
-        
+        info!("📊 [DB_SYNC] Progress: 0/{} entries (0.00%)", total_entries);
+
         // Request first batch - subsequent batches will be requested after receiving responses
         let request = RPCRequest::RequestDatabaseBatch {
             batch_index: 0,
             batch_size,
         };
-        
+
         swarm
             .behaviour_mut()
             .request_response
             .send_request(&peer_id, request);
-        
+
         info!("📦 [DB_SYNC] Requested batch 0/{}", total_batches - 1);
         Ok(())
     }
@@ -574,24 +606,22 @@ impl NetworkLayer {
         batch_size: usize,
     ) -> Result<()> {
         let entries_count = entries.len();
-        
+
         info!(
             "📦 [DB_SYNC] Received batch {} with {} entries (last: {})",
             batch_index, entries_count, is_last_batch
         );
-        
+
         // Convert entries to tuple format
-        let db_entries: Vec<(Vec<u8>, Vec<u8>)> = entries
-            .into_iter()
-            .map(|e| (e.key, e.value))
-            .collect();
-        
+        let db_entries: Vec<(Vec<u8>, Vec<u8>)> =
+            entries.into_iter().map(|e| (e.key, e.value)).collect();
+
         // Import batch into database
         self.db.import_batch(db_entries)?;
-        
+
         // Update sync state
         self.db_sync_state.complete_batch(entries_count);
-        
+
         let progress = self.db_sync_state.progress_percentage();
         info!(
             "✅ [DB_SYNC] Successfully imported batch {} - Progress: {}/{} entries ({:.2}%)",
@@ -600,19 +630,19 @@ impl NetworkLayer {
             self.db_sync_state.total_entries,
             progress
         );
-        
+
         // Request next batch if not last
         if !is_last_batch {
             let request = RPCRequest::RequestDatabaseBatch {
                 batch_index: batch_index + 1,
                 batch_size,
             };
-            
+
             swarm
                 .behaviour_mut()
                 .request_response
                 .send_request(&peer_id, request);
-            
+
             info!(
                 "📦 [DB_SYNC] Requested batch {}/{} from peer {}",
                 batch_index + 1,
@@ -628,7 +658,7 @@ impl NetworkLayer {
                 self.db_sync_state.entries_synced, peer_id
             );
         }
-        
+
         Ok(())
     }
 
@@ -705,7 +735,7 @@ impl NetworkLayer {
 
         // Check if this is an existing node with DKG data - if so, subscribe to topics immediately
         self.subscribe_to_default_topics(&mut swarm)?;
-        
+
         info!("Starting Kademlia bootstrap...");
 
         // Node manager will determine if this is the first node
@@ -729,26 +759,22 @@ impl NetworkLayer {
         let mut dkg_status_timer = tokio::time::interval(Duration::from_secs(300));
         let mut peerlist_logger = tokio::time::interval(Duration::from_secs(300));
 
-
         swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
         swarm.listen_on("/ip4/0.0.0.0/udp/0/quic-v1".parse()?)?;
-
 
         let args: Vec<String> = env::args().collect();
         if args.len() >= 2 {
             // Parse all addresses from command line arguments
             let addresses: Vec<Multiaddr> = args[1..]
                 .iter()
-                .filter_map(|arg| {
-                    match arg.parse::<Multiaddr>() {
-                        Ok(addr) => {
-                            info!("Parsed address: {}", addr);
-                            Some(addr)
-                        }
-                        Err(e) => {
-                            error!("Failed to parse address '{}': {}", arg, e);
-                            None
-                        }
+                .filter_map(|arg| match arg.parse::<Multiaddr>() {
+                    Ok(addr) => {
+                        info!("Parsed address: {}", addr);
+                        Some(addr)
+                    }
+                    Err(e) => {
+                        error!("Failed to parse address '{}': {}", arg, e);
+                        None
                     }
                 })
                 .collect();
@@ -940,8 +966,7 @@ impl NetworkLayer {
     }
 
     fn is_bootstrap_node(&self, peer_id: &PeerId) -> bool {
-        let bootstrap_peer_ids: Vec<&'static str> = vec![
-        ];
+        let bootstrap_peer_ids: Vec<&'static str> = vec![];
 
         let peer_id_str = peer_id.to_string();
         bootstrap_peer_ids
@@ -1001,7 +1026,7 @@ impl NetworkLayer {
 
                 // Determine whether they dialed us (we're the listener) or we dialed them
                 let is_listener = matches!(endpoint, ConnectedPoint::Listener { .. });
-                let is_dialer   = matches!(endpoint, ConnectedPoint::Dialer   { .. });
+                let is_dialer = matches!(endpoint, ConnectedPoint::Dialer { .. });
 
                 // Check if we already know this peer
                 let already_known = self.node_manager.get_active_nodes().contains(&peer_id);
@@ -1016,11 +1041,14 @@ impl NetworkLayer {
                 swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
                 info!("➕ Added peer {} to gossipsub explicit peers", peer_id);
 
-                 // Retry database sync if needed and not already syncing
+                // Retry database sync if needed and not already syncing
                 if self.needs_database_sync && !self.db_sync_state.in_progress {
-                    info!("🔄 [DB_SYNC] Connection established, retrying database sync with peer: {}", peer_id);
+                    info!(
+                        "🔄 [DB_SYNC] Connection established, retrying database sync with peer: {}",
+                        peer_id
+                    );
                     self.needs_database_sync = false; // Clear flag
-                    
+
                     if let Err(e) = self.sync_database_from_peer(swarm, peer_id).await {
                         warn!("❌ [DB_SYNC] Failed to start database sync: {:?}", e);
                         // Set flag again to retry with next connection
@@ -1029,7 +1057,6 @@ impl NetworkLayer {
                         info!("✅ [DB_SYNC] Database sync retry initiated successfully");
                     }
                 }
-
 
                 if is_listener && !already_known {
                     info!("📡 New peer {} connected; announcing to mesh", peer_id);
@@ -1041,8 +1068,7 @@ impl NetworkLayer {
                         sequence: Some(1),
                         index: Some(tentative_index),
                     };
-                    let payload = serde_json::to_vec(&msg)
-                        .expect("serialize PeerDiscovered");
+                    let payload = serde_json::to_vec(&msg).expect("serialize PeerDiscovered");
                     match self.broadcast(MSG_TOPIC_PEER_DISCOVERY, &payload).await {
                         Ok(_) => {
                             info!(
@@ -1057,10 +1083,7 @@ impl NetworkLayer {
                             if let Err(retry_e) =
                                 self.broadcast(MSG_TOPIC_PEER_DISCOVERY, &payload).await
                             {
-                                warn!(
-                                    "❌ Retry failed to broadcast peer discovery: {:?}",
-                                    retry_e
-                                );
+                                warn!("❌ Retry failed to broadcast peer discovery: {:?}", retry_e);
                             }
                         }
                     }
@@ -1068,11 +1091,14 @@ impl NetworkLayer {
                     // Check if peer already exists in node manager
                     let current_nodes = self.node_manager.get_active_nodes();
                     if current_nodes.contains(&peer_id) {
-                        info!("ℹ️ Peer {} already exists in node manager, skipping", peer_id);
+                        info!(
+                            "ℹ️ Peer {} already exists in node manager, skipping",
+                            peer_id
+                        );
                     } else {
                         self.node_manager
-                                .add_node(peer_id)
-                                .map_err(|e| anyhow::anyhow!(e))?;
+                            .add_node(peer_id)
+                            .map_err(|e| anyhow::anyhow!(e))?;
 
                         // Update signing node threshold after adding peer
                         if let Some(signing_node) = &mut self.signing_node {
@@ -1081,7 +1107,6 @@ impl NetworkLayer {
                             info!("🔄 [THRESHOLD] Updated signing node threshold to {} after Kademlia peer addition", new_threshold);
                         }
                     }
-
 
                     let total = self.node_manager.get_total_nodes();
 
@@ -1099,39 +1124,40 @@ impl NetworkLayer {
                         info!("📡 [NEW_NODE] PeerDiscovery message was already broadcast above, gossipsub handler will process it");
                     } else if total == 4 {
                         // First time we have 4 nodes, start initial DKG
-                        info!(
-                            "🎯 Initial 4 nodes connected, triggering first DKG!",
-                        );
+                        info!("🎯 Initial 4 nodes connected, triggering first DKG!",);
 
                         let now_secs = SystemTime::now()
-                            .duration_since(UNIX_EPOCH).unwrap()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap()
                             .as_secs();
                         let start_time = now_secs + 10;
-                        info!("🕒 Scheduling initial DKG start at unix time {}", start_time);
+                        info!(
+                            "🕒 Scheduling initial DKG start at unix time {}",
+                            start_time
+                        );
 
                         for peer in self.node_manager.get_active_nodes() {
                             if peer != *self.get_local_peer_id() {
-                                swarm.behaviour_mut()
+                                swarm
+                                    .behaviour_mut()
                                     .request_response
-                                    .send_request(
-                                        &peer,
-                                        RPCRequest::ScheduleADKG { start_time },
-                                    );
+                                    .send_request(&peer, RPCRequest::ScheduleADKG { start_time });
                             }
                         }
-                        info!("📅 Scheduled initial DKG start for all peers at {}", start_time);
+                        info!(
+                            "📅 Scheduled initial DKG start for all peers at {}",
+                            start_time
+                        );
                         self.schedule_dkg_at(start_time);
                     } else if total < 4 {
-                        info!(
-                            "⏳ Waiting for initial 4 nodes: {}/4",
-                            total
-                        );
+                        info!("⏳ Waiting for initial 4 nodes: {}/4", total);
                     }
                 }
 
                 if is_dialer {
                     info!("🚀 Sending GetPeerList RPC to {}", peer_id);
-                    swarm.behaviour_mut()
+                    swarm
+                        .behaviour_mut()
                         .request_response
                         .send_request(&peer_id, RPCRequest::GetPeerList);
                     //receive the peer list with corrosponding index
@@ -1401,7 +1427,11 @@ impl NetworkLayer {
                             .request_response
                             .send_response(channel, response); // peer.send.ptp
                         if res.is_err() {
-                            warn!("❌ Failed to send response to peer {}: {:?}", peer, res.err());
+                            warn!(
+                                "❌ Failed to send response to peer {}: {:?}",
+                                peer,
+                                res.err()
+                            );
                         } else {
                             info!("📤 Sent RPC response to {}: {:?}", peer, res);
                         }
@@ -1417,14 +1447,15 @@ impl NetworkLayer {
                             RPCResponse::PeerList { peers, indices } => {
                                 info!("🔄 Merging peer‐set from {}: {:?}", peer, peers);
                                 info!("🔄 Received indices: {:?}", indices);
-                                
+
                                 // Clone peers list before consuming it
                                 let peers_clone = peers.clone();
-                                
+
                                 for (i, SerializablePeerId(p)) in peers.into_iter().enumerate() {
                                     // Add peer to node_manager if not already present
                                     if !self.node_manager.get_active_nodes().contains(&p) {
-                                        self.node_manager.add_node(p.clone())
+                                        self.node_manager
+                                            .add_node(p.clone())
                                             .map_err(|e| anyhow::anyhow!(e))?;
 
                                         // Update signing node threshold after adding peer
@@ -1434,14 +1465,18 @@ impl NetworkLayer {
                                             info!("🔄 [THRESHOLD] Updated signing node threshold to {} after peer list merge", new_threshold);
                                         }
                                     }
-                                    
+
                                     // 🔧 FIX: Update peer_indices mapping for ALL peers in the peer list
                                     // Priority: 1) Index from peer list, 2) Existing in peer_indices, 3) Load from database
-                                    let index_to_use = if let Some(idx) = indices.get(i).cloned().flatten() {
+                                    let index_to_use = if let Some(idx) =
+                                        indices.get(i).cloned().flatten()
+                                    {
                                         // Index provided in peer list - use it and persist to database
                                         info!("🔢 [PEER_LIST] Using index {} for peer {} from peer list", idx, p);
                                         Some(idx)
-                                    } else if let Some(existing_idx) = self.peer_indices.get(&p).cloned() {
+                                    } else if let Some(existing_idx) =
+                                        self.peer_indices.get(&p).cloned()
+                                    {
                                         // Already in peer_indices - keep it
                                         info!("🔢 [PEER_LIST] Using existing index {} for peer {} from peer_indices", existing_idx, p);
                                         Some(existing_idx)
@@ -1454,67 +1489,79 @@ impl NetworkLayer {
                                         warn!("⚠️  [PEER_LIST] No index found for peer {} (not in peer list, peer_indices, or database)", p);
                                         None
                                     };
-                                    
+
                                     // Update peer_indices and persist to database if we have an index
                                     if let Some(idx) = index_to_use {
                                         self.peer_indices.insert(p.clone(), idx);
                                         let key = key_utils::peer_index_key(&p.to_string());
-                                        if let Err(e) = self.db.put_string(&key, &idx) { 
-                                            warn!("❌ [PEER_LIST] Failed to persist peer index {} for peer {}: {:?}", idx, p, e); 
+                                        if let Err(e) = self.db.put_string(&key, &idx) {
+                                            warn!("❌ [PEER_LIST] Failed to persist peer index {} for peer {}: {:?}", idx, p, e);
                                         } else {
                                             info!("✅ [PEER_LIST] Updated and persisted index {} for peer {}", idx, p);
                                         }
                                     }
                                 }
-                                
-                                info!("📊 [PEER_LIST] Updated peer_indices mapping: {} entries", self.peer_indices.len());
-                                
+
+                                info!(
+                                    "📊 [PEER_LIST] Updated peer_indices mapping: {} entries",
+                                    self.peer_indices.len()
+                                );
+
                                 // After learning about all peers, check if this is a new node joining existing network
-                                let (should_sync, sync_peer_opt, new_node_index_opt, needs_retry) = if let Some(dkg_node) = &mut self.dkg_node {
-                                    let total = self.node_manager.get_total_nodes();
-                                    let threshold = self.node_manager.get_threshold();
-                                    
-                                    // Update DKG node parameters with current network size
-                                    dkg_node.update_node_params(total, threshold);
-                                    info!("🔄 [NEW_NODE] Updated DKG params: total_nodes={}, threshold={}", total, threshold);
-                                    
-                                    let has_dkg_data = dkg_node.get_final_secret_share().await.is_some();
-                                    info!("🔍 [NEW_NODE] Has DKG data: {}", has_dkg_data);
-                                    
-                                    // If this node has no DKG data and network has > 4 nodes, it's a new node joining
-                                    if !has_dkg_data && total > 4 {
-                                        info!("🆕 [NEW_NODE] Learned about {} total nodes, triggering database sync and share request", total);
-                                        
-                                        let connected_peers: Vec<PeerId> = swarm.connected_peers().cloned().collect();
-                                        info!("🔗 [NEW_NODE] Currently connected to {} peers: {:?}", connected_peers.len(), connected_peers);
-                                        
-                                        // Find first connected peer for sync (excluding ourselves)
-                                        let sync_peer = connected_peers.iter()
-                                            .find(|pid| **pid != self.local_peer_id)
-                                            .cloned();
-                                        
-                                        let should_proceed = if let Some(ref peer) = sync_peer {
-                                            info!("✅ [NEW_NODE] Selected connected peer for sync: {}", peer);
-                                            true
+                                let (should_sync, sync_peer_opt, new_node_index_opt, needs_retry) =
+                                    if let Some(dkg_node) = &mut self.dkg_node {
+                                        let total = self.node_manager.get_total_nodes();
+                                        let threshold = self.node_manager.get_threshold();
+
+                                        // Update DKG node parameters with current network size
+                                        dkg_node.update_node_params(total, threshold);
+                                        info!("🔄 [NEW_NODE] Updated DKG params: total_nodes={}, threshold={}", total, threshold);
+
+                                        let has_dkg_data =
+                                            dkg_node.get_final_secret_share().await.is_some();
+                                        info!("🔍 [NEW_NODE] Has DKG data: {}", has_dkg_data);
+
+                                        // If this node has no DKG data and network has > 4 nodes, it's a new node joining
+                                        if !has_dkg_data && total > 4 {
+                                            info!("🆕 [NEW_NODE] Learned about {} total nodes, triggering database sync and share request", total);
+
+                                            let connected_peers: Vec<PeerId> =
+                                                swarm.connected_peers().cloned().collect();
+                                            info!("🔗 [NEW_NODE] Currently connected to {} peers: {:?}", connected_peers.len(), connected_peers);
+
+                                            // Find first connected peer for sync (excluding ourselves)
+                                            let sync_peer = connected_peers
+                                                .iter()
+                                                .find(|pid| **pid != self.local_peer_id)
+                                                .cloned();
+
+                                            let should_proceed = if let Some(ref peer) = sync_peer {
+                                                info!("✅ [NEW_NODE] Selected connected peer for sync: {}", peer);
+                                                true
+                                            } else {
+                                                warn!("⚠️ [NEW_NODE] No connected peers available for database sync!");
+                                                warn!("⚠️ [NEW_NODE] Will retry database sync when a connection is established");
+                                                // Set flag to retry when connection is available
+                                                false
+                                            };
+
+                                            // CRITICAL: New node always gets index = total (e.g., 5th node gets index 5)
+                                            let new_node_index = total;
+                                            info!("🆕 [NEW_NODE] Assigned permanent index: {} (total_nodes = {})", new_node_index, total);
+
+                                            (
+                                                should_proceed,
+                                                sync_peer,
+                                                Some(new_node_index),
+                                                !should_proceed,
+                                            )
                                         } else {
-                                            warn!("⚠️ [NEW_NODE] No connected peers available for database sync!");
-                                            warn!("⚠️ [NEW_NODE] Will retry database sync when a connection is established");
-                                            // Set flag to retry when connection is available
-                                            false
-                                        };
-                                        
-                                        // CRITICAL: New node always gets index = total (e.g., 5th node gets index 5)
-                                        let new_node_index = total;
-                                        info!("🆕 [NEW_NODE] Assigned permanent index: {} (total_nodes = {})", new_node_index, total);
-                                        
-                                        (should_proceed, sync_peer, Some(new_node_index), !should_proceed)
+                                            (false, None, None, false)
+                                        }
                                     } else {
                                         (false, None, None, false)
-                                    }
-                                } else {
-                                    (false, None, None, false)
-                                };
-                                
+                                    };
+
                                 if needs_retry {
                                     self.needs_database_sync = true;
                                 }
@@ -1523,31 +1570,46 @@ impl NetworkLayer {
                                 if should_sync {
                                     // First, sync database from an existing peer
                                     if let Some(sync_peer) = sync_peer_opt {
-                                        info!("📦 [NEW_NODE] Initiating database sync from peer: {}", sync_peer);
-                                        
-                                        if let Err(e) = self.sync_database_from_peer(swarm, sync_peer).await {
-                                            warn!("❌ [NEW_NODE] Failed to start database sync: {:?}", e);
+                                        info!(
+                                            "📦 [NEW_NODE] Initiating database sync from peer: {}",
+                                            sync_peer
+                                        );
+
+                                        if let Err(e) =
+                                            self.sync_database_from_peer(swarm, sync_peer).await
+                                        {
+                                            warn!(
+                                                "❌ [NEW_NODE] Failed to start database sync: {:?}",
+                                                e
+                                            );
                                         } else {
                                             info!("✅ [NEW_NODE] Database sync initiated");
                                         }
                                     }
-                                    
+
                                     // Request DKG shares
-                                    if let (Some(dkg_node), Some(new_node_index)) = (&mut self.dkg_node, new_node_index_opt) {
-                                        if let Err(e) = dkg_node.request_shares_as_new_node(new_node_index).await {
-                                            warn!("❌ [NEW_NODE] Failed to request shares: {:?}", e);
+                                    if let (Some(dkg_node), Some(new_node_index)) =
+                                        (&mut self.dkg_node, new_node_index_opt)
+                                    {
+                                        if let Err(e) = dkg_node
+                                            .request_shares_as_new_node(new_node_index)
+                                            .await
+                                        {
+                                            warn!(
+                                                "❌ [NEW_NODE] Failed to request shares: {:?}",
+                                                e
+                                            );
                                         }
                                     }
                                 }
-                            },
+                            }
 
                             RPCResponse::GotAVSSShare {
                                 dealer_id: _,
                                 receiver_id: _,
                                 share: _group_key,
                                 commitments: _,
-                            } => {
-                            }
+                            } => {}
 
                             RPCResponse::DKGStarted { peer_id } => {
                                 info!("DKG has started by: {:?}", peer_id);
@@ -1557,24 +1619,30 @@ impl NetworkLayer {
                                 warn!("Received error from peer {}: {}", peer, err);
                             }
 
-                            RPCResponse::ShareAccepted => {
-                            }
-
+                            RPCResponse::ShareAccepted => {}
 
                             RPCResponse::CurrentVrfRoundResponse { current_round } => {
                                 if let Some(network_round) = current_round {
-                                    info!("🔄 Received current VRF round response: {} from peer {}", network_round, peer);
+                                    info!(
+                                        "🔄 Received current VRF round response: {} from peer {}",
+                                        network_round, peer
+                                    );
 
                                     // Simple VRF round sync for both signing nodes
                                     if let Some(signing_node) = &mut self.signing_node {
-                                        signing_node.sync_vrf_round_with_network(network_round).await;
+                                        signing_node
+                                            .sync_vrf_round_with_network(network_round)
+                                            .await;
                                     }
                                     if let Some(db_signing_node) = &mut self.db_signing_node {
                                         let mut node = db_signing_node.lock().await;
                                         node.sync_vrf_round_with_network(network_round).await;
                                     }
 
-                                    info!("✅ [NETWORK] VRF round synced to network round: {}", network_round);
+                                    info!(
+                                        "✅ [NETWORK] VRF round synced to network round: {}",
+                                        network_round
+                                    );
                                     // VRF sync successful, don't need to request again
                                 } else {
                                     info!("ℹ️ Peer {} doesn't have current VRF round yet", peer);
@@ -1589,13 +1657,16 @@ impl NetworkLayer {
                                     "📦 [DB_SYNC] Received sync metadata: {} entries, batch size {}",
                                     total_entries, recommended_batch_size
                                 );
-                                
-                                if let Err(e) = self.handle_database_sync_metadata(
-                                    swarm,
-                                    peer,
-                                    total_entries,
-                                    recommended_batch_size,
-                                ).await {
+
+                                if let Err(e) = self
+                                    .handle_database_sync_metadata(
+                                        swarm,
+                                        peer,
+                                        total_entries,
+                                        recommended_batch_size,
+                                    )
+                                    .await
+                                {
                                     error!("❌ [DB_SYNC] Failed to handle sync metadata: {}", e);
                                 }
                             }
@@ -1607,20 +1678,24 @@ impl NetworkLayer {
                             } => {
                                 info!(
                                     "📦 [DB_SYNC] Received batch {} with {} entries",
-                                    batch_index, entries.len()
+                                    batch_index,
+                                    entries.len()
                                 );
-                                
+
                                 // Use the recommended batch size from metadata (default 100)
                                 let batch_size = 100;
-                                
-                                if let Err(e) = self.handle_database_batch(
-                                    swarm,
-                                    peer,
-                                    batch_index,
-                                    entries,
-                                    is_last_batch,
-                                    batch_size,
-                                ).await {
+
+                                if let Err(e) = self
+                                    .handle_database_batch(
+                                        swarm,
+                                        peer,
+                                        batch_index,
+                                        entries,
+                                        is_last_batch,
+                                        batch_size,
+                                    )
+                                    .await
+                                {
                                     error!("❌ [DB_SYNC] Failed to handle batch: {}", e);
                                 }
                             }
@@ -1763,7 +1838,7 @@ impl NetworkLayer {
                         .iter()
                         .filter(|&pid| pid != self.get_local_peer_id())
                         .collect();
-                    
+
                     // Also check database for other peers
                     let mut other_peers_in_db = 0;
                     if let Ok(keys) = self.db.get_keys_with_prefix(keys::PEER_INDEX) {
@@ -1777,7 +1852,7 @@ impl NetworkLayer {
                             }
                         }
                     }
-                    
+
                     let has_other_peers =
                         !other_peers_in_manager.is_empty() || other_peers_in_db > 0;
                     if !has_other_peers {
@@ -1795,7 +1870,7 @@ impl NetworkLayer {
                         );
                         self.pending_peer_discovery_retry = false;
                     }
-                    
+
                     // Update peer_indices mapping for all active peers before logging
                     // This ensures peer_indices stays in sync with the database
                     info!("🔢 Active nodes: {:?}", active_nodes);
@@ -1812,7 +1887,8 @@ impl NetworkLayer {
                     let existing_peer_count = self.peer_indices.len();
                     info!("📊 Existing peers count: {}", existing_peer_count);
                     if existing_peer_count > 0 {
-                        let existing_peers: Vec<(String, usize)> = self.peer_indices
+                        let existing_peers: Vec<(String, usize)> = self
+                            .peer_indices
                             .iter()
                             .map(|(pid, idx)| (pid.to_string(), *idx))
                             .collect();
@@ -1898,43 +1974,82 @@ impl NetworkLayer {
                 // the msg bytes (check broadcast_shares() in dkg module)
                 if let Some(dkg_node) = &mut self.dkg_node {
                     // now we can unwrap the internal dkg wrap to get the DKG related things
-                    dkg_node.handle_message(dkg_msg,self.node_manager.clone()).await?;
+                    dkg_node
+                        .handle_message(dkg_msg, self.node_manager.clone())
+                        .await?;
                 }
             }
             GossipsubMessage::Signing(signing_msg) => {
-                info!("📥 [NETWORK] Received signing message on topic: {}", message.topic);
+                info!(
+                    "📥 [NETWORK] Received signing message on topic: {}",
+                    message.topic
+                );
                 info!("📋 [NETWORK] Signing message type: {:?}", signing_msg);
 
                 if let Some(signing_node) = &mut self.signing_node {
                     // 🛡️ Error recovery for signing message processing - prevent node crashes
-                    let signing_result = if message.topic.to_string() == "signatures-to-final-node" {
+                    let signing_result = if message.topic.to_string() == "signatures-to-final-node"
+                    {
                         info!("🎯 [NETWORK] Processing signature for final node topic");
                         match signing_msg {
-                            crate::signing::SigningMessage::ECDSASignature { from, signature, round, timestamp:_timestamp, user_eth_address } => {
+                            crate::signing::SigningMessage::ECDSASignature {
+                                from,
+                                signature,
+                                round,
+                                timestamp: _timestamp,
+                                user_eth_address,
+                            } => {
                                 info!("📤 [NETWORK] Routing ECDSA signature to final node handler from: {} for round: {} (user_eth_address: {:?})", from, round, user_eth_address);
-                                signing_node.handle_signature_to_final_node(from, signature, round).await
+                                signing_node
+                                    .handle_signature_to_final_node(from, signature, round)
+                                    .await
                             }
-                            crate::signing::SigningMessage::BtcSignaturesMessage { from, signatures, round, timestamp: _timestamp, user_eth_address } => {
+                            crate::signing::SigningMessage::BtcSignaturesMessage {
+                                from,
+                                signatures,
+                                round,
+                                timestamp: _timestamp,
+                                user_eth_address,
+                            } => {
                                 info!("📤 [NETWORK] Routing BTC signatures to final node handler from: {} for round: {} (user_eth_address: {:?})", from, round, user_eth_address);
                                 // You may want to implement a similar handler for BTC signatures in signing_node
                                 // For now, just call the generic handler
-                                signing_node.handle_btc_signatures_to_final_node(from, signatures, round).await
+                                signing_node
+                                    .handle_btc_signatures_to_final_node(from, signatures, round)
+                                    .await
                             }
                             _ => {
-                                info!("📤 [NETWORK] Routing other signing message to normal handler");
+                                info!(
+                                    "📤 [NETWORK] Routing other signing message to normal handler"
+                                );
                                 // Handle other signing messages normally
                                 signing_node.handle_message(signing_msg).await
                             }
                         }
                     } else {
-                        info!("📤 [NETWORK] Processing normal signing message on topic: {}", message.topic);
+                        info!(
+                            "📤 [NETWORK] Processing normal signing message on topic: {}",
+                            message.topic
+                        );
                         // Handle normal signing messages
                         match &signing_msg {
-                            crate::signing::SigningMessage::ECDSASignature { from, signature, round, timestamp:_timestamp, user_eth_address } => {
-                                let tx_type = if user_eth_address.is_some() { "user-to-network" } else { "network-to-target" };
+                            crate::signing::SigningMessage::ECDSASignature {
+                                from,
+                                signature,
+                                round,
+                                timestamp: _timestamp,
+                                user_eth_address,
+                            } => {
+                                let tx_type = if user_eth_address.is_some() {
+                                    "user-to-network"
+                                } else {
+                                    "network-to-target"
+                                };
                                 info!("📥 [NETWORK] Received {} ECDSA signature from {} for round {} on topic {} (user_eth_address: {:?})", tx_type, from, round, message.topic, user_eth_address);
-                                info!("🔍 [NETWORK] Signature details - signer_id: {}",
-                                      signature.signer_id);
+                                info!(
+                                    "🔍 [NETWORK] Signature details - signer_id: {}",
+                                    signature.signer_id
+                                );
                             }
                             _ => {
                                 info!("📥 [NETWORK] Received other signing message type");
@@ -1960,11 +2075,16 @@ impl NetworkLayer {
                 }
             }
             GossipsubMessage::Consensus(consensus_msg) => {
-                info!("📥 [CONSENSUS] Received consensus message: {:?}", consensus_msg);
+                info!(
+                    "📥 [CONSENSUS] Received consensus message: {:?}",
+                    consensus_msg
+                );
 
                 // Handle consensus message in signing node
                 if let Some(signing_node) = &mut self.signing_node {
-                    signing_node.handle_consensus_message(consensus_msg.clone()).await?;
+                    signing_node
+                        .handle_consensus_message(consensus_msg.clone())
+                        .await?;
                 }
 
                 // Also handle in standalone consensus node if available
@@ -1990,57 +2110,23 @@ impl NetworkLayer {
                 }
             }
             GossipsubMessage::VrfSelectedNodes(broadcast_msg) => {
-                info!("📥 [VRF] Received VRF selected nodes broadcast: {:?}", broadcast_msg);
+                info!(
+                    "📥 [VRF] Received VRF selected nodes broadcast: {:?}",
+                    broadcast_msg
+                );
 
                 // Store the received VRF selection in the signing node's VRF selector
                 if let Some(signing_node) = &mut self.signing_node {
                     let selector_node_id = broadcast_msg.selector_node_id.clone();
                     let round = broadcast_msg.round;
-                    signing_node.handle_vrf_selected_nodes_broadcast(self.node_manager.get_total_nodes(), broadcast_msg);
+                    signing_node.handle_vrf_selected_nodes_broadcast(
+                        self.node_manager.get_total_nodes(),
+                        broadcast_msg,
+                    );
                     info!(
                         "💾 [VRF] Stored VRF selected nodes from node {} for round {}",
                         selector_node_id.0, round
                     );
-                }
-            }
-            GossipsubMessage::Transaction(transaction) => {
-                info!("📝 Received transaction via gossipsub: {:?}", transaction);
-                // Here you can add transaction processing logic
-                // For example, validate the transaction, add to mempool, etc.
-                if let Some(signing_node) = &mut self.signing_node {
-                    // Set available nodes from node manager before signing
-                    let available_nodes: Vec<PeerId> = self.node_manager.get_active_nodes().into_iter().collect();
-                    info!("🔢 [NETWORK-DEBUG] Available nodes count: {}", available_nodes.len());
-                    info!("🔢 [NETWORK-DEBUG] Available nodes: {:?}", available_nodes);
-                    signing_node.set_available_nodes(available_nodes);
-
-                    // Generate BLS key pair if not already done
-                    if let Some(dkg_node) = &self.dkg_node {
-                        if let Some(secret_share) = dkg_node.get_final_secret_share().await {
-                            info!("🔐 [NETWORK] Got secret share from DKG");
-                            info!("🔐 [NETWORK-DEBUG] Secret share (hex): 0x{}", hex::encode(secret_share.to_bytes()));
-                            signing_node.set_private_key_from_scalar(secret_share);
-
-                            // ✅ Also set the DKG group public key
-                            if let Some(group_key) = dkg_node.get_final_public_key().await {
-                                signing_node.set_group_public_key(group_key);
-                                info!("🔑 [NETWORK] Set DKG group public key for signing node");
-                            }
-                        } else {
-                            info!("⏳ [NETWORK] DKG not completed yet, no secret share available");
-                            return Ok(());
-                        }
-                    } else {
-                        info!("❌ [NETWORK] DKG node not available");
-                        return Ok(());
-                    }
-                    info!("transaction: {:?}", transaction);
-                    info!("transaction.nonce: {:?}", transaction.nonce);
-                    // Convert transaction to bytes for signing using RLP encoding
-                    let tx_bytes = crate::utils::transaction::create_transaction_for_signing(&transaction);
-                    debug!("→ RLP payload: 0x{}", hex::encode(&tx_bytes));
-
-                    signing_node.sign_message(tx_bytes, &transaction, None, None, None, None).await?;
                 }
             }
             GossipsubMessage::DKGCommand(dkg_cmd) => {
@@ -2061,8 +2147,15 @@ impl NetworkLayer {
                     }
                 }
             }
-            GossipsubMessage::UserRegistration { ethereum_address, timestamp, node_id } => {
-                info!("👤 Received user registration via gossipsub: {} from node {} at {}", ethereum_address, node_id, timestamp);
+            GossipsubMessage::UserRegistration {
+                ethereum_address,
+                timestamp,
+                node_id,
+            } => {
+                info!(
+                    "👤 Received user registration via gossipsub: {} from node {} at {}",
+                    ethereum_address, node_id, timestamp
+                );
 
                 // Process user registration locally (same pattern as deposit intent)
                 if let Some(user_registry) = &mut self.user_registry {
@@ -2074,9 +2167,15 @@ impl NetworkLayer {
                     };
 
                     // Register the user locally
-                    match user_registry.register_user(&ethereum_address, dkg_secret_share.as_ref(), &node_id).await {
+                    match user_registry
+                        .register_user(&ethereum_address, dkg_secret_share.as_ref(), &node_id)
+                        .await
+                    {
                         Ok(registration) => {
-                            info!("✅ [GOSSIPSUB] Successfully registered user {} locally", ethereum_address);
+                            info!(
+                                "✅ [GOSSIPSUB] Successfully registered user {} locally",
+                                ethereum_address
+                            );
 
                             // Log tweaked secret share status
                             if registration.tweaked_secret_share.is_some() {
@@ -2087,166 +2186,289 @@ impl NetworkLayer {
 
                             // Deterministically compute HMAC tweak and update commitments locally (primary path)
                             if let Some(dkg_node) = &self.dkg_node {
-                                if let Some(tweak_scalar) = k256::Scalar::from_repr_vartime(registration.hmac_constant.into()) {
-                                        match dkg_node.derive_user_specific_group_key_from_commitments(tweak_scalar).await {
-                                            Ok(group_key) => {
-                                                if let Err(e) = user_registry.set_user_group_key(&ethereum_address, group_key).await {
-                                                    warn!("❌ [GOSSIPSUB] Failed to store user group key for {}: {}", ethereum_address, e);
-                                                } else {
-                                                    info!("🔑 [GOSSIPSUB] Stored user-specific group key and derived addresses for {}", ethereum_address);
-                                                    // Log the derived addresses
-                                                    if let Some(user) = user_registry.get_user_by_address(&ethereum_address).await {
-                                if user.derived_eth_address.is_some() {
-                                    info!("📬 [GOSSIPSUB] Derived ETH address stored for {}", ethereum_address);
-                                }
-                                if user.derived_btc_address.is_some() {
-                                    info!("📬 [GOSSIPSUB] Derived BTC address stored for {}", ethereum_address);
-                                }
+                                if let Some(tweak_scalar) = k256::Scalar::from_repr_vartime(
+                                    registration.hmac_constant.into(),
+                                ) {
+                                    match dkg_node
+                                        .derive_user_specific_group_key_from_commitments(
+                                            tweak_scalar,
+                                        )
+                                        .await
+                                    {
+                                        Ok(group_key) => {
+                                            if let Err(e) = user_registry
+                                                .set_user_group_key(&ethereum_address, group_key)
+                                                .await
+                                            {
+                                                warn!("❌ [GOSSIPSUB] Failed to store user group key for {}: {}", ethereum_address, e);
+                                            } else {
+                                                info!("🔑 [GOSSIPSUB] Stored user-specific group key and derived addresses for {}", ethereum_address);
+                                                // Log the derived addresses
+                                                if let Some(user) = user_registry
+                                                    .get_user_by_address(&ethereum_address)
+                                                    .await
+                                                {
+                                                    if user.derived_eth_address.is_some() {
+                                                        info!("📬 [GOSSIPSUB] Derived ETH address stored for {}", ethereum_address);
+                                                    }
+                                                    if user.derived_btc_address.is_some() {
+                                                        info!("📬 [GOSSIPSUB] Derived BTC address stored for {}", ethereum_address);
                                                     }
                                                 }
                                             }
-                                            Err(e) => {
-                                                warn!("❌ [GOSSIPSUB] Failed to derive user-specific group key for {}: {}", ethereum_address, e);
-                                            }
+                                        }
+                                        Err(e) => {
+                                            warn!("❌ [GOSSIPSUB] Failed to derive user-specific group key for {}: {}", ethereum_address, e);
                                         }
                                     }
-                                } else {
-                                    warn!("❌ [GOSSIPSUB] Invalid HMAC tweak scalar for {}", ethereum_address);
                                 }
+                            } else {
+                                warn!(
+                                    "❌ [GOSSIPSUB] Invalid HMAC tweak scalar for {}",
+                                    ethereum_address
+                                );
+                            }
                         }
                         Err(e) => {
-                            warn!("❌ [GOSSIPSUB] Failed to register user {} locally: {}", ethereum_address, e);
+                            warn!(
+                                "❌ [GOSSIPSUB] Failed to register user {} locally: {}",
+                                ethereum_address, e
+                            );
                         }
                     }
                 } else {
                     warn!("❌ [GOSSIPSUB] User registry not available to handle user registration");
                 }
             }
-            GossipsubMessage::TransactionIdBroadcast { intent_hash, transaction_id, transaction_type, node_id } => {
-                info!("📡 [NETWORK] Received transaction ID broadcast from node {}", node_id);
-                info!("🔗 [NETWORK] Intent hash: {}", intent_hash);
+            GossipsubMessage::TransactionIdBroadcast {
+                intent_hash,
+                transaction_id,
+                transaction_type,
+                solver_address,
+                node_id,
+            } => {
+                info!(
+                    "📡 [NETWORK] Received transaction ID broadcast from node {}",
+                    node_id
+                );
                 info!("💳 [NETWORK] Transaction ID: {}", transaction_id);
                 info!("🔄 [NETWORK] Transaction type: {}", transaction_type);
+                if let Some(hash) = &intent_hash {
+                    info!("🔗 [NETWORK] Intent hash: {}", hash);
+                } else if let Some(solver) = &solver_address {
+                    info!("🧩 [NETWORK] Solver address: {}", solver);
+                } else {
+                    info!("ℹ️ [NETWORK] No intent hash or solver address supplied with transaction ID broadcast");
+                }
 
-                // Store the transaction ID in our local user registry
                 if let Some(user_registry) = &self.user_registry {
-                    let storage_result = match transaction_type.as_str() {
-                        "user_to_vault" => {
-                            // Also update solver amounts for user_to_vault using signing node, if available
-                            if let Some(signing_node) = &self.signing_node {
-                                if let Err(e) = signing_node.update_solver_amounts_for_user_to_vault(&intent_hash).await {
-                                    warn!("⚠️ [SIGNING] Failed to update solver amounts for UserToVault transaction: {}", e);
-                                } else {
-                                    // Calculate rewards after successfully updating solver amounts
-                                    if let Err(e) = signing_node.calculate_reward_per_solver(&intent_hash).await {
-                                        warn!("⚠️ [SIGNING] Failed to calculate rewards for UserToVault transaction: {}", e);
-                                    } else {
-                                        info!("✅ [SIGNING] Successfully calculated rewards for UserToVault transaction: {}", intent_hash);
-                                    }
-                                }
-                            }
-                            user_registry
-                                .store_user_to_vault_tx_id(
-                                    &intent_hash,
-                                    &transaction_id,
-                                    Some(&node_id),
-                                )
-                                .await
-                        },
-                        "network_to_target" => {
-                            user_registry
-                                .store_network_to_target_tx_id(
-                                    &intent_hash,
-                                    &transaction_id,
-                                    Some(&node_id),
-                                ).await
-                        },
-                        "vault_to_network" => {
-                            user_registry
-                                .store_vault_to_network_tx_id(
-                                    &intent_hash,
-                                    &transaction_id,
-                                    Some(&node_id),
-                                )
-                                .await
-                        },
-                        _ => {
-                            warn!("❌ [NETWORK] Unknown transaction type: {}", transaction_type);
-                            return Ok(());
-                        }
-                    };
-
-                    match storage_result {
-                        Ok(()) => {
-                            if let Err(e) = user_registry
-                                .store_transaction_status(&transaction_id, TransactionStatus::Pending)
-                                .await
-                            {
-                                error!(
-                                    "❌ [NETWORK] Failed to store transaction status for broadcast tx {}: {}",
-                                    transaction_id, e
-                                );
-                            }
-                            info!(
-                                "✅ [NETWORK] Successfully synchronized transaction ID {} for intent {} (type: {})",
-                                transaction_id, intent_hash, transaction_type
-                            );
-
-                            // Execute contract call when transaction ID is received
-                            if let Some(user_registry) = &self.user_registry {
-                                if let Some(intent) = user_registry.get_intent(&intent_hash).await {
-                                    // Convert transaction type string to enum
-                                    let tx_type_enum = match transaction_type.as_str() {
-                                        "user_to_vault" => crate::types::TransactionType::UserToVault,
-                                        "network_to_target" => crate::types::TransactionType::NetworkToTarget,
-                                        "vault_to_network" => crate::types::TransactionType::VaultToNetwork,
-                                        _ => {
-                                            warn!("❌ [CONTRACT] Unknown transaction type for contract call: {}", transaction_type);
-                                            return Ok(());
-                                        }
-                                    };
-
-                                    // Get vault group key
-                                    let vault_group_key = if let Some(dkg_node) = &self.dkg_node {
-                                        dkg_node.get_vault_group_key().await
-                                    } else {
-                                        None
-                                    };
-
-                                    if let Some(vault_group_key) = vault_group_key {
-                                        // Use transaction_id as tx_hash for contract call
-                                        // let tx_hash_bytes = transaction_id.clone();
-                                        // Execute contract call
-                                        if let Err(e) = self.execute_contract_call_for_transaction(
-                                            &intent,
-                                            &intent_hash,
-                                            tx_type_enum,
-                                            &transaction_id,
-                                            Some(vault_group_key),
-                                            intent.amount,
-                                        ).await {
-                                            warn!("❌ [CONTRACT] Failed to execute contract call for transaction ID {}: {}", transaction_id, e);
+                    match (intent_hash.as_ref(), solver_address.as_ref()) {
+                        (Some(intent_hash), _) => {
+                            let storage_result = match transaction_type.as_str() {
+                                "user_to_vault" => {
+                                    if let Some(signing_node) = &self.signing_node {
+                                        if let Err(e) = signing_node
+                                            .update_solver_amounts_for_user_to_vault(
+                                                intent_hash.as_str(),
+                                            )
+                                            .await
+                                        {
+                                            warn!("⚠️ [SIGNING] Failed to update solver amounts for UserToVault transaction: {}", e);
+                                        } else if let Err(e) = signing_node
+                                            .calculate_reward_per_solver(intent_hash.as_str())
+                                            .await
+                                        {
+                                            warn!("⚠️ [SIGNING] Failed to calculate rewards for UserToVault transaction: {}", e);
                                         } else {
-                                            info!("✅ [CONTRACT] Successfully executed contract call for transaction ID {}", transaction_id);
+                                            info!(
+                                                "✅ [SIGNING] Successfully calculated rewards for UserToVault transaction: {}",
+                                                intent_hash
+                                            );
                                         }
-                                    } else {
-                                        warn!("❌ [CONTRACT] No vault group key available for contract call execution");
                                     }
-                                } else {
-                                    warn!("❌ [CONTRACT] Could not retrieve intent {} for contract call execution", intent_hash);
+                                    user_registry
+                                        .store_user_to_vault_tx_id(
+                                            intent_hash,
+                                            transaction_id.as_str(),
+                                            Some(&node_id),
+                                        )
+                                        .await
+                                }
+                                "network_to_target" => {
+                                    user_registry
+                                        .store_network_to_target_tx_id(
+                                            intent_hash,
+                                            transaction_id.as_str(),
+                                            Some(&node_id),
+                                        )
+                                        .await
+                                }
+                                "vault_to_network" => {
+                                    user_registry
+                                        .store_vault_to_network_tx_id(
+                                            intent_hash,
+                                            transaction_id.as_str(),
+                                            Some(&node_id),
+                                        )
+                                        .await
+                                }
+                                _ => {
+                                    warn!(
+                                        "❌ [NETWORK] Unknown transaction type: {}",
+                                        transaction_type
+                                    );
+                                    return Ok(());
+                                }
+                            };
+
+                            match storage_result {
+                                Ok(()) => {
+                                    if let Err(e) = user_registry
+                                        .store_transaction_status(
+                                            &transaction_id,
+                                            TransactionStatus::Pending,
+                                        )
+                                        .await
+                                    {
+                                        error!(
+                                            "❌ [NETWORK] Failed to store transaction status for broadcast tx {}: {}",
+                                            transaction_id, e
+                                        );
+                                    }
+                                    info!(
+                                        "✅ [NETWORK] Successfully synchronized transaction ID {} for intent {} (type: {})",
+                                        transaction_id, intent_hash, transaction_type
+                                    );
+
+                                    if let Some(user_registry) = &self.user_registry {
+                                        if let Some(intent) =
+                                            user_registry.get_intent(intent_hash).await
+                                        {
+                                            let tx_type_enum = match transaction_type.as_str() {
+                                                "user_to_vault" => {
+                                                    crate::types::TransactionType::UserToVault
+                                                }
+                                                "network_to_target" => {
+                                                    crate::types::TransactionType::NetworkToTarget
+                                                }
+                                                "vault_to_network" => {
+                                                    crate::types::TransactionType::VaultToNetwork
+                                                }
+                                                _ => {
+                                                    warn!("❌ [CONTRACT] Unknown transaction type for contract call: {}", transaction_type);
+                                                    return Ok(());
+                                                }
+                                            };
+
+                                            let vault_group_key =
+                                                if let Some(dkg_node) = &self.dkg_node {
+                                                    dkg_node.get_vault_group_key().await
+                                                } else {
+                                                    None
+                                                };
+
+                                            if let Some(vault_group_key) = vault_group_key {
+                                                if let Err(e) = self
+                                                    .execute_contract_call_for_transaction(
+                                                        &intent,
+                                                        intent_hash,
+                                                        tx_type_enum,
+                                                        &transaction_id,
+                                                        Some(vault_group_key),
+                                                        intent.amount,
+                                                    )
+                                                    .await
+                                                {
+                                                    warn!(
+                                                        "❌ [CONTRACT] Failed to execute contract call for transaction ID {}: {}",
+                                                        transaction_id, e
+                                                    );
+                                                } else {
+                                                    info!(
+                                                        "✅ [CONTRACT] Successfully executed contract call for transaction ID {}",
+                                                        transaction_id
+                                                    );
+                                                }
+                                            } else {
+                                                warn!("❌ [CONTRACT] No vault group key available for contract call execution");
+                                            }
+                                        } else {
+                                            warn!(
+                                                "❌ [CONTRACT] Could not retrieve intent {} for contract call execution",
+                                                intent_hash
+                                            );
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    error!("❌ [NETWORK] Failed to store synchronized transaction ID: {}", e);
                                 }
                             }
-                        },
-                        Err(e) => {
-                            error!("❌ [NETWORK] Failed to store synchronized transaction ID: {}", e);
+                        }
+                        (None, Some(solver_addr)) => {
+                            let storage_result = match transaction_type.as_str() {
+                                "tics_reward" => user_registry
+                                    .add_solver_tics_txn_hash(solver_addr, transaction_id.clone())
+                                    .await
+                                    .map_err(|e| e.to_string()),
+                                "btc_reward" => user_registry
+                                    .add_solver_btc_txn_hash(solver_addr, transaction_id.clone())
+                                    .await
+                                    .map_err(|e| e.to_string()),
+                                _ => {
+                                    warn!(
+                                        "❌ [NETWORK] Unknown reward transaction type: {}",
+                                        transaction_type
+                                    );
+                                    return Ok(());
+                                }
+                            };
+
+                            match storage_result {
+                                Ok(()) => {
+                                    if let Err(e) = user_registry
+                                        .store_transaction_status(
+                                            &transaction_id,
+                                            TransactionStatus::Pending,
+                                        )
+                                        .await
+                                    {
+                                        error!(
+                                            "❌ [NETWORK] Failed to store transaction status for reward tx {}: {}",
+                                            transaction_id, e
+                                        );
+                                    }
+                                    info!(
+                                        "✅ [NETWORK] Successfully synchronized reward transaction ID {} for solver {} (type: {})",
+                                        transaction_id, solver_addr, transaction_type
+                                    );
+                                }
+                                Err(e) => {
+                                    error!(
+                                        "❌ [NETWORK] Failed to store synchronized reward transaction ID for solver {}: {}",
+                                        solver_addr, e
+                                    );
+                                }
+                            }
+                        }
+                        _ => {
+                            warn!("⚠️ [NETWORK] Transaction ID broadcast missing both intent hash and solver address");
                         }
                     }
                 } else {
                     warn!("❌ [NETWORK] No user registry available to store synchronized transaction ID");
                 }
             }
-            GossipsubMessage::TransactionErrorBroadcast { intent_hash, error_message, transaction_type, node_id } => {
-                info!("📡 [NETWORK] Received transaction error broadcast from node {}", node_id);
+            GossipsubMessage::TransactionErrorBroadcast {
+                intent_hash,
+                error_message,
+                transaction_type,
+                node_id,
+            } => {
+                info!(
+                    "📡 [NETWORK] Received transaction error broadcast from node {}",
+                    node_id
+                );
                 info!("🔗 [NETWORK] Intent hash: {}", intent_hash);
                 info!("💥 [NETWORK] Error message: {}", error_message);
                 info!("🔄 [NETWORK] Transaction type: {}", transaction_type);
@@ -2254,116 +2476,49 @@ impl NetworkLayer {
                 // Store the error message in our local user registry
                 if let Some(user_registry) = &self.user_registry {
                     match user_registry
-                        .store_transaction_error(
-                            &intent_hash,
-                            &error_message,
-                            Some(&node_id),
-                        )
+                        .store_transaction_error(&intent_hash, &error_message, Some(&node_id))
                         .await
                     {
                         Ok(()) => {
                             info!("✅ [NETWORK] Successfully synchronized transaction error for intent {}: {}", intent_hash, error_message);
-                        },
+                        }
                         Err(e) => {
-                            error!("❌ [NETWORK] Failed to store synchronized transaction error: {}", e);
+                            error!(
+                                "❌ [NETWORK] Failed to store synchronized transaction error: {}",
+                                e
+                            );
                         }
                     }
                 } else {
                     warn!("❌ [NETWORK] No user registry available to store synchronized transaction error");
                 }
             }
-            GossipsubMessage::IntentHashBroadcast { intent_hash, node_id } => {
+            GossipsubMessage::IntentHashBroadcast {
+                intent_hash,
+                node_id,
+            } => {
                 info!(
                     "📨 [GOSSIPSUB] Received intent hash broadcast {} from node {}",
                     intent_hash, node_id
                 );
             }
-            GossipsubMessage::SolverReward { solver_address, reward } => {
-                info!("💰 [REWARD] Received solver reward for {}: {}", solver_address, reward);
-                // Create dummy transaction paying the solver
-                // Fetch chain_id on the basis of tics (assuming tics is the chain name or identifier)
-                let chain_to_use = "qubetics"; // Replace this with the actual tics variable if available
-                let chain_id = crate::utils::transaction::get_chain_id_from_name(chain_to_use)
-                    .ok_or_else(|| anyhow::anyhow!("Unknown EVM chain: {}", chain_to_use))?;
-
-                // You may need to determine from_address based on your logic, e.g. from DKG node/group key
-                let from_address = if let Some(dkg_node) = &self.dkg_node {
-                    if let Some(group_key) = dkg_node.get_final_public_key().await {
-                        crate::utils::get_eth_address_from_group_key(group_key)
-                    } else {
-                        "".to_string()
-                    }
-                } else {
-                    "".to_string()
-                };
-
-                // Use fetch_ethereum_nonce from transaction utils
-                let nonce = crate::utils::transaction::fetch_ethereum_nonce(&from_address, chain_id).await?;
-
-                let ethereum_tx = EthereumTransaction {
-                    to: solver_address.clone(),
-                    value: format!("0x{:x}", reward),
-                    gas_limit: 300000,
-                    gas_price: get_default_gas_price_for_chain(chain_to_use),
-                    nonce,
-                    data: None,
-                    chain_id,
-                };
-
-                if let Some(dkg_node) = &self.dkg_node {
-                    if let Some(group_key) = dkg_node.get_final_public_key().await {
-                        let from_addr = crate::utils::get_eth_address_from_group_key(group_key);
-                        info!(
-                            "🧾 [NETWORK] Created solver reward tx from {} to {} amount {}",
-                            from_addr, solver_address, reward
-                        );
-                    }
-                }
-
-                // Create DummyTransaction from EthereumTransaction
-                let dummy_tx = crate::rpc_server::DummyTransaction {
-                    to: ethereum_tx.to.clone(),
-                    value: ethereum_tx.value.clone(),
-                    nonce: ethereum_tx.nonce,
-                    gas_limit: ethereum_tx.gas_limit,
-                    gas_price: ethereum_tx.gas_price.clone(),
-                    chain_id: ethereum_tx.chain_id,
-                };
-                let tx_bytes = crate::utils::transaction::create_transaction_for_signing(&dummy_tx);
-
-                // Sign the solver reward transaction
-                if let Some(signing_node) = &mut self.signing_node {
-                    // Set available nodes from node manager before signing
-                    let available_nodes: Vec<PeerId> = self.node_manager.get_active_nodes().into_iter().collect();
-                    signing_node.set_available_nodes(available_nodes);
-
-                    if let Some(dkg_node) = &self.dkg_node {
-                        if let Some(secret_share) = dkg_node.get_final_secret_share().await {
-                            info!("🔐 [REWARD] Got secret share from DKG: {:?}", secret_share);
-                            signing_node.set_private_key_from_scalar(secret_share);
-                            info!("🔐 [REWARD] Starting solver reward signing process: 0x{}", hex::encode(tx_bytes.clone()));
-                            signing_node.sign_message(tx_bytes, &dummy_tx, Some(secret_share), None, None, None).await?;
-                            info!("✅ [REWARD] Solver reward signing completed");
-                        } else {
-                            info!("⏳ [REWARD] DKG not completed yet, no secret share available");
-                            return Ok(());
-                        }
-                    } else {
-                        info!("❌ [REWARD] DKG node not available");
-                        return Ok(());
-                    }
-
-                } else {
-                    warn!("❌ [REWARD] Signing node not available for solver reward");
-                }
-            }
-            GossipsubMessage::IntentHash { intent_hash, signer, intent } => {
-                info!("📝 [GOSSIPSUB] Received intent hash {} from {}", intent_hash, signer);
+            GossipsubMessage::IntentHash {
+                intent_hash,
+                signer,
+                intent,
+            } => {
+                info!(
+                    "📝 [GOSSIPSUB] Received intent hash {} from {}",
+                    intent_hash, signer
+                );
 
                 if let Some(user_registry) = &self.user_registry {
                     match hex::decode(&intent_hash) {
                         Ok(bytes) => {
-                            if let Err(e) = user_registry.store_intent_hash(bytes, &signer, &intent).await {
+                            if let Err(e) = user_registry
+                                .store_intent_hash(bytes, &signer, &intent)
+                                .await
+                            {
                                 warn!("❌ [GOSSIPSUB] Failed to store intent hash: {}", e);
                             } else {
                                 info!("✅ [GOSSIPSUB] Stored intent hash from {}", signer);
@@ -2377,7 +2532,13 @@ impl NetworkLayer {
                     warn!("❌ [GOSSIPSUB] No user registry available to store intent hash");
                 }
             }
-            GossipsubMessage::DepositIntent { intent, intent_id, user_eth_address, transaction_type, amount } => {
+            GossipsubMessage::DepositIntent {
+                intent,
+                intent_id,
+                user_eth_address,
+                transaction_type,
+                amount,
+            } => {
                 info!("📝 [GOSSIPSUB] Processing deposit intent received via gossipsub: {:?} (ID: {})", intent, intent_id);
 
                 // Calculate intent hash for transaction ID storage
@@ -2389,9 +2550,15 @@ impl NetworkLayer {
                 // - NetworkToTarget: use target_chain (network is withdrawing TO this chain)
                 // - VaultToNetwork: use source_chain (vault is sending back to network on source chain)
                 let chain_to_use = match transaction_type {
-                    crate::types::TransactionType::UserToVault => &intent.source_chain.to_lowercase(),
-                    crate::types::TransactionType::NetworkToTarget => &intent.target_chain.to_lowercase(),
-                    crate::types::TransactionType::VaultToNetwork => &intent.source_chain.to_lowercase(),
+                    crate::types::TransactionType::UserToVault => {
+                        &intent.source_chain.to_lowercase()
+                    }
+                    crate::types::TransactionType::NetworkToTarget => {
+                        &intent.target_chain.to_lowercase()
+                    }
+                    crate::types::TransactionType::VaultToNetwork => {
+                        &intent.source_chain.to_lowercase()
+                    }
                 };
                 info!("🔗 [GOSSIPSUB] Processing deposit intent for chain: {} (transaction_type: {:?})",
                       chain_to_use, transaction_type);
@@ -2400,7 +2567,8 @@ impl NetworkLayer {
                 let signing_key: Option<k256::Scalar> = match transaction_type {
                     crate::types::TransactionType::UserToVault => {
                         // For user deposits, use user's tweaked secret share
-                        self.get_signing_key_for_user(user_eth_address.as_ref()).await
+                        self.get_signing_key_for_user(user_eth_address.as_ref())
+                            .await
                     }
                     crate::types::TransactionType::NetworkToTarget => {
                         // For network withdrawals, use network's DKG secret share
@@ -2423,13 +2591,24 @@ impl NetworkLayer {
                 if let Some(signing_node) = &mut self.signing_node {
                     // Set appropriate chain handler based on the determined chain
                     if crate::utils::transaction::is_evm_chain(chain_to_use) {
-                        if let Some(chain_id) = crate::utils::transaction::get_chain_id_from_name(chain_to_use) {
-                            let chain_handler = crate::chain::ChainHandlerFactory::create_ethereum_handler(chain_id);
+                        if let Some(chain_id) =
+                            crate::utils::transaction::get_chain_id_from_name(chain_to_use)
+                        {
+                            let chain_handler =
+                                crate::chain::ChainHandlerFactory::create_ethereum_handler(
+                                    chain_id,
+                                );
                             signing_node.set_chain_handler(chain_handler.into());
-                            info!("🔗 [GOSSIPSUB] Set Ethereum chain handler for chain: {} (ID: {})", chain_to_use, chain_id);
+                            info!(
+                                "🔗 [GOSSIPSUB] Set Ethereum chain handler for chain: {} (ID: {})",
+                                chain_to_use, chain_id
+                            );
                         }
                     } else if chain_to_use == "bitcoin" || chain_to_use == "btc" {
-                        let mut chain_handler = crate::chain::ChainHandlerFactory::create_bitcoin_handler("testnet".to_string());
+                        let mut chain_handler =
+                            crate::chain::ChainHandlerFactory::create_bitcoin_handler(
+                                "testnet".to_string(),
+                            );
 
                         // Set appropriate group public key in Bitcoin chain handler based on transaction type
                         match transaction_type {
@@ -2437,11 +2616,15 @@ impl NetworkLayer {
                                 // For user deposits, use user's specific group key
                                 if let Some(eth_addr) = &user_eth_address {
                                     if let Some(user_registry) = &self.user_registry {
-                                        if let Some(user) = user_registry.get_user_by_address(eth_addr).await {
+                                        if let Some(user) =
+                                            user_registry.get_user_by_address(eth_addr).await
+                                        {
                                             if let Some(user_group_key) = &user.user_group_key {
                                                 let affine_point = user_group_key.0; // user_group_key is SerializablePoint(AffinePoint)
-                                                let encoded_point = k256::EncodedPoint::from(affine_point);
-                                                let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
+                                                let encoded_point =
+                                                    k256::EncodedPoint::from(affine_point);
+                                                let compressed_bytes =
+                                                    encoded_point.compress().to_bytes().to_vec();
 
                                                 if let Some(btc_handler) = chain_handler.as_any_mut().downcast_mut::<crate::chain::BitcoinChainHandler>() {
                                                     btc_handler.set_group_public_key(compressed_bytes);
@@ -2466,9 +2649,13 @@ impl NetworkLayer {
                                     if let Some(group_key) = dkg_node.get_final_public_key().await {
                                         let affine_point = group_key.to_affine();
                                         let encoded_point = k256::EncodedPoint::from(affine_point);
-                                        let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
+                                        let compressed_bytes =
+                                            encoded_point.compress().to_bytes().to_vec();
 
-                                        if let Some(btc_handler) = chain_handler.as_any_mut().downcast_mut::<crate::chain::BitcoinChainHandler>() {
+                                        if let Some(btc_handler) = chain_handler
+                                            .as_any_mut()
+                                            .downcast_mut::<crate::chain::BitcoinChainHandler>(
+                                        ) {
                                             btc_handler.set_group_public_key(compressed_bytes);
                                             info!("🔑 [GOSSIPSUB] Set network DKG group public key in Bitcoin chain handler");
                                         }
@@ -2478,12 +2665,18 @@ impl NetworkLayer {
                             crate::types::TransactionType::VaultToNetwork => {
                                 // For vault-to-network, use vault's group key
                                 if let Some(dkg_node) = &self.dkg_node {
-                                    if let Some(vault_group_key) = dkg_node.get_vault_group_key().await {
+                                    if let Some(vault_group_key) =
+                                        dkg_node.get_vault_group_key().await
+                                    {
                                         let affine_point = vault_group_key.to_affine();
                                         let encoded_point = k256::EncodedPoint::from(affine_point);
-                                        let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
+                                        let compressed_bytes =
+                                            encoded_point.compress().to_bytes().to_vec();
 
-                                        if let Some(btc_handler) = chain_handler.as_any_mut().downcast_mut::<crate::chain::BitcoinChainHandler>() {
+                                        if let Some(btc_handler) = chain_handler
+                                            .as_any_mut()
+                                            .downcast_mut::<crate::chain::BitcoinChainHandler>(
+                                        ) {
                                             btc_handler.set_group_public_key(compressed_bytes);
                                             info!("🔑 [GOSSIPSUB] Set vault group public key in Bitcoin chain handler");
                                         }
@@ -2495,7 +2688,10 @@ impl NetworkLayer {
                         signing_node.set_chain_handler(chain_handler.into());
                         info!("🔗 [GOSSIPSUB] Set Bitcoin chain handler");
                     } else {
-                        warn!("❌ [GOSSIPSUB] Unsupported chain: {}, using default Ethereum handler", chain_to_use);
+                        warn!(
+                            "❌ [GOSSIPSUB] Unsupported chain: {}, using default Ethereum handler",
+                            chain_to_use
+                        );
                     }
 
                     // Get derived addresses based on transaction type
@@ -2504,10 +2700,18 @@ impl NetworkLayer {
                             // For user deposits, use user's derived addresses
                             if let Some(eth_addr) = &user_eth_address {
                                 if let Some(user_registry) = &self.user_registry {
-                                    if let Some(user) = user_registry.get_user_by_address(eth_addr).await {
-                                        (user.derived_eth_address.clone(), user.derived_btc_address.clone())
+                                    if let Some(user) =
+                                        user_registry.get_user_by_address(eth_addr).await
+                                    {
+                                        (
+                                            user.derived_eth_address.clone(),
+                                            user.derived_btc_address.clone(),
+                                        )
                                     } else {
-                                        warn!("❌ [GOSSIPSUB] User {} not found in registry", eth_addr);
+                                        warn!(
+                                            "❌ [GOSSIPSUB] User {} not found in registry",
+                                            eth_addr
+                                        );
                                         (None, None)
                                     }
                                 } else {
@@ -2519,7 +2723,8 @@ impl NetworkLayer {
                                 (None, None)
                             }
                         }
-                        crate::types::TransactionType::NetworkToTarget | crate::types::TransactionType::VaultToNetwork => {
+                        crate::types::TransactionType::NetworkToTarget
+                        | crate::types::TransactionType::VaultToNetwork => {
                             // For network withdrawals and vault-to-network, no derived addresses needed
                             (None, None)
                         }
@@ -2531,7 +2736,6 @@ impl NetworkLayer {
                         None
                     };
 
-                    // Get vault group key for vault operations
                     let vault_group_key = if let Some(dkg_node) = &self.dkg_node {
                         dkg_node.get_vault_group_key().await
                     } else {
@@ -2539,23 +2743,45 @@ impl NetworkLayer {
                     };
 
                     // Get vault addresses from database
-                    let (vault_eth_addr, vault_btc_addr) = if let Some(registry) = &self.user_registry {
-                        let database = registry.get_database();
-                        let vault_eth = database.get_string(&crate::database::keys::DKG_VAULT_ETH_ADDRESS).ok().flatten();
-                        let vault_btc = database.get_string(&crate::database::keys::DKG_VAULT_BTC_ADDRESS).ok().flatten();
-                        (vault_eth, vault_btc)
-                    } else {
-                        return Err(anyhow::anyhow!("User registry not available"));
-                    };
+                    let (vault_eth_addr, vault_btc_addr) =
+                        if let Some(registry) = &self.user_registry {
+                            let database = registry.get_database();
+                            let vault_eth = database
+                                .get_string(&crate::database::keys::DKG_VAULT_ETH_ADDRESS)
+                                .ok()
+                                .flatten();
+                            let vault_btc = database
+                                .get_string(&crate::database::keys::DKG_VAULT_BTC_ADDRESS)
+                                .ok()
+                                .flatten();
+                            (vault_eth, vault_btc)
+                        } else {
+                            return Err(anyhow::anyhow!("User registry not available"));
+                        };
 
-                    let chain_transaction_result = crate::utils::transaction::create_chain_transaction_from_deposit_intent(&intent, group_public_key, derived_eth_addr.as_ref(), derived_btc_addr.as_ref(), transaction_type.clone(), vault_eth_addr.as_ref(), vault_btc_addr.as_ref(), amount).await;
+                    let chain_transaction_result =
+                        crate::utils::transaction::create_chain_transaction_from_deposit_intent(
+                            &intent,
+                            group_public_key,
+                            derived_eth_addr.as_ref(),
+                            derived_btc_addr.as_ref(),
+                            transaction_type.clone(),
+                            vault_eth_addr.as_ref(),
+                            vault_btc_addr.as_ref(),
+                            amount,
+                        )
+                        .await;
 
                     match chain_transaction_result {
                         Ok(chain_transaction) => {
-                            info!("📝 [GOSSIPSUB] Created {} transaction from deposit intent", signing_node.get_chain_type());
+                            info!(
+                                "📝 [GOSSIPSUB] Created {} transaction from deposit intent",
+                                signing_node.get_chain_type()
+                            );
 
                             // Set available nodes from node manager before signing
-                            let available_nodes: Vec<PeerId> = self.node_manager.get_active_nodes().into_iter().collect();
+                            let available_nodes: Vec<PeerId> =
+                                self.node_manager.get_active_nodes().into_iter().collect();
                             signing_node.set_available_nodes(available_nodes);
 
                             // Use the signing key we got earlier
@@ -2569,9 +2795,16 @@ impl NetworkLayer {
                                         // For user deposits, use user-specific group key
                                         if let Some(eth_address) = &user_eth_address {
                                             if let Some(user_registry) = &self.user_registry {
-                                                if let Some(user) = user_registry.get_user_by_address(eth_address).await {
-                                                    if let Some(user_group_key) = &user.user_group_key {
-                                                        signing_node.set_group_public_key(user_group_key.0.into()); // Convert AffinePoint to ProjectivePoint
+                                                if let Some(user) = user_registry
+                                                    .get_user_by_address(eth_address)
+                                                    .await
+                                                {
+                                                    if let Some(user_group_key) =
+                                                        &user.user_group_key
+                                                    {
+                                                        signing_node.set_group_public_key(
+                                                            user_group_key.0.into(),
+                                                        ); // Convert AffinePoint to ProjectivePoint
                                                         info!("🔑 [GOSSIPSUB] Set user-specific group public key for: {}", eth_address);
                                                     } else {
                                                         warn!("❌ [GOSSIPSUB] User {} has no group key available", eth_address);
@@ -2584,7 +2817,9 @@ impl NetworkLayer {
                                     crate::types::TransactionType::NetworkToTarget => {
                                         // For network withdrawals, use the original DKG group key
                                         if let Some(dkg_node) = &self.dkg_node {
-                                            if let Some(group_key) = dkg_node.get_final_public_key().await {
+                                            if let Some(group_key) =
+                                                dkg_node.get_final_public_key().await
+                                            {
                                                 signing_node.set_group_public_key(group_key);
                                                 info!("🔑 [GOSSIPSUB] Set network DKG group public key");
                                             }
@@ -2593,7 +2828,9 @@ impl NetworkLayer {
                                     crate::types::TransactionType::VaultToNetwork => {
                                         // For vault-to-network, use the vault group key
                                         if let Some(dkg_node) = &self.dkg_node {
-                                            if let Some(vault_group_key) = dkg_node.get_vault_group_key().await {
+                                            if let Some(vault_group_key) =
+                                                dkg_node.get_vault_group_key().await
+                                            {
                                                 signing_node.set_vault_group_key(vault_group_key);
                                                 info!("🔑 [GOSSIPSUB] Set vault group public key");
                                             }
@@ -2601,12 +2838,16 @@ impl NetworkLayer {
                                     }
                                 }
                             } else {
-                                info!("❌ [GOSSIPSUB] Could not get signing key for deposit intent");
+                                info!(
+                                    "❌ [GOSSIPSUB] Could not get signing key for deposit intent"
+                                );
                                 return Ok(());
                             }
 
                             // Create transaction bytes using the chain handler
-                            let tx_bytes = signing_node.get_chain_handler().create_transaction_bytes(&chain_transaction)
+                            let tx_bytes = signing_node
+                                .get_chain_handler()
+                                .create_transaction_bytes(&chain_transaction)
                                 .unwrap_or_else(|e| {
                                     warn!("Failed to create transaction bytes: {}", e);
                                     vec![]
@@ -2618,20 +2859,23 @@ impl NetworkLayer {
                             match chain_transaction {
                                 crate::chain::ChainTransaction::Bitcoin(ref btc_tx) => {
                                     // For Bitcoin, use direct signing with tx_bytes and original transaction
-                                    signing_node.sign_bitcoin_transaction(tx_bytes.clone(), Some(btc_tx.clone()), user_eth_address.clone(), Some(intent_hash.clone()), Some(transaction_type.clone()), signing_key).await?;
+                                    signing_node
+                                        .sign_bitcoin_transaction(
+                                            tx_bytes.clone(),
+                                            Some(btc_tx.clone()),
+                                            user_eth_address.clone(),
+                                            Some(intent_hash.clone()),
+                                            Some(transaction_type.clone()),
+                                            signing_key,
+                                            None,
+                                        )
+                                        .await?;
                                 }
                                 crate::chain::ChainTransaction::Ethereum(ref eth_tx) => {
-                                    // For EVM chains, use your proven DummyTransaction logic
-                                    let dummy_tx = crate::rpc_server::DummyTransaction {
-                                        to: eth_tx.to.clone(),
-                                        value: eth_tx.value.clone(),
-                                        nonce: eth_tx.nonce,
-                                        gas_limit: eth_tx.gas_limit,
-                                        gas_price: eth_tx.gas_price.clone(),
-                                        chain_id: eth_tx.chain_id,
-                                    };
-
-                                    let tx_bytes = crate::utils::transaction::create_transaction_for_signing(&dummy_tx);
+                                    let tx_bytes =
+                                        crate::utils::transaction::create_transaction_for_signing(
+                                            &eth_tx,
+                                        );
                                     debug!("→ RLP payload: 0x{}", hex::encode(&tx_bytes));
 
                                     let user_tweaked_share = match transaction_type {
@@ -2639,7 +2883,10 @@ impl NetworkLayer {
                                             // For user deposits, use user's tweaked secret share
                                             if let Some(eth_addr) = &user_eth_address {
                                                 if let Some(user_registry) = &self.user_registry {
-                                                    if let Some(user) = user_registry.get_user_by_address(eth_addr).await {
+                                                    if let Some(user) = user_registry
+                                                        .get_user_by_address(eth_addr)
+                                                        .await
+                                                    {
                                                         user.tweaked_secret_share.map(|s| s.0)
                                                     } else {
                                                         None
@@ -2669,11 +2916,19 @@ impl NetworkLayer {
                                         }
                                     };
 
-                                    signing_node.sign_message(tx_bytes.clone(), &dummy_tx, user_tweaked_share, user_eth_address.clone(), Some(intent_hash.clone()), Some(transaction_type.clone())).await?;
-
-                                    // // Only execute contract transaction for UserToVault transaction type
-                                    // if matches!(transaction_type, crate::types::TransactionType::UserToVault) {
-                                    //     info!("📝 [GOSSIPSUB] UserToVault transaction detected - executing contract call");
+                                    signing_node
+                                        .sign_message(
+                                            tx_bytes.clone(),
+                                            &eth_tx,
+                                            user_tweaked_share,
+                                            user_eth_address.clone(),
+                                            Some(intent_hash.clone()),
+                                            Some(transaction_type.clone()),
+                                            None,
+                                        )
+                                        .await?; // // Only execute contract transaction for UserToVault transaction type
+                                                 // if matches!(transaction_type, crate::types::TransactionType::UserToVault) {
+                                                 //     info!("📝 [GOSSIPSUB] UserToVault transaction detected - executing contract call");
 
                                     //     let mut hasher: sha2::digest::core_api::CoreWrapper<sha3::Keccak256Core> = sha3::Keccak256::new();
                                     //     hasher.update(&tx_bytes);
@@ -2690,7 +2945,6 @@ impl NetworkLayer {
                                     //             info!("📝 [GOSSIPSUB] Created contract call transaction");
                                     //             let available_nodes: Vec<PeerId> = self.node_manager.get_active_nodes().into_iter().collect();
                                     //             signing_node.set_available_nodes(available_nodes);
-
 
                                     //             match contract_transaction {
                                     //                 crate::chain::ChainTransaction::Ethereum(ref eth_tx) => {
@@ -2741,7 +2995,6 @@ impl NetworkLayer {
                                     //             let available_nodes: Vec<PeerId> = self.node_manager.get_active_nodes().into_iter().collect();
                                     //             signing_node.set_available_nodes(available_nodes);
 
-
                                     //             match contract_transaction {
                                     //                 crate::chain::ChainTransaction::Ethereum(ref eth_tx) => {
                                     //                     let contract_tx = crate::rpc_server::ContractTransaction {
@@ -2775,7 +3028,10 @@ impl NetworkLayer {
                                     // }
                                 }
                             }
-                            info!("✅ [GOSSIPSUB] {} deposit intent signing completed", signing_node.get_chain_type());
+                            info!(
+                                "✅ [GOSSIPSUB] {} deposit intent signing completed",
+                                signing_node.get_chain_type()
+                            );
                         }
                         Err(e) => {
                             warn!("❌ [GOSSIPSUB] Failed to create chain transaction: {}", e);
@@ -2783,11 +3039,259 @@ impl NetworkLayer {
                         }
                     }
                 } else {
-                    warn!("❌ [GOSSIPSUB] Signing node not available for deposit intent processing");
+                    warn!(
+                        "❌ [GOSSIPSUB] Signing node not available for deposit intent processing"
+                    );
                 }
             }
+            GossipsubMessage::ClaimReward {
+                solver_address,
+                btc_address,
+                eth_address,
+                reward_btc,
+                reward_tics,
+            } => {
+                info!(
+                    "🎁 [GOSSIPSUB] Processing claim reward received via gossipsub for solver: {}",
+                    solver_address
+                );
+                info!(
+                    "💰 [GOSSIPSUB] Reward details - BTC: {:?}, TICS: {:?}",
+                    reward_btc, reward_tics
+                );
+                info!(
+                    "📍 [GOSSIPSUB] Addresses - ETH: {:?}, BTC: {:?}",
+                    eth_address, btc_address
+                );
 
-            GossipsubMessage::PeerDiscovered { peer, sequence, index } => {
+                // Validate that at least one reward type is present
+                if reward_btc.is_none() && reward_tics.is_none() {
+                    warn!("❌ [GOSSIPSUB] Invalid reward claim - both BTC and TICS rewards are None for solver: {}", solver_address);
+                    return Ok(());
+                }
+
+                // Process TICS rewards (Ethereum) if available
+                if let Some(tics_reward_str) = reward_tics {
+                    if let Some(eth_addr) = eth_address {
+                        if let Ok(tics_amount) = tics_reward_str.parse::<u128>() {
+                            info!(
+                                "🎁 [GOSSIPSUB] Processing TICS reward: {} -> {} (amount: {})",
+                                solver_address, eth_addr, tics_amount
+                            );
+
+                            // Get network address for sending rewards
+                            if let Some(dkg_node) = &self.dkg_node {
+                                if let Some(group_key) = dkg_node.get_final_public_key().await {
+                                    let network_address =
+                                        crate::utils::get_eth_address_from_group_key(group_key);
+
+                                    // Create Ethereum transaction for TICS reward
+                                    match crate::utils::transaction::create_ethereum_transaction(
+                                        &network_address,
+                                        &eth_addr,
+                                        tics_amount,
+                                        "qubetics", // Use Qubetics chain for TICS
+                                    )
+                                    .await
+                                    {
+                                        Ok(eth_tx) => {
+                                            info!("✅ [GOSSIPSUB] Created TICS reward transaction: {:?}", eth_tx);
+
+                                            // Sign the transaction using MPC
+                                            if let Some(signing_node) = &mut self.signing_node {
+                                                // Set available nodes from node manager before signing
+                                                let available_nodes: Vec<PeerId> = self
+                                                    .node_manager
+                                                    .get_active_nodes()
+                                                    .into_iter()
+                                                    .collect();
+                                                signing_node.set_available_nodes(available_nodes);
+
+                                                if let Some(dkg_node) = &self.dkg_node {
+                                                    if let Some(secret_share) =
+                                                        dkg_node.get_final_secret_share().await
+                                                    {
+                                                        info!("🔐 [GOSSIPSUB] Got secret share from DKG for TICS reward");
+                                                        signing_node.set_private_key_from_scalar(
+                                                            secret_share,
+                                                        );
+
+                                                        // Set the DKG group public key
+                                                        if let Some(group_key) =
+                                                            dkg_node.get_final_public_key().await
+                                                        {
+                                                            signing_node
+                                                                .set_group_public_key(group_key);
+                                                            info!("🔑 [GOSSIPSUB] Set DKG group public key for TICS reward signing");
+                                                        }
+
+                                                        // Convert transaction to bytes for signing
+                                                        let tx_bytes = crate::utils::transaction::create_transaction_for_signing(&eth_tx);
+                                                        info!("🔐 [GOSSIPSUB] Starting TICS reward signing process: 0x{}", hex::encode(tx_bytes.clone()));
+
+                                                        // Sign with only necessary parameters for transaction
+                                                        signing_node
+                                                            .sign_message(
+                                                                tx_bytes,
+                                                                &eth_tx,
+                                                                None,
+                                                                None,
+                                                                None,
+                                                                None,
+                                                                Some(solver_address.clone()),
+                                                            )
+                                                            .await?;
+                                                        info!("✅ [GOSSIPSUB] TICS reward signing completed");
+                                                    } else {
+                                                        info!("⏳ [GOSSIPSUB] DKG not completed yet, no secret share available for TICS reward");
+                                                    }
+                                                } else {
+                                                    info!("❌ [GOSSIPSUB] DKG node not available for TICS reward");
+                                                }
+                                            } else {
+                                                warn!("❌ [GOSSIPSUB] Signing node not available for TICS reward");
+                                            }
+                                        }
+                                        Err(e) => {
+                                            error!("❌ [GOSSIPSUB] Failed to create TICS reward transaction: {}", e);
+                                        }
+                                    }
+                                } else {
+                                    warn!("❌ [GOSSIPSUB] No group key available for TICS reward transaction");
+                                }
+                            } else {
+                                warn!("❌ [GOSSIPSUB] DKG node not available for TICS reward transaction");
+                            }
+                        } else {
+                            warn!(
+                                "❌ [GOSSIPSUB] Invalid TICS reward amount: {}",
+                                tics_reward_str
+                            );
+                        }
+                    } else {
+                        warn!("❌ [GOSSIPSUB] TICS reward available but no ETH address provided");
+                    }
+                }
+
+                // Process BTC rewards if available
+                if let Some(btc_reward_str) = reward_btc {
+                    if let Some(btc_addr) = btc_address {
+                        if let Ok(btc_amount) = btc_reward_str.parse::<u128>() {
+                            info!(
+                                "🎁 [GOSSIPSUB] Processing BTC reward: {} -> {} (amount: {})",
+                                solver_address, btc_addr, btc_amount
+                            );
+
+                            // Get network BTC address for sending rewards
+                            if let Some(dkg_node) = &self.dkg_node {
+                                if let Some(group_key) = dkg_node.get_final_public_key().await {
+                                    let network_btc_address =
+                                        crate::utils::get_btc_address_from_group_key(group_key);
+
+                                    // Create Bitcoin transaction for BTC reward
+                                    match crate::utils::transaction::create_bitcoin_transaction(
+                                        &network_btc_address,
+                                        &btc_addr,
+                                        btc_amount,
+                                    )
+                                    .await
+                                    {
+                                        Ok(btc_tx) => {
+                                            info!("✅ [GOSSIPSUB] Created BTC reward transaction: {:?}", btc_tx);
+
+                                            // Sign the transaction using MPC
+                                            if let Some(signing_node) = &mut self.signing_node {
+                                                // Set available nodes from node manager before signing
+                                                let available_nodes: Vec<PeerId> = self
+                                                    .node_manager
+                                                    .get_active_nodes()
+                                                    .into_iter()
+                                                    .collect();
+                                                signing_node.set_available_nodes(available_nodes);
+
+                                                if let Some(dkg_node) = &self.dkg_node {
+                                                    if let Some(secret_share) =
+                                                        dkg_node.get_final_secret_share().await
+                                                    {
+                                                        info!("🔐 [GOSSIPSUB] Got secret share from DKG for BTC reward");
+                                                        signing_node.set_private_key_from_scalar(
+                                                            secret_share,
+                                                        );
+
+                                                        // Set the DKG group public key
+                                                        if let Some(group_key) =
+                                                            dkg_node.get_final_public_key().await
+                                                        {
+                                                            signing_node
+                                                                .set_group_public_key(group_key);
+                                                            info!("🔑 [GOSSIPSUB] Set DKG group public key for BTC reward signing");
+                                                        }
+                                                        let chain_tx =
+                                                            crate::chain::ChainTransaction::Bitcoin(
+                                                                btc_tx.clone(),
+                                                            );
+                                                        // set chain handler as btc
+                                                        signing_node.set_chain_handler(crate::chain::ChainHandlerFactory::create_bitcoin_handler("testnet".to_string()).into());
+                                                        let tx_bytes = signing_node
+                                                            .get_chain_handler()
+                                                            .create_transaction_bytes(&chain_tx)
+                                                            .unwrap();
+                                                        // Convert transaction to bytes for signing
+
+                                                        // Sign with Bitcoin-specific parameters
+                                                        signing_node
+                                                            .sign_bitcoin_transaction(
+                                                                tx_bytes.clone(),
+                                                                Some(btc_tx),
+                                                                None,
+                                                                None,
+                                                                None,
+                                                                None,
+                                                                Some(solver_address.clone()),
+                                                            )
+                                                            .await?;
+                                                        info!("✅ [GOSSIPSUB] BTC reward signing completed");
+                                                    } else {
+                                                        info!("⏳ [GOSSIPSUB] DKG not completed yet, no secret share available for BTC reward");
+                                                    }
+                                                } else {
+                                                    info!("❌ [GOSSIPSUB] DKG node not available for BTC reward");
+                                                }
+                                            } else {
+                                                warn!("❌ [GOSSIPSUB] Signing node not available for BTC reward");
+                                            }
+                                        }
+                                        Err(e) => {
+                                            error!("❌ [GOSSIPSUB] Failed to create BTC reward transaction: {}", e);
+                                        }
+                                    }
+                                } else {
+                                    warn!("❌ [GOSSIPSUB] No group key available for BTC reward transaction");
+                                }
+                            } else {
+                                warn!("❌ [GOSSIPSUB] DKG node not available for BTC reward transaction");
+                            }
+                        } else {
+                            warn!(
+                                "❌ [GOSSIPSUB] Invalid BTC reward amount: {}",
+                                btc_reward_str
+                            );
+                        }
+                    } else {
+                        warn!("❌ [GOSSIPSUB] BTC reward available but no BTC address provided");
+                    }
+                }
+
+                info!(
+                    "✅ [GOSSIPSUB] Reward claim processed successfully for solver: {}",
+                    solver_address
+                );
+            }
+            GossipsubMessage::PeerDiscovered {
+                peer,
+                sequence,
+                index,
+            } => {
                 info!(
                     "🎯 Peer discovered via gossipsub: {:?} (seq: {:?}, idx: {:?})",
                     peer, sequence, index
@@ -2804,9 +3308,11 @@ impl NetworkLayer {
                 if let Some(idx) = index {
                     self.peer_indices.insert(peer.clone(), idx);
                     let key = key_utils::peer_index_key(&peer.to_string());
-                    if let Err(e) = self.db.put_string(&key, &idx) { warn!("Failed to persist peer index: {:?}", e); }
+                    if let Err(e) = self.db.put_string(&key, &idx) {
+                        warn!("Failed to persist peer index: {:?}", e);
+                    }
                 }
-                
+
                 match self.node_manager.add_node(peer) {
                     Ok(_) => {
                         info!("✅ Successfully added peer {} to node manager", peer);
@@ -2815,7 +3321,7 @@ impl NetworkLayer {
                         let total = self.node_manager.get_total_nodes();
                         let threshold = self.node_manager.get_threshold();
                         info!("📊 Updated node count: {}, threshold: {}", total, threshold);
-                        
+
                         // Update signing node threshold to match current network state
                         if let Some(signing_node) = &mut self.signing_node {
                             let new_threshold = self.node_manager.get_threshold();
@@ -2828,7 +3334,7 @@ impl NetworkLayer {
                         // The new node handles resharing in ConnectionEstablished (dialer section)
                         if let Some(dkg_node) = &mut self.dkg_node {
                             let initial_dkg_complete = dkg_node.is_initial_dkg_complete().await;
-                            
+
                             if initial_dkg_complete {
                                 info!("🔄 [EXISTING_NODE] New peer {} joined network, will respond to share requests", peer);
                                 // Existing nodes will handle the NewNodeJoined DKG message when the new node broadcasts it
@@ -2855,7 +3361,10 @@ impl NetworkLayer {
         info!("[handle_channel_message()] {:?}", message);
         match message {
             ChannelMessage::PeerDiscoveryRetry { attempt } => {
-                info!("Received peer discovery retry notification (attempt {})", attempt);
+                info!(
+                    "Received peer discovery retry notification (attempt {})",
+                    attempt
+                );
                 if !self.pending_peer_discovery_retry {
                     info!(
                         "Received stale peer discovery retry notification (attempt {}), ignoring",
@@ -2930,46 +3439,6 @@ impl NetworkLayer {
                     );
                 }
             }
-            // Handle local transaction processing (for the node that receives the HTTP request)
-            ChannelMessage::LocalTransaction { transaction } => {
-                info!("🔐 [LOCAL] Processing transaction locally: {:?}", transaction);
-
-                if let Some(signing_node) = &mut self.signing_node {
-                    // Set available nodes from node manager before signing
-                    let available_nodes: Vec<PeerId> = self.node_manager.get_active_nodes().into_iter().collect();
-                    info!("🔢 [LOCAL-DEBUG] Available nodes count: {}", available_nodes.len());
-                    info!("🔢 [LOCAL-DEBUG] Available nodes: {:?}", available_nodes);
-                    signing_node.set_available_nodes(available_nodes);
-
-                    if let Some(dkg_node) = &self.dkg_node {
-                        if let Some(secret_share) = dkg_node.get_final_secret_share().await {
-                            info!("🔐 [NETWORK] Got secret share from DKG: {:?}", secret_share);
-                            info!("🔐 [LOCAL-DEBUG] Secret share (hex): 0x{}", hex::encode(secret_share.to_bytes()));
-                            signing_node.set_private_key_from_scalar(secret_share);
-
-                            // ✅ Also set the DKG group public key
-                            if let Some(group_key) = dkg_node.get_final_public_key().await {
-                                signing_node.set_group_public_key(group_key);
-                                info!("🔑 [NETWORK] Set DKG group public key for local transaction");
-                            }
-                        } else {
-                            info!("⏳ [NETWORK] DKG not completed yet, no secret share available");
-                            return Ok(());
-                        }
-                    } else {
-                        info!("❌ [NETWORK] DKG node not available");
-                        return Ok(());
-                    }
-
-                    // Convert transaction to bytes for signing using RLP encoding
-                    let tx_bytes = crate::utils::transaction::create_transaction_for_signing(&transaction);
-                    info!("🔐 [LOCAL] Starting local signing process {:?}", hex::encode(tx_bytes.clone()));
-                    signing_node.sign_message(tx_bytes, &transaction, None, None, None, None).await?;
-                    info!("✅ [LOCAL] Local transaction signing completed");
-                } else {
-                    warn!("❌ [LOCAL] Signing node not available for local processing");
-                }
-            }
             // this is not used anywhere yet
             ChannelMessage::Unicast { peer_id, data } => {
                 // Implement direct message sending using request-response protocol
@@ -2987,11 +3456,18 @@ impl NetworkLayer {
                     .request_response
                     .send_request(&peer_id, request);
             }
-            ChannelMessage::IntentHash { intent_hash, signer, intent } => {
+            ChannelMessage::IntentHash {
+                intent_hash,
+                signer,
+                intent,
+            } => {
                 info!("📝 [NETWORK] Storing intent hash from signer {}", signer);
 
                 if let Some(user_registry) = &self.user_registry {
-                    if let Err(e) = user_registry.store_intent_hash(intent_hash.clone(), &signer, &intent).await {
+                    if let Err(e) = user_registry
+                        .store_intent_hash(intent_hash.clone(), &signer, &intent)
+                        .await
+                    {
                         warn!("❌ [NETWORK] Failed to store intent hash: {}", e);
                     } else {
                         info!("✅ [NETWORK] Intent hash stored locally");
@@ -3006,14 +3482,24 @@ impl NetworkLayer {
                     signer: signer.clone(),
                     intent: intent.clone(),
                 };
-                let msg_bytes = serde_json::to_vec(&gossip_msg)
-                    .map_err(|e| anyhow::anyhow!("Failed to serialize intent hash message: {}", e))?;
+                let msg_bytes = serde_json::to_vec(&gossip_msg).map_err(|e| {
+                    anyhow::anyhow!("Failed to serialize intent hash message: {}", e)
+                })?;
                 let topic = gossipsub::IdentTopic::new("intent-hashes");
                 swarm.behaviour_mut().gossipsub.publish(topic, msg_bytes)?;
                 info!("📡 [NETWORK] Broadcasted intent hash {}", intent_hash_hex);
             }
-            ChannelMessage::DepositIntent { intent, intent_id, user_eth_address, transaction_type, amount } => {
-                info!("📝 [NETWORK] Processing deposit intent locally: {:?}", intent);
+            ChannelMessage::DepositIntent {
+                intent,
+                intent_id,
+                user_eth_address,
+                transaction_type,
+                amount,
+            } => {
+                info!(
+                    "📝 [NETWORK] Processing deposit intent locally: {:?}",
+                    intent
+                );
 
                 // Only broadcast to other nodes via gossipsub when using network share (no user_eth_address)
                 info!("🌐 [NETWORK] Using network share - broadcasting to P2P network");
@@ -3026,7 +3512,6 @@ impl NetworkLayer {
                 };
                 let msg_bytes = serde_json::to_vec(&deposit_intent_msg)
                     .map_err(|e| anyhow::anyhow!("Failed to serialize deposit intent: {}", e))?;
-
 
                 // Broadcast to all peers via gossipsub
                 let topic = gossipsub::IdentTopic::new("deposit-intents");
@@ -3045,18 +3530,27 @@ impl NetworkLayer {
                 // - NetworkToTarget: use target_chain (network is withdrawing TO this chain)
                 // - VaultToNetwork: use source_chain (vault is sending back to network on source chain)
                 let chain_to_use = match transaction_type {
-                    crate::types::TransactionType::UserToVault => &intent.source_chain.to_lowercase(),
-                    crate::types::TransactionType::NetworkToTarget => &intent.target_chain.to_lowercase(),
-                    crate::types::TransactionType::VaultToNetwork => &intent.source_chain.to_lowercase(),
+                    crate::types::TransactionType::UserToVault => {
+                        &intent.source_chain.to_lowercase()
+                    }
+                    crate::types::TransactionType::NetworkToTarget => {
+                        &intent.target_chain.to_lowercase()
+                    }
+                    crate::types::TransactionType::VaultToNetwork => {
+                        &intent.source_chain.to_lowercase()
+                    }
                 };
-                info!("🔗 [LOCAL] Processing deposit intent for chain: {} (transaction_type: {:?})",
-                      chain_to_use, transaction_type);
+                info!(
+                    "🔗 [LOCAL] Processing deposit intent for chain: {} (transaction_type: {:?})",
+                    chain_to_use, transaction_type
+                );
 
                 // Get the appropriate signing key based on transaction type
                 let signing_key: Option<k256::Scalar> = match transaction_type {
                     crate::types::TransactionType::UserToVault => {
                         // For user deposits, use user's tweaked secret share
-                        self.get_signing_key_for_user(user_eth_address.as_ref()).await
+                        self.get_signing_key_for_user(user_eth_address.as_ref())
+                            .await
                     }
                     crate::types::TransactionType::NetworkToTarget => {
                         // For network withdrawals, use network's DKG secret share
@@ -3080,13 +3574,24 @@ impl NetworkLayer {
                 if let Some(signing_node) = &mut self.signing_node {
                     // Set appropriate chain handler based on the determined chain
                     if crate::utils::transaction::is_evm_chain(chain_to_use) {
-                        if let Some(chain_id) = crate::utils::transaction::get_chain_id_from_name(chain_to_use) {
-                            let chain_handler = crate::chain::ChainHandlerFactory::create_ethereum_handler(chain_id);
+                        if let Some(chain_id) =
+                            crate::utils::transaction::get_chain_id_from_name(chain_to_use)
+                        {
+                            let chain_handler =
+                                crate::chain::ChainHandlerFactory::create_ethereum_handler(
+                                    chain_id,
+                                );
                             signing_node.set_chain_handler(chain_handler.into());
-                            info!("🔗 [LOCAL] Set Ethereum chain handler for chain: {} (ID: {})", chain_to_use, chain_id);
+                            info!(
+                                "🔗 [LOCAL] Set Ethereum chain handler for chain: {} (ID: {})",
+                                chain_to_use, chain_id
+                            );
                         }
                     } else if chain_to_use == "bitcoin" || chain_to_use == "btc" {
-                        let mut chain_handler = crate::chain::ChainHandlerFactory::create_bitcoin_handler("testnet".to_string());
+                        let mut chain_handler =
+                            crate::chain::ChainHandlerFactory::create_bitcoin_handler(
+                                "testnet".to_string(),
+                            );
 
                         // Set appropriate group public key in Bitcoin chain handler based on transaction type
                         match transaction_type {
@@ -3094,11 +3599,15 @@ impl NetworkLayer {
                                 // For user deposits, use user's specific group key
                                 if let Some(eth_addr) = &user_eth_address {
                                     if let Some(user_registry) = &self.user_registry {
-                                        if let Some(user) = user_registry.get_user_by_address(eth_addr).await {
+                                        if let Some(user) =
+                                            user_registry.get_user_by_address(eth_addr).await
+                                        {
                                             if let Some(user_group_key) = &user.user_group_key {
                                                 let affine_point = user_group_key.0; // user_group_key is SerializablePoint(AffinePoint)
-                                                let encoded_point = k256::EncodedPoint::from(affine_point);
-                                                let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
+                                                let encoded_point =
+                                                    k256::EncodedPoint::from(affine_point);
+                                                let compressed_bytes =
+                                                    encoded_point.compress().to_bytes().to_vec();
 
                                                 if let Some(btc_handler) = chain_handler.as_any_mut().downcast_mut::<crate::chain::BitcoinChainHandler>() {
                                                     btc_handler.set_group_public_key(compressed_bytes);
@@ -3123,9 +3632,13 @@ impl NetworkLayer {
                                     if let Some(group_key) = dkg_node.get_final_public_key().await {
                                         let affine_point = group_key.to_affine();
                                         let encoded_point = k256::EncodedPoint::from(affine_point);
-                                        let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
+                                        let compressed_bytes =
+                                            encoded_point.compress().to_bytes().to_vec();
 
-                                        if let Some(btc_handler) = chain_handler.as_any_mut().downcast_mut::<crate::chain::BitcoinChainHandler>() {
+                                        if let Some(btc_handler) = chain_handler
+                                            .as_any_mut()
+                                            .downcast_mut::<crate::chain::BitcoinChainHandler>(
+                                        ) {
                                             btc_handler.set_group_public_key(compressed_bytes);
                                             info!("🔑 [LOCAL] Set network DKG group public key in Bitcoin chain handler");
                                         }
@@ -3135,12 +3648,18 @@ impl NetworkLayer {
                             crate::types::TransactionType::VaultToNetwork => {
                                 // For vault-to-network, use vault's group key
                                 if let Some(dkg_node) = &self.dkg_node {
-                                    if let Some(vault_group_key) = dkg_node.get_vault_group_key().await {
+                                    if let Some(vault_group_key) =
+                                        dkg_node.get_vault_group_key().await
+                                    {
                                         let affine_point = vault_group_key.to_affine();
                                         let encoded_point = k256::EncodedPoint::from(affine_point);
-                                        let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
+                                        let compressed_bytes =
+                                            encoded_point.compress().to_bytes().to_vec();
 
-                                        if let Some(btc_handler) = chain_handler.as_any_mut().downcast_mut::<crate::chain::BitcoinChainHandler>() {
+                                        if let Some(btc_handler) = chain_handler
+                                            .as_any_mut()
+                                            .downcast_mut::<crate::chain::BitcoinChainHandler>(
+                                        ) {
                                             btc_handler.set_group_public_key(compressed_bytes);
                                             info!("🔑 [LOCAL] Set vault group public key in Bitcoin chain handler");
                                         }
@@ -3152,7 +3671,10 @@ impl NetworkLayer {
                         signing_node.set_chain_handler(chain_handler.into());
                         info!("🔗 [LOCAL] Set Bitcoin chain handler");
                     } else {
-                        warn!("❌ [LOCAL] Unsupported chain: {}, using default Ethereum handler", chain_to_use);
+                        warn!(
+                            "❌ [LOCAL] Unsupported chain: {}, using default Ethereum handler",
+                            chain_to_use
+                        );
                     }
 
                     // Get derived addresses based on transaction type
@@ -3161,8 +3683,13 @@ impl NetworkLayer {
                             // For user deposits, use user's derived addresses
                             if let Some(eth_addr) = &user_eth_address {
                                 if let Some(user_registry) = &self.user_registry {
-                                    if let Some(user) = user_registry.get_user_by_address(eth_addr).await {
-                                        (user.derived_eth_address.clone(), user.derived_btc_address.clone())
+                                    if let Some(user) =
+                                        user_registry.get_user_by_address(eth_addr).await
+                                    {
+                                        (
+                                            user.derived_eth_address.clone(),
+                                            user.derived_btc_address.clone(),
+                                        )
                                     } else {
                                         warn!("❌ [LOCAL] User {} not found in registry", eth_addr);
                                         (None, None)
@@ -3172,11 +3699,14 @@ impl NetworkLayer {
                                     (None, None)
                                 }
                             } else {
-                                warn!("❌ [LOCAL] UserToVault transaction requires user_eth_address");
+                                warn!(
+                                    "❌ [LOCAL] UserToVault transaction requires user_eth_address"
+                                );
                                 (None, None)
                             }
                         }
-                        crate::types::TransactionType::NetworkToTarget | crate::types::TransactionType::VaultToNetwork => {
+                        crate::types::TransactionType::NetworkToTarget
+                        | crate::types::TransactionType::VaultToNetwork => {
                             // For network withdrawals and vault-to-network, no derived addresses needed
                             (None, None)
                         }
@@ -3195,23 +3725,45 @@ impl NetworkLayer {
                     };
 
                     // Get vault addresses from database
-                    let (vault_eth_addr, vault_btc_addr) = if let Some(registry) = &self.user_registry {
-                        let database = registry.get_database();
-                        let vault_eth = database.get_string(&crate::database::keys::DKG_VAULT_ETH_ADDRESS).ok().flatten();
-                        let vault_btc = database.get_string(&crate::database::keys::DKG_VAULT_BTC_ADDRESS).ok().flatten();
-                        (vault_eth, vault_btc)
-                    } else {
-                        return Err(anyhow::anyhow!("User registry not available"));
-                    };
+                    let (vault_eth_addr, vault_btc_addr) =
+                        if let Some(registry) = &self.user_registry {
+                            let database = registry.get_database();
+                            let vault_eth = database
+                                .get_string(&crate::database::keys::DKG_VAULT_ETH_ADDRESS)
+                                .ok()
+                                .flatten();
+                            let vault_btc = database
+                                .get_string(&crate::database::keys::DKG_VAULT_BTC_ADDRESS)
+                                .ok()
+                                .flatten();
+                            (vault_eth, vault_btc)
+                        } else {
+                            return Err(anyhow::anyhow!("User registry not available"));
+                        };
 
-                    let chain_transaction_result = crate::utils::transaction::create_chain_transaction_from_deposit_intent(&intent, group_public_key, derived_eth_addr.as_ref(), derived_btc_addr.as_ref(), transaction_type.clone(), vault_eth_addr.as_ref(), vault_btc_addr.as_ref(), amount).await;
+                    let chain_transaction_result =
+                        crate::utils::transaction::create_chain_transaction_from_deposit_intent(
+                            &intent,
+                            group_public_key,
+                            derived_eth_addr.as_ref(),
+                            derived_btc_addr.as_ref(),
+                            transaction_type.clone(),
+                            vault_eth_addr.as_ref(),
+                            vault_btc_addr.as_ref(),
+                            amount,
+                        )
+                        .await;
 
                     match chain_transaction_result {
                         Ok(chain_transaction) => {
-                            info!("📝 [LOCAL] Created {} transaction from deposit intent", signing_node.get_chain_type());
+                            info!(
+                                "📝 [LOCAL] Created {} transaction from deposit intent",
+                                signing_node.get_chain_type()
+                            );
 
                             // Set available nodes from node manager before signing
-                            let available_nodes: Vec<PeerId> = self.node_manager.get_active_nodes().into_iter().collect();
+                            let available_nodes: Vec<PeerId> =
+                                self.node_manager.get_active_nodes().into_iter().collect();
                             signing_node.set_available_nodes(available_nodes);
 
                             // Use the signing key we got earlier
@@ -3225,9 +3777,16 @@ impl NetworkLayer {
                                         // For user deposits, use user-specific group key
                                         if let Some(eth_address) = &user_eth_address {
                                             if let Some(user_registry) = &self.user_registry {
-                                                if let Some(user) = user_registry.get_user_by_address(eth_address).await {
-                                                    if let Some(user_group_key) = &user.user_group_key {
-                                                        signing_node.set_group_public_key(user_group_key.0.into()); // Convert AffinePoint to ProjectivePoint
+                                                if let Some(user) = user_registry
+                                                    .get_user_by_address(eth_address)
+                                                    .await
+                                                {
+                                                    if let Some(user_group_key) =
+                                                        &user.user_group_key
+                                                    {
+                                                        signing_node.set_group_public_key(
+                                                            user_group_key.0.into(),
+                                                        ); // Convert AffinePoint to ProjectivePoint
                                                         info!("🔑 [LOCAL] Set user-specific group public key for: {}", eth_address);
                                                     } else {
                                                         warn!("❌ [LOCAL] User {} has no group key available", eth_address);
@@ -3240,16 +3799,22 @@ impl NetworkLayer {
                                     crate::types::TransactionType::NetworkToTarget => {
                                         // For network withdrawals, use the original DKG group key
                                         if let Some(dkg_node) = &self.dkg_node {
-                                            if let Some(group_key) = dkg_node.get_final_public_key().await {
+                                            if let Some(group_key) =
+                                                dkg_node.get_final_public_key().await
+                                            {
                                                 signing_node.set_group_public_key(group_key);
-                                                info!("🔑 [LOCAL] Set network DKG group public key");
+                                                info!(
+                                                    "🔑 [LOCAL] Set network DKG group public key"
+                                                );
                                             }
                                         }
                                     }
                                     crate::types::TransactionType::VaultToNetwork => {
                                         // For vault-to-network, use the vault group key
                                         if let Some(dkg_node) = &self.dkg_node {
-                                            if let Some(vault_group_key) = dkg_node.get_vault_group_key().await {
+                                            if let Some(vault_group_key) =
+                                                dkg_node.get_vault_group_key().await
+                                            {
                                                 signing_node.set_vault_group_key(vault_group_key);
                                                 info!("🔑 [LOCAL] Set vault group public key");
                                             }
@@ -3262,31 +3827,40 @@ impl NetworkLayer {
                             }
 
                             // Create transaction bytes using the chain handler
-                            let tx_bytes = signing_node.get_chain_handler().create_transaction_bytes(&chain_transaction)
+                            let tx_bytes = signing_node
+                                .get_chain_handler()
+                                .create_transaction_bytes(&chain_transaction)
                                 .unwrap_or_else(|e| {
                                     warn!("Failed to create transaction bytes: {}", e);
                                     vec![]
                                 });
-                            info!("🔐 [LOCAL] Starting {} signing process for deposit intent: 0x{}",
-                                  signing_node.get_chain_type(), hex::encode(tx_bytes.clone()));
+                            info!(
+                                "🔐 [LOCAL] Starting {} signing process for deposit intent: 0x{}",
+                                signing_node.get_chain_type(),
+                                hex::encode(tx_bytes.clone())
+                            );
 
                             // Handle Bitcoin and EVM differently - DummyTransaction is only for EVM!
                             match chain_transaction {
                                 crate::chain::ChainTransaction::Bitcoin(ref btc_tx) => {
                                     // For Bitcoin, use direct signing with tx_bytes and original transaction
-                                    signing_node.sign_bitcoin_transaction( tx_bytes.clone(), Some(btc_tx.clone()), user_eth_address.clone(), Some(intent_hash.clone()), Some(transaction_type.clone()), signing_key ).await?;
+                                    signing_node
+                                        .sign_bitcoin_transaction(
+                                            tx_bytes.clone(),
+                                            Some(btc_tx.clone()),
+                                            user_eth_address.clone(),
+                                            Some(intent_hash.clone()),
+                                            Some(transaction_type.clone()),
+                                            signing_key,
+                                            None,
+                                        )
+                                        .await?;
                                 }
                                 crate::chain::ChainTransaction::Ethereum(ref eth_tx) => {
-                                    // For EVM chains, use your proven DummyTransaction logic
-                                    let dummy_tx = crate::rpc_server::DummyTransaction {
-                                        to: eth_tx.to.clone(),
-                                        value: eth_tx.value.clone(),
-                                        nonce: eth_tx.nonce,
-                                        gas_limit: eth_tx.gas_limit,
-                                        gas_price: eth_tx.gas_price.clone(),
-                                        chain_id: eth_tx.chain_id,
-                                    };
-                                    let tx_bytes = crate::utils::transaction::create_transaction_for_signing(&dummy_tx);
+                                    let tx_bytes =
+                                        crate::utils::transaction::create_transaction_for_signing(
+                                            &eth_tx,
+                                        );
                                     debug!("→ RLP payload: 0x{}", hex::encode(&tx_bytes));
 
                                     // Get signing key based on transaction type
@@ -3295,7 +3869,10 @@ impl NetworkLayer {
                                             // For user deposits, use user's tweaked secret share
                                             if let Some(eth_addr) = &user_eth_address {
                                                 if let Some(user_registry) = &self.user_registry {
-                                                    if let Some(user) = user_registry.get_user_by_address(eth_addr).await {
+                                                    if let Some(user) = user_registry
+                                                        .get_user_by_address(eth_addr)
+                                                        .await
+                                                    {
                                                         user.tweaked_secret_share.map(|s| s.0)
                                                     } else {
                                                         None
@@ -3325,8 +3902,17 @@ impl NetworkLayer {
                                         }
                                     };
 
-                                    signing_node.sign_message(tx_bytes.clone(), &dummy_tx, user_tweaked_share, user_eth_address.clone(), Some(intent_hash.clone()), Some(transaction_type.clone())).await?;
-
+                                    signing_node
+                                        .sign_message(
+                                            tx_bytes.clone(),
+                                            &eth_tx,
+                                            user_tweaked_share,
+                                            user_eth_address.clone(),
+                                            Some(intent_hash.clone()),
+                                            Some(transaction_type.clone()),
+                                            None,
+                                        )
+                                        .await?;
                                     // // Only execute contract transaction for UserToVault transaction type
                                     // if matches!(transaction_type, crate::types::TransactionType::UserToVault) {
                                     //     info!("📝 [LOCAL] UserToVault transaction detected - executing contract call");
@@ -3346,7 +3932,6 @@ impl NetworkLayer {
                                     //             info!("📝 [LOCAL] Created contract call transaction");
                                     //             let available_nodes: Vec<PeerId> = self.node_manager.get_active_nodes().into_iter().collect();
                                     //             signing_node.set_available_nodes(available_nodes);
-
 
                                     //             match contract_transaction {
                                     //                 crate::chain::ChainTransaction::Ethereum(ref eth_tx) => {
@@ -3397,7 +3982,6 @@ impl NetworkLayer {
                                     //             let available_nodes: Vec<PeerId> = self.node_manager.get_active_nodes().into_iter().collect();
                                     //             signing_node.set_available_nodes(available_nodes);
 
-
                                     //             match contract_transaction {
                                     //                 crate::chain::ChainTransaction::Ethereum(ref eth_tx) => {
                                     //                     let contract_tx = crate::rpc_server::ContractTransaction {
@@ -3441,201 +4025,229 @@ impl NetworkLayer {
                 }
             }
 
-            ChannelMessage::TransactionIdBroadcast { intent_hash, transaction_id, transaction_type, node_id } => {
-                info!("📡 [NETWORK] Received transaction ID broadcast from node {}", node_id);
-                info!("🔗 [NETWORK] Intent hash: {}", intent_hash);
+            ChannelMessage::TransactionIdBroadcast {
+                intent_hash,
+                transaction_id,
+                transaction_type,
+                solver_address,
+                node_id,
+            } => {
+                info!(
+                    "📡 [NETWORK] Received transaction ID broadcast from node {}",
+                    node_id
+                );
                 info!("💳 [NETWORK] Transaction ID: {}", transaction_id);
                 info!("🔄 [NETWORK] Transaction type: {}", transaction_type);
+                if let Some(hash) = &intent_hash {
+                    info!("🔗 [NETWORK] Intent hash: {}", hash);
+                } else if let Some(solver) = &solver_address {
+                    info!("🧩 [NETWORK] Solver address: {}", solver);
+                } else {
+                    info!("ℹ️ [NETWORK] No intent hash or solver address supplied with transaction ID broadcast");
+                }
 
-                // Store the transaction ID in our local user registry
                 if let Some(user_registry) = &self.user_registry {
-                    let storage_result = match transaction_type.as_str() {
-                        "user_to_vault" => {
-                            // Also update solver amounts for user_to_vault using signing node, if available
-                            if let Some(signing_node) = &self.signing_node {
-                                if let Err(e) = signing_node.update_solver_amounts_for_user_to_vault(&intent_hash).await {
-                                    warn!("⚠️ [SIGNING] Failed to update solver amounts for UserToVault transaction: {}", e);
-                                } else {
-                                    // Calculate rewards after successfully updating solver amounts
-                                    if let Err(e) = signing_node.calculate_reward_per_solver(&intent_hash).await {
-                                        warn!("⚠️ [SIGNING] Failed to calculate rewards for UserToVault transaction: {}", e);
-                                    } else {
-                                        info!("✅ [SIGNING] Successfully calculated rewards for UserToVault transaction: {}", intent_hash);
-                                    }
-                                }
-                            }
-                            user_registry.store_user_to_vault_tx_id(&intent_hash, &transaction_id, Some(&node_id)).await
-                        },
-                        "network_to_target" => {
-                            user_registry.store_network_to_target_tx_id(&intent_hash, &transaction_id, Some(&node_id)).await
-                        },
-                        "vault_to_network" => {
-                            user_registry.store_vault_to_network_tx_id(&intent_hash, &transaction_id, Some(&node_id)).await
-                        },
-                        _ => {
-                            warn!("❌ [NETWORK] Unknown transaction type: {}", transaction_type);
-                            return Ok(());
-                        }
-                    };
-
-                    match storage_result {
-                        Ok(()) => {
-                            if let Err(e) = user_registry
-                                .store_transaction_status(&transaction_id, TransactionStatus::Pending)
-                                .await
-                            {
-                                error!(
-                                    "❌ [NETWORK] Failed to store transaction status for broadcast tx {}: {}",
-                                    transaction_id, e
-                                );
-                            }
-                            info!(
-                                "✅ [NETWORK] Successfully synchronized transaction ID {} for intent {} (type: {})",
-                                transaction_id, intent_hash, transaction_type
-                            );
-
-                            // Execute contract call when transaction ID is received
-                            if let Some(user_registry) = &self.user_registry {
-                                if let Some(intent) = user_registry.get_intent(&intent_hash).await {
-                                    // Convert transaction type string to enum
-                                    let tx_type_enum = match transaction_type.as_str() {
-                                        "user_to_vault" => crate::types::TransactionType::UserToVault,
-                                        "network_to_target" => crate::types::TransactionType::NetworkToTarget,
-                                        "vault_to_network" => crate::types::TransactionType::VaultToNetwork,
-                                        _ => {
-                                            warn!("❌ [CONTRACT] Unknown transaction type for contract call: {}", transaction_type);
-                                            return Ok(());
-                                        }
-                                    };
-
-                                    // Get vault group key
-                                    let vault_group_key = if let Some(dkg_node) = &self.dkg_node {
-                                        dkg_node.get_vault_group_key().await
-                                    } else {
-                                        None
-                                    };
-
-                                    if let Some(vault_group_key) = vault_group_key {
-
-                                        // Execute contract call
-                                        if let Err(e) = self.execute_contract_call_for_transaction(
-                                            &intent,
-                                            &intent_hash,
-                                            tx_type_enum,
-                                            &transaction_id,
-                                            Some(vault_group_key),
-                                            intent.amount,
-                                        ).await {
-                                            warn!("❌ [CONTRACT] Failed to execute contract call for transaction ID {}: {}", transaction_id, e);
+                    match (intent_hash.as_ref(), solver_address.as_ref()) {
+                        (Some(intent_hash), _) => {
+                            let storage_result = match transaction_type.as_str() {
+                                "user_to_vault" => {
+                                    if let Some(signing_node) = &self.signing_node {
+                                        if let Err(e) = signing_node
+                                            .update_solver_amounts_for_user_to_vault(
+                                                intent_hash.as_str(),
+                                            )
+                                            .await
+                                        {
+                                            warn!("⚠️ [SIGNING] Failed to update solver amounts for UserToVault transaction: {}", e);
+                                        } else if let Err(e) = signing_node
+                                            .calculate_reward_per_solver(intent_hash.as_str())
+                                            .await
+                                        {
+                                            warn!("⚠️ [SIGNING] Failed to calculate rewards for UserToVault transaction: {}", e);
                                         } else {
-                                            info!("✅ [CONTRACT] Successfully executed contract call for transaction ID {}", transaction_id);
+                                            info!(
+                                                "✅ [SIGNING] Successfully calculated rewards for UserToVault transaction: {}",
+                                                intent_hash
+                                            );
                                         }
-                                    } else {
-                                        warn!("❌ [CONTRACT] No vault group key available for contract call execution");
                                     }
-                                } else {
-                                    warn!("❌ [CONTRACT] Could not retrieve intent {} for contract call execution", intent_hash);
+                                    user_registry
+                                        .store_user_to_vault_tx_id(
+                                            intent_hash,
+                                            transaction_id.as_str(),
+                                            Some(&node_id),
+                                        )
+                                        .await
+                                }
+                                "network_to_target" => {
+                                    user_registry
+                                        .store_network_to_target_tx_id(
+                                            intent_hash,
+                                            transaction_id.as_str(),
+                                            Some(&node_id),
+                                        )
+                                        .await
+                                }
+                                "vault_to_network" => {
+                                    user_registry
+                                        .store_vault_to_network_tx_id(
+                                            intent_hash,
+                                            transaction_id.as_str(),
+                                            Some(&node_id),
+                                        )
+                                        .await
+                                }
+                                _ => {
+                                    warn!(
+                                        "❌ [NETWORK] Unknown transaction type: {}",
+                                        transaction_type
+                                    );
+                                    return Ok(());
+                                }
+                            };
+
+                            match storage_result {
+                                Ok(()) => {
+                                    if let Err(e) = user_registry
+                                        .store_transaction_status(
+                                            &transaction_id,
+                                            TransactionStatus::Pending,
+                                        )
+                                        .await
+                                    {
+                                        error!(
+                                            "❌ [NETWORK] Failed to store transaction status for broadcast tx {}: {}",
+                                            transaction_id, e
+                                        );
+                                    }
+                                    info!(
+                                        "✅ [NETWORK] Successfully synchronized transaction ID {} for intent {} (type: {})",
+                                        transaction_id, intent_hash, transaction_type
+                                    );
+
+                                    if let Some(user_registry) = &self.user_registry {
+                                        if let Some(intent) =
+                                            user_registry.get_intent(intent_hash).await
+                                        {
+                                            let tx_type_enum = match transaction_type.as_str() {
+                                                "user_to_vault" => {
+                                                    crate::types::TransactionType::UserToVault
+                                                }
+                                                "network_to_target" => {
+                                                    crate::types::TransactionType::NetworkToTarget
+                                                }
+                                                "vault_to_network" => {
+                                                    crate::types::TransactionType::VaultToNetwork
+                                                }
+                                                _ => {
+                                                    warn!("❌ [CONTRACT] Unknown transaction type for contract call: {}", transaction_type);
+                                                    return Ok(());
+                                                }
+                                            };
+
+                                            let vault_group_key =
+                                                if let Some(dkg_node) = &self.dkg_node {
+                                                    dkg_node.get_vault_group_key().await
+                                                } else {
+                                                    None
+                                                };
+
+                                            if let Some(vault_group_key) = vault_group_key {
+                                                if let Err(e) = self
+                                                    .execute_contract_call_for_transaction(
+                                                        &intent,
+                                                        intent_hash,
+                                                        tx_type_enum,
+                                                        &transaction_id,
+                                                        Some(vault_group_key),
+                                                        intent.amount,
+                                                    )
+                                                    .await
+                                                {
+                                                    warn!(
+                                                        "❌ [CONTRACT] Failed to execute contract call for transaction ID {}: {}",
+                                                        transaction_id, e
+                                                    );
+                                                } else {
+                                                    info!(
+                                                        "✅ [CONTRACT] Successfully executed contract call for transaction ID {}",
+                                                        transaction_id
+                                                    );
+                                                }
+                                            } else {
+                                                warn!("❌ [CONTRACT] No vault group key available for contract call execution");
+                                            }
+                                        } else {
+                                            warn!(
+                                                "❌ [CONTRACT] Could not retrieve intent {} for contract call execution",
+                                                intent_hash
+                                            );
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    error!("❌ [NETWORK] Failed to store synchronized transaction ID: {}", e);
                                 }
                             }
-                        },
-                        Err(e) => {
-                            error!("❌ [NETWORK] Failed to store synchronized transaction ID: {}", e);
+                        }
+                        (None, Some(solver_addr)) => {
+                            let storage_result = match transaction_type.as_str() {
+                                "tics_reward" => user_registry
+                                    .add_solver_tics_txn_hash(solver_addr, transaction_id.clone())
+                                    .await
+                                    .map_err(|e| e.to_string()),
+                                "btc_reward" => user_registry
+                                    .add_solver_btc_txn_hash(solver_addr, transaction_id.clone())
+                                    .await
+                                    .map_err(|e| e.to_string()),
+                                _ => {
+                                    warn!(
+                                        "❌ [NETWORK] Unknown reward transaction type: {}",
+                                        transaction_type
+                                    );
+                                    return Ok(());
+                                }
+                            };
+
+                            match storage_result {
+                                Ok(()) => {
+                                    if let Err(e) = user_registry
+                                        .store_transaction_status(
+                                            &transaction_id,
+                                            TransactionStatus::Pending,
+                                        )
+                                        .await
+                                    {
+                                        error!(
+                                            "❌ [NETWORK] Failed to store transaction status for reward tx {}: {}",
+                                            transaction_id, e
+                                        );
+                                    }
+                                    info!(
+                                        "✅ [NETWORK] Successfully synchronized reward transaction ID {} for solver {} (type: {})",
+                                        transaction_id, solver_addr, transaction_type
+                                    );
+                                }
+                                Err(e) => {
+                                    error!(
+                                        "❌ [NETWORK] Failed to store synchronized reward transaction ID for solver {}: {}",
+                                        solver_addr, e
+                                    );
+                                }
+                            }
+                        }
+                        _ => {
+                            warn!("⚠️ [NETWORK] Transaction ID broadcast missing both intent hash and solver address");
                         }
                     }
                 } else {
                     warn!("❌ [NETWORK] No user registry available to store synchronized transaction ID");
                 }
             }
-
-            ChannelMessage::SolverReward { solver_address, reward } => {
-                info!("💰 [NETWORK] Broadcasting solver reward: {} -> {}", solver_address, reward);
-                let reward_msg = GossipsubMessage::SolverReward {
-                    solver_address: solver_address.clone(),
-                    reward,
-                };
-                let msg_bytes = serde_json::to_vec(&reward_msg)
-                    .map_err(|e| anyhow::anyhow!("Failed to serialize solver reward: {}", e))?;
-
-                let topic = gossipsub::IdentTopic::new("solver-rewards");
-                swarm.behaviour_mut().gossipsub.publish(topic, msg_bytes)?;
-                info!("📡 [NETWORK] Broadcasted solver reward to P2P network");
-                // Fetch chain_id on the basis of tics (assuming tics is the chain name or identifier)
-                let chain_to_use = "qubetics"; // Replace this with the actual tics variable if available
-                let chain_id = crate::utils::transaction::get_chain_id_from_name(chain_to_use)
-                    .ok_or_else(|| anyhow::anyhow!("Unknown EVM chain: {}", chain_to_use))?;
-
-                // You may need to determine from_address based on your logic, e.g. from DKG node/group key
-                let from_address = if let Some(dkg_node) = &self.dkg_node {
-                    if let Some(group_key) = dkg_node.get_final_public_key().await {
-                        crate::utils::get_eth_address_from_group_key(group_key)
-                    } else {
-                        "".to_string()
-                    }
-                } else {
-                    "".to_string()
-                };
-
-                // Use fetch_ethereum_nonce from transaction utils
-                let nonce = crate::utils::transaction::fetch_ethereum_nonce(&from_address, chain_id).await?;
-
-                let ethereum_tx = EthereumTransaction {
-                    to: solver_address.clone(),
-                    value: format!("0x{:x}", reward),
-                    gas_limit: 300000,
-                    gas_price: get_default_gas_price_for_chain(chain_to_use),
-                    nonce,
-                    data: None,
-                    chain_id,
-                };
-
-                if let Some(dkg_node) = &self.dkg_node {
-                    if let Some(group_key) = dkg_node.get_final_public_key().await {
-                        let from_addr = crate::utils::get_eth_address_from_group_key(group_key);
-                        info!(
-                            "🧾 [NETWORK] Created solver reward tx from {} to {} amount {}",
-                            from_addr, solver_address, reward
-                        );
-                    }
-                }
-
-                // Create DummyTransaction from EthereumTransaction
-                let dummy_tx = crate::rpc_server::DummyTransaction {
-                    to: ethereum_tx.to.clone(),
-                    value: ethereum_tx.value.clone(),
-                    nonce: ethereum_tx.nonce,
-                    gas_limit: ethereum_tx.gas_limit,
-                    gas_price: ethereum_tx.gas_price.clone(),
-                    chain_id: ethereum_tx.chain_id,
-                };
-                let tx_bytes = crate::utils::transaction::create_transaction_for_signing(&dummy_tx);
-
-                // Sign the solver reward transaction
-                if let Some(signing_node) = &mut self.signing_node {
-                    // Set available nodes from node manager before signing
-                    let available_nodes: Vec<PeerId> = self.node_manager.get_active_nodes().into_iter().collect();
-                    signing_node.set_available_nodes(available_nodes);
-
-                    if let Some(dkg_node) = &self.dkg_node {
-                        if let Some(secret_share) = dkg_node.get_final_secret_share().await {
-                            info!("🔐 [REWARD] Got secret share from DKG: {:?}", secret_share);
-                            signing_node.set_private_key_from_scalar(secret_share);
-                            info!("🔐 [REWARD] Starting solver reward signing process: 0x{}", hex::encode(tx_bytes.clone()));
-                            signing_node.sign_message(tx_bytes, &dummy_tx, Some(secret_share), None, None, None).await?;
-                            info!("✅ [REWARD] Solver reward signing completed");
-                        } else {
-                            info!("⏳ [REWARD] DKG not completed yet, no secret share available");
-                            return Ok(());
-                        }
-                    } else {
-                        info!("❌ [REWARD] DKG node not available");
-                        return Ok(());
-                    }
-
-                } else {
-                    warn!("❌ [REWARD] Signing node not available for solver reward");
-                }
-            }
-            ChannelMessage::IntentHashBroadcast { intent_hash, node_id } => {
+            ChannelMessage::IntentHashBroadcast {
+                intent_hash,
+                node_id,
+            } => {
                 info!(
                     "📡 [NETWORK] Broadcasting intent hash {} from node {}",
                     intent_hash, node_id
@@ -3644,44 +4256,73 @@ impl NetworkLayer {
                     intent_hash: intent_hash.clone(),
                     node_id: node_id.clone(),
                 };
-                let msg_bytes = serde_json::to_vec(&broadcast_msg)
-                    .map_err(|e| anyhow::anyhow!("Failed to serialize intent hash broadcast: {}", e))?;
+                let msg_bytes = serde_json::to_vec(&broadcast_msg).map_err(|e| {
+                    anyhow::anyhow!("Failed to serialize intent hash broadcast: {}", e)
+                })?;
                 let topic = gossipsub::IdentTopic::new("intent-hashes");
                 swarm.behaviour_mut().gossipsub.publish(topic, msg_bytes)?;
                 info!("📡 [NETWORK] Broadcasted intent hash to P2P network");
             }
-            ChannelMessage::UserRegistration { ethereum_address, node_id } => {
-                info!("👤 [NETWORK] Broadcasting user registration: {} from node {}", ethereum_address, node_id);
+            ChannelMessage::UserRegistration {
+                ethereum_address,
+                node_id,
+            } => {
+                info!(
+                    "👤 [NETWORK] Broadcasting user registration: {} from node {}",
+                    ethereum_address, node_id
+                );
 
                 // Directly update commitments locally using the stored HMAC constant
-                if let (Some(user_registry), Some(dkg_node)) = (&self.user_registry, &self.dkg_node) {
+                if let (Some(user_registry), Some(dkg_node)) = (&self.user_registry, &self.dkg_node)
+                {
                     if let Some(reg) = user_registry.get_user_by_address(&ethereum_address).await {
-                        if let Some(tweak_scalar) = k256::Scalar::from_repr_vartime(reg.hmac_constant.into()) {                                // Derive and store user-specific group key from updated commitments
-                                match dkg_node.derive_user_specific_group_key_from_commitments(tweak_scalar).await {
-                                    Ok(group_key) => {
-                                        if let Err(e) = user_registry.set_user_group_key(&ethereum_address, group_key).await {
-                                            warn!("❌ [NETWORK] Failed to store user group key for {}: {}", ethereum_address, e);
-                                        } else {
-                                            info!("🔑 [NETWORK] Stored user-specific group key and derived addresses for {}", ethereum_address);
-                                            // Log the derived addresses
-                                            if let Some(user) = user_registry.get_user_by_address(&ethereum_address).await {
-                                                if let Some(eth_addr) = &user.derived_eth_address {
-                                                    info!("📬 [NETWORK] Derived ETH address for {}: {}", ethereum_address, eth_addr);
-                                                }
-                                                if let Some(btc_addr) = &user.derived_btc_address {
-                                                    info!("📬 [NETWORK] Derived BTC address for {}: {}", ethereum_address, btc_addr);
-                                                }
+                        if let Some(tweak_scalar) =
+                            k256::Scalar::from_repr_vartime(reg.hmac_constant.into())
+                        {
+                            // Derive and store user-specific group key from updated commitments
+                            match dkg_node
+                                .derive_user_specific_group_key_from_commitments(tweak_scalar)
+                                .await
+                            {
+                                Ok(group_key) => {
+                                    if let Err(e) = user_registry
+                                        .set_user_group_key(&ethereum_address, group_key)
+                                        .await
+                                    {
+                                        warn!("❌ [NETWORK] Failed to store user group key for {}: {}", ethereum_address, e);
+                                    } else {
+                                        info!("🔑 [NETWORK] Stored user-specific group key and derived addresses for {}", ethereum_address);
+                                        // Log the derived addresses
+                                        if let Some(user) = user_registry
+                                            .get_user_by_address(&ethereum_address)
+                                            .await
+                                        {
+                                            if let Some(eth_addr) = &user.derived_eth_address {
+                                                info!(
+                                                    "📬 [NETWORK] Derived ETH address for {}: {}",
+                                                    ethereum_address, eth_addr
+                                                );
+                                            }
+                                            if let Some(btc_addr) = &user.derived_btc_address {
+                                                info!(
+                                                    "📬 [NETWORK] Derived BTC address for {}: {}",
+                                                    ethereum_address, btc_addr
+                                                );
                                             }
                                         }
                                     }
-                                    Err(e) => {
-                                        warn!("❌ [NETWORK] Failed to derive user-specific group key for {}: {}", ethereum_address, e);
-                                    }
+                                }
+                                Err(e) => {
+                                    warn!("❌ [NETWORK] Failed to derive user-specific group key for {}: {}", ethereum_address, e);
                                 }
                             }
-                        } else {
-                            warn!("❌ [NETWORK] Invalid HMAC tweak scalar for {}", ethereum_address);
                         }
+                    } else {
+                        warn!(
+                            "❌ [NETWORK] Invalid HMAC tweak scalar for {}",
+                            ethereum_address
+                        );
+                    }
                 } else {
                     warn!("❌ [NETWORK] Missing user_registry or dkg_node; cannot update commitments locally for {}", ethereum_address);
                 }
@@ -3703,37 +4344,301 @@ impl NetworkLayer {
             ChannelMessage::ScheduledDKGStart => {
                 let total = self.node_manager.get_total_nodes();
                 let threshold = self.node_manager.get_threshold();
-                
+
                 if let Some(dkg) = &mut self.dkg_node {
                     // This should only be called for initial DKG with 4 nodes
                     let initial_dkg_complete = dkg.is_initial_dkg_complete().await;
-                    
+
                     if initial_dkg_complete {
                         warn!("⚠️ [DKG] ScheduledDKGStart called but initial DKG already complete. This should not happen.");
                         return Ok(());
                     }
-                    
+
                     // Start the initial DKG with 4 nodes
                     info!("🚀 [DKG] Starting initial DKG with {} nodes", total);
-                    
+
                     if total != 4 {
-                        warn!("⚠️ [DKG] Expected 4 nodes for initial DKG, but have {}", total);
+                        warn!(
+                            "⚠️ [DKG] Expected 4 nodes for initial DKG, but have {}",
+                            total
+                        );
                     }
-                    
+
                     dkg.update_node_params(total, threshold);
                     dkg.reset().await;
                     if let Some(signing_node) = &mut self.signing_node {
-                        signing_node.set_threshold(total/2 + 1);
+                        signing_node.set_threshold(total / 2 + 1);
                     }
-                    self.node_manager
-                        .set_threshold(total/2 + 1);
-                    info!("🔄 DKG parameters updated: total_nodes={}, threshold={}", total, threshold);
+                    self.node_manager.set_threshold(total / 2 + 1);
+                    info!(
+                        "🔄 DKG parameters updated: total_nodes={}, threshold={}",
+                        total, threshold
+                    );
                     if let Err(e) = dkg.start_dkg(self.node_manager.clone()).await {
                         warn!("❌ Scheduled DKG start failed: {:?}", e);
                     }
                 } else {
                     warn!("❌ DKG node not initialized at scheduled start!");
                 }
+            }
+            ChannelMessage::ClaimReward {
+                solver_address,
+                btc_address,
+                eth_address,
+                reward_btc,
+                reward_tics,
+            } => {
+                info!("🎁 [NETWORK] Processing reward claim for solver: {}, ETH address: {:?}, BTC address: {:?}", 
+                  solver_address, eth_address, btc_address);
+                info!(
+                    "💰 [NETWORK] Reward details - BTC: {:?}, TICS: {:?}",
+                    reward_btc, reward_tics
+                );
+
+                // Broadcast the reward claim to other nodes via gossipsub immediately
+                let claim_reward_msg = GossipsubMessage::ClaimReward {
+                    solver_address: solver_address.clone(),
+                    btc_address: btc_address.clone(),
+                    eth_address: eth_address.clone(),
+                    reward_btc: reward_btc.clone(),
+                    reward_tics: reward_tics.clone(),
+                };
+                let msg_bytes = serde_json::to_vec(&claim_reward_msg).map_err(|e| {
+                    anyhow::anyhow!("Failed to serialize claim reward message: {}", e)
+                })?;
+
+                // Broadcast to all peers via gossipsub
+                let topic = gossipsub::IdentTopic::new("claim-rewards");
+                swarm.behaviour_mut().gossipsub.publish(topic, msg_bytes)?;
+                info!(
+                    "📡 [NETWORK] Broadcasted claim reward to P2P network for solver: {}",
+                    solver_address
+                );
+
+                // Validate that at least one reward type is present
+                if reward_btc.is_none() && reward_tics.is_none() {
+                    warn!("❌ [NETWORK] Invalid reward claim - both BTC and TICS rewards are None for solver: {}", solver_address);
+                    return Ok(());
+                }
+
+                // Process TICS rewards (Ethereum) if available
+                if let Some(ref tics_reward_str) = reward_tics {
+                    if let Some(ref eth_addr) = eth_address {
+                        if let Ok(tics_amount) = tics_reward_str.parse::<u128>() {
+                            info!(
+                                "🎁 [NETWORK] Processing TICS reward: {} -> {} (amount: {})",
+                                solver_address, eth_addr, tics_amount
+                            );
+
+                            // Get network address for sending rewards
+                            if let Some(dkg_node) = &self.dkg_node {
+                                if let Some(group_key) = dkg_node.get_final_public_key().await {
+                                    let network_address =
+                                        crate::utils::get_eth_address_from_group_key(group_key);
+
+                                    // Create Ethereum transaction for TICS reward
+                                    match crate::utils::transaction::create_ethereum_transaction(
+                                        &network_address,
+                                        &eth_addr,
+                                        tics_amount,
+                                        "qubetics", // Use Qubetics chain for TICS
+                                    )
+                                    .await
+                                    {
+                                        Ok(eth_tx) => {
+                                            info!("✅ [NETWORK] Created TICS reward transaction: {:?}", eth_tx);
+
+                                            // Sign the transaction using MPC
+                                            if let Some(signing_node) = &mut self.signing_node {
+                                                // Set available nodes from node manager before signing
+                                                let available_nodes: Vec<PeerId> = self
+                                                    .node_manager
+                                                    .get_active_nodes()
+                                                    .into_iter()
+                                                    .collect();
+                                                signing_node.set_available_nodes(available_nodes);
+
+                                                if let Some(dkg_node) = &self.dkg_node {
+                                                    if let Some(secret_share) =
+                                                        dkg_node.get_final_secret_share().await
+                                                    {
+                                                        info!("🔐 [REWARD] Got secret share from DKG for TICS reward");
+                                                        signing_node.set_private_key_from_scalar(
+                                                            secret_share,
+                                                        );
+
+                                                        // Set the DKG group public key
+                                                        if let Some(group_key) =
+                                                            dkg_node.get_final_public_key().await
+                                                        {
+                                                            signing_node
+                                                                .set_group_public_key(group_key);
+                                                            info!("🔑 [REWARD] Set DKG group public key for TICS reward signing");
+                                                        }
+
+                                                        // Convert transaction to bytes for signing
+                                                        let tx_bytes = crate::utils::transaction::create_transaction_for_signing(&eth_tx);
+                                                        info!("🔐 [REWARD] Starting TICS reward signing process: 0x{}", hex::encode(tx_bytes.clone()));
+
+                                                        // Sign with only necessary parameters for transaction
+                                                        signing_node
+                                                            .sign_message(
+                                                                tx_bytes,
+                                                                &eth_tx,
+                                                                None,
+                                                                None,
+                                                                None,
+                                                                None,
+                                                                Some(solver_address.clone()),
+                                                            )
+                                                            .await?;
+                                                        info!("✅ [REWARD] TICS reward signing completed");
+                                                    } else {
+                                                        info!("⏳ [REWARD] DKG not completed yet, no secret share available for TICS reward");
+                                                    }
+                                                } else {
+                                                    info!("❌ [REWARD] DKG node not available for TICS reward");
+                                                }
+                                            } else {
+                                                warn!("❌ [REWARD] Signing node not available for TICS reward");
+                                            }
+                                        }
+                                        Err(e) => {
+                                            error!("❌ [NETWORK] Failed to create TICS reward transaction: {}", e);
+                                        }
+                                    }
+                                } else {
+                                    warn!("❌ [NETWORK] No group key available for TICS reward transaction");
+                                }
+                            } else {
+                                warn!("❌ [NETWORK] DKG node not available for TICS reward transaction");
+                            }
+                        } else {
+                            warn!(
+                                "❌ [NETWORK] Invalid TICS reward amount: {}",
+                                tics_reward_str
+                            );
+                        }
+                    } else {
+                        warn!("❌ [NETWORK] TICS reward available but no ETH address provided");
+                    }
+                }
+
+                // Process BTC rewards if available
+                if let Some(ref btc_reward_str) = reward_btc {
+                    if let Some(ref btc_addr) = btc_address {
+                        if let Ok(btc_amount) = btc_reward_str.parse::<u128>() {
+                            info!(
+                                "🎁 [NETWORK] Processing BTC reward: {} -> {} (amount: {})",
+                                solver_address, btc_addr, btc_amount
+                            );
+
+                            // Get network BTC address for sending rewards
+                            if let Some(dkg_node) = &self.dkg_node {
+                                if let Some(group_key) = dkg_node.get_final_public_key().await {
+                                    let network_btc_address =
+                                        crate::utils::get_btc_address_from_group_key(group_key);
+
+                                    // Create Bitcoin transaction for BTC reward
+                                    match crate::utils::transaction::create_bitcoin_transaction(
+                                        &network_btc_address,
+                                        &btc_addr,
+                                        btc_amount,
+                                    )
+                                    .await
+                                    {
+                                        Ok(btc_tx) => {
+                                            info!(
+                                                "✅ [NETWORK] Created BTC reward transaction: {:?}",
+                                                btc_tx
+                                            );
+
+                                            // Sign the transaction using MPC
+                                            if let Some(signing_node) = &mut self.signing_node {
+                                                // Set available nodes from node manager before signing
+                                                let available_nodes: Vec<PeerId> = self
+                                                    .node_manager
+                                                    .get_active_nodes()
+                                                    .into_iter()
+                                                    .collect();
+                                                signing_node.set_available_nodes(available_nodes);
+
+                                                if let Some(dkg_node) = &self.dkg_node {
+                                                    if let Some(secret_share) =
+                                                        dkg_node.get_final_secret_share().await
+                                                    {
+                                                        info!("🔐 [REWARD] Got secret share from DKG for BTC reward");
+                                                        signing_node.set_private_key_from_scalar(
+                                                            secret_share,
+                                                        );
+
+                                                        // Set the DKG group public key
+                                                        if let Some(group_key) =
+                                                            dkg_node.get_final_public_key().await
+                                                        {
+                                                            signing_node
+                                                                .set_group_public_key(group_key);
+                                                            info!("🔑 [REWARD] Set DKG group public key for BTC reward signing");
+                                                        }
+
+                                                        // Convert transaction to bytes for signing
+                                                        let chain_tx =
+                                                            crate::chain::ChainTransaction::Bitcoin(
+                                                                btc_tx.clone(),
+                                                            );
+                                                        // set chain handler as btc
+                                                        signing_node.set_chain_handler(crate::chain::ChainHandlerFactory::create_bitcoin_handler("testnet".to_string()).into());
+                                                        let tx_bytes = signing_node
+                                                            .get_chain_handler()
+                                                            .create_transaction_bytes(&chain_tx)
+                                                            .unwrap();
+                                                        info!("🔐 [REWARD] Starting BTC reward signing process: 0x{}", hex::encode(tx_bytes.clone()));
+
+                                                        // Sign with Bitcoin-specific parameters
+                                                        signing_node
+                                                            .sign_bitcoin_transaction(
+                                                                tx_bytes,
+                                                                Some(btc_tx),
+                                                                None,
+                                                                None,
+                                                                None,
+                                                                None,
+                                                                Some(solver_address.clone()),
+                                                            )
+                                                            .await?;
+                                                        info!("✅ [REWARD] BTC reward signing completed");
+                                                    } else {
+                                                        info!("⏳ [REWARD] DKG not completed yet, no secret share available for BTC reward");
+                                                    }
+                                                } else {
+                                                    info!("❌ [REWARD] DKG node not available for BTC reward");
+                                                }
+                                            } else {
+                                                warn!("❌ [REWARD] Signing node not available for BTC reward");
+                                            }
+                                        }
+                                        Err(e) => {
+                                            error!("❌ [NETWORK] Failed to create BTC reward transaction: {}", e);
+                                        }
+                                    }
+                                } else {
+                                    warn!("❌ [NETWORK] No group key available for BTC reward transaction");
+                                }
+                            } else {
+                                warn!("❌ [NETWORK] DKG node not available for BTC reward transaction");
+                            }
+                        } else {
+                            warn!("❌ [NETWORK] Invalid BTC reward amount: {}", btc_reward_str);
+                        }
+                    } else {
+                        warn!("❌ [NETWORK] BTC reward available but no BTC address provided");
+                    }
+                }
+
+                info!(
+                    "✅ [NETWORK] Reward claim processed successfully for solver: {}",
+                    solver_address
+                );
             }
         }
         Ok(())
@@ -3760,19 +4665,31 @@ impl NetworkLayer {
     }
 
     /// Get the appropriate signing key based on the user eth address
-    async fn get_signing_key_for_user(&self, user_eth_address: Option<&String>) -> Option<k256::Scalar> {
+    async fn get_signing_key_for_user(
+        &self,
+        user_eth_address: Option<&String>,
+    ) -> Option<k256::Scalar> {
         if let Some(eth_address) = user_eth_address {
             // Use user-specific tweaked share
-            info!("🔑 [NETWORK] Using user-specific tweaked share for signing - User: {}", eth_address);
+            info!(
+                "🔑 [NETWORK] Using user-specific tweaked share for signing - User: {}",
+                eth_address
+            );
 
             if let Some(user_registry) = &self.user_registry {
                 match user_registry.get_user_by_address(eth_address).await {
                     Some(user) => {
                         if let Some(tweaked_share) = &user.tweaked_secret_share {
-                            info!("✅ [NETWORK] Found user's tweaked share for: {}", eth_address);
+                            info!(
+                                "✅ [NETWORK] Found user's tweaked share for: {}",
+                                eth_address
+                            );
                             Some(tweaked_share.0) // Convert SerializableScalar to Scalar
                         } else {
-                            warn!("❌ [NETWORK] User {} has no tweaked share available", eth_address);
+                            warn!(
+                                "❌ [NETWORK] User {} has no tweaked share available",
+                                eth_address
+                            );
                             None
                         }
                     }
@@ -3815,23 +4732,29 @@ impl NetworkLayer {
         amount: u128,
     ) -> Result<()> {
         if let Some(signing_node) = &mut self.signing_node {
-            info!("📝 [CONTRACT] Executing contract call for transaction type: {:?}", transaction_type);
+            info!(
+                "📝 [CONTRACT] Executing contract call for transaction type: {:?}",
+                transaction_type
+            );
 
             tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
 
-            let contract_call_result = crate::utils::transaction::create_chain_transaction_from_contract_call(
-                vault_group_key,
-                amount,
-                intent,
-                intent_hash,
-                tx_hash,
-                transaction_type.clone()
-            ).await;
+            let contract_call_result =
+                crate::utils::transaction::create_chain_transaction_from_contract_call(
+                    vault_group_key,
+                    amount,
+                    intent,
+                    intent_hash,
+                    tx_hash,
+                    transaction_type.clone(),
+                )
+                .await;
 
             match contract_call_result {
                 Ok(contract_transaction) => {
                     info!("📝 [CONTRACT] Created contract call transaction");
-                    let available_nodes: Vec<PeerId> = self.node_manager.get_active_nodes().into_iter().collect();
+                    let available_nodes: Vec<PeerId> =
+                        self.node_manager.get_active_nodes().into_iter().collect();
                     signing_node.set_available_nodes(available_nodes);
 
                     match contract_transaction {
@@ -3843,17 +4766,34 @@ impl NetworkLayer {
                                 gas_limit: eth_tx.gas_limit,
                                 gas_price: eth_tx.gas_price.clone(),
                                 chain_id: eth_tx.chain_id,
-                                data: eth_tx.data.as_ref().map(|d| format!("0x{}", hex::encode(d))).unwrap_or_else(|| "0x".to_string()),
+                                data: eth_tx
+                                    .data
+                                    .as_ref()
+                                    .map(|d| format!("0x{}", hex::encode(d)))
+                                    .unwrap_or_else(|| "0x".to_string()),
                             };
-                            let contract_tx_bytes = crate::utils::transaction::create_transaction_for_signing_contract(&contract_tx);
-                            debug!("→ RLP payload contract call: 0x{}", hex::encode(&contract_tx_bytes));
+                            let contract_tx_bytes =
+                                crate::utils::transaction::create_transaction_for_signing_contract(
+                                    &contract_tx,
+                                );
+                            debug!(
+                                "→ RLP payload contract call: 0x{}",
+                                hex::encode(&contract_tx_bytes)
+                            );
 
                             let vault_tweaked_share = if let Some(dkg_node) = &self.dkg_node {
                                 dkg_node.get_vault_tweaked_secret_share().await
                             } else {
                                 None
                             };
-                            signing_node.sign_contract_message(contract_tx_bytes, &contract_tx, vault_tweaked_share, None).await?;
+                            signing_node
+                                .sign_contract_message(
+                                    contract_tx_bytes,
+                                    &contract_tx,
+                                    vault_tweaked_share,
+                                    None,
+                                )
+                                .await?;
                         }
                         _ => {
                             info!("📝 [CONTRACT] Contract call transaction is not Ethereum type, skipping");
@@ -3861,7 +4801,10 @@ impl NetworkLayer {
                     }
                 }
                 Err(e) => {
-                    warn!("❌ [CONTRACT] Failed to create contract call transaction: {}", e);
+                    warn!(
+                        "❌ [CONTRACT] Failed to create contract call transaction: {}",
+                        e
+                    );
                 }
             }
         } else {

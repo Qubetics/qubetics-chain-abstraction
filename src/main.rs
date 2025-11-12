@@ -20,8 +20,8 @@ use std::error::Error;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::Mutex;
-use tracing::{info, warn};
 use tracing::level_filters::LevelFilter;
+use tracing::{info, warn};
 use tracing_appender::non_blocking;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
@@ -127,7 +127,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         dkg_storage.clone(),
         chain_code,
     );
-    
+
     // Load permanent index from storage if it exists
     if let Err(e) = dkg_node.load_permanent_index().await {
         warn!("⚠️ Failed to load permanent index: {:?}", e);

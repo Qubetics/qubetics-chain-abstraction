@@ -92,9 +92,7 @@ impl ConsensusNode {
 
         info!(
             "🔍 [CONSENSUS] Most frequent node: {:?} with frequency {} and all same or not {}",
-            most_frequent_node,
-            max_frequency,
-            all_same_frequency
+            most_frequent_node, max_frequency, all_same_frequency
         );
         // Gather all candidates that have max_frequency
         let mut candidates: Vec<SerializablePeerId> = if all_same_frequency {
@@ -126,8 +124,7 @@ impl ConsensusNode {
         } else {
             info!(
                 "🏆 [CONSENSUS] Picking from freq‐{} candidates, lexicographically first: {:?}",
-                max_frequency,
-                final_node
+                max_frequency, final_node
             );
         }
         let result = ConsensusResult {

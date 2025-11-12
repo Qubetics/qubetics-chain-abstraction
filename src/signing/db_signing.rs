@@ -1,8 +1,8 @@
 use anyhow::{anyhow, Result};
 use libp2p::PeerId;
-use std::str::FromStr;
 use secp256k1::{self, PublicKey, Secp256k1, SecretKey};
 use std::collections::HashMap;
+use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 use tracing::info;
@@ -257,23 +257,29 @@ impl DatabaseSigningNode {
     /// and received round information from other nodes
     pub async fn initialize_vrf_service_with_network_sync(&mut self, network_round: Option<u64>) {
         if self.vrf_service.is_some() {
-            info!("🔄 [DB_SIGNING] VrfService already initialized for node {}", self.id);
+            info!(
+                "🔄 [DB_SIGNING] VrfService already initialized for node {}",
+                self.id
+            );
             return;
         }
 
         let peer_id = PeerId::from_str(&self.id).unwrap_or_else(|_| PeerId::random());
-        
+
         // Create VrfService with proper initial round
         let mut vrf_service = VrfService::new(peer_id, self.message_tx.clone());
-        
+
         // Set the current round to match the network
         if let Some(network_round) = network_round {
             vrf_service.set_current_round(network_round).await;
-            info!("🔄 [DB_SIGNING] Initialized VrfService for node {} with network round: {}", self.id, network_round);
+            info!(
+                "🔄 [DB_SIGNING] Initialized VrfService for node {} with network round: {}",
+                self.id, network_round
+            );
         } else {
             info!("🆕 [DB_SIGNING] Initialized VrfService for node {} with default round: 0 (first node)", self.id);
         }
-        
+
         self.vrf_service = Some(vrf_service);
     }
 

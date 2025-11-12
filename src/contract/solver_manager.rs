@@ -50,10 +50,12 @@ impl SolverManagerContract {
     }
 
     pub async fn get_solver_evm_address(&self, solver_id: &str) -> Result<Address> {
-        let addr = self.inner.get_solver_evm_address(solver_id.to_owned())
-            .call().await
+        let addr = self
+            .inner
+            .get_solver_evm_address(solver_id.to_owned())
+            .call()
+            .await
             .map_err(|e| anyhow!("contract call failed: {}", e))?;
         Ok(addr)
     }
-    
 }

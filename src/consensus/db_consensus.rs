@@ -1,10 +1,10 @@
-use crate::types::p2p::SerializablePeerId;
+use super::{ConsensusMessage, ConsensusResult};
 use crate::database::{ConsensusStorage, Database};
+use crate::types::p2p::SerializablePeerId;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tracing::{debug, info};
-use super::{ConsensusResult, ConsensusMessage};
 
 /// Database-backed consensus node that stores state in RocksDB
 #[derive(Clone)]
@@ -15,23 +15,27 @@ pub struct DatabaseConsensusNode {
 impl DatabaseConsensusNode {
     pub fn new(database: Database) -> Self {
         let consensus_storage = ConsensusStorage::new(database);
-        
+
         info!("🏗️ [DB_CONSENSUS] Created new DatabaseConsensusNode instance");
-        
-        Self {
-            consensus_storage,
-        }
+
+        Self { consensus_storage }
     }
 
     /// Add selected nodes for a specific round
-    pub async fn add_selected_nodes(&self, round: u64, selected_nodes: Vec<SerializablePeerId>) -> Result<()> {
+    pub async fn add_selected_nodes(
+        &self,
+        round: u64,
+        selected_nodes: Vec<SerializablePeerId>,
+    ) -> Result<()> {
         info!(
             "📋 [DB_CONSENSUS] Adding {} selected nodes for round {}",
             selected_nodes.len(),
             round
         );
-        
-        self.consensus_storage.store_selected_nodes(round, &selected_nodes).await?;
+
+        self.consensus_storage
+            .store_selected_nodes(round, &selected_nodes)
+            .await?;
         Ok(())
     }
 
@@ -41,24 +45,34 @@ impl DatabaseConsensusNode {
     }
 
     /// Get all selected nodes by round
-    pub async fn get_all_selected_nodes_by_round(&self) -> Result<HashMap<u64, Vec<SerializablePeerId>>> {
-        self.consensus_storage.get_all_selected_nodes_by_round().await
+    pub async fn get_all_selected_nodes_by_round(
+        &self,
+    ) -> Result<HashMap<u64, Vec<SerializablePeerId>>> {
+        self.consensus_storage
+            .get_all_selected_nodes_by_round()
+            .await
     }
 
     /// Start consensus for a specific round
     pub async fn start_consensus(&self, round: u64) -> Result<ConsensusResult> {
         info!("🚀 [DB_CONSENSUS] Starting consensus for round {}", round);
-        
+
         // Get selected nodes for this round
         let selected_nodes = match self.get_selected_nodes(round).await? {
             Some(nodes) => nodes,
             None => {
-                return Err(anyhow::anyhow!("No selected nodes found for round {}", round));
+                return Err(anyhow::anyhow!(
+                    "No selected nodes found for round {}",
+                    round
+                ));
             }
         };
 
         if selected_nodes.is_empty() {
-            return Err(anyhow::anyhow!("No nodes available for consensus in round {}", round));
+            return Err(anyhow::anyhow!(
+                "No nodes available for consensus in round {}",
+                round
+            ));
         }
 
         // Count node frequencies (simulate consensus algorithm)
@@ -96,7 +110,9 @@ impl DatabaseConsensusNode {
 
     /// Store a consensus result
     pub async fn store_consensus_result(&self, round: u64, result: &ConsensusResult) -> Result<()> {
-        self.consensus_storage.store_consensus_result(round, result).await
+        self.consensus_storage
+            .store_consensus_result(round, result)
+            .await
     }
 
     /// Get a consensus result for a specific round
@@ -147,11 +163,15 @@ impl DatabaseConsensusNode {
         if result.round != round {
             tracing::warn!(
                 "Round mismatch in consensus result: expected {}, got {}",
-                round, result.round
+                round,
+                result.round
             );
         }
 
-        info!("✅ [DB_CONSENSUS] Processed final node result for round {}", round);
+        info!(
+            "✅ [DB_CONSENSUS] Processed final node result for round {}",
+            round
+        );
         Ok(())
     }
 
@@ -203,14 +223,14 @@ impl DatabaseConsensusNode {
     pub async fn get_pending_rounds(&self) -> Result<Vec<u64>> {
         let all_selected = self.get_all_selected_nodes_by_round().await?;
         let all_results = self.get_all_consensus_results().await?;
-        
+
         let mut pending_rounds = Vec::new();
         for round in all_selected.keys() {
             if !all_results.contains_key(round) {
                 pending_rounds.push(*round);
             }
         }
-        
+
         pending_rounds.sort();
         Ok(pending_rounds)
     }
@@ -219,20 +239,26 @@ impl DatabaseConsensusNode {
     pub async fn process_pending_rounds(&self) -> Result<Vec<ConsensusResult>> {
         let pending_rounds = self.get_pending_rounds().await?;
         let mut results = Vec::new();
-        
+
         for round in pending_rounds {
             match self.start_consensus(round).await {
                 Ok(result) => {
                     results.push(result);
-                    info!("✅ [DB_CONSENSUS] Completed consensus for pending round {}", round);
-                },
+                    info!(
+                        "✅ [DB_CONSENSUS] Completed consensus for pending round {}",
+                        round
+                    );
+                }
                 Err(e) => {
                     tracing::error!("Failed to complete consensus for round {}: {}", round, e);
                 }
             }
         }
-        
-        info!("🎯 [DB_CONSENSUS] Processed {} pending rounds", results.len());
+
+        info!(
+            "🎯 [DB_CONSENSUS] Processed {} pending rounds",
+            results.len()
+        );
         Ok(results)
     }
 

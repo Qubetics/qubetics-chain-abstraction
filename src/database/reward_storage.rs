@@ -26,14 +26,17 @@ impl RewardStorage {
 
     /// Store total liquidity in TICS as U256 (string)
     pub async fn set_total_liquidity_tics_u256(&self, tics: U256) -> Result<()> {
-        self.db.put_string(keys::TOTAL_LIQUIDITY_TICS, &tics.to_string())?;
+        self.db
+            .put_string(keys::TOTAL_LIQUIDITY_TICS, &tics.to_string())?;
         Ok(())
     }
 
     /// Get total liquidity in TICS as U256 (string)
     pub async fn get_total_liquidity_tics_u256(&self) -> Result<Option<U256>> {
         if let Some(s) = self.db.get_string::<String>(keys::TOTAL_LIQUIDITY_TICS)? {
-            Ok(Some(U256::from_dec_str(&s).map_err(|e| anyhow::anyhow!("parse tics u256: {}", e))?))
+            Ok(Some(
+                U256::from_dec_str(&s).map_err(|e| anyhow::anyhow!("parse tics u256: {}", e))?,
+            ))
         } else {
             Ok(None)
         }
@@ -53,14 +56,17 @@ impl RewardStorage {
 
     /// Store total liquidity in BTC as U256 satoshis (string)
     pub async fn set_total_liquidity_btc_u256(&self, sats: U256) -> Result<()> {
-        self.db.put_string(keys::TOTAL_LIQUIDITY_BTC, &sats.to_string())?;
+        self.db
+            .put_string(keys::TOTAL_LIQUIDITY_BTC, &sats.to_string())?;
         Ok(())
     }
 
     /// Get total liquidity in BTC as U256 satoshis (string)
     pub async fn get_total_liquidity_btc_u256(&self) -> Result<Option<U256>> {
         if let Some(s) = self.db.get_string::<String>(keys::TOTAL_LIQUIDITY_BTC)? {
-            Ok(Some(U256::from_dec_str(&s).map_err(|e| anyhow::anyhow!("parse btc u256: {}", e))?))
+            Ok(Some(
+                U256::from_dec_str(&s).map_err(|e| anyhow::anyhow!("parse btc u256: {}", e))?,
+            ))
         } else {
             Ok(None)
         }
@@ -98,7 +104,11 @@ impl RewardStorage {
     }
 
     /// Store TICS reward for a specific solver
-    pub async fn set_solver_reward_tics(&self, solver_address: &str, reward_tics: U256) -> Result<()> {
+    pub async fn set_solver_reward_tics(
+        &self,
+        solver_address: &str,
+        reward_tics: U256,
+    ) -> Result<()> {
         let key = key_utils::solver_reward_tics_key(solver_address);
         self.db.put_string(&key, &reward_tics.to_string())?;
         Ok(())
@@ -117,7 +127,11 @@ impl RewardStorage {
     }
 
     /// Store BTC reward for a specific solver (in satoshis as U256)
-    pub async fn set_solver_reward_btc(&self, solver_address: &str, reward_btc_sats: U256) -> Result<()> {
+    pub async fn set_solver_reward_btc(
+        &self,
+        solver_address: &str,
+        reward_btc_sats: U256,
+    ) -> Result<()> {
         let key = key_utils::solver_reward_btc_key(solver_address);
         self.db.put_string(&key, &reward_btc_sats.to_string())?;
         Ok(())
@@ -169,5 +183,75 @@ impl RewardStorage {
     pub async fn get_intent_reward_status(&self, intent_hash: &str) -> Result<Option<bool>> {
         let key = key_utils::intent_reward_status_key(intent_hash);
         self.db.get_string(&key)
+    }
+
+     /// Store TICS transaction hashes for a specific solver
+     pub async fn set_solver_tics_txn_hashes(&self, solver_address: &str, txn_hashes: Vec<String>) -> Result<()> {
+        let key = key_utils::solver_tics_txn_hashes_key(solver_address);
+        let serialized = serde_json::to_string(&txn_hashes)
+            .map_err(|e| anyhow::anyhow!("Failed to serialize TICS txn hashes: {}", e))?;
+        self.db.put_string(&key, &serialized)?;
+        Ok(())
+    }
+
+    /// Get TICS transaction hashes for a specific solver
+    pub async fn get_solver_tics_txn_hashes(&self, solver_address: &str) -> Result<Option<Vec<String>>> {
+        let key = key_utils::solver_tics_txn_hashes_key(solver_address);
+        if let Some(serialized) = self.db.get_string::<String>(&key)? {
+            let txn_hashes = serde_json::from_str(&serialized)
+                .map_err(|e| anyhow::anyhow!("Failed to deserialize TICS txn hashes: {}", e))?;
+            Ok(Some(txn_hashes))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Add a single TICS transaction hash to a solver's list
+    pub async fn add_solver_tics_txn_hash(&self, solver_address: &str, txn_hash: String) -> Result<()> {
+        let mut existing_hashes = self.get_solver_tics_txn_hashes(solver_address).await?.unwrap_or_default();
+        existing_hashes.push(txn_hash);
+        self.set_solver_tics_txn_hashes(solver_address, existing_hashes).await
+    }
+
+    /// Store BTC transaction hashes for a specific solver
+    pub async fn set_solver_btc_txn_hashes(&self, solver_address: &str, txn_hashes: Vec<String>) -> Result<()> {
+        let key = key_utils::solver_btc_txn_hashes_key(solver_address);
+        let serialized = serde_json::to_string(&txn_hashes)
+            .map_err(|e| anyhow::anyhow!("Failed to serialize BTC txn hashes: {}", e))?;
+        self.db.put_string(&key, &serialized)?;
+        Ok(())
+    }
+
+    /// Get BTC transaction hashes for a specific solver
+    pub async fn get_solver_btc_txn_hashes(&self, solver_address: &str) -> Result<Option<Vec<String>>> {
+        let key = key_utils::solver_btc_txn_hashes_key(solver_address);
+        if let Some(serialized) = self.db.get_string::<String>(&key)? {
+            let txn_hashes = serde_json::from_str(&serialized)
+                .map_err(|e| anyhow::anyhow!("Failed to deserialize BTC txn hashes: {}", e))?;
+            Ok(Some(txn_hashes))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Add a single BTC transaction hash to a solver's list
+    pub async fn add_solver_btc_txn_hash(&self, solver_address: &str, txn_hash: String) -> Result<()> {
+        let mut existing_hashes = self.get_solver_btc_txn_hashes(solver_address).await?.unwrap_or_default();
+        existing_hashes.push(txn_hash);
+        self.set_solver_btc_txn_hashes(solver_address, existing_hashes).await
+    }
+
+    /// Clear TICS transaction hashes for a specific solver
+    pub async fn clear_solver_tics_txn_hashes(&self, solver_address: &str) -> Result<()> {
+        let key = key_utils::solver_tics_txn_hashes_key(solver_address);
+        self.db.delete_string(&key)?;
+        Ok(())
+    }
+
+    /// Clear BTC transaction hashes for a specific solver
+    pub async fn clear_solver_btc_txn_hashes(&self, solver_address: &str) -> Result<()> {
+        let key = key_utils::solver_btc_txn_hashes_key(solver_address);
+        self.db.delete_string(&key)?;
+        Ok(())
     }
 }

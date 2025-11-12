@@ -10,8 +10,8 @@ pub enum TransactionType {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TransactionNetwork {
-    TICS,  // EVM/TICS transactions
-    BTC,   // Bitcoin transactions
+    TICS, // EVM/TICS transactions
+    BTC,  // Bitcoin transactions
 }
 
 mod secp;
@@ -37,9 +37,6 @@ pub enum ChannelMessage {
         peer_id: String,
         data: Vec<u8>,
     },
-    LocalTransaction {
-        transaction: crate::rpc_server::DummyTransaction,
-    },
     DepositIntent {
         intent: crate::rpc_server::DepositIntent,
         intent_id: String,
@@ -52,15 +49,19 @@ pub enum ChannelMessage {
         signer: String,
         intent: crate::rpc_server::DepositIntent,
     },
+    ClaimReward {
+        solver_address: String,
+        btc_address: Option<String>,
+        eth_address: Option<String>,
+        reward_btc: Option<String>,
+        reward_tics: Option<String>,
+    },
     TransactionIdBroadcast {
-        intent_hash: String,
+        intent_hash: Option<String>,
         transaction_id: String,
         transaction_type: String,
+        solver_address: Option<String>,
         node_id: String,
-    },
-    SolverReward {
-        solver_address: String,
-        reward: u128,
     },
     UserRegistration {
         ethereum_address: String,
@@ -95,7 +96,6 @@ pub enum GossipsubMessage {
         sequence: Option<u64>,
         index: Option<usize>,
     },
-    Transaction(crate::rpc_server::DummyTransaction),
     DepositIntent {
         intent: crate::rpc_server::DepositIntent,
         intent_id: String,
@@ -108,9 +108,12 @@ pub enum GossipsubMessage {
         signer: String,
         intent: crate::rpc_server::DepositIntent,
     },
-    SolverReward {
+    ClaimReward {
         solver_address: String,
-        reward: u128,
+        btc_address: Option<String>,
+        eth_address: Option<String>,
+        reward_btc: Option<String>,
+        reward_tics: Option<String>,
     },
     DKGCommand(crate::types::rpc::RPCRequest),
     UserRegistration {
@@ -119,10 +122,11 @@ pub enum GossipsubMessage {
         node_id: String,
     },
     TransactionIdBroadcast {
-        intent_hash: String,
+        intent_hash: Option<String>,
         transaction_id: String,
-        transaction_type: String, // "user_to_network", "network_to_target", or "vault_to_network"
-        node_id: String,          // Node that broadcasted the transaction
+        transaction_type: String, // "user_to_network", "network_to_target", "vault_to_network", or reward types
+        solver_address: Option<String>,
+        node_id: String, // Node that broadcasted the transaction
     },
     TransactionErrorBroadcast {
         intent_hash: String,
