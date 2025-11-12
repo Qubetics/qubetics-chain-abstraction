@@ -71,6 +71,20 @@ impl DkgStorage {
         Ok(())
     }
 
+    /// Delete a specific share by key (used for cleaning up refresh shares)
+    pub async fn delete_share(&self, share_key: &str) -> Result<()> {
+        let key = format!("{}{}", keys::DKG_SHARE, share_key);
+        self.db.delete_string(&key)?;
+        Ok(())
+    }
+
+    /// Delete a specific commitment by key (used for cleaning up refresh commitments)
+    pub async fn delete_commitment(&self, commitment_key: &str) -> Result<()> {
+        let key = format!("{}{}", keys::DKG_COMMITMENT, commitment_key);
+        self.db.delete_string(&key)?;
+        Ok(())
+    }
+
     /// Store original DKG commitments (these NEVER change after initial DKG)
     pub async fn store_original_commitments(&self, from: &str, commitments: &[AffinePoint]) -> Result<()> {
         let key = format!("{}{}", keys::DKG_ORIGINAL_COMMITMENT, from);

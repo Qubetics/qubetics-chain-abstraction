@@ -161,6 +161,8 @@ pub struct NetworkLayer {
     db_sync_state: DatabaseSyncState,
     needs_database_sync: bool,
     pending_peer_discovery_retry: bool,
+    // Track processed disconnects to prevent duplicate processing
+    processed_disconnects: std::collections::HashMap<PeerId, std::time::Instant>,
 }
 
 impl NetworkLayer {
@@ -335,6 +337,7 @@ impl NetworkLayer {
             db_sync_state: DatabaseSyncState::new(),
             pending_peer_discovery_retry: false,
             needs_database_sync: false,
+            processed_disconnects: std::collections::HashMap::new(),
         };
 
         // Preload any persisted peer indices into memory
@@ -911,6 +914,7 @@ impl NetworkLayer {
             "transaction-id-sync",
             "consensus-result",
             "transaction-error-sync",
+            "dkg"
         ];
         for topic in topics {
             let topic_hash = gossipsub::IdentTopic::new(topic);
@@ -1843,10 +1847,10 @@ impl NetworkLayer {
                 );
             }
             SwarmEvent::ConnectionClosed {
-                peer_id: _,
+                peer_id,
                 connection_id: _,
                 endpoint: _,
-                num_established: _,
+                num_established,
                 cause,
             } => {
                 if let Some(ca) = cause {
@@ -1861,6 +1865,46 @@ impl NetworkLayer {
                             );
                         }
                         _ => {}
+                    }
+                }
+                
+                // STEP 1: Detect when a node fully disconnects (no remaining connections)
+                if num_established == 0 {
+                    info!("🔌 [DISCONNECT] Node {} has fully disconnected (0 connections remaining)", peer_id);
+                    
+                    // Check if this was an active node in our network
+                    let was_active = self.node_manager.get_active_nodes().contains(&peer_id);
+                    
+                    if was_active {
+                        warn!("⚠️ [DISCONNECT] Active node {} disconnected - broadcasting to all nodes", peer_id);
+                        
+                        // STEP 1: Broadcast disconnect notification to ALL nodes via gossipsub
+                        // This ensures ALL nodes know about the disconnect, not just the one that detected it
+                        use crate::adkg_secp256k1::DKGMessage;
+                        use crate::types::{GossipsubMessage, ChannelMessage};
+                        
+                        let disconnect_msg = DKGMessage::NodeDisconnected {
+                            disconnected_node_id: peer_id.to_string(),
+                            broadcaster_node_id: self.local_peer_id.to_string(),
+                        };
+                        
+                        let gossip_wrap = GossipsubMessage::DKG(disconnect_msg);
+                        if let Ok(msg_bytes) = serde_json::to_vec(&gossip_wrap) {
+                            // Use the message channel to broadcast (same pattern as DKG node)
+                            if let Err(e) = self.message_tx.send(ChannelMessage::Broadcast {
+                                topic: "dkg".to_string(),
+                                data: msg_bytes,
+                            }).await {
+                                error!("❌ [DISCONNECT] Failed to send disconnect notification to channel: {}", e);
+                            } else {
+                                info!("📢 [DISCONNECT] Broadcasted disconnect notification for node {} to all nodes", peer_id);
+                            }
+                        }
+                        
+                        // STEP 2: Process disconnect locally (same as other nodes will do when they receive broadcast)
+                        self.handle_node_disconnect_internal(peer_id).await;
+                    } else {
+                        info!("ℹ️ [DISCONNECT] Disconnected peer {} was not an active node", peer_id);
                     }
                 }
             }
@@ -1893,12 +1937,32 @@ impl NetworkLayer {
             // this must be used by broadcast in dkg (sending end)
             // so, here it must match on the recieving end
             GossipsubMessage::DKG(dkg_msg) => {
-                // dkg.r.2.1
-                // here we unwrapped the outer gossipmsg wrap from
-                // the msg bytes (check broadcast_shares() in dkg module)
-                if let Some(dkg_node) = &mut self.dkg_node {
-                    // now we can unwrap the internal dkg wrap to get the DKG related things
-                    dkg_node.handle_message(dkg_msg,self.node_manager.clone()).await?;
+                // Check if this is a NodeDisconnected message - handle it specially
+                if let crate::adkg_secp256k1::DKGMessage::NodeDisconnected { 
+                    ref disconnected_node_id, 
+                    ref broadcaster_node_id 
+                } = dkg_msg {
+                    info!("📢 [DISCONNECT] Received disconnect broadcast: {} disconnected (from {})", 
+                          disconnected_node_id, broadcaster_node_id);
+                    
+                    // Parse the disconnected node ID
+                    if let Ok(peer_id) = disconnected_node_id.parse::<PeerId>() {
+                        // Check if we haven't already processed this disconnect
+                        if self.node_manager.get_active_nodes().contains(&peer_id) {
+                            info!("📢 [DISCONNECT] Processing disconnect for node {}", peer_id);
+                            self.handle_node_disconnect_internal(peer_id).await;
+                        } else {
+                            info!("📢 [DISCONNECT] Node {} already removed, skipping", peer_id);
+                        }
+                    }
+                } else {
+                    // dkg.r.2.1
+                    // here we unwrapped the outer gossipmsg wrap from
+                    // the msg bytes (check broadcast_shares() in dkg module)
+                    if let Some(dkg_node) = &mut self.dkg_node {
+                        // now we can unwrap the internal dkg wrap to get the DKG related things
+                        dkg_node.handle_message(dkg_msg,self.node_manager.clone()).await?;
+                    }
                 }
             }
             GossipsubMessage::Signing(signing_msg) => {
@@ -3869,5 +3933,75 @@ impl NetworkLayer {
         }
 
         Ok(())
+    }
+
+    /// Internal method to handle node disconnection (called both locally and from broadcast)
+    async fn handle_node_disconnect_internal(&mut self, peer_id: PeerId) {
+        info!("🔧 [DISCONNECT] Processing disconnect for node {}", peer_id);
+        
+        // DEDUPLICATION: Check if we've already processed this disconnect recently
+        let now = std::time::Instant::now();
+        let dedup_window = std::time::Duration::from_secs(10); // 10-second deduplication window
+        
+        if let Some(last_processed) = self.processed_disconnects.get(&peer_id) {
+            if now.duration_since(*last_processed) < dedup_window {
+                info!("⏭️ [DISCONNECT] Already processed disconnect for {} recently (within {} seconds), skipping",
+                      peer_id, dedup_window.as_secs());
+                return;
+            }
+        }
+        
+        // Mark this disconnect as processed
+        self.processed_disconnects.insert(peer_id, now);
+        info!("✅ [DISCONNECT] Marked disconnect for {} as processed at {:?}", peer_id, now);
+        
+        // Clean up old entries (older than dedup_window) to prevent memory growth
+        self.processed_disconnects.retain(|_, &mut timestamp| {
+            now.duration_since(timestamp) < dedup_window
+        });
+        
+        // Remove node from node manager
+        if let Err(e) = self.node_manager.remove_node(peer_id) {
+            warn!("⚠️ [DISCONNECT] Failed to remove node {} from node manager: {}", peer_id, e);
+            return;
+        }
+        
+        info!("✅ [DISCONNECT] Successfully removed node {} from active peer list", peer_id);
+        
+        // Update network parameters
+        let new_total = self.node_manager.get_total_nodes();
+        let new_threshold = self.node_manager.get_threshold();
+        
+        info!("📊 [DISCONNECT] Updated network: total_nodes={}, threshold={}", new_total, new_threshold);
+        
+        // Update DKG and signing node parameters
+        if let Some(dkg_node) = &mut self.dkg_node {
+            dkg_node.update_node_params(new_total, new_threshold);
+        }
+        
+        if let Some(signing_node) = &mut self.signing_node {
+            signing_node.set_threshold(new_threshold);
+        }
+        
+        // Execute proactive resharing
+        info!("🔄 [DISCONNECT] Triggering proactive resharing with {} remaining nodes", new_total);
+        
+        if let Some(dkg_node) = &mut self.dkg_node {
+            let dkg_status = dkg_node.get_status();
+            if matches!(dkg_status, DKGStatus::Completed) {
+                // Add delay to ensure all nodes have processed the broadcast
+                info!("⏰ [DISCONNECT] Waiting 3 seconds for all nodes to sync...");
+                tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+                info!("✅ [DISCONNECT] Sync period complete, starting resharing");
+                
+                if let Err(e) = dkg_node.execute_polynomial_refresh(self.node_manager.clone()).await {
+                    error!("❌ [DISCONNECT] Failed to execute resharing: {}", e);
+                } else {
+                    info!("✅ [DISCONNECT] Resharing completed successfully");
+                }
+            } else {
+                warn!("⚠️ [DISCONNECT] DKG not completed yet, skipping resharing");
+            }
+        }
     }
 }

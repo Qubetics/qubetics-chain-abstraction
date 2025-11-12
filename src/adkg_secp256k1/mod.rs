@@ -49,6 +49,11 @@ pub enum DKGMessage {
     TriggerRefresh {
         trigger_node: String,
     },
+    /// Broadcasted when a node disconnects to notify all other nodes
+    NodeDisconnected {
+        disconnected_node_id: String,
+        broadcaster_node_id: String,
+    },
     /// Refresh shares sent from each node during proactive refresh
     RefreshShare {
         from: String,
@@ -407,6 +412,47 @@ impl DKGNode {
         Ok(shares)
     }
 
+    /// Generate shares for SPECIFIC indices (used in refresh after node disconnect)
+    /// This is needed because after a node disconnects, remaining nodes don't have sequential indices
+    /// e.g., if Node 3 disconnects, remaining indices are [1, 2, 4, 5], not [1, 2, 3, 4]
+    fn generate_shares_for_indices(&self, polynomial: &[Scalar], indices: &[usize]) -> Result<Vec<KeyShare>> {
+        info!("🔍 [REFRESH] === REFRESH SHARE GENERATION FOR SPECIFIC INDICES ===");
+        info!("📊 [REFRESH] Node {} generating shares for indices: {:?}", self.id, indices);
+        info!("🔢 [REFRESH] Polynomial coefficients: {:?}", polynomial);
+
+        let mut shares = Vec::with_capacity(indices.len());
+
+        for &index in indices {
+            let x = Scalar::from(index as u64);
+            let mut y = Scalar::ZERO;
+
+            info!("🔍 [REFRESH] Calculating share for index {} (x = {:?})", index, x);
+            
+            for (j, coeff) in polynomial.iter().enumerate() {
+                let mut x_pow = Scalar::ONE;
+                for _ in 0..j {
+                    x_pow *= x;
+                }
+                let term = *coeff * x_pow;
+                y += term;
+            }
+
+            info!("🔍 [REFRESH] Final share for index {}: y = {:?}", index, y);
+
+            shares.push(KeyShare {
+                index,
+                value: SerializableScalar(y),
+            });
+        }
+        
+        info!("🔍 [REFRESH] === GENERATED REFRESH SHARES SUMMARY ===");
+        for share in shares.iter() {
+            info!("🔍 [REFRESH] Share: index={}, value={:?}", share.index, share.value.0);
+        }
+
+        Ok(shares)
+    }
+
     fn generate_commitments(&self, polynomial: &[Scalar]) -> Result<Vec<SerializablePoint>> {
         let commitments: Vec<SerializablePoint> = polynomial
             .iter()
@@ -468,6 +514,13 @@ impl DKGNode {
             DKGMessage::TriggerRefresh { trigger_node } => {
                 info!("🔄 [REFRESH] Received refresh trigger from {}", trigger_node);
                 self.execute_polynomial_refresh(node_manager).await?;
+            }
+            DKGMessage::NodeDisconnected { disconnected_node_id, broadcaster_node_id } => {
+                info!("📢 [DISCONNECT] Received disconnect notification from {}: Node {} disconnected", 
+                      broadcaster_node_id, disconnected_node_id);
+                // This message is handled in the network layer, not here
+                // The network layer will call handle_node_disconnected when it processes this
+                info!("📢 [DISCONNECT] Message will be processed by network layer");
             }
             DKGMessage::RefreshShare { from, shares, commitments } => {
                 info!("🔄 [REFRESH] Received refresh shares from {}", from);
@@ -1529,9 +1582,9 @@ impl DKGNode {
         self.storage.set_polynomial(&refresh_polynomial).await?;
         info!("💾 [REFRESH] Stored refresh polynomial in storage");
         
-        // Generate refresh shares from the refresh polynomial for all nodes
-        info!("🔄 [REFRESH] Generating refresh shares for all {} nodes...", self.total_nodes);
-        let refresh_shares = self.generate_shares(&refresh_polynomial)?;
+        // Generate refresh shares from the refresh polynomial for SPECIFIC active node indices
+        info!("🔄 [REFRESH] Generating refresh shares for active node indices: {:?}", all_indices);
+        let refresh_shares = self.generate_shares_for_indices(&refresh_polynomial, &all_indices)?;
         let refresh_commitments = self.generate_commitments(&refresh_polynomial)?;
         
         info!("✅ [REFRESH] Generated {} refresh shares and {} commitments", 
@@ -1619,8 +1672,15 @@ impl DKGNode {
         
         info!("💾 [REFRESH] Stored refresh share from {} with key: refresh_{}", from, from);
         
-        // Check if we've received refresh shares from all nodes
-        let total_nodes = self.total_nodes;
+        // Check if we've received refresh shares from all ACTIVE nodes
+        // CRITICAL FIX: Use shares.len() as the expected count, NOT node_manager!
+        // Why? The RECEIVING node might not have detected the disconnect yet.
+        // The SENDING node already knows the correct count (it generated shares.len() shares).
+        // All senders will generate the same number of shares (same active node set).
+        // So we should expect shares.len() different senders to send us their shares.
+        let expected_active_nodes = shares.len();  // How many nodes the sender thinks are active
+        let local_node_manager_count = node_manager.get_active_nodes().len();
+        
         let all_shares_stored = self.storage.get_all_shares().await?;
         let refresh_share_keys: Vec<String> = all_shares_stored
             .keys()
@@ -1629,17 +1689,25 @@ impl DKGNode {
             .collect();
         let refresh_shares_count = refresh_share_keys.len();
         
-        info!("📊 [REFRESH] Refresh shares received: {}/{}", refresh_shares_count, total_nodes);
+        info!("📊 [REFRESH] Refresh shares received: {}/{}", refresh_shares_count, expected_active_nodes);
+        info!("📊 [REFRESH] Expected nodes (from message): {}, Local node_manager: {}", expected_active_nodes, local_node_manager_count);
         info!("📊 [REFRESH] Refresh share keys in storage: {:?}", refresh_share_keys);
         
-        if refresh_shares_count >= total_nodes {
+        // Sanity check: if local node_manager disagrees with message, log warning
+        if local_node_manager_count != expected_active_nodes {
+            warn!("⚠️ [REFRESH] MISMATCH: Local node_manager has {} nodes but received message for {} nodes", 
+                  local_node_manager_count, expected_active_nodes);
+            warn!("⚠️ [REFRESH] This node might not have detected disconnect yet. Using message count as truth.");
+        }
+        
+        if refresh_shares_count >= expected_active_nodes {
             info!("🎉 [REFRESH] ═══════════════════════════════════════════════════");
-            info!("🎉 [REFRESH] RECEIVED ALL {} REFRESH SHARES!", total_nodes);
+            info!("🎉 [REFRESH] RECEIVED ALL {} REFRESH SHARES!", expected_active_nodes);
             info!("🎉 [REFRESH] Now computing new secret share...");
             info!("🎉 [REFRESH] ═══════════════════════════════════════════════════");
             self.compute_refreshed_secret(node_manager).await?;
         } else {
-            info!("⏳ [REFRESH] Waiting for more refresh shares ({}/{})", refresh_shares_count, total_nodes);
+            info!("⏳ [REFRESH] Waiting for more refresh shares ({}/{})", refresh_shares_count, expected_active_nodes);
         }
         
         Ok(())
@@ -1880,6 +1948,7 @@ impl DKGNode {
     }
 
     /// Clear all refresh shares from storage
+    /// STEP 3: Clear old refresh shares from previous rounds
     async fn clear_refresh_shares(&self) -> Result<()> {
         let all_shares = self.storage.get_all_shares().await?;
         let refresh_keys: Vec<String> = all_shares
@@ -1889,9 +1958,27 @@ impl DKGNode {
             .collect();
         
         if !refresh_keys.is_empty() {
-            info!("🗑️ [REFRESH] Clearing {} old refresh shares", refresh_keys.len());
-            // Note: We don't have a delete method in storage, so we just log
-            // The shares will be overwritten in the next refresh round
+            info!("🗑️ [REFRESH] Deleting {} old refresh shares from storage", refresh_keys.len());
+            
+            for key in &refresh_keys {
+                // Delete the refresh share
+                if let Err(e) = self.storage.delete_share(key).await {
+                    warn!("⚠️ [REFRESH] Failed to delete refresh share {}: {}", key, e);
+                } else {
+                    info!("✅ [REFRESH] Deleted refresh share: {}", key);
+                }
+                
+                // Delete the corresponding refresh commitments
+                if let Err(e) = self.storage.delete_commitment(key).await {
+                    warn!("⚠️ [REFRESH] Failed to delete refresh commitments {}: {}", key, e);
+                } else {
+                    info!("✅ [REFRESH] Deleted refresh commitments: {}", key);
+                }
+            }
+            
+            info!("✅ [REFRESH] Successfully cleared all old refresh shares and commitments");
+        } else {
+            info!("ℹ️ [REFRESH] No old refresh shares to clear");
         }
         
         Ok(())
