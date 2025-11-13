@@ -3960,13 +3960,42 @@ impl NetworkLayer {
             now.duration_since(timestamp) < dedup_window
         });
         
+        // Log active nodes BEFORE removal
+        let active_nodes_before = self.node_manager.get_active_nodes();
+        info!("📋 [DISCONNECT] Active nodes BEFORE removal: {:?} (count: {})", 
+              active_nodes_before, active_nodes_before.len());
+        
         // Remove node from node manager
         if let Err(e) = self.node_manager.remove_node(peer_id) {
             warn!("⚠️ [DISCONNECT] Failed to remove node {} from node manager: {}", peer_id, e);
             return;
         }
         
-        info!("✅ [DISCONNECT] Successfully removed node {} from active peer list", peer_id);
+        // Log active nodes AFTER removal to verify
+        let active_nodes_after = self.node_manager.get_active_nodes();
+        info!("✅ [DISCONNECT] Successfully removed node {} from node_manager", peer_id);
+        info!("📋 [DISCONNECT] Active nodes AFTER removal: {:?} (count: {})", 
+              active_nodes_after, active_nodes_after.len());
+        
+        // Double-check the node is really gone
+        if active_nodes_after.contains(&peer_id) {
+            error!("❌ [DISCONNECT] BUG: Node {} still in active nodes after removal!", peer_id);
+        } else {
+            info!("✅ [DISCONNECT] Verified: Node {} is NOT in active nodes list", peer_id);
+        }
+        
+        // Also remove from peer_indices HashMap
+        if let Some(removed_index) = self.peer_indices.remove(&peer_id) {
+            info!("✅ [DISCONNECT] Removed peer {} (index {}) from peer_indices HashMap", peer_id, removed_index);
+        }
+        
+        // Remove from database as well
+        let peer_index_key = format!("{}{}", keys::PEER_INDEX, peer_id);
+        if let Err(e) = self.db.delete_string(&peer_index_key) {
+            warn!("⚠️ [DISCONNECT] Failed to remove peer {} from database: {}", peer_id, e);
+        } else {
+            info!("✅ [DISCONNECT] Removed peer {} from database", peer_id);
+        }
         
         // Update network parameters
         let new_total = self.node_manager.get_total_nodes();

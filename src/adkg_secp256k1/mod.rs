@@ -1875,18 +1875,20 @@ impl DKGNode {
         info!("🔄 [REFRESH] All nodes now have refreshed shares with new randomness");
         
         // ========================================
-        // RECALCULATE VAULT TWEAKED SECRET WITH NEW PUBLIC KEY
+        // RECALCULATE VAULT TWEAKED SECRET WITH REFRESHED SHARE
+        // Use the NEW public key (which should equal the original if refresh is correct)
         // ========================================
-        info!("🏦 [REFRESH] Recalculating vault tweaked secret with refreshed share and new public key...");
+        info!("🏦 [REFRESH] Recalculating vault tweaked secret with refreshed share...");
         
-        // Use the NEW final public key we just calculated (not from storage)
-        info!("🏦 [REFRESH] Using NEW final public key: {:?}", new_final_public_key);
+        // Use the NEW final public key for vault address (same as during DKG and node joining)
+        // If proactive refresh is done correctly, this should equal the original public key
+        info!("🏦 [REFRESH] Using NEW final public key for vault address: {:?}", new_final_public_key);
         
         // Convert NEW public key to ETH address
         let eth_address = utils::get_eth_address_from_group_key(new_final_public_key);
-        info!("🏦 [REFRESH] Main ETH address (from NEW public key): {}", eth_address);
+        info!("🏦 [REFRESH] Main ETH address from NEW public key: {}", eth_address);
         
-        // Calculate vault HMAC from ETH address
+        // Calculate vault HMAC from the ETH address
         let vault_hmac = hmac256_from_addr(&eth_address, &self.chain_code)
             .map_err(|e| anyhow!("Failed to generate vault HMAC: {}", e))?;
         info!("🏦 [REFRESH] Vault HMAC: {:?}", vault_hmac);
@@ -1911,21 +1913,29 @@ impl DKGNode {
             }
         }
 
-        // Verify vault addresses using ORIGINAL commitments (should never change)
-        match self
-            .derive_vault_group_key_from_original_commitments(tweak_scalar)
-            .await
-        {
-            Ok(vault_group_key) => {
-                let vault_eth = utils::get_eth_address_from_group_key(vault_group_key);
-                let vault_btc = utils::get_btc_address_from_group_key(vault_group_key);
-                info!("🏦 [REFRESH] Vault ETH address (from ORIGINAL commitments): {}", vault_eth);
-                info!("🏦 [REFRESH] Vault BTC address (from ORIGINAL commitments): {}", vault_btc);
-                info!("✅ [REFRESH] Vault addresses verified - they remain UNCHANGED after refresh");
-            }
-            Err(e) => {
-                warn!("⚠️ [REFRESH] Failed to derive vault group key for addresses: {}", e);
-            }
+        // Derive vault group key from NEW final public key (same as DKG and node joining)
+        // vault_group_key = new_final_public_key + tweak_scalar * G
+        let tweak_point = ProjectivePoint::GENERATOR * &tweak_scalar;
+        let vault_group_key = new_final_public_key + tweak_point;
+        
+        let vault_eth = utils::get_eth_address_from_group_key(vault_group_key);
+        let vault_btc = utils::get_btc_address_from_group_key(vault_group_key);
+        info!("🏦 [REFRESH] Derived vault group key: {:?}", vault_group_key);
+        info!("🏦 [REFRESH] Vault ETH address: {}", vault_eth);
+        info!("🏦 [REFRESH] Vault BTC address: {}", vault_btc);
+        
+        // Store vault addresses
+        if let Err(e) = self.storage.set_vault_addresses(&vault_eth, &vault_btc).await {
+            warn!("⚠️ [REFRESH] Failed to store vault addresses: {}", e);
+        } else {
+            info!("✅ [REFRESH] Successfully stored vault addresses in database");
+        }
+        
+        // Store vault group key
+        if let Err(e) = self.storage.set_vault_group_key(vault_group_key).await {
+            warn!("⚠️ [REFRESH] Failed to store vault group key: {}", e);
+        } else {
+            info!("✅ [REFRESH] Successfully stored vault group key in database");
         }
         
         info!("🎉 [REFRESH] Polynomial refresh complete with updated vault secret!");
