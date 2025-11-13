@@ -3127,6 +3127,7 @@ impl NetworkLayer {
                                                     .into_iter()
                                                     .collect();
                                                 signing_node.set_available_nodes(available_nodes);
+                                                signing_node.set_chain_handler(crate::chain::ChainHandlerFactory::create_ethereum_handler(eth_tx.chain_id).into());
 
                                                 if let Some(dkg_node) = &self.dkg_node {
                                                     if let Some(secret_share) =
@@ -3229,6 +3230,7 @@ impl NetworkLayer {
                                                     .into_iter()
                                                     .collect();
                                                 signing_node.set_available_nodes(available_nodes);
+                                                signing_node.set_chain_handler(crate::chain::ChainHandlerFactory::create_bitcoin_handler("testnet".to_string()).into());
 
                                                 if let Some(dkg_node) = &self.dkg_node {
                                                     if let Some(secret_share) =
@@ -4513,6 +4515,7 @@ impl NetworkLayer {
                                                     .into_iter()
                                                     .collect();
                                                 signing_node.set_available_nodes(available_nodes);
+                                                signing_node.set_chain_handler(crate::chain::ChainHandlerFactory::create_ethereum_handler(eth_tx.chain_id).into());
 
                                                 if let Some(dkg_node) = &self.dkg_node {
                                                     if let Some(secret_share) =
@@ -4618,6 +4621,7 @@ impl NetworkLayer {
                                                     .into_iter()
                                                     .collect();
                                                 signing_node.set_available_nodes(available_nodes);
+                                                signing_node.set_chain_handler(crate::chain::ChainHandlerFactory::create_bitcoin_handler("testnet".to_string()).into());
 
                                                 if let Some(dkg_node) = &self.dkg_node {
                                                     if let Some(secret_share) =

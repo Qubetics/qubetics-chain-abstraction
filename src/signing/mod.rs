@@ -4810,10 +4810,27 @@ pub async fn handle_btc_signature_for_round(
                     solver_btc * base_reward / total_btc_u256
                 }
             } else {
-                let solver_tics = amounts
-                    .get(1)
-                    .and_then(|v| EthereumU256::from_dec_str(v).ok())
-                    .unwrap_or_else(EthereumU256::zero);
+                 // For TICS (non-BTC chains): use index 1 if available, otherwise index 0
+                // Handle both [BTC, TICS] and [TICS] array formats
+                let solver_tics = if amounts.len() >= 2 {
+                    // Array has 2+ elements: [BTC, TICS] format - use index 1
+                    amounts
+                        .get(1)
+                        .and_then(|v| EthereumU256::from_dec_str(v).ok())
+                        .unwrap_or_else(EthereumU256::zero)
+                } else if amounts.len() == 1 {
+                    // Array has 1 element: assume it's TICS-only format - use index 0
+                    // Log this case to help debug data format inconsistencies
+                    info!("⚠️ [SOLVER] Solver {} has single-element liquidity array: {:?}, using as TICS", solver, amounts);
+                    amounts
+                        .get(0)
+                        .and_then(|v| EthereumU256::from_dec_str(v).ok())
+                        .unwrap_or_else(EthereumU256::zero)
+                } else {
+                    // Empty array
+                    warn!("⚠️ [SOLVER] Solver {} has empty liquidity array", solver);
+                    EthereumU256::zero()
+                };
                 if total_tics_u256.is_zero() {
                     EthereumU256::zero()
                 } else {

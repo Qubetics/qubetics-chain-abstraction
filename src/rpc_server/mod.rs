@@ -506,14 +506,46 @@ pub async fn start_http_server(
         .allow_any_origin()
         .allow_methods(vec!["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
         .allow_headers(vec![
-            "Content-Type",
-            "Authorization",
+            // CORS/safelisted & basics
             "Accept",
+            "Accept-Language",
+            "Content-Language",
+            "Content-Type", // note: browser restricts values on simple requests
             "Origin",
+            // Auth
+            "Authorization",
+            "X-Api-Key",
+            "X-Auth-Token",
+            "Idempotency-Key",
+            // CSRF / AJAX
             "X-Requested-With",
             "X-CSRF-Token",
+            // Caching / validators
             "Cache-Control",
-            "X-Api-Key",
+            "Pragma",
+            "If-None-Match",
+            "If-Match",
+            "If-Modified-Since",
+            "If-Unmodified-Since",
+            // Conditional / range
+            "Range",
+            "Content-Range",
+            // Client metadata / tracing (common in apps & SDKs)
+            "X-Client-Id",
+            "X-Client-Version",
+            "X-Device-Id",
+            "X-Platform",
+            "X-Session-Id",
+            "X-Trace-Id",
+            "X-Request-Id",
+            // Sig/nonce patterns used by wallets/exts/APIs
+            "X-Signature",
+            "X-Signature-Version",
+            "X-Timestamp",
+            "X-Nonce",
+            // Overrides / misc
+            "X-HTTP-Method-Override",
+            "X-Requested-By",
         ]);
 
     warp::serve(routes.with(cors))
@@ -2275,7 +2307,6 @@ async fn handle_claim_reward(
         "🎁 HTTP: claim_reward request for ETH: {:?}, BTC: {:?}",
         req.ethereum_address, req.btc_address
     );
-
     // Validate that at least one address is provided
     if req.ethereum_address.is_none() && req.btc_address.is_none() {
         warn!("❌ Both addresses are None - at least one address must be provided");
@@ -2290,7 +2321,6 @@ async fn handle_claim_reward(
             error_message: Some("Both ethereum_address and btc_address cannot be None".to_string()),
         }));
     }
-
     // Validate Ethereum address format if provided
     let normalized_eth_address = if let Some(eth_addr) = &req.ethereum_address {
         match validate_ethereum_address(eth_addr) {
@@ -2314,6 +2344,7 @@ async fn handle_claim_reward(
     };
 
     // Validate signature format
+
     let (compact, v) = match normalize_eth_signature(&req.signature) {
         Ok(t) => t,
         Err(e) => {
@@ -2331,9 +2362,11 @@ async fn handle_claim_reward(
         }
     };
 
-    // Recover signer address from signature
+    // Recover signer address from signature - this must be the solver address (the one who earned rewards)
+
     let msg_bytes = req.message.as_bytes();
-    let signer_address = match recover_eth_address_secp(msg_bytes, &compact, v, true) {
+
+    let solver_address = match recover_eth_address_secp(msg_bytes, &compact, v, true) {
         Ok(addr) => addr,
         Err(e1) => match recover_eth_address_secp(msg_bytes, &compact, v, false) {
             Ok(addr) => addr,
@@ -2359,41 +2392,29 @@ async fn handle_claim_reward(
         },
     };
 
+    // The recovered address is the solver address (who earned the rewards)
+
+    // The ethereum_address and btc_address in the request can be any address (where to send rewards)
+
     info!(
-        "🔍 Recovered signer address from signature: {}",
-        signer_address
+        "🔐 Recovered solver address from signature: {}",
+        solver_address
     );
 
-    // IMPORTANT: Always use signer_address for fetching rewards, not the ethereum_address parameter
-    // The ethereum_address is only used as the DESTINATION for rewards, not for lookup
-    let reward_btc = user_registry.get_solver_reward_btc(&signer_address).await;
-    let reward_tics = user_registry.get_solver_reward_tics(&signer_address).await;
+    let reward_btc = user_registry
+        .get_solver_reward_btc(solver_address.as_str())
+        .await;
 
-    // Check if the signer has any rewards to claim
-    if reward_btc.is_none() && reward_tics.is_none() {
-        warn!(
-            "❌ Signer {} is not a registered solver or has no rewards available",
-            signer_address
-        );
-        return Ok(warp::reply::json(&ClaimRewardResponse {
-            status: "error".to_string(),
-            ethereum_address: normalized_eth_address,
-            btc_address: req.btc_address,
-            reward_btc: None,
-            reward_tics: None,
-            total_reward: None,
-            message: "Signer is not a registered solver or has no rewards".to_string(),
-            error_message: Some(format!(
-                "Address {} has no rewards available",
-                signer_address
-            )),
-        }));
-    }
+    let reward_tics = user_registry
+        .get_solver_reward_tics(solver_address.as_str())
+        .await;
 
     let reward_btc_str = reward_btc.as_ref().map(|v| v.to_string());
+
     let reward_tics_str = reward_tics.as_ref().map(|v| v.to_string());
 
     // Calculate total reward
+
     let total_reward = match (reward_btc, reward_tics) {
         (Some(btc), Some(tics)) => Some((btc + tics).to_string()),
         (Some(btc), None) => Some(btc.to_string()),
@@ -2401,11 +2422,28 @@ async fn handle_claim_reward(
         (None, None) => None,
     };
 
+    // Check if there are any rewards to claim - at least one must be present
+
+    if reward_btc.is_none() && reward_tics.is_none() {
+        info!("💰 No rewards available for address: {}", solver_address);
+        return Ok(warp::reply::json(&ClaimRewardResponse {
+            status: "success".to_string(),
+            ethereum_address: normalized_eth_address,
+            btc_address: req.btc_address,
+            reward_btc: None,
+            reward_tics: None,
+            total_reward: None,
+            message: "No rewards available to claim".to_string(),
+            error_message: None,
+        }));
+    }
+
     // If there are rewards, send a claim message to the network
+
     let claim_msg = ChannelMessage::ClaimReward {
-        solver_address: signer_address.clone(), // The solver who is claiming
+        solver_address: solver_address.clone(),
         btc_address: req.btc_address.clone(),
-        eth_address: req.ethereum_address.clone(), // Destination address for rewards
+        eth_address: req.ethereum_address.clone(),
         reward_btc: reward_btc_str.clone(),
         reward_tics: reward_tics_str.clone(),
     };
@@ -2427,7 +2465,7 @@ async fn handle_claim_reward(
 
     info!(
         "✅ Reward claim processed successfully for solver: {}, BTC: {:?}",
-        signer_address, req.btc_address
+        solver_address, req.btc_address
     );
 
     Ok(warp::reply::json(&ClaimRewardResponse {
