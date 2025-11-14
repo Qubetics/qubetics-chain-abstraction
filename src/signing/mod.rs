@@ -2874,8 +2874,8 @@ impl SigningNode {
         info!("🎁 [SIGNING] Stored BTC reward transaction for round {} with solver address", round);
     }
 
-     /// Get reward amount from transaction for a specific round and network
-     async fn get_reward_amount_from_transaction(
+    /// Get reward amount from transaction for a specific round and network
+    async fn get_reward_amount_from_transaction(
         &self,
         round: u64,
         network: crate::types::TransactionNetwork,
@@ -2886,10 +2886,13 @@ impl SigningNode {
                 if let Some((chain_tx, _tx_bytes, _solver_address, _transaction_type)) = reward_pending_transactions.get(&round) {
                     match chain_tx {
                         crate::chain::ChainTransaction::Ethereum(eth_tx) => {
-                            // Parse the value from hex string
-                            if let Ok(value) = ethers::types::U256::from_str(&eth_tx.value) {
+                            // Parse the value from hex string (format: "0x1234" or "1234")
+                            let value_str = eth_tx.value.trim_start_matches("0x");
+                            if let Ok(value) = ethers::types::U256::from_str_radix(value_str, 16) {
+                                info!("✅ [REWARD] Parsed TICS reward amount from transaction: {}", value);
                                 Some(value)
                             } else {
+                                error!("❌ [REWARD] Failed to parse TICS reward amount from hex string: {}", eth_tx.value);
                                 None
                             }
                         }
@@ -2906,8 +2909,11 @@ impl SigningNode {
                         crate::chain::ChainTransaction::Bitcoin(btc_tx) => {
                             // For Bitcoin, get the first output value (assuming single output for rewards)
                             if let Some(output) = btc_tx.outputs.first() {
-                                Some(ethers::types::U256::from(output.value))
+                                let value = ethers::types::U256::from(output.value);
+                                info!("✅ [REWARD] Parsed BTC reward amount from transaction: {}", value);
+                                Some(value)
                             } else {
+                                error!("❌ [REWARD] No outputs found in BTC reward transaction");
                                 None
                             }
                         }

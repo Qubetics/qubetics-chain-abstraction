@@ -657,6 +657,17 @@ impl NetworkLayer {
                 "📊 [DB_SYNC] Total synced: {} entries from peer {}",
                 self.db_sync_state.entries_synced, peer_id
             );
+
+            // Request VRF round sync after database sync completes
+            if !self.vrf_round_requested {
+                info!("🔄 [VRF_SYNC] Requesting current VRF round from peer {}", peer_id);
+                swarm
+                    .behaviour_mut()
+                    .request_response
+                    .send_request(&peer_id, RPCRequest::RequestCurrentVrfRound);
+                self.vrf_round_requested = true;
+                info!("✅ [VRF_SYNC] VRF round request sent to peer {}", peer_id);
+            }
         }
 
         Ok(())
@@ -1162,6 +1173,17 @@ impl NetworkLayer {
                         .request_response
                         .send_request(&peer_id, RPCRequest::GetPeerList);
                     //receive the peer list with corrosponding index
+
+                    // Also request VRF round sync when connecting to network
+                    if !self.vrf_round_requested && !self.needs_database_sync {
+                        info!("🔄 [VRF_SYNC] Requesting current VRF round from peer {} on connection", peer_id);
+                        swarm
+                            .behaviour_mut()
+                            .request_response
+                            .send_request(&peer_id, RPCRequest::RequestCurrentVrfRound);
+                        self.vrf_round_requested = true;
+                        info!("✅ [VRF_SYNC] VRF round request sent to peer {}", peer_id);
+                    }
                 }
 
                 // Debug: Log current Kademlia routing table size
@@ -2443,6 +2465,52 @@ impl NetworkLayer {
                                         "✅ [NETWORK] Successfully synchronized reward transaction ID {} for solver {} (type: {})",
                                         transaction_id, solver_addr, transaction_type
                                     );
+                                    
+                                    // Handle reward transaction success - update claimed amounts and reduce rewards
+                                    // Get the current reward amount and reduce it to 0 (since claim_reward claims all available rewards)
+                                    let (currency, current_reward) = if transaction_type == "tics_reward" {
+                                        ("tics", user_registry.get_solver_reward_tics(solver_addr).await.unwrap_or_else(|| ethers::types::U256::zero()))
+                                    } else {
+                                        ("btc", user_registry.get_solver_reward_btc(solver_addr).await.unwrap_or_else(|| ethers::types::U256::zero()))
+                                    };
+                                    
+                                    if current_reward > ethers::types::U256::zero() {
+                                        // Get current claimed amount
+                                        let current_claimed = user_registry
+                                            .get_solver_claimed_request_amount(solver_addr)
+                                            .await
+                                            .unwrap_or_else(|| ethers::types::U256::zero());
+                                        
+                                        // Update claimed amount
+                                        let new_claimed = current_claimed + current_reward;
+                                        if let Err(e) = user_registry
+                                            .set_solver_claimed_request_amount(solver_addr, new_claimed)
+                                            .await
+                                        {
+                                            error!("❌ [NETWORK-REWARD] Failed to update claimed amount for solver {}: {}", solver_addr, e);
+                                        } else {
+                                            info!("✅ [NETWORK-REWARD] Updated claimed amount for solver {}: {} (was: {})", solver_addr, new_claimed, current_claimed);
+                                        }
+                                        
+                                        // Set reward to 0 (all rewards claimed)
+                                        let result = if currency == "tics" {
+                                            user_registry.set_solver_reward_tics(solver_addr, ethers::types::U256::zero()).await
+                                        } else {
+                                            user_registry.set_solver_reward_btc(solver_addr, ethers::types::U256::zero()).await
+                                        };
+                                        
+                                        match result {
+                                            Ok(()) => {
+                                                info!("✅ [NETWORK-REWARD] Successfully processed {} reward transaction {} for solver {}: claimed={}, remaining_reward=0", 
+                                                      currency, transaction_id, solver_addr, new_claimed);
+                                            }
+                                            Err(e) => {
+                                                error!("❌ [NETWORK-REWARD] Failed to reduce {} reward for solver {}: {}", currency, solver_addr, e);
+                                            }
+                                        }
+                                    } else {
+                                        info!("ℹ️ [NETWORK-REWARD] No {} reward to claim for solver {} (already claimed or zero)", currency, solver_addr);
+                                    }
                                 }
                                 Err(e) => {
                                     error!(
@@ -4285,6 +4353,52 @@ impl NetworkLayer {
                                         "✅ [NETWORK] Successfully synchronized reward transaction ID {} for solver {} (type: {})",
                                         transaction_id, solver_addr, transaction_type
                                     );
+                                    
+                                    // Handle reward transaction success - update claimed amounts and reduce rewards
+                                    // Get the current reward amount and reduce it to 0 (since claim_reward claims all available rewards)
+                                    let (currency, current_reward) = if transaction_type == "tics_reward" {
+                                        ("tics", user_registry.get_solver_reward_tics(solver_addr).await.unwrap_or_else(|| ethers::types::U256::zero()))
+                                    } else {
+                                        ("btc", user_registry.get_solver_reward_btc(solver_addr).await.unwrap_or_else(|| ethers::types::U256::zero()))
+                                    };
+                                    
+                                    if current_reward > ethers::types::U256::zero() {
+                                        // Get current claimed amount
+                                        let current_claimed = user_registry
+                                            .get_solver_claimed_request_amount(solver_addr)
+                                            .await
+                                            .unwrap_or_else(|| ethers::types::U256::zero());
+                                        
+                                        // Update claimed amount
+                                        let new_claimed = current_claimed + current_reward;
+                                        if let Err(e) = user_registry
+                                            .set_solver_claimed_request_amount(solver_addr, new_claimed)
+                                            .await
+                                        {
+                                            error!("❌ [NETWORK-REWARD] Failed to update claimed amount for solver {}: {}", solver_addr, e);
+                                        } else {
+                                            info!("✅ [NETWORK-REWARD] Updated claimed amount for solver {}: {} (was: {})", solver_addr, new_claimed, current_claimed);
+                                        }
+                                        
+                                        // Set reward to 0 (all rewards claimed)
+                                        let result = if currency == "tics" {
+                                            user_registry.set_solver_reward_tics(solver_addr, ethers::types::U256::zero()).await
+                                        } else {
+                                            user_registry.set_solver_reward_btc(solver_addr, ethers::types::U256::zero()).await
+                                        };
+                                        
+                                        match result {
+                                            Ok(()) => {
+                                                info!("✅ [NETWORK-REWARD] Successfully processed {} reward transaction {} for solver {}: claimed={}, remaining_reward=0", 
+                                                      currency, transaction_id, solver_addr, new_claimed);
+                                            }
+                                            Err(e) => {
+                                                error!("❌ [NETWORK-REWARD] Failed to reduce {} reward for solver {}: {}", currency, solver_addr, e);
+                                            }
+                                        }
+                                    } else {
+                                        info!("ℹ️ [NETWORK-REWARD] No {} reward to claim for solver {} (already claimed or zero)", currency, solver_addr);
+                                    }
                                 }
                                 Err(e) => {
                                     error!(
