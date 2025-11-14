@@ -44,6 +44,7 @@ pub enum DKGMessage {
         to: String,
         share: KeyShare,
         commitment: Vec<SerializablePoint>,
+        new_node_index: usize, // The index calculated by existing nodes for the new node
     },
     /// Broadcasted to trigger polynomial refresh after new node joins
     TriggerRefresh {
@@ -505,10 +506,10 @@ impl DKGNode {
                 info!("🆕 New node {} joined at index {}", new_node_id, new_node_index);
                 self.handle_new_node_joined(new_node_id, new_node_index).await?;
             }
-            DKGMessage::NewNodeShare { from, to, share, commitment } => {
-                info!("📨 Received new node share from {} to {}", from, to);
+            DKGMessage::NewNodeShare { from, to, share, commitment, new_node_index } => {
+                info!("📨 Received new node share from {} to {} (new_node_index: {})", from, to, new_node_index);
                 if to == self.id {
-                    self.handle_new_node_share_received(from, share, commitment, node_manager.clone()).await?;
+                    self.handle_new_node_share_received(from, share, commitment, new_node_index, node_manager.clone()).await?;
                 }
             }
             DKGMessage::TriggerRefresh { trigger_node } => {
@@ -1255,6 +1256,7 @@ impl DKGNode {
             to: new_node_id.clone(),
             share,
             commitment: commitments,
+            new_node_index, // Pass the calculated index to the new node
         };
         
         let gossip_wrap = GossipsubMessage::DKG(msg);
@@ -1272,9 +1274,10 @@ impl DKGNode {
         from: String,
         share: KeyShare,
         commitments: Vec<SerializablePoint>,
+        new_node_index: usize,
         node_manager: Box<dyn NodeMembership>,
     ) -> Result<()> {
-        info!("📨 [NEW_NODE] Received share from existing node {}", from);
+        info!("📨 [NEW_NODE] Received share from existing node {} (my assigned index: {})", from, new_node_index);
         info!("📨 [NEW_NODE] Share index: {}, value: {:?}", share.index, share.value.0);
         
         // Verify the share
@@ -1352,13 +1355,13 @@ impl DKGNode {
             self.storage.set_final_secret(final_secret_share).await?;
             self.storage.set_final_public(final_public_key).await?;
             
-            // Store the permanent index for the new node (always gets the next index = total_nodes)
-            let new_node_index = self.total_nodes;
+            // Store the permanent index that was assigned by existing nodes
+            // The index was calculated by the network layer and passed via NewNodeShare messages
             self.storage.set_my_permanent_index(new_node_index).await?;
             self.my_permanent_index = Some(new_node_index);
-            info!("🔢 [NEW_NODE] Stored permanent index: {} (new node gets index = total_nodes)", new_node_index);
+            info!("🔢 [NEW_NODE] Stored permanent index: {} (assigned by existing nodes)", new_node_index);
             
-            // Store all commitments as ORIGINAL commitments (these will never change)
+            // Store all commitments as ORIGINAL commitments (these will nesver change)
             info!("🏦 [NEW_NODE] Storing original commitments for permanent vault derivation...");
             for (from, comms) in commitments_map.iter() {
                 if let Err(e) = self.storage.store_original_commitments(from, comms).await {

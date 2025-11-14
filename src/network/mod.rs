@@ -1507,9 +1507,24 @@ impl NetworkLayer {
                                             false
                                         };
                                         
-                                        // CRITICAL: New node always gets index = total (e.g., 5th node gets index 5)
-                                        let new_node_index = total;
-                                        info!("🆕 [NEW_NODE] Assigned permanent index: {} (total_nodes = {})", new_node_index, total);
+                                        // CRITICAL: Check if this is a REJOINING node or a truly NEW node
+                                        // Rejoining nodes should reuse their old index
+                                        let new_node_index = if let Some(existing_index) = self.get_index_from_db(&self.local_peer_id) {
+                                            // This node is REJOINING - reuse its old index
+                                            info!("🔄 [REJOIN] Node rejoining with existing index: {}", existing_index);
+                                            existing_index
+                                        } else {
+                                            // This is a truly NEW node - assign max_index + 1
+                                            // Get all assigned indices from peer_indices
+                                            let all_assigned_indices: Vec<usize> = self.peer_indices.values().cloned().collect();
+                                            let max_index = all_assigned_indices.iter().max().cloned().unwrap_or(0);
+                                            
+                                            // Always assign next sequential index (max + 1)
+                                            let final_index = max_index + 1;
+                                            info!("🆕 [NEW_NODE] Assigned permanent index: {} (max_existing={}, total_nodes={})", 
+                                                  final_index, max_index, total);
+                                            final_index
+                                        };
                                         
                                         (should_proceed, sync_peer, Some(new_node_index), !should_proceed)
                                     } else {
