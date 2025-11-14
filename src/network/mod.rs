@@ -4513,6 +4513,66 @@ impl NetworkLayer {
                 swarm.behaviour_mut().gossipsub.publish(topic, msg_bytes)?;
                 info!("📡 [NETWORK] Broadcasted user registration to P2P network");
             }
+            ChannelMessage::RefundInitiation { intent_hash, data } => {
+                info!("💸 [NETWORK] Received refund initiation for intent: {}", intent_hash);
+                
+                // Deserialize refund message to get details
+                match serde_json::from_slice::<serde_json::Value>(&data) {
+                    Ok(refund_data) => {
+                        info!("📋 [NETWORK] Refund details: {:?}", refund_data);
+                        
+                        // Get the intent to create the refund transaction
+                        if let Some(user_registry) = &self.user_registry {
+                            if let Some(mut intent) = user_registry.get_intent(&intent_hash).await {
+                                info!("🔄 [NETWORK-REFUND] Creating refund transaction from network to user's source address");
+                                info!("💰 [NETWORK-REFUND] Refunding {} from network to source address: {} on {}", 
+                                      intent.amount, intent.source_address, intent.source_chain);
+                                
+                                // Modify the intent to create a refund transaction:
+                                // - From: Network address (DKG group key)
+                                // - To: User's source address
+                                // - Chain: Source chain (where user originally sent from)
+                                let original_target = intent.target_address.clone();
+                                let original_target_chain = intent.target_chain.clone();
+                                
+                                // Set target to user's source address on source chain for the refund
+                                intent.target_address = intent.source_address.clone();
+                                intent.target_chain = intent.source_chain.clone();
+                                
+                                info!("🔄 [NETWORK-REFUND] Refund routing: Network → {} ({})", 
+                                      intent.target_address, intent.target_chain);
+                                info!("🔄 [NETWORK-REFUND] Original failed transaction was to: {} ({})", 
+                                      original_target, original_target_chain);
+                                
+                                // Create a refund transaction from network to user's source address
+                                // Use NetworkToTarget type since we're sending from network address to a target
+                                let refund_intent_id = format!("refund-{}", intent_hash);
+                                let refund_message = ChannelMessage::DepositIntent {
+                                    intent: intent.clone(),
+                                    intent_id: refund_intent_id,
+                                    user_eth_address: None, // Use network's DKG key for refund
+                                    transaction_type: crate::types::TransactionType::NetworkToTarget,
+                                    amount: intent.amount,
+                                };
+                                
+                                // Send the refund message through the channel to be processed
+                                if let Err(e) = self.message_tx.send(refund_message).await {
+                                    error!("❌ [NETWORK-REFUND] Failed to send refund transaction message: {}", e);
+                                } else {
+                                    info!("✅ [NETWORK-REFUND] Successfully initiated refund transaction for intent: {}", intent_hash);
+                                }
+                            } else {
+                                warn!("❌ [NETWORK-REFUND] Intent not found: {}", intent_hash);
+                            }
+                        } else {
+                            warn!("❌ [NETWORK-REFUND] User registry not available");
+                        }
+                    }
+                    Err(e) => {
+                        error!("❌ [NETWORK-REFUND] Failed to deserialize refund data: {}", e);
+                    }
+                }
+            }
             ChannelMessage::ScheduledDKGStart => {
                 let total = self.node_manager.get_total_nodes();
                 let threshold = self.node_manager.get_threshold();

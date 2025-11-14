@@ -2826,12 +2826,23 @@ impl SigningNode {
 
                         // Broadcast error to other nodes for synchronization
                         self.broadcast_transaction_error(Some(intent_hash), error_message, transaction_type_str, None).await;
-                    },
+                     // If this was a NetworkToTarget transaction failure, initiate a refund
+                    if matches!(
+                        transaction_type,
+                        Some(crate::types::TransactionType::NetworkToTarget)
+                    ) {
+                        info!("💸 [SIGNING] Network-to-target transaction failed, initiating refund for intent: {}", intent_hash);
+                        if let Err(e) = self.initiate_refund_transaction(intent_hash).await {
+                            error!("❌ [SIGNING] Failed to initiate refund transaction: {}", e);
+                        }
+                    }
+                }
+
                     Err(e) => {
                         error!("❌ [SIGNING] Failed to store transaction error for intent {}: {}", intent_hash, e);
                     }
                 }
-            },
+            }
             (None, Some(user_registry)) => {
                 // This is a reward transaction - handle solver address case
                 if let Some(solver_addr) = retrieved_solver_address.as_ref() {
@@ -2859,6 +2870,88 @@ impl SigningNode {
             }
         }
     }
+
+    // Initiate a refund transaction when network-to-target broadcast fails
+    /// This will create a VaultToNetwork transaction to return funds to the user's source address
+    async fn initiate_refund_transaction(&self, intent_hash: &str) -> Result<()> {
+        info!(
+            "🔄 [SIGNING-REFUND] Starting refund process for intent: {}",
+            intent_hash
+        );
+
+        // Get user registry
+        let user_registry = self
+            .user_registry
+            .as_ref()
+            .ok_or_else(|| anyhow!("User registry not available for refund"))?;
+
+        // Get the intent details
+        let intent = user_registry
+            .get_intent(intent_hash)
+            .await
+            .ok_or_else(|| anyhow!("Intent not found: {}", intent_hash))?;
+
+        info!(
+            "📋 [SIGNING-REFUND] Found intent - Amount: {}, Source: {} ({}), Target: {} ({})",
+            intent.amount,
+            intent.source_address,
+            intent.source_chain,
+            intent.target_address,
+            intent.target_chain
+        );
+
+        // Broadcast refund initiation message to network for coordination
+        if let Err(e) = self.broadcast_refund_initiation(intent_hash, &intent).await {
+            warn!(
+                "⚠️ [SIGNING-REFUND] Failed to broadcast refund initiation: {}",
+                e
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Broadcast refund initiation message to the network
+    /// This notifies other nodes that a refund transaction needs to be created
+    async fn broadcast_refund_initiation(
+        &self,
+        intent_hash: &str,
+        intent: &crate::rpc_server::DepositIntent,
+    ) -> Result<()> {
+        use crate::types::ChannelMessage;
+
+        // Create a message to notify the network about the refund
+        let refund_msg = serde_json::json!({
+            "type": "refund_initiation",
+            "intent_hash": intent_hash,
+            "source_address": intent.source_address,
+            "source_chain": intent.source_chain,
+            "amount": intent.amount.to_string(),
+            "timestamp": SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis()
+        });
+
+        // Serialize and send via channel
+        let msg_bytes = serde_json::to_vec(&refund_msg)?;
+        let channel_msg = ChannelMessage::RefundInitiation {
+            intent_hash: intent_hash.to_string(),
+            data: msg_bytes,
+        };
+
+        self.message_tx
+            .send(channel_msg)
+            .await
+            .map_err(|e| anyhow!("Failed to broadcast refund initiation: {}", e))?;
+
+        info!(
+            "📢 [SIGNING-REFUND] Broadcasted refund initiation for intent: {}",
+            intent_hash
+        );
+        Ok(())
+    }
+
     
      /// Store reward transaction in TICS reward pending transactions mapping
      async fn store_reward_transaction_tics(&self, round: u64, chain_tx: ChainTransaction, tx_bytes: Vec<u8>, solver_address: String) {
