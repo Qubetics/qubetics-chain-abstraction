@@ -34,9 +34,8 @@ pub enum DKGMessage {
         round: u64,
     },
     /// Broadcasted when a new node joins and needs shares
-    NewNodeJoined {
-        
-      id: String,
+    NewNodeJoined {  
+      new_node_id: String,
         new_node_index: usize,
     },
     /// Sent from existing nodes to the new node with a share

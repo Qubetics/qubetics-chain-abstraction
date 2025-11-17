@@ -1462,7 +1462,6 @@ impl NetworkLayer {
                             info!("📤 Sent RPC response to {}: {:?}", peer, res);
                         }
                     }
-                    // here peer(s) will recieve the msg sent by other peer by peer.send.ptp
                     ReqRespMessage::Response {
                         request_id: _,
                         response,
@@ -1473,17 +1472,16 @@ impl NetworkLayer {
                             RPCResponse::PeerList { peers, indices } => {
                                 info!("🔄 Merging peer‐set from {}: {:?}", peer, peers);
                                 info!("🔄 Received indices: {:?}", indices);
-
+ 
                                 // Clone peers list before consuming it
                                 let peers_clone = peers.clone();
-
+ 
                                 for (i, SerializablePeerId(p)) in peers.into_iter().enumerate() {
                                     // Add peer to node_manager if not already present
                                     if !self.node_manager.get_active_nodes().contains(&p) {
-                                        self.node_manager
-                                            .add_node(p.clone())
+                                        self.node_manager.add_node(p.clone())
                                             .map_err(|e| anyhow::anyhow!(e))?;
-
+ 
                                         // Update signing node threshold after adding peer
                                         if let Some(signing_node) = &mut self.signing_node {
                                             let new_threshold = self.node_manager.get_threshold();
@@ -1491,18 +1489,14 @@ impl NetworkLayer {
                                             info!("🔄 [THRESHOLD] Updated signing node threshold to {} after peer list merge", new_threshold);
                                         }
                                     }
-
+ 
                                     // 🔧 FIX: Update peer_indices mapping for ALL peers in the peer list
                                     // Priority: 1) Index from peer list, 2) Existing in peer_indices, 3) Load from database
-                                    let index_to_use = if let Some(idx) =
-                                        indices.get(i).cloned().flatten()
-                                    {
+                                    let index_to_use = if let Some(idx) = indices.get(i).cloned().flatten() {
                                         // Index provided in peer list - use it and persist to database
                                         info!("🔢 [PEER_LIST] Using index {} for peer {} from peer list", idx, p);
                                         Some(idx)
-                                    } else if let Some(existing_idx) =
-                                        self.peer_indices.get(&p).cloned()
-                                    {
+                                    } else if let Some(existing_idx) = self.peer_indices.get(&p).cloned() {
                                         // Already in peer_indices - keep it
                                         info!("🔢 [PEER_LIST] Using existing index {} for peer {} from peer_indices", existing_idx, p);
                                         Some(existing_idx)
@@ -1515,79 +1509,55 @@ impl NetworkLayer {
                                         warn!("⚠️  [PEER_LIST] No index found for peer {} (not in peer list, peer_indices, or database)", p);
                                         None
                                     };
-
+ 
                                     // Update peer_indices and persist to database if we have an index
                                     if let Some(idx) = index_to_use {
                                         self.peer_indices.insert(p.clone(), idx);
                                         let key = key_utils::peer_index_key(&p.to_string());
-                                        if let Err(e) = self.db.put_string(&key, &idx) {
-                                            warn!("❌ [PEER_LIST] Failed to persist peer index {} for peer {}: {:?}", idx, p, e);
+                                        if let Err(e) = self.db.put_string(&key, &idx) { 
+                                            warn!("❌ [PEER_LIST] Failed to persist peer index {} for peer {}: {:?}", idx, p, e); 
                                         } else {
                                             info!("✅ [PEER_LIST] Updated and persisted index {} for peer {}", idx, p);
                                         }
                                     }
                                 }
-
-                                info!(
-                                    "📊 [PEER_LIST] Updated peer_indices mapping: {} entries",
-                                    self.peer_indices.len()
-                                );
-
+ 
+                                info!("📊 [PEER_LIST] Updated peer_indices mapping: {} entries", self.peer_indices.len());
+ 
                                 // After learning about all peers, check if this is a new node joining existing network
-                                let (should_sync, sync_peer_opt, new_node_index_opt, needs_retry) =
-                                    if let Some(dkg_node) = &mut self.dkg_node {
-                                        let total = self.node_manager.get_total_nodes();
-                                        let threshold = self.node_manager.get_threshold();
-
-                                        // Update DKG node parameters with current network size
-                                        dkg_node.update_node_params(total, threshold);
-                                        info!("🔄 [NEW_NODE] Updated DKG params: total_nodes={}, threshold={}", total, threshold);
-
-                                        let has_dkg_data =
-                                            dkg_node.get_final_secret_share().await.is_some();
-                                        info!("🔍 [NEW_NODE] Has DKG data: {}", has_dkg_data);
-
-                                        // If this node has no DKG data and network has > 4 nodes, it's a new node joining
-                                        if !has_dkg_data && total > 4 {
-                                            info!("🆕 [NEW_NODE] Learned about {} total nodes, triggering database sync and share request", total);
-
-                                            let connected_peers: Vec<PeerId> =
-                                                swarm.connected_peers().cloned().collect();
-                                            info!("🔗 [NEW_NODE] Currently connected to {} peers: {:?}", connected_peers.len(), connected_peers);
-
-                                            // Find first connected peer for sync (excluding ourselves)
-                                            let sync_peer = connected_peers
-                                                .iter()
-                                                .find(|pid| **pid != self.local_peer_id)
-                                                .cloned();
-
-                                            let should_proceed = if let Some(ref peer) = sync_peer {
-                                                info!("✅ [NEW_NODE] Selected connected peer for sync: {}", peer);
-                                                true
-                                            } else {
-                                                warn!("⚠️ [NEW_NODE] No connected peers available for database sync!");
-                                                warn!("⚠️ [NEW_NODE] Will retry database sync when a connection is established");
-                                                // Set flag to retry when connection is available
-                                                false
-                                            };
-
-                                            // CRITICAL: New node always gets index = total (e.g., 5th node gets index 5)
-                                            let new_node_index = total;
-                                            info!("🆕 [NEW_NODE] Assigned permanent index: {} (total_nodes = {})", new_node_index, total);
-
-                                            (
-                                                should_proceed,
-                                                sync_peer,
-                                                Some(new_node_index),
-                                                !should_proceed,
-                                            )
+                                let (should_sync, sync_peer_opt, new_node_index_opt, needs_retry) = if let Some(dkg_node) = &mut self.dkg_node {
+                                    let total = self.node_manager.get_total_nodes();
+                                    let threshold = self.node_manager.get_threshold();
+ 
+                                    // Update DKG node parameters with current network size
+                                    dkg_node.update_node_params(total, threshold);
+                                    info!("🔄 [NEW_NODE] Updated DKG params: total_nodes={}, threshold={}", total, threshold);
+ 
+                                    let has_dkg_data = dkg_node.get_final_secret_share().await.is_some();
+                                    info!("🔍 [NEW_NODE] Has DKG data: {}", has_dkg_data);
+ 
+                                    // If this node has no DKG data and network has > 4 nodes, it's a new node joining
+                                    if !has_dkg_data && total > 4 {
+                                        info!("🆕 [NEW_NODE] Learned about {} total nodes, triggering database sync and share request", total);
+ 
+                                        let connected_peers: Vec<PeerId> = swarm.connected_peers().cloned().collect();
+                                        info!("🔗 [NEW_NODE] Currently connected to {} peers: {:?}", connected_peers.len(), connected_peers);
+ 
+                                        // Find first connected peer for sync (excluding ourselves)
+                                        let sync_peer = connected_peers.iter()
+                                            .find(|pid| **pid != self.local_peer_id)
+                                            .cloned();
+ 
+                                        let should_proceed = if let Some(ref peer) = sync_peer {
+                                            info!("✅ [NEW_NODE] Selected connected peer for sync: {}", peer);
+                                            true
                                         } else {
                                             warn!("⚠️ [NEW_NODE] No connected peers available for database sync!");
                                             warn!("⚠️ [NEW_NODE] Will retry database sync when a connection is established");
                                             // Set flag to retry when connection is available
                                             false
                                         };
-                                        
+ 
                                         // CRITICAL: Check if this is a REJOINING node or a truly NEW node
                                         // Rejoining nodes should reuse their old index
                                         let new_node_index = if let Some(existing_index) = self.get_index_from_db(&self.local_peer_id) {
@@ -1599,60 +1569,47 @@ impl NetworkLayer {
                                             // Get all assigned indices from peer_indices
                                             let all_assigned_indices: Vec<usize> = self.peer_indices.values().cloned().collect();
                                             let max_index = all_assigned_indices.iter().max().cloned().unwrap_or(0);
-                                            
+ 
                                             // Always assign next sequential index (max + 1)
                                             let final_index = max_index + 1;
                                             info!("🆕 [NEW_NODE] Assigned permanent index: {} (max_existing={}, total_nodes={})", 
                                                   final_index, max_index, total);
                                             final_index
                                         };
-                                        
+ 
                                         (should_proceed, sync_peer, Some(new_node_index), !should_proceed)
                                     } else {
                                         (false, None, None, false)
-                                    };
-
+                                    }
+                                } else {
+                                    (false, None, None, false)
+                                };
+ 
                                 if needs_retry {
                                     self.needs_database_sync = true;
                                 }
-
+ 
                                 // Now handle sync and DKG request outside of the dkg_node borrow
                                 if should_sync {
                                     // First, sync database from an existing peer
                                     if let Some(sync_peer) = sync_peer_opt {
-                                        info!(
-                                            "📦 [NEW_NODE] Initiating database sync from peer: {}",
-                                            sync_peer
-                                        );
-
-                                        if let Err(e) =
-                                            self.sync_database_from_peer(swarm, sync_peer).await
-                                        {
-                                            warn!(
-                                                "❌ [NEW_NODE] Failed to start database sync: {:?}",
-                                                e
-                                            );
+                                        info!("📦 [NEW_NODE] Initiating database sync from peer: {}", sync_peer);
+ 
+                                        if let Err(e) = self.sync_database_from_peer(swarm, sync_peer).await {
+                                            warn!("❌ [NEW_NODE] Failed to start database sync: {:?}", e);
                                         } else {
                                             info!("✅ [NEW_NODE] Database sync initiated");
                                         }
                                     }
-
+ 
                                     // Request DKG shares
-                                    if let (Some(dkg_node), Some(new_node_index)) =
-                                        (&mut self.dkg_node, new_node_index_opt)
-                                    {
-                                        if let Err(e) = dkg_node
-                                            .request_shares_as_new_node(new_node_index)
-                                            .await
-                                        {
-                                            warn!(
-                                                "❌ [NEW_NODE] Failed to request shares: {:?}",
-                                                e
-                                            );
+                                    if let (Some(dkg_node), Some(new_node_index)) = (&mut self.dkg_node, new_node_index_opt) {
+                                        if let Err(e) = dkg_node.request_shares_as_new_node(new_node_index).await {
+                                            warn!("❌ [NEW_NODE] Failed to request shares: {:?}", e);
                                         }
                                     }
                                 }
-                            }
+                            },
 
                             RPCResponse::GotAVSSShare {
                                 dealer_id: _,
