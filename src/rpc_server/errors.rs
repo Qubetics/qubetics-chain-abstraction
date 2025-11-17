@@ -1,4 +1,4 @@
-use crate::user_registry::checksum_from_any;
+use crate::user_intent_manager::checksum_from_any;
 
 use super::types::ErrorResponse;
 

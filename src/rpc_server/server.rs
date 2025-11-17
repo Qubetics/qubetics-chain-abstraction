@@ -7,7 +7,7 @@ use warp::Filter;
 use crate::{
     database::{DkgStorage, RewardStorage},
     types::ChannelMessage,
-    user_registry::DatabaseUserRegistry,
+    user_intent_manager::UserIntentManager,
 };
 
 use super::{
@@ -22,7 +22,7 @@ use super::{
 pub async fn start_http_server(
     message_tx: mpsc::Sender<ChannelMessage>,
     port: u16,
-    user_registry: Arc<DatabaseUserRegistry>,
+    user_intent_manager: Arc<UserIntentManager>,
     dkg_storage: DkgStorage,
     reward_storage: RewardStorage,
     node_id: String,
@@ -30,7 +30,7 @@ pub async fn start_http_server(
 ) -> Result<(), warp::Rejection> {
     info!(
         "🔗 [RPC_SERVER] Received user registry - Arc pointer: {:p}",
-        Arc::as_ptr(&user_registry)
+        Arc::as_ptr(&user_intent_manager)
     );
 
     let message_tx = Arc::new(Mutex::new(message_tx));
@@ -41,7 +41,7 @@ pub async fn start_http_server(
     let register_user = warp::path("register_user")
         .and(warp::post())
         .and(warp::body::json())
-        .and(with_user_registry(user_registry.clone()))
+        .and(with_user_intent_manager(user_intent_manager.clone()))
         .and(with_dkg_storage(dkg_storage.clone()))
         .and(with_message_tx(message_tx.clone()))
         .and(with_node_id(node_id.clone()))
@@ -50,7 +50,7 @@ pub async fn start_http_server(
     let user_mpc_deposit = warp::path("user_mpc_deposit")
         .and(warp::post())
         .and(warp::body::json())
-        .and(with_user_registry(user_registry.clone()))
+        .and(with_user_intent_manager(user_intent_manager.clone()))
         .and(with_message_tx(message_tx.clone()))
         .and(with_dkg_storage(dkg_storage.clone()))
         .and_then(handle_user_mpc_deposit);
@@ -58,13 +58,13 @@ pub async fn start_http_server(
     let get_reward_solver = warp::path("get_reward_solver")
         .and(warp::get())
         .and(warp::query::<GetRewardSolverRequest>())
-        .and(with_user_registry(user_registry.clone()))
+        .and(with_user_intent_manager(user_intent_manager.clone()))
         .and_then(handle_get_reward_solver);
 
     let claim_reward = warp::path("claim_reward")
         .and(warp::post())
         .and(warp::body::json())
-        .and(with_user_registry(user_registry.clone()))
+        .and(with_user_intent_manager(user_intent_manager.clone()))
         .and(with_reward_storage(reward_storage.clone()))
         .and(with_message_tx(message_tx.clone()))
         .and_then(handle_claim_reward);
@@ -72,7 +72,7 @@ pub async fn start_http_server(
     let get_user_info = warp::path("user_info")
         .and(warp::path::param())
         .and(warp::get())
-        .and(with_user_registry(user_registry.clone()))
+        .and(with_user_intent_manager(user_intent_manager.clone()))
         .and_then(handle_get_user_info);
 
     let get_node_id = warp::path("node_id")
@@ -170,10 +170,10 @@ fn with_message_tx(
     warp::any().map(move || message_tx.clone())
 }
 
-fn with_user_registry(
-    user_registry: Arc<DatabaseUserRegistry>,
-) -> impl Filter<Extract = (Arc<DatabaseUserRegistry>,), Error = std::convert::Infallible> + Clone {
-    warp::any().map(move || user_registry.clone())
+fn with_user_intent_manager(
+    user_intent_manager: Arc<UserIntentManager>,
+) -> impl Filter<Extract = (Arc<UserIntentManager>,), Error = std::convert::Infallible> + Clone {
+    warp::any().map(move || user_intent_manager.clone())
 }
 
 fn with_dkg_storage(

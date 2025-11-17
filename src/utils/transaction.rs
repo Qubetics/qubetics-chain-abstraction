@@ -991,7 +991,7 @@ async fn create_chain_transaction_from_deposit_intent_internal(
     transaction_type: crate::types::TransactionType,
     vault_eth_address: Option<&String>,
     vault_btc_address: Option<&String>,
-    _user_registry: Option<&crate::user_registry::DatabaseUserRegistry>,
+    _user_intent_manager: Option<&crate::user_intent_manager::UserIntentManager>,
     amount: u128,
 ) -> Result<ChainTransaction> {
     // Determine chain type based on transaction type:

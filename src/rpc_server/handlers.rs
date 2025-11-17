@@ -11,7 +11,7 @@ use uuid::Uuid;
 use crate::{
     database::{DkgStorage, RewardStorage},
     types::{rpc::RPCRequest, ChannelMessage, TransactionType},
-    user_registry::{checksum_from_any, DatabaseUserRegistry},
+    user_intent_manager::{checksum_from_any, UserIntentManager},
 };
 
 use super::{
@@ -120,7 +120,7 @@ pub(crate) async fn handle_deposit_intent(
 
 pub(crate) async fn handle_register_user(
     request: UserRegistrationRequest,
-    user_registry: Arc<DatabaseUserRegistry>,
+    user_intent_manager: Arc<UserIntentManager>,
     dkg_storage: Arc<DkgStorage>,
     message_tx: Arc<Mutex<mpsc::Sender<ChannelMessage>>>,
     node_id: String,
@@ -150,7 +150,7 @@ pub(crate) async fn handle_register_user(
     };
 
     // Check if user is already registered
-    if let Some(_existing_user) = user_registry.get_user_by_address(&addr_cs).await {
+    if let Some(_existing_user) = user_intent_manager.get_user_by_address(&addr_cs).await {
         info!("⚠️ HTTP: User already registered: {}", addr_cs);
         let error_response = EnhancedUserRegistrationResponse {
             status: "error".to_string(),
@@ -183,7 +183,7 @@ pub(crate) async fn handle_register_user(
     }
 
     // Attempt user registration
-    match user_registry
+    match user_intent_manager
         .register_user(&addr_cs, dkg_secret_share.as_ref(), &node_id)
         .await
     {
@@ -230,7 +230,7 @@ pub(crate) async fn handle_register_user(
 
             let mut final_registration = registration.clone();
             while attempts < MAX_ATTEMPTS {
-                match user_registry.get_user_by_address(&addr_cs).await {
+                match user_intent_manager.get_user_by_address(&addr_cs).await {
                     Some(updated_user) => {
                         if updated_user.derived_eth_address.is_some()
                             && updated_user.derived_btc_address.is_some()
@@ -307,7 +307,7 @@ pub(crate) async fn handle_register_user(
 
 pub(crate) async fn handle_user_mpc_deposit(
     req: UserMpcDepositRequest,
-    user_registry: Arc<DatabaseUserRegistry>,
+    user_intent_manager: Arc<UserIntentManager>,
     message_tx: Arc<Mutex<mpsc::Sender<ChannelMessage>>>,
     dkg_storage: Arc<DkgStorage>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
@@ -319,10 +319,10 @@ pub(crate) async fn handle_user_mpc_deposit(
     let intent_hash_hex = hex::encode(intent_hash);
 
     let mut transaction_ids = Vec::new();
-    let tx_mapping = user_registry
+    let tx_mapping = user_intent_manager
         .get_intent_transaction_ids(&intent_hash_hex)
         .await;
-    if let Some(tx_ids) = user_registry
+    if let Some(tx_ids) = user_intent_manager
         .get_intent_transaction_ids(&intent_hash_hex)
         .await
     {
@@ -375,7 +375,7 @@ pub(crate) async fn handle_user_mpc_deposit(
         }
     );
 
-    let user_registration = match user_registry
+    let user_registration = match user_intent_manager
         .get_user_by_intent_hash(&intent_hash_hex)
         .await
     {
@@ -435,7 +435,7 @@ pub(crate) async fn handle_user_mpc_deposit(
                             }
                         }
                     };
-                    let user_reg = match user_registry.get_user_by_address(&signer).await {
+                    let user_reg = match user_intent_manager.get_user_by_address(&signer).await {
                         Some(user_reg) => user_reg,
                         None => {
                             return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
@@ -577,7 +577,7 @@ pub(crate) async fn handle_user_mpc_deposit(
     info!("⏳ Waiting for transaction to be processed by the network...");
 
     let (u2n_tx_id, n2t_tx_id, v2n_tx_id, final_solver_id, chain_error) =
-        wait_for_transaction_result(&user_registry, &intent_hash, 40).await;
+        wait_for_transaction_result(&user_intent_manager, &intent_hash, 40).await;
 
     if let Some(ref tx_id_str) = u2n_tx_id {
         info!(
@@ -642,7 +642,7 @@ pub(crate) async fn handle_user_mpc_deposit(
 
 pub(crate) async fn handle_get_user_info(
     ethereum_address: String,
-    user_registry: Arc<DatabaseUserRegistry>,
+    user_intent_manager: Arc<UserIntentManager>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
     info!(
         "🔍 HTTP: Received user info request for address: {}",
@@ -677,7 +677,7 @@ pub(crate) async fn handle_get_user_info(
         addr_cs
     );
 
-    match user_registry.get_user_by_address(&addr_cs).await {
+    match user_intent_manager.get_user_by_address(&addr_cs).await {
         Some(registration) => {
             info!("✅ HTTP: Found user info for {}", addr_cs);
 
@@ -823,7 +823,7 @@ pub(crate) async fn handle_start_dkg(
 
 pub(crate) async fn handle_get_reward_solver(
     req: GetRewardSolverRequest,
-    user_registry: Arc<DatabaseUserRegistry>,
+    user_intent_manager: Arc<UserIntentManager>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
     info!(
         "🔍 HTTP: get_reward_solver request for solver: {}",
@@ -856,10 +856,10 @@ pub(crate) async fn handle_get_reward_solver(
         }
     };
 
-    let reward_btc = user_registry
+    let reward_btc = user_intent_manager
         .get_solver_reward_btc(&normalized_address)
         .await;
-    let reward_tics = user_registry
+    let reward_tics = user_intent_manager
         .get_solver_reward_tics(&normalized_address)
         .await;
 
@@ -890,7 +890,7 @@ pub(crate) async fn handle_get_reward_solver(
 
 pub(crate) async fn handle_claim_reward(
     req: ClaimRewardRequest,
-    user_registry: Arc<DatabaseUserRegistry>,
+    user_intent_manager: Arc<UserIntentManager>,
     _reward_storage: Arc<RewardStorage>,
     message_tx: Arc<Mutex<mpsc::Sender<ChannelMessage>>>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
@@ -983,10 +983,10 @@ pub(crate) async fn handle_claim_reward(
         solver_address
     );
 
-    let reward_btc = user_registry
+    let reward_btc = user_intent_manager
         .get_solver_reward_btc(solver_address.as_str())
         .await;
-    let reward_tics = user_registry
+    let reward_tics = user_intent_manager
         .get_solver_reward_tics(solver_address.as_str())
         .await;
 

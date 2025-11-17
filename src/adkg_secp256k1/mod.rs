@@ -82,7 +82,7 @@ pub struct DKGNode {
     round: u64,
     chain_code: [u8; 32],
     my_permanent_index: Option<usize>, // Index assigned during initial DKG, never changes
-    user_registry: Option<std::sync::Arc<crate::user_registry::DatabaseUserRegistry>>, // optional handle to update users after refresh
+    user_intent_manager: Option<std::sync::Arc<crate::user_intent_manager::UserIntentManager>>, // optional handle to update users after refresh
 }
 
 impl DKGNode {
@@ -105,15 +105,15 @@ impl DKGNode {
             round: 0,
             chain_code,
             my_permanent_index: None, // Will be set during DKG completion or when joining
-            user_registry: None,
+            user_intent_manager: None,
         }
     }
 
-    pub fn set_user_registry(
+    pub fn set_user_intent_manager(
         &mut self,
-        registry: std::sync::Arc<crate::user_registry::DatabaseUserRegistry>,
+        registry: std::sync::Arc<crate::user_intent_manager::UserIntentManager>,
     ) {
-        self.user_registry = Some(registry);
+        self.user_intent_manager = Some(registry);
         info!("🔗 [DKG] User registry handle attached to DKG node");
     }
 
@@ -2403,7 +2403,7 @@ impl DKGNode {
         info!("🎉 [REFRESH] Polynomial refresh complete with updated vault secret!");
 
         // After updating final secret and vault tweaked secret, refresh all user tweaked shares
-        if let Some(registry) = &self.user_registry {
+        if let Some(registry) = &self.user_intent_manager {
             info!(
                 "💾 [REFRESH] Computing and storing refreshed polynomial shares for all USERS..."
             );

@@ -15,8 +15,8 @@ use crate::types::{SerializablePoint, SerializableScalar};
 use crate::utils::hmac_helper::hmac256_from_addr;
 use tracing::info;
 
-pub mod db_registry;
-pub use db_registry::DatabaseUserRegistry;
+pub mod manager;
+pub use manager::UserIntentManager;
 
 /// Intent status enumeration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

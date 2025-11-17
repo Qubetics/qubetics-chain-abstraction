@@ -14,7 +14,7 @@ pub mod node_management;
 pub mod rpc_server;
 pub mod signing;
 pub mod types;
-pub mod user_registry;
+pub mod user_intent_manager;
 pub mod utils;
 pub mod vrf;
 
@@ -32,7 +32,7 @@ pub use node_management::{
     VrfNodeManager,
 };
 pub use signing::{DatabaseSigningNode, ECDSASignature, SigningMessage, SigningNode};
-pub use user_registry::{DatabaseUserRegistry, UserRegistry};
+pub use user_intent_manager::{UserIntentManager, UserRegistry};
 pub use vrf::{
     NodeSelectionResult, VrfNodeSelector, VrfOutput, VrfSelectedNodesBroadcast, VrfSelectionMessage,
 };

@@ -16,7 +16,7 @@ use sha3::{Digest, Keccak256};
 use tokio::time::{Duration, Instant};
 use tracing::{debug, error, info, warn};
 
-use crate::{database::DkgStorage, user_registry::DatabaseUserRegistry};
+use crate::{database::DkgStorage, user_intent_manager::UserIntentManager};
 
 use super::errors::TransactionError;
 
@@ -227,7 +227,7 @@ pub async fn fetch_crypto_prices() -> Result<HashMap<String, Decimal>, String> {
 }
 
 pub(crate) async fn get_transaction_id_for_intent(
-    user_registry: &DatabaseUserRegistry,
+    user_intent_manager: &UserIntentManager,
     intent_hash: &[u8],
 ) -> (
     Option<String>,
@@ -238,28 +238,40 @@ pub(crate) async fn get_transaction_id_for_intent(
     let intent_hash_hex = hex::encode(intent_hash);
 
     // Fetch any recorded transaction IDs for this intent hash
-    if let Some(tx_ids) = user_registry
+    if let Some(tx_ids) = user_intent_manager
         .get_intent_transaction_ids(&intent_hash_hex)
         .await
     {
         // Check each candidate transaction id individually
         let mut user_to_network_tx_id = None;
         if let Some(ref tx_id) = tx_ids.user_to_network_tx_id {
-            if user_registry.get_transaction_status(tx_id).await.is_some() {
+            if user_intent_manager
+                .get_transaction_status(tx_id)
+                .await
+                .is_some()
+            {
                 user_to_network_tx_id = Some(tx_id.clone());
             }
         }
 
         let mut network_to_target_tx_id = None;
         if let Some(ref tx_id) = tx_ids.network_to_target_tx_id {
-            if user_registry.get_transaction_status(tx_id).await.is_some() {
+            if user_intent_manager
+                .get_transaction_status(tx_id)
+                .await
+                .is_some()
+            {
                 network_to_target_tx_id = Some(tx_id.clone());
             }
         }
 
         let mut vault_to_network_tx_id = None;
         if let Some(ref tx_id) = tx_ids.vault_to_network_tx_id {
-            if user_registry.get_transaction_status(tx_id).await.is_some() {
+            if user_intent_manager
+                .get_transaction_status(tx_id)
+                .await
+                .is_some()
+            {
                 vault_to_network_tx_id = Some(tx_id.clone());
             }
         }
@@ -280,7 +292,7 @@ pub(crate) async fn get_transaction_id_for_intent(
 /// after the provided number of seconds. Tries to get all transaction IDs when possible,
 /// but returns with whatever is available after the timeout.
 pub(crate) async fn wait_for_transaction_result(
-    user_registry: &DatabaseUserRegistry,
+    user_intent_manager: &UserIntentManager,
     intent_hash: &[u8],
     timeout_secs: u64,
 ) -> (
@@ -302,7 +314,7 @@ pub(crate) async fn wait_for_transaction_result(
     loop {
         // Check for transaction ids
         let (u2n_tx, n2t_tx, v2n_tx, final_solver) =
-            get_transaction_id_for_intent(user_registry, intent_hash).await;
+            get_transaction_id_for_intent(user_intent_manager, intent_hash).await;
 
         // Update our best result if we have new information
         if u2n_tx.is_some() || n2t_tx.is_some() || v2n_tx.is_some() {
@@ -320,7 +332,7 @@ pub(crate) async fn wait_for_transaction_result(
         }
 
         // Check for any recorded chain error
-        if let Some(tx_ids) = user_registry
+        if let Some(tx_ids) = user_intent_manager
             .get_intent_transaction_ids(&intent_hash_hex)
             .await
         {
@@ -423,5 +435,5 @@ pub fn recover_eth_address_secp(
     let keccak = Keccak256::digest(&uncompressed[1..]);
     let mut addr20 = [0u8; 20];
     addr20.copy_from_slice(&keccak[12..]); // last 20 bytes
-    Ok(crate::user_registry::to_checksum_address(&addr20))
+    Ok(crate::user_intent_manager::to_checksum_address(&addr20))
 }

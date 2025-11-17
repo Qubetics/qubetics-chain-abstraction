@@ -40,7 +40,7 @@ use crate::consensus::ConsensusNode;
 use crate::database::{key_utils, keys, Database, DatabaseConfig};
 use crate::node_management::NodeMembership;
 use crate::signing::{DatabaseSigningNode, SigningNode};
-use crate::user_registry::{DatabaseUserRegistry, TransactionStatus};
+use crate::user_intent_manager::{TransactionStatus, UserIntentManager};
 use crate::{
     adkg_secp256k1::DKGStatus,
     types::{
@@ -156,7 +156,7 @@ pub struct NetworkLayer {
     db_signing_node: Option<Arc<Mutex<DatabaseSigningNode>>>,
     consensus_node: Option<ConsensusNode>,
     command_processor: Option<CommandProcessor>,
-    user_registry: Option<DatabaseUserRegistry>,
+    user_intent_manager: Option<UserIntentManager>,
     node_manager: Box<dyn NodeMembership>,
     scheduled_dkg_task: Option<JoinHandle<()>>,
     vrf_round_requested: bool, // Flag to prevent duplicate VRF round requests
@@ -345,7 +345,7 @@ impl NetworkLayer {
             db_signing_node: None,
             consensus_node: None,
             command_processor: None,
-            user_registry: None,
+            user_intent_manager: None,
             node_manager,
             scheduled_dkg_task: None,
             vrf_round_requested: false,
@@ -396,18 +396,18 @@ impl NetworkLayer {
         self.command_processor = Some(processor);
     }
 
-    pub fn set_user_registry(&mut self, registry: Arc<DatabaseUserRegistry>) {
+    pub fn set_user_intent_manager(&mut self, registry: Arc<UserIntentManager>) {
         info!(
             "🔗 [NETWORK] Received database user registry - Arc pointer: {:p}",
             Arc::as_ptr(&registry)
         );
-        info!("🔗 [NETWORK] About to clone DatabaseUserRegistry from Arc");
-        self.user_registry = Some((*registry).clone());
-        info!("🔗 [NETWORK] DatabaseUserRegistry clone stored in network layer");
+        info!("🔗 [NETWORK] About to clone UserIntentManager from Arc");
+        self.user_intent_manager = Some((*registry).clone());
+        info!("🔗 [NETWORK] UserIntentManager clone stored in network layer");
 
         // Also set the user registry on the signing node for transaction ID storage
         if let Some(signing_node) = &mut self.signing_node {
-            signing_node.set_user_registry(registry.clone());
+            signing_node.set_user_intent_manager(registry.clone());
             info!("📋 [NETWORK] Set user registry on signing node for transaction ID storage");
         } else {
             info!("⚠️ [NETWORK] Signing node not available when setting user registry");
@@ -415,7 +415,7 @@ impl NetworkLayer {
 
         // Attach user registry to DKG node so it can refresh user shares after secret updates
         if let Some(dkg_node) = &mut self.dkg_node {
-            dkg_node.set_user_registry(registry.clone());
+            dkg_node.set_user_intent_manager(registry.clone());
             info!("🔗 [NETWORK] Attached user registry to DKG node");
         } else {
             info!("⚠️ [NETWORK] DKG node not available when setting user registry");
@@ -442,8 +442,8 @@ impl NetworkLayer {
         self.signing_node.as_mut()
     }
 
-    pub fn get_user_registry(&mut self) -> Option<&mut DatabaseUserRegistry> {
-        self.user_registry.as_mut()
+    pub fn get_user_intent_manager(&mut self) -> Option<&mut UserIntentManager> {
+        self.user_intent_manager.as_mut()
     }
 
     pub fn get_msg_tx(&self) -> mpsc::Sender<ChannelMessage> {
@@ -2284,7 +2284,7 @@ impl NetworkLayer {
                 );
 
                 // Process user registration locally (same pattern as deposit intent)
-                if let Some(user_registry) = &mut self.user_registry {
+                if let Some(user_intent_manager) = &mut self.user_intent_manager {
                     // Get DKG secret share if available
                     let dkg_secret_share = if let Some(dkg_node) = &self.dkg_node {
                         dkg_node.get_final_secret_share().await
@@ -2293,7 +2293,7 @@ impl NetworkLayer {
                     };
 
                     // Register the user locally
-                    match user_registry
+                    match user_intent_manager
                         .register_user(&ethereum_address, dkg_secret_share.as_ref(), &node_id)
                         .await
                     {
@@ -2322,7 +2322,7 @@ impl NetworkLayer {
                                         .await
                                     {
                                         Ok(group_key) => {
-                                            if let Err(e) = user_registry
+                                            if let Err(e) = user_intent_manager
                                                 .set_user_group_key(&ethereum_address, group_key)
                                                 .await
                                             {
@@ -2330,7 +2330,7 @@ impl NetworkLayer {
                                             } else {
                                                 info!("🔑 [GOSSIPSUB] Stored user-specific group key and derived addresses for {}", ethereum_address);
                                                 // Log the derived addresses
-                                                if let Some(user) = user_registry
+                                                if let Some(user) = user_intent_manager
                                                     .get_user_by_address(&ethereum_address)
                                                     .await
                                                 {
@@ -2387,7 +2387,7 @@ impl NetworkLayer {
                     info!("ℹ️ [NETWORK] No intent hash or solver address supplied with transaction ID broadcast");
                 }
 
-                if let Some(user_registry) = &self.user_registry {
+                if let Some(user_intent_manager) = &self.user_intent_manager {
                     match (intent_hash.as_ref(), solver_address.as_ref()) {
                         (Some(intent_hash), _) => {
                             let storage_result = match transaction_type.as_str() {
@@ -2412,7 +2412,7 @@ impl NetworkLayer {
                                             );
                                         }
                                     }
-                                    user_registry
+                                    user_intent_manager
                                         .store_user_to_vault_tx_id(
                                             intent_hash,
                                             transaction_id.as_str(),
@@ -2421,7 +2421,7 @@ impl NetworkLayer {
                                         .await
                                 }
                                 "network_to_target" => {
-                                    user_registry
+                                    user_intent_manager
                                         .store_network_to_target_tx_id(
                                             intent_hash,
                                             transaction_id.as_str(),
@@ -2430,7 +2430,7 @@ impl NetworkLayer {
                                         .await
                                 }
                                 "vault_to_network" => {
-                                    user_registry
+                                    user_intent_manager
                                         .store_vault_to_network_tx_id(
                                             intent_hash,
                                             transaction_id.as_str(),
@@ -2449,7 +2449,7 @@ impl NetworkLayer {
 
                             match storage_result {
                                 Ok(()) => {
-                                    if let Err(e) = user_registry
+                                    if let Err(e) = user_intent_manager
                                         .store_transaction_status(
                                             &transaction_id,
                                             TransactionStatus::Pending,
@@ -2466,9 +2466,9 @@ impl NetworkLayer {
                                         transaction_id, intent_hash, transaction_type
                                     );
 
-                                    if let Some(user_registry) = &self.user_registry {
+                                    if let Some(user_intent_manager) = &self.user_intent_manager {
                                         if let Some(intent) =
-                                            user_registry.get_intent(intent_hash).await
+                                            user_intent_manager.get_intent(intent_hash).await
                                         {
                                             let tx_type_enum = match transaction_type.as_str() {
                                                 "user_to_vault" => {
@@ -2533,11 +2533,11 @@ impl NetworkLayer {
                         }
                         (None, Some(solver_addr)) => {
                             let storage_result = match transaction_type.as_str() {
-                                "tics_reward" => user_registry
+                                "tics_reward" => user_intent_manager
                                     .add_solver_tics_txn_hash(solver_addr, transaction_id.clone())
                                     .await
                                     .map_err(|e| e.to_string()),
-                                "btc_reward" => user_registry
+                                "btc_reward" => user_intent_manager
                                     .add_solver_btc_txn_hash(solver_addr, transaction_id.clone())
                                     .await
                                     .map_err(|e| e.to_string()),
@@ -2552,7 +2552,7 @@ impl NetworkLayer {
 
                             match storage_result {
                                 Ok(()) => {
-                                    if let Err(e) = user_registry
+                                    if let Err(e) = user_intent_manager
                                         .store_transaction_status(
                                             &transaction_id,
                                             TransactionStatus::Pending,
@@ -2575,7 +2575,7 @@ impl NetworkLayer {
                                         if transaction_type == "tics_reward" {
                                             (
                                                 "tics",
-                                                user_registry
+                                                user_intent_manager
                                                     .get_solver_reward_tics(solver_addr)
                                                     .await
                                                     .unwrap_or_else(|| ethers::types::U256::zero()),
@@ -2583,7 +2583,7 @@ impl NetworkLayer {
                                         } else {
                                             (
                                                 "btc",
-                                                user_registry
+                                                user_intent_manager
                                                     .get_solver_reward_btc(solver_addr)
                                                     .await
                                                     .unwrap_or_else(|| ethers::types::U256::zero()),
@@ -2592,14 +2592,14 @@ impl NetworkLayer {
 
                                     if current_reward > ethers::types::U256::zero() {
                                         // Get current claimed amount
-                                        let current_claimed = user_registry
+                                        let current_claimed = user_intent_manager
                                             .get_solver_claimed_request_amount(solver_addr)
                                             .await
                                             .unwrap_or_else(|| ethers::types::U256::zero());
 
                                         // Update claimed amount
                                         let new_claimed = current_claimed + current_reward;
-                                        if let Err(e) = user_registry
+                                        if let Err(e) = user_intent_manager
                                             .set_solver_claimed_request_amount(
                                                 solver_addr,
                                                 new_claimed,
@@ -2613,14 +2613,14 @@ impl NetworkLayer {
 
                                         // Set reward to 0 (all rewards claimed)
                                         let result = if currency == "tics" {
-                                            user_registry
+                                            user_intent_manager
                                                 .set_solver_reward_tics(
                                                     solver_addr,
                                                     ethers::types::U256::zero(),
                                                 )
                                                 .await
                                         } else {
-                                            user_registry
+                                            user_intent_manager
                                                 .set_solver_reward_btc(
                                                     solver_addr,
                                                     ethers::types::U256::zero(),
@@ -2679,11 +2679,11 @@ impl NetworkLayer {
                 }
 
                 // Store the error message in our local user registry
-                if let Some(user_registry) = &self.user_registry {
+                if let Some(user_intent_manager) = &self.user_intent_manager {
                     match (intent_hash.as_ref(), solver_address.as_ref()) {
                         (Some(intent_hash), _) => {
                             // Regular transaction error - store with intent hash
-                            match user_registry
+                            match user_intent_manager
                                 .store_transaction_error(
                                     intent_hash,
                                     &error_message,
@@ -2704,7 +2704,7 @@ impl NetworkLayer {
                         }
                         (None, Some(solver_addr)) => {
                             // Reward transaction error - just log for now
-                            // The user_registry might need a method to store reward transaction errors
+                            // The user_intent_manager might need a method to store reward transaction errors
                             info!("✅ [NETWORK] Successfully synchronized reward transaction error for solver {}: {}", solver_addr, error_message);
                         }
                         _ => {
@@ -2734,10 +2734,10 @@ impl NetworkLayer {
                     intent_hash, signer
                 );
 
-                if let Some(user_registry) = &self.user_registry {
+                if let Some(user_intent_manager) = &self.user_intent_manager {
                     match hex::decode(&intent_hash) {
                         Ok(bytes) => {
-                            if let Err(e) = user_registry
+                            if let Err(e) = user_intent_manager
                                 .store_intent_hash(bytes, &signer, &intent)
                                 .await
                             {
@@ -2837,9 +2837,9 @@ impl NetworkLayer {
                             crate::types::TransactionType::UserToVault => {
                                 // For user deposits, use user's specific group key
                                 if let Some(eth_addr) = &user_eth_address {
-                                    if let Some(user_registry) = &self.user_registry {
+                                    if let Some(user_intent_manager) = &self.user_intent_manager {
                                         if let Some(user) =
-                                            user_registry.get_user_by_address(eth_addr).await
+                                            user_intent_manager.get_user_by_address(eth_addr).await
                                         {
                                             if let Some(user_group_key) = &user.user_group_key {
                                                 let affine_point = user_group_key.0; // user_group_key is SerializablePoint(AffinePoint)
@@ -2921,9 +2921,9 @@ impl NetworkLayer {
                         crate::types::TransactionType::UserToVault => {
                             // For user deposits, use user's derived addresses
                             if let Some(eth_addr) = &user_eth_address {
-                                if let Some(user_registry) = &self.user_registry {
+                                if let Some(user_intent_manager) = &self.user_intent_manager {
                                     if let Some(user) =
-                                        user_registry.get_user_by_address(eth_addr).await
+                                        user_intent_manager.get_user_by_address(eth_addr).await
                                     {
                                         (
                                             user.derived_eth_address.clone(),
@@ -2966,7 +2966,7 @@ impl NetworkLayer {
 
                     // Get vault addresses from database
                     let (vault_eth_addr, vault_btc_addr) =
-                        if let Some(registry) = &self.user_registry {
+                        if let Some(registry) = &self.user_intent_manager {
                             let database = registry.get_database();
                             let vault_eth = database
                                 .get_string(&crate::database::keys::DKG_VAULT_ETH_ADDRESS)
@@ -3016,8 +3016,10 @@ impl NetworkLayer {
                                     crate::types::TransactionType::UserToVault => {
                                         // For user deposits, use user-specific group key
                                         if let Some(eth_address) = &user_eth_address {
-                                            if let Some(user_registry) = &self.user_registry {
-                                                if let Some(user) = user_registry
+                                            if let Some(user_intent_manager) =
+                                                &self.user_intent_manager
+                                            {
+                                                if let Some(user) = user_intent_manager
                                                     .get_user_by_address(eth_address)
                                                     .await
                                                 {
@@ -3104,8 +3106,10 @@ impl NetworkLayer {
                                         crate::types::TransactionType::UserToVault => {
                                             // For user deposits, use user's tweaked secret share
                                             if let Some(eth_addr) = &user_eth_address {
-                                                if let Some(user_registry) = &self.user_registry {
-                                                    if let Some(user) = user_registry
+                                                if let Some(user_intent_manager) =
+                                                    &self.user_intent_manager
+                                                {
+                                                    if let Some(user) = user_intent_manager
                                                         .get_user_by_address(eth_addr)
                                                         .await
                                                     {
@@ -3687,8 +3691,8 @@ impl NetworkLayer {
             } => {
                 info!("📝 [NETWORK] Storing intent hash from signer {}", signer);
 
-                if let Some(user_registry) = &self.user_registry {
-                    if let Err(e) = user_registry
+                if let Some(user_intent_manager) = &self.user_intent_manager {
+                    if let Err(e) = user_intent_manager
                         .store_intent_hash(intent_hash.clone(), &signer, &intent)
                         .await
                     {
@@ -3822,9 +3826,9 @@ impl NetworkLayer {
                             crate::types::TransactionType::UserToVault => {
                                 // For user deposits, use user's specific group key
                                 if let Some(eth_addr) = &user_eth_address {
-                                    if let Some(user_registry) = &self.user_registry {
+                                    if let Some(user_intent_manager) = &self.user_intent_manager {
                                         if let Some(user) =
-                                            user_registry.get_user_by_address(eth_addr).await
+                                            user_intent_manager.get_user_by_address(eth_addr).await
                                         {
                                             if let Some(user_group_key) = &user.user_group_key {
                                                 let affine_point = user_group_key.0; // user_group_key is SerializablePoint(AffinePoint)
@@ -3906,9 +3910,9 @@ impl NetworkLayer {
                         crate::types::TransactionType::UserToVault => {
                             // For user deposits, use user's derived addresses
                             if let Some(eth_addr) = &user_eth_address {
-                                if let Some(user_registry) = &self.user_registry {
+                                if let Some(user_intent_manager) = &self.user_intent_manager {
                                     if let Some(user) =
-                                        user_registry.get_user_by_address(eth_addr).await
+                                        user_intent_manager.get_user_by_address(eth_addr).await
                                     {
                                         (
                                             user.derived_eth_address.clone(),
@@ -3950,7 +3954,7 @@ impl NetworkLayer {
 
                     // Get vault addresses from database
                     let (vault_eth_addr, vault_btc_addr) =
-                        if let Some(registry) = &self.user_registry {
+                        if let Some(registry) = &self.user_intent_manager {
                             let database = registry.get_database();
                             let vault_eth = database
                                 .get_string(&crate::database::keys::DKG_VAULT_ETH_ADDRESS)
@@ -4000,8 +4004,10 @@ impl NetworkLayer {
                                     crate::types::TransactionType::UserToVault => {
                                         // For user deposits, use user-specific group key
                                         if let Some(eth_address) = &user_eth_address {
-                                            if let Some(user_registry) = &self.user_registry {
-                                                if let Some(user) = user_registry
+                                            if let Some(user_intent_manager) =
+                                                &self.user_intent_manager
+                                            {
+                                                if let Some(user) = user_intent_manager
                                                     .get_user_by_address(eth_address)
                                                     .await
                                                 {
@@ -4092,8 +4098,10 @@ impl NetworkLayer {
                                         crate::types::TransactionType::UserToVault => {
                                             // For user deposits, use user's tweaked secret share
                                             if let Some(eth_addr) = &user_eth_address {
-                                                if let Some(user_registry) = &self.user_registry {
-                                                    if let Some(user) = user_registry
+                                                if let Some(user_intent_manager) =
+                                                    &self.user_intent_manager
+                                                {
+                                                    if let Some(user) = user_intent_manager
                                                         .get_user_by_address(eth_addr)
                                                         .await
                                                     {
@@ -4315,7 +4323,7 @@ impl NetworkLayer {
                 }
 
                 // Now process locally
-                if let Some(user_registry) = &self.user_registry {
+                if let Some(user_intent_manager) = &self.user_intent_manager {
                     match (intent_hash.as_ref(), solver_address.as_ref()) {
                         (Some(intent_hash), _) => {
                             let storage_result = match transaction_type.as_str() {
@@ -4340,7 +4348,7 @@ impl NetworkLayer {
                                             );
                                         }
                                     }
-                                    user_registry
+                                    user_intent_manager
                                         .store_user_to_vault_tx_id(
                                             intent_hash,
                                             transaction_id.as_str(),
@@ -4349,7 +4357,7 @@ impl NetworkLayer {
                                         .await
                                 }
                                 "network_to_target" => {
-                                    user_registry
+                                    user_intent_manager
                                         .store_network_to_target_tx_id(
                                             intent_hash,
                                             transaction_id.as_str(),
@@ -4358,7 +4366,7 @@ impl NetworkLayer {
                                         .await
                                 }
                                 "vault_to_network" => {
-                                    user_registry
+                                    user_intent_manager
                                         .store_vault_to_network_tx_id(
                                             intent_hash,
                                             transaction_id.as_str(),
@@ -4377,7 +4385,7 @@ impl NetworkLayer {
 
                             match storage_result {
                                 Ok(()) => {
-                                    if let Err(e) = user_registry
+                                    if let Err(e) = user_intent_manager
                                         .store_transaction_status(
                                             &transaction_id,
                                             TransactionStatus::Pending,
@@ -4394,9 +4402,9 @@ impl NetworkLayer {
                                         transaction_id, intent_hash, transaction_type
                                     );
 
-                                    if let Some(user_registry) = &self.user_registry {
+                                    if let Some(user_intent_manager) = &self.user_intent_manager {
                                         if let Some(intent) =
-                                            user_registry.get_intent(intent_hash).await
+                                            user_intent_manager.get_intent(intent_hash).await
                                         {
                                             let tx_type_enum = match transaction_type.as_str() {
                                                 "user_to_vault" => {
@@ -4461,11 +4469,11 @@ impl NetworkLayer {
                         }
                         (None, Some(solver_addr)) => {
                             let storage_result = match transaction_type.as_str() {
-                                "tics_reward" => user_registry
+                                "tics_reward" => user_intent_manager
                                     .add_solver_tics_txn_hash(solver_addr, transaction_id.clone())
                                     .await
                                     .map_err(|e| e.to_string()),
-                                "btc_reward" => user_registry
+                                "btc_reward" => user_intent_manager
                                     .add_solver_btc_txn_hash(solver_addr, transaction_id.clone())
                                     .await
                                     .map_err(|e| e.to_string()),
@@ -4480,7 +4488,7 @@ impl NetworkLayer {
 
                             match storage_result {
                                 Ok(()) => {
-                                    if let Err(e) = user_registry
+                                    if let Err(e) = user_intent_manager
                                         .store_transaction_status(
                                             &transaction_id,
                                             TransactionStatus::Pending,
@@ -4503,7 +4511,7 @@ impl NetworkLayer {
                                         if transaction_type == "tics_reward" {
                                             (
                                                 "tics",
-                                                user_registry
+                                                user_intent_manager
                                                     .get_solver_reward_tics(solver_addr)
                                                     .await
                                                     .unwrap_or_else(|| ethers::types::U256::zero()),
@@ -4511,7 +4519,7 @@ impl NetworkLayer {
                                         } else {
                                             (
                                                 "btc",
-                                                user_registry
+                                                user_intent_manager
                                                     .get_solver_reward_btc(solver_addr)
                                                     .await
                                                     .unwrap_or_else(|| ethers::types::U256::zero()),
@@ -4520,14 +4528,14 @@ impl NetworkLayer {
 
                                     if current_reward > ethers::types::U256::zero() {
                                         // Get current claimed amount
-                                        let current_claimed = user_registry
+                                        let current_claimed = user_intent_manager
                                             .get_solver_claimed_request_amount(solver_addr)
                                             .await
                                             .unwrap_or_else(|| ethers::types::U256::zero());
 
                                         // Update claimed amount
                                         let new_claimed = current_claimed + current_reward;
-                                        if let Err(e) = user_registry
+                                        if let Err(e) = user_intent_manager
                                             .set_solver_claimed_request_amount(
                                                 solver_addr,
                                                 new_claimed,
@@ -4541,14 +4549,14 @@ impl NetworkLayer {
 
                                         // Set reward to 0 (all rewards claimed)
                                         let result = if currency == "tics" {
-                                            user_registry
+                                            user_intent_manager
                                                 .set_solver_reward_tics(
                                                     solver_addr,
                                                     ethers::types::U256::zero(),
                                                 )
                                                 .await
                                         } else {
-                                            user_registry
+                                            user_intent_manager
                                                 .set_solver_reward_btc(
                                                     solver_addr,
                                                     ethers::types::U256::zero(),
@@ -4614,9 +4622,13 @@ impl NetworkLayer {
                 );
 
                 // Directly update commitments locally using the stored HMAC constant
-                if let (Some(user_registry), Some(dkg_node)) = (&self.user_registry, &self.dkg_node)
+                if let (Some(user_intent_manager), Some(dkg_node)) =
+                    (&self.user_intent_manager, &self.dkg_node)
                 {
-                    if let Some(reg) = user_registry.get_user_by_address(&ethereum_address).await {
+                    if let Some(reg) = user_intent_manager
+                        .get_user_by_address(&ethereum_address)
+                        .await
+                    {
                         if let Some(tweak_scalar) =
                             k256::Scalar::from_repr_vartime(reg.hmac_constant.into())
                         {
@@ -4626,7 +4638,7 @@ impl NetworkLayer {
                                 .await
                             {
                                 Ok(group_key) => {
-                                    if let Err(e) = user_registry
+                                    if let Err(e) = user_intent_manager
                                         .set_user_group_key(&ethereum_address, group_key)
                                         .await
                                     {
@@ -4634,7 +4646,7 @@ impl NetworkLayer {
                                     } else {
                                         info!("🔑 [NETWORK] Stored user-specific group key and derived addresses for {}", ethereum_address);
                                         // Log the derived addresses
-                                        if let Some(user) = user_registry
+                                        if let Some(user) = user_intent_manager
                                             .get_user_by_address(&ethereum_address)
                                             .await
                                         {
@@ -4665,7 +4677,7 @@ impl NetworkLayer {
                         );
                     }
                 } else {
-                    warn!("❌ [NETWORK] Missing user_registry or dkg_node; cannot update commitments locally for {}", ethereum_address);
+                    warn!("❌ [NETWORK] Missing user_intent_manager or dkg_node; cannot update commitments locally for {}", ethereum_address);
                 }
 
                 // Create and broadcast user registration message via gossipsub (same pattern as deposit intent)
@@ -4694,8 +4706,10 @@ impl NetworkLayer {
                         info!("📋 [NETWORK] Refund details: {:?}", refund_data);
 
                         // Get the intent to create the refund transaction
-                        if let Some(user_registry) = &self.user_registry {
-                            if let Some(mut intent) = user_registry.get_intent(&intent_hash).await {
+                        if let Some(user_intent_manager) = &self.user_intent_manager {
+                            if let Some(mut intent) =
+                                user_intent_manager.get_intent(&intent_hash).await
+                            {
                                 info!("🔄 [NETWORK-REFUND] Creating refund transaction from network to user's source address");
                                 info!("💰 [NETWORK-REFUND] Refunding {} from network to source address: {} on {}", 
                                       intent.amount, intent.source_address, intent.source_chain);
@@ -5088,8 +5102,8 @@ impl NetworkLayer {
                 eth_address
             );
 
-            if let Some(user_registry) = &self.user_registry {
-                match user_registry.get_user_by_address(eth_address).await {
+            if let Some(user_intent_manager) = &self.user_intent_manager {
+                match user_intent_manager.get_user_by_address(eth_address).await {
                     Some(user) => {
                         if let Some(tweaked_share) = &user.tweaked_secret_share {
                             info!(

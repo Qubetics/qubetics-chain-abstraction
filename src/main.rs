@@ -5,11 +5,11 @@ use mpc_node::{
     adkg_secp256k1::DKGNode,
     commands::CommandProcessor,
     consensus::{ConsensusNode, DatabaseConsensusNode},
-    database::{Database, DatabaseConfig, DkgStorage, RewardStorage},
+    database::{Database, DatabaseConfig, DatabaseModule, DkgStorage, RewardStorage},
     network::NetworkLayer,
     rpc_server,
     signing::{DatabaseSigningNode, SigningNode},
-    user_registry::DatabaseUserRegistry,
+    user_intent_manager::UserIntentManager,
 };
 use rand::{thread_rng, Rng};
 #[allow(dead_code)]
@@ -96,8 +96,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         create_if_missing: true,
         max_open_files: 1000,
     };
-    let database = Arc::new(Database::new(db_config)?);
+    let database_module = DatabaseModule::initialize(db_config)?;
+    let database: Arc<Database> = Arc::new(database_module.database());
     info!("🗄️ [MAIN] Database initialized successfully");
+    info!("🧩 [MAIN] Database module wired for dependent components");
 
     let mut network = NetworkLayer::new(node_manager, database.as_ref().clone()).await?;
 
@@ -116,8 +118,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         network.get_msg_tx(),
     )));
 
-    let dkg_storage = DkgStorage::new(database.as_ref().clone());
-    let reward_storage = RewardStorage::new(database.as_ref().clone());
+    let dkg_storage: DkgStorage = database_module.dkg_storage();
+    let reward_storage: RewardStorage = database_module.reward_storage();
     let chain_code = [42u8; 32]; // Placeholder chain code
     let mut dkg_node = DKGNode::new(
         network.get_local_peer_id().to_string(),
@@ -133,7 +135,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         warn!("⚠️ Failed to load permanent index: {:?}", e);
     }
 
-    let db_consensus_node = DatabaseConsensusNode::new(database.as_ref().clone());
+    let _db_consensus_node = DatabaseConsensusNode::new(database.as_ref().clone());
     let consensus_node = ConsensusNode::new(); // Keep legacy for compatibility
     let command_processor = CommandProcessor::new();
 
@@ -144,20 +146,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
     network.set_command_processor(command_processor);
 
     // Create database-backed user registry
-    let db_user_registry = Arc::new(DatabaseUserRegistry::new(
-        database.as_ref().clone(),
+    let db_user_intent_manager = Arc::new(UserIntentManager::from_module(
+        database_module.clone(),
         chain_code,
     ));
-    info!("🏗️ [MAIN] Created Arc<DatabaseUserRegistry>");
+    info!("🏗️ [MAIN] Created Arc<UserIntentManager>");
 
     // Legacy user registry removed - now using database-backed registry
 
     // Set database user registry in network layer (this will also set it on the signing node)
     info!(
         "🔗 [MAIN] Setting database user registry in network layer - Arc pointer: {:p}",
-        Arc::as_ptr(&db_user_registry)
+        Arc::as_ptr(&db_user_intent_manager)
     );
-    network.set_user_registry(db_user_registry.clone());
+    network.set_user_intent_manager(db_user_intent_manager.clone());
 
     // Set database on signing node for solver amount storage
     network.set_database(database);
@@ -175,12 +177,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
         info!("🚀 Starting RPC server on port {}", rpc_port);
         info!(
             "🔗 [MAIN] Passing database user registry to RPC server - Arc pointer: {:p}",
-            Arc::as_ptr(&db_user_registry)
+            Arc::as_ptr(&db_user_intent_manager)
         );
         if let Err(e) = rpc_server::start_http_server(
             message_tx,
             rpc_port,
-            db_user_registry.clone(),
+            db_user_intent_manager.clone(),
             dkg_storage,
             reward_storage,
             node_id,
@@ -196,7 +198,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     info!("📊 [MAIN] Database components initialized:");
     info!("  📝 DatabaseSigningNode: Available");
     info!("  🗳️ DatabaseConsensusNode: Available");
-    info!("  👥 DatabaseUserRegistry: Available");
+    info!("  👥 UserIntentManager: Available");
     info!(
         "  🗄️ Database path: {}",
         format!(

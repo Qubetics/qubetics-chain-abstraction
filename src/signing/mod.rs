@@ -40,7 +40,7 @@ use crate::vrf::{VrfSelectedNodesBroadcast, VrfService};
 use crate::chain::{BitcoinInput, BitcoinTransaction};
 use crate::contract::{ContractClient, SolverManagerContract};
 use crate::database::RewardStorage;
-use crate::user_registry::{DatabaseUserRegistry, TransactionStatus};
+use crate::user_intent_manager::{TransactionStatus, UserIntentManager};
 use crate::utils::transaction::DetectedAddressType;
 use anyhow::bail;
 use ethereum_types::U256 as EthereumU256;
@@ -197,7 +197,7 @@ pub struct SigningNode {
     // ✅ Store vault group public key separately
     vault_group_key: Option<k256::ProjectivePoint>, // Vault group public key for vault transactions
     // User registry for storing transaction IDs
-    user_registry: Option<Arc<DatabaseUserRegistry>>,
+    user_intent_manager: Option<Arc<UserIntentManager>>,
     // Database for storing solver amounts
     database: Option<Arc<crate::database::Database>>,
     // Dynamic broadcast configuration
@@ -248,10 +248,10 @@ impl SigningNode {
             btc_sigs_by_round: Arc::new(RwLock::new(HashMap::new())),
             btc_agg_by_round: Arc::new(RwLock::new(HashMap::new())),
             btc_done_inputs_by_round: Arc::new(RwLock::new(HashMap::new())),
-            group_public_key: None, // ✅ Initialize DKG group public key
-            vault_group_key: None,  // ✅ Initialize vault group public key
-            user_registry: None,    // Will be set later via set_user_registry
-            database: None,         // Will be set later via set_database
+            group_public_key: None,    // ✅ Initialize DKG group public key
+            vault_group_key: None,     // ✅ Initialize vault group public key
+            user_intent_manager: None, // Will be set later via set_user_intent_manager
+            database: None,            // Will be set later via set_database
             broadcast_config: BroadcastConfig::from_env(), // Load configuration from environment
         }
     }
@@ -1138,9 +1138,9 @@ impl SigningNode {
                     Some(crate::types::TransactionType::UserToVault) => {
                         // This is a user transaction - fetch nonce from user's derived address
                         if let Some(user_addr) = &user_eth_address {
-                            if let Some(user_registry) = &self.user_registry {
+                            if let Some(user_intent_manager) = &self.user_intent_manager {
                                 if let Some(user) =
-                                    user_registry.get_user_by_address(user_addr).await
+                                    user_intent_manager.get_user_by_address(user_addr).await
                                 {
                                     if let Some(derived_eth_addr) = &user.derived_eth_address {
                                         let nonce =
@@ -1187,8 +1187,8 @@ impl SigningNode {
                     }
                     Some(crate::types::TransactionType::VaultToNetwork) => {
                         // This is a vault transaction - fetch nonce from the actual vault address stored in database
-                        if let Some(user_registry) = &self.user_registry {
-                            let database = user_registry.get_database();
+                        if let Some(user_intent_manager) = &self.user_intent_manager {
+                            let database = user_intent_manager.get_database();
                             let vault_eth_address: String = database
                                 .get_string(&crate::database::keys::DKG_VAULT_ETH_ADDRESS)
                                 .ok()
@@ -1211,9 +1211,9 @@ impl SigningNode {
                         // Fallback to old logic for backward compatibility
                         if let Some(user_addr) = &user_eth_address {
                             // This is a user transaction - fetch nonce from user's derived address
-                            if let Some(user_registry) = &self.user_registry {
+                            if let Some(user_intent_manager) = &self.user_intent_manager {
                                 if let Some(user) =
-                                    user_registry.get_user_by_address(user_addr).await
+                                    user_intent_manager.get_user_by_address(user_addr).await
                                 {
                                     if let Some(derived_eth_addr) = &user.derived_eth_address {
                                         let nonce =
@@ -1702,8 +1702,9 @@ impl SigningNode {
             Some(crate::types::TransactionType::UserToVault) => {
                 // UserToVault transactions use the user's specific group key from user registry
                 if let Some(user_addr) = &user_eth_address {
-                    if let Some(user_registry) = &self.user_registry {
-                        if let Some(user) = user_registry.get_user_by_address(user_addr).await {
+                    if let Some(user_intent_manager) = &self.user_intent_manager {
+                        if let Some(user) = user_intent_manager.get_user_by_address(user_addr).await
+                        {
                             if let Some(user_group_key) = &user.user_group_key {
                                 let affine_point = user_group_key.0; // user_group_key is SerializablePoint(AffinePoint)
                                 let encoded_point = k256::EncodedPoint::from(affine_point);
@@ -2978,8 +2979,8 @@ impl SigningNode {
         self.vault_group_key
     }
 
-    pub fn set_user_registry(&mut self, user_registry: Arc<DatabaseUserRegistry>) {
-        self.user_registry = Some(user_registry);
+    pub fn set_user_intent_manager(&mut self, user_intent_manager: Arc<UserIntentManager>) {
+        self.user_intent_manager = Some(user_intent_manager);
         info!("📋 [SIGNING] Node {} user registry set", self.id);
     }
 
@@ -3126,10 +3127,10 @@ impl SigningNode {
             }
         };
 
-        match (intent_hash, &self.user_registry) {
-            (Some(ref intent_hash), Some(user_registry)) => {
+        match (intent_hash, &self.user_intent_manager) {
+            (Some(ref intent_hash), Some(user_intent_manager)) => {
                 // Regular transaction - store error locally with intent hash
-                match user_registry
+                match user_intent_manager
                     .store_transaction_error(intent_hash, error_message, None)
                     .await
                 {
@@ -3179,7 +3180,7 @@ impl SigningNode {
                     }
                 }
             }
-            (None, Some(user_registry)) => {
+            (None, Some(user_intent_manager)) => {
                 // This is a reward transaction - handle solver address case
                 if let Some(solver_addr) = retrieved_solver_address.as_ref() {
                     let transaction_type_str = match txn_network {
@@ -3188,7 +3189,7 @@ impl SigningNode {
                     };
 
                     // For reward transactions, we can store the error in a general way
-                    // Note: The user_registry might need a method to store reward transaction errors
+                    // Note: The user_intent_manager might need a method to store reward transaction errors
                     // For now, we'll just log and broadcast
                     info!(
                         "💥 [SIGNING] Reward transaction error for solver {} (round {}): {}",
@@ -3225,13 +3226,13 @@ impl SigningNode {
         );
 
         // Get user registry
-        let user_registry = self
-            .user_registry
+        let user_intent_manager = self
+            .user_intent_manager
             .as_ref()
             .ok_or_else(|| anyhow!("User registry not available for refund"))?;
 
         // Get the intent details
-        let intent = user_registry
+        let intent = user_intent_manager
             .get_intent(intent_hash)
             .await
             .ok_or_else(|| anyhow!("Intent not found: {}", intent_hash))?;
@@ -3405,16 +3406,16 @@ impl SigningNode {
         currency: &str, // "tics" or "btc"
         tx_id: &str,
     ) -> Result<()> {
-        if let Some(user_registry) = &self.user_registry {
+        if let Some(user_intent_manager) = &self.user_intent_manager {
             // Get current claimed amount
-            let current_claimed = user_registry
+            let current_claimed = user_intent_manager
                 .get_solver_claimed_request_amount(solver_address)
                 .await
                 .unwrap_or_else(|| ethers::types::U256::zero());
 
             // Update claimed amount
             let new_claimed = current_claimed + reward_amount;
-            if let Err(e) = user_registry
+            if let Err(e) = user_intent_manager
                 .set_solver_claimed_request_amount(solver_address, new_claimed)
                 .await
             {
@@ -3427,12 +3428,12 @@ impl SigningNode {
 
             // Reduce solver reward
             let current_reward = if currency == "tics" {
-                user_registry
+                user_intent_manager
                     .get_solver_reward_tics(solver_address)
                     .await
                     .unwrap_or_else(|| ethers::types::U256::zero())
             } else {
-                user_registry
+                user_intent_manager
                     .get_solver_reward_btc(solver_address)
                     .await
                     .unwrap_or_else(|| ethers::types::U256::zero())
@@ -3441,11 +3442,11 @@ impl SigningNode {
             if current_reward >= reward_amount {
                 let new_reward = current_reward - reward_amount;
                 let result = if currency == "tics" {
-                    user_registry
+                    user_intent_manager
                         .set_solver_reward_tics(solver_address, new_reward)
                         .await
                 } else {
-                    user_registry
+                    user_intent_manager
                         .set_solver_reward_btc(solver_address, new_reward)
                         .await
                 };
@@ -3467,10 +3468,10 @@ impl SigningNode {
             }
 
             // Update transaction status to confirmed
-            if let Err(e) = user_registry
+            if let Err(e) = user_intent_manager
                 .update_transaction_status(
                     tx_id,
-                    crate::user_registry::TransactionStatus::Confirmed,
+                    crate::user_intent_manager::TransactionStatus::Confirmed,
                 )
                 .await
             {
@@ -3494,9 +3495,9 @@ impl SigningNode {
         currency: &str, // "tics" or "btc"
         tx_id: &str,
     ) -> Result<()> {
-        if let Some(user_registry) = &self.user_registry {
+        if let Some(user_intent_manager) = &self.user_intent_manager {
             // Store transaction error (using solver_address as intent_hash equivalent for rewards)
-            if let Err(e) = user_registry
+            if let Err(e) = user_intent_manager
                 .store_transaction_error(solver_address, error_message, Some(tx_id))
                 .await
             {
@@ -3508,8 +3509,11 @@ impl SigningNode {
             }
 
             // Update transaction status to rejected
-            if let Err(e) = user_registry
-                .update_transaction_status(tx_id, crate::user_registry::TransactionStatus::Rejected)
+            if let Err(e) = user_intent_manager
+                .update_transaction_status(
+                    tx_id,
+                    crate::user_intent_manager::TransactionStatus::Rejected,
+                )
                 .await
             {
                 error!(
@@ -3540,8 +3544,8 @@ impl SigningNode {
 
     /// Store transaction error for a specific intent hash
     async fn store_transaction_error_for_intent(&self, intent_hash: &str, error_message: &str) {
-        if let Some(user_registry) = &self.user_registry {
-            if let Err(e) = user_registry
+        if let Some(user_intent_manager) = &self.user_intent_manager {
+            if let Err(e) = user_intent_manager
                 .store_transaction_error(intent_hash, error_message, None)
                 .await
             {
@@ -3633,13 +3637,13 @@ impl SigningNode {
             }
         };
 
-        match (intent_hash, &self.user_registry) {
-            (Some(ref intent_hash), Some(user_registry)) => {
+        match (intent_hash, &self.user_intent_manager) {
+            (Some(ref intent_hash), Some(user_intent_manager)) => {
                 // Determine transaction type based on the actual transaction type from pending transactions
                 let (transaction_type_str, storage_result) = match transaction_type {
                     Some(crate::types::TransactionType::UserToVault) => {
                         // User-to-vault transaction
-                        let result = user_registry
+                        let result = user_intent_manager
                             .store_user_to_vault_tx_id(intent_hash, tx_id, None)
                             .await;
                         match &result {
@@ -3671,7 +3675,7 @@ impl SigningNode {
                     }
                     Some(crate::types::TransactionType::NetworkToTarget) => {
                         // Network-to-target transaction
-                        let result = user_registry
+                        let result = user_intent_manager
                             .store_network_to_target_tx_id(intent_hash, tx_id, Some(&self.id))
                             .await;
                         match &result {
@@ -3686,7 +3690,7 @@ impl SigningNode {
                     }
                     Some(crate::types::TransactionType::VaultToNetwork) => {
                         // Vault-to-network transaction
-                        let result = user_registry
+                        let result = user_intent_manager
                             .store_vault_to_network_tx_id(intent_hash, tx_id, None)
                             .await;
                         match &result {
@@ -3712,7 +3716,7 @@ impl SigningNode {
                         let result = if is_tics_reward {
                             // Store as TICS reward transaction hash
                             if let Some(eth_addr) = solver_address_to_use {
-                                let result = user_registry
+                                let result = user_intent_manager
                                     .add_solver_tics_txn_hash(eth_addr, tx_id.to_string())
                                     .await
                                     .map_err(|e| e.to_string());
@@ -3759,7 +3763,7 @@ impl SigningNode {
                         } else {
                             // Store as BTC reward transaction hash
                             if let Some(eth_addr) = solver_address_to_use {
-                                let result = user_registry
+                                let result = user_intent_manager
                                     .add_solver_btc_txn_hash(eth_addr, tx_id.to_string())
                                     .await
                                     .map_err(|e| e.to_string());
@@ -3808,7 +3812,7 @@ impl SigningNode {
 
                 // If storage was successful, record transaction status and broadcast to other nodes
                 if storage_result.is_ok() {
-                    if let Err(e) = user_registry
+                    if let Err(e) = user_intent_manager
                         .store_transaction_status(tx_id, TransactionStatus::Pending)
                         .await
                     {
@@ -3832,12 +3836,12 @@ impl SigningNode {
                     .await;
                 }
             }
-            (None, Some(user_registry)) => {
+            (None, Some(user_intent_manager)) => {
                 // This is a reward transaction - handle solver address case
                 if let Some(solver_addr) = retrieved_solver_address.as_ref() {
                     let (transaction_type_str, storage_result) = match txn_network {
                         crate::types::TransactionNetwork::TICS => {
-                            let result = user_registry
+                            let result = user_intent_manager
                                 .add_solver_tics_txn_hash(solver_addr, tx_id.to_string())
                                 .await
                                 .map_err(|e| e.to_string());
@@ -3852,7 +3856,7 @@ impl SigningNode {
                             ("tics_reward", result)
                         }
                         crate::types::TransactionNetwork::BTC => {
-                            let result = user_registry
+                            let result = user_intent_manager
                                 .add_solver_btc_txn_hash(solver_addr, tx_id.to_string())
                                 .await
                                 .map_err(|e| e.to_string());
@@ -3869,7 +3873,7 @@ impl SigningNode {
                     };
 
                     if storage_result.is_ok() {
-                        if let Err(e) = user_registry
+                        if let Err(e) = user_intent_manager
                             .store_transaction_status(tx_id, TransactionStatus::Pending)
                             .await
                         {
@@ -5489,13 +5493,16 @@ impl SigningNode {
             .database
             .as_ref()
             .ok_or_else(|| anyhow!("Database not available"))?;
-        let user_registry = self
-            .user_registry
+        let user_intent_manager = self
+            .user_intent_manager
             .as_ref()
             .ok_or_else(|| anyhow!("User registry not available"))?;
 
         // Check if rewards already calculated using user registry
-        if let Some(true) = user_registry.get_intent_reward_status(intent_hash).await {
+        if let Some(true) = user_intent_manager
+            .get_intent_reward_status(intent_hash)
+            .await
+        {
             info!(
                 "⏭️ [SOLVER] Rewards already calculated for intent {}",
                 intent_hash
@@ -5504,7 +5511,7 @@ impl SigningNode {
         }
 
         // Fetch intent to determine amount and target chain
-        let intent = user_registry
+        let intent = user_intent_manager
             .get_intent(intent_hash)
             .await
             .ok_or_else(|| anyhow!("Intent not found: {}", intent_hash))?;
@@ -5514,11 +5521,11 @@ impl SigningNode {
         let base_reward = intent_amount / EthereumU256::from(10u8); // 10% of intent amount
 
         // Fetch total liquidity values using user registry
-        let total_tics = user_registry
+        let total_tics = user_intent_manager
             .get_total_liquidity_tics_u256()
             .await
             .unwrap_or(EthereumU256::zero());
-        let total_btc = user_registry
+        let total_btc = user_intent_manager
             .get_total_liquidity_btc_u256()
             .await
             .unwrap_or(EthereumU256::zero());
@@ -5576,12 +5583,12 @@ impl SigningNode {
 
             // Get current reward by currency and update accordingly
             let current_currency_reward = if source_chain == "btc" || source_chain == "bitcoin" {
-                user_registry
+                user_intent_manager
                     .get_solver_reward_btc(solver)
                     .await
                     .unwrap_or_else(|| EthereumU256::zero())
             } else {
-                user_registry
+                user_intent_manager
                     .get_solver_reward_tics(solver)
                     .await
                     .unwrap_or_else(|| EthereumU256::zero())
@@ -5604,11 +5611,11 @@ impl SigningNode {
                 .map_err(|e| anyhow!("Failed to convert updated reward: {}", e))?;
 
             if source_chain == "btc" || source_chain == "bitcoin" {
-                let _ = user_registry
+                let _ = user_intent_manager
                     .set_solver_reward_btc(solver, updated_ethereum_types)
                     .await;
             } else {
-                let _ = user_registry
+                let _ = user_intent_manager
                     .set_solver_reward_tics(solver, updated_ethereum_types)
                     .await;
             }
@@ -5625,7 +5632,7 @@ impl SigningNode {
         );
 
         // Mark intent reward status as calculated using user registry
-        user_registry
+        user_intent_manager
             .set_intent_reward_status(intent_hash, true)
             .await
             .map_err(|e| anyhow!("Failed to set intent reward status: {}", e))?;
