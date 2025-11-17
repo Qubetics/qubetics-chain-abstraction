@@ -1177,7 +1177,6 @@ impl NetworkLayer {
                         .request_response
                         .send_request(&peer_id, RPCRequest::GetPeerList);
                     //receive the peer list with corrosponding index
-
                     // Also request VRF round sync when connecting to network
                     if !self.vrf_round_requested && !self.needs_database_sync {
                         info!("🔄 [VRF_SYNC] Requesting current VRF round from peer {} on connection", peer_id);
