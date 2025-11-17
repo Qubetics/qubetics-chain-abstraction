@@ -1,10 +1,10 @@
-use crate::{utils, NodeMembership};
 use crate::utils::hmac_helper::hmac256_from_addr;
-use anyhow::{Result, anyhow};
-use k256::{AffinePoint, ProjectivePoint, Scalar};
-use k256::elliptic_curve::group::Group;
+use crate::{utils, NodeMembership};
+use anyhow::{anyhow, Result};
 use ethers::core::k256::ecdsa::Error;
 use ff::{Field, PrimeField};
+use k256::elliptic_curve::group::Group;
+use k256::{AffinePoint, ProjectivePoint, Scalar};
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -14,11 +14,11 @@ use tokio::sync::mpsc;
 use tracing::info;
 use tracing::warn;
 
+use crate::database::DkgStorage;
 use crate::types::dkg::MSG_TOPIC_DKG;
 use crate::types::{
     ChannelMessage, GossipsubMessage, KeyShare, SerializablePoint, SerializableScalar,
 };
-use crate::database::DkgStorage;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DKGMessage {
@@ -31,11 +31,12 @@ pub enum DKGMessage {
         from: String,
         to: String,
         is_valid: bool,
-        round : u64,
+        round: u64,
     },
     /// Broadcasted when a new node joins and needs shares
     NewNodeJoined {
-        new_node_id: String,
+        
+      id: String,
         new_node_index: usize,
     },
     /// Sent from existing nodes to the new node with a share
@@ -177,17 +178,20 @@ impl DKGNode {
         &self,
         tweak_scalar: Scalar,
     ) -> Result<Scalar> {
-        let final_secret_share = self.storage.get_final_secret().await?
+        let final_secret_share = self
+            .storage
+            .get_final_secret()
+            .await?
             .ok_or_else(|| anyhow!("No final secret share available"))?;
-        
+
         // The vault tweaked secret share is: final_secret_share + tweak_scalar
         let vault_tweaked_secret = final_secret_share + tweak_scalar;
-        
+
         info!("🔐 [DKG] Calculated vault tweaked secret share");
         info!("  📊 Final secret share: {:?}", final_secret_share);
         info!("  🔧 Tweak scalar: {:?}", tweak_scalar);
         info!("  🏦 Vault tweaked secret: {:?}", vault_tweaked_secret);
-        
+
         Ok(vault_tweaked_secret)
     }
 
@@ -210,13 +214,19 @@ impl DKGNode {
         }
 
         // Sort solver IDs by their stored peer indices instead of alphabetically
-        let mut solver_with_indices: Vec<(String, usize)> = commitments.keys()
+        let mut solver_with_indices: Vec<(String, usize)> = commitments
+            .keys()
             .filter_map(|sid| peer_indices.get(sid).map(|&idx| (sid.clone(), idx)))
             .collect();
         solver_with_indices.sort_by_key(|(_, idx)| *idx);
 
-        info!("🔢 [DKG] Processing commitments in peer index order: {:?}", 
-              solver_with_indices.iter().map(|(sid, idx)| format!("{}:{}", sid, idx)).collect::<Vec<_>>());
+        info!(
+            "🔢 [DKG] Processing commitments in peer index order: {:?}",
+            solver_with_indices
+                .iter()
+                .map(|(sid, idx)| format!("{}:{}", sid, idx))
+                .collect::<Vec<_>>()
+        );
 
         // P_base = Σ C0_i (in peer index order)
         let mut p_base = ProjectivePoint::IDENTITY;
@@ -233,7 +243,9 @@ impl DKGNode {
         }
 
         if added == 0 {
-            return Err(anyhow!("No C0 found in any solver commitments; cannot derive base group key"));
+            return Err(anyhow!(
+                "No C0 found in any solver commitments; cannot derive base group key"
+            ));
         }
 
         // T = t * G
@@ -259,7 +271,9 @@ impl DKGNode {
     ) -> Result<ProjectivePoint> {
         let commitments = self.storage.get_all_original_commitments().await?;
         if commitments.is_empty() {
-            return Err(anyhow!("No original commitments available - vault cannot be derived"));
+            return Err(anyhow!(
+                "No original commitments available - vault cannot be derived"
+            ));
         }
 
         // Get peer indices from database for deterministic ordering
@@ -269,13 +283,19 @@ impl DKGNode {
         }
 
         // Sort solver IDs by their stored peer indices instead of alphabetically
-        let mut solver_with_indices: Vec<(String, usize)> = commitments.keys()
+        let mut solver_with_indices: Vec<(String, usize)> = commitments
+            .keys()
             .filter_map(|sid| peer_indices.get(sid).map(|&idx| (sid.clone(), idx)))
             .collect();
         solver_with_indices.sort_by_key(|(_, idx)| *idx);
 
-        info!("🔢 [VAULT] Processing original commitments in peer index order: {:?}", 
-              solver_with_indices.iter().map(|(sid, idx)| format!("{}:{}", sid, idx)).collect::<Vec<_>>());
+        info!(
+            "🔢 [VAULT] Processing original commitments in peer index order: {:?}",
+            solver_with_indices
+                .iter()
+                .map(|(sid, idx)| format!("{}:{}", sid, idx))
+                .collect::<Vec<_>>()
+        );
 
         // P_base = Σ C0_i from ORIGINAL commitments (in peer index order)
         let mut p_base = ProjectivePoint::IDENTITY;
@@ -286,16 +306,24 @@ impl DKGNode {
                     p_base += ProjectivePoint::from(*c0);
                     added += 1;
                 } else {
-                    warn!("⚠️ [VAULT] Solver {} has no C0 in original commitments", sid);
+                    warn!(
+                        "⚠️ [VAULT] Solver {} has no C0 in original commitments",
+                        sid
+                    );
                 }
             }
         }
 
         if added == 0 {
-            return Err(anyhow!("No C0 found in original commitments; cannot derive vault"));
+            return Err(anyhow!(
+                "No C0 found in original commitments; cannot derive vault"
+            ));
         }
 
-        info!("🏦 [VAULT] Using {} original commitment C0s for vault derivation", added);
+        info!(
+            "🏦 [VAULT] Using {} original commitment C0s for vault derivation",
+            added
+        );
 
         // T = t * G
         let tweak_point = ProjectivePoint::GENERATOR * &tweak_scalar;
@@ -306,8 +334,7 @@ impl DKGNode {
         Ok(p_vault)
     }
 
-    
-    pub async fn start_dkg(&mut self,node_manager: Box<dyn NodeMembership>) -> Result<()> {
+    pub async fn start_dkg(&mut self, node_manager: Box<dyn NodeMembership>) -> Result<()> {
         info!(
             "🚀 Starting DKG for node {} with threshold {} and total nodes {}",
             self.id, self.threshold, self.total_nodes
@@ -315,11 +342,11 @@ impl DKGNode {
 
         let polynomial = self.generate_polynomial()?;
         info!("🔢 Generated polynomial: {:?}", polynomial);
-        
+
         // Store the polynomial for later use when new nodes join
         self.storage.set_polynomial(&polynomial).await?;
         info!("💾 Stored polynomial for future share generation");
-        
+
         let shares = self.generate_shares(&polynomial)?;
         let commitments = self.generate_commitments(&polynomial)?;
 
@@ -331,8 +358,13 @@ impl DKGNode {
             let my_commitments = commitments.clone();
             // This will verify, store in database
             // and even send you a local "validation" message if you want.
-            self.handle_share_distribution(self.id.clone(), my_shares, my_commitments,node_manager)
-                .await?;
+            self.handle_share_distribution(
+                self.id.clone(),
+                my_shares,
+                my_commitments,
+                node_manager,
+            )
+            .await?;
         }
         self.broadcast_shares(shares, commitments).await?;
         Ok(())
@@ -363,12 +395,15 @@ impl DKGNode {
             total_nodes, threshold
         );
         self.total_nodes = total_nodes;
-        self.threshold = threshold; 
+        self.threshold = threshold;
     }
 
     fn generate_shares(&self, polynomial: &[Scalar]) -> Result<Vec<KeyShare>> {
         info!("🔍 [DKG] === SECRET SHARE GENERATION ===");
-        info!("📊 [DKG] Node {} generating shares for {} nodes", self.id, self.total_nodes);
+        info!(
+            "📊 [DKG] Node {} generating shares for {} nodes",
+            self.id, self.total_nodes
+        );
         info!(
             "🔢 [DKG] Node {} polynomial coefficients: {:?}",
             self.id, polynomial
@@ -382,7 +417,7 @@ impl DKGNode {
             let mut y = Scalar::ZERO;
 
             info!("🔍 [DKG] Calculating share for index {} (x = {:?})", i, x);
-            
+
             for (j, coeff) in polynomial.iter().enumerate() {
                 let mut x_pow = Scalar::ONE;
                 for _ in 0..j {
@@ -390,8 +425,10 @@ impl DKGNode {
                 }
                 let term = *coeff * x_pow;
                 y += term;
-                info!("🔍 [DKG]   Term {}: coeff[{}] * x^{} = {:?} * {:?}^{} = {:?}", 
-                      j, j, j, coeff, x, j, term);
+                info!(
+                    "🔍 [DKG]   Term {}: coeff[{}] * x^{} = {:?} * {:?}^{} = {:?}",
+                    j, j, j, coeff, x, j, term
+                );
             }
 
             info!("🔍 [DKG] Final share for index {}: y = {:?}", i, y);
@@ -401,14 +438,23 @@ impl DKGNode {
                 value: SerializableScalar(y),
             });
         }
-        
+
         info!("🔍 [DKG] === GENERATED SHARES SUMMARY ===");
         for (i, share) in shares.iter().enumerate() {
-            info!("🔍 [DKG] Share {}: index={}, value={:?}", i+1, share.index, share.value.0);
+            info!(
+                "🔍 [DKG] Share {}: index={}, value={:?}",
+                i + 1,
+                share.index,
+                share.value.0
+            );
         }
         info!("🔍 [DKG] === END GENERATED SHARES SUMMARY ===");
-        
-        info!("✅ [DKG] Node {} generated {} shares", self.id, shares.len());
+
+        info!(
+            "✅ [DKG] Node {} generated {} shares",
+            self.id,
+            shares.len()
+        );
         info!("🔍 [DKG] === END SECRET SHARE GENERATION ===");
         Ok(shares)
     }
@@ -483,8 +529,11 @@ impl DKGNode {
         Ok(())
     }
 
-    pub async fn handle_message(&mut self, msg: DKGMessage,node_manager: Box<dyn NodeMembership>,
-) -> Result<()> {
+    pub async fn handle_message(
+        &mut self,
+        msg: DKGMessage,
+        node_manager: Box<dyn NodeMembership>,
+    ) -> Result<()> {
         match msg {
             DKGMessage::ShareDistribution {
                 from,
@@ -492,28 +541,45 @@ impl DKGNode {
                 commitments,
             } => {
                 info!("📥 Received share distribution from {}", from);
-                self.handle_share_distribution(from, shares, commitments,node_manager.clone())
+                self.handle_share_distribution(from, shares, commitments, node_manager.clone())
                     .await?;
             }
-            DKGMessage::ShareValidation { from, to, is_valid ,round} => {
+            DKGMessage::ShareValidation {
+                from,
+                to,
+                is_valid,
+                round,
+            } => {
                 info!(
                     "✅ Received share validation from {} for {}: {}",
                     from, to, is_valid
                 );
-                self.handle_share_validation(from, to, is_valid,node_manager).await?;
+                self.handle_share_validation(from, to, is_valid, node_manager)
+                    .await?;
             }
-            DKGMessage::NewNodeJoined { new_node_id, new_node_index } => {
-                info!("🆕 New node {} joined at index {}", new_node_id, new_node_index);
-                self.handle_new_node_joined(new_node_id, new_node_index).await?;
+            DKGMessage::NewNodeJoined {
+                new_node_id,
+                new_node_index,
+            } => {
+                info!(
+                    "🆕 New node {} joined at index {}",
+                    new_node_id, new_node_index
+                );
+                self.handle_new_node_joined(new_node_id, new_node_index)
+                    .await?;
             }
             DKGMessage::NewNodeShare { from, to, share, commitment, new_node_index } => {
                 info!("📨 Received new node share from {} to {} (new_node_index: {})", from, to, new_node_index);
                 if to == self.id {
                     self.handle_new_node_share_received(from, share, commitment, new_node_index, node_manager.clone()).await?;
+
                 }
             }
             DKGMessage::TriggerRefresh { trigger_node } => {
-                info!("🔄 [REFRESH] Received refresh trigger from {}", trigger_node);
+                info!(
+                    "🔄 [REFRESH] Received refresh trigger from {}",
+                    trigger_node
+                );
                 self.execute_polynomial_refresh(node_manager).await?;
             }
             DKGMessage::NodeDisconnected { disconnected_node_id, broadcaster_node_id } => {
@@ -525,7 +591,8 @@ impl DKGNode {
             }
             DKGMessage::RefreshShare { from, shares, commitments } => {
                 info!("🔄 [REFRESH] Received refresh shares from {}", from);
-                self.handle_refresh_share(from, shares, commitments, node_manager.clone()).await?;
+                self.handle_refresh_share(from, shares, commitments, node_manager.clone())
+                    .await?;
             }
         }
         Ok(())
@@ -544,16 +611,24 @@ impl DKGNode {
 
         // Log all shares received from this node
         info!("🔍 [DKG] === SHARE DISTRIBUTION RECEIVED ===");
-        info!("📥 [DKG] Node {} received {} shares from node {}", self.id, shares.len(), from);
-        
+        info!(
+            "📥 [DKG] Node {} received {} shares from node {}",
+            self.id,
+            shares.len(),
+            from
+        );
+
         info!("🔍 [DKG] All shares received from node {}:", from);
         for (i, share) in shares.iter().enumerate() {
             info!(
                 "🔍 [DKG] Share {}: index={}, value={:?} (intended for node with index {})",
-                i + 1, share.index, share.value.0, share.index
+                i + 1,
+                share.index,
+                share.value.0,
+                share.index
             );
         }
-        
+
         info!("🔍 [DKG] === END SHARE DISTRIBUTION RECEIVED ===");
 
         info!(
@@ -570,12 +645,14 @@ impl DKGNode {
                     "✅ [DKG] Found valid share for node {} from {}, share value: {:?}",
                     self.id, from, share.value.0
                 );
-                
+
                 // Store share by sender ID but also track the share index
                 info!("🔍 [DKG] === STORING SHARE ===");
-                info!("🔍 [DKG] Storing share from node {}: index={}, value={:?}", 
-                      from, share.index, share.value.0);
-                
+                info!(
+                    "🔍 [DKG] Storing share from node {}: index={}, value={:?}",
+                    from, share.index, share.value.0
+                );
+
                 self.storage.store_share(&from, &share).await?;
                 self.storage
                     .store_commitments(&from, &raw_commitments)
@@ -583,7 +660,10 @@ impl DKGNode {
 
                 // Log current state of all stored shares
                 let current_shares = self.storage.get_all_shares().await?;
-                info!("🔍 [DKG] Current total shares stored: {}", current_shares.len());
+                info!(
+                    "🔍 [DKG] Current total shares stored: {}",
+                    current_shares.len()
+                );
                 info!("🔍 [DKG] All stored shares:");
                 for (sender, stored_share) in current_shares.iter() {
                     info!(
@@ -593,14 +673,14 @@ impl DKGNode {
                 }
                 info!("🔍 [DKG] === END STORING SHARE ===");
 
-                self.handle_share_validation(self.id.clone(), from.clone(), true,node_manager)
+                self.handle_share_validation(self.id.clone(), from.clone(), true, node_manager)
                     .await?;
 
                 let validation_msg = DKGMessage::ShareValidation {
                     from: self.id.clone(),
                     to: from,
                     is_valid: true,
-                    round : self.round,
+                    round: self.round,
                 };
                 let gossip_wrapped = GossipsubMessage::DKG(validation_msg);
                 let msg_bytes = serde_json::to_vec(&gossip_wrapped)?;
@@ -614,19 +694,22 @@ impl DKGNode {
                     from: self.id.clone(),
                     to: from,
                     is_valid: false,
-                    round : self.round,
+                    round: self.round,
                 };
                 let gossip_wrapped = GossipsubMessage::DKG(validation_msg);
                 let msg_bytes = serde_json::to_vec(&gossip_wrapped)?;
                 self.broadcast(MSG_TOPIC_DKG, &msg_bytes).await?;
             }
         } else {
-            info!("❌ [DKG] Share verification failed for shares from {}", from);
+            info!(
+                "❌ [DKG] Share verification failed for shares from {}",
+                from
+            );
             let validation_msg = DKGMessage::ShareValidation {
                 from: self.id.clone(),
                 to: from,
                 is_valid: false,
-                round : self.round,
+                round: self.round,
             };
             let gossip_wrapped = GossipsubMessage::DKG(validation_msg);
             let msg_bytes = serde_json::to_vec(&gossip_wrapped)?;
@@ -635,18 +718,24 @@ impl DKGNode {
         Ok(())
     }
 
-    fn get_node_index(&self,_node_manager: Box<dyn NodeMembership>) -> usize {
+    fn get_node_index(&self, _node_manager: Box<dyn NodeMembership>) -> usize {
         info!("🔍 [DKG] === NODE INDEX LOOKUP (DB-only) ===");
         info!("🔍 [DKG] Current node ID: {}", self.id);
 
         match self.storage.get_peer_index_for(&self.id) {
             Ok(Some(idx)) => {
-                info!("🔢 [DKG] Using stored peer index {} for node {}", idx, self.id);
+                info!(
+                    "🔢 [DKG] Using stored peer index {} for node {}",
+                    idx, self.id
+                );
                 info!("🔍 [DKG] === END NODE INDEX LOOKUP ===");
                 idx
             }
             Ok(None) => {
-                tracing::warn!("❌ [DKG] No stored peer index found for {}. Using default index 1.", self.id);
+                tracing::warn!(
+                    "❌ [DKG] No stored peer index found for {}. Using default index 1.",
+                    self.id
+                );
                 info!("🔍 [DKG] === END NODE INDEX LOOKUP ===");
                 1
             }
@@ -670,7 +759,10 @@ impl DKGNode {
 
         info!("🔍 [DKG] === SHARE VERIFICATION ===");
         info!("🔍 [DKG] Verifying share with index: {}", share_index);
-        info!("🔍 [DKG] Using x = Scalar::from({}) for verification", share_index);
+        info!(
+            "🔍 [DKG] Using x = Scalar::from({}) for verification",
+            share_index
+        );
 
         let x = Scalar::from(share_index as u64);
         let mut expected = ProjectivePoint::IDENTITY;
@@ -685,10 +777,13 @@ impl DKGNode {
 
         let actual = ProjectivePoint::GENERATOR * share.0;
         let is_valid = expected == actual;
-        
-        info!("🔍 [DKG] Share verification result: {}", if is_valid { "✅ PASS" } else { "❌ FAIL" });
+
+        info!(
+            "🔍 [DKG] Share verification result: {}",
+            if is_valid { "✅ PASS" } else { "❌ FAIL" }
+        );
         info!("🔍 [DKG] === END SHARE VERIFICATION ===");
-        
+
         is_valid
     }
 
@@ -702,8 +797,11 @@ impl DKGNode {
 
         for share in shares {
             info!("🔍 [DKG] Verifying share with index: {}", share.index);
-            info!("🔍 [DKG] Using x = Scalar::from({}) for verification", share.index);
-            
+            info!(
+                "🔍 [DKG] Using x = Scalar::from({}) for verification",
+                share.index
+            );
+
             let x = Scalar::from(share.index as u64);
             let mut expected = ProjectivePoint::IDENTITY;
 
@@ -743,7 +841,7 @@ impl DKGNode {
         Ok(())
     }
 
-    async fn check_completion(&mut self,node_manager: Box<dyn NodeMembership>) -> Result<()> {
+    async fn check_completion(&mut self, node_manager: Box<dyn NodeMembership>) -> Result<()> {
         let (shares_len, validations_len, valid_validations) = {
             let validations = self.storage.get_all_validations().await?;
             let shares = self.storage.get_all_shares().await?;
@@ -776,7 +874,9 @@ impl DKGNode {
             && shares_len >= node_manager.get_total_nodes()
         {
             info!(
-                "✅ [DKG] Required validations: {} and valid validations: {}",(node_manager.get_total_nodes()) * (node_manager.get_total_nodes()),valid_validations
+                "✅ [DKG] Required validations: {} and valid validations: {}",
+                (node_manager.get_total_nodes()) * (node_manager.get_total_nodes()),
+                valid_validations
             );
             info!("🎉 [DKG] DKG completion criteria met! Generating final keys...");
             self.generate_group_key(node_manager).await?;
@@ -792,7 +892,7 @@ impl DKGNode {
         Ok(())
     }
 
-    async fn generate_group_key(&mut self,node_manager: Box<dyn NodeMembership>) -> Result<()> {
+    async fn generate_group_key(&mut self, node_manager: Box<dyn NodeMembership>) -> Result<()> {
         let shares = self.storage.get_all_shares().await?;
         let commitments = self.storage.get_all_commitments().await?;
         info!("🔐 [DKG] Commitments: {:?}", commitments);
@@ -811,7 +911,11 @@ impl DKGNode {
 
         // Log all shares before processing
         info!("🔍 [DKG] === ALL SHARES BEFORE FINAL CALCULATION ===");
-        info!("🔍 [DKG] Node {} has {} total shares stored", self.id, shares.len());
+        info!(
+            "🔍 [DKG] Node {} has {} total shares stored",
+            self.id,
+            shares.len()
+        );
         for (from, share) in shares.iter() {
             info!(
                 "🔍 [DKG] Share from {}: index={}, value={:?} (will be used if index matches our index {})",
@@ -824,7 +928,10 @@ impl DKGNode {
         let mut skipped_shares = 0;
 
         info!("🔍 [DKG] === FINAL SECRET SHARE CALCULATION ===");
-        info!("🔍 [DKG] Starting with final_secret_share = {:?}", final_secret_share);
+        info!(
+            "🔍 [DKG] Starting with final_secret_share = {:?}",
+            final_secret_share
+        );
 
         for (from, share) in shares.iter() {
             // Only use shares that are meant for this node's index
@@ -845,10 +952,13 @@ impl DKGNode {
                 skipped_shares += 1;
             }
         }
-        
+
         info!("🔍 [DKG] === END FINAL SECRET SHARE CALCULATION ===");
 
-        info!("📊 [DKG] Final calculation summary: used {} shares, skipped {} shares", used_shares, skipped_shares);
+        info!(
+            "📊 [DKG] Final calculation summary: used {} shares, skipped {} shares",
+            used_shares, skipped_shares
+        );
 
         let first_comms: Vec<AffinePoint> = commitments
             .values()
@@ -888,7 +998,7 @@ impl DKGNode {
         // Store the results
         self.storage.set_final_secret(final_secret_share).await?;
         self.storage.set_final_public(final_public_key).await?;
-        
+
         // Store the permanent index (will never change after this)
         self.storage.set_my_permanent_index(node_index).await?;
         self.my_permanent_index = Some(node_index);
@@ -898,7 +1008,10 @@ impl DKGNode {
         info!("🏦 [DKG] Storing original commitments for permanent vault derivation...");
         for (from, comms) in commitments.iter() {
             if let Err(e) = self.storage.store_original_commitments(from, comms).await {
-                warn!("⚠️ [DKG] Failed to store original commitments for {}: {}", from, e);
+                warn!(
+                    "⚠️ [DKG] Failed to store original commitments for {}: {}",
+                    from, e
+                );
             } else {
                 info!("✅ [DKG] Stored original commitments for {}", from);
             }
@@ -919,7 +1032,11 @@ impl DKGNode {
         info!("🔍 [DKG] === FINAL SHARES SUMMARY ===");
         info!("🔍 [DKG] Node {} final shares summary:", self.id);
         for (from, share) in shares.iter() {
-            let was_used = if share.index == node_index { "✅ USED" } else { "❌ SKIPPED" };
+            let was_used = if share.index == node_index {
+                "✅ USED"
+            } else {
+                "❌ SKIPPED"
+            };
             info!(
                 "🔍 [DKG] Share from {}: index={}, value={:?} - {}",
                 from, share.index, share.value.0, was_used
@@ -938,7 +1055,6 @@ impl DKGNode {
         info!("📬 Ethereum Address from Group Key: {}", eth_address);
         info!("📬 Bitcoin Address from Group Key: {}", btc_address);
 
-
         // Derive vault addresses using the same flow as user registration
         let vault_hmac = hmac256_from_addr(&eth_address, &self.chain_code)
             .map_err(|e| anyhow!("Failed to generate vault HMAC: {}", e))?;
@@ -949,19 +1065,32 @@ impl DKGNode {
 
         let tweak_scalar = k256::Scalar::from_repr(vault_hmac.into()).unwrap();
         info!("🏦 [DKG] Vault tweak scalar: {:?}", tweak_scalar);
-        
+
         // Calculate and store the vault tweaked secret share
-        match self.calculate_vault_tweaked_secret_share(tweak_scalar).await {
+        match self
+            .calculate_vault_tweaked_secret_share(tweak_scalar)
+            .await
+        {
             Ok(vault_tweaked_secret) => {
-                info!("🔐 [DKG] Successfully calculated vault tweaked secret share: {:?}", vault_tweaked_secret);
-                if let Err(e) = self.storage.set_vault_tweaked_secret(vault_tweaked_secret).await {
+                info!(
+                    "🔐 [DKG] Successfully calculated vault tweaked secret share: {:?}",
+                    vault_tweaked_secret
+                );
+                if let Err(e) = self
+                    .storage
+                    .set_vault_tweaked_secret(vault_tweaked_secret)
+                    .await
+                {
                     warn!("⚠️ [DKG] Failed to store vault tweaked secret share: {}", e);
                 } else {
                     info!("✅ [DKG] Successfully stored vault tweaked secret share in database");
                 }
             }
             Err(e) => {
-                warn!("⚠️ [DKG] Failed to calculate vault tweaked secret share: {}", e);
+                warn!(
+                    "⚠️ [DKG] Failed to calculate vault tweaked secret share: {}",
+                    e
+                );
             }
         }
 
@@ -976,7 +1105,7 @@ impl DKGNode {
                 info!("🏦 [DKG] Derived vault group key: {:?}", vault_group_key);
                 info!("🏦 [DKG] Vault ETH address: {}", vault_eth);
                 info!("🏦 [DKG] Vault BTC address: {}", vault_btc);
-                
+
                 if let Err(e) = self
                     .storage
                     .set_vault_addresses(&vault_eth, &vault_btc)
@@ -1050,7 +1179,10 @@ impl DKGNode {
     }
 
     pub async fn is_initial_dkg_complete(&self) -> bool {
-        self.storage.is_initial_dkg_complete().await.unwrap_or(false)
+        self.storage
+            .is_initial_dkg_complete()
+            .await
+            .unwrap_or(false)
     }
 
     // Test function to verify share generation
@@ -1078,7 +1210,11 @@ impl DKGNode {
         match self.storage.get_all_shares().await {
             Ok(shares) => {
                 info!("📊 [DKG] === CURRENT SHARES DEBUG ===");
-                info!("📊 [DKG] Node {} has {} shares stored", self.id, shares.len());
+                info!(
+                    "📊 [DKG] Node {} has {} shares stored",
+                    self.id,
+                    shares.len()
+                );
                 if shares.is_empty() {
                     info!("📊 [DKG] No shares currently stored");
                 } else {
@@ -1103,21 +1239,24 @@ impl DKGNode {
     fn generate_zero_constant_polynomial(&self) -> Result<Vec<Scalar>> {
         let mut rng = OsRng;
         let mut coefficients = Vec::with_capacity(self.threshold);
-        
+
         // First coefficient (constant term) is ZERO
         coefficients.push(Scalar::ZERO);
-        
+
         // Remaining coefficients are random
         for _ in 1..self.threshold {
             coefficients.push(Scalar::random(&mut rng));
         }
-        
+
         info!(
             "🔢 [REFRESH] Generated zero-constant polynomial with {} coefficients",
             coefficients.len()
         );
-        info!("🔢 [REFRESH] Constant term (a0) = {:?} (should be ZERO)", coefficients[0]);
-        
+        info!(
+            "🔢 [REFRESH] Constant term (a0) = {:?} (should be ZERO)",
+            coefficients[0]
+        );
+
         Ok(coefficients)
     }
 
@@ -1125,93 +1264,138 @@ impl DKGNode {
     /// pi(0) = product of (0 - j) / (i - j) for all j != i
     /// Used in proactive refresh: Gi(x) = Si * pi(0) + zero_constant_polynomial(x)
     fn calculate_lagrange_coefficient(&self, my_index: usize, all_indices: &[usize]) -> Scalar {
-        info!("🔢 [REFRESH] Calculating Lagrange coefficient for index {}", my_index);
-        
+        info!(
+            "🔢 [REFRESH] Calculating Lagrange coefficient for index {}",
+            my_index
+        );
+
         let mut numerator = Scalar::ONE;
         let mut denominator = Scalar::ONE;
-        
+
         for &j in all_indices {
             if j != my_index {
                 // Numerator: (0 - j) = -j
                 let j_scalar = Scalar::from(j as u64);
                 let neg_j = Scalar::ZERO - j_scalar;
                 numerator *= neg_j;
-                
+
                 // Denominator: (i - j)
                 let i_scalar = Scalar::from(my_index as u64);
                 let diff = i_scalar - j_scalar;
                 denominator *= diff;
-                
-                info!("🔢 [REFRESH]   j={}: numerator term = -{}  denominator term = ({} - {})", 
-                      j, j, my_index, j);
+
+                info!(
+                    "🔢 [REFRESH]   j={}: numerator term = -{}  denominator term = ({} - {})",
+                    j, j, my_index, j
+                );
             }
         }
-        
+
         // Calculate pi(0) = numerator / denominator
         let denominator_inv = denominator.invert().unwrap();
         let lagrange_coeff = numerator * denominator_inv;
-        
-        info!("🔢 [REFRESH] Lagrange coefficient pi({}) = {:?}", my_index, lagrange_coeff);
+
+        info!(
+            "🔢 [REFRESH] Lagrange coefficient pi({}) = {:?}",
+            my_index, lagrange_coeff
+        );
         lagrange_coeff
     }
 
     /// Generate refresh polynomial: Gi(x) = Si * pi(0) + zero_constant_polynomial(x)
     /// This is used in proactive refresh to re-randomize shares while keeping the same secret
-    async fn generate_refresh_polynomial(&self, my_index: usize, all_indices: &[usize]) -> Result<Vec<Scalar>> {
+    async fn generate_refresh_polynomial(
+        &self,
+        my_index: usize,
+        all_indices: &[usize],
+    ) -> Result<Vec<Scalar>> {
         info!("🔄 [REFRESH] ═══════════════════════════════════════════════════");
-        info!("🔄 [REFRESH] GENERATING REFRESH POLYNOMIAL FOR NODE {}", my_index);
+        info!(
+            "🔄 [REFRESH] GENERATING REFRESH POLYNOMIAL FOR NODE {}",
+            my_index
+        );
         info!("🔄 [REFRESH] ═══════════════════════════════════════════════════");
         info!("🔄 [REFRESH] Node ID: {}", self.id);
         info!("🔄 [REFRESH] My index: {}", my_index);
         info!("🔄 [REFRESH] All indices for Lagrange: {:?}", all_indices);
         info!("⚠️  [REFRESH] CRITICAL: All nodes MUST use the SAME all_indices array!");
         info!("⚠️  [REFRESH] If nodes disagree on all_indices, the secret WILL change!");
-        
+
         // Get my current secret share Si
-        let my_secret_share = self.storage.get_final_secret().await?
+        let my_secret_share = self
+            .storage
+            .get_final_secret()
+            .await?
             .ok_or_else(|| anyhow!("No final secret share available for refresh"))?;
-        
-        info!("🔐 [REFRESH] My current secret share S_{} = {:?}", my_index, my_secret_share);
-        
+
+        info!(
+            "🔐 [REFRESH] My current secret share S_{} = {:?}",
+            my_index, my_secret_share
+        );
+
         // Calculate Lagrange coefficient pi(0)
-        info!("🔢 [REFRESH] Calculating Lagrange coefficient λ_{}(0) over indices {:?}...", my_index, all_indices);
+        info!(
+            "🔢 [REFRESH] Calculating Lagrange coefficient λ_{}(0) over indices {:?}...",
+            my_index, all_indices
+        );
         let lagrange_coeff = self.calculate_lagrange_coefficient(my_index, all_indices);
         info!("🔢 [REFRESH] λ_{}(0) = {:?}", my_index, lagrange_coeff);
-        
+
         // Calculate the constant term that THIS node contributes to the secret
         let constant_contribution = my_secret_share * lagrange_coeff;
-        info!("🎯 [REFRESH] This node's contribution to secret: S_{} * λ_{}(0) = {:?}", 
-              my_index, my_index, constant_contribution);
+        info!(
+            "🎯 [REFRESH] This node's contribution to secret: S_{} * λ_{}(0) = {:?}",
+            my_index, my_index, constant_contribution
+        );
         info!("📝 [REFRESH] Mathematical invariant: Σ_i (S_i * λ_i(0)) = S (original secret)");
-        info!("📝 [REFRESH] If all nodes use indices {:?}, sum should equal original secret", all_indices);
-        
+        info!(
+            "📝 [REFRESH] If all nodes use indices {:?}, sum should equal original secret",
+            all_indices
+        );
+
         // Generate zero-constant polynomial (constant term = 0, other coefficients random)
         let zero_poly = self.generate_zero_constant_polynomial()?;
         info!("🎲 [REFRESH] Generated zero-constant polynomial for randomization");
-        info!("🎲 [REFRESH] Zero poly constant term (should be 0): {:?}", zero_poly[0]);
-        
+        info!(
+            "🎲 [REFRESH] Zero poly constant term (should be 0): {:?}",
+            zero_poly[0]
+        );
+
         // Gi(x) = Si * λi(0) + zero_constant_polynomial(x)
         let mut refresh_poly = zero_poly.clone();
-        
+
         // The constant term: Gi(0) = Si * λi(0) + 0 = Si * λi(0)
         refresh_poly[0] = constant_contribution;
-        
+
         info!("🔄 [REFRESH] Refresh polynomial G_{}(x):", my_index);
-        info!("🔄 [REFRESH]   G_{}(0) = {:?} (contribution to secret)", my_index, refresh_poly[0]);
+        info!(
+            "🔄 [REFRESH]   G_{}(0) = {:?} (contribution to secret)",
+            my_index, refresh_poly[0]
+        );
         for (i, coeff) in refresh_poly.iter().enumerate().skip(1) {
-            info!("🔄 [REFRESH]   Coefficient[{}] = {:?} (randomness)", i, coeff);
+            info!(
+                "🔄 [REFRESH]   Coefficient[{}] = {:?} (randomness)",
+                i, coeff
+            );
         }
         info!("🔄 [REFRESH] ═══════════════════════════════════════════════════");
-        
+
         Ok(refresh_poly)
     }
 
     /// Called by existing nodes when a new node joins
     /// Uses the existing polynomial to send a share to the new node
     /// The polynomial is NOT modified - we just evaluate it at the new node's index
-    async fn handle_new_node_joined(&mut self, new_node_id: String, new_node_index: usize) -> Result<()> {
-        info!("🆕 [NEW_NODE] Handling new node join: {} at index {}", new_node_id, new_node_index);
-        
+    async fn handle_new_node_joined(
+        &mut self,
+        new_node_id: String,
+        new_node_index: usize,
+    ) -> Result<()> {
+        info!(
+            "🆕 [NEW_NODE] Handling new node join: {} at index {}",
+            new_node_id, new_node_index
+        );
+
         // Get the stored polynomial (existing, unmodified)
         let polynomial = match self.storage.get_polynomial().await? {
             Some(poly) => poly,
@@ -1220,16 +1404,22 @@ impl DKGNode {
                 return Ok(());
             }
         };
-        
-        info!("🔍 [NEW_NODE] Retrieved stored polynomial with {} coefficients", polynomial.len());
+
+        info!(
+            "🔍 [NEW_NODE] Retrieved stored polynomial with {} coefficients",
+            polynomial.len()
+        );
         info!("🔍 [NEW_NODE] Using EXISTING polynomial (unmodified) to generate share");
-        
+
         // Evaluate the existing polynomial at the new node's index
         // For example: If F(x) = 4+2x and new node index is 5, then F(5) = 4+2*5 = 14
         let x = Scalar::from(new_node_index as u64);
         let mut y = Scalar::ZERO;
-        
-        info!("🔍 [NEW_NODE] Evaluating polynomial at x = {}", new_node_index);
+
+        info!(
+            "🔍 [NEW_NODE] Evaluating polynomial at x = {}",
+            new_node_index
+        );
         for (j, coeff) in polynomial.iter().enumerate() {
             let mut x_pow = Scalar::ONE;
             for _ in 0..j {
@@ -1239,17 +1429,20 @@ impl DKGNode {
             y += term;
             info!("🔍 [NEW_NODE]   Term {}: coeff * x^{} = {:?}", j, j, term);
         }
-        
-        info!("🔍 [NEW_NODE] Share for new node at index {}: {:?}", new_node_index, y);
-        
+
+        info!(
+            "🔍 [NEW_NODE] Share for new node at index {}: {:?}",
+            new_node_index, y
+        );
+
         let share = KeyShare {
             index: new_node_index,
             value: SerializableScalar(y),
         };
-        
+
         // Generate commitments for the existing polynomial
         let commitments = self.generate_commitments(&polynomial)?;
-        
+
         // Send the share to the new node
         let msg = DKGMessage::NewNodeShare {
             from: self.id.clone(),
@@ -1258,13 +1451,16 @@ impl DKGNode {
             commitment: commitments,
             new_node_index, // Pass the calculated index to the new node
         };
-        
+
         let gossip_wrap = GossipsubMessage::DKG(msg);
         let msg_bytes = serde_json::to_vec(&gossip_wrap)?;
         self.broadcast(MSG_TOPIC_DKG, &msg_bytes).await?;
-        
-        info!("✅ [NEW_NODE] Sent share to new node {} using existing polynomial", new_node_id);
-        
+
+        info!(
+            "✅ [NEW_NODE] Sent share to new node {} using existing polynomial",
+            new_node_id
+        );
+
         Ok(())
     }
 
@@ -1277,49 +1473,67 @@ impl DKGNode {
         new_node_index: usize,
         node_manager: Box<dyn NodeMembership>,
     ) -> Result<()> {
-        info!("📨 [NEW_NODE] Received share from existing node {} (my assigned index: {})", from, new_node_index);
-        info!("📨 [NEW_NODE] Share index: {}, value: {:?}", share.index, share.value.0);
-        
+        info!("📨 [NEW_NODE] Received share from existing node {}", from);
+        info!(
+            "📨 [NEW_NODE] Share index: {}, value: {:?}",
+            share.index, share.value.0
+        );
+
         // Verify the share
         if !self.verify_share(&share.value, share.index, &commitments) {
             warn!("❌ [NEW_NODE] Share verification failed from {}", from);
             return Ok(());
         }
-        
+
         info!("✅ [NEW_NODE] Share verified successfully from {}", from);
-        
+
         // Convert commitments to raw format for storage
         let raw_commitments: Vec<AffinePoint> = commitments.into_iter().map(|c| c.0).collect();
-        
+
         // Store the share
         self.storage.store_share(&from, &share).await?;
-        self.storage.store_commitments(&from, &raw_commitments).await?;
-        
+        self.storage
+            .store_commitments(&from, &raw_commitments)
+            .await?;
+
         info!("💾 [NEW_NODE] Stored share from {}", from);
-        
+
         // Check if we have received shares from all existing nodes
         let shares = self.storage.get_all_shares().await?;
         let commitments_map = self.storage.get_all_commitments().await?;
-        info!("📊 [NEW_NODE] Total shares received: {}/{}", shares.len(), self.total_nodes - 1);
-        
+        info!(
+            "📊 [NEW_NODE] Total shares received: {}/{}",
+            shares.len(),
+            self.total_nodes - 1
+        );
+
         // If we have shares from all existing nodes (total_nodes - 1), calculate the final secret share
         if shares.len() >= self.total_nodes - 1 {
             info!("🎉 [NEW_NODE] Received all shares from existing nodes! Calculating final secret share...");
-            
+
             // Calculate final secret share by summing all received shares
             let mut final_secret_share = Scalar::ZERO;
-            
+
             info!("🔍 [NEW_NODE] === FINAL SECRET SHARE CALCULATION ===");
-            info!("🔍 [NEW_NODE] Starting with final_secret_share = {:?}", final_secret_share);
-            
+            info!(
+                "🔍 [NEW_NODE] Starting with final_secret_share = {:?}",
+                final_secret_share
+            );
+
             for (from_node, share) in shares.iter() {
-                info!("✅ [NEW_NODE] Adding share from {} - value: {:?}", from_node, share.value.0);
+                info!(
+                    "✅ [NEW_NODE] Adding share from {} - value: {:?}",
+                    from_node, share.value.0
+                );
                 final_secret_share += share.value.0;
-                info!("🔍 [NEW_NODE] New final_secret_share = {:?}", final_secret_share);
+                info!(
+                    "🔍 [NEW_NODE] New final_secret_share = {:?}",
+                    final_secret_share
+                );
             }
-            
+
             info!("🔍 [NEW_NODE] === END FINAL SECRET SHARE CALCULATION ===");
-            
+
             // Calculate final public key (sum of all commitment constant terms) in peer-index order
             let mut final_public_key = ProjectivePoint::IDENTITY;
 
@@ -1350,7 +1564,7 @@ impl DKGNode {
                     }
                 }
             }
-            
+
             // Store the results
             self.storage.set_final_secret(final_secret_share).await?;
             self.storage.set_final_public(final_public_key).await?;
@@ -1365,61 +1579,86 @@ impl DKGNode {
             info!("🏦 [NEW_NODE] Storing original commitments for permanent vault derivation...");
             for (from, comms) in commitments_map.iter() {
                 if let Err(e) = self.storage.store_original_commitments(from, comms).await {
-                    warn!("⚠️ [NEW_NODE] Failed to store original commitments for {}: {}", from, e);
+                    warn!(
+                        "⚠️ [NEW_NODE] Failed to store original commitments for {}: {}",
+                        from, e
+                    );
                 } else {
                     info!("✅ [NEW_NODE] Stored original commitments for {}", from);
                 }
             }
             info!("🏦 [NEW_NODE] All original commitments stored successfully");
-            
+
             // Update status
             self.status = DKGStatus::Completed;
-            
+
             // Log the final results
             info!("🎯 [NEW_NODE] DKG COMPLETED for new node {}!", self.id);
             info!("🔐 [NEW_NODE] Final secret share: {:?}", final_secret_share);
             info!("🔑 [NEW_NODE] Final public key: {:?}", final_public_key);
             info!("📊 [NEW_NODE] Total shares collected: {}", shares.len());
             info!("✅ [NEW_NODE] DKG status: {:?}", self.status);
-            
+
             // Call completion callback if set
             if let Some(callback) = self.completion_callback.take() {
                 callback(final_secret_share, final_public_key);
             }
-            
+
             // Generate and log addresses
             let eth_address = utils::get_eth_address_from_group_key(final_public_key);
             let btc_address = utils::get_btc_address_from_group_key(final_public_key);
-            
-            info!("📬 [NEW_NODE] Ethereum Address from Group Key: {}", eth_address);
-            info!("📬 [NEW_NODE] Bitcoin Address from Group Key: {}", btc_address);
-            
+
+            info!(
+                "📬 [NEW_NODE] Ethereum Address from Group Key: {}",
+                eth_address
+            );
+            info!(
+                "📬 [NEW_NODE] Bitcoin Address from Group Key: {}",
+                btc_address
+            );
+
             // Derive vault addresses using the same flow as regular DKG
             let vault_hmac = hmac256_from_addr(&eth_address, &self.chain_code)
                 .map_err(|e| anyhow!("Failed to generate vault HMAC: {}", e))?;
-            
+
             info!("🏦 [NEW_NODE] === VAULT GENERATION STARTED ===");
             info!("🏦 [NEW_NODE] Main ETH address: {}", eth_address);
             info!("🏦 [NEW_NODE] Vault HMAC: {:?}", vault_hmac);
-            
+
             let tweak_scalar = k256::Scalar::from_repr(vault_hmac.into()).unwrap();
             info!("🏦 [NEW_NODE] Vault tweak scalar: {:?}", tweak_scalar);
-            
+
             // Calculate and store the vault tweaked secret share
-            match self.calculate_vault_tweaked_secret_share(tweak_scalar).await {
+            match self
+                .calculate_vault_tweaked_secret_share(tweak_scalar)
+                .await
+            {
                 Ok(vault_tweaked_secret) => {
-                    info!("🔐 [NEW_NODE] Successfully calculated vault tweaked secret share: {:?}", vault_tweaked_secret);
-                    if let Err(e) = self.storage.set_vault_tweaked_secret(vault_tweaked_secret).await {
-                        warn!("⚠️ [NEW_NODE] Failed to store vault tweaked secret share: {}", e);
+                    info!(
+                        "🔐 [NEW_NODE] Successfully calculated vault tweaked secret share: {:?}",
+                        vault_tweaked_secret
+                    );
+                    if let Err(e) = self
+                        .storage
+                        .set_vault_tweaked_secret(vault_tweaked_secret)
+                        .await
+                    {
+                        warn!(
+                            "⚠️ [NEW_NODE] Failed to store vault tweaked secret share: {}",
+                            e
+                        );
                     } else {
                         info!("✅ [NEW_NODE] Successfully stored vault tweaked secret share in database");
                     }
                 }
                 Err(e) => {
-                    warn!("⚠️ [NEW_NODE] Failed to calculate vault tweaked secret share: {}", e);
+                    warn!(
+                        "⚠️ [NEW_NODE] Failed to calculate vault tweaked secret share: {}",
+                        e
+                    );
                 }
             }
-            
+
             // Derive and store the vault group key and addresses using ORIGINAL commitments
             match self
                 .derive_vault_group_key_from_original_commitments(tweak_scalar)
@@ -1428,10 +1667,13 @@ impl DKGNode {
                 Ok(vault_group_key) => {
                     let vault_eth = utils::get_eth_address_from_group_key(vault_group_key);
                     let vault_btc = utils::get_btc_address_from_group_key(vault_group_key);
-                    info!("🏦 [NEW_NODE] Derived vault group key: {:?}", vault_group_key);
+                    info!(
+                        "🏦 [NEW_NODE] Derived vault group key: {:?}",
+                        vault_group_key
+                    );
                     info!("🏦 [NEW_NODE] Vault ETH address: {}", vault_eth);
                     info!("🏦 [NEW_NODE] Vault BTC address: {}", vault_btc);
-                    
+
                     if let Err(e) = self
                         .storage
                         .set_vault_addresses(&vault_eth, &vault_btc)
@@ -1445,7 +1687,7 @@ impl DKGNode {
                             vault_eth, vault_btc
                         );
                     }
-                    
+
                     // Store the vault group key
                     if let Err(e) = self.storage.set_vault_group_key(vault_group_key).await {
                         warn!("⚠️ [NEW_NODE] Failed to store vault group key: {}", e);
@@ -1457,17 +1699,19 @@ impl DKGNode {
                     warn!("⚠️ [NEW_NODE] Failed to derive vault group key: {}", e);
                 }
             }
-            
+
             info!("🏦 [NEW_NODE] === VAULT GENERATION COMPLETED ===");
-            
+
             // Trigger polynomial refresh after new node completes
             info!("🔄 [NEW_NODE] New node setup complete, triggering polynomial refresh");
-            
+
             // Broadcast trigger to other nodes
             match self.trigger_polynomial_refresh().await {
                 Ok(should_execute_locally) => {
                     if should_execute_locally {
-                        info!("🔄 [NEW_NODE] Executing refresh locally (won't receive own broadcast)");
+                        info!(
+                            "🔄 [NEW_NODE] Executing refresh locally (won't receive own broadcast)"
+                        );
                         if let Err(e) = self.execute_polynomial_refresh(node_manager).await {
                             warn!("⚠️ [NEW_NODE] Failed to execute local refresh: {}", e);
                         }
@@ -1478,26 +1722,29 @@ impl DKGNode {
                 }
             }
         }
-        
+
         Ok(())
     }
 
     /// Broadcast that this node is new and needs shares
     /// This should be called when a new node joins the network
     pub async fn request_shares_as_new_node(&self, node_index: usize) -> Result<()> {
-        info!("🆕 [NEW_NODE] Broadcasting new node join request for node {} at index {}", self.id, node_index);
-        
+        info!(
+            "🆕 [NEW_NODE] Broadcasting new node join request for node {} at index {}",
+            self.id, node_index
+        );
+
         let msg = DKGMessage::NewNodeJoined {
             new_node_id: self.id.clone(),
             new_node_index: node_index,
         };
-        
+
         let gossip_wrap = GossipsubMessage::DKG(msg);
         let msg_bytes = serde_json::to_vec(&gossip_wrap)?;
         self.broadcast(MSG_TOPIC_DKG, &msg_bytes).await?;
-        
+
         info!("✅ [NEW_NODE] Broadcasted new node join request");
-        
+
         Ok(())
     }
 
@@ -1505,30 +1752,36 @@ impl DKGNode {
     /// Called by the new node after it completes receiving all shares
     /// Returns true if this node should also execute refresh locally
     pub async fn trigger_polynomial_refresh(&self) -> Result<bool> {
-        info!("🔄 [REFRESH] Triggering polynomial refresh from node {}", self.id);
-        
+        info!(
+            "🔄 [REFRESH] Triggering polynomial refresh from node {}",
+            self.id
+        );
+
         let msg = DKGMessage::TriggerRefresh {
             trigger_node: self.id.clone(),
         };
-        
+
         let gossip_wrap = GossipsubMessage::DKG(msg);
         let msg_bytes = serde_json::to_vec(&gossip_wrap)?;
         self.broadcast(MSG_TOPIC_DKG, &msg_bytes).await?;
-        
+
         info!("✅ [REFRESH] Broadcasted refresh trigger");
         info!("⚠️ [REFRESH] Note: This node won't receive its own broadcast, will execute refresh locally");
-        
+
         // Return true to indicate this node should also execute refresh
         Ok(true)
     }
 
     /// Execute polynomial refresh and broadcast refresh shares
-    pub async fn execute_polynomial_refresh(&mut self, node_manager: Box<dyn NodeMembership>) -> Result<()> {
+    pub async fn execute_polynomial_refresh(
+        &mut self,
+        node_manager: Box<dyn NodeMembership>,
+    ) -> Result<()> {
         info!("🔄 [REFRESH] ═══════════════════════════════════════════════════");
         info!("🔄 [REFRESH] EXECUTING POLYNOMIAL REFRESH");
         info!("🔄 [REFRESH] ═══════════════════════════════════════════════════");
         info!("🔄 [REFRESH] Node: {}", self.id);
-        
+
         // Get all active nodes and their indices from database (DB-first ordering)
         let active_nodes: Vec<String> = node_manager
             .get_active_nodes()
@@ -1536,51 +1789,77 @@ impl DKGNode {
             .map(|p| p.to_string())
             .collect();
 
-        info!("🔍 [REFRESH] Active nodes from node_manager: {:?}", active_nodes);
+        info!(
+            "🔍 [REFRESH] Active nodes from node_manager: {:?}",
+            active_nodes
+        );
 
         let peer_indices_map = self.storage.get_peer_indices().await?;
-        info!("🔍 [REFRESH] Peer indices in database: {:?}", peer_indices_map);
-        
+        info!(
+            "🔍 [REFRESH] Peer indices in database: {:?}",
+            peer_indices_map
+        );
+
         let mut nodes_with_indices: Vec<(String, usize)> = active_nodes
             .into_iter()
             .filter_map(|pid| peer_indices_map.get(&pid).copied().map(|idx| (pid, idx)))
             .collect();
         nodes_with_indices.sort_by_key(|(_, idx)| *idx);
 
-        info!("🔍 [REFRESH] Nodes with indices (sorted): {:?}", nodes_with_indices);
-        
+        info!(
+            "🔍 [REFRESH] Nodes with indices (sorted): {:?}",
+            nodes_with_indices
+        );
+
         let total_nodes = nodes_with_indices.len();
         let threshold = node_manager.get_threshold();
-        
-        info!("🔍 [REFRESH] Total nodes: {}, Threshold: {}", total_nodes, threshold);
-        
+
+        info!(
+            "🔍 [REFRESH] Total nodes: {}, Threshold: {}",
+            total_nodes, threshold
+        );
+
         // CRITICAL: Update this node's total_nodes parameter to current network size
         // Old nodes will have total_nodes = 4, but network now has 5 nodes
-        info!("🔄 [REFRESH] Updating node params: old total_nodes={}, new total_nodes={}", 
-              self.total_nodes, total_nodes);
+        info!(
+            "🔄 [REFRESH] Updating node params: old total_nodes={}, new total_nodes={}",
+            self.total_nodes, total_nodes
+        );
         self.update_node_params(total_nodes, threshold);
-        
+
         // Clear old refresh shares from previous refresh rounds
         self.clear_refresh_shares().await?;
-        
+
         // Use exact indices from database in ascending order
         let all_indices: Vec<usize> = nodes_with_indices.iter().map(|(_, idx)| *idx).collect();
-        
+
         // CRITICAL: Use permanent index instead of recalculating from sorted nodes
         // The permanent index never changes after initial DKG/join, even if new nodes join
-        let my_index = self.my_permanent_index
-            .ok_or_else(|| anyhow!("Permanent index not set - should have been set during DKG completion"))?;
-        
-        info!("🔄 [REFRESH] Using PERMANENT index: {}, total nodes: {}", my_index, total_nodes);
-        info!("🔄 [REFRESH] All indices used for Lagrange: {:?}", all_indices);
+        let my_index = self.my_permanent_index.ok_or_else(|| {
+            anyhow!("Permanent index not set - should have been set during DKG completion")
+        })?;
+
+        info!(
+            "🔄 [REFRESH] Using PERMANENT index: {}, total nodes: {}",
+            my_index, total_nodes
+        );
+        info!(
+            "🔄 [REFRESH] All indices used for Lagrange: {:?}",
+            all_indices
+        );
         info!("⚠️  [REFRESH] IMPORTANT: These indices MUST match the original DKG setup!");
         info!("⚠️  [REFRESH] If original DKG had {} nodes but now we have {} nodes, the secret WILL change!", all_indices.len(), total_nodes);
-        
+
         // Generate refresh polynomial Gi(x) = Si * pi(0) + zero_constant_polynomial(x)
-        info!("🔄 [REFRESH] Generating refresh polynomial for my index {}...", my_index);
-        let refresh_polynomial = self.generate_refresh_polynomial(my_index, &all_indices).await?;
+        info!(
+            "🔄 [REFRESH] Generating refresh polynomial for my index {}...",
+            my_index
+        );
+        let refresh_polynomial = self
+            .generate_refresh_polynomial(my_index, &all_indices)
+            .await?;
         info!("✅ [REFRESH] Refresh polynomial generated successfully");
-        
+
         // Store the refresh polynomial in storage
         self.storage.set_polynomial(&refresh_polynomial).await?;
         info!("💾 [REFRESH] Stored refresh polynomial in storage");
@@ -1589,29 +1868,40 @@ impl DKGNode {
         info!("🔄 [REFRESH] Generating refresh shares for active node indices: {:?}", all_indices);
         let refresh_shares = self.generate_shares_for_indices(&refresh_polynomial, &all_indices)?;
         let refresh_commitments = self.generate_commitments(&refresh_polynomial)?;
-        
-        info!("✅ [REFRESH] Generated {} refresh shares and {} commitments", 
-              refresh_shares.len(), refresh_commitments.len());
-        
+
+        info!(
+            "✅ [REFRESH] Generated {} refresh shares and {} commitments",
+            refresh_shares.len(),
+            refresh_commitments.len()
+        );
+
         info!("🔍 [REFRESH] Refresh shares generated:");
         for share in &refresh_shares {
-            info!("🔍 [REFRESH]   Share for index {}: {:?}", share.index, share.value.0);
+            info!(
+                "🔍 [REFRESH]   Share for index {}: {:?}",
+                share.index, share.value.0
+            );
         }
-        
+
         // IMPORTANT: Store our own refresh share locally (won't receive it via gossipsub)
-        let my_refresh_share = refresh_shares.iter()
+        let my_refresh_share = refresh_shares
+            .iter()
             .find(|s| s.index == my_index)
             .ok_or_else(|| anyhow!("My refresh share not found in generated shares"))?;
-        
+
         let raw_commitments: Vec<AffinePoint> = refresh_commitments.iter().map(|c| c.0).collect();
-        
+
         let key: String = format!("refresh_{}", self.id);
         self.storage.store_share(&key, my_refresh_share).await?;
-        self.storage.store_commitments(&key, &raw_commitments).await?;
-        
-        info!("💾 [REFRESH] Stored own refresh share locally (index={}, value={:?})", 
-              my_refresh_share.index, my_refresh_share.value.0);
-        
+        self.storage
+            .store_commitments(&key, &raw_commitments)
+            .await?;
+
+        info!(
+            "💾 [REFRESH] Stored own refresh share locally (index={}, value={:?})",
+            my_refresh_share.index, my_refresh_share.value.0
+        );
+
         tokio::time::sleep(Duration::from_secs(2)).await;
         // Broadcast refresh shares
         let msg = DKGMessage::RefreshShare {
@@ -1619,55 +1909,85 @@ impl DKGNode {
             shares: refresh_shares,
             commitments: refresh_commitments,
         };
-        
+
         let gossip_wrap = GossipsubMessage::DKG(msg);
         let msg_bytes = serde_json::to_vec(&gossip_wrap)?;
         self.broadcast(MSG_TOPIC_DKG, &msg_bytes).await?;
-        
+
         info!("✅ [REFRESH] Broadcasted refresh shares to all nodes");
-        
+
         Ok(())
     }
 
     /// Handle receiving refresh share from another node
-    async fn handle_refresh_share(&mut self, from: String, shares: Vec<KeyShare>, commitments: Vec<SerializablePoint>, node_manager: Box<dyn NodeMembership>) -> Result<()> {
+    async fn handle_refresh_share(
+        &mut self,
+        from: String,
+        shares: Vec<KeyShare>,
+        commitments: Vec<SerializablePoint>,
+        node_manager: Box<dyn NodeMembership>,
+    ) -> Result<()> {
         info!("🔄 [REFRESH] ═══════════════════════════════════════════════════");
         info!("🔄 [REFRESH] RECEIVED REFRESH SHARE FROM {}", from);
         info!("🔄 [REFRESH] ═══════════════════════════════════════════════════");
-        info!("📦 [REFRESH] Received {} shares, {} commitments", shares.len(), commitments.len());
-        
+        info!(
+            "📦 [REFRESH] Received {} shares, {} commitments",
+            shares.len(),
+            commitments.len()
+        );
+
         // Log all received shares to see what indices they have
         info!("🔍 [REFRESH] All shares received from {}:", from);
         for share in &shares {
-            info!("🔍 [REFRESH]   Share: index={}, value={:?}", share.index, share.value.0);
+            info!(
+                "🔍 [REFRESH]   Share: index={}, value={:?}",
+                share.index, share.value.0
+            );
         }
-        
+
         // Verify refresh shares
         let raw_commitments: Vec<AffinePoint> = commitments.into_iter().map(|c| c.0).collect();
-        info!("🔐 [REFRESH] Verifying {} shares against {} commitments...", shares.len(), raw_commitments.len());
-        
+        info!(
+            "🔐 [REFRESH] Verifying {} shares against {} commitments...",
+            shares.len(),
+            raw_commitments.len()
+        );
+
         if !self.verify_shares(&shares, &raw_commitments) {
-            warn!("❌ [REFRESH] Refresh share verification failed from {}", from);
+            warn!(
+                "❌ [REFRESH] Refresh share verification failed from {}",
+                from
+            );
             return Ok(());
         }
-        
-        info!("✅ [REFRESH] All refresh shares verified successfully from {}", from);
-        
+
+        info!(
+            "✅ [REFRESH] All refresh shares verified successfully from {}",
+            from
+        );
+
         // CRITICAL: Use permanent index, not recalculated sorted position!
-        let my_index = self.my_permanent_index
+        let my_index = self
+            .my_permanent_index
             .ok_or_else(|| anyhow!("Permanent index not set during refresh share handling"))?;
-        
+
         info!("🔍 [REFRESH] My permanent index: {}", my_index);
-        info!("🔍 [REFRESH] Looking for share with index {} in received shares...", my_index);
-        
+        info!(
+            "🔍 [REFRESH] Looking for share with index {} in received shares...",
+            my_index
+        );
+
         // Find the refresh share meant for this node
-        let my_refresh_share = shares.iter()
+        let my_refresh_share = shares
+            .iter()
             .find(|s| s.index == my_index)
             .ok_or_else(|| anyhow!("No refresh share found for my index {}", my_index))?;
-        
-        info!("✅ [REFRESH] Found my refresh share from {}: index={}, value={:?}", 
-              from, my_refresh_share.index, my_refresh_share.value.0);
-        
+
+        info!(
+            "✅ [REFRESH] Found my refresh share from {}: index={}, value={:?}",
+            from, my_refresh_share.index, my_refresh_share.value.0
+        );
+
         // Store refresh share temporarily with "refresh_" prefix
         let key = format!("refresh_{}", from);
         self.storage.store_share(&key, my_refresh_share).await?;
@@ -1712,87 +2032,127 @@ impl DKGNode {
         } else {
             info!("⏳ [REFRESH] Waiting for more refresh shares ({}/{})", refresh_shares_count, expected_active_nodes);
         }
-        
+
         Ok(())
     }
 
     /// Compute the refreshed secret share by summing all refresh shares
-    async fn compute_refreshed_secret(&mut self, node_manager: Box<dyn NodeMembership>) -> Result<()> {
+    async fn compute_refreshed_secret(
+        &mut self,
+        node_manager: Box<dyn NodeMembership>,
+    ) -> Result<()> {
         info!("🔄 [REFRESH] ═══════════════════════════════════════════════════");
         info!("🔄 [REFRESH] COMPUTING REFRESHED SECRET SHARE");
         info!("🔄 [REFRESH] ═══════════════════════════════════════════════════");
-        
+
         // Get ORIGINAL secret before refresh
-        let original_secret = self.storage.get_final_secret().await?
+        let original_secret = self
+            .storage
+            .get_final_secret()
+            .await?
             .ok_or_else(|| anyhow!("No original secret found"))?;
-        let original_public = self.storage.get_final_public().await?
+        let original_public = self
+            .storage
+            .get_final_public()
+            .await?
             .ok_or_else(|| anyhow!("No original public key found"))?;
-        
+
         info!("📊 [REFRESH] BEFORE REFRESH:");
-        info!("📊 [REFRESH]   Original secret share: {:?}", original_secret);
+        info!(
+            "📊 [REFRESH]   Original secret share: {:?}",
+            original_secret
+        );
         info!("📊 [REFRESH]   Original public key: {:?}", original_public);
-        
-        let my_index = self.my_permanent_index
+
+        let my_index = self
+            .my_permanent_index
             .ok_or_else(|| anyhow!("Permanent index not set"))?;
         info!("📊 [REFRESH]   My permanent index: {}", my_index);
-        
+
         // Get all refresh shares
         let all_shares = self.storage.get_all_shares().await?;
         let refresh_shares: HashMap<String, KeyShare> = all_shares
             .into_iter()
             .filter(|(k, _)| k.starts_with("refresh_"))
             .collect();
-        
-        info!("🔄 [REFRESH] Found {} refresh shares in storage", refresh_shares.len());
-        
+
+        info!(
+            "🔄 [REFRESH] Found {} refresh shares in storage",
+            refresh_shares.len()
+        );
+
         // Verify all refresh shares have MY index
-        info!("🔍 [REFRESH] Verifying all refresh shares are for MY index {}:", my_index);
+        info!(
+            "🔍 [REFRESH] Verifying all refresh shares are for MY index {}:",
+            my_index
+        );
         for (from, share) in refresh_shares.iter() {
             let node_id = from.trim_start_matches("refresh_");
-            info!("🔍 [REFRESH]   From {}: index={}, value={:?}", 
-                  node_id, share.index, share.value.0);
+            info!(
+                "🔍 [REFRESH]   From {}: index={}, value={:?}",
+                node_id, share.index, share.value.0
+            );
             if share.index != my_index {
-                warn!("⚠️ [REFRESH] ERROR: Share from {} has WRONG index {} (expected {})", 
-                      node_id, share.index, my_index);
+                warn!(
+                    "⚠️ [REFRESH] ERROR: Share from {} has WRONG index {} (expected {})",
+                    node_id, share.index, my_index
+                );
                 return Err(anyhow!("Refresh share has wrong index"));
             }
         }
-        info!("✅ [REFRESH] All refresh shares have correct index {}", my_index);
-        
+        info!(
+            "✅ [REFRESH] All refresh shares have correct index {}",
+            my_index
+        );
+
         // Sum up all refresh shares: S'i = sum of all refresh shares
         let mut new_secret = Scalar::ZERO;
-        info!("🔄 [REFRESH] Computing new secret share: S'_{} = Σ G_i({})", my_index, my_index);
+        info!(
+            "🔄 [REFRESH] Computing new secret share: S'_{} = Σ G_i({})",
+            my_index, my_index
+        );
         for (from, share) in refresh_shares.iter() {
             let node_id = from.trim_start_matches("refresh_");
-            info!("✅ [REFRESH]   Adding G_{}({}) from {}: {:?}", 
-                  node_id, my_index, node_id, share.value.0);
+            info!(
+                "✅ [REFRESH]   Adding G_{}({}) from {}: {:?}",
+                node_id, my_index, node_id, share.value.0
+            );
             new_secret += share.value.0;
         }
-        
+
         info!("📊 [REFRESH] AFTER SUMMING REFRESH SHARES:");
-        info!("📊 [REFRESH]   New secret share S'_{}: {:?}", my_index, new_secret);
+        info!(
+            "📊 [REFRESH]   New secret share S'_{}: {:?}",
+            my_index, new_secret
+        );
         info!("📊 [REFRESH]   Change: {:?}", new_secret - original_secret);
-        
+
         // Store the new secret share
         //OKAY 1
-        info!("💾 [REFRESH] Storing refreshed polynomial share for NETWORK (final_secret): {:?}", new_secret);
+        info!(
+            "💾 [REFRESH] Storing refreshed polynomial share for NETWORK (final_secret): {:?}",
+            new_secret
+        );
         self.storage.set_final_secret(new_secret).await?;
         info!("✅ [REFRESH] Successfully stored refreshed NETWORK polynomial share");
-        
+
         // ========================================
         // UPDATE COMMITMENTS AND FINAL PUBLIC KEY
         // ========================================
         info!("🔄 [REFRESH] Updating commitments and final public key...");
-        
+
         // Get all refresh commitments
         let all_commitments = self.storage.get_all_commitments().await?;
         let refresh_commitment_entries: HashMap<String, Vec<AffinePoint>> = all_commitments
             .into_iter()
             .filter(|(k, _)| k.starts_with("refresh_"))
             .collect();
-        
-        info!("🔄 [REFRESH] Found {} refresh commitment sets", refresh_commitment_entries.len());
-        
+
+        info!(
+            "🔄 [REFRESH] Found {} refresh commitment sets",
+            refresh_commitment_entries.len()
+        );
+
         // Calculate new final public key by summing all refresh C0 commitments in peer-index order
         let mut new_final_public_key = ProjectivePoint::IDENTITY;
 
@@ -1813,13 +2173,20 @@ impl DKGNode {
             if let Some(comms) = refresh_commitment_entries.get(&refresh_key) {
                 if let Some(c0) = comms.get(0) {
                     new_final_public_key += ProjectivePoint::from(*c0);
-                    info!("✅ [REFRESH] Added C0 from {}: {:?}", refresh_key.trim_start_matches("refresh_"), c0);
+                    info!(
+                        "✅ [REFRESH] Added C0 from {}: {:?}",
+                        refresh_key.trim_start_matches("refresh_"),
+                        c0
+                    );
                 }
             }
         }
-        
-        info!("🔑 [REFRESH] New final public key from refresh commitments: {:?}", new_final_public_key);
-        
+
+        info!(
+            "🔑 [REFRESH] New final public key from refresh commitments: {:?}",
+            new_final_public_key
+        );
+
         // CRITICAL VERIFICATION: Check if new public key matches original
         info!("🔍 [REFRESH] ═══════════════════════════════════════════════════");
         info!("🔍 [REFRESH] VERIFYING SECRET PRESERVATION");
@@ -1831,7 +2198,7 @@ impl DKGNode {
         info!("🔍 [REFRESH] Comparing public keys:");
         info!("🔍 [REFRESH]   Original: {:?}", original_public);
         info!("🔍 [REFRESH]   New:      {:?}", new_final_public_key);
-        
+
         if original_public == new_final_public_key {
             info!("✅ [REFRESH] SUCCESS: Public keys MATCH! Secret preserved correctly!");
             info!("✅ [REFRESH] The refresh protocol is working correctly.");
@@ -1846,19 +2213,21 @@ impl DKGNode {
             warn!("❌ [REFRESH]   2. Node indices changed between DKG and refresh");
             warn!("❌ [REFRESH]   3. Some nodes using old shares, others using new shares");
             warn!("❌ [REFRESH]   4. Timing issue: nodes joined/left during refresh");
-            
+
             // Calculate what the ETH addresses would be
             let original_eth = utils::get_eth_address_from_group_key(original_public);
             let new_eth = utils::get_eth_address_from_group_key(new_final_public_key);
             warn!("❌ [REFRESH] ETH Address BEFORE refresh: {}", original_eth);
             warn!("❌ [REFRESH] ETH Address AFTER refresh:  {}", new_eth);
             warn!("❌ [REFRESH] ═══════════════════════════════════════════════════");
-            warn!("⚠️  [REFRESH] CHECK LOGS: Did all nodes use the same 'All indices for Lagrange'?");
+            warn!(
+                "⚠️  [REFRESH] CHECK LOGS: Did all nodes use the same 'All indices for Lagrange'?"
+            );
         }
-        
+
         // Store the new final public key
         self.storage.set_final_public(new_final_public_key).await?;
-        
+
         // Update CURRENT commitments with NEW refresh commitments (for signing verification)
         // NOTE: This updates current commitments but PRESERVES original commitments
         // Original commitments are NEVER changed and are used for vault address derivation
@@ -1867,16 +2236,19 @@ impl DKGNode {
             // Remove "refresh_" prefix to get the main key
             let main_key = refresh_key.trim_start_matches("refresh_");
             self.storage.store_commitments(main_key, comms).await?;
-            info!("💾 [REFRESH] Updated current commitments for {} (original commitments preserved)", main_key);
+            info!(
+                "💾 [REFRESH] Updated current commitments for {} (original commitments preserved)",
+                main_key
+            );
         }
         info!("✅ [REFRESH] Current commitments updated (original commitments remain unchanged)");
-        
+
         // Clear refresh shares after computing new secret
         self.clear_refresh_shares().await?;
-        
+
         info!("✅ [REFRESH] Secret share and commitments refreshed successfully!");
         info!("🔄 [REFRESH] All nodes now have refreshed shares with new randomness");
-        
+
         // ========================================
         // RECALCULATE VAULT TWEAKED SECRET WITH REFRESHED SHARE
         // Use the NEW public key (which should equal the original if refresh is correct)
@@ -1895,24 +2267,40 @@ impl DKGNode {
         let vault_hmac = hmac256_from_addr(&eth_address, &self.chain_code)
             .map_err(|e| anyhow!("Failed to generate vault HMAC: {}", e))?;
         info!("🏦 [REFRESH] Vault HMAC: {:?}", vault_hmac);
-        
+
         let tweak_scalar = k256::Scalar::from_repr(vault_hmac.into()).unwrap();
         info!("🏦 [REFRESH] Vault tweak scalar: {:?}", tweak_scalar);
-        
+
         // Calculate and store the NEW vault tweaked secret share
         info!("💾 [REFRESH] Computing refreshed polynomial share for VAULT...");
-        match self.calculate_vault_tweaked_secret_share(tweak_scalar).await {
+        match self
+            .calculate_vault_tweaked_secret_share(tweak_scalar)
+            .await
+        {
             Ok(vault_tweaked_secret) => {
-                info!("🔐 [REFRESH] Successfully calculated refreshed VAULT polynomial share: {:?}", vault_tweaked_secret);
+                info!(
+                    "🔐 [REFRESH] Successfully calculated refreshed VAULT polynomial share: {:?}",
+                    vault_tweaked_secret
+                );
                 info!("💾 [REFRESH] Storing refreshed polynomial share for VAULT (vault_tweaked_secret): {:?}", vault_tweaked_secret);
-                if let Err(e) = self.storage.set_vault_tweaked_secret(vault_tweaked_secret).await {
-                    warn!("⚠️ [REFRESH] Failed to store vault tweaked secret share: {}", e);
+                if let Err(e) = self
+                    .storage
+                    .set_vault_tweaked_secret(vault_tweaked_secret)
+                    .await
+                {
+                    warn!(
+                        "⚠️ [REFRESH] Failed to store vault tweaked secret share: {}",
+                        e
+                    );
                 } else {
                     info!("✅ [REFRESH] Successfully stored refreshed VAULT polynomial share in database");
                 }
             }
             Err(e) => {
-                warn!("⚠️ [REFRESH] Failed to calculate vault tweaked secret share: {}", e);
+                warn!(
+                    "⚠️ [REFRESH] Failed to calculate vault tweaked secret share: {}",
+                    e
+                );
             }
         }
 
@@ -1940,12 +2328,14 @@ impl DKGNode {
         } else {
             info!("✅ [REFRESH] Successfully stored vault group key in database");
         }
-        
+
         info!("🎉 [REFRESH] Polynomial refresh complete with updated vault secret!");
-        
+
         // After updating final secret and vault tweaked secret, refresh all user tweaked shares
         if let Some(registry) = &self.user_registry {
-            info!("💾 [REFRESH] Computing and storing refreshed polynomial shares for all USERS...");
+            info!(
+                "💾 [REFRESH] Computing and storing refreshed polynomial shares for all USERS..."
+            );
             info!("👥 [REFRESH] Refreshing tweaked secret shares for all users");
             if let Err(e) = registry.refresh_all_user_tweaked_shares().await {
                 warn!("⚠️ [REFRESH] Failed to refresh user tweaked shares: {}", e);
@@ -1956,7 +2346,7 @@ impl DKGNode {
         } else {
             warn!("⚠️ [REFRESH] No user registry attached; cannot refresh user tweaked shares");
         }
-        
+
         Ok(())
     }
 
@@ -1969,7 +2359,7 @@ impl DKGNode {
             .filter(|k| k.starts_with("refresh_"))
             .cloned()
             .collect();
-        
+
         if !refresh_keys.is_empty() {
             info!("🗑️ [REFRESH] Deleting {} old refresh shares from storage", refresh_keys.len());
             
@@ -1993,7 +2383,7 @@ impl DKGNode {
         } else {
             info!("ℹ️ [REFRESH] No old refresh shares to clear");
         }
-        
+
         Ok(())
     }
 }
@@ -2003,7 +2393,7 @@ mod tests {
     use super::*;
     use crate::database::{Database, DatabaseConfig};
     use tempfile::TempDir;
-    
+
     /// Helper to create a test database
     fn create_test_db() -> (Database, TempDir) {
         let temp_dir = TempDir::new().unwrap();
@@ -2015,20 +2405,23 @@ mod tests {
         let db = Database::new(config).unwrap();
         (db, temp_dir)
     }
-    
+
     #[tokio::test]
     async fn test_original_commitments_storage() {
         let (db, _temp_dir) = create_test_db();
         let storage = DkgStorage::new(db);
-        
+
         // Create test commitments
         let commitment1 = AffinePoint::GENERATOR;
         let commitment2 = (ProjectivePoint::GENERATOR * &Scalar::from(2u64)).to_affine();
         let commitments = vec![commitment1, commitment2];
-        
+
         // Store original commitments
-        storage.store_original_commitments("node1", &commitments).await.unwrap();
-        
+        storage
+            .store_original_commitments("node1", &commitments)
+            .await
+            .unwrap();
+
         // Retrieve and verify
         let retrieved = storage.get_all_original_commitments().await.unwrap();
         assert_eq!(retrieved.len(), 1);
@@ -2037,39 +2430,46 @@ mod tests {
         assert_eq!(retrieved["node1"][0], commitment1);
         assert_eq!(retrieved["node1"][1], commitment2);
     }
-    
+
     #[tokio::test]
     async fn test_original_commitments_persist_after_refresh() {
         let (db, _temp_dir) = create_test_db();
         let storage = DkgStorage::new(db);
-        
+
         // Store ORIGINAL commitments
         let original_commitments = vec![AffinePoint::GENERATOR];
-        storage.store_original_commitments("node1", &original_commitments).await.unwrap();
-        
+        storage
+            .store_original_commitments("node1", &original_commitments)
+            .await
+            .unwrap();
+
         // Simulate refresh by storing NEW current commitments
-        let refresh_commitments = vec![(ProjectivePoint::GENERATOR * &Scalar::from(2u64)).to_affine()];
-        storage.store_commitments("node1", &refresh_commitments).await.unwrap();
-        
+        let refresh_commitments =
+            vec![(ProjectivePoint::GENERATOR * &Scalar::from(2u64)).to_affine()];
+        storage
+            .store_commitments("node1", &refresh_commitments)
+            .await
+            .unwrap();
+
         // Verify ORIGINAL commitments are UNCHANGED
         let original = storage.get_all_original_commitments().await.unwrap();
         assert_eq!(original["node1"][0], AffinePoint::GENERATOR);
-        
+
         // Verify CURRENT commitments are UPDATED
         let current = storage.get_all_commitments().await.unwrap();
         assert_ne!(current["node1"][0], AffinePoint::GENERATOR);
         assert_eq!(current["node1"][0], refresh_commitments[0]);
     }
-    
+
     #[tokio::test]
     async fn test_vault_derivation_from_original_commitments() {
         let (db, _temp_dir) = create_test_db();
         let storage = DkgStorage::new(db);
         let chain_code = [0u8; 32];
-        
+
         // Create a mock message channel
         let (tx, _rx) = tokio::sync::mpsc::channel(100);
-        
+
         let adkg = DKGNode::new(
             "test_node".to_string(),
             2,
@@ -2078,45 +2478,72 @@ mod tests {
             storage.clone(),
             chain_code,
         );
-        
+
         // Store original commitments for 3 nodes
         let c1 = AffinePoint::GENERATOR;
         let c2 = (ProjectivePoint::GENERATOR * &Scalar::from(2u64)).to_affine();
         let c3 = (ProjectivePoint::GENERATOR * &Scalar::from(3u64)).to_affine();
-        
-        storage.store_original_commitments("node1", &vec![c1]).await.unwrap();
-        storage.store_original_commitments("node2", &vec![c2]).await.unwrap();
-        storage.store_original_commitments("node3", &vec![c3]).await.unwrap();
-        
+
+        storage
+            .store_original_commitments("node1", &vec![c1])
+            .await
+            .unwrap();
+        storage
+            .store_original_commitments("node2", &vec![c2])
+            .await
+            .unwrap();
+        storage
+            .store_original_commitments("node3", &vec![c3])
+            .await
+            .unwrap();
+
         // Derive vault using original commitments
         let tweak_scalar = Scalar::from(42u64);
-        let vault_key1 = adkg.derive_vault_group_key_from_original_commitments(tweak_scalar).await.unwrap();
-        
+        let vault_key1 = adkg
+            .derive_vault_group_key_from_original_commitments(tweak_scalar)
+            .await
+            .unwrap();
+
         // Store different current commitments (simulating refresh)
         let new_c1 = (ProjectivePoint::GENERATOR * &Scalar::from(10u64)).to_affine();
         let new_c2 = (ProjectivePoint::GENERATOR * &Scalar::from(20u64)).to_affine();
         let new_c3 = (ProjectivePoint::GENERATOR * &Scalar::from(30u64)).to_affine();
-        
-        storage.store_commitments("node1", &vec![new_c1]).await.unwrap();
-        storage.store_commitments("node2", &vec![new_c2]).await.unwrap();
-        storage.store_commitments("node3", &vec![new_c3]).await.unwrap();
-        
+
+        storage
+            .store_commitments("node1", &vec![new_c1])
+            .await
+            .unwrap();
+        storage
+            .store_commitments("node2", &vec![new_c2])
+            .await
+            .unwrap();
+        storage
+            .store_commitments("node3", &vec![new_c3])
+            .await
+            .unwrap();
+
         // Derive vault again using original commitments (should be the SAME)
-        let vault_key2 = adkg.derive_vault_group_key_from_original_commitments(tweak_scalar).await.unwrap();
-        
+        let vault_key2 = adkg
+            .derive_vault_group_key_from_original_commitments(tweak_scalar)
+            .await
+            .unwrap();
+
         // Assert vault keys are IDENTICAL
-        assert_eq!(vault_key1, vault_key2, "Vault group key changed after refresh - THIS IS A BUG!");
+        assert_eq!(
+            vault_key1, vault_key2,
+            "Vault group key changed after refresh - THIS IS A BUG!"
+        );
     }
-    
+
     #[tokio::test]
     async fn test_vault_addresses_remain_constant_after_refresh() {
         let (db, _temp_dir) = create_test_db();
         let storage = DkgStorage::new(db);
         let chain_code = [0u8; 32];
-        
+
         // Create a mock message channel
         let (tx, _rx) = tokio::sync::mpsc::channel(100);
-        
+
         let adkg = DKGNode::new(
             "test_node".to_string(),
             2,
@@ -2125,49 +2552,79 @@ mod tests {
             storage.clone(),
             chain_code,
         );
-        
+
         // Store original commitments
         let c1 = AffinePoint::GENERATOR;
         let c2 = (ProjectivePoint::GENERATOR * &Scalar::from(2u64)).to_affine();
-        
-        storage.store_original_commitments("node1", &vec![c1]).await.unwrap();
-        storage.store_original_commitments("node2", &vec![c2]).await.unwrap();
-        
+
+        storage
+            .store_original_commitments("node1", &vec![c1])
+            .await
+            .unwrap();
+        storage
+            .store_original_commitments("node2", &vec![c2])
+            .await
+            .unwrap();
+
         // Derive vault addresses BEFORE refresh
         let tweak_scalar = Scalar::from(123u64);
-        let vault_key_before = adkg.derive_vault_group_key_from_original_commitments(tweak_scalar).await.unwrap();
+        let vault_key_before = adkg
+            .derive_vault_group_key_from_original_commitments(tweak_scalar)
+            .await
+            .unwrap();
         let vault_eth_before = utils::get_eth_address_from_group_key(vault_key_before);
         let vault_btc_before = utils::get_btc_address_from_group_key(vault_key_before);
-        
+
         // Simulate refresh - update current commitments
         let new_c1 = (ProjectivePoint::GENERATOR * &Scalar::from(100u64)).to_affine();
         let new_c2 = (ProjectivePoint::GENERATOR * &Scalar::from(200u64)).to_affine();
-        
-        storage.store_commitments("node1", &vec![new_c1]).await.unwrap();
-        storage.store_commitments("node2", &vec![new_c2]).await.unwrap();
-        
+
+        storage
+            .store_commitments("node1", &vec![new_c1])
+            .await
+            .unwrap();
+        storage
+            .store_commitments("node2", &vec![new_c2])
+            .await
+            .unwrap();
+
         // Derive vault addresses AFTER refresh (from original commitments)
-        let vault_key_after = adkg.derive_vault_group_key_from_original_commitments(tweak_scalar).await.unwrap();
+        let vault_key_after = adkg
+            .derive_vault_group_key_from_original_commitments(tweak_scalar)
+            .await
+            .unwrap();
         let vault_eth_after = utils::get_eth_address_from_group_key(vault_key_after);
         let vault_btc_after = utils::get_btc_address_from_group_key(vault_key_after);
-        
+
         // Assert vault addresses are IDENTICAL
-        assert_eq!(vault_eth_before, vault_eth_after, "Vault ETH address changed after refresh!");
-        assert_eq!(vault_btc_before, vault_btc_after, "Vault BTC address changed after refresh!");
-        
-        println!("✅ Vault ETH address remains constant: {}", vault_eth_before);
-        println!("✅ Vault BTC address remains constant: {}", vault_btc_before);
+        assert_eq!(
+            vault_eth_before, vault_eth_after,
+            "Vault ETH address changed after refresh!"
+        );
+        assert_eq!(
+            vault_btc_before, vault_btc_after,
+            "Vault BTC address changed after refresh!"
+        );
+
+        println!(
+            "✅ Vault ETH address remains constant: {}",
+            vault_eth_before
+        );
+        println!(
+            "✅ Vault BTC address remains constant: {}",
+            vault_btc_before
+        );
     }
-    
+
     #[tokio::test]
     async fn test_multiple_refresh_rounds_preserve_vault() {
         let (db, _temp_dir) = create_test_db();
         let storage = DkgStorage::new(db);
         let chain_code = [0u8; 32];
-        
+
         // Create a mock message channel
         let (tx, _rx) = tokio::sync::mpsc::channel(100);
-        
+
         let adkg = DKGNode::new(
             "test_node".to_string(),
             2,
@@ -2176,29 +2633,42 @@ mod tests {
             storage.clone(),
             chain_code,
         );
-        
+
         // Store original commitments
-        storage.store_original_commitments("node1", &vec![AffinePoint::GENERATOR]).await.unwrap();
-        
+        storage
+            .store_original_commitments("node1", &vec![AffinePoint::GENERATOR])
+            .await
+            .unwrap();
+
         let tweak_scalar = Scalar::from(999u64);
-        let initial_vault = adkg.derive_vault_group_key_from_original_commitments(tweak_scalar).await.unwrap();
+        let initial_vault = adkg
+            .derive_vault_group_key_from_original_commitments(tweak_scalar)
+            .await
+            .unwrap();
         let initial_vault_eth = utils::get_eth_address_from_group_key(initial_vault);
-        
+
         // Simulate 5 refresh rounds
         for round in 1..=5 {
-            let new_c = (ProjectivePoint::GENERATOR * &Scalar::from((round * 1000) as u64)).to_affine();
-            storage.store_commitments("node1", &vec![new_c]).await.unwrap();
-            
-            let vault_after_round = adkg.derive_vault_group_key_from_original_commitments(tweak_scalar).await.unwrap();
+            let new_c =
+                (ProjectivePoint::GENERATOR * &Scalar::from((round * 1000) as u64)).to_affine();
+            storage
+                .store_commitments("node1", &vec![new_c])
+                .await
+                .unwrap();
+
+            let vault_after_round = adkg
+                .derive_vault_group_key_from_original_commitments(tweak_scalar)
+                .await
+                .unwrap();
             let vault_eth_after_round = utils::get_eth_address_from_group_key(vault_after_round);
-            
+
             assert_eq!(
                 initial_vault_eth, vault_eth_after_round,
                 "Vault address changed after refresh round {}!",
                 round
             );
         }
-        
+
         println!("✅ Vault address remained constant through 5 refresh rounds");
     }
 }

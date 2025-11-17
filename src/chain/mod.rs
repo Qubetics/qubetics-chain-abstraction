@@ -155,7 +155,6 @@ pub trait ChainHandler: Send + Sync {
     fn create_transaction_bytes(&self, transaction: &ChainTransaction) -> Result<Vec<u8>>;
     fn create_transaction_bytes_contract(&self, transaction: &ChainTransaction) -> Result<Vec<u8>>;
 
-
     /// Create signature from raw signature data
     fn create_signature(
         &self,
@@ -219,17 +218,8 @@ impl ChainHandler for EthereumChainHandler {
                         ),
                     )
                 } else {
-                    // Use regular transaction function for simple transfers (no data)
-                    let dummy_tx = DummyTransaction {
-                        to: eth_tx.to.clone(),
-                        value: eth_tx.value.clone(),
-                        gas_limit: eth_tx.gas_limit,
-                        gas_price: eth_tx.gas_price.clone(),
-                        nonce: eth_tx.nonce,
-                        chain_id: eth_tx.chain_id,
-                    };
                     Ok(crate::utils::transaction::create_transaction_for_signing(
-                        &dummy_tx,
+                        &eth_tx,
                     ))
                 }
             }
@@ -260,17 +250,8 @@ impl ChainHandler for EthereumChainHandler {
                         ),
                     )
                 } else {
-                    // Use regular transaction function for simple transfers (no data)
-                    let dummy_tx = DummyTransaction {
-                        to: eth_tx.to.clone(),
-                        value: eth_tx.value.clone(),
-                        gas_limit: eth_tx.gas_limit,
-                        gas_price: eth_tx.gas_price.clone(),
-                        nonce: eth_tx.nonce,
-                        chain_id: eth_tx.chain_id,
-                    };
                     Ok(crate::utils::transaction::create_transaction_for_signing(
-                        &dummy_tx,
+                        &eth_tx,
                     ))
                 }
             }
@@ -574,17 +555,8 @@ impl ChainHandler for BitcoinChainHandler {
                         ),
                     )
                 } else {
-                    // Use regular transaction function for simple transfers (no data)
-                    let dummy_tx = DummyTransaction {
-                        to: eth_tx.to.clone(),
-                        value: eth_tx.value.clone(),
-                        gas_limit: eth_tx.gas_limit,
-                        gas_price: eth_tx.gas_price.clone(),
-                        nonce: eth_tx.nonce,
-                        chain_id: eth_tx.chain_id,
-                    };
                     Ok(crate::utils::transaction::create_transaction_for_signing(
-                        &dummy_tx,
+                        &eth_tx,
                     ))
                 }
             }

@@ -202,7 +202,7 @@ mod tests {
             3 // Always return 3 for testing
         }
         fn clone_box(&self) -> Box<dyn ThresholdCalculator> {
-           Box::new(self.clone())
+            Box::new(self.clone())
         }
     }
 

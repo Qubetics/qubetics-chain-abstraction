@@ -1,7 +1,7 @@
 // src/utils/bigint.rs
 use num_bigint::BigUint;
-use serde::{Deserializer, Serializer};
 use serde::de::{self, Visitor};
+use serde::{Deserializer, Serializer};
 use std::fmt;
 
 pub fn serialize<S>(value: &BigUint, serializer: S) -> Result<S::Ok, S::Error>

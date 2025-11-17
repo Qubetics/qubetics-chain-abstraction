@@ -3,23 +3,21 @@ use std::sync::{Arc, OnceLock};
 use anyhow::{anyhow, Result};
 use ethers::{
     abi::{Abi, Token},
-    providers::{Http, Provider, Middleware},
+    providers::{Http, Middleware, Provider},
     types::{
-        transaction::eip1559::Eip1559TransactionRequest,
-        transaction::eip2718::TypedTransaction,
-        Address, BlockId, BlockNumber, Bytes, H256, U256, U64, NameOrAddress,
+        transaction::eip1559::Eip1559TransactionRequest, transaction::eip2718::TypedTransaction,
+        Address, BlockId, BlockNumber, Bytes, NameOrAddress, H256, U256, U64,
     },
 };
 use rlp::RlpStream;
-use serde_json;
 use secp256k1::{self, ecdsa::RecoverableSignature, Message, PublicKey, Secp256k1, SecretKey};
+use serde_json;
 
 // ===== ABI LOADER (keep your ABI file next to this source) =====
 static ABI: OnceLock<Abi> = OnceLock::new();
 fn intent_manager_abi() -> &'static Abi {
     ABI.get_or_init(|| {
-        serde_json::from_str(include_str!("intent_manager_abi.json"))
-            .expect("invalid ABI JSON")
+        serde_json::from_str(include_str!("intent_manager_abi.json")).expect("invalid ABI JSON")
     })
 }
 
@@ -31,11 +29,11 @@ pub async fn prepare_unsigned_eip1559_tx(
     provider: Arc<Provider<Http>>,
     chain_id: u64,
     from: Address,
-    to: Address,                // contract address
+    to: Address, // contract address
     function_name: &str,
-    params: Vec<Token>,         // ABI-typed params
-    value: Option<U256>,        // wei (None for non-payable)
-    manual_gas: Option<U256>,   // if None -> estimate
+    params: Vec<Token>,       // ABI-typed params
+    value: Option<U256>,      // wei (None for non-payable)
+    manual_gas: Option<U256>, // if None -> estimate
     manual_max_fee: Option<U256>,
     manual_max_priority: Option<U256>,
 ) -> Result<(H256, String, TypedTransaction)> {
@@ -49,7 +47,9 @@ pub async fn prepare_unsigned_eip1559_tx(
         .to(to)
         .data(data)
         .chain_id(U64::from(chain_id));
-    if let Some(v) = value { req = req.value(v); }
+    if let Some(v) = value {
+        req = req.value(v);
+    }
 
     // 3) nonce
     let nonce = provider.as_ref().get_transaction_count(from, None).await?;
@@ -65,8 +65,11 @@ pub async fn prepare_unsigned_eip1559_tx(
     }
 
     // 5) fees
-    let (max_fee, max_prio) = derive_fees(provider.as_ref(), manual_max_fee, manual_max_priority).await?;
-    req = req.max_fee_per_gas(max_fee).max_priority_fee_per_gas(max_prio);
+    let (max_fee, max_prio) =
+        derive_fees(provider.as_ref(), manual_max_fee, manual_max_priority).await?;
+    req = req
+        .max_fee_per_gas(max_fee)
+        .max_priority_fee_per_gas(max_prio);
 
     // 6) final tx + sighash
     let tx = TypedTransaction::Eip1559(req.clone());
@@ -97,11 +100,11 @@ async fn derive_fees(
     {
         let base = block.base_fee_per_gas.unwrap_or_default();
         let prio = manual_max_priority.unwrap_or(default_prio);
-        let max  = manual_max_fee.unwrap_or(base * 2 + prio);
+        let max = manual_max_fee.unwrap_or(base * 2 + prio);
         Ok((max, prio))
     } else {
         // fallback for weird RPCs
-        let gp   = provider.get_gas_price().await?;
+        let gp = provider.get_gas_price().await?;
         let prio = manual_max_priority.unwrap_or(default_prio);
         Ok((gp + prio, prio))
     }
@@ -109,14 +112,18 @@ async fn derive_fees(
 
 fn encode_unsigned_payload_eip1559(req: &Eip1559TransactionRequest) -> Result<Vec<u8>> {
     let chain_id = req.chain_id.ok_or_else(|| anyhow!("missing chain_id"))?;
-    let nonce    = req.nonce.ok_or_else(|| anyhow!("missing nonce"))?;
-    let max_prio = req.max_priority_fee_per_gas.ok_or_else(|| anyhow!("missing max_priority_fee_per_gas"))?;
-    let max_fee  = req.max_fee_per_gas.ok_or_else(|| anyhow!("missing max_fee_per_gas"))?;
-    let gas      = req.gas.ok_or_else(|| anyhow!("missing gas"))?;
+    let nonce = req.nonce.ok_or_else(|| anyhow!("missing nonce"))?;
+    let max_prio = req
+        .max_priority_fee_per_gas
+        .ok_or_else(|| anyhow!("missing max_priority_fee_per_gas"))?;
+    let max_fee = req
+        .max_fee_per_gas
+        .ok_or_else(|| anyhow!("missing max_fee_per_gas"))?;
+    let gas = req.gas.ok_or_else(|| anyhow!("missing gas"))?;
 
-    let to_ref   = req.to.as_ref().ok_or_else(|| anyhow!("missing to"))?;
-    let value    = req.value.unwrap_or_default();
-    let data     = req.data.clone().unwrap_or_default();
+    let to_ref = req.to.as_ref().ok_or_else(|| anyhow!("missing to"))?;
+    let value = req.value.unwrap_or_default();
+    let data = req.data.clone().unwrap_or_default();
 
     let mut s = RlpStream::new_list(9);
     s.append(&U256::from(chain_id.as_u64()));
@@ -126,33 +133,42 @@ fn encode_unsigned_payload_eip1559(req: &Eip1559TransactionRequest) -> Result<Ve
     s.append(&gas);
 
     match to_ref {
-        NameOrAddress::Address(a) => { s.append(a); }   // <-- do the append, then end arm
+        NameOrAddress::Address(a) => {
+            s.append(a);
+        } // <-- do the append, then end arm
         NameOrAddress::Name(_) => return Err(anyhow!("resolve ENS before encoding")),
-    };                                                  // <-- END THE MATCH WITH A SEMICOLON
+    }; // <-- END THE MATCH WITH A SEMICOLON
 
     s.append(&value);
     s.append(&data.as_ref());
     s.begin_list(0);
 
-    let rlp_bytes = s.out();            // out(self) consumes s — call it ONCE
+    let rlp_bytes = s.out(); // out(self) consumes s — call it ONCE
     let mut out = Vec::with_capacity(1 + rlp_bytes.len());
     out.push(0x02);
     out.extend_from_slice(&rlp_bytes);
     Ok(out)
 }
 
-
 pub fn sign_unsigned_preimage_to_raw_with_secp(
     unsigned_preimage_hex: &str,
     sk: &secp256k1::SecretKey,
-) -> anyhow::Result<(ethers::types::Bytes, ethers::types::H256, [u8; 32], [u8; 32], u64)> {
+) -> anyhow::Result<(
+    ethers::types::Bytes,
+    ethers::types::H256,
+    [u8; 32],
+    [u8; 32],
+    u64,
+)> {
     use anyhow::anyhow;
-    use ethers::types::{H256, U256, Bytes};
+    use ethers::types::{Bytes, H256, U256};
     use rlp::{Rlp, RlpStream};
     use secp256k1::{ecdsa::RecoverableSignature, Message, Secp256k1};
 
     // 1) decode & sanity
-    let pre = unsigned_preimage_hex.strip_prefix("0x").unwrap_or(unsigned_preimage_hex);
+    let pre = unsigned_preimage_hex
+        .strip_prefix("0x")
+        .unwrap_or(unsigned_preimage_hex);
     let pre_bytes = hex::decode(pre)?;
     if pre_bytes.first().copied() != Some(0x02) {
         return Err(anyhow!("expected type-2 preimage (starts with 0x02)"));
@@ -163,7 +179,10 @@ pub fn sign_unsigned_preimage_to_raw_with_secp(
         return Err(anyhow!("payload is not an RLP list"));
     }
     if rlp_list.item_count()? != 9 {
-        return Err(anyhow!("expected 9 signing fields, got {}", rlp_list.item_count()?));
+        return Err(anyhow!(
+            "expected 9 signing fields, got {}",
+            rlp_list.item_count()?
+        ));
     }
 
     // 2) sighash = keccak256(preimage)

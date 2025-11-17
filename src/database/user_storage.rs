@@ -593,14 +593,14 @@ impl IntentStorage {
         tx_id: &str,
         final_solver_id: Option<String>,
     ) -> Result<()> {
-        self
-            .store_intent_transaction_ids(
-                intent_hash,
-                Some(tx_id.to_string()),
-                None,
-                None,
-                final_solver_id,
-            ).await
+        self.store_intent_transaction_ids(
+            intent_hash,
+            Some(tx_id.to_string()),
+            None,
+            None,
+            final_solver_id,
+        )
+        .await
     }
 
     /// Store network_to_target transaction ID
@@ -610,15 +610,14 @@ impl IntentStorage {
         tx_id: &str,
         final_solver_id: Option<String>,
     ) -> Result<()> {
-        self
-            .store_intent_transaction_ids(
-                intent_hash,
-                None,
-                Some(tx_id.to_string()),
-                None,
-                final_solver_id,
-            )
-            .await
+        self.store_intent_transaction_ids(
+            intent_hash,
+            None,
+            Some(tx_id.to_string()),
+            None,
+            final_solver_id,
+        )
+        .await
     }
 
     /// Store vault_to_network transaction ID
@@ -628,22 +627,18 @@ impl IntentStorage {
         tx_id: &str,
         final_solver_id: Option<String>,
     ) -> Result<()> {
-        self
-            .store_intent_transaction_ids(
-                intent_hash,
-                None,
-                None,
-                Some(tx_id.to_string()),
-                final_solver_id,
-            ).await
+        self.store_intent_transaction_ids(
+            intent_hash,
+            None,
+            None,
+            Some(tx_id.to_string()),
+            final_solver_id,
+        )
+        .await
     }
 
     /// Store or update the final solver for an intent
-    pub async fn store_final_solver(
-        &self,
-        intent_hash: &str,
-        solver: &str,
-    ) -> Result<()> {
+    pub async fn store_final_solver(&self, intent_hash: &str, solver: &str) -> Result<()> {
         info!(
             "💾 [INTENT_STORAGE] Storing final solver for intent {}: {}",
             intent_hash, solver

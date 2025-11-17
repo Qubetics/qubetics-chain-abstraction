@@ -4,8 +4,8 @@ use ecvrf::{keygen, prove, verify, VrfPk, VrfProof, VrfSk};
 use libp2p::PeerId;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use tokio::sync::{mpsc, RwLock};
 use std::sync::Arc;
+use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, info};
 
 use crate::types::ChannelMessage;
@@ -79,7 +79,7 @@ impl VrfService {
     /// Create a new VRF service
     pub fn new(node_id: PeerId, message_tx: mpsc::Sender<ChannelMessage>) -> Self {
         let selector = VrfNodeSelector::new(node_id);
-        
+
         Self {
             selector: Arc::new(RwLock::new(selector)),
             message_tx,
@@ -98,13 +98,15 @@ impl VrfService {
     ) -> Result<NodeSelectionResult> {
         info!(
             "🎯 [VRF] Starting {} operation node selection for round {} with {} available nodes",
-            operation_type, round, available_nodes.len()
+            operation_type,
+            round,
+            available_nodes.len()
         );
 
         let mut selector = self.selector.write().await;
         let selection_result = selector.select_mpc_nodes(available_nodes, threshold, round);
         info!("🧐 Selection result: {:?}", selection_result);
-        
+
         info!("⏳ Waiting 3 seconds before broadcasting selection...");
         tokio::time::sleep(std::time::Duration::from_millis(3000)).await;
 
@@ -122,12 +124,14 @@ impl VrfService {
             let broadcast_data = serde_json::to_vec(
                 &crate::types::GossipsubMessage::VrfSelectedNodes(broadcast_msg),
             )?;
-            
-            self.message_tx.send(ChannelMessage::Broadcast {
-                topic: "vrf-selection".to_string(),
-                data: broadcast_data,
-            }).await?;
-            
+
+            self.message_tx
+                .send(ChannelMessage::Broadcast {
+                    topic: "vrf-selection".to_string(),
+                    data: broadcast_data,
+                })
+                .await?;
+
             info!(
                 "📤 [VRF] Node {} broadcasted VRF-selected nodes for {} operation round {}",
                 self.node_id, operation_type, round
@@ -144,15 +148,20 @@ impl VrfService {
     }
 
     /// Handle VRF broadcast from other nodes
-    pub async fn handle_vrf_broadcast(&self, broadcast: VrfSelectedNodesBroadcast, total_nodes: usize) {
+    pub async fn handle_vrf_broadcast(
+        &self,
+        broadcast: VrfSelectedNodesBroadcast,
+        total_nodes: usize,
+    ) {
         let mut selector = self.selector.write().await;
         let round = broadcast.round;
-        
+
         selector.handle_selected_nodes_broadcast(broadcast, total_nodes);
-        
+
         // Check if consensus can be started
         let min_selections = total_nodes;
-        if selector.can_start_consensus(round, min_selections) { ////////////////////
+        if selector.can_start_consensus(round, min_selections) {
+            ////////////////////
             info!(
                 "🎯 [VRF] Enough selections collected for round {}, consensus can be triggered",
                 round
@@ -184,7 +193,10 @@ impl VrfService {
     pub async fn set_current_round(&mut self, round: u64) {
         let mut current = self.current_round.write().await;
         *current = round;
-        info!("🔄 [VRF] Node {} set current round to: {}", self.node_id, round);
+        info!(
+            "🔄 [VRF] Node {} set current round to: {}",
+            self.node_id, round
+        );
     }
 
     /// Get VRF public key
@@ -206,7 +218,10 @@ impl VrfService {
     }
 
     /// Get all selected nodes with frequencies for consensus
-    pub async fn get_all_selected_nodes_with_frequencies(&self, round: u64) -> Vec<SerializablePeerId> {
+    pub async fn get_all_selected_nodes_with_frequencies(
+        &self,
+        round: u64,
+    ) -> Vec<SerializablePeerId> {
         let selector = self.selector.read().await;
         selector.get_all_selected_nodes_with_frequencies(round)
     }
@@ -481,7 +496,11 @@ impl VrfNodeSelector {
     }
 
     /// Handle received VRF selected nodes broadcast from another node
-    pub fn handle_selected_nodes_broadcast(&mut self, broadcast: VrfSelectedNodesBroadcast, total_nodes: usize) {
+    pub fn handle_selected_nodes_broadcast(
+        &mut self,
+        broadcast: VrfSelectedNodesBroadcast,
+        total_nodes: usize,
+    ) {
         info!(
             "📥 [VRF] Received VRF selected nodes broadcast from node {} for round {}: {} nodes selected",
             broadcast.selector_node_id.0,
@@ -654,7 +673,6 @@ mod tests {
         assert!(!output.proof.is_empty());
         assert!(!output.hash.is_empty());
         assert!(output.value > 0);
-
     }
 
     #[test]

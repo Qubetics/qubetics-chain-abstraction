@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use ethereum_types::U256;
+use ethers::types::U256 as EthersU256;
 use ff::PrimeField;
 use k256::ProjectivePoint;
 use k256::Scalar;
@@ -8,15 +9,14 @@ use sha2::Digest as _;
 use sha3::Keccak256;
 use std::collections::HashMap;
 use uuid::Uuid;
-use ethers::types::U256 as EthersU256;
 
 use super::{
     checksum_from_any, to_checksum_address, IntentStatus, IntentTransactionIds, TransactionStatus,
     UserRegistration,
 };
+use crate::database::DkgStorage;
 use crate::database::RewardStorage;
 use crate::database::{Database, IntentStorage, TransactionStatusStorage, UserStorage};
-use crate::database::DkgStorage;
 use crate::rpc_server::DepositIntent;
 use crate::types::{SerializablePoint, SerializableScalar};
 use crate::utils::hmac_helper::hmac256_from_addr;
@@ -56,14 +56,20 @@ impl DatabaseUserRegistry {
 
         // Fetch all users
         let users = self.user_storage.get_all_users().await?;
-        info!("👥 [DB_USER_REGISTRY] Users loaded for refresh: {}", users.len());
+        info!(
+            "👥 [DB_USER_REGISTRY] Users loaded for refresh: {}",
+            users.len()
+        );
 
         let mut success_count: usize = 0;
         let mut failure_count: usize = 0;
 
         // Iterate and recompute tweaked share for each user based on their HMAC constant
         for (address, mut user) in users.into_iter() {
-            info!("🧮 [DB_USER_REGISTRY] Recomputing tweaked share for {} (user_id: {})", address, user.user_id);
+            info!(
+                "🧮 [DB_USER_REGISTRY] Recomputing tweaked share for {} (user_id: {})",
+                address, user.user_id
+            );
             let new_tweaked = self.compute_tweaked_share(&final_secret_share, &user.hmac_constant);
             user.tweaked_secret_share = Some(new_tweaked);
 
@@ -71,12 +77,14 @@ impl DatabaseUserRegistry {
             if let Err(e) = self.user_storage.store_user(&address, &user).await {
                 error!(
                     "❌ [DB_USER_REGISTRY] Failed to update tweaked share for {}: {}",
-                    address,
-                    e
+                    address, e
                 );
                 failure_count += 1;
             } else {
-                info!("✅ [DB_USER_REGISTRY] Updated tweaked secret share for {}", address);
+                info!(
+                    "✅ [DB_USER_REGISTRY] Updated tweaked secret share for {}",
+                    address
+                );
                 success_count += 1;
             }
         }
@@ -605,20 +613,14 @@ impl DatabaseUserRegistry {
     }
 
     /// Store or update the final solver for an intent
-    pub async fn store_final_solver(
-        &self,
-        intent_hash: &str,
-        solver: &str,
-    ) -> Result<(), String> {
+    pub async fn store_final_solver(&self, intent_hash: &str, solver: &str) -> Result<(), String> {
         match self
             .intent_storage
             .store_final_solver(intent_hash, solver)
             .await
         {
             Ok(()) => {
-                info!(
-                    "✅ [DB_USER_REGISTRY] Successfully stored final solver",
-                );
+                info!("✅ [DB_USER_REGISTRY] Successfully stored final solver",);
                 info!("  🎯 Intent: {}", intent_hash);
                 info!("  🧠 Solver: {}", solver);
                 Ok(())
@@ -640,7 +642,7 @@ impl DatabaseUserRegistry {
         user_to_network_tx_id: Option<String>,
         network_to_target_tx_id: Option<String>,
         vault_to_network_tx_id: Option<String>,
-        final_solver_id: Option<String>
+        final_solver_id: Option<String>,
     ) -> Result<(), String> {
         self.intent_storage
             .store_intent_transaction_ids(
@@ -673,11 +675,7 @@ impl DatabaseUserRegistry {
 
         match self
             .intent_storage
-            .store_transaction_error(
-                intent_hash,
-                error_message,
-                solver_id.map(|s| s.to_string()),
-            )
+            .store_transaction_error(intent_hash, error_message, solver_id.map(|s| s.to_string()))
             .await
         {
             Ok(()) => {
@@ -902,8 +900,8 @@ impl DatabaseUserRegistry {
         solver_address: &str,
         reward_tics: U256,
     ) -> Result<(), String> {
-        let reward_ethers = EthersU256::from_dec_str(&reward_tics.to_string())
-            .map_err(|e| e.to_string())?;
+        let reward_ethers =
+            EthersU256::from_dec_str(&reward_tics.to_string()).map_err(|e| e.to_string())?;
         match self
             .reward_storage
             .set_solver_reward_tics(solver_address, reward_ethers)
@@ -920,8 +918,8 @@ impl DatabaseUserRegistry {
         solver_address: &str,
         reward_btc_sats: U256,
     ) -> Result<(), String> {
-        let reward_ethers = EthersU256::from_dec_str(&reward_btc_sats.to_string())
-            .map_err(|e| e.to_string())?;
+        let reward_ethers =
+            EthersU256::from_dec_str(&reward_btc_sats.to_string()).map_err(|e| e.to_string())?;
         match self
             .reward_storage
             .set_solver_reward_btc(solver_address, reward_ethers)
@@ -931,7 +929,6 @@ impl DatabaseUserRegistry {
             Err(e) => Err(e.to_string()),
         }
     }
-
 
     /// Get TICS reward for a specific solver
     pub async fn get_solver_reward_tics(&self, solver_address: &str) -> Option<U256> {
@@ -1077,5 +1074,175 @@ impl DatabaseUserRegistry {
                 None
             }
         }
+    }
+
+    /// Store TICS transaction hashes for a specific solver
+    pub async fn set_solver_tics_txn_hashes(
+        &self,
+        solver_address: &str,
+        txn_hashes: Vec<String>,
+    ) -> Result<()> {
+        info!("🎯 [DB_USER_REGISTRY] Processing TICS txn hashes storage for solver: {}", solver_address);
+        info!("📝 [DB_USER_REGISTRY] Storing {} TICS transaction hashes", txn_hashes.len());
+        
+        self.reward_storage
+            .set_solver_tics_txn_hashes(solver_address, txn_hashes)
+            .await
+            .map(|_| {
+                info!("✅ [DB_USER_REGISTRY] Successfully stored TICS txn hashes");
+            })
+            .map_err(|e| {
+                error!("❌ [DB_USER_REGISTRY] Failed to store TICS txn hashes: {}", e);
+                e
+            })
+    }
+
+    /// Get TICS transaction hashes for a specific solver
+    pub async fn get_solver_tics_txn_hashes(&self, solver_address: &str) -> Option<Vec<String>> {
+        match self
+            .reward_storage
+            .get_solver_tics_txn_hashes(solver_address)
+            .await
+        {
+            Ok(hashes) => {
+                if let Some(ref hashes) = hashes {
+                    info!(
+                        "🔍 [DB_USER_REGISTRY] Retrieved {} TICS txn hashes for solver: {}",
+                        hashes.len(),
+                        solver_address
+                    );
+                }
+                hashes
+            }
+            Err(e) => {
+                tracing::error!(
+                    "Failed to get TICS txn hashes for solver {}: {}",
+                    solver_address, e
+                );
+                None
+            }
+        }
+    }
+
+    /// Add a single TICS transaction hash to a solver's list
+    pub async fn add_solver_tics_txn_hash(
+        &self,
+        solver_address: &str,
+        txn_hash: String,
+    ) -> Result<()> {
+        info!("🎯 [DB_USER_REGISTRY] Adding TICS txn hash for solver: {}", solver_address);
+        info!("📝 [DB_USER_REGISTRY] Txn hash: {}", txn_hash);
+        
+        self.reward_storage
+            .add_solver_tics_txn_hash(solver_address, txn_hash)
+            .await
+            .map(|_| {
+                info!("✅ [DB_USER_REGISTRY] Successfully added TICS txn hash");
+            })
+            .map_err(|e| {
+                error!("❌ [DB_USER_REGISTRY] Failed to add TICS txn hash: {}", e);
+                e
+            })
+    }
+
+    /// Store BTC transaction hashes for a specific solver
+    pub async fn set_solver_btc_txn_hashes(
+        &self,
+        solver_address: &str,
+        txn_hashes: Vec<String>,
+    ) -> Result<()> {
+        info!("🎯 [DB_USER_REGISTRY] Processing BTC txn hashes storage for solver: {}", solver_address);
+        info!("📝 [DB_USER_REGISTRY] Storing {} BTC transaction hashes", txn_hashes.len());
+        
+        self.reward_storage
+            .set_solver_btc_txn_hashes(solver_address, txn_hashes)
+            .await
+            .map(|_| {
+                info!("✅ [DB_USER_REGISTRY] Successfully stored BTC txn hashes");
+            })
+            .map_err(|e| {
+                error!("❌ [DB_USER_REGISTRY] Failed to store BTC txn hashes: {}", e);
+                e
+            })
+    }
+
+    /// Get BTC transaction hashes for a specific solver
+    pub async fn get_solver_btc_txn_hashes(&self, solver_address: &str) -> Option<Vec<String>> {
+        match self
+            .reward_storage
+            .get_solver_btc_txn_hashes(solver_address)
+            .await
+        {
+            Ok(hashes) => {
+                if let Some(ref hashes) = hashes {
+                    info!(
+                        "🔍 [DB_USER_REGISTRY] Retrieved {} BTC txn hashes for solver: {}",
+                        hashes.len(),
+                        solver_address
+                    );
+                }
+                hashes
+            }
+            Err(e) => {
+                tracing::error!(
+                    "Failed to get BTC txn hashes for solver {}: {}",
+                    solver_address, e
+                );
+                None
+            }
+        }
+    }
+
+    /// Add a single BTC transaction hash to a solver's list
+    pub async fn add_solver_btc_txn_hash(
+        &self,
+        solver_address: &str,
+        txn_hash: String,
+    ) -> Result<()> {
+        info!("🎯 [DB_USER_REGISTRY] Adding BTC txn hash for solver: {}", solver_address);
+        info!("📝 [DB_USER_REGISTRY] Txn hash: {}", txn_hash);
+        
+        self.reward_storage
+            .add_solver_btc_txn_hash(solver_address, txn_hash)
+            .await
+            .map(|_| {
+                info!("✅ [DB_USER_REGISTRY] Successfully added BTC txn hash");
+            })
+            .map_err(|e| {
+                error!("❌ [DB_USER_REGISTRY] Failed to add BTC txn hash: {}", e);
+                e
+            })
+    }
+
+    /// Clear TICS transaction hashes for a specific solver
+    pub async fn clear_solver_tics_txn_hashes(&self, solver_address: &str) -> Result<()> {
+        info!("🎯 [DB_USER_REGISTRY] Clearing TICS txn hashes for solver: {}", solver_address);
+        
+        self.reward_storage
+            .clear_solver_tics_txn_hashes(solver_address)
+            .await
+            .map(|_| {
+                info!("✅ [DB_USER_REGISTRY] Successfully cleared TICS txn hashes");
+            })
+            .map_err(|e| {
+                error!("❌ [DB_USER_REGISTRY] Failed to clear TICS txn hashes: {}", e);
+                e
+            })
+    }
+
+    /// Clear BTC transaction hashes for a specific solver
+    pub async fn clear_solver_btc_txn_hashes(&self, solver_address: &str) -> Result<()> {
+        info!("🎯 [DB_USER_REGISTRY] Clearing BTC txn hashes for solver: {}", solver_address);
+        
+        self.reward_storage
+            .clear_solver_btc_txn_hashes(solver_address)
+            .await
+            .map(|_| {
+                info!("✅ [DB_USER_REGISTRY] Successfully cleared BTC txn hashes");
+            })
+            .map_err(|e| {
+                error!("❌ [DB_USER_REGISTRY] Failed to clear BTC txn hashes: {}", e);
+                e
+            })
     }
 }

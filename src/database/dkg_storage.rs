@@ -1,4 +1,4 @@
-use crate::database::{Database, keys};
+use crate::database::{keys, Database};
 use crate::types::{KeyShare, SerializablePoint, SerializableScalar};
 use anyhow::Result;
 use k256::{AffinePoint, ProjectivePoint, Scalar};
@@ -44,14 +44,16 @@ impl DkgStorage {
 
     pub async fn store_commitments(&self, from: &str, commitments: &[AffinePoint]) -> Result<()> {
         let key = format!("{}{}", keys::DKG_COMMITMENT, from);
-        let serializable: Vec<SerializablePoint> = commitments.iter().cloned().map(SerializablePoint).collect();
+        let serializable: Vec<SerializablePoint> =
+            commitments.iter().cloned().map(SerializablePoint).collect();
         self.db.put_string(&key, &serializable)?;
         Ok(())
     }
 
     pub async fn get_all_commitments(&self) -> Result<HashMap<String, Vec<AffinePoint>>> {
         let prefix = keys::DKG_COMMITMENT;
-        let results: Vec<(String, Vec<SerializablePoint>)> = self.db.get_values_with_prefix(prefix)?;
+        let results: Vec<(String, Vec<SerializablePoint>)> =
+            self.db.get_values_with_prefix(prefix)?;
         let mut map = HashMap::new();
         for (key, ser_vec) in results {
             if let Some(id) = key.strip_prefix(prefix) {
@@ -86,18 +88,28 @@ impl DkgStorage {
     }
 
     /// Store original DKG commitments (these NEVER change after initial DKG)
-    pub async fn store_original_commitments(&self, from: &str, commitments: &[AffinePoint]) -> Result<()> {
+    pub async fn store_original_commitments(
+        &self,
+        from: &str,
+        commitments: &[AffinePoint],
+    ) -> Result<()> {
         let key = format!("{}{}", keys::DKG_ORIGINAL_COMMITMENT, from);
-        let serializable: Vec<SerializablePoint> = commitments.iter().cloned().map(SerializablePoint).collect();
+        let serializable: Vec<SerializablePoint> =
+            commitments.iter().cloned().map(SerializablePoint).collect();
         self.db.put_string(&key, &serializable)?;
-        tracing::info!("💾 [DKG_STORAGE] Stored ORIGINAL commitments for {} (count: {})", from, commitments.len());
+        tracing::info!(
+            "💾 [DKG_STORAGE] Stored ORIGINAL commitments for {} (count: {})",
+            from,
+            commitments.len()
+        );
         Ok(())
     }
 
     /// Get all original DKG commitments (used for vault address derivation)
     pub async fn get_all_original_commitments(&self) -> Result<HashMap<String, Vec<AffinePoint>>> {
         let prefix = keys::DKG_ORIGINAL_COMMITMENT;
-        let results: Vec<(String, Vec<SerializablePoint>)> = self.db.get_values_with_prefix(prefix)?;
+        let results: Vec<(String, Vec<SerializablePoint>)> =
+            self.db.get_values_with_prefix(prefix)?;
         let mut map = HashMap::new();
         for (key, ser_vec) in results {
             if let Some(id) = key.strip_prefix(prefix) {
@@ -105,7 +117,10 @@ impl DkgStorage {
                 map.insert(id.to_string(), vec);
             }
         }
-        tracing::debug!("🔍 [DKG_STORAGE] Retrieved {} original commitment sets", map.len());
+        tracing::debug!(
+            "🔍 [DKG_STORAGE] Retrieved {} original commitment sets",
+            map.len()
+        );
         Ok(map)
     }
 
@@ -196,7 +211,10 @@ impl DkgStorage {
     pub async fn set_vault_tweaked_secret(&self, tweaked_secret: Scalar) -> Result<()> {
         let ser = SerializableScalar(tweaked_secret);
         self.db.put_string(keys::DKG_VAULT_TWEAKED_SECRET, &ser)?;
-        tracing::info!("💾 [DKG_STORAGE] Stored vault tweaked secret share: {:?}", tweaked_secret);
+        tracing::info!(
+            "💾 [DKG_STORAGE] Stored vault tweaked secret share: {:?}",
+            tweaked_secret
+        );
         Ok(())
     }
 
@@ -205,13 +223,16 @@ impl DkgStorage {
             .db
             .get_string::<SerializableScalar>(keys::DKG_VAULT_TWEAKED_SECRET)?
             .map(|s| s.0);
-        
+
         if result.is_some() {
-            tracing::info!("🔍 [DKG_STORAGE] Retrieved vault tweaked secret share: {:?}", result.unwrap());
+            tracing::info!(
+                "🔍 [DKG_STORAGE] Retrieved vault tweaked secret share: {:?}",
+                result.unwrap()
+            );
         } else {
             tracing::debug!("🔍 [DKG_STORAGE] No vault tweaked secret share found in database");
         }
-        
+
         Ok(result)
     }
 
@@ -225,7 +246,10 @@ impl DkgStorage {
         let affine: AffinePoint = vault_group_key.into();
         let ser = SerializablePoint(affine);
         self.db.put_string(keys::DKG_VAULT_GROUP_KEY, &ser)?;
-        tracing::info!("💾 [DKG_STORAGE] Stored vault group key: {:?}", vault_group_key);
+        tracing::info!(
+            "💾 [DKG_STORAGE] Stored vault group key: {:?}",
+            vault_group_key
+        );
         Ok(())
     }
 
@@ -234,13 +258,16 @@ impl DkgStorage {
             .db
             .get_string::<SerializablePoint>(keys::DKG_VAULT_GROUP_KEY)?
             .map(|p| ProjectivePoint::from(p.0));
-        
+
         if result.is_some() {
-            tracing::info!("🔍 [DKG_STORAGE] Retrieved vault group key: {:?}", result.unwrap());
+            tracing::info!(
+                "🔍 [DKG_STORAGE] Retrieved vault group key: {:?}",
+                result.unwrap()
+            );
         } else {
             tracing::debug!("🔍 [DKG_STORAGE] No vault group key found in database");
         }
-        
+
         Ok(result)
     }
 
@@ -252,12 +279,13 @@ impl DkgStorage {
 
     /// Store the polynomial coefficients for this node
     pub async fn set_polynomial(&self, polynomial: &[Scalar]) -> Result<()> {
-        let serializable: Vec<SerializableScalar> = polynomial
-            .iter()
-            .map(|&s| SerializableScalar(s))
-            .collect();
+        let serializable: Vec<SerializableScalar> =
+            polynomial.iter().map(|&s| SerializableScalar(s)).collect();
         self.db.put_string(keys::DKG_POLYNOMIAL, &serializable)?;
-        tracing::info!("💾 [DKG_STORAGE] Stored polynomial with {} coefficients", polynomial.len());
+        tracing::info!(
+            "💾 [DKG_STORAGE] Stored polynomial with {} coefficients",
+            polynomial.len()
+        );
         Ok(())
     }
 
@@ -267,13 +295,16 @@ impl DkgStorage {
             .db
             .get_string::<Vec<SerializableScalar>>(keys::DKG_POLYNOMIAL)?
             .map(|v| v.into_iter().map(|s| s.0).collect::<Vec<Scalar>>());
-        
+
         if let Some(ref poly) = result {
-            tracing::info!("🔍 [DKG_STORAGE] Retrieved polynomial with {} coefficients", poly.len());
+            tracing::info!(
+                "🔍 [DKG_STORAGE] Retrieved polynomial with {} coefficients",
+                poly.len()
+            );
         } else {
             tracing::debug!("🔍 [DKG_STORAGE] No polynomial found in database");
         }
-        
+
         Ok(result)
     }
 
@@ -286,8 +317,12 @@ impl DkgStorage {
 
     /// Set the initial DKG completion flag (marks that the initial 4-node DKG is complete)
     pub async fn set_initial_dkg_complete(&self, is_complete: bool) -> Result<()> {
-        self.db.put_string(keys::DKG_INITIAL_COMPLETE, &is_complete)?;
-        tracing::info!("🎯 [DKG_STORAGE] Set initial DKG complete flag: {}", is_complete);
+        self.db
+            .put_string(keys::DKG_INITIAL_COMPLETE, &is_complete)?;
+        tracing::info!(
+            "🎯 [DKG_STORAGE] Set initial DKG complete flag: {}",
+            is_complete
+        );
         Ok(())
     }
 
@@ -297,7 +332,7 @@ impl DkgStorage {
             .db
             .get_string::<bool>(keys::DKG_INITIAL_COMPLETE)?
             .unwrap_or(false);
-        
+
         tracing::debug!("🔍 [DKG_STORAGE] Initial DKG complete flag: {}", result);
         Ok(result)
     }
@@ -312,13 +347,13 @@ impl DkgStorage {
     /// Get the node's permanent index
     pub async fn get_my_permanent_index(&self) -> Result<Option<usize>> {
         let result = self.db.get_string::<usize>(keys::DKG_MY_PERMANENT_INDEX)?;
-        
+
         if let Some(idx) = result {
             tracing::debug!("🔍 [DKG_STORAGE] Retrieved permanent index: {}", idx);
         } else {
             tracing::debug!("🔍 [DKG_STORAGE] No permanent index found in database");
         }
-        
+
         Ok(result)
     }
 
@@ -327,15 +362,18 @@ impl DkgStorage {
         let prefix = crate::database::keys::PEER_INDEX;
         let results: Vec<(String, usize)> = self.db.get_values_with_prefix(prefix)?;
         let mut indices = HashMap::new();
-        
+
         for (key, index) in results {
             // Extract peer ID from key (format: "peer_index:<peer_id>")
             if let Some(peer_id) = key.strip_prefix(prefix) {
                 indices.insert(peer_id.to_string(), index);
             }
         }
-        
-        info!("🔢 [DKG_STORAGE] Retrieved {} peer indices from database", indices.len());
+
+        info!(
+            "🔢 [DKG_STORAGE] Retrieved {} peer indices from database",
+            indices.len()
+        );
         Ok(indices)
     }
 
@@ -367,4 +405,3 @@ impl DkgStorage {
         Ok(indices)
     }
 }
-

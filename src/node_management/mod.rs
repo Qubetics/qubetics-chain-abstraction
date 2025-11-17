@@ -52,7 +52,7 @@ pub struct DefaultThresholdCalculator;
 
 impl ThresholdCalculator for DefaultThresholdCalculator {
     fn calculate_threshold(&self, _total_nodes: usize) -> usize {
-        _total_nodes/2 + 1
+        _total_nodes / 2 + 1
     }
 
     fn clone_box(&self) -> Box<dyn ThresholdCalculator> {

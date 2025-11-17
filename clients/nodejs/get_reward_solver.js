@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import axios from 'axios';
 
-const baseUrl = process.env.RPC_BASE_URL || 'http://localhost:8082';
+const baseUrl = 'http://124.243.185.174:8083';
 
 function usage() {
   console.log('Usage: node get_reward_solver.js <solver_address>');

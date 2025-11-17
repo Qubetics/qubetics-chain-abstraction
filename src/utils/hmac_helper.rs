@@ -11,7 +11,9 @@ use sha2::Sha256;
 /// tied to a user's address but hidden behind your server's secret key.
 pub fn hmac256_from_addr(addr: &str, key: &[u8]) -> Result<[u8; 32], String> {
     let s = addr.strip_prefix("0x").unwrap_or(addr);
-    if s.len() != 40 { return Err("not a 20-byte hex address".into()); }
+    if s.len() != 40 {
+        return Err("not a 20-byte hex address".into());
+    }
     let msg = hex::decode(s).map_err(|_| "invalid hex")?;
     let mut mac = <Hmac<Sha256>>::new_from_slice(key).map_err(|_| "bad key")?;
     mac.update(&msg);
@@ -54,7 +56,8 @@ pub fn hmac_scalar_mod_n(addr: &str, key: &[u8]) -> Result<[u8; 32], String> {
     let n = BigUint::parse_bytes(
         b"FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141",
         16,
-    ).unwrap();
+    )
+    .unwrap();
 
     let h = hmac256_from_addr(addr, key)?;
     let x = BigUint::from_bytes_be(&h);
@@ -62,7 +65,9 @@ pub fn hmac_scalar_mod_n(addr: &str, key: &[u8]) -> Result<[u8; 32], String> {
     let x = (x % (&n - &one)) + &one; // ensure 1..n-1
 
     let mut be = x.to_bytes_be();
-    if be.len() > 32 { be = be[be.len()-32..].to_vec(); }
+    if be.len() > 32 {
+        be = be[be.len() - 32..].to_vec();
+    }
     let mut out = [0u8; 32];
     out[32 - be.len()..].copy_from_slice(&be);
     Ok(out)
@@ -81,4 +86,4 @@ mod tests {
             "1708cce8ea41e6a5d09878ae91d1a1206725eb90bffec0d5aa402245978cfb7a"
         );
     }
-} 
+}
