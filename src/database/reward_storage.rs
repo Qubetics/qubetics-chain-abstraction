@@ -185,8 +185,12 @@ impl RewardStorage {
         self.db.get_string(&key)
     }
 
-     /// Store TICS transaction hashes for a specific solver
-     pub async fn set_solver_tics_txn_hashes(&self, solver_address: &str, txn_hashes: Vec<String>) -> Result<()> {
+    /// Store TICS transaction hashes for a specific solver
+    pub async fn set_solver_tics_txn_hashes(
+        &self,
+        solver_address: &str,
+        txn_hashes: Vec<String>,
+    ) -> Result<()> {
         let key = key_utils::solver_tics_txn_hashes_key(solver_address);
         let serialized = serde_json::to_string(&txn_hashes)
             .map_err(|e| anyhow::anyhow!("Failed to serialize TICS txn hashes: {}", e))?;
@@ -195,7 +199,10 @@ impl RewardStorage {
     }
 
     /// Get TICS transaction hashes for a specific solver
-    pub async fn get_solver_tics_txn_hashes(&self, solver_address: &str) -> Result<Option<Vec<String>>> {
+    pub async fn get_solver_tics_txn_hashes(
+        &self,
+        solver_address: &str,
+    ) -> Result<Option<Vec<String>>> {
         let key = key_utils::solver_tics_txn_hashes_key(solver_address);
         if let Some(serialized) = self.db.get_string::<String>(&key)? {
             let txn_hashes = serde_json::from_str(&serialized)
@@ -207,14 +214,26 @@ impl RewardStorage {
     }
 
     /// Add a single TICS transaction hash to a solver's list
-    pub async fn add_solver_tics_txn_hash(&self, solver_address: &str, txn_hash: String) -> Result<()> {
-        let mut existing_hashes = self.get_solver_tics_txn_hashes(solver_address).await?.unwrap_or_default();
+    pub async fn add_solver_tics_txn_hash(
+        &self,
+        solver_address: &str,
+        txn_hash: String,
+    ) -> Result<()> {
+        let mut existing_hashes = self
+            .get_solver_tics_txn_hashes(solver_address)
+            .await?
+            .unwrap_or_default();
         existing_hashes.push(txn_hash);
-        self.set_solver_tics_txn_hashes(solver_address, existing_hashes).await
+        self.set_solver_tics_txn_hashes(solver_address, existing_hashes)
+            .await
     }
 
     /// Store BTC transaction hashes for a specific solver
-    pub async fn set_solver_btc_txn_hashes(&self, solver_address: &str, txn_hashes: Vec<String>) -> Result<()> {
+    pub async fn set_solver_btc_txn_hashes(
+        &self,
+        solver_address: &str,
+        txn_hashes: Vec<String>,
+    ) -> Result<()> {
         let key = key_utils::solver_btc_txn_hashes_key(solver_address);
         let serialized = serde_json::to_string(&txn_hashes)
             .map_err(|e| anyhow::anyhow!("Failed to serialize BTC txn hashes: {}", e))?;
@@ -223,7 +242,10 @@ impl RewardStorage {
     }
 
     /// Get BTC transaction hashes for a specific solver
-    pub async fn get_solver_btc_txn_hashes(&self, solver_address: &str) -> Result<Option<Vec<String>>> {
+    pub async fn get_solver_btc_txn_hashes(
+        &self,
+        solver_address: &str,
+    ) -> Result<Option<Vec<String>>> {
         let key = key_utils::solver_btc_txn_hashes_key(solver_address);
         if let Some(serialized) = self.db.get_string::<String>(&key)? {
             let txn_hashes = serde_json::from_str(&serialized)
@@ -235,10 +257,18 @@ impl RewardStorage {
     }
 
     /// Add a single BTC transaction hash to a solver's list
-    pub async fn add_solver_btc_txn_hash(&self, solver_address: &str, txn_hash: String) -> Result<()> {
-        let mut existing_hashes = self.get_solver_btc_txn_hashes(solver_address).await?.unwrap_or_default();
+    pub async fn add_solver_btc_txn_hash(
+        &self,
+        solver_address: &str,
+        txn_hash: String,
+    ) -> Result<()> {
+        let mut existing_hashes = self
+            .get_solver_btc_txn_hashes(solver_address)
+            .await?
+            .unwrap_or_default();
         existing_hashes.push(txn_hash);
-        self.set_solver_btc_txn_hashes(solver_address, existing_hashes).await
+        self.set_solver_btc_txn_hashes(solver_address, existing_hashes)
+            .await
     }
 
     /// Clear TICS transaction hashes for a specific solver

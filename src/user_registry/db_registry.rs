@@ -1082,9 +1082,15 @@ impl DatabaseUserRegistry {
         solver_address: &str,
         txn_hashes: Vec<String>,
     ) -> Result<()> {
-        info!("🎯 [DB_USER_REGISTRY] Processing TICS txn hashes storage for solver: {}", solver_address);
-        info!("📝 [DB_USER_REGISTRY] Storing {} TICS transaction hashes", txn_hashes.len());
-        
+        info!(
+            "🎯 [DB_USER_REGISTRY] Processing TICS txn hashes storage for solver: {}",
+            solver_address
+        );
+        info!(
+            "📝 [DB_USER_REGISTRY] Storing {} TICS transaction hashes",
+            txn_hashes.len()
+        );
+
         self.reward_storage
             .set_solver_tics_txn_hashes(solver_address, txn_hashes)
             .await
@@ -1092,7 +1098,10 @@ impl DatabaseUserRegistry {
                 info!("✅ [DB_USER_REGISTRY] Successfully stored TICS txn hashes");
             })
             .map_err(|e| {
-                error!("❌ [DB_USER_REGISTRY] Failed to store TICS txn hashes: {}", e);
+                error!(
+                    "❌ [DB_USER_REGISTRY] Failed to store TICS txn hashes: {}",
+                    e
+                );
                 e
             })
     }
@@ -1117,7 +1126,8 @@ impl DatabaseUserRegistry {
             Err(e) => {
                 tracing::error!(
                     "Failed to get TICS txn hashes for solver {}: {}",
-                    solver_address, e
+                    solver_address,
+                    e
                 );
                 None
             }
@@ -1130,9 +1140,12 @@ impl DatabaseUserRegistry {
         solver_address: &str,
         txn_hash: String,
     ) -> Result<()> {
-        info!("🎯 [DB_USER_REGISTRY] Adding TICS txn hash for solver: {}", solver_address);
+        info!(
+            "🎯 [DB_USER_REGISTRY] Adding TICS txn hash for solver: {}",
+            solver_address
+        );
         info!("📝 [DB_USER_REGISTRY] Txn hash: {}", txn_hash);
-        
+
         self.reward_storage
             .add_solver_tics_txn_hash(solver_address, txn_hash)
             .await
@@ -1151,9 +1164,15 @@ impl DatabaseUserRegistry {
         solver_address: &str,
         txn_hashes: Vec<String>,
     ) -> Result<()> {
-        info!("🎯 [DB_USER_REGISTRY] Processing BTC txn hashes storage for solver: {}", solver_address);
-        info!("📝 [DB_USER_REGISTRY] Storing {} BTC transaction hashes", txn_hashes.len());
-        
+        info!(
+            "🎯 [DB_USER_REGISTRY] Processing BTC txn hashes storage for solver: {}",
+            solver_address
+        );
+        info!(
+            "📝 [DB_USER_REGISTRY] Storing {} BTC transaction hashes",
+            txn_hashes.len()
+        );
+
         self.reward_storage
             .set_solver_btc_txn_hashes(solver_address, txn_hashes)
             .await
@@ -1161,7 +1180,10 @@ impl DatabaseUserRegistry {
                 info!("✅ [DB_USER_REGISTRY] Successfully stored BTC txn hashes");
             })
             .map_err(|e| {
-                error!("❌ [DB_USER_REGISTRY] Failed to store BTC txn hashes: {}", e);
+                error!(
+                    "❌ [DB_USER_REGISTRY] Failed to store BTC txn hashes: {}",
+                    e
+                );
                 e
             })
     }
@@ -1186,7 +1208,8 @@ impl DatabaseUserRegistry {
             Err(e) => {
                 tracing::error!(
                     "Failed to get BTC txn hashes for solver {}: {}",
-                    solver_address, e
+                    solver_address,
+                    e
                 );
                 None
             }
@@ -1199,9 +1222,12 @@ impl DatabaseUserRegistry {
         solver_address: &str,
         txn_hash: String,
     ) -> Result<()> {
-        info!("🎯 [DB_USER_REGISTRY] Adding BTC txn hash for solver: {}", solver_address);
+        info!(
+            "🎯 [DB_USER_REGISTRY] Adding BTC txn hash for solver: {}",
+            solver_address
+        );
         info!("📝 [DB_USER_REGISTRY] Txn hash: {}", txn_hash);
-        
+
         self.reward_storage
             .add_solver_btc_txn_hash(solver_address, txn_hash)
             .await
@@ -1216,8 +1242,11 @@ impl DatabaseUserRegistry {
 
     /// Clear TICS transaction hashes for a specific solver
     pub async fn clear_solver_tics_txn_hashes(&self, solver_address: &str) -> Result<()> {
-        info!("🎯 [DB_USER_REGISTRY] Clearing TICS txn hashes for solver: {}", solver_address);
-        
+        info!(
+            "🎯 [DB_USER_REGISTRY] Clearing TICS txn hashes for solver: {}",
+            solver_address
+        );
+
         self.reward_storage
             .clear_solver_tics_txn_hashes(solver_address)
             .await
@@ -1225,15 +1254,21 @@ impl DatabaseUserRegistry {
                 info!("✅ [DB_USER_REGISTRY] Successfully cleared TICS txn hashes");
             })
             .map_err(|e| {
-                error!("❌ [DB_USER_REGISTRY] Failed to clear TICS txn hashes: {}", e);
+                error!(
+                    "❌ [DB_USER_REGISTRY] Failed to clear TICS txn hashes: {}",
+                    e
+                );
                 e
             })
     }
 
     /// Clear BTC transaction hashes for a specific solver
     pub async fn clear_solver_btc_txn_hashes(&self, solver_address: &str) -> Result<()> {
-        info!("🎯 [DB_USER_REGISTRY] Clearing BTC txn hashes for solver: {}", solver_address);
-        
+        info!(
+            "🎯 [DB_USER_REGISTRY] Clearing BTC txn hashes for solver: {}",
+            solver_address
+        );
+
         self.reward_storage
             .clear_solver_btc_txn_hashes(solver_address)
             .await
@@ -1241,7 +1276,10 @@ impl DatabaseUserRegistry {
                 info!("✅ [DB_USER_REGISTRY] Successfully cleared BTC txn hashes");
             })
             .map_err(|e| {
-                error!("❌ [DB_USER_REGISTRY] Failed to clear BTC txn hashes: {}", e);
+                error!(
+                    "❌ [DB_USER_REGISTRY] Failed to clear BTC txn hashes: {}",
+                    e
+                );
                 e
             })
     }

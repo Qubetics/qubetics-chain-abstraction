@@ -663,7 +663,10 @@ impl NetworkLayer {
 
             // Request VRF round sync after database sync completes
             if !self.vrf_round_requested {
-                info!("🔄 [VRF_SYNC] Requesting current VRF round from peer {}", peer_id);
+                info!(
+                    "🔄 [VRF_SYNC] Requesting current VRF round from peer {}",
+                    peer_id
+                );
                 swarm
                     .behaviour_mut()
                     .request_response
@@ -952,7 +955,7 @@ impl NetworkLayer {
             "transaction-id-sync",
             "consensus-result",
             "transaction-error-sync",
-            "dkg"
+            "dkg",
         ];
         for topic in topics {
             let topic_hash = gossipsub::IdentTopic::new(topic);
@@ -1179,7 +1182,10 @@ impl NetworkLayer {
                     //receive the peer list with corrosponding index
                     // Also request VRF round sync when connecting to network
                     if !self.vrf_round_requested && !self.needs_database_sync {
-                        info!("🔄 [VRF_SYNC] Requesting current VRF round from peer {} on connection", peer_id);
+                        info!(
+                            "🔄 [VRF_SYNC] Requesting current VRF round from peer {} on connection",
+                            peer_id
+                        );
                         swarm
                             .behaviour_mut()
                             .request_response
@@ -1396,7 +1402,7 @@ impl NetworkLayer {
                             }
                             RPCRequest::RequestDatabaseSync { requester_id } => {
                                 info!("📦 [DB_SYNC] Received database sync request from peer: {:?}", requester_id);
-                                
+
                                 match self.db.count_entries_with_prefix(crate::database::keys::USER_REGISTRATION) {
                                     Ok(total_entries) => {
                                         let recommended_batch_size = 100; // Entries per batch
@@ -1420,19 +1426,19 @@ impl NetworkLayer {
                                     "📦 [DB_SYNC] Received database batch request: batch {} with size {} from peer {}",
                                     batch_index, batch_size, peer
                                 );
-                                
+
                                 match self.db.export_batch_with_prefix(crate::database::keys::USER_REGISTRATION, batch_index * batch_size, batch_size) {
                                     Ok((entries, is_last_batch)) => {
                                         let db_entries: Vec<crate::types::rpc::DatabaseEntry> = entries
                                             .into_iter()
                                             .map(|(key, value)| crate::types::rpc::DatabaseEntry { key, value })
                                             .collect();
-                                        
+
                                         info!(
                                             "📦 [DB_SYNC] Sending batch {} with {} user entries (last batch: {})",
                                             batch_index, db_entries.len(), is_last_batch
                                         );
-                                        
+
                                         RPCResponse::DatabaseBatch {
                                             batch_index,
                                             entries: db_entries,
@@ -1472,16 +1478,17 @@ impl NetworkLayer {
                             RPCResponse::PeerList { peers, indices } => {
                                 info!("🔄 Merging peer‐set from {}: {:?}", peer, peers);
                                 info!("🔄 Received indices: {:?}", indices);
- 
+
                                 // Clone peers list before consuming it
                                 let peers_clone = peers.clone();
- 
+
                                 for (i, SerializablePeerId(p)) in peers.into_iter().enumerate() {
                                     // Add peer to node_manager if not already present
                                     if !self.node_manager.get_active_nodes().contains(&p) {
-                                        self.node_manager.add_node(p.clone())
+                                        self.node_manager
+                                            .add_node(p.clone())
                                             .map_err(|e| anyhow::anyhow!(e))?;
- 
+
                                         // Update signing node threshold after adding peer
                                         if let Some(signing_node) = &mut self.signing_node {
                                             let new_threshold = self.node_manager.get_threshold();
@@ -1489,14 +1496,18 @@ impl NetworkLayer {
                                             info!("🔄 [THRESHOLD] Updated signing node threshold to {} after peer list merge", new_threshold);
                                         }
                                     }
- 
+
                                     // 🔧 FIX: Update peer_indices mapping for ALL peers in the peer list
                                     // Priority: 1) Index from peer list, 2) Existing in peer_indices, 3) Load from database
-                                    let index_to_use = if let Some(idx) = indices.get(i).cloned().flatten() {
+                                    let index_to_use = if let Some(idx) =
+                                        indices.get(i).cloned().flatten()
+                                    {
                                         // Index provided in peer list - use it and persist to database
                                         info!("🔢 [PEER_LIST] Using index {} for peer {} from peer list", idx, p);
                                         Some(idx)
-                                    } else if let Some(existing_idx) = self.peer_indices.get(&p).cloned() {
+                                    } else if let Some(existing_idx) =
+                                        self.peer_indices.get(&p).cloned()
+                                    {
                                         // Already in peer_indices - keep it
                                         info!("🔢 [PEER_LIST] Using existing index {} for peer {} from peer_indices", existing_idx, p);
                                         Some(existing_idx)
@@ -1509,107 +1520,142 @@ impl NetworkLayer {
                                         warn!("⚠️  [PEER_LIST] No index found for peer {} (not in peer list, peer_indices, or database)", p);
                                         None
                                     };
- 
+
                                     // Update peer_indices and persist to database if we have an index
                                     if let Some(idx) = index_to_use {
                                         self.peer_indices.insert(p.clone(), idx);
                                         let key = key_utils::peer_index_key(&p.to_string());
-                                        if let Err(e) = self.db.put_string(&key, &idx) { 
-                                            warn!("❌ [PEER_LIST] Failed to persist peer index {} for peer {}: {:?}", idx, p, e); 
+                                        if let Err(e) = self.db.put_string(&key, &idx) {
+                                            warn!("❌ [PEER_LIST] Failed to persist peer index {} for peer {}: {:?}", idx, p, e);
                                         } else {
                                             info!("✅ [PEER_LIST] Updated and persisted index {} for peer {}", idx, p);
                                         }
                                     }
                                 }
- 
-                                info!("📊 [PEER_LIST] Updated peer_indices mapping: {} entries", self.peer_indices.len());
- 
+
+                                info!(
+                                    "📊 [PEER_LIST] Updated peer_indices mapping: {} entries",
+                                    self.peer_indices.len()
+                                );
+
                                 // After learning about all peers, check if this is a new node joining existing network
-                                let (should_sync, sync_peer_opt, new_node_index_opt, needs_retry) = if let Some(dkg_node) = &mut self.dkg_node {
-                                    let total = self.node_manager.get_total_nodes();
-                                    let threshold = self.node_manager.get_threshold();
- 
-                                    // Update DKG node parameters with current network size
-                                    dkg_node.update_node_params(total, threshold);
-                                    info!("🔄 [NEW_NODE] Updated DKG params: total_nodes={}, threshold={}", total, threshold);
- 
-                                    let has_dkg_data = dkg_node.get_final_secret_share().await.is_some();
-                                    info!("🔍 [NEW_NODE] Has DKG data: {}", has_dkg_data);
- 
-                                    // If this node has no DKG data and network has > 4 nodes, it's a new node joining
-                                    if !has_dkg_data && total > 4 {
-                                        info!("🆕 [NEW_NODE] Learned about {} total nodes, triggering database sync and share request", total);
- 
-                                        let connected_peers: Vec<PeerId> = swarm.connected_peers().cloned().collect();
-                                        info!("🔗 [NEW_NODE] Currently connected to {} peers: {:?}", connected_peers.len(), connected_peers);
- 
-                                        // Find first connected peer for sync (excluding ourselves)
-                                        let sync_peer = connected_peers.iter()
-                                            .find(|pid| **pid != self.local_peer_id)
-                                            .cloned();
- 
-                                        let should_proceed = if let Some(ref peer) = sync_peer {
-                                            info!("✅ [NEW_NODE] Selected connected peer for sync: {}", peer);
-                                            true
-                                        } else {
-                                            warn!("⚠️ [NEW_NODE] No connected peers available for database sync!");
-                                            warn!("⚠️ [NEW_NODE] Will retry database sync when a connection is established");
-                                            // Set flag to retry when connection is available
-                                            false
-                                        };
- 
-                                        // CRITICAL: Check if this is a REJOINING node or a truly NEW node
-                                        // Rejoining nodes should reuse their old index
-                                        let new_node_index = if let Some(existing_index) = self.get_index_from_db(&self.local_peer_id) {
-                                            // This node is REJOINING - reuse its old index
-                                            info!("🔄 [REJOIN] Node rejoining with existing index: {}", existing_index);
-                                            existing_index
-                                        } else {
-                                            // This is a truly NEW node - assign max_index + 1
-                                            // Get all assigned indices from peer_indices
-                                            let all_assigned_indices: Vec<usize> = self.peer_indices.values().cloned().collect();
-                                            let max_index = all_assigned_indices.iter().max().cloned().unwrap_or(0);
- 
-                                            // Always assign next sequential index (max + 1)
-                                            let final_index = max_index + 1;
-                                            info!("🆕 [NEW_NODE] Assigned permanent index: {} (max_existing={}, total_nodes={})", 
+                                let (should_sync, sync_peer_opt, new_node_index_opt, needs_retry) =
+                                    if let Some(dkg_node) = &mut self.dkg_node {
+                                        let total = self.node_manager.get_total_nodes();
+                                        let threshold = self.node_manager.get_threshold();
+
+                                        // Update DKG node parameters with current network size
+                                        dkg_node.update_node_params(total, threshold);
+                                        info!("🔄 [NEW_NODE] Updated DKG params: total_nodes={}, threshold={}", total, threshold);
+
+                                        let has_dkg_data =
+                                            dkg_node.get_final_secret_share().await.is_some();
+                                        info!("🔍 [NEW_NODE] Has DKG data: {}", has_dkg_data);
+
+                                        // If this node has no DKG data and network has > 4 nodes, it's a new node joining
+                                        if !has_dkg_data && total > 4 {
+                                            info!("🆕 [NEW_NODE] Learned about {} total nodes, triggering database sync and share request", total);
+
+                                            let connected_peers: Vec<PeerId> =
+                                                swarm.connected_peers().cloned().collect();
+                                            info!("🔗 [NEW_NODE] Currently connected to {} peers: {:?}", connected_peers.len(), connected_peers);
+
+                                            // Find first connected peer for sync (excluding ourselves)
+                                            let sync_peer = connected_peers
+                                                .iter()
+                                                .find(|pid| **pid != self.local_peer_id)
+                                                .cloned();
+
+                                            let should_proceed = if let Some(ref peer) = sync_peer {
+                                                info!("✅ [NEW_NODE] Selected connected peer for sync: {}", peer);
+                                                true
+                                            } else {
+                                                warn!("⚠️ [NEW_NODE] No connected peers available for database sync!");
+                                                warn!("⚠️ [NEW_NODE] Will retry database sync when a connection is established");
+                                                // Set flag to retry when connection is available
+                                                false
+                                            };
+
+                                            // CRITICAL: Check if this is a REJOINING node or a truly NEW node
+                                            // Rejoining nodes should reuse their old index
+                                            let new_node_index = if let Some(existing_index) =
+                                                self.get_index_from_db(&self.local_peer_id)
+                                            {
+                                                // This node is REJOINING - reuse its old index
+                                                info!("🔄 [REJOIN] Node rejoining with existing index: {}", existing_index);
+                                                existing_index
+                                            } else {
+                                                // This is a truly NEW node - assign max_index + 1
+                                                // Get all assigned indices from peer_indices
+                                                let all_assigned_indices: Vec<usize> =
+                                                    self.peer_indices.values().cloned().collect();
+                                                let max_index = all_assigned_indices
+                                                    .iter()
+                                                    .max()
+                                                    .cloned()
+                                                    .unwrap_or(0);
+
+                                                // Always assign next sequential index (max + 1)
+                                                let final_index = max_index + 1;
+                                                info!("🆕 [NEW_NODE] Assigned permanent index: {} (max_existing={}, total_nodes={})", 
                                                   final_index, max_index, total);
-                                            final_index
-                                        };
- 
-                                        (should_proceed, sync_peer, Some(new_node_index), !should_proceed)
+                                                final_index
+                                            };
+
+                                            (
+                                                should_proceed,
+                                                sync_peer,
+                                                Some(new_node_index),
+                                                !should_proceed,
+                                            )
+                                        } else {
+                                            (false, None, None, false)
+                                        }
                                     } else {
                                         (false, None, None, false)
-                                    }
-                                } else {
-                                    (false, None, None, false)
-                                };
- 
+                                    };
+
                                 if needs_retry {
                                     self.needs_database_sync = true;
                                 }
- 
+
                                 // Now handle sync and DKG request outside of the dkg_node borrow
                                 if should_sync {
                                     // First, sync database from an existing peer
                                     if let Some(sync_peer) = sync_peer_opt {
-                                        info!("📦 [NEW_NODE] Initiating database sync from peer: {}", sync_peer);
- 
-                                        if let Err(e) = self.sync_database_from_peer(swarm, sync_peer).await {
-                                            warn!("❌ [NEW_NODE] Failed to start database sync: {:?}", e);
+                                        info!(
+                                            "📦 [NEW_NODE] Initiating database sync from peer: {}",
+                                            sync_peer
+                                        );
+
+                                        if let Err(e) =
+                                            self.sync_database_from_peer(swarm, sync_peer).await
+                                        {
+                                            warn!(
+                                                "❌ [NEW_NODE] Failed to start database sync: {:?}",
+                                                e
+                                            );
                                         } else {
                                             info!("✅ [NEW_NODE] Database sync initiated");
                                         }
                                     }
- 
+
                                     // Request DKG shares
-                                    if let (Some(dkg_node), Some(new_node_index)) = (&mut self.dkg_node, new_node_index_opt) {
-                                        if let Err(e) = dkg_node.request_shares_as_new_node(new_node_index).await {
-                                            warn!("❌ [NEW_NODE] Failed to request shares: {:?}", e);
+                                    if let (Some(dkg_node), Some(new_node_index)) =
+                                        (&mut self.dkg_node, new_node_index_opt)
+                                    {
+                                        if let Err(e) = dkg_node
+                                            .request_shares_as_new_node(new_node_index)
+                                            .await
+                                        {
+                                            warn!(
+                                                "❌ [NEW_NODE] Failed to request shares: {:?}",
+                                                e
+                                            );
                                         }
                                     }
                                 }
-                            },
+                            }
 
                             RPCResponse::GotAVSSShare {
                                 dealer_id: _,
@@ -1946,44 +1992,54 @@ impl NetworkLayer {
                         _ => {}
                     }
                 }
-                
+
                 // STEP 1: Detect when a node fully disconnects (no remaining connections)
                 if num_established == 0 {
-                    info!("🔌 [DISCONNECT] Node {} has fully disconnected (0 connections remaining)", peer_id);
-                    
+                    info!(
+                        "🔌 [DISCONNECT] Node {} has fully disconnected (0 connections remaining)",
+                        peer_id
+                    );
+
                     // Check if this was an active node in our network
                     let was_active = self.node_manager.get_active_nodes().contains(&peer_id);
-                    
+
                     if was_active {
                         warn!("⚠️ [DISCONNECT] Active node {} disconnected - broadcasting to all nodes", peer_id);
-                        
+
                         // STEP 1: Broadcast disconnect notification to ALL nodes via gossipsub
                         // This ensures ALL nodes know about the disconnect, not just the one that detected it
                         use crate::adkg_secp256k1::DKGMessage;
-                        use crate::types::{GossipsubMessage, ChannelMessage};
-                        
+                        use crate::types::{ChannelMessage, GossipsubMessage};
+
                         let disconnect_msg = DKGMessage::NodeDisconnected {
                             disconnected_node_id: peer_id.to_string(),
                             broadcaster_node_id: self.local_peer_id.to_string(),
                         };
-                        
+
                         let gossip_wrap = GossipsubMessage::DKG(disconnect_msg);
                         if let Ok(msg_bytes) = serde_json::to_vec(&gossip_wrap) {
                             // Use the message channel to broadcast (same pattern as DKG node)
-                            if let Err(e) = self.message_tx.send(ChannelMessage::Broadcast {
-                                topic: "dkg".to_string(),
-                                data: msg_bytes,
-                            }).await {
+                            if let Err(e) = self
+                                .message_tx
+                                .send(ChannelMessage::Broadcast {
+                                    topic: "dkg".to_string(),
+                                    data: msg_bytes,
+                                })
+                                .await
+                            {
                                 error!("❌ [DISCONNECT] Failed to send disconnect notification to channel: {}", e);
                             } else {
                                 info!("📢 [DISCONNECT] Broadcasted disconnect notification for node {} to all nodes", peer_id);
                             }
                         }
-                        
+
                         // STEP 2: Process disconnect locally (same as other nodes will do when they receive broadcast)
                         self.handle_node_disconnect_internal(peer_id).await;
                     } else {
-                        info!("ℹ️ [DISCONNECT] Disconnected peer {} was not an active node", peer_id);
+                        info!(
+                            "ℹ️ [DISCONNECT] Disconnected peer {} was not an active node",
+                            peer_id
+                        );
                     }
                 }
             }
@@ -2017,13 +2073,16 @@ impl NetworkLayer {
             // so, here it must match on the recieving end
             GossipsubMessage::DKG(dkg_msg) => {
                 // Check if this is a NodeDisconnected message - handle it specially
-                if let crate::adkg_secp256k1::DKGMessage::NodeDisconnected { 
-                    ref disconnected_node_id, 
-                    ref broadcaster_node_id 
-                } = dkg_msg {
-                    info!("📢 [DISCONNECT] Received disconnect broadcast: {} disconnected (from {})", 
-                          disconnected_node_id, broadcaster_node_id);
-                    
+                if let crate::adkg_secp256k1::DKGMessage::NodeDisconnected {
+                    ref disconnected_node_id,
+                    ref broadcaster_node_id,
+                } = dkg_msg
+                {
+                    info!(
+                        "📢 [DISCONNECT] Received disconnect broadcast: {} disconnected (from {})",
+                        disconnected_node_id, broadcaster_node_id
+                    );
+
                     // Parse the disconnected node ID
                     if let Ok(peer_id) = disconnected_node_id.parse::<PeerId>() {
                         // Check if we haven't already processed this disconnect
@@ -2040,7 +2099,9 @@ impl NetworkLayer {
                     // the msg bytes (check broadcast_shares() in dkg module)
                     if let Some(dkg_node) = &mut self.dkg_node {
                         // now we can unwrap the internal dkg wrap to get the DKG related things
-                        dkg_node.handle_message(dkg_msg,self.node_manager.clone()).await?;
+                        dkg_node
+                            .handle_message(dkg_msg, self.node_manager.clone())
+                            .await?;
                     }
                 }
             }
@@ -2507,40 +2568,66 @@ impl NetworkLayer {
                                         "✅ [NETWORK] Successfully synchronized reward transaction ID {} for solver {} (type: {})",
                                         transaction_id, solver_addr, transaction_type
                                     );
-                                    
+
                                     // Handle reward transaction success - update claimed amounts and reduce rewards
                                     // Get the current reward amount and reduce it to 0 (since claim_reward claims all available rewards)
-                                    let (currency, current_reward) = if transaction_type == "tics_reward" {
-                                        ("tics", user_registry.get_solver_reward_tics(solver_addr).await.unwrap_or_else(|| ethers::types::U256::zero()))
-                                    } else {
-                                        ("btc", user_registry.get_solver_reward_btc(solver_addr).await.unwrap_or_else(|| ethers::types::U256::zero()))
-                                    };
-                                    
+                                    let (currency, current_reward) =
+                                        if transaction_type == "tics_reward" {
+                                            (
+                                                "tics",
+                                                user_registry
+                                                    .get_solver_reward_tics(solver_addr)
+                                                    .await
+                                                    .unwrap_or_else(|| ethers::types::U256::zero()),
+                                            )
+                                        } else {
+                                            (
+                                                "btc",
+                                                user_registry
+                                                    .get_solver_reward_btc(solver_addr)
+                                                    .await
+                                                    .unwrap_or_else(|| ethers::types::U256::zero()),
+                                            )
+                                        };
+
                                     if current_reward > ethers::types::U256::zero() {
                                         // Get current claimed amount
                                         let current_claimed = user_registry
                                             .get_solver_claimed_request_amount(solver_addr)
                                             .await
                                             .unwrap_or_else(|| ethers::types::U256::zero());
-                                        
+
                                         // Update claimed amount
                                         let new_claimed = current_claimed + current_reward;
                                         if let Err(e) = user_registry
-                                            .set_solver_claimed_request_amount(solver_addr, new_claimed)
+                                            .set_solver_claimed_request_amount(
+                                                solver_addr,
+                                                new_claimed,
+                                            )
                                             .await
                                         {
                                             error!("❌ [NETWORK-REWARD] Failed to update claimed amount for solver {}: {}", solver_addr, e);
                                         } else {
                                             info!("✅ [NETWORK-REWARD] Updated claimed amount for solver {}: {} (was: {})", solver_addr, new_claimed, current_claimed);
                                         }
-                                        
+
                                         // Set reward to 0 (all rewards claimed)
                                         let result = if currency == "tics" {
-                                            user_registry.set_solver_reward_tics(solver_addr, ethers::types::U256::zero()).await
+                                            user_registry
+                                                .set_solver_reward_tics(
+                                                    solver_addr,
+                                                    ethers::types::U256::zero(),
+                                                )
+                                                .await
                                         } else {
-                                            user_registry.set_solver_reward_btc(solver_addr, ethers::types::U256::zero()).await
+                                            user_registry
+                                                .set_solver_reward_btc(
+                                                    solver_addr,
+                                                    ethers::types::U256::zero(),
+                                                )
+                                                .await
                                         };
-                                        
+
                                         match result {
                                             Ok(()) => {
                                                 info!("✅ [NETWORK-REWARD] Successfully processed {} reward transaction {} for solver {}: claimed={}, remaining_reward=0", 
@@ -2597,7 +2684,11 @@ impl NetworkLayer {
                         (Some(intent_hash), _) => {
                             // Regular transaction error - store with intent hash
                             match user_registry
-                                .store_transaction_error(intent_hash, &error_message, Some(&node_id))
+                                .store_transaction_error(
+                                    intent_hash,
+                                    &error_message,
+                                    Some(&node_id),
+                                )
                                 .await
                             {
                                 Ok(()) => {
@@ -4197,8 +4288,15 @@ impl NetworkLayer {
                 };
 
                 let topic = gossipsub::IdentTopic::new("transaction-id-sync");
-                if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic.clone(), msg_bytes) {
-                    error!("❌ [NETWORK] Failed to gossip transaction ID broadcast to other peers: {}", e);
+                if let Err(e) = swarm
+                    .behaviour_mut()
+                    .gossipsub
+                    .publish(topic.clone(), msg_bytes)
+                {
+                    error!(
+                        "❌ [NETWORK] Failed to gossip transaction ID broadcast to other peers: {}",
+                        e
+                    );
                 } else {
                     match (intent_hash.as_ref(), solver_address.as_ref()) {
                         (Some(hash), _) => {
@@ -4208,7 +4306,10 @@ impl NetworkLayer {
                             info!("📡 [NETWORK] Gossiped reward transaction ID {} for solver {} (type: {}) to other peers", transaction_id, solver, transaction_type);
                         }
                         _ => {
-                            info!("📡 [NETWORK] Gossiped transaction ID {} (type: {}) to other peers", transaction_id, transaction_type);
+                            info!(
+                                "📡 [NETWORK] Gossiped transaction ID {} (type: {}) to other peers",
+                                transaction_id, transaction_type
+                            );
                         }
                     }
                 }
@@ -4395,40 +4496,66 @@ impl NetworkLayer {
                                         "✅ [NETWORK] Successfully synchronized reward transaction ID {} for solver {} (type: {})",
                                         transaction_id, solver_addr, transaction_type
                                     );
-                                    
+
                                     // Handle reward transaction success - update claimed amounts and reduce rewards
                                     // Get the current reward amount and reduce it to 0 (since claim_reward claims all available rewards)
-                                    let (currency, current_reward) = if transaction_type == "tics_reward" {
-                                        ("tics", user_registry.get_solver_reward_tics(solver_addr).await.unwrap_or_else(|| ethers::types::U256::zero()))
-                                    } else {
-                                        ("btc", user_registry.get_solver_reward_btc(solver_addr).await.unwrap_or_else(|| ethers::types::U256::zero()))
-                                    };
-                                    
+                                    let (currency, current_reward) =
+                                        if transaction_type == "tics_reward" {
+                                            (
+                                                "tics",
+                                                user_registry
+                                                    .get_solver_reward_tics(solver_addr)
+                                                    .await
+                                                    .unwrap_or_else(|| ethers::types::U256::zero()),
+                                            )
+                                        } else {
+                                            (
+                                                "btc",
+                                                user_registry
+                                                    .get_solver_reward_btc(solver_addr)
+                                                    .await
+                                                    .unwrap_or_else(|| ethers::types::U256::zero()),
+                                            )
+                                        };
+
                                     if current_reward > ethers::types::U256::zero() {
                                         // Get current claimed amount
                                         let current_claimed = user_registry
                                             .get_solver_claimed_request_amount(solver_addr)
                                             .await
                                             .unwrap_or_else(|| ethers::types::U256::zero());
-                                        
+
                                         // Update claimed amount
                                         let new_claimed = current_claimed + current_reward;
                                         if let Err(e) = user_registry
-                                            .set_solver_claimed_request_amount(solver_addr, new_claimed)
+                                            .set_solver_claimed_request_amount(
+                                                solver_addr,
+                                                new_claimed,
+                                            )
                                             .await
                                         {
                                             error!("❌ [NETWORK-REWARD] Failed to update claimed amount for solver {}: {}", solver_addr, e);
                                         } else {
                                             info!("✅ [NETWORK-REWARD] Updated claimed amount for solver {}: {} (was: {})", solver_addr, new_claimed, current_claimed);
                                         }
-                                        
+
                                         // Set reward to 0 (all rewards claimed)
                                         let result = if currency == "tics" {
-                                            user_registry.set_solver_reward_tics(solver_addr, ethers::types::U256::zero()).await
+                                            user_registry
+                                                .set_solver_reward_tics(
+                                                    solver_addr,
+                                                    ethers::types::U256::zero(),
+                                                )
+                                                .await
                                         } else {
-                                            user_registry.set_solver_reward_btc(solver_addr, ethers::types::U256::zero()).await
+                                            user_registry
+                                                .set_solver_reward_btc(
+                                                    solver_addr,
+                                                    ethers::types::U256::zero(),
+                                                )
+                                                .await
                                         };
-                                        
+
                                         match result {
                                             Ok(()) => {
                                                 info!("✅ [NETWORK-REWARD] Successfully processed {} reward transaction {} for solver {}: claimed={}, remaining_reward=0", 
@@ -4556,36 +4683,41 @@ impl NetworkLayer {
                 info!("📡 [NETWORK] Broadcasted user registration to P2P network");
             }
             ChannelMessage::RefundInitiation { intent_hash, data } => {
-                info!("💸 [NETWORK] Received refund initiation for intent: {}", intent_hash);
-                
+                info!(
+                    "💸 [NETWORK] Received refund initiation for intent: {}",
+                    intent_hash
+                );
+
                 // Deserialize refund message to get details
                 match serde_json::from_slice::<serde_json::Value>(&data) {
                     Ok(refund_data) => {
                         info!("📋 [NETWORK] Refund details: {:?}", refund_data);
-                        
+
                         // Get the intent to create the refund transaction
                         if let Some(user_registry) = &self.user_registry {
                             if let Some(mut intent) = user_registry.get_intent(&intent_hash).await {
                                 info!("🔄 [NETWORK-REFUND] Creating refund transaction from network to user's source address");
                                 info!("💰 [NETWORK-REFUND] Refunding {} from network to source address: {} on {}", 
                                       intent.amount, intent.source_address, intent.source_chain);
-                                
+
                                 // Modify the intent to create a refund transaction:
                                 // - From: Network address (DKG group key)
                                 // - To: User's source address
                                 // - Chain: Source chain (where user originally sent from)
                                 let original_target = intent.target_address.clone();
                                 let original_target_chain = intent.target_chain.clone();
-                                
+
                                 // Set target to user's source address on source chain for the refund
                                 intent.target_address = intent.source_address.clone();
                                 intent.target_chain = intent.source_chain.clone();
-                                
-                                info!("🔄 [NETWORK-REFUND] Refund routing: Network → {} ({})", 
-                                      intent.target_address, intent.target_chain);
+
+                                info!(
+                                    "🔄 [NETWORK-REFUND] Refund routing: Network → {} ({})",
+                                    intent.target_address, intent.target_chain
+                                );
                                 info!("🔄 [NETWORK-REFUND] Original failed transaction was to: {} ({})", 
                                       original_target, original_target_chain);
-                                
+
                                 // Create a refund transaction from network to user's source address
                                 // Use NetworkToTarget type since we're sending from network address to a target
                                 let refund_intent_id = format!("refund-{}", intent_hash);
@@ -4593,10 +4725,11 @@ impl NetworkLayer {
                                     intent: intent.clone(),
                                     intent_id: refund_intent_id,
                                     user_eth_address: None, // Use network's DKG key for refund
-                                    transaction_type: crate::types::TransactionType::NetworkToTarget,
+                                    transaction_type:
+                                        crate::types::TransactionType::NetworkToTarget,
                                     amount: intent.amount,
                                 };
-                                
+
                                 // Send the refund message through the channel to be processed
                                 if let Err(e) = self.message_tx.send(refund_message).await {
                                     error!("❌ [NETWORK-REFUND] Failed to send refund transaction message: {}", e);
@@ -4611,7 +4744,10 @@ impl NetworkLayer {
                         }
                     }
                     Err(e) => {
-                        error!("❌ [NETWORK-REFUND] Failed to deserialize refund data: {}", e);
+                        error!(
+                            "❌ [NETWORK-REFUND] Failed to deserialize refund data: {}",
+                            e
+                        );
                     }
                 }
             }
@@ -5093,11 +5229,11 @@ impl NetworkLayer {
     /// Internal method to handle node disconnection (called both locally and from broadcast)
     async fn handle_node_disconnect_internal(&mut self, peer_id: PeerId) {
         info!("🔧 [DISCONNECT] Processing disconnect for node {}", peer_id);
-        
+
         // DEDUPLICATION: Check if we've already processed this disconnect recently
         let now = std::time::Instant::now();
         let dedup_window = std::time::Duration::from_secs(10); // 10-second deduplication window
-        
+
         if let Some(last_processed) = self.processed_disconnects.get(&peer_id) {
             if now.duration_since(*last_processed) < dedup_window {
                 info!("⏭️ [DISCONNECT] Already processed disconnect for {} recently (within {} seconds), skipping",
@@ -5105,71 +5241,103 @@ impl NetworkLayer {
                 return;
             }
         }
-        
+
         // Mark this disconnect as processed
         self.processed_disconnects.insert(peer_id, now);
-        info!("✅ [DISCONNECT] Marked disconnect for {} as processed at {:?}", peer_id, now);
-        
+        info!(
+            "✅ [DISCONNECT] Marked disconnect for {} as processed at {:?}",
+            peer_id, now
+        );
+
         // Clean up old entries (older than dedup_window) to prevent memory growth
-        self.processed_disconnects.retain(|_, &mut timestamp| {
-            now.duration_since(timestamp) < dedup_window
-        });
-        
+        self.processed_disconnects
+            .retain(|_, &mut timestamp| now.duration_since(timestamp) < dedup_window);
+
         // Log active nodes BEFORE removal
         let active_nodes_before = self.node_manager.get_active_nodes();
-        info!("📋 [DISCONNECT] Active nodes BEFORE removal: {:?} (count: {})", 
-              active_nodes_before, active_nodes_before.len());
-        
+        info!(
+            "📋 [DISCONNECT] Active nodes BEFORE removal: {:?} (count: {})",
+            active_nodes_before,
+            active_nodes_before.len()
+        );
+
         // Remove node from node manager
         if let Err(e) = self.node_manager.remove_node(peer_id) {
-            warn!("⚠️ [DISCONNECT] Failed to remove node {} from node manager: {}", peer_id, e);
+            warn!(
+                "⚠️ [DISCONNECT] Failed to remove node {} from node manager: {}",
+                peer_id, e
+            );
             return;
         }
-        
+
         // Log active nodes AFTER removal to verify
         let active_nodes_after = self.node_manager.get_active_nodes();
-        info!("✅ [DISCONNECT] Successfully removed node {} from node_manager", peer_id);
-        info!("📋 [DISCONNECT] Active nodes AFTER removal: {:?} (count: {})", 
-              active_nodes_after, active_nodes_after.len());
-        
+        info!(
+            "✅ [DISCONNECT] Successfully removed node {} from node_manager",
+            peer_id
+        );
+        info!(
+            "📋 [DISCONNECT] Active nodes AFTER removal: {:?} (count: {})",
+            active_nodes_after,
+            active_nodes_after.len()
+        );
+
         // Double-check the node is really gone
         if active_nodes_after.contains(&peer_id) {
-            error!("❌ [DISCONNECT] BUG: Node {} still in active nodes after removal!", peer_id);
+            error!(
+                "❌ [DISCONNECT] BUG: Node {} still in active nodes after removal!",
+                peer_id
+            );
         } else {
-            info!("✅ [DISCONNECT] Verified: Node {} is NOT in active nodes list", peer_id);
+            info!(
+                "✅ [DISCONNECT] Verified: Node {} is NOT in active nodes list",
+                peer_id
+            );
         }
-        
+
         // Also remove from peer_indices HashMap
         if let Some(removed_index) = self.peer_indices.remove(&peer_id) {
-            info!("✅ [DISCONNECT] Removed peer {} (index {}) from peer_indices HashMap", peer_id, removed_index);
+            info!(
+                "✅ [DISCONNECT] Removed peer {} (index {}) from peer_indices HashMap",
+                peer_id, removed_index
+            );
         }
-        
+
         // Remove from database as well
         let peer_index_key = format!("{}{}", keys::PEER_INDEX, peer_id);
         if let Err(e) = self.db.delete_string(&peer_index_key) {
-            warn!("⚠️ [DISCONNECT] Failed to remove peer {} from database: {}", peer_id, e);
+            warn!(
+                "⚠️ [DISCONNECT] Failed to remove peer {} from database: {}",
+                peer_id, e
+            );
         } else {
             info!("✅ [DISCONNECT] Removed peer {} from database", peer_id);
         }
-        
+
         // Update network parameters
         let new_total = self.node_manager.get_total_nodes();
         let new_threshold = self.node_manager.get_threshold();
-        
-        info!("📊 [DISCONNECT] Updated network: total_nodes={}, threshold={}", new_total, new_threshold);
-        
+
+        info!(
+            "📊 [DISCONNECT] Updated network: total_nodes={}, threshold={}",
+            new_total, new_threshold
+        );
+
         // Update DKG and signing node parameters
         if let Some(dkg_node) = &mut self.dkg_node {
             dkg_node.update_node_params(new_total, new_threshold);
         }
-        
+
         if let Some(signing_node) = &mut self.signing_node {
             signing_node.set_threshold(new_threshold);
         }
-        
+
         // Execute proactive resharing
-        info!("🔄 [DISCONNECT] Triggering proactive resharing with {} remaining nodes", new_total);
-        
+        info!(
+            "🔄 [DISCONNECT] Triggering proactive resharing with {} remaining nodes",
+            new_total
+        );
+
         if let Some(dkg_node) = &mut self.dkg_node {
             let dkg_status = dkg_node.get_status();
             if matches!(dkg_status, DKGStatus::Completed) {
@@ -5177,8 +5345,11 @@ impl NetworkLayer {
                 info!("⏰ [DISCONNECT] Waiting 3 seconds for all nodes to sync...");
                 tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
                 info!("✅ [DISCONNECT] Sync period complete, starting resharing");
-                
-                if let Err(e) = dkg_node.execute_polynomial_refresh(self.node_manager.clone()).await {
+
+                if let Err(e) = dkg_node
+                    .execute_polynomial_refresh(self.node_manager.clone())
+                    .await
+                {
                     error!("❌ [DISCONNECT] Failed to execute resharing: {}", e);
                 } else {
                     info!("✅ [DISCONNECT] Resharing completed successfully");
