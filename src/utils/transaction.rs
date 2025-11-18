@@ -1,8 +1,9 @@
-use crate::chain::{
-    BitcoinInput, BitcoinOutput, BitcoinTransaction, BitcoinWitness, BitcoinWitnessUtxo,
-    ChainTransaction, EthereumTransaction,
+use crate::chain::{ChainTransaction, EthereumTransaction};
+use crate::types::{
+    BitcoinInput, BitcoinOutput, BitcoinTransaction, BitcoinUtxo, BitcoinWitness,
+    BitcoinWitnessUtxo, ContractTransaction, DepositIntent, DummyTransaction, RlpEncoder,
+    SpendKind, UtxoStatus,
 };
-use crate::types::{ContractTransaction, DepositIntent, DummyTransaction};
 use crate::utils::get_eth_address_from_group_key;
 use anyhow::{bail, Result};
 use ethabi::ethereum_types::U256;
@@ -12,30 +13,8 @@ use tracing::{info, warn}; // for Token::Uint
 
 // use rlp::RlpStream;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SpendKind {
-    P2PKH,
-    P2WPKH,
-}
-/// Bitcoin UTXO structure for fetching from external APIs
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BitcoinUtxo {
-    pub txid: String,
-    pub vout: u32,
-    pub value: u64,
-    pub status: UtxoStatus,
-}
-
 pub type WitnessItem = Vec<u8>;
 pub type WitnessStack = Vec<WitnessItem>;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UtxoStatus {
-    pub confirmed: bool,
-    pub block_height: Option<u64>,
-    pub block_hash: Option<String>,
-    pub block_time: Option<u64>,
-}
 
 const DEFAULT_FEE_RATE_SAT_PER_VBYTE: u64 = 2;
 const DUST_LIMIT_SATS: u64 = 546;
@@ -48,98 +27,6 @@ struct CustomApiUtxoResponse {
     status_code: u16,
     message: String,
     data: Vec<BitcoinUtxo>,
-}
-
-/// RLP encoder for Ethereum transaction signing (EIP-155)
-pub struct RlpEncoder {
-    pub data: Vec<u8>,
-}
-
-impl RlpEncoder {
-    fn new() -> Self {
-        RlpEncoder { data: Vec::new() }
-    }
-
-    fn encode_bytes(&mut self, bytes: &[u8]) {
-        if bytes.len() == 1 && bytes[0] < 0x80 {
-            self.data.push(bytes[0]);
-        } else if bytes.len() < 56 {
-            self.data.push(0x80 + bytes.len() as u8);
-            self.data.extend_from_slice(bytes);
-        } else {
-            let length_bytes = (bytes.len() as u64).to_be_bytes();
-            let length_start = length_bytes
-                .iter()
-                .position(|&x| x != 0)
-                .unwrap_or(length_bytes.len() - 1);
-            let length_slice = &length_bytes[length_start..];
-
-            self.data.push(0xb7 + length_slice.len() as u8);
-            self.data.extend_from_slice(length_slice);
-            self.data.extend_from_slice(bytes);
-        }
-    }
-
-    fn encode_u64(&mut self, value: u64) {
-        if value == 0 {
-            self.data.push(0x80);
-        } else {
-            let bytes = value.to_be_bytes();
-            let start = bytes
-                .iter()
-                .position(|&x| x != 0)
-                .unwrap_or(bytes.len() - 1);
-            self.encode_bytes(&bytes[start..]);
-        }
-    }
-
-    fn encode_hex_string(&mut self, hex_str: &str) {
-        let bytes = encode_hex_to_bytes(hex_str);
-        self.encode_bytes(&bytes);
-    }
-
-    fn encode_address(&mut self, address: &str) {
-        let bytes = hex::decode(&address[2..]).expect("Invalid address");
-        self.encode_bytes(&bytes);
-    }
-
-    fn encode_list_header(&mut self, content_length: usize) {
-        if content_length < 56 {
-            self.data.push(0xc0 + content_length as u8);
-        } else {
-            let length_bytes = (content_length as u64).to_be_bytes();
-            let length_start = length_bytes
-                .iter()
-                .position(|&x| x != 0)
-                .unwrap_or(length_bytes.len() - 1);
-            let length_slice = &length_bytes[length_start..];
-
-            self.data.push(0xf7 + length_slice.len() as u8);
-            self.data.extend_from_slice(length_slice);
-        }
-    }
-
-    fn finalize(self) -> Vec<u8> {
-        self.data
-    }
-}
-
-fn encode_hex_to_bytes(hex_str: &str) -> Vec<u8> {
-    let clean_hex = hex_str.strip_prefix("0x").unwrap_or(hex_str);
-    let trimmed = clean_hex.trim_start_matches('0');
-
-    // If the value is zero or only zeros were provided, return an empty
-    // Vec so that the caller encodes it as an empty byte slice (0x80 in RLP).
-    if trimmed.is_empty() {
-        return Vec::new();
-    }
-
-    let mut final_hex = trimmed.to_string();
-    if final_hex.len() % 2 == 1 {
-        final_hex = format!("0{}", final_hex);
-    }
-
-    hex::decode(&final_hex).expect("Invalid hex string")
 }
 
 /// Strip leading zeros from byte array for RLP compliance
@@ -1725,7 +1612,7 @@ mod tests {
 // }
 
 fn create_bitcoin_script_pubkey(address: &str) -> Result<Vec<u8>> {
-    use bitcoin::{Address, Network};
+    use bitcoin::Address;
     use std::str::FromStr;
 
     // Parse the address and determine network

@@ -1,8 +1,7 @@
 use anyhow::Result;
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use crate::types::{ContractTransaction, DummyTransaction};
+use crate::types::{BitcoinSignature, BitcoinTransaction, ContractTransaction, DummyTransaction};
 
 use super::{ChainHandler, ChainSignature, ChainTransaction};
 
@@ -49,55 +48,6 @@ fn create_p2pkh_script_for_signing(group_public_key: &[u8]) -> Result<Vec<u8>> {
     script.push(0xac); // OP_CHECKSIG
 
     Ok(script)
-}
-
-/// Bitcoin transaction structure with full SegWit support
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BitcoinTransaction {
-    pub inputs: Vec<BitcoinInput>,
-    pub outputs: Vec<BitcoinOutput>,
-    pub version: u32,
-    pub lock_time: u32,
-    pub witness: Option<BitcoinWitness>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BitcoinInput {
-    pub txid: String,
-    pub vout: u32,
-    pub script_sig: Vec<u8>,
-    pub sequence: u32,
-    pub witness_utxo: Option<BitcoinWitnessUtxo>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BitcoinOutput {
-    pub value: u64,
-    pub script_pubkey: Vec<u8>,
-}
-
-/// SegWit witness data
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BitcoinWitness {
-    pub inputs: Vec<BitcoinWitnessInput>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BitcoinWitnessInput {
-    pub stack: Vec<Vec<u8>>,
-}
-
-/// Witness UTXO information for SegWit inputs
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BitcoinWitnessUtxo {
-    pub value: u64,
-    pub script_pubkey: Vec<u8>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BitcoinSignature {
-    pub signature: Vec<u8>,
-    pub sighash_type: u8,
 }
 
 /// Bitcoin chain handler implementation

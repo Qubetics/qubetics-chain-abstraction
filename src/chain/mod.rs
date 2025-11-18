@@ -7,10 +7,11 @@ use crate::types::DummyTransaction;
 pub mod bitcoin;
 pub mod ethereum;
 
-pub use bitcoin::{
-    BitcoinChainHandler, BitcoinInput, BitcoinOutput, BitcoinSignature, BitcoinTransaction,
-    BitcoinWitness, BitcoinWitnessInput, BitcoinWitnessUtxo,
+pub use crate::types::chain::bitcoin::{
+    BitcoinInput, BitcoinOutput, BitcoinSignature, BitcoinTransaction, BitcoinWitness,
+    BitcoinWitnessInput, BitcoinWitnessUtxo,
 };
+pub use bitcoin::BitcoinChainHandler;
 pub use ethereum::{EthereumChainHandler, EthereumSignature, EthereumTransaction};
 
 /// Generic transaction interface for different blockchain types

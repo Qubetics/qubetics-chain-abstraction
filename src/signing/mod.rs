@@ -1,9 +1,11 @@
 use crate::chain::EthereumTransaction;
+use crate::types::SpendKind;
 use crate::types::{
     intent::{ContractTransaction, DepositIntent, DummyTransaction},
-    signing::{BtcIndexedSignature, ECDSASignature, SignedMessage, SigningMessage, ThresholdSignatureShare},
+    signing::{
+        BtcIndexedSignature, ECDSASignature, SignedMessage, SigningMessage, ThresholdSignatureShare,
+    },
 };
-use crate::utils::transaction::SpendKind;
 use anyhow::anyhow;
 use anyhow::Result;
 use k256::Scalar;

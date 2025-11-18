@@ -69,4 +69,3 @@ pub struct DepositIntentResponse {
     pub message: String,
     pub raw_transaction: Option<String>,
 }
-

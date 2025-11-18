@@ -78,4 +78,3 @@ pub enum SigningMessage {
         message: String,
     },
 }
-
