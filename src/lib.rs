@@ -29,10 +29,11 @@ pub use intent_manager::prepare_unsigned_eip1559_tx;
 pub use network::NetworkLayer;
 pub use node_management::{
     BasicNodeManager, DefaultThresholdCalculator, NodeMembership, ThresholdCalculator,
-    VrfNodeManager,
+    VrfNodeManager, VrfNodeManagerConfig,
 };
 pub use signing::{DatabaseSigningNode, ECDSASignature, SigningMessage, SigningNode};
 pub use user_intent_manager::{UserIntentManager, UserRegistry};
 pub use vrf::{
-    NodeSelectionResult, VrfNodeSelector, VrfOutput, VrfSelectedNodesBroadcast, VrfSelectionMessage,
+    NodeSelectionResult, VrfNodeSelector, VrfOutput, VrfSelectedNodesBroadcast,
+    VrfSelectionMessage, VrfService, VrfServiceConfig,
 };

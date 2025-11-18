@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use tracing::info;
 
 pub mod vrf_manager;
-pub use vrf_manager::VrfNodeManager;
+pub use vrf_manager::{VrfNodeManager, VrfNodeManagerConfig};
 
 /// Trait for managing node membership in the network
 pub trait NodeMembership {
@@ -21,7 +21,7 @@ pub trait NodeMembership {
     fn get_threshold(&self) -> usize;
 
     /// Set the threshold
-    fn set_threshold(&self, threshold: usize) -> usize;
+    fn set_threshold(&mut self, threshold: usize) -> usize;
 
     /// Get all active node IDs
     fn get_active_nodes(&self) -> HashSet<PeerId>;
@@ -71,6 +71,7 @@ impl Clone for Box<dyn ThresholdCalculator> {
 pub struct BasicNodeManager {
     nodes: HashSet<PeerId>,
     threshold_calculator: Box<dyn ThresholdCalculator>,
+    threshold_override: Option<usize>,
 }
 
 impl BasicNodeManager {
@@ -78,12 +79,14 @@ impl BasicNodeManager {
         Self {
             nodes: HashSet::new(),
             threshold_calculator,
+            threshold_override: None,
         }
     }
 }
 
 impl NodeMembership for BasicNodeManager {
-    fn set_threshold(&self, threshold: usize) -> usize {
+    fn set_threshold(&mut self, threshold: usize) -> usize {
+        self.threshold_override = Some(threshold);
         threshold
     }
 
@@ -109,8 +112,12 @@ impl NodeMembership for BasicNodeManager {
     }
 
     fn get_threshold(&self) -> usize {
-        self.threshold_calculator
-            .calculate_threshold(self.get_total_nodes())
+        if let Some(override_value) = self.threshold_override {
+            override_value
+        } else {
+            self.threshold_calculator
+                .calculate_threshold(self.get_total_nodes())
+        }
     }
 
     fn get_active_nodes(&self) -> HashSet<PeerId> {

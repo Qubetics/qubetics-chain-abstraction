@@ -214,7 +214,8 @@ where
 
 fn with_message_tx(
     message_tx: Arc<Mutex<mpsc::Sender<ChannelMessage>>>,
-) -> impl Filter<Extract = (Arc<Mutex<mpsc::Sender<ChannelMessage>>>,), Error = Infallible> + Clone {
+) -> impl Filter<Extract = (Arc<Mutex<mpsc::Sender<ChannelMessage>>>,), Error = Infallible> + Clone
+{
     warp::any().map(move || message_tx.clone())
 }
 
@@ -246,7 +247,8 @@ fn with_start_time(
     warp::any().map(move || start_time.clone())
 }
 
-fn with_request_context() -> impl Filter<Extract = (RequestContext,), Error = warp::Rejection> + Clone {
+fn with_request_context(
+) -> impl Filter<Extract = (RequestContext,), Error = warp::Rejection> + Clone {
     warp::header::optional("Idempotency-Key")
         .map(|idempotency_key: Option<String>| RequestContext::new(idempotency_key))
 }
