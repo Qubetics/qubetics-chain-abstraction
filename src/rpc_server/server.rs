@@ -19,7 +19,7 @@ use super::handlers::{
     handle_get_status, handle_get_uptime, handle_get_user_info, handle_heartbeat,
     handle_register_user, handle_start_dkg, handle_user_mpc_deposit, RequestContext,
 };
-use crate::types::{
+use crate::types::rpc_server::{
     ClaimRewardRequest, GetRewardSolverRequest, UserMpcDepositRequest,
     UserMpcDepositVerifyResponse, UserRegistrationRequest,
 };

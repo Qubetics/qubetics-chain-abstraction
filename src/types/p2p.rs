@@ -1,7 +1,13 @@
-use libp2p::PeerId;
+use libp2p::{Multiaddr, PeerId};
 use serde::de::{self, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct PeerInfo {
+    pub addresses: Vec<Multiaddr>,
+    pub connected: bool,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SerializablePeerId(pub PeerId);

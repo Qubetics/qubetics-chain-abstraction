@@ -31,7 +31,8 @@ pub use node_management::{
     BasicNodeManager, DefaultThresholdCalculator, NodeMembership, ThresholdCalculator,
     VrfNodeManager, VrfNodeManagerConfig,
 };
-pub use signing::{DatabaseSigningNode, ECDSASignature, SigningMessage, SigningNode};
+pub use signing::{DatabaseSigningNode, SigningNode};
+pub use types::{ECDSASignature, SigningMessage};
 pub use user_intent_manager::{UserIntentManager, UserRegistry};
 pub use vrf::{
     NodeSelectionResult, VrfNodeSelector, VrfOutput, VrfSelectedNodesBroadcast,

@@ -13,7 +13,10 @@ use serde::{Deserialize, Serialize};
 use std::{future::Future, io, pin::Pin};
 use tracing::info;
 
-use super::{p2p::SerializablePeerId, PeerInfo, SerializablePoint, SerializableScalar};
+use super::{
+    p2p::{PeerInfo, SerializablePeerId},
+    SerializablePoint, SerializableScalar,
+};
 
 pub type MPCCodecRequest = <MPCCodec as libp2p::request_response::Codec>::Request;
 pub type MPCCodecResponse = <MPCCodec as libp2p::request_response::Codec>::Response;

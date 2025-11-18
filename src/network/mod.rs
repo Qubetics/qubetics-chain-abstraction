@@ -2102,7 +2102,7 @@ impl NetworkLayer {
                     {
                         info!("🎯 [NETWORK] Processing signature for final node topic");
                         match signing_msg {
-                            crate::signing::SigningMessage::ECDSASignature {
+                            crate::types::SigningMessage::ECDSASignature {
                                 from,
                                 signature,
                                 round,
@@ -2114,7 +2114,7 @@ impl NetworkLayer {
                                     .handle_signature_to_final_node(from, signature, round)
                                     .await
                             }
-                            crate::signing::SigningMessage::BtcSignaturesMessage {
+                            crate::types::SigningMessage::BtcSignaturesMessage {
                                 from,
                                 signatures,
                                 round,
@@ -2143,7 +2143,7 @@ impl NetworkLayer {
                         );
                         // Handle normal signing messages
                         match &signing_msg {
-                            crate::signing::SigningMessage::ECDSASignature {
+                            crate::types::SigningMessage::ECDSASignature {
                                 from,
                                 signature,
                                 round,

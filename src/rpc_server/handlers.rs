@@ -11,11 +11,15 @@ use uuid::Uuid;
 use crate::{
     database::{DkgStorage, RewardStorage},
     types::{
-        rpc::RPCRequest, ChannelMessage, ClaimRewardRequest, ClaimRewardResponse,
-        DKGStatusResponse, DepositIntent, DepositIntentResponse, EnhancedUserRegistrationResponse,
-        GetRewardSolverRequest, GetRewardSolverResponse, HeartbeatResponse, NodeIdResponse,
-        NodeStatus, TransactionResponse, TransactionType, UptimeResponse, UserInfoResponse,
-        UserMpcDepositRequest, UserMpcDepositVerifyResponse, UserRegistrationRequest,
+        intent::{DepositIntent, DepositIntentResponse, TransactionResponse, TransactionType},
+        messaging::ChannelMessage,
+        rpc::RPCRequest,
+        rpc_server::{
+            ClaimRewardRequest, ClaimRewardResponse, DKGStatusResponse,
+            EnhancedUserRegistrationResponse, GetRewardSolverRequest, GetRewardSolverResponse,
+            HeartbeatResponse, NodeIdResponse, NodeStatus, UptimeResponse, UserInfoResponse,
+            UserMpcDepositRequest, UserMpcDepositVerifyResponse, UserRegistrationRequest,
+        },
     },
     user_intent_manager::{checksum_from_any, UserIntentManager},
 };

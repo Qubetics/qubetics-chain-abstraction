@@ -1,5 +1,8 @@
 use crate::chain::EthereumTransaction;
-use crate::types::{ContractTransaction, DepositIntent, DummyTransaction};
+use crate::types::{
+    intent::{ContractTransaction, DepositIntent, DummyTransaction},
+    signing::{BtcIndexedSignature, ECDSASignature, SignedMessage, SigningMessage, ThresholdSignatureShare},
+};
 use crate::utils::transaction::SpendKind;
 use anyhow::anyhow;
 use anyhow::Result;
@@ -44,14 +47,6 @@ use anyhow::bail;
 use ethereum_types::U256 as EthereumU256;
 use ethers::types::U256;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ECDSASignature {
-    pub signature: Vec<u8>, // 65-byte recoverable signature
-    pub signer_id: String,
-    pub recovery_id: u8,
-    pub user_eth_address: Option<String>, // Track if this is user-to-network or network-to-target
-}
-
 use serde_big_array::BigArray; // <- this exists when const-generics is enabled
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -61,73 +56,6 @@ pub struct BtcRoundExtras {
     pub signer_h160: [u8; 20],
     pub from_kind: SpendKind,
     pub is_testnet: bool,
-}
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ThresholdSignatureShare {
-    pub share: Vec<u8>, // The signature share
-    pub signer_id: String,
-    pub share_index: u32,
-    pub threshold: u32,
-    pub total_shares: u32,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct BtcIndexedSignature {
-    pub input_index: usize,        // which input this signature is for
-    pub signature: ECDSASignature, // your existing { signature: [u8;64], recovery_id: u8, signer_id, ... }
-}
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ThresholdSignature {
-    pub aggregated_signature: Vec<u8>,
-    pub signer_ids: Vec<String>,
-    pub message_hash: Vec<u8>,
-    pub threshold: u32,
-    pub total_shares: u32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SignedMessage {
-    pub message: Vec<u8>,
-    pub aggregated_signature: Vec<u8>, // ECDSA signature
-    pub signer_ids: Vec<String>,
-    pub timestamp: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum SigningMessage {
-    MessageToSign {
-        from: String,
-        message: Vec<u8>,
-        message_hash: Vec<u8>,
-    },
-    ECDSASignature {
-        from: String,
-        signature: ECDSASignature,
-        round: u64,
-        timestamp: u128,
-        user_eth_address: Option<String>, // Track if this is user-to-network or network-to-target
-    },
-    BtcSignaturesMessage {
-        from: String,                         // node id
-        signatures: Vec<BtcIndexedSignature>, // one (or more) per input
-        round: u64,                           // VRF round
-        timestamp: u128,                      // ms since epoch
-        user_eth_address: Option<String>,     // carry-through context
-    },
-    SignedMessage {
-        from: String,
-        signed_message: SignedMessage,
-    },
-    RequestSignatures {
-        round: u64,
-        final_node_id: String,
-        message: String,
-    },
-    RequestBtcSignatures {
-        round: u64,
-        final_node_id: String,
-        message: String,
-    },
 }
 type PendingValue = (
     ChainTransaction,
@@ -2243,7 +2171,7 @@ impl SigningNode {
         let (recovery_id, signature_bytes) = signature.serialize_compact();
 
         // Create ECDSA signature struct
-        let ecdsa_signature = crate::signing::ECDSASignature {
+        let ecdsa_signature = ECDSASignature {
             signature: signature_bytes.to_vec(),
             signer_id: self.id.clone(),
             recovery_id: recovery_id.to_i32() as u8,

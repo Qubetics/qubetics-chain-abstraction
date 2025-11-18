@@ -1,6 +1,6 @@
 use crate::chain::ChainTransaction;
 use crate::database::{key_utils, Database};
-use crate::signing::ECDSASignature;
+use crate::types::ECDSASignature;
 use anyhow::Result;
 use secp256k1::PublicKey;
 use std::collections::HashMap;
