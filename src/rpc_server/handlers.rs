@@ -10,19 +10,19 @@ use uuid::Uuid;
 
 use crate::{
     database::{DkgStorage, RewardStorage},
-    types::{rpc::RPCRequest, ChannelMessage, TransactionType},
+    types::{
+        rpc::RPCRequest, ChannelMessage, ClaimRewardRequest, ClaimRewardResponse,
+        DepositIntent, DepositIntentResponse, DKGStatusResponse,
+        EnhancedUserRegistrationResponse, GetRewardSolverRequest, GetRewardSolverResponse,
+        HeartbeatResponse, NodeIdResponse, NodeStatus, TransactionResponse, TransactionType,
+        UptimeResponse, UserInfoResponse, UserMpcDepositRequest, UserMpcDepositVerifyResponse,
+        UserRegistrationRequest,
+    },
     user_intent_manager::{checksum_from_any, UserIntentManager},
 };
 
 use super::{
     errors::{RpcError, TransactionError},
-    types::{
-        ClaimRewardRequest, ClaimRewardResponse, DKGStatusResponse, DepositIntent,
-        DepositIntentResponse, EnhancedUserRegistrationResponse, GetRewardSolverRequest,
-        GetRewardSolverResponse, HeartbeatResponse, NodeIdResponse, NodeStatus,
-        TransactionResponse, UptimeResponse, UserInfoResponse, UserMpcDepositRequest,
-        UserMpcDepositVerifyResponse, UserRegistrationRequest,
-    },
     utils::{
         convert_src_smallest_to_dst_smallest, fetch_crypto_prices, get_actual_dkg_secret_share,
         normalize_eth_signature, recover_eth_address_secp, wait_for_transaction_result,
@@ -40,10 +40,7 @@ pub(crate) async fn handle_deposit_intent(
     if let Some(addr) = &user_eth_address {
         info!("📝 HTTP: User eth address provided for signing: {}", addr);
     }
-    let mut required_amount_u128 = 0;
-
-    // Only do price conversion for NetworkToTarget, else just use intent.amount
-    if matches!(transaction_type, TransactionType::NetworkToTarget) {
+    let required_amount_u128 = if matches!(transaction_type, TransactionType::NetworkToTarget) {
         // Fetch current prices for BTC and TICS to determine the
         // value equivalence between source and target chains.
         let prices = fetch_crypto_prices()
@@ -80,15 +77,14 @@ pub(crate) async fn handle_deposit_intent(
             &prices,
         )?;
 
-        required_amount_u128 = target_smallest;
-
         info!("💱 Conversion: source amount converted to target smallest units");
+        target_smallest
     } else {
         // For VaultToNetwork and other types, use the intent amount plus 10%
         let base_amount = intent.amount + (intent.amount / 10);
-        required_amount_u128 = base_amount;
         info!("💱 No price conversion needed; using adjusted intent amount");
-    }
+        base_amount
+    };
 
     let intent_id = format!("intent-{}", Uuid::new_v4());
     let deposit_intent_msg = ChannelMessage::DepositIntent {

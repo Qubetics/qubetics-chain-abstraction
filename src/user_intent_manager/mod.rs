@@ -10,8 +10,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
-use crate::rpc_server::DepositIntent;
-use crate::types::{SerializablePoint, SerializableScalar};
+use crate::types::{DepositIntent, SerializablePoint, SerializableScalar};
 use crate::utils::hmac_helper::hmac256_from_addr;
 use tracing::info;
 

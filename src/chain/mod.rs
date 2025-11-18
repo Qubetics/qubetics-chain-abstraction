@@ -2,7 +2,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use crate::rpc_server::DummyTransaction;
+use crate::types::{ContractTransaction, DummyTransaction};
 
 /// Encode a variable length integer for Bitcoin transaction serialization
 fn encode_varint(value: u64) -> Vec<u8> {
@@ -203,7 +203,7 @@ impl ChainHandler for EthereumChainHandler {
                 // Check if this is a contract transaction (has data)
                 if let Some(data) = &eth_tx.data {
                     // Use contract transaction function for transactions with data
-                    let contract_tx = crate::rpc_server::ContractTransaction {
+                    let contract_tx = ContractTransaction {
                         to: eth_tx.to.clone(),
                         value: eth_tx.value.clone(),
                         gas_limit: eth_tx.gas_limit,
@@ -235,7 +235,7 @@ impl ChainHandler for EthereumChainHandler {
                 // Check if this is a contract transaction (has data)
                 if let Some(data) = &eth_tx.data {
                     // Use contract transaction function for transactions with data
-                    let contract_tx = crate::rpc_server::ContractTransaction {
+                    let contract_tx = ContractTransaction {
                         to: eth_tx.to.clone(),
                         value: eth_tx.value.clone(),
                         gas_limit: eth_tx.gas_limit,
@@ -540,7 +540,7 @@ impl ChainHandler for BitcoinChainHandler {
                 // Check if this is a contract transaction (has data)
                 if let Some(data) = &eth_tx.data {
                     // Use contract transaction function for transactions with data
-                    let contract_tx = crate::rpc_server::ContractTransaction {
+                    let contract_tx = ContractTransaction {
                         to: eth_tx.to.clone(),
                         value: eth_tx.value.clone(),
                         gas_limit: eth_tx.gas_limit,

@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-// Define the transaction types for the RPC server
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DummyTransaction {
     pub to: String,
@@ -25,13 +24,10 @@ pub struct ContractTransaction {
     pub gas_price: String,
     #[serde(rename = "chainId")]
     pub chain_id: u64,
-
-    /// ABI-encoded calldata as 0x-prefixed hex. Use "0x" when empty.
     #[serde(default)]
     pub data: String,
 }
 
-// Define the deposit intent structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DepositIntent {
     pub source_address: String,
@@ -41,7 +37,7 @@ pub struct DepositIntent {
     pub amount: u128,
     pub source_token: String,
     pub target_token: String,
-    pub timestamp: u128, // Unix timestamp in seconds
+    pub timestamp: u128,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,7 +87,6 @@ pub struct UserRegistrationRequest {
 pub struct UserMpcDepositRequest {
     pub signature: Option<String>,
     pub msg: DepositIntent,
-    // Optional transaction ID and status for updating existing deposits
     pub tx_id: Option<String>,
     pub status: Option<String>,
 }
@@ -175,7 +170,6 @@ pub struct ClaimRewardResponse {
     pub error_message: Option<String>,
 }
 
-// Enhanced error types for better error handling
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErrorResponse {
     pub status: String,
@@ -184,7 +178,6 @@ pub struct ErrorResponse {
     pub details: Option<String>,
 }
 
-// User info response with proper error handling
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserInfoResponse {
     pub status: String,
@@ -199,7 +192,6 @@ pub struct UserInfoResponse {
     pub error: Option<ErrorResponse>,
 }
 
-// Enhanced user registration response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EnhancedUserRegistrationResponse {
     pub status: String,
@@ -208,3 +200,4 @@ pub struct EnhancedUserRegistrationResponse {
     pub derived_btc_address: Option<String>,
     pub error: Option<ErrorResponse>,
 }
+

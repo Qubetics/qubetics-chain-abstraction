@@ -1,6 +1,4 @@
-use crate::user_intent_manager::checksum_from_any;
-
-use super::types::ErrorResponse;
+use crate::{types::ErrorResponse, user_intent_manager::checksum_from_any};
 
 #[derive(Debug)]
 pub enum RpcError {

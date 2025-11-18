@@ -2,11 +2,9 @@ use crate::chain::{
     BitcoinInput, BitcoinOutput, BitcoinTransaction, BitcoinWitness, BitcoinWitnessUtxo,
     ChainTransaction, EthereumTransaction,
 };
-use crate::rpc_server::{ContractTransaction, DepositIntent, DummyTransaction};
+use crate::types::{ContractTransaction, DepositIntent, DummyTransaction};
 use crate::utils::get_eth_address_from_group_key;
 use anyhow::{bail, Result};
-use bitcoin::address::NetworkUnchecked;
-use bitcoin::{Address, WitnessVersion};
 use ethabi::ethereum_types::U256;
 use ethabi::{Function, Param, ParamType, StateMutability, Token};
 use serde::{Deserialize, Serialize};
@@ -191,7 +189,7 @@ pub fn validate_and_normalize_hex_amount(hex_str: &str) -> Result<String> {
 }
 
 /// Validate that a transaction has proper hex formatting for value and gas_price
-pub fn validate_transaction_hex_fields(tx: &crate::rpc_server::DummyTransaction) -> Result<()> {
+pub fn validate_transaction_hex_fields(tx: &DummyTransaction) -> Result<()> {
     // Validate value field
     validate_and_normalize_hex_amount(&tx.value)
         .map_err(|e| anyhow::anyhow!("Invalid value field: {}", e))?;
@@ -204,9 +202,7 @@ pub fn validate_transaction_hex_fields(tx: &crate::rpc_server::DummyTransaction)
 }
 
 /// Validate that a contract transaction has proper hex formatting
-pub fn validate_contract_transaction_hex_fields(
-    tx: &crate::rpc_server::ContractTransaction,
-) -> Result<()> {
+pub fn validate_contract_transaction_hex_fields(tx: &ContractTransaction) -> Result<()> {
     // Validate value field
     validate_and_normalize_hex_amount(&tx.value)
         .map_err(|e| anyhow::anyhow!("Invalid value field: {}", e))?;
@@ -1248,6 +1244,7 @@ pub fn encode_deposit_intent_calldata(
     intent_id: &str,
     timestamp: &str,
 ) -> Option<Vec<u8>> {
+    #[allow(deprecated)]
     let f = Function {
         name: "depositIntent".to_owned(),
         inputs: vec![
@@ -1335,6 +1332,7 @@ pub fn encode_fulfill_intent_calldata(
     intent_id: &str,
     timestamp: &str,
 ) -> Option<Vec<u8>> {
+    #[allow(deprecated)]
     let f = Function {
         name: "fulfillIntent".to_owned(),
         inputs: vec![
@@ -1905,7 +1903,7 @@ fn test_validate_and_normalize_hex_amount() {
 
 #[test]
 fn test_validate_transaction_hex_fields() {
-    use crate::rpc_server::DummyTransaction;
+    use crate::types::DummyTransaction;
 
     // Test valid transaction
     let valid_tx = DummyTransaction {
@@ -1943,7 +1941,7 @@ fn test_validate_transaction_hex_fields() {
 
 #[test]
 fn test_validate_contract_transaction_hex_fields() {
-    use crate::rpc_server::ContractTransaction;
+    use crate::types::ContractTransaction;
 
     // Test valid contract transaction
     let valid_contract_tx = ContractTransaction {

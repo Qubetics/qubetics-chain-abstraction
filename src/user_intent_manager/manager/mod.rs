@@ -13,8 +13,7 @@ use crate::database::RewardStorage;
 use crate::database::{
     Database, DatabaseModule, IntentStorage, TransactionStatusStorage, UserStorage,
 };
-use crate::rpc_server::DepositIntent;
-use crate::types::{SerializablePoint, SerializableScalar};
+use crate::types::{DepositIntent, SerializablePoint, SerializableScalar};
 use crate::utils::hmac_helper::hmac256_from_addr;
 use anyhow::Result;
 use tracing::info;

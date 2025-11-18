@@ -1,10 +1,4 @@
-use crate::prepare_unsigned_eip1559_tx;
 use anyhow::Result;
-use ethers::{
-    abi::Token,
-    providers::{Http, Provider},
-    types::{Address, U256},
-};
 use futures::StreamExt;
 use libp2p::{
     core::ConnectedPoint,
@@ -19,8 +13,6 @@ use libp2p::{
     swarm::{ConnectionError, NetworkBehaviour, SwarmEvent},
     tcp, yamux, Multiaddr, PeerId,
 };
-use sha2::Digest as Sha2Digest;
-use std::str::FromStr;
 use std::sync::Arc;
 
 use ff::PrimeField;
@@ -37,7 +29,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::adkg_secp256k1::DKGNode;
 use crate::consensus::ConsensusNode;
-use crate::database::{key_utils, keys, Database, DatabaseConfig};
+use crate::database::{key_utils, keys, Database};
 use crate::node_management::NodeMembership;
 use crate::signing::{DatabaseSigningNode, SigningNode};
 use crate::user_intent_manager::{TransactionStatus, UserIntentManager};
@@ -53,10 +45,7 @@ use crate::{
         ChannelMessage, GossipsubMessage, PeerInfo,
     },
 };
-use crate::{
-    chain::EthereumTransaction, commands::CommandProcessor, rpc_server::DummyTransaction,
-    utils::transaction::get_default_gas_price_for_chain,
-};
+use crate::commands::CommandProcessor;
 
 #[derive(NetworkBehaviour)]
 #[behaviour(out_event = "NetworkEvent")]
@@ -767,7 +756,6 @@ impl NetworkLayer {
         }
 
         // Start a task to check if this is the first node after bootstrap attempts
-        let tx_clone = self.message_tx.clone();
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_secs(3)).await;
         });
@@ -1478,10 +1466,6 @@ impl NetworkLayer {
                             RPCResponse::PeerList { peers, indices } => {
                                 info!("🔄 Merging peer‐set from {}: {:?}", peer, peers);
                                 info!("🔄 Received indices: {:?}", indices);
-
-                                // Clone peers list before consuming it
-                                let peers_clone = peers.clone();
-
                                 for (i, SerializablePeerId(p)) in peers.into_iter().enumerate() {
                                     // Add peer to node_manager if not already present
                                     if !self.node_manager.get_active_nodes().contains(&p) {
@@ -2958,12 +2942,6 @@ impl NetworkLayer {
                         None
                     };
 
-                    let vault_group_key = if let Some(dkg_node) = &self.dkg_node {
-                        dkg_node.get_vault_group_key().await
-                    } else {
-                        None
-                    };
-
                     // Get vault addresses from database
                     let (vault_eth_addr, vault_btc_addr) =
                         if let Some(registry) = &self.user_intent_manager {
@@ -3174,7 +3152,7 @@ impl NetworkLayer {
 
                                     //             match contract_transaction {
                                     //                 crate::chain::ChainTransaction::Ethereum(ref eth_tx) => {
-                                    //                     let contract_tx = crate::rpc_server::ContractTransaction {
+                                    //                     let contract_tx = crate::types::ContractTransaction {
                                     //                         to: eth_tx.to.clone(),
                                     //                         value: eth_tx.value.clone(),
                                     //                         nonce: eth_tx.nonce,
@@ -3223,7 +3201,7 @@ impl NetworkLayer {
 
                                     //             match contract_transaction {
                                     //                 crate::chain::ChainTransaction::Ethereum(ref eth_tx) => {
-                                    //                     let contract_tx = crate::rpc_server::ContractTransaction {
+                                    //                     let contract_tx = crate::types::ContractTransaction {
                                     //                         to: eth_tx.to.clone(),
                                     //                         value: eth_tx.value.clone(),
                                     //                         nonce: eth_tx.nonce,
@@ -3946,12 +3924,6 @@ impl NetworkLayer {
                         None
                     };
 
-                    let vault_group_key = if let Some(dkg_node) = &self.dkg_node {
-                        dkg_node.get_vault_group_key().await
-                    } else {
-                        None
-                    };
-
                     // Get vault addresses from database
                     let (vault_eth_addr, vault_btc_addr) =
                         if let Some(registry) = &self.user_intent_manager {
@@ -4167,7 +4139,7 @@ impl NetworkLayer {
 
                                     //             match contract_transaction {
                                     //                 crate::chain::ChainTransaction::Ethereum(ref eth_tx) => {
-                                    //                     let contract_tx = crate::rpc_server::ContractTransaction {
+                                    //                     let contract_tx = crate::types::ContractTransaction {
                                     //                         to: eth_tx.to.clone(),
                                     //                         value: eth_tx.value.clone(),
                                     //                         nonce: eth_tx.nonce,
@@ -4216,7 +4188,7 @@ impl NetworkLayer {
 
                                     //             match contract_transaction {
                                     //                 crate::chain::ChainTransaction::Ethereum(ref eth_tx) => {
-                                    //                     let contract_tx = crate::rpc_server::ContractTransaction {
+                                    //                     let contract_tx = crate::types::ContractTransaction {
                                     //                         to: eth_tx.to.clone(),
                                     //                         value: eth_tx.value.clone(),
                                     //                         nonce: eth_tx.nonce,
@@ -5150,7 +5122,7 @@ impl NetworkLayer {
     /// Execute contract call for a given transaction type and intent
     async fn execute_contract_call_for_transaction(
         &mut self,
-        intent: &crate::rpc_server::DepositIntent,
+        intent: &crate::types::DepositIntent,
         intent_hash: &str,
         transaction_type: crate::types::TransactionType,
         tx_hash: &str,
@@ -5185,7 +5157,7 @@ impl NetworkLayer {
 
                     match contract_transaction {
                         crate::chain::ChainTransaction::Ethereum(ref eth_tx) => {
-                            let contract_tx = crate::rpc_server::ContractTransaction {
+                            let contract_tx = crate::types::ContractTransaction {
                                 to: eth_tx.to.clone(),
                                 value: eth_tx.value.clone(),
                                 nonce: eth_tx.nonce,

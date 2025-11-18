@@ -20,6 +20,8 @@ pub use secp::{SerializablePoint, SerializableScalar};
 pub mod dkg;
 pub mod p2p;
 pub mod rpc;
+pub mod rpc_server;
+pub use rpc_server::*;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PeerInfo {
@@ -38,7 +40,7 @@ pub enum ChannelMessage {
         data: Vec<u8>,
     },
     DepositIntent {
-        intent: crate::rpc_server::DepositIntent,
+        intent: DepositIntent,
         intent_id: String,
         user_eth_address: Option<String>, // If provided, use user's tweaked share; otherwise use network's DKG share
         transaction_type: TransactionType,
@@ -47,7 +49,7 @@ pub enum ChannelMessage {
     IntentHash {
         intent_hash: Vec<u8>,
         signer: String,
-        intent: crate::rpc_server::DepositIntent,
+        intent: DepositIntent,
     },
     ClaimReward {
         solver_address: String,
@@ -101,7 +103,7 @@ pub enum GossipsubMessage {
         index: Option<usize>,
     },
     DepositIntent {
-        intent: crate::rpc_server::DepositIntent,
+        intent: DepositIntent,
         intent_id: String,
         user_eth_address: Option<String>, // If provided, use user's tweaked share; otherwise use network's DKG share
         transaction_type: TransactionType,
@@ -110,7 +112,7 @@ pub enum GossipsubMessage {
     IntentHash {
         intent_hash: String,
         signer: String,
-        intent: crate::rpc_server::DepositIntent,
+        intent: DepositIntent,
     },
     ClaimReward {
         solver_address: String,

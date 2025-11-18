@@ -1,7 +1,6 @@
 use anyhow::Result;
 use k256::ProjectivePoint;
-use crate::rpc_server::DepositIntent;
-use crate::types::TransactionType;
+use crate::types::{ContractTransaction, DepositIntent, TransactionType};
 use crate::signing::SigningNode;
 use crate::node_management::NodeMembership;
 use crate::adkg_secp256k1::DKGNode;
@@ -42,7 +41,7 @@ pub async fn execute_contract_call_for_transaction(
                                     
             match contract_transaction {
                 crate::chain::ChainTransaction::Ethereum(ref eth_tx) => {
-                    let contract_tx = crate::rpc_server::ContractTransaction {
+                    let contract_tx = ContractTransaction {
                         to: eth_tx.to.clone(),
                         value: eth_tx.value.clone(),
                         nonce: eth_tx.nonce,

@@ -1,5 +1,5 @@
 use crate::chain::EthereumTransaction;
-use crate::rpc_server::DummyTransaction;
+use crate::types::{ContractTransaction, DepositIntent, DummyTransaction};
 use crate::utils::transaction::SpendKind;
 use anyhow::anyhow;
 use anyhow::Result;
@@ -39,9 +39,7 @@ use crate::vrf::{VrfSelectedNodesBroadcast, VrfService};
 // Import BitcoinTransaction directly from chain module
 use crate::chain::{BitcoinInput, BitcoinTransaction};
 use crate::contract::{ContractClient, SolverManagerContract};
-use crate::database::RewardStorage;
 use crate::user_intent_manager::{TransactionStatus, UserIntentManager};
-use crate::utils::transaction::DetectedAddressType;
 use anyhow::bail;
 use ethereum_types::U256 as EthereumU256;
 use ethers::types::U256;
@@ -302,7 +300,6 @@ impl SigningNode {
     }
 
     pub fn set_private_key_from_scalar(&mut self, scalar: Scalar) {
-        let scalar_bytes = scalar.to_bytes();
         let secret_key = Self::derive_secp_secret(&scalar);
 
         info!("🔐 [SIGNING] Node {} private key set from scalar", self.id);
@@ -1134,7 +1131,7 @@ impl SigningNode {
                 };
 
                 // Determine which address to use for nonce fetching based on transaction type
-                let (nonce_address, dynamic_nonce) = match transaction_type {
+                let nonce_address = match transaction_type {
                     Some(crate::types::TransactionType::UserToVault) => {
                         // This is a user transaction - fetch nonce from user's derived address
                         if let Some(user_addr) = &user_eth_address {
@@ -1147,7 +1144,7 @@ impl SigningNode {
                                             Self::fetch_ethereum_nonce(derived_eth_addr, chain_id)
                                                 .await?;
                                         info!("🔢 [SIGNING] UserToVault transaction: fetching nonce {} from user's derived address {}", nonce, derived_eth_addr);
-                                        (derived_eth_addr.clone(), nonce)
+                                        derived_eth_addr.clone()
                                     } else {
                                         return Err(anyhow::anyhow!(
                                             "User {} has no derived Ethereum address",
@@ -1183,7 +1180,7 @@ impl SigningNode {
 
                         let nonce = Self::fetch_ethereum_nonce(&group_address, chain_id).await?;
                         info!("🔢 [SIGNING] NetworkToTarget transaction: fetching nonce {} from network group address {}", nonce, group_address);
-                        (group_address, nonce)
+                        group_address
                     }
                     Some(crate::types::TransactionType::VaultToNetwork) => {
                         // This is a vault transaction - fetch nonce from the actual vault address stored in database
@@ -1200,7 +1197,7 @@ impl SigningNode {
                             let nonce =
                                 Self::fetch_ethereum_nonce(&vault_eth_address, chain_id).await?;
                             info!("🔢 [SIGNING] VaultToNetwork transaction: fetching nonce {} from vault address {}", nonce, vault_eth_address);
-                            (vault_eth_address, nonce)
+                            vault_eth_address
                         } else {
                             return Err(anyhow::anyhow!(
                                 "User registry not available for vault transaction"
@@ -1220,7 +1217,7 @@ impl SigningNode {
                                             Self::fetch_ethereum_nonce(derived_eth_addr, chain_id)
                                                 .await?;
                                         info!("🔢 [SIGNING] User transaction (fallback): fetching nonce {} from user's derived address {}", nonce, derived_eth_addr);
-                                        (derived_eth_addr.clone(), nonce)
+                                        derived_eth_addr.clone()
                                     } else {
                                         return Err(anyhow::anyhow!(
                                             "User {} has no derived Ethereum address",
@@ -1251,7 +1248,7 @@ impl SigningNode {
                             let nonce =
                                 Self::fetch_ethereum_nonce(&group_address, chain_id).await?;
                             info!("🔢 [SIGNING] Network/Vault transaction (fallback): fetching nonce {} from group address {}", nonce, group_address);
-                            (group_address, nonce)
+                            group_address
                         }
                     }
                 };
@@ -1269,7 +1266,7 @@ impl SigningNode {
 
                 // Create signed transaction using the utility function with dynamic nonce
                 let signed_tx = crate::utils::transaction::create_signed_transaction(
-                    &crate::rpc_server::DummyTransaction {
+                    &DummyTransaction {
                         to: original_tx.to.clone(),
                         value: original_tx.value.clone(),
                         nonce: original_tx.nonce,
@@ -2120,7 +2117,7 @@ impl SigningNode {
     pub async fn sign_contract_message(
         &mut self,
         _message: Vec<u8>,
-        transaction: &crate::rpc_server::ContractTransaction,
+    transaction: &ContractTransaction,
         user_tweaked_share: Option<k256::Scalar>,
         user_eth_address: Option<String>,
     ) -> Result<()> {
@@ -2230,7 +2227,7 @@ impl SigningNode {
         let msg = Message::from_digest_slice(&tx_hash)?;
         let signature = self.create_ecdsa_signature_with_key_contract(
             &msg,
-            &crate::rpc_server::ContractTransaction {
+            &ContractTransaction {
                 to: transaction.to.clone(),
                 value: transaction.value.clone(),
                 nonce: transaction.nonce,
@@ -2386,7 +2383,7 @@ impl SigningNode {
     pub fn create_ecdsa_signature_with_key_contract(
         &self,
         message: &Message,
-        _transaction: &crate::rpc_server::ContractTransaction,
+        _transaction: &ContractTransaction,
         signing_key: &SecretKey,
     ) -> Result<RecoverableSignature> {
         // 1) Use provided signing key and context
@@ -2472,11 +2469,11 @@ impl SigningNode {
                 //     .await?;
             }
             SigningMessage::ECDSASignature {
-                from,
-                signature,
-                round,
+                from: _from,
+                signature: _signature,
+                round: _round,
                 timestamp: _timestamp,
-                user_eth_address,
+                user_eth_address: _user_eth_address,
             } => {}
             SigningMessage::BtcSignaturesMessage {
                 from,
@@ -3180,7 +3177,7 @@ impl SigningNode {
                     }
                 }
             }
-            (None, Some(user_intent_manager)) => {
+            (None, Some(_user_intent_manager)) => {
                 // This is a reward transaction - handle solver address case
                 if let Some(solver_addr) = retrieved_solver_address.as_ref() {
                     let transaction_type_str = match txn_network {
@@ -3262,7 +3259,7 @@ impl SigningNode {
     async fn broadcast_refund_initiation(
         &self,
         intent_hash: &str,
-        intent: &crate::rpc_server::DepositIntent,
+        intent: &DepositIntent,
     ) -> Result<()> {
         use crate::types::ChannelMessage;
 
@@ -4798,7 +4795,7 @@ impl SigningNode {
         use anyhow::{anyhow, bail};
         use secp256k1::{
             ecdsa::{RecoverableSignature, RecoveryId},
-            Message, PublicKey, Secp256k1,
+            Message, Secp256k1,
         };
         use std::collections::{HashMap, HashSet};
 
@@ -5084,7 +5081,7 @@ impl SigningNode {
         }
 
         // Get intent hash and user_eth_address for proper error/success handling
-        let (intent_hash, user_eth_address) = {
+        let (_intent_hash, _user_eth_address) = {
             let pt = self.pending_transactions_btc.read().await;
             if let Some((_chain_tx, _raw, intent_hash, _tx_type_opt, _extras)) = pt.get(&round) {
                 // Get user_eth_address from the first signature we have
@@ -5356,12 +5353,11 @@ impl SigningNode {
         };
 
         // Initialize contract client
-        let client = crate::contract::ContractClient::new(config.clone())
+        let client = ContractClient::new(config.clone())
             .map_err(|e| anyhow::anyhow!("Failed to create contract client: {}", e))?;
 
-        let solver_contract =
-            crate::contract::SolverManagerContract::new(&config, client.provider())
-                .map_err(|e| anyhow::anyhow!("Failed to create solver contract: {}", e))?;
+        let solver_contract = SolverManagerContract::new(&config, client.provider())
+            .map_err(|e| anyhow::anyhow!("Failed to create solver contract: {}", e))?;
 
         // Get all active solvers
         let active_solvers = solver_contract
@@ -5657,7 +5653,7 @@ impl SigningNode {
             if let Some(rmap) = map.get(&round) {
                 let mut all_sigs = Vec::new();
                 for (input_idx, imap) in rmap {
-                    for (peer_id, ecsig) in imap {
+                    for (_peer_id, ecsig) in imap {
                         all_sigs.push(BtcIndexedSignature {
                             input_index: *input_idx,
                             signature: ecsig.clone(),
