@@ -2,6 +2,7 @@
 
 import axios from 'axios';
 import { Wallet } from 'ethers';
+import { randomUUID } from 'crypto';
 
 // =========================
 // Configuration
@@ -28,6 +29,20 @@ const colors = {
 const oooo = 4752457687635
 function log(message, color = 'reset') {
   console.log(`${colors[color]}${message}${colors.reset}`);
+}
+
+const DEFAULT_IDEMPOTENCY_PREFIX = 'mpc-deposit';
+
+function buildIdempotencyHeaders(explicitKey) {
+  const envKey = process.env.IDEMPOTENCY_KEY;
+  const idempotencyKey = explicitKey || envKey || `${DEFAULT_IDEMPOTENCY_PREFIX}-${randomUUID()}`;
+  return {
+    key: idempotencyKey,
+    headers: {
+      'Content-Type': 'application/json',
+      'Idempotency-Key': idempotencyKey,
+    },
+  };
 }
 
 // =========================
@@ -133,11 +148,13 @@ async function testDKGStatus() {
 // - error: Transaction failed with actual blockchain error message
 // - timeout: Transaction processing timed out
 // Update testUserMpcDeposit to fetch user info
-async function testUserMpcDeposit({ wallet, amount }) {
+async function testUserMpcDeposit({ wallet, amount, idempotencyKey }) {
   try {
     const signerAddr = await wallet.getAddress();
     log(`\n🔐 Testing user_mpc_deposit WITHOUT tx_id for signer: ${signerAddr}`, 'blue');
     log(`💰 Amount: ${amount}`, 'cyan');
+    const { key: activeIdempotencyKey, headers } = buildIdempotencyHeaders(idempotencyKey);
+    log(`🆔 Using Idempotency-Key: ${activeIdempotencyKey}`, 'cyan');
 
     // Fetch user info to get the canonical Ethereum address
     const userInfo = await testGetUserInfo(signerAddr);
@@ -169,7 +186,7 @@ async function testUserMpcDeposit({ wallet, amount }) {
       `${RPC_BASE_URL}/user_mpc_deposit`,
       { signature, msg: depositIntent },
       { 
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         timeout: 60000 // 15 seconds timeout to match server processing time
       }
     );
@@ -294,6 +311,9 @@ async function testSimpleDeposit() {
     log(`📊 Deposit Intent:`, 'cyan');
     console.log(JSON.stringify(depositIntent, null, 2));
 
+    const { key: activeIdempotencyKey, headers } = buildIdempotencyHeaders();
+    log(`🆔 Using Idempotency-Key: ${activeIdempotencyKey}`, 'cyan');
+
     const response = await axios.post(
       `${RPC_BASE_URL}/user_mpc_deposit`, // Use existing endpoint
       { 
@@ -301,7 +321,7 @@ async function testSimpleDeposit() {
         msg: depositIntent, // Send as msg field like the signed version
       },
       { 
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         timeout: 60000 // 60 seconds timeout
       }
     );
@@ -399,13 +419,15 @@ async function testSimpleDeposit() {
 // =========================
 // New: user_mpc_deposit test WITH tx_id (should pass None to handle_deposit_intent)
 // =========================
-async function testUserMpcDepositWithTxId({ wallet, amount, txId, status }) {
+async function testUserMpcDepositWithTxId({ wallet, amount, txId, status, idempotencyKey }) {
   try {
     const signerAddr = await wallet.getAddress();
     log(`\n🔐 Testing user_mpc_deposit WITH tx_id for signer: ${signerAddr}`, 'blue');
     log(`💰 Amount: ${amount}`, 'cyan');
     log(`📊 Transaction ID: ${txId}`, 'cyan');
     log(`📊 Status: ${status}`, 'cyan');
+    const { key: activeIdempotencyKey, headers } = buildIdempotencyHeaders(idempotencyKey);
+    log(`🆔 Using Idempotency-Key: ${activeIdempotencyKey}`, 'cyan');
 
     // Fetch user info to get the canonical Ethereum address
     const userInfo = await testGetUserInfo(signerAddr);
@@ -442,7 +464,7 @@ async function testUserMpcDepositWithTxId({ wallet, amount, txId, status }) {
         status: status  // Include status
       },
       { 
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         timeout: 60000 // 15 seconds timeout to match server processing time
       }
     );

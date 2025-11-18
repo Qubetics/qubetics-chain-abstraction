@@ -2,6 +2,7 @@
 
 import axios from 'axios';
 import { Wallet } from 'ethers';
+import { randomUUID } from 'crypto';
 
 // =========================
 // Configuration
@@ -28,6 +29,20 @@ function log(message, color = 'reset') {
   console.log(`${colors[color]}${message}${colors.reset}`);
 }
 
+const DEFAULT_IDEMPOTENCY_PREFIX = 'mpc-deposit';
+
+function buildIdempotencyHeaders(explicitKey) {
+  const envKey = process.env.IDEMPOTENCY_KEY;
+  const idempotencyKey = explicitKey || envKey || `${DEFAULT_IDEMPOTENCY_PREFIX}-${randomUUID()}`;
+  return {
+    key: idempotencyKey,
+    headers: {
+      'Content-Type': 'application/json',
+      'Idempotency-Key': idempotencyKey,
+    },
+  };
+}
+
 // =========================
 // HTTP helpers
 // =========================
@@ -46,6 +61,8 @@ async function getUserInfo(ethereumAddress) {
 async function vaultToNetworkTransfer({ wallet, amount }) {
   const signerAddr = await wallet.getAddress();
   log(`🔐 VaultToNetwork - Amount: ${amount}`, 'blue');
+  const { key: activeIdempotencyKey, headers } = buildIdempotencyHeaders();
+  log(`🆔 Using Idempotency-Key: ${activeIdempotencyKey}`, 'cyan');
 
   const userInfo = await getUserInfo(signerAddr);
   console.log(`UserInfo: ${JSON.stringify(userInfo, null, 2)}`);
@@ -67,7 +84,7 @@ async function vaultToNetworkTransfer({ wallet, amount }) {
     `${RPC_BASE_URL}/user_mpc_deposit`,
     { signature, msg: depositIntent },
     { 
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       timeout: 25000
     }
   );

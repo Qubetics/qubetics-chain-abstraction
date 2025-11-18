@@ -19,10 +19,13 @@ use super::handlers::{
     handle_get_status, handle_get_uptime, handle_get_user_info, handle_heartbeat,
     handle_register_user, handle_start_dkg, handle_user_mpc_deposit, RequestContext,
 };
-use crate::types::{GetRewardSolverRequest, UserMpcDepositRequest, UserMpcDepositVerifyResponse};
+use crate::types::{
+    ClaimRewardRequest, GetRewardSolverRequest, UserMpcDepositRequest,
+    UserMpcDepositVerifyResponse, UserRegistrationRequest,
+};
 
 const MAX_REQUEST_BODY_BYTES: u64 = 256 * 1024; // 256 KiB
-const REQUEST_TIMEOUT_SECONDS: u64 = 30;
+const REQUEST_TIMEOUT_SECONDS: u64 = 90;
 
 pub async fn start_http_server(
     message_tx: mpsc::Sender<ChannelMessage>,
@@ -43,7 +46,7 @@ pub async fn start_http_server(
     let reward_storage = Arc::new(reward_storage);
     let start_time = Arc::new(start_time);
 
-    let json_body_user_registration = limited_json_body();
+    let json_body_user_registration = limited_json_body::<UserRegistrationRequest>();
     let register_user = warp::path("register_user")
         .and(warp::post())
         .and(json_body_user_registration)
@@ -102,7 +105,7 @@ pub async fn start_http_server(
 
     let claim_reward = warp::path("claim_reward")
         .and(warp::post())
-        .and(limited_json_body())
+        .and(limited_json_body::<ClaimRewardRequest>())
         .and(with_user_intent_manager(user_intent_manager.clone()))
         .and(with_reward_storage(reward_storage.clone()))
         .and(with_message_tx(message_tx.clone()))
@@ -205,8 +208,8 @@ where
     T: DeserializeOwned + Send,
 {
     warp::body::content_length_limit(MAX_REQUEST_BODY_BYTES)
-        .and(warp::body::json())
-        .map(|((), body): ((), T)| body)
+        .and(warp::body::json::<T>())
+        .map(|body: T| body)
 }
 
 fn with_message_tx(
