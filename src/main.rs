@@ -84,7 +84,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
     info!("Initial node count: {}, threshold: {}", total, threshold);
 
     // Initialize database
-    let db_config = DatabaseConfig {
+    // Load config from environment, falling back to defaults
+    let mut db_config = DatabaseConfig::from_env()
+        .unwrap_or_else(|e| {
+            warn!("Failed to load database config from env: {}. Using defaults.", e);
+            DatabaseConfig::default()
+                .validate()
+                .expect("default config should always be valid")
+        });
+
+    // Override path with peer-specific directory
+    db_config = DatabaseConfig {
         path: format!(
             "./data/rocksdb-{}",
             local_peer_id
@@ -93,9 +103,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 .take(8)
                 .collect::<String>()
         ),
-        create_if_missing: true,
-        max_open_files: 1000,
-    };
+        create_if_missing: db_config.create_if_missing,
+        max_open_files: db_config.max_open_files,
+    }
+    .validate()
+    .map_err(|e| anyhow::anyhow!("Invalid database configuration: {}", e))?;
+
     let database_module = DatabaseModule::initialize(db_config)?;
     let database: Arc<Database> = Arc::new(database_module.database());
     info!("🗄️ [MAIN] Database initialized successfully");
