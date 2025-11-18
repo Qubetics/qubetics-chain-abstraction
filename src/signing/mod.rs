@@ -2117,7 +2117,7 @@ impl SigningNode {
     pub async fn sign_contract_message(
         &mut self,
         _message: Vec<u8>,
-    transaction: &ContractTransaction,
+        transaction: &ContractTransaction,
         user_tweaked_share: Option<k256::Scalar>,
         user_eth_address: Option<String>,
     ) -> Result<()> {

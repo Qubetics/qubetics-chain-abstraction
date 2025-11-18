@@ -25,7 +25,10 @@ impl std::fmt::Display for ConfigError {
         match self {
             ConfigError::EmptyPath => write!(f, "database path must not be empty"),
             ConfigError::MaxOpenFilesOutOfRange { provided } => {
-                write!(f, "max_open_files must be a positive integer (got {provided})")
+                write!(
+                    f,
+                    "max_open_files must be a positive integer (got {provided})"
+                )
             }
             ConfigError::ParseEnv { var, reason } => {
                 write!(f, "failed to parse env var {var}: {reason}")
@@ -56,21 +59,23 @@ impl DatabaseConfig {
         }
 
         if let Ok(create_if_missing) = env::var("DATABASE_CREATE_IF_MISSING") {
-            config.create_if_missing = create_if_missing
-                .parse::<bool>()
-                .map_err(|e| ConfigError::ParseEnv {
-                    var: "DATABASE_CREATE_IF_MISSING".to_string(),
-                    reason: e.to_string(),
-                })?;
+            config.create_if_missing =
+                create_if_missing
+                    .parse::<bool>()
+                    .map_err(|e| ConfigError::ParseEnv {
+                        var: "DATABASE_CREATE_IF_MISSING".to_string(),
+                        reason: e.to_string(),
+                    })?;
         }
 
         if let Ok(max_open_files) = env::var("DATABASE_MAX_OPEN_FILES") {
-            config.max_open_files = max_open_files
-                .parse::<i32>()
-                .map_err(|e| ConfigError::ParseEnv {
-                    var: "DATABASE_MAX_OPEN_FILES".to_string(),
-                    reason: e.to_string(),
-                })?;
+            config.max_open_files =
+                max_open_files
+                    .parse::<i32>()
+                    .map_err(|e| ConfigError::ParseEnv {
+                        var: "DATABASE_MAX_OPEN_FILES".to_string(),
+                        reason: e.to_string(),
+                    })?;
         }
 
         config.validate()
@@ -135,7 +140,10 @@ mod tests {
         };
 
         let err = config.validate().expect_err("expected validation to fail");
-        assert!(matches!(err, ConfigError::MaxOpenFilesOutOfRange { provided: 0 }));
+        assert!(matches!(
+            err,
+            ConfigError::MaxOpenFilesOutOfRange { provided: 0 }
+        ));
     }
 
     #[test]

@@ -200,4 +200,3 @@ pub struct EnhancedUserRegistrationResponse {
     pub derived_btc_address: Option<String>,
     pub error: Option<ErrorResponse>,
 }
-

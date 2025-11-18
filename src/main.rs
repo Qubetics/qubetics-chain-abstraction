@@ -85,13 +85,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // Initialize database
     // Load config from environment, falling back to defaults
-    let mut db_config = DatabaseConfig::from_env()
-        .unwrap_or_else(|e| {
-            warn!("Failed to load database config from env: {}. Using defaults.", e);
-            DatabaseConfig::default()
-                .validate()
-                .expect("default config should always be valid")
-        });
+    let mut db_config = DatabaseConfig::from_env().unwrap_or_else(|e| {
+        warn!(
+            "Failed to load database config from env: {}. Using defaults.",
+            e
+        );
+        DatabaseConfig::default()
+            .validate()
+            .expect("default config should always be valid")
+    });
 
     // Override path with peer-specific directory
     db_config = DatabaseConfig {

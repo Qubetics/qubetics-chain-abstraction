@@ -28,6 +28,7 @@ use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 
 use crate::adkg_secp256k1::DKGNode;
+use crate::commands::CommandProcessor;
 use crate::consensus::ConsensusNode;
 use crate::database::{key_utils, keys, Database};
 use crate::node_management::NodeMembership;
@@ -45,7 +46,6 @@ use crate::{
         ChannelMessage, GossipsubMessage, PeerInfo,
     },
 };
-use crate::commands::CommandProcessor;
 
 #[derive(NetworkBehaviour)]
 #[behaviour(out_event = "NetworkEvent")]
