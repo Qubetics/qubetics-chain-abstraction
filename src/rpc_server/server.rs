@@ -6,7 +6,7 @@ use tokio::{
     time::Duration,
 };
 use tracing::{error, info};
-use warp::Filter;
+use warp::{Filter, Reply};
 
 use crate::{
     database::{DkgStorage, RewardStorage},
@@ -60,20 +60,20 @@ pub async fn start_http_server(
         .and(with_message_tx(message_tx.clone()))
         .and(with_dkg_storage(dkg_storage.clone()))
         .and(with_request_context())
-        .and_then(|req, uim, tx, dkg, ctx| async move {
+        .and_then(|req, uim, tx, dkg, ctx: RequestContext| async move {
             match tokio::time::timeout(
                 Duration::from_secs(REQUEST_TIMEOUT_SECONDS),
                 handle_user_mpc_deposit(req, uim, tx, dkg, ctx.clone()),
             )
             .await
             {
-                Ok(res) => res,
+                Ok(res) => res.map(|reply| reply.into_response()),
                 Err(_) => {
                     error!(
                         request_id = %ctx.request_id,
                         "❌ user_mpc_deposit handler timed out"
                     );
-                    Ok(warp::reply::with_status(
+                    let timeout_reply = warp::reply::with_status(
                         warp::reply::json(&UserMpcDepositVerifyResponse {
                             status: "timeout".to_string(),
                             signer_address: "".to_string(),
@@ -88,7 +88,8 @@ pub async fn start_http_server(
                             ),
                         }),
                         warp::http::StatusCode::REQUEST_TIMEOUT,
-                    ))
+                    );
+                    Ok(timeout_reply.into_response())
                 }
             }
         });
@@ -205,49 +206,44 @@ where
 {
     warp::body::content_length_limit(MAX_REQUEST_BODY_BYTES)
         .and(warp::body::json())
-        .map(|(), body| body)
+        .map(|((), body): ((), T)| body)
 }
 
 fn with_message_tx(
     message_tx: Arc<Mutex<mpsc::Sender<ChannelMessage>>>,
-) -> impl Filter<
-    Extract = (Arc<Mutex<mpsc::Sender<ChannelMessage>>>,),
-    Error = std::convert::Infallible,
-> + Clone {
+) -> impl Filter<Extract = (Arc<Mutex<mpsc::Sender<ChannelMessage>>>,), Error = Infallible> + Clone {
     warp::any().map(move || message_tx.clone())
 }
 
 fn with_user_intent_manager(
     user_intent_manager: Arc<UserIntentManager>,
-) -> impl Filter<Extract = (Arc<UserIntentManager>,), Error = std::convert::Infallible> + Clone {
+) -> impl Filter<Extract = (Arc<UserIntentManager>,), Error = Infallible> + Clone {
     warp::any().map(move || user_intent_manager.clone())
 }
 
 fn with_dkg_storage(
     dkg_storage: Arc<DkgStorage>,
-) -> impl Filter<Extract = (Arc<DkgStorage>,), Error = std::convert::Infallible> + Clone {
+) -> impl Filter<Extract = (Arc<DkgStorage>,), Error = Infallible> + Clone {
     warp::any().map(move || dkg_storage.clone())
 }
 
 fn with_reward_storage(
     reward_storage: Arc<RewardStorage>,
-) -> impl Filter<Extract = (Arc<RewardStorage>,), Error = std::convert::Infallible> + Clone {
+) -> impl Filter<Extract = (Arc<RewardStorage>,), Error = Infallible> + Clone {
     warp::any().map(move || reward_storage.clone())
 }
 
-fn with_node_id(
-    node_id: String,
-) -> impl Filter<Extract = (String,), Error = std::convert::Infallible> + Clone {
+fn with_node_id(node_id: String) -> impl Filter<Extract = (String,), Error = Infallible> + Clone {
     warp::any().map(move || node_id.clone())
 }
 
 fn with_start_time(
     start_time: Arc<Instant>,
-) -> impl Filter<Extract = (Arc<Instant>,), Error = std::convert::Infallible> + Clone {
+) -> impl Filter<Extract = (Arc<Instant>,), Error = Infallible> + Clone {
     warp::any().map(move || start_time.clone())
 }
 
-fn with_request_context() -> impl Filter<Extract = (RequestContext,), Error = Infallible> + Clone {
+fn with_request_context() -> impl Filter<Extract = (RequestContext,), Error = warp::Rejection> + Clone {
     warp::header::optional("Idempotency-Key")
         .map(|idempotency_key: Option<String>| RequestContext::new(idempotency_key))
 }
