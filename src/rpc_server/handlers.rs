@@ -1,22 +1,21 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Instant};
 
 use hex;
 use serde_json;
 use sha3::{Digest, Keccak256};
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::{sleep, Duration};
-use tracing::{error, info, warn};
+use tracing::{error, info, info_span, warn};
 use uuid::Uuid;
 
 use crate::{
     database::{DkgStorage, RewardStorage},
     types::{
         rpc::RPCRequest, ChannelMessage, ClaimRewardRequest, ClaimRewardResponse,
-        DepositIntent, DepositIntentResponse, DKGStatusResponse,
-        EnhancedUserRegistrationResponse, GetRewardSolverRequest, GetRewardSolverResponse,
-        HeartbeatResponse, NodeIdResponse, NodeStatus, TransactionResponse, TransactionType,
-        UptimeResponse, UserInfoResponse, UserMpcDepositRequest, UserMpcDepositVerifyResponse,
-        UserRegistrationRequest,
+        DKGStatusResponse, DepositIntent, DepositIntentResponse, EnhancedUserRegistrationResponse,
+        GetRewardSolverRequest, GetRewardSolverResponse, HeartbeatResponse, NodeIdResponse,
+        NodeStatus, TransactionResponse, TransactionType, UptimeResponse, UserInfoResponse,
+        UserMpcDepositRequest, UserMpcDepositVerifyResponse, UserRegistrationRequest,
     },
     user_intent_manager::{checksum_from_any, UserIntentManager},
 };
@@ -28,6 +27,23 @@ use super::{
         normalize_eth_signature, recover_eth_address_secp, wait_for_transaction_result,
     },
 };
+
+#[derive(Debug, Clone)]
+pub struct RequestContext {
+    pub request_id: String,
+    pub idempotency_key: Option<String>,
+    pub started_at: Instant,
+}
+
+impl RequestContext {
+    pub fn new(idempotency_key: Option<String>) -> Self {
+        Self {
+            request_id: Uuid::new_v4().to_string(),
+            idempotency_key,
+            started_at: Instant::now(),
+        }
+    }
+}
 
 pub(crate) async fn handle_deposit_intent(
     intent: DepositIntent,
@@ -306,13 +322,86 @@ pub(crate) async fn handle_user_mpc_deposit(
     user_intent_manager: Arc<UserIntentManager>,
     message_tx: Arc<Mutex<mpsc::Sender<ChannelMessage>>>,
     dkg_storage: Arc<DkgStorage>,
+    request_context: RequestContext,
 ) -> Result<impl warp::Reply, warp::Rejection> {
-    info!("🧾 HTTP: user_mpc_deposit received");
-
-    let intent_json = serde_json::to_string(&req.msg).unwrap();
+    let intent_json = match serde_json::to_string(&req.msg) {
+        Ok(json) => json,
+        Err(e) => {
+            error!(
+                request_id = %request_context.request_id,
+                error = %e,
+                "❌ Failed to serialize deposit intent for hashing"
+            );
+            return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+                status: "error".to_string(),
+                signer_address: "".to_string(),
+                is_registered: false,
+                amount: req.msg.amount,
+                user_to_network_tx_id: None,
+                network_to_target_tx_id: None,
+                vault_to_network_tx_id: None,
+                final_solver_id: None,
+                error_message: Some("Invalid deposit intent payload".to_string()),
+            }));
+        }
+    };
     let intent_bytes = intent_json.as_bytes();
     let intent_hash = Keccak256::digest(intent_bytes);
     let intent_hash_hex = hex::encode(intent_hash);
+    let span = info_span!(
+        "user_mpc_deposit",
+        request_id = %request_context.request_id,
+        intent_hash = %intent_hash_hex
+    );
+    let _enter = span.enter();
+
+    info!("🧾 HTTP: user_mpc_deposit received");
+
+    if let Some(ref idempotency_key) = request_context.idempotency_key {
+        match user_intent_manager
+            .register_idempotency_key(idempotency_key, &intent_hash_hex)
+            .await
+        {
+            Ok(already_seen) => {
+                if already_seen {
+                    info!(
+                        request_id = %request_context.request_id,
+                        "♻️ Idempotent replay detected for deposit intent"
+                    );
+                } else {
+                    info!(
+                        request_id = %request_context.request_id,
+                        "🆔 Recorded new idempotency key for deposit intent"
+                    );
+                }
+            }
+            Err(e) => {
+                error!(
+                    request_id = %request_context.request_id,
+                    error = %e,
+                    "❌ Idempotency key reuse with different intent"
+                );
+                return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+                    status: "error".to_string(),
+                    signer_address: "".to_string(),
+                    is_registered: false,
+                    amount: req.msg.amount,
+                    user_to_network_tx_id: None,
+                    network_to_target_tx_id: None,
+                    vault_to_network_tx_id: None,
+                    final_solver_id: None,
+                    error_message: Some(
+                        "Idempotency key already used for another intent".to_string(),
+                    ),
+                }));
+            }
+        }
+    } else {
+        warn!(
+            request_id = %request_context.request_id,
+            "⚠️ No Idempotency-Key header provided for deposit request"
+        );
+    }
 
     let mut transaction_ids = Vec::new();
     let tx_mapping = user_intent_manager
@@ -594,7 +683,14 @@ pub(crate) async fn handle_user_mpc_deposit(
         );
     }
 
+    let duration_ms = request_context.started_at.elapsed().as_millis() as u64;
+
     if u2n_tx_id.is_some() || n2t_tx_id.is_some() || v2n_tx_id.is_some() {
+        info!(
+            request_id = %request_context.request_id,
+            duration_ms,
+            "✅ Deposit request finished with on-chain receipts"
+        );
         Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
             status: "success".to_string(),
             signer_address: user_registration.ethereum_address.clone(),
@@ -607,6 +703,11 @@ pub(crate) async fn handle_user_mpc_deposit(
             error_message: None,
         }))
     } else if let Some(error_msg) = chain_error {
+        warn!(
+            request_id = %request_context.request_id,
+            duration_ms,
+            "⚠️ Deposit processing returned chain error"
+        );
         Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
             status: "error".to_string(),
             signer_address: user_registration.ethereum_address.clone(),
@@ -619,6 +720,11 @@ pub(crate) async fn handle_user_mpc_deposit(
             error_message: Some(error_msg),
         }))
     } else {
+        warn!(
+            request_id = %request_context.request_id,
+            duration_ms,
+            "⚠️ Deposit processing timed out"
+        );
         Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
             status: "timeout".to_string(),
             signer_address: user_registration.ethereum_address.clone(),

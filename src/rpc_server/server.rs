@@ -1,7 +1,11 @@
-use std::{sync::Arc, time::Instant};
+use std::{convert::Infallible, sync::Arc, time::Instant};
 
-use tokio::sync::{mpsc, Mutex};
-use tracing::info;
+use serde::de::DeserializeOwned;
+use tokio::{
+    sync::{mpsc, Mutex},
+    time::Duration,
+};
+use tracing::{error, info};
 use warp::Filter;
 
 use crate::{
@@ -13,9 +17,12 @@ use crate::{
 use super::handlers::{
     handle_claim_reward, handle_get_dkg_status, handle_get_node_id, handle_get_reward_solver,
     handle_get_status, handle_get_uptime, handle_get_user_info, handle_heartbeat,
-    handle_register_user, handle_start_dkg, handle_user_mpc_deposit,
+    handle_register_user, handle_start_dkg, handle_user_mpc_deposit, RequestContext,
 };
-use crate::types::GetRewardSolverRequest;
+use crate::types::{GetRewardSolverRequest, UserMpcDepositRequest, UserMpcDepositVerifyResponse};
+
+const MAX_REQUEST_BODY_BYTES: u64 = 256 * 1024; // 256 KiB
+const REQUEST_TIMEOUT_SECONDS: u64 = 30;
 
 pub async fn start_http_server(
     message_tx: mpsc::Sender<ChannelMessage>,
@@ -36,9 +43,10 @@ pub async fn start_http_server(
     let reward_storage = Arc::new(reward_storage);
     let start_time = Arc::new(start_time);
 
+    let json_body_user_registration = limited_json_body();
     let register_user = warp::path("register_user")
         .and(warp::post())
-        .and(warp::body::json())
+        .and(json_body_user_registration)
         .and(with_user_intent_manager(user_intent_manager.clone()))
         .and(with_dkg_storage(dkg_storage.clone()))
         .and(with_message_tx(message_tx.clone()))
@@ -47,11 +55,43 @@ pub async fn start_http_server(
 
     let user_mpc_deposit = warp::path("user_mpc_deposit")
         .and(warp::post())
-        .and(warp::body::json())
+        .and(limited_json_body::<UserMpcDepositRequest>())
         .and(with_user_intent_manager(user_intent_manager.clone()))
         .and(with_message_tx(message_tx.clone()))
         .and(with_dkg_storage(dkg_storage.clone()))
-        .and_then(handle_user_mpc_deposit);
+        .and(with_request_context())
+        .and_then(|req, uim, tx, dkg, ctx| async move {
+            match tokio::time::timeout(
+                Duration::from_secs(REQUEST_TIMEOUT_SECONDS),
+                handle_user_mpc_deposit(req, uim, tx, dkg, ctx.clone()),
+            )
+            .await
+            {
+                Ok(res) => res,
+                Err(_) => {
+                    error!(
+                        request_id = %ctx.request_id,
+                        "❌ user_mpc_deposit handler timed out"
+                    );
+                    Ok(warp::reply::with_status(
+                        warp::reply::json(&UserMpcDepositVerifyResponse {
+                            status: "timeout".to_string(),
+                            signer_address: "".to_string(),
+                            is_registered: false,
+                            amount: 0,
+                            user_to_network_tx_id: None,
+                            network_to_target_tx_id: None,
+                            vault_to_network_tx_id: None,
+                            final_solver_id: None,
+                            error_message: Some(
+                                "Request timed out before processing could complete".to_string(),
+                            ),
+                        }),
+                        warp::http::StatusCode::REQUEST_TIMEOUT,
+                    ))
+                }
+            }
+        });
 
     let get_reward_solver = warp::path("get_reward_solver")
         .and(warp::get())
@@ -61,7 +101,7 @@ pub async fn start_http_server(
 
     let claim_reward = warp::path("claim_reward")
         .and(warp::post())
-        .and(warp::body::json())
+        .and(limited_json_body())
         .and(with_user_intent_manager(user_intent_manager.clone()))
         .and(with_reward_storage(reward_storage.clone()))
         .and(with_message_tx(message_tx.clone()))
@@ -159,6 +199,15 @@ pub async fn start_http_server(
     Ok(())
 }
 
+fn limited_json_body<T>() -> impl Filter<Extract = (T,), Error = warp::Rejection> + Clone
+where
+    T: DeserializeOwned + Send,
+{
+    warp::body::content_length_limit(MAX_REQUEST_BODY_BYTES)
+        .and(warp::body::json())
+        .map(|(), body| body)
+}
+
 fn with_message_tx(
     message_tx: Arc<Mutex<mpsc::Sender<ChannelMessage>>>,
 ) -> impl Filter<
@@ -196,4 +245,9 @@ fn with_start_time(
     start_time: Arc<Instant>,
 ) -> impl Filter<Extract = (Arc<Instant>,), Error = std::convert::Infallible> + Clone {
     warp::any().map(move || start_time.clone())
+}
+
+fn with_request_context() -> impl Filter<Extract = (RequestContext,), Error = Infallible> + Clone {
+    warp::header::optional("Idempotency-Key")
+        .map(|idempotency_key: Option<String>| RequestContext::new(idempotency_key))
 }
