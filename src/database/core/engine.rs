@@ -5,7 +5,7 @@ use rocksdb::{Options, DB};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info};
 
-use super::config::DatabaseConfig;
+use super::config::{ConfigError, DatabaseConfig};
 
 /// Main database wrapper around RocksDB
 #[derive(Clone)]
@@ -16,6 +16,13 @@ pub struct Database {
 impl Database {
     /// Create a new database instance
     pub fn new(config: DatabaseConfig) -> Result<Self> {
+        let config = config
+            .validate()
+            .map_err(|e: ConfigError| anyhow!("Invalid database configuration: {e}"))?;
+
+        std::fs::create_dir_all(&config.path)
+            .map_err(|e| anyhow!("Failed to prepare database path {}: {e}", config.path))?;
+
         let mut opts = Options::default();
         opts.create_if_missing(config.create_if_missing);
         opts.set_max_open_files(config.max_open_files);
