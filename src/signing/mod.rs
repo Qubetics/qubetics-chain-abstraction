@@ -3573,30 +3573,10 @@ impl SigningNode {
                         let result = user_intent_manager
                             .store_user_to_vault_tx_id(intent_hash, tx_id, None)
                             .await;
-                        match &result {
-                            Ok(()) => {
-                                info!("💾 [SIGNING] Stored user-to-network transaction ID {} for intent {} (round {})", tx_id, intent_hash, round);
-
-                                // Update solver amounts and calculate rewards for user_to_vault transactions
-                                if let Err(e) = self
-                                    .update_solver_amounts_for_user_to_vault(intent_hash)
-                                    .await
-                                {
-                                    warn!("⚠️ [SIGNING] Failed to update solver amounts for UserToVault transaction: {}", e);
-                                } else {
-                                    // Calculate rewards after successfully updating solver amounts
-                                    if let Err(e) =
-                                        self.calculate_reward_per_solver(intent_hash).await
-                                    {
-                                        warn!("⚠️ [SIGNING] Failed to calculate rewards for UserToVault transaction: {}", e);
-                                    } else {
-                                        info!("✅ [SIGNING] Successfully calculated rewards for UserToVault transaction: {}", intent_hash);
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                error!("❌ [SIGNING] Failed to store user-to-network transaction ID for intent {}: {}", intent_hash, e);
-                            }
+                        if let Err(e) = &result {
+                            error!("❌ [SIGNING] Failed to store user-to-network transaction ID for intent {}: {}", intent_hash, e);
+                        } else {
+                            info!("💾 [SIGNING] Stored user-to-network transaction ID {} for intent {} (round {})", tx_id, intent_hash, round);
                         }
                         ("user_to_vault", result)
                     }
@@ -3851,16 +3831,6 @@ impl SigningNode {
                 solver_address: solver_address.map(|s| s.to_string()),
                 node_id: self.id.clone(),
             };
-
-        // Call update_solver_amounts_for_user_to_vault only for user_to_vault transaction type
-        // This only applies to regular transactions with intent_hash
-        if transaction_type == "user_to_vault" {
-            if let Some(hash) = intent_hash {
-                if let Err(e) = self.update_solver_amounts_for_user_to_vault(hash).await {
-                    warn!("⚠️ [SIGNING] Failed to update solver amounts for UserToVault transaction: {}", e);
-                }
-            }
-        }
 
         if let Err(e) = self
             .message_tx
