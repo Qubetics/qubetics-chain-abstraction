@@ -1,4 +1,4 @@
-use crate::chain::ChainTransaction;
+use crate::chain_abstraction::ChainTransaction;
 use crate::database::{key_utils, Database};
 use crate::types::ECDSASignature;
 use anyhow::Result;

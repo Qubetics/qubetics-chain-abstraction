@@ -1,30 +1,12 @@
 use anyhow::Result;
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use crate::types::{ContractTransaction, DummyTransaction};
 
-use super::{ChainHandler, ChainSignature, ChainTransaction};
-
-/// Ethereum transaction structure
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EthereumTransaction {
-    pub to: String,
-    pub value: String,
-    pub gas_limit: u64,
-    pub gas_price: String,
-    pub nonce: u64,
-    pub data: Option<Vec<u8>>,
-    pub chain_id: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EthereumSignature {
-    pub v: u64,
-    pub r: Vec<u8>,
-    pub s: Vec<u8>,
-    pub recovery_id: u8,
-}
+use super::ChainHandler;
+use crate::chain_abstraction::transactions::{
+    ChainSignature, ChainTransaction, EthereumSignature, EthereumTransaction,
+};
 
 /// Ethereum chain handler implementation
 pub struct EthereumChainHandler {

@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use libp2p::PeerId;
 use secp256k1::{self, PublicKey, Secp256k1, SecretKey};
 use std::collections::HashMap;
@@ -8,12 +8,11 @@ use tokio::sync::{mpsc, RwLock};
 use tracing::info;
 
 use super::ECDSASignature;
-use crate::chain::{ChainHandler, ChainHandlerFactory, ChainTransaction};
+use crate::chain_abstraction::{ChainHandler, ChainHandlerFactory, ChainTransaction};
 use crate::consensus::ConsensusNode;
-use crate::contract::{ContractClient, ContractConfig, SolverManagerContract};
-use crate::database::{key_utils, ConsensusStorage, Database, SigningStorage};
+use crate::database::{ConsensusStorage, Database, SigningStorage};
 use crate::types::ChannelMessage;
-use crate::vrf::VrfService;
+use crate::vrf_selection::VrfService;
 
 /// Database-backed signing node that stores state in RocksDB
 #[derive(Clone)]

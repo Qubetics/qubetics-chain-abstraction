@@ -1,9 +1,12 @@
 use anyhow::Result;
 use std::collections::HashMap;
 
-use crate::types::{BitcoinSignature, BitcoinTransaction, ContractTransaction, DummyTransaction};
+use crate::types::{ContractTransaction, DummyTransaction};
 
-use super::{ChainHandler, ChainSignature, ChainTransaction};
+use super::ChainHandler;
+use crate::chain_abstraction::transactions::{
+    BitcoinSignature, BitcoinTransaction, ChainSignature, ChainTransaction,
+};
 
 /// Encode a variable length integer for Bitcoin transaction serialization
 fn encode_varint(value: u64) -> Vec<u8> {

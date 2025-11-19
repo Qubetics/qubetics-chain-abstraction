@@ -243,7 +243,7 @@ impl NetworkLayer {
                             crate::utils::transaction::get_chain_id_from_name(chain_to_use)
                         {
                             let chain_handler =
-                                crate::chain::ChainHandlerFactory::create_ethereum_handler(
+                                crate::chain_abstraction::ChainHandlerFactory::create_ethereum_handler(
                                     chain_id,
                                 );
                             signing_node.set_chain_handler(chain_handler.into());
@@ -254,7 +254,7 @@ impl NetworkLayer {
                         }
                     } else if chain_to_use == "bitcoin" || chain_to_use == "btc" {
                         let mut chain_handler =
-                            crate::chain::ChainHandlerFactory::create_bitcoin_handler(
+                            crate::chain_abstraction::ChainHandlerFactory::create_bitcoin_handler(
                                 "testnet".to_string(),
                             );
 
@@ -274,7 +274,7 @@ impl NetworkLayer {
                                                 let compressed_bytes =
                                                     encoded_point.compress().to_bytes().to_vec();
 
-                                                if let Some(btc_handler) = chain_handler.as_any_mut().downcast_mut::<crate::chain::BitcoinChainHandler>() {
+                                                if let Some(btc_handler) = chain_handler.as_any_mut().downcast_mut::<crate::chain_abstraction::BitcoinChainHandler>() {
                                                     btc_handler.set_group_public_key(compressed_bytes);
                                                     info!("🔑 [LOCAL] Set user-specific group public key in Bitcoin chain handler for user: {}", eth_addr);
                                                 }
@@ -302,7 +302,7 @@ impl NetworkLayer {
 
                                         if let Some(btc_handler) = chain_handler
                                             .as_any_mut()
-                                            .downcast_mut::<crate::chain::BitcoinChainHandler>(
+                                            .downcast_mut::<crate::chain_abstraction::BitcoinChainHandler>(
                                         ) {
                                             btc_handler.set_group_public_key(compressed_bytes);
                                             info!("🔑 [LOCAL] Set network DKG group public key in Bitcoin chain handler");
@@ -323,7 +323,7 @@ impl NetworkLayer {
 
                                         if let Some(btc_handler) = chain_handler
                                             .as_any_mut()
-                                            .downcast_mut::<crate::chain::BitcoinChainHandler>(
+                                            .downcast_mut::<crate::chain_abstraction::BitcoinChainHandler>(
                                         ) {
                                             btc_handler.set_group_public_key(compressed_bytes);
                                             info!("🔑 [LOCAL] Set vault group public key in Bitcoin chain handler");
@@ -503,7 +503,7 @@ impl NetworkLayer {
 
                             // Handle Bitcoin and EVM differently - DummyTransaction is only for EVM!
                             match chain_transaction {
-                                crate::chain::ChainTransaction::Bitcoin(ref btc_tx) => {
+                                crate::chain_abstraction::ChainTransaction::Bitcoin(ref btc_tx) => {
                                     // For Bitcoin, use direct signing with tx_bytes and original transaction
                                     signing_node
                                         .sign_bitcoin_transaction(
@@ -517,7 +517,7 @@ impl NetworkLayer {
                                         )
                                         .await?;
                                 }
-                                crate::chain::ChainTransaction::Ethereum(ref eth_tx) => {
+                                crate::chain_abstraction::ChainTransaction::Ethereum(ref eth_tx) => {
                                     let tx_bytes =
                                         crate::utils::transaction::create_transaction_for_signing(
                                             &eth_tx,
@@ -597,7 +597,7 @@ impl NetworkLayer {
                                     //             signing_node.set_available_nodes(available_nodes);
 
                                     //             match contract_transaction {
-                                    //                 crate::chain::ChainTransaction::Ethereum(ref eth_tx) => {
+                                    //                 crate::chain_abstraction::ChainTransaction::Ethereum(ref eth_tx) => {
                                     //                     let contract_tx = crate::types::ContractTransaction {
                                     //                         to: eth_tx.to.clone(),
                                     //                         value: eth_tx.value.clone(),
@@ -646,7 +646,7 @@ impl NetworkLayer {
                                     //             signing_node.set_available_nodes(available_nodes);
 
                                     //             match contract_transaction {
-                                    //                 crate::chain::ChainTransaction::Ethereum(ref eth_tx) => {
+                                    //                 crate::chain_abstraction::ChainTransaction::Ethereum(ref eth_tx) => {
                                     //                     let contract_tx = crate::types::ContractTransaction {
                                     //                         to: eth_tx.to.clone(),
                                     //                         value: eth_tx.value.clone(),
@@ -1312,7 +1312,7 @@ impl NetworkLayer {
                                                     .into_iter()
                                                     .collect();
                                                 signing_node.set_available_nodes(available_nodes);
-                                                signing_node.set_chain_handler(crate::chain::ChainHandlerFactory::create_ethereum_handler(eth_tx.chain_id).into());
+                                                signing_node.set_chain_handler(crate::chain_abstraction::ChainHandlerFactory::create_ethereum_handler(eth_tx.chain_id).into());
 
                                                 if let Some(dkg_node) = &self.dkg_node {
                                                     if let Some(secret_share) =
@@ -1418,7 +1418,7 @@ impl NetworkLayer {
                                                     .into_iter()
                                                     .collect();
                                                 signing_node.set_available_nodes(available_nodes);
-                                                signing_node.set_chain_handler(crate::chain::ChainHandlerFactory::create_bitcoin_handler("testnet".to_string()).into());
+                                                signing_node.set_chain_handler(crate::chain_abstraction::ChainHandlerFactory::create_bitcoin_handler("testnet".to_string()).into());
 
                                                 if let Some(dkg_node) = &self.dkg_node {
                                                     if let Some(secret_share) =
@@ -1440,11 +1440,11 @@ impl NetworkLayer {
 
                                                         // Convert transaction to bytes for signing
                                                         let chain_tx =
-                                                            crate::chain::ChainTransaction::Bitcoin(
+                                                            crate::chain_abstraction::ChainTransaction::Bitcoin(
                                                                 btc_tx.clone(),
                                                             );
                                                         // set chain handler as btc
-                                                        signing_node.set_chain_handler(crate::chain::ChainHandlerFactory::create_bitcoin_handler("testnet".to_string()).into());
+                                                        signing_node.set_chain_handler(crate::chain_abstraction::ChainHandlerFactory::create_bitcoin_handler("testnet".to_string()).into());
                                                         let tx_bytes = signing_node
                                                             .get_chain_handler()
                                                             .create_transaction_bytes(&chain_tx)
