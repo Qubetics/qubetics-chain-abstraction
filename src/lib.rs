@@ -10,7 +10,7 @@ pub mod contract;
 pub mod database;
 pub mod intent_manager;
 pub mod network;
-pub mod node_management;
+pub mod node_selection;
 pub mod rpc_server;
 pub mod signing;
 pub mod types;
@@ -27,7 +27,7 @@ pub use database::{
 };
 pub use intent_manager::prepare_unsigned_eip1559_tx;
 pub use network::NetworkLayer;
-pub use node_management::{
+pub use node_selection::{
     BasicNodeManager, DefaultThresholdCalculator, NodeMembership, ThresholdCalculator,
     VrfNodeManager, VrfNodeManagerConfig,
 };

@@ -1,4 +1,5 @@
-use crate::node_management::{NodeMembership, ThresholdCalculator};
+use crate::node_selection::membership::NodeMembership;
+use crate::node_selection::threshold::ThresholdCalculator;
 use crate::types::p2p::SerializablePeerId;
 use crate::vrf::{NodeSelectionResult, VrfNodeSelector, VrfSelectionMessage};
 use anyhow::{anyhow, Result};
@@ -329,7 +330,7 @@ impl NodeMembership for VrfNodeManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::node_management::DefaultThresholdCalculator;
+    use crate::node_selection::threshold::DefaultThresholdCalculator;
     use libp2p::identity::Keypair;
 
     // Custom threshold calculator for testing
@@ -380,3 +381,4 @@ mod tests {
         assert!(!manager.is_self_selected_for_mpc());
     }
 }
+

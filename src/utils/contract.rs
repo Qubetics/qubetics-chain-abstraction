@@ -2,7 +2,7 @@ use anyhow::Result;
 use k256::ProjectivePoint;
 use crate::types::{ContractTransaction, DepositIntent, TransactionType};
 use crate::signing::SigningNode;
-use crate::node_management::NodeMembership;
+use crate::node_selection::NodeMembership;
 use crate::adkg_secp256k1::DKGNode;
 use libp2p::PeerId;
 use tracing::{info, warn, debug};

@@ -3,8 +3,7 @@ use std::any::Any;
 use std::collections::HashSet;
 use tracing::info;
 
-pub mod vrf_manager;
-pub use vrf_manager::{VrfNodeManager, VrfNodeManagerConfig};
+use super::threshold::ThresholdCalculator;
 
 /// Trait for managing node membership in the network
 pub trait NodeMembership {
@@ -38,35 +37,7 @@ impl Clone for Box<dyn NodeMembership> {
     }
 }
 
-/// Trait for calculating threshold based on total nodes
-pub trait ThresholdCalculator {
-    /// Calculate the threshold based on the total number of nodes
-    fn calculate_threshold(&self, total_nodes: usize) -> usize;
-
-    fn clone_box(&self) -> Box<dyn ThresholdCalculator>;
-}
-
-/// Default implementation of ThresholdCalculator
-#[derive(Clone)]
-pub struct DefaultThresholdCalculator;
-
-impl ThresholdCalculator for DefaultThresholdCalculator {
-    fn calculate_threshold(&self, _total_nodes: usize) -> usize {
-        _total_nodes / 2 + 1
-    }
-
-    fn clone_box(&self) -> Box<dyn ThresholdCalculator> {
-        Box::new(self.clone())
-    }
-}
-
-impl Clone for Box<dyn ThresholdCalculator> {
-    fn clone(&self) -> Box<dyn ThresholdCalculator> {
-        self.clone_box()
-    }
-}
-
-/// Basic mplementation of NodeMembership
+/// Basic implementation of NodeMembership
 #[derive(Clone)]
 pub struct BasicNodeManager {
     nodes: HashSet<PeerId>,
@@ -94,7 +65,7 @@ impl NodeMembership for BasicNodeManager {
         if self.nodes.contains(&node_id) {
             return Err(format!("Node {} already exists", node_id));
         }
-        info!("Adding nodeasasa: {:?}", node_id);
+        info!("Adding node: {:?}", node_id);
         self.nodes.insert(node_id);
         Ok(())
     }
@@ -132,3 +103,4 @@ impl NodeMembership for BasicNodeManager {
         Box::new(self.clone())
     }
 }
+

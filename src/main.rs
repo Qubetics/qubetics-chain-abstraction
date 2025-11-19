@@ -1,6 +1,6 @@
 use dotenv::dotenv;
 use libp2p::identity::Keypair;
-use mpc_node::node_management::{DefaultThresholdCalculator, NodeMembership, VrfNodeManager};
+use mpc_node::node_selection::{DefaultThresholdCalculator, NodeMembership, VrfNodeManager};
 use mpc_node::{
     adkg_secp256k1::DKGNode,
     commands::CommandProcessor,

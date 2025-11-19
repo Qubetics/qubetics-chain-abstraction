@@ -31,7 +31,7 @@ use crate::adkg_secp256k1::DKGNode;
 use crate::commands::CommandProcessor;
 use crate::consensus::ConsensusNode;
 use crate::database::{key_utils, keys, Database};
-use crate::node_management::NodeMembership;
+use crate::node_selection::NodeMembership;
 use crate::signing::{DatabaseSigningNode, SigningNode};
 use crate::user_intent_manager::UserIntentManager;
 use crate::{
@@ -2207,7 +2207,7 @@ impl NetworkLayer {
                 if let Some(_vrf_manager) =
                     self.node_manager
                         .as_any()
-                        .downcast_ref::<crate::node_management::VrfNodeManager>()
+                        .downcast_ref::<crate::node_selection::VrfNodeManager>()
                 {
                     // We need to handle this differently since we can't mutate through a trait object
                     // For now, we'll log the message
