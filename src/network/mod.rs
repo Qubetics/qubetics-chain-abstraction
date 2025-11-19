@@ -33,7 +33,7 @@ use crate::consensus::ConsensusNode;
 use crate::database::{key_utils, keys, Database};
 use crate::node_management::NodeMembership;
 use crate::signing::{DatabaseSigningNode, SigningNode};
-use crate::user_intent_manager::{TransactionStatus, UserIntentManager};
+use crate::user_intent_manager::UserIntentManager;
 use crate::{
     adkg_secp256k1::DKGStatus,
     types::{
@@ -43,7 +43,7 @@ use crate::{
             build_mpc_behaviour, MPCCodecRequest, MPCCodecResponse, MPCProtocol, RPCRequest,
             RPCResponse,
         },
-        ChannelMessage, GossipsubMessage, PeerInfo,
+        ChannelMessage, GossipsubMessage, PeerInfo, TransactionStatus,
     },
 };
 

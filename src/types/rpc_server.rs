@@ -1,5 +1,24 @@
 use crate::types::intent::DepositIntent;
 use serde::{Deserialize, Serialize};
+use std::time::Instant;
+use uuid::Uuid;
+
+#[derive(Debug, Clone)]
+pub struct RequestContext {
+    pub request_id: String,
+    pub idempotency_key: Option<String>,
+    pub started_at: Instant,
+}
+
+impl RequestContext {
+    pub fn new(idempotency_key: Option<String>) -> Self {
+        Self {
+            request_id: Uuid::new_v4().to_string(),
+            idempotency_key,
+            started_at: Instant::now(),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeStatus {

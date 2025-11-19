@@ -17,10 +17,10 @@ use crate::{
 use super::handlers::{
     handle_claim_reward, handle_get_dkg_status, handle_get_node_id, handle_get_reward_solver,
     handle_get_status, handle_get_uptime, handle_get_user_info, handle_heartbeat,
-    handle_register_user, handle_start_dkg, handle_user_mpc_deposit, RequestContext,
+    handle_register_user, handle_start_dkg, handle_user_mpc_deposit,
 };
 use crate::types::rpc_server::{
-    ClaimRewardRequest, GetRewardSolverRequest, UserMpcDepositRequest,
+    ClaimRewardRequest, GetRewardSolverRequest, RequestContext, UserMpcDepositRequest,
     UserMpcDepositVerifyResponse, UserRegistrationRequest,
 };
 

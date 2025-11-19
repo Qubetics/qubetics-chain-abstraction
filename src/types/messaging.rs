@@ -1,12 +1,12 @@
 use crate::{
     adkg_secp256k1::DKGMessage,
     commands::Command,
-    consensus::ConsensusMessage,
     types::{
         intent::{DepositIntent, TransactionType},
         rpc::RPCRequest,
         secp::SerializableScalar,
         signing::SigningMessage,
+        ConsensusMessage,
     },
     vrf::{VrfSelectedNodesBroadcast, VrfSelectionMessage},
 };

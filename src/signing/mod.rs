@@ -37,14 +37,14 @@ use rand::seq::SliceRandom;
 use rand::thread_rng;
 
 use crate::chain::{ChainHandler, ChainHandlerFactory, ChainTransaction};
-use crate::consensus::{ConsensusMessage, ConsensusNode, ConsensusResult};
-use crate::types::{p2p::SerializablePeerId, ChannelMessage};
+use crate::consensus::ConsensusNode;
+use crate::types::{p2p::SerializablePeerId, ChannelMessage, ConsensusMessage, ConsensusResult, TransactionStatus};
 use crate::utils::get_eth_address_from_group_key;
 use crate::vrf::{VrfSelectedNodesBroadcast, VrfService};
 // Import BitcoinTransaction directly from chain module
 use crate::chain::{BitcoinInput, BitcoinTransaction};
 use crate::contract::{ContractClient, SolverManagerContract};
-use crate::user_intent_manager::{TransactionStatus, UserIntentManager};
+use crate::user_intent_manager::UserIntentManager;
 use anyhow::bail;
 use ethereum_types::U256 as EthereumU256;
 use ethers::types::U256;
@@ -3398,7 +3398,7 @@ impl SigningNode {
             if let Err(e) = user_intent_manager
                 .update_transaction_status(
                     tx_id,
-                    crate::user_intent_manager::TransactionStatus::Confirmed,
+                    TransactionStatus::Confirmed,
                 )
                 .await
             {
@@ -3437,10 +3437,7 @@ impl SigningNode {
 
             // Update transaction status to rejected
             if let Err(e) = user_intent_manager
-                .update_transaction_status(
-                    tx_id,
-                    crate::user_intent_manager::TransactionStatus::Rejected,
-                )
+                .update_transaction_status(tx_id, TransactionStatus::Rejected)
                 .await
             {
                 error!(

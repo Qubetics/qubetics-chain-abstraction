@@ -15,10 +15,10 @@ use crate::{
         messaging::ChannelMessage,
         rpc::RPCRequest,
         rpc_server::{
-            ClaimRewardRequest, ClaimRewardResponse, DKGStatusResponse,
-            EnhancedUserRegistrationResponse, GetRewardSolverRequest, GetRewardSolverResponse,
-            HeartbeatResponse, NodeIdResponse, NodeStatus, UptimeResponse, UserInfoResponse,
-            UserMpcDepositRequest, UserMpcDepositVerifyResponse, UserRegistrationRequest,
+            ClaimRewardRequest, ClaimRewardResponse, DKGStatusResponse, EnhancedUserRegistrationResponse,
+            GetRewardSolverRequest, GetRewardSolverResponse, HeartbeatResponse, NodeIdResponse,
+            NodeStatus, RequestContext, UptimeResponse, UserInfoResponse, UserMpcDepositRequest,
+            UserMpcDepositVerifyResponse, UserRegistrationRequest,
         },
     },
     user_intent_manager::{checksum_from_any, UserIntentManager},
@@ -31,23 +31,6 @@ use super::{
         normalize_eth_signature, recover_eth_address_secp, wait_for_transaction_result,
     },
 };
-
-#[derive(Debug, Clone)]
-pub struct RequestContext {
-    pub request_id: String,
-    pub idempotency_key: Option<String>,
-    pub started_at: Instant,
-}
-
-impl RequestContext {
-    pub fn new(idempotency_key: Option<String>) -> Self {
-        Self {
-            request_id: Uuid::new_v4().to_string(),
-            idempotency_key,
-            started_at: Instant::now(),
-        }
-    }
-}
 
 pub(crate) async fn handle_deposit_intent(
     intent: DepositIntent,
@@ -851,7 +834,7 @@ pub(crate) async fn handle_heartbeat() -> Result<impl warp::Reply, warp::Rejecti
 }
 
 pub(crate) async fn handle_get_uptime(
-    start_time: Arc<std::time::Instant>,
+    start_time: Arc<Instant>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
     let uptime = start_time.elapsed().as_secs();
     Ok(warp::reply::json(&UptimeResponse {

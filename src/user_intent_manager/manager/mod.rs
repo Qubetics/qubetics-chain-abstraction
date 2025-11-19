@@ -7,14 +7,15 @@ use std::{collections::HashMap, sync::Arc};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-use super::{
-    checksum_from_any, IntentStatus, IntentTransactionIds, TransactionStatus, UserRegistration,
-};
+use super::checksum_from_any;
 use crate::database::RewardStorage;
 use crate::database::{
     Database, DatabaseModule, IntentStorage, TransactionStatusStorage, UserStorage,
 };
-use crate::types::{DepositIntent, SerializablePoint, SerializableScalar};
+pub use crate::types::{
+    DepositIntent, IntentStatus, IntentTransactionIds, SerializablePoint, SerializableScalar,
+    TransactionStatus, UserRegistration,
+};
 use crate::utils::hmac_helper::hmac256_from_addr;
 use anyhow::Result;
 use tracing::info;

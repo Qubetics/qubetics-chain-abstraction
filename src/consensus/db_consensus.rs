@@ -1,10 +1,8 @@
-use super::{ConsensusMessage, ConsensusResult};
 use crate::database::{ConsensusStorage, Database};
-use crate::types::p2p::SerializablePeerId;
+use crate::types::{ConsensusMessage, ConsensusResult, SerializablePeerId};
 use anyhow::Result;
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use tracing::{debug, info};
+use tracing::info;
 
 /// Database-backed consensus node that stores state in RocksDB
 #[derive(Clone)]

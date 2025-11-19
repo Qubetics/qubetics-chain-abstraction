@@ -1,25 +1,10 @@
-use crate::types::p2p::SerializablePeerId;
+use crate::types::{ConsensusMessage, ConsensusResult, SerializablePeerId};
 use anyhow::Result;
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tracing::{debug, info};
 
 pub mod db_consensus;
 pub use db_consensus::DatabaseConsensusNode;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConsensusResult {
-    pub final_node: SerializablePeerId,
-    pub round: u64,
-    pub node_frequencies: HashMap<SerializablePeerId, usize>,
-    pub total_selections: usize,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum ConsensusMessage {
-    /// Broadcast the final consensus result
-    FinalNodeResult { result: ConsensusResult, round: u64 },
-}
 
 #[derive(Clone)]
 pub struct ConsensusNode {
