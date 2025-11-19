@@ -1,3 +1,4 @@
+
 #[allow(dead_code)]
 #[allow(unused_imports)]
 #[allow(non_snake_case)]
@@ -13,12 +14,16 @@ pub mod network;
 pub mod node_selection;
 pub mod rpc_server;
 pub mod signing;
+#[allow(dead_code)]
+#[allow(unused_imports)]
+#[allow(non_snake_case)]
+#[allow(unused_variables)]
+pub mod threshold_dkg;
 pub mod types;
 pub mod user_intent_manager;
 pub mod utils;
 pub mod vrf_selection;
 
-pub use adkg_secp256k1::DKGNode;
 pub use commands::CommandProcessor;
 pub use consensus::{ConsensusNode, DatabaseConsensusNode};
 pub use database::{
@@ -32,6 +37,7 @@ pub use node_selection::{
     VrfNodeManager, VrfNodeManagerConfig,
 };
 pub use signing::{DatabaseSigningNode, SigningNode};
+pub use threshold_dkg::DKGNode;
 pub use types::{ECDSASignature, SigningMessage};
 pub use user_intent_manager::{UserIntentManager, UserRegistry};
 pub use vrf_selection::{

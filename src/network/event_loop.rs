@@ -1,13 +1,12 @@
 /// Main event loop for network layer
 /// Handles swarm events, channel messages, and periodic tasks
-
 use anyhow::Result;
 use futures::StreamExt;
 use libp2p::{Multiaddr, PeerId};
 use std::time::Duration;
 use tracing::{error, info, warn};
 
-use crate::adkg_secp256k1::DKGStatus;
+use crate::threshold_dkg::DKGStatus;
 
 use super::types::{MPCBehaviour, NetworkLayer};
 
@@ -35,7 +34,7 @@ impl NetworkLayer {
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_secs(3)).await;
         });
-        
+
         let mut bootstrap_timer = tokio::time::interval(Duration::from_secs(300));
         let mut discovery_timer = tokio::time::interval(Duration::from_secs(300));
         let mut dkg_status_timer = tokio::time::interval(Duration::from_secs(300));
@@ -46,7 +45,7 @@ impl NetworkLayer {
 
         // Dial command-line provided addresses
         self.dial_command_line_addresses(&mut swarm);
-        
+
         info!("Local Peer ID: {}", self.local_peer_id);
 
         loop {
@@ -61,7 +60,7 @@ impl NetworkLayer {
                         // Continue processing other events
                     }
                 }
-                
+
                 // only hit when there is anything on the mpsc channel
                 msg = self.message_rx.recv() => {
                     if let Some(msg) = msg {
@@ -78,7 +77,7 @@ impl NetworkLayer {
                 _ = peerlist_logger.tick() => {
                     self.log_peer_list_snapshot();
                 }
-                
+
                 _ = bootstrap_timer.tick() => {
                     // Periodic bootstrap to discover new peers
                     info!("Performing periodic bootstrap...");
@@ -201,11 +200,10 @@ impl NetworkLayer {
         // Proactively request indices from peers we lack index for
         let active = self.node_manager.get_active_nodes();
         for p in active {
-            let known = self.peer_indices.contains_key(&p)
-                || {
-                    let key = crate::database::key_utils::peer_index_key(&p.to_string());
-                    self.db.get_string::<usize>(&key).ok().flatten().is_some()
-                };
+            let known = self.peer_indices.contains_key(&p) || {
+                let key = crate::database::key_utils::peer_index_key(&p.to_string());
+                self.db.get_string::<usize>(&key).ok().flatten().is_some()
+            };
             if !known {
                 info!("🔎 Requesting PeerList from {} to learn indices", p);
                 swarm
@@ -237,4 +235,3 @@ impl NetworkLayer {
         }
     }
 }
-

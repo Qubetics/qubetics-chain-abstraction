@@ -1,4 +1,7 @@
-use super::{messages::DKGMessage, node::DKGNode, status::DKGStatus};
+use crate::threshold_dkg::{
+    artifacts::{DKGMessage, DKGStatus},
+    DKGNode,
+};
 use anyhow::{anyhow, Result};
 use ff::PrimeField;
 use k256::{AffinePoint, ProjectivePoint, Scalar};

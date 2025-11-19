@@ -1,4 +1,4 @@
-use super::{messages::DKGMessage, node::DKGNode};
+use crate::threshold_dkg::{artifacts::DKGMessage, DKGNode};
 use crate::types::dkg::MSG_TOPIC_DKG;
 use crate::types::{
     ChannelMessage, GossipsubMessage, KeyShare, SerializablePoint, SerializableScalar,
@@ -28,7 +28,7 @@ impl DKGNode {
         let shares = self.generate_shares(&polynomial)?;
         let commitments = self.generate_commitments(&polynomial)?;
 
-        self.status = super::status::DKGStatus::Started;
+        self.status = crate::threshold_dkg::artifacts::DKGStatus::Started;
         info!("📤 Broadcasting DKG shares and commitments...");
         tokio::time::sleep(Duration::from_secs(1)).await;
         {

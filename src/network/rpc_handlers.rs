@@ -5,7 +5,7 @@ use anyhow::Result;
 use libp2p::PeerId;
 use tracing::{error, info, warn};
 
-use crate::adkg_secp256k1::DKGStatus;
+use crate::threshold_dkg::DKGStatus;
 use crate::database::key_utils;
 use crate::types::p2p::SerializablePeerId;
 use crate::types::rpc::{RPCRequest, RPCResponse};

@@ -2,11 +2,11 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::info;
 
-use crate::adkg_secp256k1::DKGNode;
 use crate::commands::CommandProcessor;
 use crate::consensus::ConsensusNode;
 use crate::database::Database;
 use crate::signing::{DatabaseSigningNode, SigningNode};
+use crate::threshold_dkg::DKGNode;
 use crate::user_intent_manager::UserIntentManager;
 
 use super::types::NetworkLayer;
@@ -77,4 +77,3 @@ impl NetworkLayer {
         }
     }
 }
-

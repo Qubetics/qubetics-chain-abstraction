@@ -1,14 +1,16 @@
 /// Swarm event handlers
 /// Handles ConnectionEstablished, ConnectionClosed, Kademlia events, etc.
-
 use anyhow::Result;
 use libp2p::swarm::{ConnectionError, SwarmEvent};
-use libp2p::{gossipsub, kad::Event as KademliaEvent, multiaddr::Protocol, request_response::Message as ReqRespMessage, PeerId};
+use libp2p::{
+    gossipsub, kad::Event as KademliaEvent, multiaddr::Protocol,
+    request_response::Message as ReqRespMessage, PeerId,
+};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{error, info, warn};
 
-use crate::adkg_secp256k1::DKGMessage;
 use crate::database::keys;
+use crate::threshold_dkg::DKGMessage;
 use crate::types::dkg::MSG_TOPIC_PEER_DISCOVERY;
 use crate::types::rpc::{MPCProtocol, RPCRequest};
 use crate::types::{ChannelMessage, GossipsubMessage};
@@ -153,7 +155,10 @@ impl NetworkLayer {
                     .unwrap()
                     .as_secs();
                 let start_time = now_secs + 10;
-                info!("🕒 Scheduling initial DKG start at unix time {}", start_time);
+                info!(
+                    "🕒 Scheduling initial DKG start at unix time {}",
+                    start_time
+                );
 
                 for peer in self.node_manager.get_active_nodes() {
                     if peer != *self.get_local_peer_id() {
@@ -163,7 +168,10 @@ impl NetworkLayer {
                             .send_request(&peer, RPCRequest::ScheduleADKG { start_time });
                     }
                 }
-                info!("📅 Scheduled initial DKG start for all peers at {}", start_time);
+                info!(
+                    "📅 Scheduled initial DKG start for all peers at {}",
+                    start_time
+                );
                 self.schedule_dkg_at(start_time);
             } else if total < 4 {
                 info!("⏳ Waiting for initial 4 nodes: {}/4", total);
@@ -199,7 +207,10 @@ impl NetworkLayer {
             .kbuckets()
             .map(|bucket| bucket.num_entries())
             .sum();
-        info!("📋 Kademlia routing table now has {} entries", kbucket_count);
+        info!(
+            "📋 Kademlia routing table now has {} entries",
+            kbucket_count
+        );
 
         let gossipsub_peer_count = swarm.behaviour_mut().gossipsub.all_peers().count();
         info!(
@@ -217,7 +228,10 @@ impl NetworkLayer {
     async fn handle_request_response_event(
         &mut self,
         swarm: &mut libp2p::Swarm<MPCBehaviour>,
-        event: libp2p::request_response::Event<crate::types::rpc::RPCRequest, crate::types::rpc::RPCResponse>,
+        event: libp2p::request_response::Event<
+            crate::types::rpc::RPCRequest,
+            crate::types::rpc::RPCResponse,
+        >,
     ) -> Result<()> {
         use libp2p::request_response::Event as ReqRespEvent;
 
@@ -225,14 +239,20 @@ impl NetworkLayer {
             ReqRespEvent::Message { peer, message, .. } => {
                 info!("RPC request: peer: {} response: {:?}", peer, message);
                 match message {
-                    ReqRespMessage::Request { request, channel, .. } => {
+                    ReqRespMessage::Request {
+                        request, channel, ..
+                    } => {
                         let response = self.handle_rpc_request(peer, request).await;
                         let res = swarm
                             .behaviour_mut()
                             .request_response
                             .send_response(channel, response);
                         if res.is_err() {
-                            warn!("❌ Failed to send response to peer {}: {:?}", peer, res.err());
+                            warn!(
+                                "❌ Failed to send response to peer {}: {:?}",
+                                peer,
+                                res.err()
+                            );
                         } else {
                             info!("📤 Sent RPC response to {}: {:?}", peer, res);
                         }
@@ -272,7 +292,7 @@ impl NetworkLayer {
                     "-----------routing updated----------: Peer{:?}, is_new_peer{:?}, addresses{:?}, bucket_range{:?}, old_peer{:?}\n",
                     peer, is_new_peer, addresses, bucket_range, old_peer
                 );
-                
+
                 if is_new_peer {
                     // Check if this is a bootstrap node
                     if self.is_bootstrap_node(&peer) {
@@ -287,7 +307,10 @@ impl NetworkLayer {
 
                     // Debug: Show all active nodes
                     let active_nodes = self.node_manager.get_active_nodes();
-                    info!("\x1b[36m🔗 Active nodes in manager: {:?}\x1b[0m", active_nodes);
+                    info!(
+                        "\x1b[36m🔗 Active nodes in manager: {:?}\x1b[0m",
+                        active_nodes
+                    );
                     info!(
                         "\x1b[33m📊 node length: {:?}\x1b[0m",
                         self.node_manager.get_total_nodes()
@@ -344,8 +367,11 @@ impl NetworkLayer {
 
         // If this is the peer discovery topic, we can now safely broadcast our presence
         if topic.as_str() == MSG_TOPIC_PEER_DISCOVERY {
-            info!("🎯 Peer discovery topic subscription confirmed by: {}", peer_id);
-            
+            info!(
+                "🎯 Peer discovery topic subscription confirmed by: {}",
+                peer_id
+            );
+
             let active_nodes = self.node_manager.get_active_nodes();
             let other_peers_in_manager: Vec<_> = active_nodes
                 .iter()
@@ -392,7 +418,7 @@ impl NetworkLayer {
                     }
                 }
             }
-            
+
             let existing_peer_count = self.peer_indices.len();
             info!("📊 Existing peers count: {}", existing_peer_count);
             if existing_peer_count > 0 {
@@ -403,7 +429,7 @@ impl NetworkLayer {
                     .collect();
                 info!("📋 Existing peers with indices: {:?}", existing_peers);
             }
-            
+
             if has_other_peers {
                 self.broadcast_local_presence().await?;
             }
@@ -503,4 +529,3 @@ impl NetworkLayer {
         }
     }
 }
-
