@@ -1,8 +1,8 @@
 use libp2p::PeerId;
 use tokio::sync::mpsc;
 
-use crate::adkg_secp256k1::DKGNode;
 use crate::signing::SigningNode;
+use crate::threshold_dkg::DKGNode;
 use crate::types::ChannelMessage;
 use crate::user_intent_manager::UserIntentManager;
 
@@ -39,4 +39,3 @@ impl NetworkLayer {
         &self.local_peer_id
     }
 }
-

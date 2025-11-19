@@ -2,13 +2,13 @@ use dotenv::dotenv;
 use libp2p::identity::Keypair;
 use mpc_node::node_selection::{DefaultThresholdCalculator, NodeMembership, VrfNodeManager};
 use mpc_node::{
-    adkg_secp256k1::DKGNode,
     commands::CommandProcessor,
     consensus::{ConsensusNode, DatabaseConsensusNode},
     database::{Database, DatabaseConfig, DatabaseModule, DkgStorage, RewardStorage},
     network::NetworkLayer,
     rpc_server,
     signing::{DatabaseSigningNode, SigningNode},
+    threshold_dkg::DKGNode,
     user_intent_manager::UserIntentManager,
 };
 use rand::{thread_rng, Rng};

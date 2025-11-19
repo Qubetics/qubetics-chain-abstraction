@@ -1,6 +1,6 @@
 use crate::{
-    adkg_secp256k1::DKGMessage,
     commands::Command,
+    threshold_dkg::DKGMessage,
     types::{
         intent::{DepositIntent, TransactionType},
         rpc::RPCRequest,

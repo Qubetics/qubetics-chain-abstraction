@@ -3,8 +3,8 @@ use libp2p::PeerId;
 use std::time::Duration;
 use tracing::{info, warn};
 
-use crate::adkg_secp256k1::DKGStatus;
 use crate::database::keys;
+use crate::threshold_dkg::DKGStatus;
 use crate::types::dkg::MSG_TOPIC_PEER_DISCOVERY;
 use crate::types::GossipsubMessage;
 
@@ -152,18 +152,18 @@ impl NetworkLayer {
         peer_id: PeerId,
     ) -> Result<()> {
         info!("📡 New peer {} connected; announcing to mesh", peer_id);
-        
+
         // Assign and persist index based on DB state
         let tentative_index = self.assign_and_persist_index(&peer_id);
         info!("assigned_index : {:?}", tentative_index);
-        
+
         let msg = GossipsubMessage::PeerDiscovered {
             peer: peer_id.clone(),
             sequence: Some(1),
             index: Some(tentative_index),
         };
         let payload = serde_json::to_vec(&msg).expect("serialize PeerDiscovered");
-        
+
         match self.broadcast(MSG_TOPIC_PEER_DISCOVERY, &payload).await {
             Ok(_) => {
                 info!(
@@ -184,7 +184,10 @@ impl NetworkLayer {
         // Check if peer already exists in node manager
         let current_nodes = self.node_manager.get_active_nodes();
         if current_nodes.contains(&peer_id) {
-            info!("ℹ️ Peer {} already exists in node manager, skipping", peer_id);
+            info!(
+                "ℹ️ Peer {} already exists in node manager, skipping",
+                peer_id
+            );
         } else {
             self.node_manager
                 .add_node(peer_id)
@@ -201,4 +204,3 @@ impl NetworkLayer {
         Ok(())
     }
 }
-

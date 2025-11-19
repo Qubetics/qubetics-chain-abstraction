@@ -2,9 +2,7 @@ use anyhow::Result;
 use libp2p::{
     gossipsub::{self, TopicHash},
     kad::{self, store::MemoryStore, Event as KademliaEvent},
-    request_response::{
-        cbor::Behaviour as CborReqRespBehaviour, Event as ReqRespEvent,
-    },
+    request_response::{cbor::Behaviour as CborReqRespBehaviour, Event as ReqRespEvent},
     swarm::NetworkBehaviour,
     PeerId,
 };
@@ -14,12 +12,12 @@ use std::time::Instant;
 use tokio::sync::{mpsc, Mutex};
 use tokio::task::JoinHandle;
 
-use crate::adkg_secp256k1::DKGNode;
 use crate::commands::CommandProcessor;
 use crate::consensus::ConsensusNode;
 use crate::database::Database;
 use crate::node_selection::NodeMembership;
 use crate::signing::{DatabaseSigningNode, SigningNode};
+use crate::threshold_dkg::DKGNode;
 use crate::types::rpc::{MPCCodecRequest, MPCCodecResponse, RPCRequest, RPCResponse};
 use crate::types::ChannelMessage;
 use crate::user_intent_manager::UserIntentManager;
@@ -139,4 +137,3 @@ pub struct NetworkLayer {
 impl NetworkLayer {
     pub const MAX_PEER_DISCOVERY_RETRIES: u8 = 10;
 }
-

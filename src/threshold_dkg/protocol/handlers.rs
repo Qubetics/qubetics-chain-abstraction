@@ -1,4 +1,7 @@
-use super::{messages::DKGMessage, node::DKGNode, status::DKGStatus};
+use crate::threshold_dkg::{
+    artifacts::{DKGMessage, DKGStatus},
+    DKGNode,
+};
 use crate::types::dkg::MSG_TOPIC_DKG;
 use crate::types::{
     ChannelMessage, GossipsubMessage, KeyShare, SerializablePoint, SerializableScalar,

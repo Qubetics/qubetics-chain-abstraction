@@ -13,10 +13,7 @@ use tokio::sync::mpsc;
 use tracing::info;
 use tracing::warn;
 
-use super::{
-    messages::DKGMessage,
-    status::{DKGCompletionCallback, DKGStatus},
-};
+use super::artifacts::{DKGCompletionCallback, DKGMessage, DKGStatus};
 use crate::database::DkgStorage;
 use crate::types::dkg::MSG_TOPIC_DKG;
 use crate::types::{

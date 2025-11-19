@@ -1,9 +1,8 @@
 /// Gossipsub message handler
 /// Handles all gossipsub message types: DKG, Signing, Command, Consensus, VRF, etc.
-/// 
+///
 /// NOTE: This module contains the gossipsub message handling logic from the original network/mod.rs
 /// The implementation should be ported from lines ~2038-3559 of the original file
-
 use anyhow::Result;
 use ff::PrimeField;
 use libp2p::{gossipsub::Message, PeerId};
@@ -41,7 +40,7 @@ impl NetworkLayer {
             // so, here it must match on the recieving end
             GossipsubMessage::DKG(dkg_msg) => {
                 // Check if this is a NodeDisconnected message - handle it specially
-                if let crate::adkg_secp256k1::DKGMessage::NodeDisconnected {
+                if let crate::threshold_dkg::DKGMessage::NodeDisconnected {
                     ref disconnected_node_id,
                     ref broadcaster_node_id,
                 } = dkg_msg
@@ -188,10 +187,10 @@ impl NetworkLayer {
             }
             GossipsubMessage::VrfSelection(vrf_msg) => {
                 // Handle VRF selection messages
-                if let Some(_vrf_manager) =
-                    self.node_manager
-                        .as_any()
-                        .downcast_ref::<crate::node_selection::VrfNodeManager>()
+                if let Some(_vrf_manager) = self
+                    .node_manager
+                    .as_any()
+                    .downcast_ref::<crate::node_selection::VrfNodeManager>()
                 {
                     // We need to handle this differently since we can't mutate through a trait object
                     // For now, we'll log the message
@@ -1542,4 +1541,3 @@ impl NetworkLayer {
         Ok(())
     }
 }
-
