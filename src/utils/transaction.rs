@@ -1,4 +1,4 @@
-use crate::chain::{ChainTransaction, EthereumTransaction};
+use crate::chain_abstraction::{ChainTransaction, EthereumTransaction};
 use crate::types::{
     BitcoinInput, BitcoinOutput, BitcoinTransaction, BitcoinUtxo, BitcoinWitness,
     BitcoinWitnessUtxo, ContractTransaction, DepositIntent, DummyTransaction, RlpEncoder,
@@ -669,7 +669,7 @@ pub async fn create_bitcoin_transaction(
                 2,
                 Some(BitcoinWitness {
                     inputs: (0..inputs.len())
-                        .map(|_| crate::chain::BitcoinWitnessInput { stack: vec![] })
+                        .map(|_| crate::chain_abstraction::BitcoinWitnessInput { stack: vec![] })
                         .collect(),
                 }),
             )

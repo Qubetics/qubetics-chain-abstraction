@@ -1,4 +1,10 @@
-pub mod chain;
+
+#[allow(dead_code)]
+#[allow(unused_imports)]
+#[allow(non_snake_case)]
+#[allow(unused_variables)]
+pub mod adkg_secp256k1;
+pub mod chain_abstraction;
 pub mod commands;
 pub mod consensus;
 pub mod contract;
@@ -16,7 +22,7 @@ pub mod threshold_dkg;
 pub mod types;
 pub mod user_intent_manager;
 pub mod utils;
-pub mod vrf;
+pub mod vrf_selection;
 
 pub use commands::CommandProcessor;
 pub use consensus::{ConsensusNode, DatabaseConsensusNode};
@@ -34,7 +40,7 @@ pub use signing::{DatabaseSigningNode, SigningNode};
 pub use threshold_dkg::DKGNode;
 pub use types::{ECDSASignature, SigningMessage};
 pub use user_intent_manager::{UserIntentManager, UserRegistry};
-pub use vrf::{
+pub use vrf_selection::{
     NodeSelectionResult, VrfNodeSelector, VrfOutput, VrfSelectedNodesBroadcast,
-    VrfSelectionMessage, VrfService, VrfServiceConfig,
+    VrfSelectionFacade, VrfSelectionMessage, VrfService, VrfServiceConfig,
 };

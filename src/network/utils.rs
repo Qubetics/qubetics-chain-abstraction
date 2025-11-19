@@ -202,7 +202,7 @@ impl NetworkLayer {
                     signing_node.set_available_nodes(available_nodes);
 
                     match contract_transaction {
-                        crate::chain::ChainTransaction::Ethereum(ref eth_tx) => {
+                        crate::chain_abstraction::ChainTransaction::Ethereum(ref eth_tx) => {
                             let contract_tx = crate::types::ContractTransaction {
                                 to: eth_tx.to.clone(),
                                 value: eth_tx.value.clone(),

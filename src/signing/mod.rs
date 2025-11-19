@@ -1,4 +1,4 @@
-use crate::chain::EthereumTransaction;
+use crate::chain_abstraction::EthereumTransaction;
 use crate::types::SpendKind;
 use crate::types::{
     intent::{ContractTransaction, DepositIntent, DummyTransaction},
@@ -36,13 +36,13 @@ use num_traits::Zero;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
 
-use crate::chain::{ChainHandler, ChainHandlerFactory, ChainTransaction};
+use crate::chain_abstraction::{ChainHandler, ChainHandlerFactory, ChainTransaction};
 use crate::consensus::ConsensusNode;
 use crate::types::{p2p::SerializablePeerId, ChannelMessage, ConsensusMessage, ConsensusResult, TransactionStatus};
 use crate::utils::get_eth_address_from_group_key;
-use crate::vrf::{VrfSelectedNodesBroadcast, VrfService};
+use crate::vrf_selection::{VrfSelectedNodesBroadcast, VrfSelectionFacade, VrfService};
 // Import BitcoinTransaction directly from chain module
-use crate::chain::{BitcoinInput, BitcoinTransaction};
+use crate::chain_abstraction::{BitcoinInput, BitcoinTransaction};
 use crate::contract::{ContractClient, SolverManagerContract};
 use crate::user_intent_manager::UserIntentManager;
 use anyhow::bail;
@@ -163,7 +163,7 @@ impl SigningNode {
             final_nodes_by_round: Arc::new(RwLock::new(HashMap::new())),
             aggregated_rounds: Arc::new(RwLock::new(std::collections::HashSet::new())),
             message_tx: message_tx.clone(),
-            vrf_service: Some(VrfService::new(peer_id, message_tx)),
+            vrf_service: Some(VrfSelectionFacade::new_service(peer_id, message_tx)),
             chain_handler,
             contract_chain_handler,
             consensus_node: Some(ConsensusNode::new()),
@@ -1867,7 +1867,7 @@ impl SigningNode {
         info!("📝 [SIGNING] Node {} starting to sign transaction", self.id);
 
         // Convert DummyTransaction to ChainTransaction for chain-agnostic handling with UTXO error handling
-        let chain_transaction = ChainTransaction::Ethereum(crate::chain::EthereumTransaction {
+        let chain_transaction = ChainTransaction::Ethereum(crate::chain_abstraction::EthereumTransaction {
             to: transaction.to.clone(),
             value: transaction.value.clone(),
             gas_limit: transaction.gas_limit,
@@ -1971,7 +1971,7 @@ impl SigningNode {
         if intent_hash.is_none() {
             // This is a reward transaction - store in reward pending transactions
             if let Some(solver_addr) = solver_address {
-                let chain_tx = ChainTransaction::Ethereum(crate::chain::EthereumTransaction {
+                let chain_tx = ChainTransaction::Ethereum(crate::chain_abstraction::EthereumTransaction {
                     to: transaction.to.clone(),
                     value: transaction.value.clone(),
                     gas_limit: transaction.gas_limit,
@@ -2015,7 +2015,7 @@ impl SigningNode {
         } else {
             // This is an intent-based transaction - store in regular pending transactions
             let mut pending_transactions = self.pending_transactions.write().await;
-            let chain_tx = ChainTransaction::Ethereum(crate::chain::EthereumTransaction {
+            let chain_tx = ChainTransaction::Ethereum(crate::chain_abstraction::EthereumTransaction {
                 to: transaction.to.clone(),
                 value: transaction.value.clone(),
                 gas_limit: transaction.gas_limit,
@@ -2112,7 +2112,7 @@ impl SigningNode {
         );
 
         let chain_transaction =
-            crate::chain::ChainTransaction::Ethereum(crate::chain::EthereumTransaction {
+            crate::chain_abstraction::ChainTransaction::Ethereum(crate::chain_abstraction::EthereumTransaction {
                 to: transaction.to.clone(),
                 value: transaction.value.clone(),
                 gas_limit: transaction.gas_limit,
@@ -2218,7 +2218,7 @@ impl SigningNode {
 
         {
             let mut pending_transactions = self.pending_transactions.write().await;
-            let chain_tx = ChainTransaction::Ethereum(crate::chain::EthereumTransaction {
+            let chain_tx = ChainTransaction::Ethereum(crate::chain_abstraction::EthereumTransaction {
                 to: transaction.to.clone(),
                 value: transaction.value.clone(),
                 gas_limit: transaction.gas_limit,
@@ -2967,7 +2967,7 @@ impl SigningNode {
         let peer_id = PeerId::from_str(&self.id).unwrap_or_else(|_| PeerId::random());
 
         // Create VrfService with proper initial round
-        let mut vrf_service = VrfService::new(peer_id, self.message_tx.clone());
+        let mut vrf_service = VrfSelectionFacade::new_service(peer_id, self.message_tx.clone());
 
         // Set the current round to match the network
         if let Some(network_round) = network_round {
@@ -3275,7 +3275,7 @@ impl SigningNode {
                     reward_pending_transactions.get(&round)
                 {
                     match chain_tx {
-                        crate::chain::ChainTransaction::Ethereum(eth_tx) => {
+                        crate::chain_abstraction::ChainTransaction::Ethereum(eth_tx) => {
                             // Parse the value from hex string (format: "0x1234" or "1234")
                             let value_str = eth_tx.value.trim_start_matches("0x");
                             if let Ok(value) = ethers::types::U256::from_str_radix(value_str, 16) {
@@ -3302,7 +3302,7 @@ impl SigningNode {
                     reward_pending_transactions_btc.get(&round)
                 {
                     match chain_tx {
-                        crate::chain::ChainTransaction::Bitcoin(btc_tx) => {
+                        crate::chain_abstraction::ChainTransaction::Bitcoin(btc_tx) => {
                             // For Bitcoin, get the first output value (assuming single output for rewards)
                             if let Some(output) = btc_tx.outputs.first() {
                                 let value = ethers::types::U256::from(output.value);

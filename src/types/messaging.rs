@@ -8,7 +8,7 @@ use crate::{
         signing::SigningMessage,
         ConsensusMessage,
     },
-    vrf::{VrfSelectedNodesBroadcast, VrfSelectionMessage},
+    vrf_selection::{VrfSelectedNodesBroadcast, VrfSelectionMessage},
 };
 use libp2p::PeerId;
 use serde::{Deserialize, Serialize};

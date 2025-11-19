@@ -1,0 +1,45 @@
+use anyhow::Result;
+use std::collections::HashMap;
+
+use crate::chain_abstraction::handlers::{
+    BitcoinChainHandler, ChainHandler, EthereumChainHandler,
+};
+
+/// Chain handler factory helpers
+pub struct ChainHandlerFactory;
+
+impl ChainHandlerFactory {
+    pub fn create_ethereum_handler(chain_id: u64) -> Box<dyn ChainHandler> {
+        Box::new(EthereumChainHandler::new(chain_id))
+    }
+
+    pub fn create_bitcoin_handler(network: String) -> Box<dyn ChainHandler> {
+        Box::new(BitcoinChainHandler::new(network))
+    }
+
+    pub fn create_handler_by_type(
+        chain_type: &str,
+        params: HashMap<String, String>,
+    ) -> Result<Box<dyn ChainHandler>> {
+        match chain_type {
+            "ethereum" => {
+                let chain_id = params
+                    .get("chain_id")
+                    .ok_or_else(|| anyhow::anyhow!("Missing chain_id parameter for Ethereum"))?
+                    .parse::<u64>()?;
+                Ok(Self::create_ethereum_handler(chain_id))
+            }
+            "bitcoin" => {
+                let network = params
+                    .get("network")
+                    .unwrap_or(&"mainnet".to_string())
+                    .clone();
+                Ok(Self::create_bitcoin_handler(network))
+            }
+            _ => Err(anyhow::anyhow!("Unsupported chain type: {}", chain_type)),
+        }
+    }
+}
+
+
+
