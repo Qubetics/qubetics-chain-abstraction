@@ -5,14 +5,14 @@ use tracing::info;
 use crate::types::p2p::SerializablePeerId;
 use crate::types::rpc::RPCRequest;
 
-use super::types::{MPCBehaviour, NetworkLayer};
+use super::types::{MpcNetworkBehaviour, MpcNetworkLayer};
 
-impl NetworkLayer {
+impl MpcNetworkLayer {
     /// Sync database from an existing peer when joining the network
     /// This method should be called by new nodes after connecting to the network
     pub async fn sync_database_from_peer(
         &self,
-        swarm: &mut libp2p::Swarm<MPCBehaviour>,
+        swarm: &mut libp2p::Swarm<MpcNetworkBehaviour>,
         peer_id: PeerId,
     ) -> Result<()> {
         info!("📦 [DB_SYNC] Starting database sync from peer {}", peer_id);
@@ -40,7 +40,7 @@ impl NetworkLayer {
     /// Handle database sync metadata response and start batch requests
     pub async fn handle_database_sync_metadata(
         &mut self,
-        swarm: &mut libp2p::Swarm<MPCBehaviour>,
+        swarm: &mut libp2p::Swarm<MpcNetworkBehaviour>,
         peer_id: PeerId,
         total_entries: usize,
         batch_size: usize,
@@ -79,7 +79,7 @@ impl NetworkLayer {
     /// Handle a batch of database entries
     pub async fn handle_database_batch(
         &mut self,
-        swarm: &mut libp2p::Swarm<MPCBehaviour>,
+        swarm: &mut libp2p::Swarm<MpcNetworkBehaviour>,
         peer_id: PeerId,
         batch_index: usize,
         entries: Vec<crate::types::rpc::DatabaseEntry>,

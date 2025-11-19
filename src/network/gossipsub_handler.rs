@@ -14,9 +14,9 @@ use crate::{
     user_intent_manager::TransactionStatus,
 };
 
-use super::types::NetworkLayer;
+use super::types::MpcNetworkLayer;
 
-impl NetworkLayer {
+impl MpcNetworkLayer {
     /// Main gossipsub message handler - delegates to specific message type handlers
     pub(crate) async fn handle_gossipsub_message(&mut self, message: &Message) -> Result<()> {
         info!(
@@ -1495,7 +1495,7 @@ impl NetworkLayer {
 
                 // If index provided, store and persist it
                 if let Some(idx) = index {
-                    self.peer_indices.insert(peer.clone(), idx);
+                    self.peer_discovery.peer_indices.insert(peer.clone(), idx);
                     let key = key_utils::peer_index_key(&peer.to_string());
                     if let Err(e) = self.db.put_string(&key, &idx) {
                         warn!("Failed to persist peer index: {:?}", e);

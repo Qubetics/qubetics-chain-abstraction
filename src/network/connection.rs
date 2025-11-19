@@ -8,9 +8,9 @@ use crate::threshold_dkg::DKGStatus;
 use crate::types::dkg::MSG_TOPIC_PEER_DISCOVERY;
 use crate::types::GossipsubMessage;
 
-use super::types::{MPCBehaviour, NetworkLayer};
+use super::types::{MpcNetworkBehaviour, MpcNetworkLayer};
 
-impl NetworkLayer {
+impl MpcNetworkLayer {
     /// Handle node disconnection internally (called both locally and from broadcast)
     pub(crate) async fn handle_node_disconnect_internal(&mut self, peer_id: PeerId) {
         info!("🔧 [DISCONNECT] Processing disconnect for node {}", peer_id);
@@ -19,7 +19,7 @@ impl NetworkLayer {
         let now = std::time::Instant::now();
         let dedup_window = std::time::Duration::from_secs(10); // 10-second deduplication window
 
-        if let Some(last_processed) = self.processed_disconnects.get(&peer_id) {
+        if let Some(last_processed) = self.peer_discovery.processed_disconnects.get(&peer_id) {
             if now.duration_since(*last_processed) < dedup_window {
                 info!("⏭️ [DISCONNECT] Already processed disconnect for {} recently (within {} seconds), skipping",
                       peer_id, dedup_window.as_secs());
@@ -28,14 +28,14 @@ impl NetworkLayer {
         }
 
         // Mark this disconnect as processed
-        self.processed_disconnects.insert(peer_id, now);
+        self.peer_discovery.processed_disconnects.insert(peer_id, now);
         info!(
             "✅ [DISCONNECT] Marked disconnect for {} as processed at {:?}",
             peer_id, now
         );
 
         // Clean up old entries (older than dedup_window) to prevent memory growth
-        self.processed_disconnects
+        self.peer_discovery.processed_disconnects
             .retain(|_, &mut timestamp| now.duration_since(timestamp) < dedup_window);
 
         // Log active nodes BEFORE removal
@@ -81,7 +81,7 @@ impl NetworkLayer {
         }
 
         // Also remove from peer_indices HashMap
-        if let Some(removed_index) = self.peer_indices.remove(&peer_id) {
+        if let Some(removed_index) = self.peer_discovery.peer_indices.remove(&peer_id) {
             info!(
                 "✅ [DISCONNECT] Removed peer {} (index {}) from peer_indices HashMap",
                 peer_id, removed_index
@@ -148,7 +148,7 @@ impl NetworkLayer {
     /// Handle new peer connection and announce to network
     pub(crate) async fn handle_new_peer_connection(
         &mut self,
-        _swarm: &mut libp2p::Swarm<MPCBehaviour>,
+        _swarm: &mut libp2p::Swarm<MpcNetworkBehaviour>,
         peer_id: PeerId,
     ) -> Result<()> {
         info!("📡 New peer {} connected; announcing to mesh", peer_id);

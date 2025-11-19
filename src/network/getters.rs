@@ -6,9 +6,9 @@ use crate::threshold_dkg::DKGNode;
 use crate::types::ChannelMessage;
 use crate::user_intent_manager::UserIntentManager;
 
-use super::types::NetworkLayer;
+use super::types::MpcNetworkLayer;
 
-impl NetworkLayer {
+impl MpcNetworkLayer {
     /// Get mutable reference to DKG node
     pub fn get_dkg_node(&mut self) -> Option<&mut DKGNode> {
         self.dkg_node.as_mut()

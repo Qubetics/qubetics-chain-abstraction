@@ -12,10 +12,12 @@ use tracing::info;
 use crate::database::{keys, Database};
 use crate::node_selection::NodeMembership;
 
-use super::types::{DatabaseSyncState, MPCBehaviour, NetworkLayer};
+use super::types::{
+    DatabaseSyncState, MpcNetworkBehaviour, MpcNetworkLayer, PeerDiscoveryState, MPC_TOPICS,
+};
 
-impl NetworkLayer {
-    /// Create a new NetworkLayer instance
+impl MpcNetworkLayer {
+    /// Create a new MpcNetworkLayer instance
     pub async fn new(node_manager: Box<dyn NodeMembership>, db: Database) -> Result<Self> {
         // Load or create persistent keypair
         let (local_key, local_peer_id) = Self::load_or_create_keypair().await?;
@@ -36,12 +38,10 @@ impl NetworkLayer {
             node_manager,
             scheduled_dkg_task: None,
             vrf_round_requested: false,
-            peer_indices: std::collections::HashMap::new(),
+            peer_discovery: PeerDiscoveryState::new(),
             db,
             db_sync_state: DatabaseSyncState::new(),
-            pending_peer_discovery_retry: false,
             needs_database_sync: false,
-            processed_disconnects: std::collections::HashMap::new(),
         };
 
         // Preload any persisted peer indices into memory
@@ -50,7 +50,7 @@ impl NetworkLayer {
                 if let Some(peer_str) = k.strip_prefix(keys::PEER_INDEX) {
                     if let Ok(Some(idx)) = this.db.get_string::<usize>(&k) {
                         if let Ok(pid) = peer_str.parse() {
-                            this.peer_indices.insert(pid, idx);
+                            this.peer_discovery.peer_indices.insert(pid, idx);
                         }
                     }
                 }
@@ -66,46 +66,25 @@ impl NetworkLayer {
     /// Subscribe to default gossipsub topics
     pub(crate) fn subscribe_to_default_topics(
         &mut self,
-        swarm: &mut libp2p::Swarm<MPCBehaviour>,
+        swarm: &mut libp2p::Swarm<MpcNetworkBehaviour>,
     ) -> Result<()> {
-        use crate::types::dkg::{MSG_TOPIC_DKG, MSG_TOPIC_PEER_DISCOVERY};
         use tracing::warn;
 
-        let topics = vec![
-            MSG_TOPIC_DKG,
-            MSG_TOPIC_PEER_DISCOVERY,
-            "signing",
-            "consensus",
-            "commands",
-            "vrf-selection",
-            "transactions",
-            "deposit-intents",
-            "intent-hashes",
-            "dkg-commands",
-            "signatures-to-final-node",
-            "user-registrations",
-            "solver-rewards",
-            "claim-rewards",
-            "transaction-id-sync",
-            "consensus-result",
-            "transaction-error-sync",
-            "dkg",
-        ];
-        
-        for topic in topics {
-            let topic_hash = gossipsub::IdentTopic::new(topic);
-            info!("🔔 Attempting to subscribe to topic: {}", topic);
+        for topic in MPC_TOPICS {
+            let topic_str = topic.as_str();
+            let topic_hash = gossipsub::IdentTopic::new(topic_str);
+            info!("🔔 Attempting to subscribe to topic: {}", topic_str);
             info!("🔔 Topic hash: {:?}", topic_hash.hash());
 
             let res = swarm.behaviour_mut().gossipsub.subscribe(&topic_hash);
             match res {
                 Ok(_) => {
-                    info!("✅ Successfully subscribed to topic: {}", topic);
+                    info!("✅ Successfully subscribed to topic: {}", topic_str);
                 }
                 Err(err) => {
                     warn!(
                         "❌ Failed to subscribe to topic: {} with error {:?}",
-                        topic, err
+                        topic_str, err
                     );
                 }
             }
@@ -120,9 +99,7 @@ impl NetworkLayer {
     }
 
     /// Build swarm with configured behavior
-    pub(crate) fn build_swarm(
-        &self,
-    ) -> Result<libp2p::Swarm<MPCBehaviour>> {
+    pub(crate) fn build_swarm(&self) -> Result<libp2p::Swarm<MpcNetworkBehaviour>> {
         use crate::types::rpc::build_mpc_behaviour;
         use kad::{store::MemoryStore, BucketInserts};
 
@@ -187,7 +164,7 @@ impl NetworkLayer {
 
                 let request_response = build_mpc_behaviour();
 
-                Ok(MPCBehaviour {
+                Ok(MpcNetworkBehaviour {
                     gossipsub,
                     request_response,
                     kademlia,

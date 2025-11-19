@@ -38,4 +38,4 @@ mod gossipsub_handler;
 mod channel_handler;
 
 // Re-export main types for public API
-pub use types::{DatabaseSyncState, MPCBehaviour, NetworkEvent, NetworkLayer};
+pub use types::{DatabaseSyncState, MpcNetworkBehaviour, NetworkEvent, MpcNetworkLayer};

@@ -14,14 +14,14 @@ use crate::{
     user_intent_manager::TransactionStatus,
 };
 
-use super::types::{MPCBehaviour, NetworkLayer};
+use super::types::{MpcNetworkBehaviour, MpcNetworkLayer};
 
-impl NetworkLayer {
+impl MpcNetworkLayer {
     // ChannelMessage is related to the MPSC channel only
     pub(crate) async fn handle_channel_message(
         &mut self,
         message: ChannelMessage,
-        swarm: &mut libp2p::Swarm<MPCBehaviour>,
+        swarm: &mut libp2p::Swarm<MpcNetworkBehaviour>,
     ) -> Result<()> {
         info!("[handle_channel_message()] {:?}", message);
         match message {
@@ -30,7 +30,7 @@ impl NetworkLayer {
                     "Received peer discovery retry notification (attempt {})",
                     attempt
                 );
-                if !self.pending_peer_discovery_retry {
+                if !self.peer_discovery.pending_peer_discovery_retry {
                     info!(
                         "Received stale peer discovery retry notification (attempt {}), ignoring",
                         attempt
@@ -38,7 +38,7 @@ impl NetworkLayer {
                     return Ok(());
                 }
 
-                self.pending_peer_discovery_retry = false;
+                self.peer_discovery.pending_peer_discovery_retry = false;
 
                 if self.has_additional_peers() {
                     info!(

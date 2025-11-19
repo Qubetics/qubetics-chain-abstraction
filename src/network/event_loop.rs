@@ -8,9 +8,9 @@ use tracing::{error, info, warn};
 
 use crate::threshold_dkg::DKGStatus;
 
-use super::types::{MPCBehaviour, NetworkLayer};
+use super::types::{MpcNetworkBehaviour, MpcNetworkLayer};
 
-impl NetworkLayer {
+impl MpcNetworkLayer {
     /// Start the network event loop
     pub async fn start(&mut self) -> Result<()> {
         let mut swarm = self.build_swarm()?;
@@ -98,7 +98,7 @@ impl NetworkLayer {
     }
 
     /// Dial addresses provided via command line arguments
-    fn dial_command_line_addresses(&self, swarm: &mut libp2p::Swarm<MPCBehaviour>) {
+    fn dial_command_line_addresses(&self, swarm: &mut libp2p::Swarm<MpcNetworkBehaviour>) {
         let args: Vec<String> = std::env::args().collect();
         if args.len() >= 2 {
             // Parse all addresses from command line arguments
@@ -137,7 +137,7 @@ impl NetworkLayer {
         let peers = self.node_manager.get_active_nodes();
         let mut entries: Vec<String> = Vec::new();
         for p in &peers {
-            let idx = match self.peer_indices.get(p).cloned() {
+            let idx = match self.peer_discovery.peer_indices.get(p).cloned() {
                 Some(i) => Some(i),
                 None => {
                     let key = crate::database::key_utils::peer_index_key(&p.to_string());
@@ -161,7 +161,7 @@ impl NetworkLayer {
     }
 
     /// Perform periodic peer discovery
-    fn perform_periodic_peer_discovery(&mut self, swarm: &mut libp2p::Swarm<MPCBehaviour>) {
+    fn perform_periodic_peer_discovery(&mut self, swarm: &mut libp2p::Swarm<MpcNetworkBehaviour>) {
         info!("🔄 Performing periodic peer discovery...");
 
         // Debug: Show current state before discovery
@@ -200,7 +200,7 @@ impl NetworkLayer {
         // Proactively request indices from peers we lack index for
         let active = self.node_manager.get_active_nodes();
         for p in active {
-            let known = self.peer_indices.contains_key(&p) || {
+            let known = self.peer_discovery.peer_indices.contains_key(&p) || {
                 let key = crate::database::key_utils::peer_index_key(&p.to_string());
                 self.db.get_string::<usize>(&key).ok().flatten().is_some()
             };

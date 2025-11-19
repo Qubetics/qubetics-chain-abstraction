@@ -3,9 +3,9 @@ use tracing::info;
 
 use crate::types::ChannelMessage;
 
-use super::types::NetworkLayer;
+use super::types::MpcNetworkLayer;
 
-impl NetworkLayer {
+impl MpcNetworkLayer {
     /// Schedule DKG to start at a specific Unix timestamp
     pub(crate) fn schedule_dkg_at(&mut self, start_time_unix: u64) {
         if let Some(prev) = self.scheduled_dkg_task.take() {

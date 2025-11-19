@@ -11,9 +11,9 @@ use crate::types::p2p::SerializablePeerId;
 use crate::types::rpc::{RPCRequest, RPCResponse};
 use crate::types::PeerInfo;
 
-use super::types::{MPCBehaviour, NetworkLayer};
+use super::types::{MpcNetworkBehaviour, MpcNetworkLayer};
 
-impl NetworkLayer {
+impl MpcNetworkLayer {
     /// Handle RPC requests from peers
     pub(crate) async fn handle_rpc_request(
         &mut self,
@@ -75,14 +75,14 @@ impl NetworkLayer {
         // 🔧 FIX: Update peer_indices mapping for all peers before sending
         // This ensures peer_indices stays in sync with the database
         for SerializablePeerId(pid) in &peers {
-            if !self.peer_indices.contains_key(pid) {
+            if !self.peer_discovery.peer_indices.contains_key(pid) {
                 // Load from database if not in peer_indices
                 if let Some(db_idx) = self.get_index_from_db(pid) {
                     info!(
                         "🔢 [PEER_LIST_SEND] Loaded index {} for peer {} from database",
                         db_idx, pid
                     );
-                    self.peer_indices.insert(pid.clone(), db_idx);
+                    self.peer_discovery.peer_indices.insert(pid.clone(), db_idx);
                 }
             }
         }
@@ -91,7 +91,7 @@ impl NetworkLayer {
         let indices: Vec<Option<usize>> = peers
             .iter()
             .map(|SerializablePeerId(pid)| {
-                if let Some(idx) = self.peer_indices.get(pid).cloned() {
+                if let Some(idx) = self.peer_discovery.peer_indices.get(pid).cloned() {
                     Some(idx)
                 } else {
                     let key = key_utils::peer_index_key(&pid.to_string());
@@ -102,7 +102,7 @@ impl NetworkLayer {
                                 "🔢 [PEER_LIST_SEND] Loading index {} for peer {} from database",
                                 idx, pid
                             );
-                            self.peer_indices.insert(pid.clone(), idx);
+                            self.peer_discovery.peer_indices.insert(pid.clone(), idx);
                             Some(idx)
                         }
                         _ => None,
@@ -317,7 +317,7 @@ impl NetworkLayer {
     /// Handle RPC responses from peers
     pub(crate) async fn handle_rpc_response(
         &mut self,
-        swarm: &mut libp2p::Swarm<MPCBehaviour>,
+        swarm: &mut libp2p::Swarm<MpcNetworkBehaviour>,
         peer: PeerId,
         response: RPCResponse,
     ) -> Result<()> {
@@ -387,7 +387,7 @@ impl NetworkLayer {
     /// Handle PeerList RPC response
     async fn handle_peer_list_response(
         &mut self,
-        swarm: &mut libp2p::Swarm<MPCBehaviour>,
+        swarm: &mut libp2p::Swarm<MpcNetworkBehaviour>,
         peers: Vec<SerializablePeerId>,
         indices: Vec<Option<usize>>,
     ) -> Result<()> {
@@ -415,7 +415,7 @@ impl NetworkLayer {
                 // Index provided in peer list - use it and persist to database
                 info!("🔢 [PEER_LIST] Using index {} for peer {} from peer list", idx, p);
                 Some(idx)
-            } else if let Some(existing_idx) = self.peer_indices.get(&p).cloned() {
+            } else if let Some(existing_idx) = self.peer_discovery.peer_indices.get(&p).cloned() {
                 // Already in peer_indices - keep it
                 info!("🔢 [PEER_LIST] Using existing index {} for peer {} from peer_indices", existing_idx, p);
                 Some(existing_idx)
@@ -431,7 +431,7 @@ impl NetworkLayer {
 
             // Update peer_indices and persist to database if we have an index
             if let Some(idx) = index_to_use {
-                self.peer_indices.insert(p.clone(), idx);
+                self.peer_discovery.peer_indices.insert(p.clone(), idx);
                 let key = key_utils::peer_index_key(&p.to_string());
                 if let Err(e) = self.db.put_string(&key, &idx) {
                     warn!("❌ [PEER_LIST] Failed to persist peer index {} for peer {}: {:?}", idx, p, e);
@@ -443,7 +443,7 @@ impl NetworkLayer {
 
         info!(
             "📊 [PEER_LIST] Updated peer_indices mapping: {} entries",
-            self.peer_indices.len()
+            self.peer_discovery.peer_indices.len()
         );
 
         // After learning about all peers, check if this is a new node joining existing network
@@ -455,7 +455,7 @@ impl NetworkLayer {
     /// Check if this is a new node joining an existing network
     async fn handle_new_node_joining_check(
         &mut self,
-        swarm: &mut libp2p::Swarm<MPCBehaviour>,
+        swarm: &mut libp2p::Swarm<MpcNetworkBehaviour>,
     ) -> Result<()> {
         let (should_sync, sync_peer_opt, new_node_index_opt, needs_retry) =
             if let Some(dkg_node) = &mut self.dkg_node {
@@ -501,7 +501,7 @@ impl NetworkLayer {
                     } else {
                         // This is a truly NEW node - assign max_index + 1
                         let all_assigned_indices: Vec<usize> =
-                            self.peer_indices.values().cloned().collect();
+                            self.peer_discovery.peer_indices.values().cloned().collect();
                         let max_index = all_assigned_indices.iter().max().cloned().unwrap_or(0);
                         let final_index = max_index + 1;
                         info!("🆕 [NEW_NODE] Assigned permanent index: {} (max_existing={}, total_nodes={})", 

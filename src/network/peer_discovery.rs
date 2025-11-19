@@ -7,9 +7,9 @@ use crate::database::{key_utils, keys};
 use crate::types::{ChannelMessage, GossipsubMessage};
 use crate::types::dkg::MSG_TOPIC_PEER_DISCOVERY;
 
-use super::types::NetworkLayer;
+use super::types::MpcNetworkLayer;
 
-impl NetworkLayer {
+impl MpcNetworkLayer {
     /// Get maximum peer index from database
     pub(crate) fn get_max_peer_index_from_db(&self) -> usize {
         if let Ok(keys) = self
@@ -47,14 +47,14 @@ impl NetworkLayer {
         if let Err(e) = self.db.put_string(&key, &next) {
             warn!("Failed to persist peer index: {:?}", e);
         }
-        self.peer_indices.insert(pid.clone(), next);
+        self.peer_discovery.peer_indices.insert(pid.clone(), next);
         next
     }
 
     /// Ensure local peer has an assigned index
     pub(crate) fn ensure_local_index(&mut self) -> usize {
         if let Some(idx) = self.get_index_from_db(&self.local_peer_id) {
-            self.peer_indices.insert(self.local_peer_id.clone(), idx);
+            self.peer_discovery.peer_indices.insert(self.local_peer_id.clone(), idx);
             return idx;
         }
         // If no peers indexed yet, start at 1; otherwise next max+1
@@ -64,7 +64,7 @@ impl NetworkLayer {
         if let Err(e) = self.db.put_string(&key, &idx) {
             warn!("Failed to persist local index: {:?}", e);
         }
-        self.peer_indices.insert(self.local_peer_id.clone(), idx);
+        self.peer_discovery.peer_indices.insert(self.local_peer_id.clone(), idx);
         idx
     }
 
@@ -102,11 +102,11 @@ impl NetworkLayer {
                 "⚠️ Maximum peer discovery retry attempts ({}) reached; giving up for now",
                 Self::MAX_PEER_DISCOVERY_RETRIES
             );
-            self.pending_peer_discovery_retry = false;
+            self.peer_discovery.pending_peer_discovery_retry = false;
             return;
         }
 
-        if self.pending_peer_discovery_retry {
+        if self.peer_discovery.pending_peer_discovery_retry {
             info!(
                 "⏳ Peer discovery retry already scheduled (attempt {})",
                 attempt
@@ -114,7 +114,7 @@ impl NetworkLayer {
             return;
         }
 
-        self.pending_peer_discovery_retry = true;
+        self.peer_discovery.pending_peer_discovery_retry = true;
         info!(
             "⏱️ Scheduling peer discovery retry attempt {} in 1 second",
             attempt
@@ -137,12 +137,13 @@ impl NetworkLayer {
     /// Broadcast local node presence to the network
     pub(crate) async fn broadcast_local_presence(&mut self) -> Result<()> {
         let my_index = self
+            .peer_discovery
             .peer_indices
             .get(&self.local_peer_id)
             .cloned()
             .unwrap_or_else(|| self.node_manager.get_total_nodes());
 
-        if let Some(idx) = self.peer_indices.get(&self.local_peer_id).cloned() {
+        if let Some(idx) = self.peer_discovery.peer_indices.get(&self.local_peer_id).cloned() {
             let key = key_utils::peer_index_key(&self.local_peer_id.to_string());
             if let Err(e) = self.db.put_string(&key, &idx) {
                 warn!("Failed to persist my index: {:?}", e);

@@ -48,7 +48,7 @@ impl DKGNode {
         Ok(())
     }
 
-    pub(super) fn generate_polynomial(&self) -> Result<Vec<Scalar>> {
+    pub(crate) fn generate_polynomial(&self) -> Result<Vec<Scalar>> {
         let mut rng = OsRng;
         let mut coefficients = Vec::with_capacity(self.threshold);
 
@@ -67,7 +67,7 @@ impl DKGNode {
         Ok(coefficients)
     }
 
-    pub(super) fn generate_shares(&self, polynomial: &[Scalar]) -> Result<Vec<KeyShare>> {
+    pub(crate) fn generate_shares(&self, polynomial: &[Scalar]) -> Result<Vec<KeyShare>> {
         info!("🔍 [DKG] === SECRET SHARE GENERATION ===");
         info!(
             "📊 [DKG] Node {} generating shares for {} nodes",
@@ -128,7 +128,7 @@ impl DKGNode {
         Ok(shares)
     }
 
-    pub(super) fn generate_shares_for_indices(
+    pub(crate) fn generate_shares_for_indices(
         &self,
         polynomial: &[Scalar],
         indices: &[usize],
@@ -179,7 +179,7 @@ impl DKGNode {
         Ok(shares)
     }
 
-    pub(super) fn generate_commitments(
+    pub(crate) fn generate_commitments(
         &self,
         polynomial: &[Scalar],
     ) -> Result<Vec<SerializablePoint>> {

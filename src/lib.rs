@@ -1,9 +1,5 @@
 
-#[allow(dead_code)]
-#[allow(unused_imports)]
-#[allow(non_snake_case)]
-#[allow(unused_variables)]
-pub mod adkg_secp256k1;
+
 pub mod chain_abstraction;
 pub mod commands;
 pub mod consensus;
@@ -31,7 +27,7 @@ pub use database::{
     SigningStorage, TransactionStatusStorage, UserStorage,
 };
 pub use intent_manager::prepare_unsigned_eip1559_tx;
-pub use network::NetworkLayer;
+pub use network::MpcNetworkLayer;
 pub use node_selection::{
     BasicNodeManager, DefaultThresholdCalculator, NodeMembership, ThresholdCalculator,
     VrfNodeManager, VrfNodeManagerConfig,

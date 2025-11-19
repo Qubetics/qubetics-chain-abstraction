@@ -5,9 +5,9 @@ use tracing::{info, warn};
 
 use crate::database::{keys, Database, DatabaseConfig};
 
-use super::types::NetworkLayer;
+use super::types::MpcNetworkLayer;
 
-impl NetworkLayer {
+impl MpcNetworkLayer {
     /// Load existing keypair from database or create a new one
     pub async fn load_or_create_keypair() -> Result<(Keypair, PeerId)> {
         // Create database connection

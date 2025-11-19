@@ -15,14 +15,14 @@ use crate::types::dkg::MSG_TOPIC_PEER_DISCOVERY;
 use crate::types::rpc::{MPCProtocol, RPCRequest};
 use crate::types::{ChannelMessage, GossipsubMessage};
 
-use super::types::{MPCBehaviour, NetworkEvent, NetworkLayer};
+use super::types::{MpcNetworkBehaviour, NetworkEvent, MpcNetworkLayer};
 
-impl NetworkLayer {
+impl MpcNetworkLayer {
     /// Main swarm event handler - delegates to specific handlers
     pub(crate) async fn handle_swarm_event(
         &mut self,
         event: SwarmEvent<NetworkEvent>,
-        swarm: &mut libp2p::Swarm<MPCBehaviour>,
+        swarm: &mut libp2p::Swarm<MpcNetworkBehaviour>,
     ) -> Result<()> {
         info!("[SWARM EVENT] {:?}", event);
         match event {
@@ -88,7 +88,7 @@ impl NetworkLayer {
     /// Handle connection established event
     async fn handle_connection_established(
         &mut self,
-        swarm: &mut libp2p::Swarm<MPCBehaviour>,
+        swarm: &mut libp2p::Swarm<MpcNetworkBehaviour>,
         peer_id: PeerId,
         endpoint: libp2p::core::ConnectedPoint,
     ) -> Result<()> {
@@ -227,7 +227,7 @@ impl NetworkLayer {
     /// Handle request-response events
     async fn handle_request_response_event(
         &mut self,
-        swarm: &mut libp2p::Swarm<MPCBehaviour>,
+        swarm: &mut libp2p::Swarm<MpcNetworkBehaviour>,
         event: libp2p::request_response::Event<
             crate::types::rpc::RPCRequest,
             crate::types::rpc::RPCResponse,
@@ -405,24 +405,25 @@ impl NetworkLayer {
                     other_peers_in_manager.len(),
                     other_peers_in_db
                 );
-                self.pending_peer_discovery_retry = false;
+                self.peer_discovery.pending_peer_discovery_retry = false;
             }
 
             // Update peer_indices mapping for all active peers before logging
             info!("🔢 Active nodes: {:?}", active_nodes);
             for pid in &active_nodes {
-                if !self.peer_indices.contains_key(pid) {
+                if !self.peer_discovery.peer_indices.contains_key(pid) {
                     if let Some(db_idx) = self.get_index_from_db(pid) {
                         info!("🔢 Loaded index {} for peer {} from database", db_idx, pid);
-                        self.peer_indices.insert(pid.clone(), db_idx);
+                        self.peer_discovery.peer_indices.insert(pid.clone(), db_idx);
                     }
                 }
             }
 
-            let existing_peer_count = self.peer_indices.len();
+            let existing_peer_count = self.peer_discovery.peer_indices.len();
             info!("📊 Existing peers count: {}", existing_peer_count);
             if existing_peer_count > 0 {
                 let existing_peers: Vec<(String, usize)> = self
+                    .peer_discovery
                     .peer_indices
                     .iter()
                     .map(|(pid, idx)| (pid.to_string(), *idx))

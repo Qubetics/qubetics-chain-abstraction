@@ -9,9 +9,9 @@ use crate::signing::{DatabaseSigningNode, SigningNode};
 use crate::threshold_dkg::DKGNode;
 use crate::user_intent_manager::UserIntentManager;
 
-use super::types::NetworkLayer;
+use super::types::MpcNetworkLayer;
 
-impl NetworkLayer {
+impl MpcNetworkLayer {
     /// Set the DKG node
     pub fn set_dkg_node(&mut self, dkg_node: DKGNode) {
         self.dkg_node = Some(dkg_node);
