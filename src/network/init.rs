@@ -170,6 +170,10 @@ impl MpcNetworkLayer {
                 let message_id_fn = |message: &gossipsub::Message| {
                     let mut s = DefaultHasher::new();
                     message.data.hash(&mut s);
+                    message.topic.hash(&mut s);
+                    message.source.hash(&mut s);
+                    message.sequence_number.hash(&mut s);
+
                     gossipsub::MessageId::from(s.finish().to_string())
                 };
 
