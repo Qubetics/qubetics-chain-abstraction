@@ -43,6 +43,7 @@ impl MpcNetworkLayer {
         swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
         swarm.listen_on("/ip4/0.0.0.0/udp/0/quic-v1".parse()?)?;
 
+        self.dial_seed_addresses(&mut swarm);
         // Dial command-line provided addresses
         self.dial_command_line_addresses(&mut swarm);
 
@@ -128,6 +129,26 @@ impl MpcNetworkLayer {
                         info!("Successfully initiated dial to: {}", addr);
                     }
                 }
+            }
+        }
+    }
+
+    /// Dial any configured seed addresses to accelerate mesh convergence
+    fn dial_seed_addresses(&self, swarm: &mut libp2p::Swarm<MpcNetworkBehaviour>) {
+        let mut dialed = std::collections::HashSet::new();
+
+        for addr in self
+            .bootstrap_addresses
+            .iter()
+            .chain(self.discovery_seeds.iter())
+        {
+            if !dialed.insert(addr.clone()) {
+                continue;
+            }
+
+            info!("Dialing configured seed: {}", addr);
+            if let Err(e) = swarm.dial(addr.clone()) {
+                warn!("Failed to dial seed {}: {}", addr, e);
             }
         }
     }

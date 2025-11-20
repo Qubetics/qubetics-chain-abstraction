@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use libp2p::PeerId;
 use std::time::Duration;
 use tracing::{info, warn};
@@ -165,7 +165,17 @@ impl MpcNetworkLayer {
             sequence: Some(1),
             index: Some(tentative_index),
         };
-        let payload = serde_json::to_vec(&msg).expect("serialize PeerDiscovered");
+
+        let payload = match serde_json::to_vec(&msg) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                warn!(
+                    "❌ Failed to serialize peer discovery announcement for {}: {}",
+                    peer_id, err
+                );
+                return Err(anyhow!(err));
+            }
+        };
 
         match self.broadcast(MSG_TOPIC_PEER_DISCOVERY, &payload).await {
             Ok(_) => {
