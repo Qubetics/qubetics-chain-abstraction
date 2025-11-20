@@ -1459,24 +1459,6 @@ impl DKGNode {
             }
             
             info!("🏦 [NEW_NODE] === VAULT GENERATION COMPLETED ===");
-            
-            // Trigger polynomial refresh after new node completes
-            info!("🔄 [NEW_NODE] New node setup complete, triggering polynomial refresh");
-            
-            // Broadcast trigger to other nodes
-            match self.trigger_polynomial_refresh().await {
-                Ok(should_execute_locally) => {
-                    if should_execute_locally {
-                        info!("🔄 [NEW_NODE] Executing refresh locally (won't receive own broadcast)");
-                        if let Err(e) = self.execute_polynomial_refresh(node_manager).await {
-                            warn!("⚠️ [NEW_NODE] Failed to execute local refresh: {}", e);
-                        }
-                    }
-                }
-                Err(e) => {
-                    warn!("⚠️ [NEW_NODE] Failed to trigger polynomial refresh: {}", e);
-                }
-            }
         }
         
         Ok(())
@@ -1528,6 +1510,11 @@ impl DKGNode {
         info!("🔄 [REFRESH] EXECUTING POLYNOMIAL REFRESH");
         info!("🔄 [REFRESH] ═══════════════════════════════════════════════════");
         info!("🔄 [REFRESH] Node: {}", self.id);
+        
+        // GUARD: Check if we have a permanent index
+        if self.my_permanent_index.is_none() {
+            return Err(anyhow!("Cannot execute refresh: permanent index not set. Node must complete initial DKG first."));
+        }
         
         // Get all active nodes and their indices from database (DB-first ordering)
         let active_nodes: Vec<String> = node_manager
@@ -1636,6 +1623,15 @@ impl DKGNode {
         info!("🔄 [REFRESH] ═══════════════════════════════════════════════════");
         info!("📦 [REFRESH] Received {} shares, {} commitments", shares.len(), commitments.len());
         
+        // GUARD: Check if we have a permanent index yet
+        // If not, this node hasn't completed initial DKG or join protocol yet
+        // In this case, we should ignore refresh shares as we're not part of the group yet
+        if self.my_permanent_index.is_none() {
+            warn!("⏭️ [REFRESH] Ignoring refresh share from {} - permanent index not set yet (node still initializing or joining)", from);
+            warn!("⏭️ [REFRESH] This node needs to complete initial DKG or join protocol first");
+            return Ok(());
+        }
+        
         // Log all received shares to see what indices they have
         info!("🔍 [REFRESH] All shares received from {}:", from);
         for share in &shares {
@@ -1654,8 +1650,8 @@ impl DKGNode {
         info!("✅ [REFRESH] All refresh shares verified successfully from {}", from);
         
         // CRITICAL: Use permanent index, not recalculated sorted position!
-        let my_index = self.my_permanent_index
-            .ok_or_else(|| anyhow!("Permanent index not set during refresh share handling"))?;
+        // Safe to unwrap here because we checked above
+        let my_index = self.my_permanent_index.unwrap();
         
         info!("🔍 [REFRESH] My permanent index: {}", my_index);
         info!("🔍 [REFRESH] Looking for share with index {} in received shares...", my_index);
@@ -1722,6 +1718,11 @@ impl DKGNode {
         info!("🔄 [REFRESH] COMPUTING REFRESHED SECRET SHARE");
         info!("🔄 [REFRESH] ═══════════════════════════════════════════════════");
         
+        // GUARD: This should never happen if handle_refresh_share guards properly, but check anyway
+        if self.my_permanent_index.is_none() {
+            return Err(anyhow!("Cannot compute refresh: permanent index not set"));
+        }
+        
         // Get ORIGINAL secret before refresh
         let original_secret = self.storage.get_final_secret().await?
             .ok_or_else(|| anyhow!("No original secret found"))?;
@@ -1732,8 +1733,8 @@ impl DKGNode {
         info!("📊 [REFRESH]   Original secret share: {:?}", original_secret);
         info!("📊 [REFRESH]   Original public key: {:?}", original_public);
         
-        let my_index = self.my_permanent_index
-            .ok_or_else(|| anyhow!("Permanent index not set"))?;
+        // Safe to unwrap here because we checked above
+        let my_index = self.my_permanent_index.unwrap();
         info!("📊 [REFRESH]   My permanent index: {}", my_index);
         
         // Get all refresh shares

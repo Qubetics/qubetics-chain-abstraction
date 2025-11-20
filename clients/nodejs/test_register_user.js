@@ -478,9 +478,7 @@ async function testUserMpcDepositWithTxId({ wallet, amount, txId, status }) {
 
     // Show transaction ID if available
     if (response.data.network_to_target_tx_id) {
-      log(`   🎯 Transaction ID: ${response.data.network_to_target_tx_id
-
-      }`, 'green');
+      log(`   🎯 Transaction ID: ${response.data.network_to_target_tx_id}`, 'green');
     } else {
       log(`   🎯 Transaction ID: Not available yet`, 'yellow');
     }
@@ -582,7 +580,7 @@ async function runTests() {
   const signerAddr = await wallet.getAddress();
   log(`\n🔑 Derived signer address from TEST_PRIVKEY: ${signerAddr}`, 'blue');
 
-  // // 1) DKG status
+  // 1) DKG status
   // await testDKGStatus();
 
   // // 2) Register ONLY the derived address 

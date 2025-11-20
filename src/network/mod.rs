@@ -1,19 +1,11 @@
 use anyhow::Result;
 use futures::StreamExt;
 use std::sync::Arc;
-use ethers::{
-    abi::Token,
-    providers::{Http, Provider},
-    types::{Address, U256},
-};
-use std::str::FromStr;
-use crate::prepare_unsigned_eip1559_tx;
 use libp2p::{
     core::ConnectedPoint, gossipsub::{self, Message, TopicHash}, identity::Keypair, kad::{self, store::MemoryStore, BucketInserts, Event as KademliaEvent}, multiaddr::Protocol, noise, request_response::{
         cbor::Behaviour as CborReqRespBehaviour, Event as ReqRespEvent, Message as ReqRespMessage,
     }, swarm::{ConnectionError, NetworkBehaviour, SwarmEvent}, tcp, yamux, Multiaddr, PeerId
 };
-use sha2::Digest as Sha2Digest;
 
 use std::{
     collections::hash_map::DefaultHasher,
@@ -31,8 +23,8 @@ use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, error, info, warn};
 use ff::PrimeField;
 
-use crate::{chain::EthereumTransaction, commands::CommandProcessor, rpc_server::DummyTransaction, utils::transaction::get_default_gas_price_for_chain};
-use crate::database::{Database, DatabaseConfig, key_utils, keys};
+use crate::{chain::EthereumTransaction, commands::CommandProcessor, utils::transaction::get_default_gas_price_for_chain};
+use crate::database::{Database, key_utils, keys};
 use crate::consensus::ConsensusNode;
 use crate::adkg_secp256k1::DKGNode;
 use crate::node_management::NodeMembership;
@@ -163,10 +155,20 @@ pub struct NetworkLayer {
     pending_peer_discovery_retry: bool,
     // Track processed disconnects to prevent duplicate processing
     processed_disconnects: std::collections::HashMap<PeerId, std::time::Instant>,
+    // Track restricted nodes (disconnected, waiting for next periodic refresh)
+    restricted_nodes: std::collections::HashSet<PeerId>,
+    // Track nodes pending reconnection (reconnected, waiting for next periodic refresh to unrestrict)
+    pending_reconnects: std::collections::HashSet<PeerId>,
+    // Track new nodes pending join (waiting for next periodic refresh to get shares)
+    pending_joins: std::collections::HashSet<PeerId>,
+    // Handle for the periodic connection check task
+    connection_check_task: Option<JoinHandle<()>>,
 }
 
 impl NetworkLayer {
     const MAX_PEER_DISCOVERY_RETRIES: u8 = 10;
+    const PERIODIC_REFRESH_INTERVAL_SECS: u64 = 600; // 10 minutes
+    const NEW_NODE_SHARE_COLLECTION_DELAY_SECS: u64 = 10; // Wait time for new nodes to collect shares before refresh
 
     fn get_max_peer_index_from_db(&self) -> usize {
         if let Ok(keys) = self.db.get_keys_with_prefix(crate::database::keys::PEER_INDEX) {
@@ -209,6 +211,20 @@ impl NetworkLayer {
         if let Err(e) = self.db.put_string(&key, &idx) { warn!("Failed to persist local index: {:?}", e); }
         self.peer_indices.insert(self.local_peer_id.clone(), idx);
         idx
+    }
+
+    /// Get active nodes that can participate in DKG/signing (excludes restricted, pending reconnects, and pending joins)
+    fn get_participating_nodes(&self) -> Vec<PeerId> {
+        self.node_manager
+            .get_active_nodes()
+            .into_iter()
+            .filter(|peer_id| {
+                // Exclude restricted nodes, pending reconnects, and pending joins
+                !self.restricted_nodes.contains(peer_id) 
+                    && !self.pending_reconnects.contains(peer_id)
+                    && !self.pending_joins.contains(peer_id)
+            })
+            .collect()
     }
 
     fn has_additional_peers(&self) -> bool {
@@ -338,6 +354,10 @@ impl NetworkLayer {
             pending_peer_discovery_retry: false,
             needs_database_sync: false,
             processed_disconnects: std::collections::HashMap::new(),
+            restricted_nodes: std::collections::HashSet::new(),
+            pending_reconnects: std::collections::HashSet::new(),
+            pending_joins: std::collections::HashSet::new(),
+            connection_check_task: None,
         };
 
         // Preload any persisted peer indices into memory
@@ -723,7 +743,6 @@ impl NetworkLayer {
         }
 
         // Start a task to check if this is the first node after bootstrap attempts
-        let tx_clone = self.message_tx.clone();
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_secs(3)).await;
         });
@@ -771,6 +790,9 @@ impl NetworkLayer {
             }
         }
         info!("Local Peer ID: {}", self.local_peer_id);
+
+        // Start the periodic connection check
+        self.start_periodic_connection_check();
 
         loop {
             tokio::select! {
@@ -961,7 +983,7 @@ impl NetworkLayer {
 
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or(Duration::from_secs(0))
             .as_secs();
         let delay = start_time_unix.saturating_sub(now);
 
@@ -975,6 +997,63 @@ impl NetworkLayer {
 
         self.scheduled_dkg_task = Some(handle);
         info!("✅ Scheduled DKG to start at {}", start_time_unix);
+    }
+
+    /// Start the periodic connection check that runs at synchronized intervals
+    fn start_periodic_connection_check(&mut self) {
+        // Cancel any existing periodic check task
+        if let Some(prev) = self.connection_check_task.take() {
+            info!("⏰ Cancelling previous periodic connection check task");
+            prev.abort();
+        }
+
+        let tx = self.message_tx.clone();
+        let interval_secs = Self::PERIODIC_REFRESH_INTERVAL_SECS;
+        let handle = tokio::spawn(async move {
+            // Calculate the next boundary based on Unix epoch
+            // This ensures ALL nodes fire at the same wall-clock time
+            let interval_mins = interval_secs / 60;
+            
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or(Duration::from_secs(0))
+                .as_secs();
+            
+            // Calculate seconds since last boundary
+            let elapsed_in_interval = now % interval_secs;
+            
+            // Calculate seconds until next boundary
+            let initial_delay = interval_secs - elapsed_in_interval;
+            
+            info!("⏰ [GLOBAL_CLOCK] Current time: {} seconds since epoch", now);
+            info!("⏰ [GLOBAL_CLOCK] Next {}-minute boundary in {} seconds", interval_mins, initial_delay);
+            info!("⏰ [GLOBAL_CLOCK] All nodes will sync to fire at boundary times");
+            
+            // Sleep until the next boundary
+            tokio::time::sleep(Duration::from_secs(initial_delay)).await;
+            
+            // First trigger at the boundary
+            info!("⏰ [GLOBAL_CLOCK] Reached {}-minute boundary! All nodes firing simultaneously", interval_mins);
+            if let Err(e) = tx.send(ChannelMessage::PeriodicConnectionCheck).await {
+                error!("❌ [GLOBAL_CLOCK] Failed to send periodic check message: {}", e);
+                return;
+            }
+            
+            // Now continue with exact intervals
+            loop {
+                tokio::time::sleep(Duration::from_secs(interval_secs)).await;
+                
+                info!("⏰ [GLOBAL_CLOCK] {}-minute boundary reached, all nodes firing simultaneously", interval_mins);
+                
+                if let Err(e) = tx.send(ChannelMessage::PeriodicConnectionCheck).await {
+                    error!("❌ [GLOBAL_CLOCK] Failed to send periodic check message: {}", e);
+                    break;
+                }
+            }
+        });
+
+        self.connection_check_task = Some(handle);
+        info!("✅ [GLOBAL_CLOCK] Started global synchronized periodic check (every {} minutes at boundary times)", Self::PERIODIC_REFRESH_INTERVAL_SECS / 60);
     }
 
     async fn handle_swarm_event(
@@ -1003,12 +1082,22 @@ impl NetworkLayer {
                 let remote_addr = endpoint.get_remote_address();
                 info!("📍 Remote address: {:?}", remote_addr);
 
+                // Check if we already know this peer
+                let already_known = self.node_manager.get_active_nodes().contains(&peer_id);
+                
+                // Check if this node was restricted (disconnected) - if so, mark as pending reconnection
+                if self.restricted_nodes.remove(&peer_id) {
+                    self.pending_reconnects.insert(peer_id);
+                    info!("🔄 [RECONNECT] Node {} reconnected - marked as pending (will be unrestricted at next periodic refresh)", peer_id);
+                } else if !already_known {
+                    // This is a fresh node joining - mark as pending join
+                    self.pending_joins.insert(peer_id);
+                    info!("🆕 [NEW_NODE] Fresh node {} joined - marked as pending (will receive shares at next periodic refresh)", peer_id);
+                }
+
                 // Determine whether they dialed us (we're the listener) or we dialed them
                 let is_listener = matches!(endpoint, ConnectedPoint::Listener { .. });
                 let is_dialer   = matches!(endpoint, ConnectedPoint::Dialer   { .. });
-
-                // Check if we already know this peer
-                let already_known = self.node_manager.get_active_nodes().contains(&peer_id);
 
                 // Add the peer's address to Kademlia - this should trigger RoutingUpdated
                 swarm
@@ -1045,8 +1134,13 @@ impl NetworkLayer {
                         sequence: Some(1),
                         index: Some(tentative_index),
                     };
-                    let payload = serde_json::to_vec(&msg)
-                        .expect("serialize PeerDiscovered");
+                    let payload = match serde_json::to_vec(&msg) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            warn!("❌ Failed to serialize PeerDiscovered message: {:?}", e);
+                            return Err(anyhow::anyhow!("Failed to serialize PeerDiscovered message: {:?}", e));
+                        }
+                    };
                     match self.broadcast(MSG_TOPIC_PEER_DISCOVERY, &payload).await {
                         Ok(_) => {
                             info!(
@@ -1108,7 +1202,8 @@ impl NetworkLayer {
                         );
 
                         let now_secs = SystemTime::now()
-                            .duration_since(UNIX_EPOCH).unwrap()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap_or(Duration::from_secs(0))
                             .as_secs();
                         let start_time = now_secs + 10;
                         info!("🕒 Scheduling initial DKG start at unix time {}", start_time);
@@ -1309,10 +1404,15 @@ impl NetworkLayer {
                                         ((hash % 100) + 1) as usize // Use a reasonable default range
                                     };
 
-                                    if self.dkg_node.as_ref().unwrap().verify_share(&share, share_index, &commitments) {
-                                        RPCResponse::ShareAccepted
+                                    if let Some(dkg_node) = self.dkg_node.as_ref() {
+                                        if dkg_node.verify_share(&share, share_index, &commitments) {
+                                            RPCResponse::ShareAccepted
+                                        } else {
+                                            RPCResponse::Error("Invalid share".into())
+                                        }
                                     } else {
-                                        RPCResponse::Error("Invalid share".into())
+                                        warn!("❌ DKG node not initialized for share verification");
+                                        RPCResponse::Error("DKG not initialized".into())
                                     }
                                 }
                             },
@@ -1421,9 +1521,6 @@ impl NetworkLayer {
                             RPCResponse::PeerList { peers, indices } => {
                                 info!("🔄 Merging peer‐set from {}: {:?}", peer, peers);
                                 info!("🔄 Received indices: {:?}", indices);
-                                
-                                // Clone peers list before consuming it
-                                let peers_clone = peers.clone();
                                 
                                 for (i, SerializablePeerId(p)) in peers.into_iter().enumerate() {
                                     // Add peer to node_manager if not already present
@@ -1551,12 +1648,20 @@ impl NetworkLayer {
                                         }
                                     }
                                     
-                                    // Request DKG shares
-                                    if let (Some(dkg_node), Some(new_node_index)) = (&mut self.dkg_node, new_node_index_opt) {
-                                        if let Err(e) = dkg_node.request_shares_as_new_node(new_node_index).await {
-                                            warn!("❌ [NEW_NODE] Failed to request shares: {:?}", e);
+                                    // Add this node to pending_joins so it knows to request shares at periodic interval
+                                    if let Some(new_node_index) = new_node_index_opt {
+                                        info!("🆕 [NEW_NODE] Adding myself to pending_joins (index: {})", new_node_index);
+                                        self.pending_joins.insert(self.local_peer_id);
+                                        
+                                        // Store my assigned index
+                                        self.peer_indices.insert(self.local_peer_id, new_node_index);
+                                        let key = key_utils::peer_index_key(&self.local_peer_id.to_string());
+                                        if let Err(e) = self.db.put_string(&key, &new_node_index) {
+                                            warn!("❌ [NEW_NODE] Failed to persist my index: {:?}", e);
                                         }
                                     }
+                                    
+                                    info!("⏰ [NEW_NODE] Will request shares at next periodic refresh cycle");
                                 }
                             },
 
@@ -1916,8 +2021,9 @@ impl NetworkLayer {
                             }
                         }
                         
-                        // STEP 2: Process disconnect locally (same as other nodes will do when they receive broadcast)
-                        self.handle_node_disconnect_internal(peer_id).await;
+                        // STEP 2: Mark node as restricted (will be processed at next periodic refresh)
+                        self.restricted_nodes.insert(peer_id);
+                        info!("🚫 [DISCONNECT] Marked node {} as restricted (will be processed at next periodic refresh)", peer_id);
                     } else {
                         info!("ℹ️ [DISCONNECT] Disconnected peer {} was not an active node", peer_id);
                     }
@@ -1964,8 +2070,10 @@ impl NetworkLayer {
                     if let Ok(peer_id) = disconnected_node_id.parse::<PeerId>() {
                         // Check if we haven't already processed this disconnect
                         if self.node_manager.get_active_nodes().contains(&peer_id) {
-                            info!("📢 [DISCONNECT] Processing disconnect for node {}", peer_id);
-                            self.handle_node_disconnect_internal(peer_id).await;
+                            info!("📢 [DISCONNECT] Received broadcast disconnect for node {}", peer_id);
+                            // Mark as restricted (waiting for next periodic refresh)
+                            self.restricted_nodes.insert(peer_id);
+                            info!("🚫 [DISCONNECT] Marked node {} as restricted (will be processed at next periodic refresh)", peer_id);
                         } else {
                             info!("📢 [DISCONNECT] Node {} already removed, skipping", peer_id);
                         }
@@ -2086,11 +2194,14 @@ impl NetworkLayer {
                 info!("📝 Received transaction via gossipsub: {:?}", transaction);
                 // Here you can add transaction processing logic
                 // For example, validate the transaction, add to mempool, etc.
-                if let Some(signing_node) = &mut self.signing_node {
-                    // Set available nodes from node manager before signing
-                    let available_nodes: Vec<PeerId> = self.node_manager.get_active_nodes().into_iter().collect();
-                    info!("🔢 [NETWORK-DEBUG] Available nodes count: {}", available_nodes.len());
+                
+                // Get participating nodes before borrowing signing_node
+                let available_nodes: Vec<PeerId> = self.get_participating_nodes();
+                info!("🔢 [NETWORK-DEBUG] Available nodes count: {} (restricted nodes excluded)", available_nodes.len());
                     info!("🔢 [NETWORK-DEBUG] Available nodes: {:?}", available_nodes);
+                
+                if let Some(signing_node) = &mut self.signing_node {
+                    // Set available nodes from node manager before signing (excluding restricted nodes)
                     signing_node.set_available_nodes(available_nodes);
 
                     // Generate BLS key pair if not already done
@@ -2410,11 +2521,13 @@ impl NetworkLayer {
                 };
                 let tx_bytes = crate::utils::transaction::create_transaction_for_signing(&dummy_tx);
 
+                // Get participating nodes before borrowing signing_node
+                let available_nodes_for_reward: Vec<PeerId> = self.get_participating_nodes();
+
                 // Sign the solver reward transaction
                 if let Some(signing_node) = &mut self.signing_node {
-                    // Set available nodes from node manager before signing
-                    let available_nodes: Vec<PeerId> = self.node_manager.get_active_nodes().into_iter().collect();
-                    signing_node.set_available_nodes(available_nodes);
+                    // Set available nodes from node manager before signing (excluding restricted nodes)
+                    signing_node.set_available_nodes(available_nodes_for_reward);
 
                     if let Some(dkg_node) = &self.dkg_node {
                         if let Some(secret_share) = dkg_node.get_final_secret_share().await {
@@ -2498,6 +2611,9 @@ impl NetworkLayer {
                         }
                     }
                 };
+
+                // Get participating nodes before borrowing signing_node
+                let deposit_available_nodes: Vec<PeerId> = self.get_participating_nodes();
 
                 if let Some(signing_node) = &mut self.signing_node {
                     // Set appropriate chain handler based on the determined chain
@@ -2633,9 +2749,8 @@ impl NetworkLayer {
                         Ok(chain_transaction) => {
                             info!("📝 [GOSSIPSUB] Created {} transaction from deposit intent", signing_node.get_chain_type());
 
-                            // Set available nodes from node manager before signing
-                            let available_nodes: Vec<PeerId> = self.node_manager.get_active_nodes().into_iter().collect();
-                            signing_node.set_available_nodes(available_nodes);
+                            // Set available nodes from node manager before signing (excluding restricted nodes)
+                            signing_node.set_available_nodes(deposit_available_nodes.clone());
 
                             // Use the signing key we got earlier
                             if let Some(key) = signing_key {
@@ -2904,13 +3019,13 @@ impl NetworkLayer {
 
                         // If initial DKG is completed, existing nodes are aware of the new node
                         // Note: The new node itself won't receive this PeerDiscovery message (gossipsub doesn't echo)
-                        // The new node handles resharing in ConnectionEstablished (dialer section)
+                        // The new node will receive shares at the next periodic refresh cycle
                         if let Some(dkg_node) = &mut self.dkg_node {
                             let initial_dkg_complete = dkg_node.is_initial_dkg_complete().await;
                             
                             if initial_dkg_complete {
-                                info!("🔄 [EXISTING_NODE] New peer {} joined network, will respond to share requests", peer);
-                                // Existing nodes will handle the NewNodeJoined DKG message when the new node broadcasts it
+                                info!("🔄 [EXISTING_NODE] New peer {} joined network, marked as pending_joins", peer);
+                                // New node will receive shares at the next periodic refresh cycle
                             } else {
                                 info!("ℹ️ [NEW_NODE] Initial DKG not yet completed (waiting for 4 nodes)");
                             }
@@ -3013,11 +3128,13 @@ impl NetworkLayer {
             ChannelMessage::LocalTransaction { transaction } => {
                 info!("🔐 [LOCAL] Processing transaction locally: {:?}", transaction);
 
-                if let Some(signing_node) = &mut self.signing_node {
-                    // Set available nodes from node manager before signing
-                    let available_nodes: Vec<PeerId> = self.node_manager.get_active_nodes().into_iter().collect();
-                    info!("🔢 [LOCAL-DEBUG] Available nodes count: {}", available_nodes.len());
+                // Get participating nodes before borrowing signing_node
+                let available_nodes: Vec<PeerId> = self.get_participating_nodes();
+                info!("🔢 [LOCAL-DEBUG] Available nodes count: {} (restricted nodes excluded)", available_nodes.len());
                     info!("🔢 [LOCAL-DEBUG] Available nodes: {:?}", available_nodes);
+
+                if let Some(signing_node) = &mut self.signing_node {
+                    // Set available nodes from node manager before signing (excluding restricted nodes)
                     signing_node.set_available_nodes(available_nodes);
 
                     if let Some(dkg_node) = &self.dkg_node {
@@ -3155,6 +3272,9 @@ impl NetworkLayer {
                     }
                 };
 
+                // Get participating nodes before borrowing signing_node
+                let local_deposit_available_nodes: Vec<PeerId> = self.get_participating_nodes();
+
                 // Process locally first (this node will sign it)
                 if let Some(signing_node) = &mut self.signing_node {
                     // Set appropriate chain handler based on the determined chain
@@ -3289,9 +3409,8 @@ impl NetworkLayer {
                         Ok(chain_transaction) => {
                             info!("📝 [LOCAL] Created {} transaction from deposit intent", signing_node.get_chain_type());
 
-                            // Set available nodes from node manager before signing
-                            let available_nodes: Vec<PeerId> = self.node_manager.get_active_nodes().into_iter().collect();
-                            signing_node.set_available_nodes(available_nodes);
+                            // Set available nodes from node manager before signing (excluding restricted nodes)
+                            signing_node.set_available_nodes(local_deposit_available_nodes.clone());
 
                             // Use the signing key we got earlier
                             if let Some(key) = signing_key {
@@ -3688,11 +3807,13 @@ impl NetworkLayer {
                 };
                 let tx_bytes = crate::utils::transaction::create_transaction_for_signing(&dummy_tx);
 
+                // Get participating nodes before borrowing signing_node
+                let available_nodes_for_reward: Vec<PeerId> = self.get_participating_nodes();
+
                 // Sign the solver reward transaction
                 if let Some(signing_node) = &mut self.signing_node {
-                    // Set available nodes from node manager before signing
-                    let available_nodes: Vec<PeerId> = self.node_manager.get_active_nodes().into_iter().collect();
-                    signing_node.set_available_nodes(available_nodes);
+                    // Set available nodes from node manager before signing (excluding restricted nodes)
+                    signing_node.set_available_nodes(available_nodes_for_reward);
 
                     if let Some(dkg_node) = &self.dkg_node {
                         if let Some(secret_share) = dkg_node.get_final_secret_share().await {
@@ -3814,6 +3935,185 @@ impl NetworkLayer {
                     warn!("❌ DKG node not initialized at scheduled start!");
                 }
             }
+            ChannelMessage::PeriodicConnectionCheck => {
+                info!("⏰ [PERIODIC_REFRESH] Refresh triggered - processing all pending changes");
+                
+                // Clone all pending states to avoid borrow issues
+                let restricted: Vec<PeerId> = self.restricted_nodes.iter().cloned().collect();
+                let pending_reconnects: Vec<PeerId> = self.pending_reconnects.iter().cloned().collect();
+                let pending_joins: Vec<PeerId> = self.pending_joins.iter().cloned().collect();
+                
+                info!("🔍 [PERIODIC_REFRESH] Found {} restricted, {} pending reconnects, {} pending joins", 
+                      restricted.len(), pending_reconnects.len(), pending_joins.len());
+                
+                let mut needs_refresh = false;
+                let mut nodes_to_remove: Vec<PeerId> = Vec::new();
+                let mut has_new_nodes_joining = false;
+                
+                // Process restricted (disconnected) nodes
+                for peer_id in restricted {
+                    if swarm.is_connected(&peer_id) {
+                        // Node reconnected (should have been moved to pending_reconnects)
+                        self.restricted_nodes.remove(&peer_id);
+                        info!("✅ [PERIODIC_REFRESH] Node {} reconnected", peer_id);
+                    } else {
+                        // Node still disconnected - remove and trigger refresh
+                        self.restricted_nodes.remove(&peer_id);
+                        nodes_to_remove.push(peer_id);
+                        needs_refresh = true;
+                        info!("🔄 [PERIODIC_REFRESH] Node {} still disconnected - will be removed", peer_id);
+                    }
+                }
+                
+                // Process pending reconnections
+                for peer_id in pending_reconnects {
+                    if !swarm.is_connected(&peer_id) {
+                        // Node disconnected again - move back to restricted
+                        self.pending_reconnects.remove(&peer_id);
+                        self.restricted_nodes.insert(peer_id);
+                        info!("⚠️ [PERIODIC_REFRESH] Node {} disconnected again - back to restricted", peer_id);
+                    } else {
+                        // Node stable - unrestrict it
+                        self.pending_reconnects.remove(&peer_id);
+                        needs_refresh = true;
+                        info!("✅ [PERIODIC_REFRESH] Node {} stable - fully unrestricting", peer_id);
+                    }
+                }
+                
+                // Process pending joins (new nodes) - they will REQUEST shares at this interval
+                for peer_id in pending_joins.clone() {
+                    // Special case: if peer_id is the local node, skip connectivity check
+                    // (a node can't be "connected" to itself in swarm terms)
+                    let is_connected = if peer_id == self.local_peer_id {
+                        true  // Always consider ourselves "connected"
+                    } else {
+                        swarm.is_connected(&peer_id)
+                    };
+                    
+                    if is_connected {
+                        // New node stable - will request shares now
+                        self.pending_joins.remove(&peer_id);
+                        has_new_nodes_joining = true;
+                        
+                        // Check if this is the local node (we're the new node)
+                        if peer_id == self.local_peer_id {
+                            info!("🆕 [PERIODIC_REFRESH] I am a new node - requesting shares from existing nodes");
+                            
+                            // Get my assigned index
+                            if let Some(my_index) = self.peer_indices.get(&peer_id) {
+                                if let Some(dkg_node) = &mut self.dkg_node {
+                                    // Request shares from existing nodes
+                                    if let Err(e) = dkg_node.request_shares_as_new_node(*my_index).await {
+                                        warn!("❌ [PERIODIC_REFRESH] Failed to request shares: {:?}", e);
+                                    } else {
+                                        info!("✅ [PERIODIC_REFRESH] Share request broadcasted - existing nodes will respond");
+                                    }
+                                }
+                            } else {
+                                warn!("⚠️ [PERIODIC_REFRESH] No index assigned to new node {}", peer_id);
+                            }
+                        } else {
+                            info!("🆕 [PERIODIC_REFRESH] Remote node {} is joining - will respond with shares", peer_id);
+                        }
+                    } else {
+                        // New node disconnected before requesting shares - remove
+                        self.pending_joins.remove(&peer_id);
+                        info!("⚠️ [PERIODIC_REFRESH] New node {} disconnected - removing", peer_id);
+                    }
+                }
+                
+                // If new nodes are joining, schedule a delayed refresh WITHOUT blocking
+                if has_new_nodes_joining {
+                    let delay_secs = Self::NEW_NODE_SHARE_COLLECTION_DELAY_SECS;
+                    info!("⏰ [PERIODIC_REFRESH] New nodes are joining - scheduling refresh in {} seconds (non-blocking)...", delay_secs);
+                    
+                    // Clone the message sender to use in the spawned task
+                    let tx = self.message_tx.clone();
+                    
+                    // Spawn a non-blocking task that will send DelayedRefreshTrigger after delay
+                    tokio::spawn(async move {
+                        tokio::time::sleep(tokio::time::Duration::from_secs(delay_secs)).await;
+                        info!("⏰ [DELAYED_REFRESH] {} seconds elapsed - triggering refresh now", delay_secs);
+                        
+                        if let Err(e) = tx.send(ChannelMessage::DelayedRefreshTrigger).await {
+                            error!("❌ [DELAYED_REFRESH] Failed to send delayed refresh trigger: {}", e);
+                        }
+                    });
+                    
+                    info!("✅ [PERIODIC_REFRESH] Refresh scheduled - event loop continues processing messages");
+                } 
+                // Process disconnected/reconnected nodes ONLY if no new nodes are joining
+                else if needs_refresh {
+                    info!("🔄 [PERIODIC_REFRESH] Triggering refresh for disconnect/reconnect changes");
+                    
+                    // Remove disconnected nodes from node_manager
+                    for peer_id in nodes_to_remove {
+                        if let Err(e) = self.node_manager.remove_node(peer_id) {
+                            warn!("⚠️ [PERIODIC_REFRESH] Failed to remove node {}: {}", peer_id, e);
+                        }
+                    }
+                    
+                    // Update parameters
+                    let new_total = self.node_manager.get_total_nodes();
+                    let new_threshold = self.node_manager.get_threshold();
+                    
+                    if let Some(dkg_node) = &mut self.dkg_node {
+                        dkg_node.update_node_params(new_total, new_threshold);
+                    }
+                    
+                    if let Some(signing_node) = &mut self.signing_node {
+                        signing_node.set_threshold(new_threshold);
+                    }
+                    
+                    // Execute refresh
+                    if let Some(dkg_node) = &mut self.dkg_node {
+                        let dkg_status = dkg_node.get_status();
+                        if matches!(dkg_status, DKGStatus::Completed) {
+                            info!("🔄 [PERIODIC_REFRESH] Executing polynomial refresh with {} nodes", new_total);
+                            
+                            if let Err(e) = dkg_node.execute_polynomial_refresh(self.node_manager.clone()).await {
+                                error!("❌ [PERIODIC_REFRESH] Failed to execute resharing: {}", e);
+                            } else {
+                                info!("✅ [PERIODIC_REFRESH] Resharing completed successfully");
+                            }
+                        } else {
+                            warn!("⚠️ [PERIODIC_REFRESH] DKG not completed yet, skipping resharing");
+                        }
+                    }
+                } else {
+                    info!("✅ [PERIODIC_REFRESH] No changes requiring refresh");
+                }
+            }
+            ChannelMessage::DelayedRefreshTrigger => {
+                info!("🔄 [DELAYED_REFRESH] Delayed refresh trigger received - executing refresh now");
+                
+                // Execute the refresh that was scheduled after share collection delay
+                if let Some(dkg_node) = &mut self.dkg_node {
+                    let dkg_status = dkg_node.get_status();
+                    if matches!(dkg_status, DKGStatus::Completed) {
+                        // Update parameters first
+                        let new_total = self.node_manager.get_total_nodes();
+                        let new_threshold = self.node_manager.get_threshold();
+                        dkg_node.update_node_params(new_total, new_threshold);
+                        
+                        if let Some(signing_node) = &mut self.signing_node {
+                            signing_node.set_threshold(new_threshold);
+                        }
+                        
+                        info!("🔄 [DELAYED_REFRESH] Executing polynomial refresh with {} nodes, threshold {}", new_total, new_threshold);
+                        
+                        if let Err(e) = dkg_node.execute_polynomial_refresh(self.node_manager.clone()).await {
+                            error!("❌ [DELAYED_REFRESH] Failed to execute refresh: {}", e);
+                        } else {
+                            info!("✅ [DELAYED_REFRESH] Refresh completed successfully - new nodes now fully integrated");
+                        }
+                    } else {
+                        warn!("⚠️ [DELAYED_REFRESH] DKG not completed yet, skipping refresh");
+                    }
+                } else {
+                    warn!("⚠️ [DELAYED_REFRESH] DKG node not initialized");
+                }
+            }
         }
         Ok(())
     }
@@ -3893,6 +4193,9 @@ impl NetworkLayer {
         vault_group_key: Option<k256::ProjectivePoint>,
         amount: u128,
     ) -> Result<()> {
+        // Get participating nodes before borrowing signing_node
+        let contract_available_nodes: Vec<PeerId> = self.get_participating_nodes();
+
         if let Some(signing_node) = &mut self.signing_node {
             info!("📝 [CONTRACT] Executing contract call for transaction type: {:?}", transaction_type);
 
@@ -3910,8 +4213,7 @@ impl NetworkLayer {
             match contract_call_result {
                 Ok(contract_transaction) => {
                     info!("📝 [CONTRACT] Created contract call transaction");
-                    let available_nodes: Vec<PeerId> = self.node_manager.get_active_nodes().into_iter().collect();
-                    signing_node.set_available_nodes(available_nodes);
+                    signing_node.set_available_nodes(contract_available_nodes);
 
                     match contract_transaction {
                         crate::chain::ChainTransaction::Ethereum(ref eth_tx) => {
@@ -3948,104 +4250,5 @@ impl NetworkLayer {
         }
 
         Ok(())
-    }
-
-    /// Internal method to handle node disconnection (called both locally and from broadcast)
-    async fn handle_node_disconnect_internal(&mut self, peer_id: PeerId) {
-        info!("🔧 [DISCONNECT] Processing disconnect for node {}", peer_id);
-        
-        // DEDUPLICATION: Check if we've already processed this disconnect recently
-        let now = std::time::Instant::now();
-        let dedup_window = std::time::Duration::from_secs(10); // 10-second deduplication window
-        
-        if let Some(last_processed) = self.processed_disconnects.get(&peer_id) {
-            if now.duration_since(*last_processed) < dedup_window {
-                info!("⏭️ [DISCONNECT] Already processed disconnect for {} recently (within {} seconds), skipping",
-                      peer_id, dedup_window.as_secs());
-                return;
-            }
-        }
-        
-        // Mark this disconnect as processed
-        self.processed_disconnects.insert(peer_id, now);
-        info!("✅ [DISCONNECT] Marked disconnect for {} as processed at {:?}", peer_id, now);
-        
-        // Clean up old entries (older than dedup_window) to prevent memory growth
-        self.processed_disconnects.retain(|_, &mut timestamp| {
-            now.duration_since(timestamp) < dedup_window
-        });
-        
-        // Log active nodes BEFORE removal
-        let active_nodes_before = self.node_manager.get_active_nodes();
-        info!("📋 [DISCONNECT] Active nodes BEFORE removal: {:?} (count: {})", 
-              active_nodes_before, active_nodes_before.len());
-        
-        // Remove node from node manager
-        if let Err(e) = self.node_manager.remove_node(peer_id) {
-            warn!("⚠️ [DISCONNECT] Failed to remove node {} from node manager: {}", peer_id, e);
-            return;
-        }
-        
-        // Log active nodes AFTER removal to verify
-        let active_nodes_after = self.node_manager.get_active_nodes();
-        info!("✅ [DISCONNECT] Successfully removed node {} from node_manager", peer_id);
-        info!("📋 [DISCONNECT] Active nodes AFTER removal: {:?} (count: {})", 
-              active_nodes_after, active_nodes_after.len());
-        
-        // Double-check the node is really gone
-        if active_nodes_after.contains(&peer_id) {
-            error!("❌ [DISCONNECT] BUG: Node {} still in active nodes after removal!", peer_id);
-        } else {
-            info!("✅ [DISCONNECT] Verified: Node {} is NOT in active nodes list", peer_id);
-        }
-        
-        // Also remove from peer_indices HashMap
-        if let Some(removed_index) = self.peer_indices.remove(&peer_id) {
-            info!("✅ [DISCONNECT] Removed peer {} (index {}) from peer_indices HashMap", peer_id, removed_index);
-        }
-        
-        // Remove from database as well
-        let peer_index_key = format!("{}{}", keys::PEER_INDEX, peer_id);
-        if let Err(e) = self.db.delete_string(&peer_index_key) {
-            warn!("⚠️ [DISCONNECT] Failed to remove peer {} from database: {}", peer_id, e);
-        } else {
-            info!("✅ [DISCONNECT] Removed peer {} from database", peer_id);
-        }
-        
-        // Update network parameters
-        let new_total = self.node_manager.get_total_nodes();
-        let new_threshold = self.node_manager.get_threshold();
-        
-        info!("📊 [DISCONNECT] Updated network: total_nodes={}, threshold={}", new_total, new_threshold);
-        
-        // Update DKG and signing node parameters
-        if let Some(dkg_node) = &mut self.dkg_node {
-            dkg_node.update_node_params(new_total, new_threshold);
-        }
-        
-        if let Some(signing_node) = &mut self.signing_node {
-            signing_node.set_threshold(new_threshold);
-        }
-        
-        // Execute proactive resharing
-        info!("🔄 [DISCONNECT] Triggering proactive resharing with {} remaining nodes", new_total);
-        
-        if let Some(dkg_node) = &mut self.dkg_node {
-            let dkg_status = dkg_node.get_status();
-            if matches!(dkg_status, DKGStatus::Completed) {
-                // Add delay to ensure all nodes have processed the broadcast
-                info!("⏰ [DISCONNECT] Waiting 3 seconds for all nodes to sync...");
-                tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-                info!("✅ [DISCONNECT] Sync period complete, starting resharing");
-                
-                if let Err(e) = dkg_node.execute_polynomial_refresh(self.node_manager.clone()).await {
-                    error!("❌ [DISCONNECT] Failed to execute resharing: {}", e);
-                } else {
-                    info!("✅ [DISCONNECT] Resharing completed successfully");
-                }
-            } else {
-                warn!("⚠️ [DISCONNECT] DKG not completed yet, skipping resharing");
-            }
-        }
     }
 }

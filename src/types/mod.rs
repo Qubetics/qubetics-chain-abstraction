@@ -74,6 +74,8 @@ pub enum ChannelMessage {
     PeerDiscoveryRetry {
         attempt: u8,
     },
+    PeriodicConnectionCheck,
+    DelayedRefreshTrigger,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
