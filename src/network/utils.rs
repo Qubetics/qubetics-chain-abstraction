@@ -1,21 +1,24 @@
 use anyhow::Result;
 use libp2p::identity::Keypair;
 use libp2p::PeerId;
+use std::sync::Arc;
 use tracing::{info, warn};
 
-use crate::database::{keys, Database, DatabaseConfig};
+use crate::database::{keys, KeyStore};
 
 use super::types::MpcNetworkLayer;
 
 impl MpcNetworkLayer {
-    /// Load existing keypair from database or create a new one
-    pub async fn load_or_create_keypair() -> Result<(Keypair, PeerId)> {
-        // Create database connection
-        let db_config = DatabaseConfig::default();
-        let database = Database::new(db_config)?;
-
+    /// Load existing keypair from keystore or create a new one
+    /// 
+    /// Accepts a KeyStore implementation (e.g., Database, remote KMS) to allow
+    /// the MPC stack to control the identity lifecycle and swap storage backends
+    /// without changing keypair management logic.
+    pub async fn load_or_create_keypair(
+        keystore: Arc<dyn KeyStore>,
+    ) -> Result<(Keypair, PeerId)> {
         // Try to load existing keypair
-        if let Some(keypair_bytes) = database.get_keypair(keys::PEER_KEYPAIR)? {
+        if let Some(keypair_bytes) = keystore.get_keypair(keys::PEER_KEYPAIR)? {
             match Keypair::from_protobuf_encoding(&keypair_bytes) {
                 Ok(keypair) => {
                     let peer_id = PeerId::from(keypair.public());
@@ -37,11 +40,11 @@ impl MpcNetworkLayer {
         let keypair = Keypair::generate_ed25519();
         let peer_id = PeerId::from(keypair.public());
 
-        // Save keypair to database
+        // Save keypair to keystore
         let keypair_bytes = keypair
             .to_protobuf_encoding()
             .map_err(|e| anyhow::anyhow!("Failed to encode keypair: {}", e))?;
-        database.put_keypair(keys::PEER_KEYPAIR, &keypair_bytes)?;
+        keystore.put_keypair(keys::PEER_KEYPAIR, &keypair_bytes)?;
 
         info!("✅ Generated and saved new keypair - Peer ID: {}", peer_id);
         Ok((keypair, peer_id))

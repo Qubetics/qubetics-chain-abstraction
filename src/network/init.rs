@@ -4,12 +4,13 @@ use std::collections::hash_map::DefaultHasher;
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use std::num::NonZeroUsize;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::io;
 use tokio::sync::mpsc;
 use tracing::info;
 
-use crate::database::{keys, Database};
+use crate::database::{keys, Database, KeyStore};
 use crate::node_selection::NodeMembership;
 
 use super::types::{
@@ -19,8 +20,11 @@ use super::types::{
 impl MpcNetworkLayer {
     /// Create a new MpcNetworkLayer instance
     pub async fn new(node_manager: Box<dyn NodeMembership>, db: Database) -> Result<Self> {
-        // Load or create persistent keypair
-        let (local_key, local_peer_id) = Self::load_or_create_keypair().await?;
+        // Load or create persistent keypair using the injected database
+        // Wrap in Arc to satisfy KeyStore trait object requirements
+        // Clone the database since we need to move it into the struct later
+        let keystore: Arc<dyn KeyStore> = Arc::new(db.clone());
+        let (local_key, local_peer_id) = Self::load_or_create_keypair(keystore).await?;
         let (tx, rx) = mpsc::channel(100);
 
         let mut this = Self {

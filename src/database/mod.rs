@@ -1,9 +1,11 @@
 pub mod core;
+pub mod keystore;
 pub mod module;
 pub mod primitives;
 pub mod storage;
 
 pub use core::{config, engine, BatchWriter, Database, DatabaseConfig};
+pub use keystore::KeyStore;
 pub use module::DatabaseModule;
 pub use primitives::{key_utils, keys};
 pub use primitives::{key_utils::*, keys::*};

@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info};
 
 use super::config::{ConfigError, DatabaseConfig};
+use crate::database::keystore::KeyStore;
 
 /// Main database wrapper around RocksDB
 #[derive(Clone)]
@@ -461,6 +462,19 @@ impl Database {
 
         info!("🗑️ [DATABASE] Cleared all entries");
         Ok(())
+    }
+}
+
+/// Implement KeyStore trait for Database
+/// This allows Database to be used as a keypair storage backend
+/// The trait methods delegate to the existing Database methods
+impl KeyStore for Database {
+    fn put_keypair(&self, key: &str, keypair_bytes: &[u8]) -> Result<()> {
+        Database::put_keypair(self, key, keypair_bytes)
+    }
+    
+    fn get_keypair(&self, key: &str) -> Result<Option<Vec<u8>>> {
+        Database::get_keypair(self, key)
     }
 }
 
