@@ -190,11 +190,8 @@ impl MpcNetworkLayer {
 
     /// Check if a peer is a bootstrap node
     pub(crate) fn is_bootstrap_node(&self, peer_id: &PeerId) -> bool {
-        let bootstrap_peer_ids: Vec<&'static str> = vec![];
-
-        let peer_id_str = peer_id.to_string();
-        bootstrap_peer_ids
+        self.bootstrap_peer_ids
             .iter()
-            .any(|&bootstrap_id| peer_id_str.contains(bootstrap_id))
+            .any(|bootstrap_id| bootstrap_id == peer_id)
     }
 }

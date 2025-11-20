@@ -1,5 +1,5 @@
 use anyhow::Result;
-use libp2p::{gossipsub, kad, noise, tcp, yamux};
+use libp2p::{gossipsub, kad, noise, tcp, yamux, Multiaddr, PeerId};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
@@ -46,7 +46,16 @@ impl MpcNetworkLayer {
             db,
             db_sync_state: DatabaseSyncState::new(),
             needs_database_sync: false,
+            bootstrap_addresses: Self::load_multiaddrs_from_env("BOOTSTRAP_PEERS"),
+            bootstrap_peer_ids: Vec::new(),
+            discovery_seeds: Self::load_multiaddrs_from_env("DISCOVERY_SEEDS"),
         };
+
+        this.bootstrap_peer_ids = this
+            .bootstrap_addresses
+            .iter()
+            .filter_map(|addr| Self::extract_peer_id(addr))
+            .collect();
 
         // Preload any persisted peer indices into memory
         if let Ok(keys) = this.db.get_keys_with_prefix_async(keys::PEER_INDEX).await {
@@ -65,6 +74,45 @@ impl MpcNetworkLayer {
         this.ensure_local_index();
 
         Ok(this)
+    }
+
+    fn load_multiaddrs_from_env(env_key: &str) -> Vec<Multiaddr> {
+        use tracing::warn;
+
+        std::env::var(env_key)
+            .ok()
+            .map(|value| {
+                value
+                    .split(',')
+                    .filter_map(|raw| {
+                        let trimmed = raw.trim();
+                        if trimmed.is_empty() {
+                            return None;
+                        }
+
+                        match trimmed.parse::<Multiaddr>() {
+                            Ok(addr) => Some(addr),
+                            Err(err) => {
+                                warn!(
+                                    "Ignoring invalid multiaddr from {}: {} ({})",
+                                    env_key, trimmed, err
+                                );
+                                None
+                            }
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn extract_peer_id(addr: &Multiaddr) -> Option<PeerId> {
+        addr.iter().find_map(|proto| match proto {
+            libp2p::multiaddr::Protocol::P2p(multihash) => {
+                PeerId::from_multihash(multihash.clone().into()).ok()
+            }
+            _ => None,
+        })
     }
 
     /// Subscribe to default gossipsub topics
@@ -106,6 +154,9 @@ impl MpcNetworkLayer {
     pub(crate) fn build_swarm(&self) -> Result<libp2p::Swarm<MpcNetworkBehaviour>> {
         use crate::types::rpc::build_mpc_behaviour;
         use kad::{store::MemoryStore, BucketInserts};
+
+        let bootstrap_nodes = self.bootstrap_addresses.clone();
+        let discovery_seeds = self.discovery_seeds.clone();
 
         let swarm = libp2p::SwarmBuilder::with_existing_identity(self.local_key.clone())
             .with_tokio()
@@ -150,19 +201,9 @@ impl MpcNetworkLayer {
                 let mut kademlia =
                     kad::Behaviour::with_config(key.public().to_peer_id(), store, kademlia_config);
 
-                let bootstrap_nodes: Vec<&'static str> = vec![];
-
-                for addr in bootstrap_nodes {
-                    if let Ok(addr) = addr.parse::<libp2p::Multiaddr>() {
-                        if let Some(peer_id) = addr.iter().find_map(|proto| {
-                            if let libp2p::multiaddr::Protocol::P2p(multihash) = proto {
-                                libp2p::PeerId::from_multihash(multihash.clone().into()).ok()
-                            } else {
-                                None
-                            }
-                        }) {
-                            kademlia.add_address(&peer_id, addr);
-                        }
+                for addr in bootstrap_nodes.iter().chain(discovery_seeds.iter()) {
+                    if let Some(peer_id) = Self::extract_peer_id(addr) {
+                        kademlia.add_address(&peer_id, addr.clone());
                     }
                 }
 

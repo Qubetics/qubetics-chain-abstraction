@@ -4,7 +4,7 @@ use libp2p::{
     kad::{self, store::MemoryStore, Event as KademliaEvent},
     request_response::{cbor::Behaviour as CborReqRespBehaviour, Event as ReqRespEvent},
     swarm::NetworkBehaviour,
-    PeerId,
+    Multiaddr, PeerId,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -224,6 +224,9 @@ pub struct MpcNetworkLayer {
     pub(crate) db: Database,
     pub(crate) db_sync_state: DatabaseSyncState,
     pub(crate) needs_database_sync: bool,
+    pub(crate) bootstrap_addresses: Vec<libp2p::Multiaddr>,
+    pub(crate) bootstrap_peer_ids: Vec<PeerId>,
+    pub(crate) discovery_seeds: Vec<libp2p::Multiaddr>,
 }
 
 impl MpcNetworkLayer {
