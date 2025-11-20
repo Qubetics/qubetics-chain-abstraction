@@ -4,8 +4,8 @@ use std::time::Duration;
 use tracing::{info, warn};
 
 use crate::database::{key_utils, keys};
-use crate::types::{ChannelMessage, GossipsubMessage};
 use crate::types::dkg::MSG_TOPIC_PEER_DISCOVERY;
+use crate::types::{ChannelMessage, GossipsubMessage};
 
 use super::types::MpcNetworkLayer;
 
@@ -36,6 +36,12 @@ impl MpcNetworkLayer {
         self.db.get_string::<usize>(&key).ok().flatten()
     }
 
+    /// Async-safe helper for loading peer indices without blocking the Tokio runtime.
+    pub(crate) async fn get_index_from_db_async(&self, pid: &PeerId) -> Option<usize> {
+        let key = crate::database::key_utils::peer_index_key(&pid.to_string());
+        self.db.get_string_async::<usize>(&key).await.ok().flatten()
+    }
+
     /// Assign and persist peer index
     pub(crate) fn assign_and_persist_index(&mut self, pid: &PeerId) -> usize {
         if let Some(idx) = self.get_index_from_db(pid) {
@@ -54,7 +60,9 @@ impl MpcNetworkLayer {
     /// Ensure local peer has an assigned index
     pub(crate) fn ensure_local_index(&mut self) -> usize {
         if let Some(idx) = self.get_index_from_db(&self.local_peer_id) {
-            self.peer_discovery.peer_indices.insert(self.local_peer_id.clone(), idx);
+            self.peer_discovery
+                .peer_indices
+                .insert(self.local_peer_id.clone(), idx);
             return idx;
         }
         // If no peers indexed yet, start at 1; otherwise next max+1
@@ -64,7 +72,9 @@ impl MpcNetworkLayer {
         if let Err(e) = self.db.put_string(&key, &idx) {
             warn!("Failed to persist local index: {:?}", e);
         }
-        self.peer_discovery.peer_indices.insert(self.local_peer_id.clone(), idx);
+        self.peer_discovery
+            .peer_indices
+            .insert(self.local_peer_id.clone(), idx);
         idx
     }
 
@@ -143,9 +153,14 @@ impl MpcNetworkLayer {
             .cloned()
             .unwrap_or_else(|| self.node_manager.get_total_nodes());
 
-        if let Some(idx) = self.peer_discovery.peer_indices.get(&self.local_peer_id).cloned() {
+        if let Some(idx) = self
+            .peer_discovery
+            .peer_indices
+            .get(&self.local_peer_id)
+            .cloned()
+        {
             let key = key_utils::peer_index_key(&self.local_peer_id.to_string());
-            if let Err(e) = self.db.put_string(&key, &idx) {
+            if let Err(e) = self.db.put_string_async(&key, &idx).await {
                 warn!("Failed to persist my index: {:?}", e);
             }
         }
@@ -183,4 +198,3 @@ impl MpcNetworkLayer {
             .any(|&bootstrap_id| peer_id_str.contains(bootstrap_id))
     }
 }
-

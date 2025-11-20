@@ -1,12 +1,11 @@
 /// RPC Request/Response handlers
 /// This module contains all the RPC request and response handling logic
-
 use anyhow::Result;
 use libp2p::PeerId;
 use tracing::{error, info, warn};
 
-use crate::threshold_dkg::DKGStatus;
 use crate::database::key_utils;
+use crate::threshold_dkg::DKGStatus;
 use crate::types::p2p::SerializablePeerId;
 use crate::types::rpc::{RPCRequest, RPCResponse};
 use crate::types::PeerInfo;
@@ -35,17 +34,16 @@ impl MpcNetworkLayer {
                 commitments,
                 receiver_id,
                 ..
-            } => self
-                .handle_send_avss_share_request(share, commitments, receiver_id)
-                .await,
+            } => {
+                self.handle_send_avss_share_request(share, commitments, receiver_id)
+                    .await
+            }
             RPCRequest::ScheduleADKG { start_time } => {
                 info!("🕒 Got DKGStartAt({})", start_time);
                 self.schedule_dkg_at(start_time);
                 RPCResponse::Ack
             }
-            RPCRequest::RequestCurrentVrfRound => {
-                self.handle_request_current_vrf_round(peer).await
-            }
+            RPCRequest::RequestCurrentVrfRound => self.handle_request_current_vrf_round(peer).await,
             RPCRequest::RequestDatabaseSync { requester_id } => {
                 self.handle_request_database_sync(peer, requester_id).await
             }
@@ -77,7 +75,7 @@ impl MpcNetworkLayer {
         for SerializablePeerId(pid) in &peers {
             if !self.peer_discovery.peer_indices.contains_key(pid) {
                 // Load from database if not in peer_indices
-                if let Some(db_idx) = self.get_index_from_db(pid) {
+                if let Some(db_idx) = self.get_index_from_db_async(pid).await {
                     info!(
                         "🔢 [PEER_LIST_SEND] Loaded index {} for peer {} from database",
                         db_idx, pid
@@ -88,28 +86,33 @@ impl MpcNetworkLayer {
         }
 
         // Map indices in the same order, also load from DB if not in-memory
-        let indices: Vec<Option<usize>> = peers
-            .iter()
-            .map(|SerializablePeerId(pid)| {
-                if let Some(idx) = self.peer_discovery.peer_indices.get(pid).cloned() {
-                    Some(idx)
-                } else {
-                    let key = key_utils::peer_index_key(&pid.to_string());
-                    match self.db.get_string::<usize>(&key) {
-                        Ok(Some(idx)) => {
-                            // Update peer_indices with index from database
-                            info!(
-                                "🔢 [PEER_LIST_SEND] Loading index {} for peer {} from database",
-                                idx, pid
-                            );
-                            self.peer_discovery.peer_indices.insert(pid.clone(), idx);
-                            Some(idx)
-                        }
-                        _ => None,
+        let mut indices: Vec<Option<usize>> = Vec::with_capacity(peers.len());
+        for SerializablePeerId(pid) in &peers {
+            if let Some(idx) = self.peer_discovery.peer_indices.get(pid).cloned() {
+                indices.push(Some(idx));
+            } else {
+                let key = key_utils::peer_index_key(&pid.to_string());
+                match self.db.get_string_async::<usize>(&key).await {
+                    Ok(Some(idx)) => {
+                        // Update peer_indices with index from database
+                        info!(
+                            "🔢 [PEER_LIST_SEND] Loading index {} for peer {} from database",
+                            idx, pid
+                        );
+                        self.peer_discovery.peer_indices.insert(pid.clone(), idx);
+                        indices.push(Some(idx));
+                    }
+                    Ok(None) => indices.push(None),
+                    Err(e) => {
+                        warn!(
+                            "❌ [PEER_LIST_SEND] Failed to load index for {}: {}",
+                            pid, e
+                        );
+                        indices.push(None);
                     }
                 }
-            })
-            .collect();
+            }
+        }
 
         // Log how many peers we're returning
         info!(
@@ -212,7 +215,10 @@ impl MpcNetworkLayer {
 
     /// Handle RequestCurrentVrfRound RPC request
     async fn handle_request_current_vrf_round(&self, peer: PeerId) -> RPCResponse {
-        info!("🔄 Received request for current VRF round from peer {}", peer);
+        info!(
+            "🔄 Received request for current VRF round from peer {}",
+            peer
+        );
         let mut current_round = None;
 
         // Check signing_node first
@@ -248,7 +254,8 @@ impl MpcNetworkLayer {
 
         match self
             .db
-            .count_entries_with_prefix(crate::database::keys::USER_REGISTRATION)
+            .count_entries_with_prefix_async(crate::database::keys::USER_REGISTRATION)
+            .await
         {
             Ok(total_entries) => {
                 let recommended_batch_size = 100; // Entries per batch
@@ -262,10 +269,7 @@ impl MpcNetworkLayer {
                 }
             }
             Err(e) => {
-                error!(
-                    "❌ [DB_SYNC] Failed to count user database entries: {}",
-                    e
-                );
+                error!("❌ [DB_SYNC] Failed to count user database entries: {}", e);
                 RPCResponse::Error(format!("Failed to count user database entries: {}", e))
             }
         }
@@ -283,11 +287,15 @@ impl MpcNetworkLayer {
             batch_index, batch_size, peer
         );
 
-        match self.db.export_batch_with_prefix(
-            crate::database::keys::USER_REGISTRATION,
-            batch_index * batch_size,
-            batch_size,
-        ) {
+        match self
+            .db
+            .export_batch_with_prefix(
+                crate::database::keys::USER_REGISTRATION,
+                batch_index * batch_size,
+                batch_size,
+            )
+            .await
+        {
             Ok((entries, is_last_batch)) => {
                 let db_entries: Vec<crate::types::rpc::DatabaseEntry> = entries
                     .into_iter()
@@ -349,7 +357,12 @@ impl MpcNetworkLayer {
                 );
 
                 if let Err(e) = self
-                    .handle_database_sync_metadata(swarm, peer, total_entries, recommended_batch_size)
+                    .handle_database_sync_metadata(
+                        swarm,
+                        peer,
+                        total_entries,
+                        recommended_batch_size,
+                    )
                     .await
                 {
                     error!("❌ [DB_SYNC] Failed to handle sync metadata: {}", e);
@@ -370,7 +383,14 @@ impl MpcNetworkLayer {
                 let batch_size = 100;
 
                 if let Err(e) = self
-                    .handle_database_batch(swarm, peer, batch_index, entries, is_last_batch, batch_size)
+                    .handle_database_batch(
+                        swarm,
+                        peer,
+                        batch_index,
+                        entries,
+                        is_last_batch,
+                        batch_size,
+                    )
                     .await
                 {
                     error!("❌ [DB_SYNC] Failed to handle batch: {}", e);
@@ -393,7 +413,9 @@ impl MpcNetworkLayer {
     ) -> Result<()> {
         info!("🔄 Merging peer‐set: {:?}", peers);
         info!("🔄 Received indices: {:?}", indices);
-        
+
+        let mut batch_updates: Vec<(String, usize)> = Vec::new();
+
         for (i, SerializablePeerId(p)) in peers.into_iter().enumerate() {
             // Add peer to node_manager if not already present
             if !self.node_manager.get_active_nodes().contains(&p) {
@@ -405,7 +427,10 @@ impl MpcNetworkLayer {
                 if let Some(signing_node) = &mut self.signing_node {
                     let new_threshold = self.node_manager.get_threshold();
                     signing_node.set_threshold(new_threshold);
-                    info!("🔄 [THRESHOLD] Updated signing node threshold to {} after peer list merge", new_threshold);
+                    info!(
+                        "🔄 [THRESHOLD] Updated signing node threshold to {} after peer list merge",
+                        new_threshold
+                    );
                 }
             }
 
@@ -413,15 +438,24 @@ impl MpcNetworkLayer {
             // Priority: 1) Index from peer list, 2) Existing in peer_indices, 3) Load from database
             let index_to_use = if let Some(idx) = indices.get(i).cloned().flatten() {
                 // Index provided in peer list - use it and persist to database
-                info!("🔢 [PEER_LIST] Using index {} for peer {} from peer list", idx, p);
+                info!(
+                    "🔢 [PEER_LIST] Using index {} for peer {} from peer list",
+                    idx, p
+                );
                 Some(idx)
             } else if let Some(existing_idx) = self.peer_discovery.peer_indices.get(&p).cloned() {
                 // Already in peer_indices - keep it
-                info!("🔢 [PEER_LIST] Using existing index {} for peer {} from peer_indices", existing_idx, p);
+                info!(
+                    "🔢 [PEER_LIST] Using existing index {} for peer {} from peer_indices",
+                    existing_idx, p
+                );
                 Some(existing_idx)
-            } else if let Some(db_idx) = self.get_index_from_db(&p) {
+            } else if let Some(db_idx) = self.get_index_from_db_async(&p).await {
                 // Load from database if available
-                info!("🔢 [PEER_LIST] Loaded index {} for peer {} from database", db_idx, p);
+                info!(
+                    "🔢 [PEER_LIST] Loaded index {} for peer {} from database",
+                    db_idx, p
+                );
                 Some(db_idx)
             } else {
                 // No index available
@@ -433,11 +467,25 @@ impl MpcNetworkLayer {
             if let Some(idx) = index_to_use {
                 self.peer_discovery.peer_indices.insert(p.clone(), idx);
                 let key = key_utils::peer_index_key(&p.to_string());
-                if let Err(e) = self.db.put_string(&key, &idx) {
-                    warn!("❌ [PEER_LIST] Failed to persist peer index {} for peer {}: {:?}", idx, p, e);
-                } else {
-                    info!("✅ [PEER_LIST] Updated and persisted index {} for peer {}", idx, p);
-                }
+                batch_updates.push((key, idx));
+            }
+        }
+
+        if !batch_updates.is_empty() {
+            if let Err(e) = self
+                .db
+                .batch_write_async(move |batch| {
+                    for (key, idx) in batch_updates {
+                        batch.put_string(&key, &idx)?;
+                    }
+                    Ok(())
+                })
+                .await
+            {
+                warn!(
+                    "❌ [PEER_LIST] Failed to persist peer indices batch: {:?}",
+                    e
+                );
             }
         }
 
@@ -457,65 +505,82 @@ impl MpcNetworkLayer {
         &mut self,
         swarm: &mut libp2p::Swarm<MpcNetworkBehaviour>,
     ) -> Result<()> {
-        let (should_sync, sync_peer_opt, new_node_index_opt, needs_retry) =
-            if let Some(dkg_node) = &mut self.dkg_node {
-                let total = self.node_manager.get_total_nodes();
-                let threshold = self.node_manager.get_threshold();
+        let (should_sync, sync_peer_opt, new_node_index_opt, needs_retry) = if let Some(dkg_node) =
+            &mut self.dkg_node
+        {
+            let total = self.node_manager.get_total_nodes();
+            let threshold = self.node_manager.get_threshold();
 
-                // Update DKG node parameters with current network size
-                dkg_node.update_node_params(total, threshold);
-                info!("🔄 [NEW_NODE] Updated DKG params: total_nodes={}, threshold={}", total, threshold);
+            // Update DKG node parameters with current network size
+            dkg_node.update_node_params(total, threshold);
+            info!(
+                "🔄 [NEW_NODE] Updated DKG params: total_nodes={}, threshold={}",
+                total, threshold
+            );
 
-                let has_dkg_data = dkg_node.get_final_secret_share().await.is_some();
-                info!("🔍 [NEW_NODE] Has DKG data: {}", has_dkg_data);
+            let has_dkg_data = dkg_node.get_final_secret_share().await.is_some();
+            info!("🔍 [NEW_NODE] Has DKG data: {}", has_dkg_data);
 
-                // If this node has no DKG data and network has > 4 nodes, it's a new node joining
-                if !has_dkg_data && total > 4 {
-                    info!("🆕 [NEW_NODE] Learned about {} total nodes, triggering database sync and share request", total);
+            // If this node has no DKG data and network has > 4 nodes, it's a new node joining
+            if !has_dkg_data && total > 4 {
+                info!("🆕 [NEW_NODE] Learned about {} total nodes, triggering database sync and share request", total);
 
-                    let connected_peers: Vec<PeerId> =
-                        swarm.connected_peers().cloned().collect();
-                    info!("🔗 [NEW_NODE] Currently connected to {} peers: {:?}", connected_peers.len(), connected_peers);
+                let connected_peers: Vec<PeerId> = swarm.connected_peers().cloned().collect();
+                info!(
+                    "🔗 [NEW_NODE] Currently connected to {} peers: {:?}",
+                    connected_peers.len(),
+                    connected_peers
+                );
 
-                    // Find first connected peer for sync (excluding ourselves)
-                    let sync_peer = connected_peers
-                        .iter()
-                        .find(|pid| **pid != self.local_peer_id)
-                        .cloned();
+                // Find first connected peer for sync (excluding ourselves)
+                let sync_peer = connected_peers
+                    .iter()
+                    .find(|pid| **pid != self.local_peer_id)
+                    .cloned();
 
-                    let should_proceed = if let Some(ref peer) = sync_peer {
-                        info!("✅ [NEW_NODE] Selected connected peer for sync: {}", peer);
-                        true
-                    } else {
-                        warn!("⚠️ [NEW_NODE] No connected peers available for database sync!");
-                        warn!("⚠️ [NEW_NODE] Will retry database sync when a connection is established");
-                        false
-                    };
-
-                    // CRITICAL: Check if this is a REJOINING node or a truly NEW node
-                    let new_node_index = if let Some(existing_index) =
-                        self.get_index_from_db(&self.local_peer_id)
-                    {
-                        info!("🔄 [REJOIN] Node rejoining with existing index: {}", existing_index);
-                        existing_index
-                    } else {
-                        // This is a truly NEW node - assign max_index + 1
-                        let all_assigned_indices: Vec<usize> =
-                            self.peer_discovery.peer_indices.values().cloned().collect();
-                        let max_index = all_assigned_indices.iter().max().cloned().unwrap_or(0);
-                        let final_index = max_index + 1;
-                        info!("🆕 [NEW_NODE] Assigned permanent index: {} (max_existing={}, total_nodes={})", 
-                              final_index, max_index, total);
-                        final_index
-                    };
-
-                    (should_proceed, sync_peer, Some(new_node_index), !should_proceed)
+                let should_proceed = if let Some(ref peer) = sync_peer {
+                    info!("✅ [NEW_NODE] Selected connected peer for sync: {}", peer);
+                    true
                 } else {
-                    (false, None, None, false)
-                }
+                    warn!("⚠️ [NEW_NODE] No connected peers available for database sync!");
+                    warn!(
+                        "⚠️ [NEW_NODE] Will retry database sync when a connection is established"
+                    );
+                    false
+                };
+
+                // CRITICAL: Check if this is a REJOINING node or a truly NEW node
+                let new_node_index = if let Some(existing_index) =
+                    self.get_index_from_db_async(&self.local_peer_id).await
+                {
+                    info!(
+                        "🔄 [REJOIN] Node rejoining with existing index: {}",
+                        existing_index
+                    );
+                    existing_index
+                } else {
+                    // This is a truly NEW node - assign max_index + 1
+                    let all_assigned_indices: Vec<usize> =
+                        self.peer_discovery.peer_indices.values().cloned().collect();
+                    let max_index = all_assigned_indices.iter().max().cloned().unwrap_or(0);
+                    let final_index = max_index + 1;
+                    info!("🆕 [NEW_NODE] Assigned permanent index: {} (max_existing={}, total_nodes={})", 
+                              final_index, max_index, total);
+                    final_index
+                };
+
+                (
+                    should_proceed,
+                    sync_peer,
+                    Some(new_node_index),
+                    !should_proceed,
+                )
             } else {
                 (false, None, None, false)
-            };
+            }
+        } else {
+            (false, None, None, false)
+        };
 
         if needs_retry {
             self.needs_database_sync = true;
@@ -525,7 +590,10 @@ impl MpcNetworkLayer {
         if should_sync {
             // First, sync database from an existing peer
             if let Some(sync_peer) = sync_peer_opt {
-                info!("📦 [NEW_NODE] Initiating database sync from peer: {}", sync_peer);
+                info!(
+                    "📦 [NEW_NODE] Initiating database sync from peer: {}",
+                    sync_peer
+                );
 
                 if let Err(e) = self.sync_database_from_peer(swarm, sync_peer).await {
                     warn!("❌ [NEW_NODE] Failed to start database sync: {:?}", e);
@@ -535,7 +603,8 @@ impl MpcNetworkLayer {
             }
 
             // Request DKG shares
-            if let (Some(dkg_node), Some(new_node_index)) = (&mut self.dkg_node, new_node_index_opt) {
+            if let (Some(dkg_node), Some(new_node_index)) = (&mut self.dkg_node, new_node_index_opt)
+            {
                 if let Err(e) = dkg_node.request_shares_as_new_node(new_node_index).await {
                     warn!("❌ [NEW_NODE] Failed to request shares: {:?}", e);
                 }
@@ -552,17 +621,21 @@ impl MpcNetworkLayer {
 
             // Simple VRF round sync for both signing nodes
             if let Some(signing_node) = &mut self.signing_node {
-                signing_node.sync_vrf_round_with_network(network_round).await;
+                signing_node
+                    .sync_vrf_round_with_network(network_round)
+                    .await;
             }
             if let Some(db_signing_node) = &mut self.db_signing_node {
                 let mut node = db_signing_node.lock().await;
                 node.sync_vrf_round_with_network(network_round).await;
             }
 
-            info!("✅ [NETWORK] VRF round synced to network round: {}", network_round);
+            info!(
+                "✅ [NETWORK] VRF round synced to network round: {}",
+                network_round
+            );
         } else {
             info!("ℹ️ Peer doesn't have current VRF round yet");
         }
     }
 }
-
