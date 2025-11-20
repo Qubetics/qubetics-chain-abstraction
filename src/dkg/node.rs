@@ -7,6 +7,7 @@ use k256::elliptic_curve::group::Group;
 use k256::{AffinePoint, ProjectivePoint, Scalar};
 use rand::rngs::OsRng;
 use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 use std::{any, usize};
 use tokio::sync::mpsc;
@@ -20,17 +21,22 @@ use crate::types::{
     ChannelMessage, GossipsubMessage, KeyShare, SerializablePoint, SerializableScalar,
 };
 
-pub struct DKGNode {
-    pub(super) id: String,
+#[derive(Clone)]
+pub(super) struct DKGState {
     pub(super) status: DKGStatus,
     pub(super) threshold: usize,
     pub(super) total_nodes: usize,
+    pub(super) round: u64,
+    pub(super) my_permanent_index: Option<usize>, // Index assigned during initial DKG, never changes
+}
+
+pub struct DKGNode {
+    pub(super) id: String,
+    pub(super) state: Arc<RwLock<DKGState>>,
     pub(super) storage: DkgStorage,
     pub(super) message_tx: mpsc::Sender<ChannelMessage>,
     pub(super) completion_callback: Option<DKGCompletionCallback>,
-    pub(super) round: u64,
     pub(super) chain_code: [u8; 32],
-    pub(super) my_permanent_index: Option<usize>, // Index assigned during initial DKG, never changes
     pub(super) user_intent_manager:
         Option<std::sync::Arc<crate::user_intent_manager::UserIntentManager>>, // optional handle to update users after refresh
 }
@@ -44,17 +50,20 @@ impl DKGNode {
         storage: DkgStorage,
         chain_code: [u8; 32],
     ) -> Self {
-        Self {
-            id,
+        let state = DKGState {
             status: DKGStatus::New,
             threshold,
             total_nodes,
+            round: 0,
+            my_permanent_index: None,
+        };
+        Self {
+            id,
+            state: Arc::new(RwLock::new(state)),
             storage,
             message_tx,
             completion_callback: None,
-            round: 0,
             chain_code,
-            my_permanent_index: None, // Will be set during DKG completion or when joining
             user_intent_manager: None,
         }
     }
@@ -70,7 +79,7 @@ impl DKGNode {
     /// Load permanent index from storage
     pub async fn load_permanent_index(&mut self) -> Result<()> {
         if let Some(index) = self.storage.get_my_permanent_index().await? {
-            self.my_permanent_index = Some(index);
+            self.state.write().unwrap().my_permanent_index = Some(index);
             info!("🔢 [DKG] Loaded permanent index: {}", index);
         }
         Ok(())
@@ -96,8 +105,9 @@ impl DKGNode {
             warn!("Failed to delete polynomial: {}", e);
         }
 
-        self.status = DKGStatus::New;
-        self.round += 1;
+        let mut state = self.state.write().unwrap();
+        state.status = DKGStatus::New;
+        state.round += 1;
     }
 
     pub fn set_completion_callback(&mut self, callback: DKGCompletionCallback) {
@@ -116,7 +126,7 @@ impl DKGNode {
     }
 
     pub fn get_status(&self) -> DKGStatus {
-        self.status.clone()
+        self.state.read().unwrap().status.clone()
     }
 
     pub fn update_node_params(&mut self, total_nodes: usize, threshold: usize) {
@@ -124,8 +134,9 @@ impl DKGNode {
             "🔄 Updating DKGNode params: total_nodes = {}, threshold = {}",
             total_nodes, threshold
         );
-        self.total_nodes = total_nodes;
-        self.threshold = threshold;
+        let mut state = self.state.write().unwrap();
+        state.total_nodes = total_nodes;
+        state.threshold = threshold;
     }
 
     pub async fn get_final_secret_share(&self) -> Option<Scalar> {
@@ -157,7 +168,7 @@ impl DKGNode {
     }
 
     pub async fn is_completed(&self) -> bool {
-        matches!(self.status, DKGStatus::Completed)
+        matches!(self.state.read().unwrap().status, DKGStatus::Completed)
     }
 
     pub async fn is_initial_dkg_complete(&self) -> bool {
