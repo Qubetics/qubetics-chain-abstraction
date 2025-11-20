@@ -132,14 +132,15 @@ impl DKGNode {
         // Check if we have received shares from all existing nodes
         let shares = self.storage.get_all_shares().await?;
         let commitments_map = self.storage.get_all_commitments().await?;
+        let total_nodes = self.state.read().unwrap().total_nodes;
         info!(
             "📊 [NEW_NODE] Total shares received: {}/{}",
             shares.len(),
-            self.total_nodes - 1
+            total_nodes - 1
         );
 
         // If we have shares from all existing nodes (total_nodes - 1), calculate the final secret share
-        if shares.len() >= self.total_nodes - 1 {
+        if shares.len() >= total_nodes - 1 {
             info!("🎉 [NEW_NODE] Received all shares from existing nodes! Calculating final secret share...");
 
             // Calculate final secret share by summing all received shares
@@ -202,7 +203,7 @@ impl DKGNode {
 
             // Store the permanent index that was assigned by existing nodes
             self.storage.set_my_permanent_index(new_node_index).await?;
-            self.my_permanent_index = Some(new_node_index);
+            self.state.write().unwrap().my_permanent_index = Some(new_node_index);
             info!(
                 "🔢 [NEW_NODE] Stored permanent index: {} (assigned by existing nodes)",
                 new_node_index
@@ -223,14 +224,17 @@ impl DKGNode {
             info!("🏦 [NEW_NODE] All original commitments stored successfully");
 
             // Update status
-            self.status = DKGStatus::Completed;
+            self.state.write().unwrap().status = DKGStatus::Completed;
 
             // Log the final results
             info!("🎯 [NEW_NODE] DKG COMPLETED for new node {}!", self.id);
             info!("🔐 [NEW_NODE] Final secret share: {:?}", final_secret_share);
             info!("🔑 [NEW_NODE] Final public key: {:?}", final_public_key);
             info!("📊 [NEW_NODE] Total shares collected: {}", shares.len());
-            info!("✅ [NEW_NODE] DKG status: {:?}", self.status);
+            info!(
+                "✅ [NEW_NODE] DKG status: {:?}",
+                self.state.read().unwrap().status
+            );
 
             // Call completion callback if set
             if let Some(callback) = self.completion_callback.take() {

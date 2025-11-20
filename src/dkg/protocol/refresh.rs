@@ -18,13 +18,14 @@ use tracing::{info, warn};
 impl DKGNode {
     fn generate_zero_constant_polynomial(&self) -> Result<Vec<Scalar>> {
         let mut rng = rand::rngs::OsRng;
-        let mut coefficients = Vec::with_capacity(self.threshold);
+        let threshold = self.state.read().unwrap().threshold;
+        let mut coefficients = Vec::with_capacity(threshold);
 
         // First coefficient (constant term) is ZERO
         coefficients.push(Scalar::ZERO);
 
         // Remaining coefficients are random
-        for _ in 1..self.threshold {
+        for _ in 1..threshold {
             coefficients.push(Scalar::random(&mut rng));
         }
 
@@ -229,7 +230,8 @@ impl DKGNode {
         // Old nodes will have total_nodes = 4, but network now has 5 nodes
         info!(
             "🔄 [REFRESH] Updating node params: old total_nodes={}, new total_nodes={}",
-            self.total_nodes, total_nodes
+            self.state.read().unwrap().total_nodes,
+            total_nodes
         );
         self.update_node_params(total_nodes, threshold);
 
@@ -241,9 +243,14 @@ impl DKGNode {
 
         // CRITICAL: Use permanent index instead of recalculating from sorted nodes
         // The permanent index never changes after initial DKG/join, even if new nodes join
-        let my_index = self.my_permanent_index.ok_or_else(|| {
-            anyhow!("Permanent index not set - should have been set during DKG completion")
-        })?;
+        let my_index = self
+            .state
+            .read()
+            .unwrap()
+            .my_permanent_index
+            .ok_or_else(|| {
+                anyhow!("Permanent index not set - should have been set during DKG completion")
+            })?;
 
         info!(
             "🔄 [REFRESH] Using PERMANENT index: {}, total nodes: {}",
@@ -376,6 +383,9 @@ impl DKGNode {
 
         // CRITICAL: Use permanent index, not recalculated sorted position!
         let my_index = self
+            .state
+            .read()
+            .unwrap()
             .my_permanent_index
             .ok_or_else(|| anyhow!("Permanent index not set during refresh share handling"))?;
 
@@ -486,6 +496,9 @@ impl DKGNode {
         info!("📊 [REFRESH]   Original public key: {:?}", original_public);
 
         let my_index = self
+            .state
+            .read()
+            .unwrap()
             .my_permanent_index
             .ok_or_else(|| anyhow!("Permanent index not set"))?;
         info!("📊 [REFRESH]   My permanent index: {}", my_index);
