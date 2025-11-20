@@ -36,6 +36,7 @@ mod event_loop;
 mod swarm_events;
 mod gossipsub_handler;
 mod channel_handler;
+mod message_handlers;
 
 // Re-export main types for public API
 pub use types::{DatabaseSyncState, MpcNetworkBehaviour, NetworkEvent, MpcNetworkLayer};

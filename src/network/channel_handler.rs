@@ -753,275 +753,42 @@ impl MpcNetworkLayer {
                     }
                 }
 
-                // Now process locally
-                if let Some(user_intent_manager) = &self.user_intent_manager {
-                    match (intent_hash.as_ref(), solver_address.as_ref()) {
-                        (Some(intent_hash), _) => {
-                            let storage_result = match transaction_type.as_str() {
-                                "user_to_vault" => {
-                                    if let Some(signing_node) = &self.signing_node {
-                                        if let Err(e) = signing_node
-                                            .update_solver_amounts_for_user_to_vault(
-                                                intent_hash.as_str(),
-                                            )
-                                            .await
-                                        {
-                                            warn!("⚠️ [SIGNING] Failed to update solver amounts for UserToVault transaction: {}", e);
-                                        } else if let Err(e) = signing_node
-                                            .calculate_reward_per_solver(intent_hash.as_str())
-                                            .await
-                                        {
-                                            warn!("⚠️ [SIGNING] Failed to calculate rewards for UserToVault transaction: {}", e);
-                                        } else {
-                                            info!(
-                                                "✅ [SIGNING] Successfully calculated rewards for UserToVault transaction: {}",
-                                                intent_hash
-                                            );
-                                        }
-                                    }
-                                    user_intent_manager
-                                        .store_user_to_vault_tx_id(
-                                            intent_hash,
-                                            transaction_id.as_str(),
-                                            Some(&node_id),
-                                        )
-                                        .await
-                                }
-                                "network_to_target" => {
-                                    user_intent_manager
-                                        .store_network_to_target_tx_id(
-                                            intent_hash,
-                                            transaction_id.as_str(),
-                                            Some(&node_id),
-                                        )
-                                        .await
-                                }
-                                "vault_to_network" => {
-                                    user_intent_manager
-                                        .store_vault_to_network_tx_id(
-                                            intent_hash,
-                                            transaction_id.as_str(),
-                                            Some(&node_id),
-                                        )
-                                        .await
-                                }
-                                _ => {
-                                    warn!(
-                                        "❌ [NETWORK] Unknown transaction type: {}",
-                                        transaction_type
-                                    );
-                                    return Ok(());
-                                }
-                            };
-
-                            match storage_result {
-                                Ok(()) => {
-                                    if let Err(e) = user_intent_manager
-                                        .store_transaction_status(
-                                            &transaction_id,
-                                            TransactionStatus::Pending,
-                                        )
-                                        .await
-                                    {
-                                        error!(
-                                            "❌ [NETWORK] Failed to store transaction status for broadcast tx {}: {}",
-                                            transaction_id, e
-                                        );
-                                    }
-                                    info!(
-                                        "✅ [NETWORK] Successfully synchronized transaction ID {} for intent {} (type: {})",
-                                        transaction_id, intent_hash, transaction_type
-                                    );
-
-                                    if let Some(user_intent_manager) = &self.user_intent_manager {
-                                        if let Some(intent) =
-                                            user_intent_manager.get_intent(intent_hash).await
-                                        {
-                                            let tx_type_enum = match transaction_type.as_str() {
-                                                "user_to_vault" => {
-                                                    crate::types::TransactionType::UserToVault
-                                                }
-                                                "network_to_target" => {
-                                                    crate::types::TransactionType::NetworkToTarget
-                                                }
-                                                "vault_to_network" => {
-                                                    crate::types::TransactionType::VaultToNetwork
-                                                }
-                                                _ => {
-                                                    warn!("❌ [CONTRACT] Unknown transaction type for contract call: {}", transaction_type);
-                                                    return Ok(());
-                                                }
-                                            };
-
-                                            let vault_group_key =
-                                                if let Some(dkg_node) = &self.dkg_node {
-                                                    dkg_node.get_vault_group_key().await
-                                                } else {
-                                                    None
-                                                };
-
-                                            if let Some(vault_group_key) = vault_group_key {
-                                                if let Err(e) = self
-                                                    .execute_contract_call_for_transaction(
-                                                        &intent,
-                                                        intent_hash,
-                                                        tx_type_enum,
-                                                        &transaction_id,
-                                                        Some(vault_group_key),
-                                                        intent.amount,
-                                                    )
-                                                    .await
-                                                {
-                                                    warn!(
-                                                        "❌ [CONTRACT] Failed to execute contract call for transaction ID {}: {}",
-                                                        transaction_id, e
-                                                    );
-                                                } else {
-                                                    info!(
-                                                        "✅ [CONTRACT] Successfully executed contract call for transaction ID {}",
-                                                        transaction_id
-                                                    );
-                                                }
-                                            } else {
-                                                warn!("❌ [CONTRACT] No vault group key available for contract call execution");
-                                            }
-                                        } else {
-                                            warn!(
-                                                "❌ [CONTRACT] Could not retrieve intent {} for contract call execution",
-                                                intent_hash
-                                            );
-                                        }
-                                    }
-                                }
-                                Err(e) => {
-                                    error!("❌ [NETWORK] Failed to store synchronized transaction ID: {}", e);
-                                }
-                            }
-                        }
-                        (None, Some(solver_addr)) => {
-                            let storage_result = match transaction_type.as_str() {
-                                "tics_reward" => user_intent_manager
-                                    .add_solver_tics_txn_hash(solver_addr, transaction_id.clone())
-                                    .await
-                                    .map_err(|e| e.to_string()),
-                                "btc_reward" => user_intent_manager
-                                    .add_solver_btc_txn_hash(solver_addr, transaction_id.clone())
-                                    .await
-                                    .map_err(|e| e.to_string()),
-                                _ => {
-                                    warn!(
-                                        "❌ [NETWORK] Unknown reward transaction type: {}",
-                                        transaction_type
-                                    );
-                                    return Ok(());
-                                }
-                            };
-
-                            match storage_result {
-                                Ok(()) => {
-                                    if let Err(e) = user_intent_manager
-                                        .store_transaction_status(
-                                            &transaction_id,
-                                            TransactionStatus::Pending,
-                                        )
-                                        .await
-                                    {
-                                        error!(
-                                            "❌ [NETWORK] Failed to store transaction status for reward tx {}: {}",
-                                            transaction_id, e
-                                        );
-                                    }
-                                    info!(
-                                        "✅ [NETWORK] Successfully synchronized reward transaction ID {} for solver {} (type: {})",
-                                        transaction_id, solver_addr, transaction_type
-                                    );
-
-                                    // Handle reward transaction success - update claimed amounts and reduce rewards
-                                    // Get the current reward amount and reduce it to 0 (since claim_reward claims all available rewards)
-                                    let (currency, current_reward) =
-                                        if transaction_type == "tics_reward" {
-                                            (
-                                                "tics",
-                                                user_intent_manager
-                                                    .get_solver_reward_tics(solver_addr)
-                                                    .await
-                                                    .unwrap_or_else(|| ethers::types::U256::zero()),
-                                            )
-                                        } else {
-                                            (
-                                                "btc",
-                                                user_intent_manager
-                                                    .get_solver_reward_btc(solver_addr)
-                                                    .await
-                                                    .unwrap_or_else(|| ethers::types::U256::zero()),
-                                            )
-                                        };
-
-                                    if current_reward > ethers::types::U256::zero() {
-                                        // Get current claimed amount
-                                        let current_claimed = user_intent_manager
-                                            .get_solver_claimed_request_amount(solver_addr)
-                                            .await
-                                            .unwrap_or_else(|| ethers::types::U256::zero());
-
-                                        // Update claimed amount
-                                        let new_claimed = current_claimed + current_reward;
-                                        if let Err(e) = user_intent_manager
-                                            .set_solver_claimed_request_amount(
-                                                solver_addr,
-                                                new_claimed,
-                                            )
-                                            .await
-                                        {
-                                            error!("❌ [NETWORK-REWARD] Failed to update claimed amount for solver {}: {}", solver_addr, e);
-                                        } else {
-                                            info!("✅ [NETWORK-REWARD] Updated claimed amount for solver {}: {} (was: {})", solver_addr, new_claimed, current_claimed);
-                                        }
-
-                                        // Set reward to 0 (all rewards claimed)
-                                        let result = if currency == "tics" {
-                                            user_intent_manager
-                                                .set_solver_reward_tics(
-                                                    solver_addr,
-                                                    ethers::types::U256::zero(),
-                                                )
-                                                .await
-                                        } else {
-                                            user_intent_manager
-                                                .set_solver_reward_btc(
-                                                    solver_addr,
-                                                    ethers::types::U256::zero(),
-                                                )
-                                                .await
-                                        };
-
-                                        match result {
-                                            Ok(()) => {
-                                                info!("✅ [NETWORK-REWARD] Successfully processed {} reward transaction {} for solver {}: claimed={}, remaining_reward=0", 
-                                                      currency, transaction_id, solver_addr, new_claimed);
-                                            }
-                                            Err(e) => {
-                                                error!("❌ [NETWORK-REWARD] Failed to reduce {} reward for solver {}: {}", currency, solver_addr, e);
-                                            }
-                                        }
-                                    } else {
-                                        info!("ℹ️ [NETWORK-REWARD] No {} reward to claim for solver {} (already claimed or zero)", currency, solver_addr);
-                                    }
-                                }
-                                Err(e) => {
-                                    error!(
-                                        "❌ [NETWORK] Failed to store synchronized reward transaction ID for solver {}: {}",
-                                        solver_addr, e
-                                    );
-                                }
-                            }
-                        }
-                        _ => {
-                            warn!("⚠️ [NETWORK] Transaction ID broadcast missing both intent hash and solver address");
+                // Now process locally using shared handler
+                match (intent_hash.as_ref(), solver_address.as_ref()) {
+                    (Some(intent_hash), _) => {
+                        if let Err(e) = self
+                            .handle_transaction_id_storage(
+                                intent_hash,
+                                &transaction_id,
+                                &transaction_type,
+                                &node_id,
+                            )
+                            .await
+                        {
+                            error!(
+                                "❌ [NETWORK] Failed to handle transaction ID storage: {}",
+                                e
+                            );
                         }
                     }
-                } else {
-                    warn!("❌ [NETWORK] No user registry available to store synchronized transaction ID");
+                    (None, Some(solver_addr)) => {
+                        if let Err(e) = self
+                            .handle_reward_transaction_id_storage(
+                                solver_addr,
+                                &transaction_id,
+                                &transaction_type,
+                            )
+                            .await
+                        {
+                            error!(
+                                "❌ [NETWORK] Failed to handle reward transaction ID storage: {}",
+                                e
+                            );
+                        }
+                    }
+                    _ => {
+                        warn!("⚠️ [NETWORK] Transaction ID broadcast missing both intent hash and solver address");
+                    }
                 }
             }
             ChannelMessage::IntentHashBroadcast {
