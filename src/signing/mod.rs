@@ -243,7 +243,16 @@ impl SigningNode {
     }
 
     pub fn set_private_key_from_scalar(&mut self, scalar: Scalar) {
-        let secret_key = Self::derive_secp_secret(&scalar);
+        let secret_key = match Self::derive_secp_secret(&scalar) {
+            Ok(key) => key,
+            Err(err) => {
+                error!(
+                    "❌ [SIGNING] Node {} failed to set private key from scalar: {}",
+                    self.id, err
+                );
+                return;
+            }
+        };
 
         info!("🔐 [SIGNING] Node {} private key set from scalar", self.id);
         // Redacted sensitive material (scalar bytes and secret key)
@@ -261,9 +270,9 @@ impl SigningNode {
         );
     }
 
-    pub fn derive_secp_secret(scalar: &Scalar) -> SecretKey {
-        let be = scalar.to_bytes();
-        SecretKey::from_slice(be.as_slice()).expect("valid secp256k1 scalar")
+    pub fn derive_secp_secret(scalar: &Scalar) -> Result<SecretKey> {
+        SecretKey::from_slice(scalar.to_bytes().as_slice())
+            .map_err(|e| anyhow!("Invalid secp256k1 scalar: {}", e))
     }
 
     // Configuration methods
@@ -439,9 +448,11 @@ impl SigningNode {
 
         // ===== Sign each input digest with our key share (or tweaked) =====
         let signing_key = if let Some(tweaked_share) = user_tweaked_share {
-            Self::derive_secp_secret(&tweaked_share)
+            Self::derive_secp_secret(&tweaked_share)?
         } else {
-            self.private_key.unwrap()
+            self.private_key
+                .clone()
+                .ok_or_else(|| anyhow!("No private key available for signing"))?
         };
 
         // Log signing key for testing/debugging (Bitcoin)
@@ -532,7 +543,7 @@ impl SigningNode {
         let pubkey33_arr: [u8; 33] = signer_pubkey33
             .as_slice()
             .try_into()
-            .expect("compressed pubkey must be 33 bytes");
+            .map_err(|_| anyhow!("Compressed pubkey must be 33 bytes"))?;
 
         // Choose broadcast network (or derive from addresses if you prefer)
         let is_testnet = true;
@@ -1847,11 +1858,11 @@ impl SigningNode {
         let signing_key = if let Some(tweaked_share) = user_tweaked_share {
             // Use user's tweaked share for user deposits
             info!("🔑 [SIGNING] Using user-specific tweaked share for signing");
-            Self::derive_secp_secret(&tweaked_share)
+            Self::derive_secp_secret(&tweaked_share)?
         } else {
             // Use network DKG share for network withdrawals
             info!("🔑 [SIGNING] Using network DKG share for signing");
-            match self.private_key {
+            match self.private_key.clone() {
                 Some(key) => key,
                 None => {
                     error!(
@@ -2072,11 +2083,11 @@ impl SigningNode {
         let signing_key = if let Some(tweaked_share) = user_tweaked_share {
             // Use user's tweaked share for user deposits
             info!("🔑 [SIGNING] Using user-specific tweaked share for signing");
-            Self::derive_secp_secret(&tweaked_share)
+            Self::derive_secp_secret(&tweaked_share)?
         } else {
             // Use network DKG share for network withdrawals
             info!("🔑 [SIGNING] Using network DKG share for signing");
-            match self.private_key {
+            match self.private_key.clone() {
                 Some(key) => key,
                 None => {
                     error!(
