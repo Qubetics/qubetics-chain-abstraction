@@ -164,6 +164,9 @@ impl MpcNetworkLayer {
     }
 
     /// Execute contract call for a given transaction type and intent
+    /// 
+    /// This method delegates to MpcChainExecutor to keep contract execution
+    /// logic separate from networking concerns.
     pub(crate) async fn execute_contract_call_for_transaction(
         &mut self,
         intent: &crate::types::DepositIntent,
@@ -173,89 +176,23 @@ impl MpcNetworkLayer {
         vault_group_key: Option<k256::ProjectivePoint>,
         amount: u128,
     ) -> Result<()> {
-        use tracing::debug;
-
         if let Some(signing_node) = &mut self.signing_node {
-            info!(
-                "📝 [CONTRACT] Executing contract call for transaction type: {:?}",
-                transaction_type
-            );
-
-            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-
-            let contract_call_result =
-                crate::utils::transaction::create_chain_transaction_from_contract_call(
-                    vault_group_key,
-                    amount,
-                    intent,
-                    intent_hash,
-                    tx_hash,
-                    transaction_type.clone(),
-                )
-                .await;
-
-            match contract_call_result {
-                Ok(contract_transaction) => {
-                    info!("📝 [CONTRACT] Created contract call transaction");
-                    let available_nodes: Vec<PeerId> =
-                        self.node_manager.get_active_nodes().into_iter().collect();
-                    signing_node.set_available_nodes(available_nodes);
-
-                    match contract_transaction {
-                        crate::chain_abstraction::ChainTransaction::Ethereum(ref eth_tx) => {
-                            let contract_tx = crate::types::ContractTransaction {
-                                to: eth_tx.to.clone(),
-                                value: eth_tx.value.clone(),
-                                nonce: eth_tx.nonce,
-                                gas_limit: eth_tx.gas_limit,
-                                gas_price: eth_tx.gas_price.clone(),
-                                chain_id: eth_tx.chain_id,
-                                data: eth_tx
-                                    .data
-                                    .as_ref()
-                                    .map(|d| format!("0x{}", hex::encode(d)))
-                                    .unwrap_or_else(|| "0x".to_string()),
-                            };
-                            let contract_tx_bytes =
-                                crate::utils::transaction::create_transaction_for_signing_contract(
-                                    &contract_tx,
-                                );
-                            debug!(
-                                "→ RLP payload contract call: 0x{}",
-                                hex::encode(&contract_tx_bytes)
-                            );
-
-                            let vault_tweaked_share = if let Some(dkg_node) = &self.dkg_node {
-                                dkg_node.get_vault_tweaked_secret_share().await
-                            } else {
-                                None
-                            };
-                            signing_node
-                                .sign_contract_message(
-                                    contract_tx_bytes,
-                                    &contract_tx,
-                                    vault_tweaked_share,
-                                    None,
-                                )
-                                .await?;
-                        }
-                        _ => {
-                            info!("📝 [CONTRACT] Contract call transaction is not Ethereum type, skipping");
-                        }
-                    }
-                }
-                Err(e) => {
-                    warn!(
-                        "❌ [CONTRACT] Failed to create contract call transaction: {}",
-                        e
-                    );
-                }
-            }
+            crate::chain_abstraction::MpcChainExecutor::execute_contract_call(
+                signing_node,
+                self.node_manager.as_ref(),
+                self.dkg_node.as_ref(),
+                intent,
+                intent_hash,
+                transaction_type,
+                vault_group_key,
+                amount,
+                tx_hash,
+            )
+            .await
         } else {
-            warn!("❌ [CONTRACT] Signing node not available for contract call execution");
+            warn!("❌ [NETWORK] Signing node not available for contract call execution");
+            Ok(())
         }
-
-        Ok(())
     }
 }
 

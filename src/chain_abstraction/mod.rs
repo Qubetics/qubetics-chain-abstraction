@@ -1,7 +1,9 @@
+pub mod executor;
 pub mod factory;
 pub mod handlers;
 pub mod transactions;
 
+pub use executor::MpcChainExecutor;
 pub use factory::ChainHandlerFactory;
 pub use handlers::{BitcoinChainHandler, ChainHandler, EthereumChainHandler};
 pub use transactions::{
