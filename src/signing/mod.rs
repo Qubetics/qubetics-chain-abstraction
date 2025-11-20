@@ -19,9 +19,9 @@ use serde::{Deserialize, Serialize};
 use sha2::Digest as Sha2Digest;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::future::Future;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::future::Future;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::{
     sync::{mpsc, RwLock},
@@ -47,11 +47,11 @@ use rand::thread_rng;
 
 use crate::chain_abstraction::{ChainHandler, ChainHandlerFactory, ChainTransaction};
 use crate::consensus::ConsensusNode;
+use crate::protocols::{VrfSelectedNodesBroadcast, VrfSelectionFacade, VrfService};
 use crate::types::{
     p2p::SerializablePeerId, ChannelMessage, ConsensusMessage, ConsensusResult, TransactionStatus,
 };
 use crate::utils::get_eth_address_from_group_key;
-use crate::protocols::{VrfSelectedNodesBroadcast, VrfSelectionFacade, VrfService};
 // Import BitcoinTransaction directly from chain module
 use crate::chain_abstraction::{BitcoinInput, BitcoinTransaction};
 use crate::contract::{ContractClient, SolverManagerContract};
@@ -5387,11 +5387,7 @@ impl SigningNode {
                 })
                 .await
                 .map_err(|e| {
-                    anyhow::anyhow!(
-                        "Failed to get EVM address for solver {}: {}",
-                        solver_id,
-                        e
-                    )
+                    anyhow::anyhow!("Failed to get EVM address for solver {}: {}", solver_id, e)
                 })?;
 
             // Call getSolverAllChainAmounts for each solver

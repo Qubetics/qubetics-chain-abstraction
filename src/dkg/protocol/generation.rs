@@ -13,10 +13,11 @@ use tracing::info;
 
 impl DKGNode {
     pub async fn start_dkg(&mut self, node_manager: Box<dyn NodeMembership>) -> Result<()> {
-        let state = self.state.read().unwrap().clone();
         info!(
             "🚀 Starting DKG for node {} with threshold {} and total nodes {}",
-            self.id, state.threshold, state.total_nodes
+            self.id,
+            self.threshold(),
+            self.total_nodes()
         );
 
         let polynomial = self.generate_polynomial()?;
@@ -29,7 +30,7 @@ impl DKGNode {
         let shares = self.generate_shares(&polynomial)?;
         let commitments = self.generate_commitments(&polynomial)?;
 
-        self.state.write().unwrap().status = crate::dkg::artifacts::DKGStatus::Started;
+        self.transition_status(crate::dkg::artifacts::DKGStatus::Started)?;
         info!("📤 Broadcasting DKG shares and commitments...");
         tokio::time::sleep(Duration::from_secs(1)).await;
         {
@@ -51,7 +52,7 @@ impl DKGNode {
 
     pub(crate) fn generate_polynomial(&self) -> Result<Vec<Scalar>> {
         let mut rng = OsRng;
-        let threshold = self.state.read().unwrap().threshold;
+        let threshold = self.threshold();
         let mut coefficients = Vec::with_capacity(threshold);
 
         for _ in 0..threshold {
@@ -70,21 +71,21 @@ impl DKGNode {
     }
 
     pub(crate) fn generate_shares(&self, polynomial: &[Scalar]) -> Result<Vec<KeyShare>> {
-        let state = self.state.read().unwrap().clone();
         info!("🔍 [DKG] === SECRET SHARE GENERATION ===");
         info!(
             "📊 [DKG] Node {} generating shares for {} nodes",
-            self.id, state.total_nodes
+            self.id,
+            self.total_nodes()
         );
         info!(
             "🔢 [DKG] Node {} polynomial coefficients: {:?}",
             self.id, polynomial
         );
 
-        let mut shares = Vec::with_capacity(state.total_nodes);
+        let mut shares = Vec::with_capacity(self.total_nodes());
 
         info!("🔍 [DKG] Generating shares for each index:");
-        for i in 1..=state.total_nodes {
+        for i in 1..=self.total_nodes() {
             let x = Scalar::from(i as u64);
             let mut y = Scalar::ZERO;
 

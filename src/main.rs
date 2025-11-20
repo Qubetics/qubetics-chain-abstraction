@@ -7,9 +7,9 @@ use mpc_node::{
     consensus::{ConsensusNode, DatabaseConsensusNode},
     database::{Database, DatabaseConfig, DatabaseModule, DkgStorage, RewardStorage},
     network::MpcNetworkLayer,
+    protocols::DKGNode,
     rpc_server,
     signing::{DatabaseSigningNode, SigningNode},
-    protocols::DKGNode,
     user_intent_manager::UserIntentManager,
 };
 use rand::{thread_rng, Rng};

@@ -135,8 +135,14 @@ impl MpcNetworkLayer {
                 // Update DKG parameters with current network state
                 let total = self.node_manager.get_total_nodes();
                 let threshold = self.node_manager.get_threshold();
-                dkg.update_node_params(total, threshold);
-                dkg.reset().await;
+                if let Err(e) = dkg.update_node_params(total, threshold) {
+                    warn!("❌ Invalid DKG params: {}", e);
+                    return RPCResponse::DKGError(format!("Invalid DKG params: {}", e));
+                }
+                if let Err(e) = dkg.reset().await {
+                    warn!("❌ Failed to reset DKG state: {}", e);
+                    return RPCResponse::DKGError(format!("Failed to reset DKG: {}", e));
+                }
                 if let Some(signing_node) = &mut self.signing_node {
                     signing_node.set_threshold(self.node_manager.get_total_nodes() - 1);
                 }
@@ -512,7 +518,7 @@ impl MpcNetworkLayer {
             let threshold = self.node_manager.get_threshold();
 
             // Update DKG node parameters with current network size
-            dkg_node.update_node_params(total, threshold);
+            dkg_node.update_node_params(total, threshold)?;
             info!(
                 "🔄 [NEW_NODE] Updated DKG params: total_nodes={}, threshold={}",
                 total, threshold

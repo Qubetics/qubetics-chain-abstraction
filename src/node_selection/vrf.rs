@@ -1,7 +1,7 @@
 use crate::node_selection::membership::NodeMembership;
 use crate::node_selection::threshold::ThresholdCalculator;
-use crate::types::p2p::SerializablePeerId;
 use crate::protocols::{NodeSelectionResult, VrfNodeSelector, VrfSelectionMessage};
+use crate::types::p2p::SerializablePeerId;
 use anyhow::{anyhow, Result};
 use libp2p::PeerId;
 use std::any::Any;

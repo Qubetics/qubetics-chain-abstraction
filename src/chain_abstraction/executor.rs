@@ -6,8 +6,8 @@ use libp2p::PeerId;
 use tracing::{debug, info, warn};
 
 use crate::node_selection::NodeMembership;
-use crate::signing::{EthereumSigner, SigningNode};
 use crate::protocols::DKGNode;
+use crate::signing::{EthereumSigner, SigningNode};
 use crate::types::{ContractTransaction, DepositIntent, TransactionType};
 
 /// Service for executing contract calls on blockchain networks

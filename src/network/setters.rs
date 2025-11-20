@@ -5,8 +5,8 @@ use tracing::info;
 use crate::commands::CommandProcessor;
 use crate::consensus::ConsensusNode;
 use crate::database::Database;
-use crate::signing::{DatabaseSigningNode, SigningNode};
 use crate::protocols::DKGNode;
+use crate::signing::{DatabaseSigningNode, SigningNode};
 use crate::user_intent_manager::UserIntentManager;
 
 use super::types::MpcNetworkLayer;

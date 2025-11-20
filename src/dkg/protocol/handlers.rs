@@ -151,7 +151,7 @@ impl DKGNode {
                 self.handle_share_validation(self.id.clone(), from.clone(), true, node_manager)
                     .await?;
 
-                let round = self.state.read().unwrap().round;
+                let round = self.current_round();
                 let validation_msg = DKGMessage::ShareValidation {
                     from: self.id.clone(),
                     to: from,
@@ -166,7 +166,7 @@ impl DKGNode {
                     "❌ [DKG] Share for index {} not found in shares from {}",
                     node_index, from
                 );
-                let round = self.state.read().unwrap().round;
+                let round = self.current_round();
                 let validation_msg = DKGMessage::ShareValidation {
                     from: self.id.clone(),
                     to: from,
@@ -182,7 +182,7 @@ impl DKGNode {
                 "❌ [DKG] Share verification failed for shares from {}",
                 from
             );
-            let round = self.state.read().unwrap().round;
+            let round = self.current_round();
             let validation_msg = DKGMessage::ShareValidation {
                 from: self.id.clone(),
                 to: from,
@@ -410,7 +410,7 @@ impl DKGNode {
         self.storage.set_final_secret(final_secret_share).await?;
         self.storage.set_final_public(final_public_key).await?;
         self.storage.set_my_permanent_index(node_index).await?;
-        self.state.write().unwrap().my_permanent_index = Some(node_index);
+        self.set_permanent_index(node_index);
         info!("🔢 [DKG] Stored permanent index: {}", node_index);
 
         for (from, comms) in commitments.iter() {
@@ -422,7 +422,7 @@ impl DKGNode {
             }
         }
 
-        self.state.write().unwrap().status = DKGStatus::Completed;
+        self.transition_status(DKGStatus::Completed)?;
 
         info!("🎯 [DKG] DKG COMPLETED for node {}!", self.id);
         info!("🔐 [DKG] Final secret share: {:?}", final_secret_share);
@@ -500,7 +500,7 @@ impl DKGNode {
             }
         }
 
-        if self.state.read().unwrap().total_nodes == 4 {
+        if self.total_nodes() == 4 {
             if let Err(e) = self.storage.set_initial_dkg_complete(true).await {
                 warn!("⚠️ [DKG] Failed to set initial DKG complete flag: {}", e);
             }

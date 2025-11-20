@@ -1,8 +1,8 @@
 use libp2p::PeerId;
 use tokio::sync::mpsc;
 
-use crate::signing::SigningNode;
 use crate::protocols::DKGNode;
+use crate::signing::SigningNode;
 use crate::types::ChannelMessage;
 use crate::user_intent_manager::UserIntentManager;
 

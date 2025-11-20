@@ -113,7 +113,9 @@ impl MpcNetworkLayer {
 
         // Update DKG and signing node parameters
         if let Some(dkg_node) = &mut self.dkg_node {
-            dkg_node.update_node_params(new_total, new_threshold);
+            if let Err(e) = dkg_node.update_node_params(new_total, new_threshold) {
+                warn!("⚠️ [DISCONNECT] Failed to update DKG params: {}", e);
+            }
         }
 
         if let Some(signing_node) = &mut self.signing_node {

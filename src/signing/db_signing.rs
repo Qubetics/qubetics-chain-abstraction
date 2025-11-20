@@ -11,8 +11,8 @@ use super::ECDSASignature;
 use crate::chain_abstraction::{ChainHandler, ChainHandlerFactory, ChainTransaction};
 use crate::consensus::ConsensusNode;
 use crate::database::{ConsensusStorage, Database, SigningStorage};
-use crate::types::ChannelMessage;
 use crate::protocols::VrfService;
+use crate::types::ChannelMessage;
 
 /// Database-backed signing node that stores state in RocksDB
 #[derive(Clone)]

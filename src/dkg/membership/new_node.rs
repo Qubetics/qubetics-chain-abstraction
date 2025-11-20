@@ -132,7 +132,7 @@ impl DKGNode {
         // Check if we have received shares from all existing nodes
         let shares = self.storage.get_all_shares().await?;
         let commitments_map = self.storage.get_all_commitments().await?;
-        let total_nodes = self.state.read().unwrap().total_nodes;
+        let total_nodes = self.total_nodes();
         info!(
             "📊 [NEW_NODE] Total shares received: {}/{}",
             shares.len(),
@@ -203,7 +203,7 @@ impl DKGNode {
 
             // Store the permanent index that was assigned by existing nodes
             self.storage.set_my_permanent_index(new_node_index).await?;
-            self.state.write().unwrap().my_permanent_index = Some(new_node_index);
+            self.set_permanent_index(new_node_index);
             info!(
                 "🔢 [NEW_NODE] Stored permanent index: {} (assigned by existing nodes)",
                 new_node_index
@@ -224,17 +224,14 @@ impl DKGNode {
             info!("🏦 [NEW_NODE] All original commitments stored successfully");
 
             // Update status
-            self.state.write().unwrap().status = DKGStatus::Completed;
+            self.transition_status(DKGStatus::Completed)?;
 
             // Log the final results
             info!("🎯 [NEW_NODE] DKG COMPLETED for new node {}!", self.id);
             info!("🔐 [NEW_NODE] Final secret share: {:?}", final_secret_share);
             info!("🔑 [NEW_NODE] Final public key: {:?}", final_public_key);
             info!("📊 [NEW_NODE] Total shares collected: {}", shares.len());
-            info!(
-                "✅ [NEW_NODE] DKG status: {:?}",
-                self.state.read().unwrap().status
-            );
+            info!("✅ [NEW_NODE] DKG status: {:?}", self.get_status());
 
             // Call completion callback if set
             if let Some(callback) = self.completion_callback.take() {

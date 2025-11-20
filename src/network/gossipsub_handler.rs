@@ -889,8 +889,8 @@ impl MpcNetworkLayer {
                                             )
                                             .await?;
                                     } // // Only execute contract transaction for UserToVault transaction type
-                                                 // if matches!(transaction_type, crate::types::TransactionType::UserToVault) {
-                                                 //     info!("📝 [GOSSIPSUB] UserToVault transaction detected - executing contract call");
+                                      // if matches!(transaction_type, crate::types::TransactionType::UserToVault) {
+                                      //     info!("📝 [GOSSIPSUB] UserToVault transaction detected - executing contract call");
 
                                     //     let mut hasher: sha2::digest::core_api::CoreWrapper<sha3::Keccak256Core> = sha3::Keccak256::new();
                                     //     hasher.update(&tx_bytes);

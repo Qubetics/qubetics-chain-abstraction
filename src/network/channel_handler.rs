@@ -992,8 +992,14 @@ impl MpcNetworkLayer {
                         );
                     }
 
-                    dkg.update_node_params(total, threshold);
-                    dkg.reset().await;
+                    if let Err(e) = dkg.update_node_params(total, threshold) {
+                        warn!("❌ [DKG] Invalid params for scheduled start: {}", e);
+                        return Ok(());
+                    }
+                    if let Err(e) = dkg.reset().await {
+                        warn!("❌ [DKG] Failed to reset before scheduled start: {}", e);
+                        return Ok(());
+                    }
                     if let Some(signing_node) = &mut self.signing_node {
                         signing_node.set_threshold(total / 2 + 1);
                     }

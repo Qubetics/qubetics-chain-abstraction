@@ -1,6 +1,6 @@
 use crate::utils::hmac_helper::hmac256_from_addr;
 use crate::{utils, NodeMembership};
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, ensure, Result};
 use ethers::core::k256::ecdsa::Error;
 use ff::{Field, PrimeField};
 use k256::elliptic_curve::group::Group;
@@ -9,7 +9,6 @@ use rand::rngs::OsRng;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
-use std::{any, usize};
 use tokio::sync::mpsc;
 use tracing::info;
 use tracing::warn;
@@ -22,17 +21,17 @@ use crate::types::{
 };
 
 #[derive(Clone)]
-pub(super) struct DKGState {
-    pub(super) status: DKGStatus,
-    pub(super) threshold: usize,
-    pub(super) total_nodes: usize,
-    pub(super) round: u64,
-    pub(super) my_permanent_index: Option<usize>, // Index assigned during initial DKG, never changes
+struct DKGState {
+    status: DKGStatus,
+    threshold: usize,
+    total_nodes: usize,
+    round: u64,
+    my_permanent_index: Option<usize>, // Index assigned during initial DKG, never changes
 }
 
 pub struct DKGNode {
     pub(super) id: String,
-    pub(super) state: Arc<RwLock<DKGState>>,
+    state: Arc<RwLock<DKGState>>,
     pub(super) storage: DkgStorage,
     pub(super) message_tx: mpsc::Sender<ChannelMessage>,
     pub(super) completion_callback: Option<DKGCompletionCallback>,
@@ -42,6 +41,67 @@ pub struct DKGNode {
 }
 
 impl DKGNode {
+    pub(crate) fn total_nodes(&self) -> usize {
+        self.state.read().unwrap().total_nodes
+    }
+
+    pub(crate) fn threshold(&self) -> usize {
+        self.state.read().unwrap().threshold
+    }
+
+    pub(crate) fn current_round(&self) -> u64 {
+        self.state.read().unwrap().round
+    }
+
+    pub(crate) fn permanent_index(&self) -> Option<usize> {
+        self.state.read().unwrap().my_permanent_index
+    }
+
+    pub(super) fn set_permanent_index(&self, index: usize) {
+        let mut state = self.state.write().unwrap();
+        if let Some(existing) = state.my_permanent_index {
+            if existing != index {
+                warn!(
+                    "🔁 [DKG] Overwriting permanent index from {} to {}",
+                    existing, index
+                );
+            }
+        }
+        state.my_permanent_index = Some(index);
+    }
+
+    fn increment_round(&self) {
+        self.state.write().unwrap().round += 1;
+    }
+
+    pub(super) fn transition_status(&self, next: DKGStatus) -> Result<()> {
+        fn is_valid_transition(current: &DKGStatus, next: &DKGStatus) -> bool {
+            use DKGStatus::*;
+            match (current, next) {
+                // Staying in the same state is harmless
+                (a, b) if std::mem::discriminant(a) == std::mem::discriminant(b) => true,
+                (New, Started | Completed | New | Error { .. }) => true,
+                (Started, Completed | Error { .. } | Started) => true,
+                (Completed, New | Completed | Error { .. }) => true,
+                (Error { .. }, New | Error { .. }) => true,
+                _ => false,
+            }
+        }
+
+        let mut state = self.state.write().unwrap();
+        if !is_valid_transition(&state.status, &next) {
+            let err = anyhow!(
+                "Invalid DKG status transition: {:?} -> {:?}",
+                state.status,
+                next
+            );
+            warn!("{}", err);
+            return Err(err);
+        }
+        state.status = next;
+        Ok(())
+    }
+
     pub fn new(
         id: String,
         threshold: usize,
@@ -79,35 +139,46 @@ impl DKGNode {
     /// Load permanent index from storage
     pub async fn load_permanent_index(&mut self) -> Result<()> {
         if let Some(index) = self.storage.get_my_permanent_index().await? {
-            self.state.write().unwrap().my_permanent_index = Some(index);
+            self.set_permanent_index(index);
             info!("🔢 [DKG] Loaded permanent index: {}", index);
         }
         Ok(())
     }
 
-    pub async fn reset(&mut self) {
+    pub async fn reset(&mut self) -> Result<()> {
+        let mut failures = Vec::new();
+
         if let Err(e) = self.storage.clear_shares().await {
-            warn!("Failed to clear shares: {}", e);
+            failures.push(format!("clear shares: {}", e));
         }
         if let Err(e) = self.storage.clear_commitments().await {
-            warn!("Failed to clear commitments: {}", e);
+            failures.push(format!("clear commitments: {}", e));
         }
         if let Err(e) = self.storage.clear_validations().await {
-            warn!("Failed to clear validations: {}", e);
+            failures.push(format!("clear validations: {}", e));
         }
         if let Err(e) = self.storage.delete_final_secret().await {
-            warn!("Failed to delete final secret: {}", e);
+            failures.push(format!("delete final secret: {}", e));
         }
         if let Err(e) = self.storage.delete_final_public().await {
-            warn!("Failed to delete final public key: {}", e);
+            failures.push(format!("delete final public key: {}", e));
         }
         if let Err(e) = self.storage.delete_polynomial().await {
-            warn!("Failed to delete polynomial: {}", e);
+            failures.push(format!("delete polynomial: {}", e));
         }
 
-        let mut state = self.state.write().unwrap();
-        state.status = DKGStatus::New;
-        state.round += 1;
+        if failures.is_empty() {
+            self.transition_status(DKGStatus::New)?;
+            self.increment_round();
+            Ok(())
+        } else {
+            let message = failures.join("; ");
+            warn!("Failed to fully reset DKG node {}: {}", self.id, message);
+            self.transition_status(DKGStatus::Error {
+                kind: format!("reset_failed: {}", message),
+            })?;
+            Err(anyhow!("Failed to reset DKG node: {}", message))
+        }
     }
 
     pub fn set_completion_callback(&mut self, callback: DKGCompletionCallback) {
@@ -129,14 +200,22 @@ impl DKGNode {
         self.state.read().unwrap().status.clone()
     }
 
-    pub fn update_node_params(&mut self, total_nodes: usize, threshold: usize) {
+    pub fn update_node_params(&mut self, total_nodes: usize, threshold: usize) -> Result<()> {
         info!(
             "🔄 Updating DKGNode params: total_nodes = {}, threshold = {}",
             total_nodes, threshold
         );
+        ensure!(total_nodes > 0, "total_nodes must be greater than zero");
+        ensure!(
+            threshold > 0 && threshold <= total_nodes,
+            "threshold {} must be between 1 and total_nodes {}",
+            threshold,
+            total_nodes
+        );
         let mut state = self.state.write().unwrap();
         state.total_nodes = total_nodes;
         state.threshold = threshold;
+        Ok(())
     }
 
     pub async fn get_final_secret_share(&self) -> Option<Scalar> {
