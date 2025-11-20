@@ -824,7 +824,9 @@ impl MpcNetworkLayer {
                                         )
                                         .await?;
                                 }
-                                crate::chain_abstraction::ChainTransaction::Ethereum(ref eth_tx) => {
+                                crate::chain_abstraction::ChainTransaction::Ethereum(
+                                    ref eth_tx,
+                                ) => {
                                     let tx_bytes =
                                         crate::utils::transaction::create_transaction_for_signing(
                                             &eth_tx,
@@ -1265,7 +1267,7 @@ impl MpcNetworkLayer {
                 if let Some(idx) = index {
                     self.peer_discovery.peer_indices.insert(peer.clone(), idx);
                     let key = key_utils::peer_index_key(&peer.to_string());
-                    if let Err(e) = self.db.put_string(&key, &idx) {
+                    if let Err(e) = self.db.put_string_async(&key, &idx).await {
                         warn!("Failed to persist peer index: {:?}", e);
                     }
                 }

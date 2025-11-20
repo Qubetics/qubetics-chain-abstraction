@@ -15,7 +15,7 @@ use crate::types::dkg::MSG_TOPIC_PEER_DISCOVERY;
 use crate::types::rpc::{MPCProtocol, RPCRequest};
 use crate::types::{ChannelMessage, GossipsubMessage};
 
-use super::types::{MpcNetworkBehaviour, NetworkEvent, MpcNetworkLayer};
+use super::types::{MpcNetworkBehaviour, MpcNetworkLayer, NetworkEvent};
 
 impl MpcNetworkLayer {
     /// Main swarm event handler - delegates to specific handlers
@@ -380,7 +380,7 @@ impl MpcNetworkLayer {
 
             // Also check database for other peers
             let mut other_peers_in_db = 0;
-            if let Ok(keys) = self.db.get_keys_with_prefix(keys::PEER_INDEX) {
+            if let Ok(keys) = self.db.get_keys_with_prefix_async(keys::PEER_INDEX).await {
                 for k in keys {
                     if let Some(peer_str) = k.strip_prefix(keys::PEER_INDEX) {
                         if let Ok(pid) = peer_str.parse::<PeerId>() {
@@ -412,7 +412,7 @@ impl MpcNetworkLayer {
             info!("🔢 Active nodes: {:?}", active_nodes);
             for pid in &active_nodes {
                 if !self.peer_discovery.peer_indices.contains_key(pid) {
-                    if let Some(db_idx) = self.get_index_from_db(pid) {
+                    if let Some(db_idx) = self.get_index_from_db_async(pid).await {
                         info!("🔢 Loaded index {} for peer {} from database", db_idx, pid);
                         self.peer_discovery.peer_indices.insert(pid.clone(), db_idx);
                     }

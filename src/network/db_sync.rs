@@ -98,7 +98,7 @@ impl MpcNetworkLayer {
             entries.into_iter().map(|e| (e.key, e.value)).collect();
 
         // Import batch into database
-        self.db.import_batch(db_entries)?;
+        self.db.import_batch_async(db_entries).await?;
 
         // Update sync state
         self.db_sync_state.complete_batch(entries_count);
@@ -157,4 +157,3 @@ impl MpcNetworkLayer {
         Ok(())
     }
 }
-
