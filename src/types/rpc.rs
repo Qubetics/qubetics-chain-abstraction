@@ -1,6 +1,6 @@
 // src/mpc_request_response.rs
 
-use crate::threshold_dkg::DKGStatus;
+use crate::protocols::DKGStatus;
 use futures::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use libp2p::{
     request_response::{

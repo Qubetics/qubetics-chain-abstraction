@@ -1,4 +1,4 @@
-use crate::threshold_dkg::{
+use crate::dkg::{
     artifacts::{DKGMessage, DKGStatus},
     DKGNode,
 };

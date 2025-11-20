@@ -10,7 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{error, info, warn};
 
 use crate::database::keys;
-use crate::threshold_dkg::DKGMessage;
+use crate::protocols::DKGMessage;
 use crate::types::dkg::MSG_TOPIC_PEER_DISCOVERY;
 use crate::types::rpc::{MPCProtocol, RPCRequest};
 use crate::types::{ChannelMessage, GossipsubMessage};

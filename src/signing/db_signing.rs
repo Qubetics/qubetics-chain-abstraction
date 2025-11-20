@@ -12,7 +12,7 @@ use crate::chain_abstraction::{ChainHandler, ChainHandlerFactory, ChainTransacti
 use crate::consensus::ConsensusNode;
 use crate::database::{ConsensusStorage, Database, SigningStorage};
 use crate::types::ChannelMessage;
-use crate::vrf_selection::VrfService;
+use crate::protocols::VrfService;
 
 /// Database-backed signing node that stores state in RocksDB
 #[derive(Clone)]

@@ -51,7 +51,7 @@ use crate::types::{
     p2p::SerializablePeerId, ChannelMessage, ConsensusMessage, ConsensusResult, TransactionStatus,
 };
 use crate::utils::get_eth_address_from_group_key;
-use crate::vrf_selection::{VrfSelectedNodesBroadcast, VrfSelectionFacade, VrfService};
+use crate::protocols::{VrfSelectedNodesBroadcast, VrfSelectionFacade, VrfService};
 // Import BitcoinTransaction directly from chain module
 use crate::chain_abstraction::{BitcoinInput, BitcoinTransaction};
 use crate::contract::{ContractClient, SolverManagerContract};

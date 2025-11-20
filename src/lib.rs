@@ -12,11 +12,12 @@ pub mod signing;
 #[allow(unused_imports)]
 #[allow(non_snake_case)]
 #[allow(unused_variables)]
-pub mod threshold_dkg;
+pub mod dkg;
 pub mod types;
 pub mod user_intent_manager;
 pub mod utils;
-pub mod vrf_selection;
+pub mod vrf;
+pub mod protocols;
 
 pub use commands::CommandProcessor;
 pub use consensus::{ConsensusNode, DatabaseConsensusNode};
@@ -31,10 +32,10 @@ pub use node_selection::{
     VrfNodeManager, VrfNodeManagerConfig,
 };
 pub use signing::{DatabaseSigningNode, SigningNode};
-pub use threshold_dkg::DKGNode;
+pub use protocols::{
+    DKGMessage, DKGNode, DKGStatus, NodeSelectionResult, VrfNodeSelector, VrfOutput,
+    VrfSelectedNodesBroadcast, VrfSelectionFacade, VrfSelectionMessage, VrfService,
+    VrfServiceConfig,
+};
 pub use types::{ECDSASignature, SigningMessage};
 pub use user_intent_manager::{UserIntentManager, UserRegistry};
-pub use vrf_selection::{
-    NodeSelectionResult, VrfNodeSelector, VrfOutput, VrfSelectedNodesBroadcast, VrfSelectionFacade,
-    VrfSelectionMessage, VrfService, VrfServiceConfig,
-};

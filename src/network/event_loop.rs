@@ -6,7 +6,7 @@ use libp2p::{Multiaddr, PeerId};
 use std::time::Duration;
 use tracing::{error, info, warn};
 
-use crate::threshold_dkg::DKGStatus;
+use crate::protocols::DKGStatus;
 
 use super::types::{MpcNetworkBehaviour, MpcNetworkLayer};
 

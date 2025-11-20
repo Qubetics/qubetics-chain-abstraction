@@ -9,7 +9,7 @@ use mpc_node::{
     network::MpcNetworkLayer,
     rpc_server,
     signing::{DatabaseSigningNode, SigningNode},
-    threshold_dkg::DKGNode,
+    protocols::DKGNode,
     user_intent_manager::UserIntentManager,
 };
 use rand::{thread_rng, Rng};

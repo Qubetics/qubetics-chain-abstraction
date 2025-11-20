@@ -6,7 +6,7 @@ use crate::commands::CommandProcessor;
 use crate::consensus::ConsensusNode;
 use crate::database::Database;
 use crate::signing::{DatabaseSigningNode, SigningNode};
-use crate::threshold_dkg::DKGNode;
+use crate::protocols::DKGNode;
 use crate::user_intent_manager::UserIntentManager;
 
 use super::types::MpcNetworkLayer;

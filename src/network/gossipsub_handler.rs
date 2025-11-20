@@ -40,7 +40,7 @@ impl MpcNetworkLayer {
             // so, here it must match on the recieving end
             GossipsubMessage::DKG(dkg_msg) => {
                 // Check if this is a NodeDisconnected message - handle it specially
-                if let crate::threshold_dkg::DKGMessage::NodeDisconnected {
+                if let crate::protocols::DKGMessage::NodeDisconnected {
                     ref disconnected_node_id,
                     ref broadcaster_node_id,
                 } = dkg_msg

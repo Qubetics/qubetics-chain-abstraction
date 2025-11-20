@@ -7,7 +7,7 @@ use tracing::{debug, info, warn};
 
 use crate::node_selection::NodeMembership;
 use crate::signing::{EthereumSigner, SigningNode};
-use crate::threshold_dkg::DKGNode;
+use crate::protocols::DKGNode;
 use crate::types::{ContractTransaction, DepositIntent, TransactionType};
 
 /// Service for executing contract calls on blockchain networks

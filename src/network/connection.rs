@@ -4,7 +4,7 @@ use std::time::Duration;
 use tracing::{info, warn};
 
 use crate::database::keys;
-use crate::threshold_dkg::DKGStatus;
+use crate::protocols::DKGStatus;
 use crate::types::dkg::MSG_TOPIC_PEER_DISCOVERY;
 use crate::types::GossipsubMessage;
 

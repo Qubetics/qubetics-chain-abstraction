@@ -2,7 +2,7 @@ use anyhow::Result;
 use k256::ProjectivePoint;
 use crate::signing::SigningNode;
 use crate::node_selection::NodeMembership;
-use crate::threshold_dkg::DKGNode;
+use crate::protocols::DKGNode;
 use crate::types::{DepositIntent, TransactionType};
 
 /// Global function to execute contract call for a given transaction type and intent

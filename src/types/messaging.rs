@@ -1,6 +1,6 @@
 use crate::{
     commands::Command,
-    threshold_dkg::DKGMessage,
+    protocols::{DKGMessage, VrfSelectedNodesBroadcast, VrfSelectionMessage},
     types::{
         intent::{DepositIntent, TransactionType},
         rpc::RPCRequest,
@@ -8,7 +8,6 @@ use crate::{
         signing::SigningMessage,
         ConsensusMessage,
     },
-    vrf_selection::{VrfSelectedNodesBroadcast, VrfSelectionMessage},
 };
 use libp2p::PeerId;
 use serde::{Deserialize, Serialize};
