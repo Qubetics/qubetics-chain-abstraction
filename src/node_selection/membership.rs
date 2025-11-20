@@ -103,4 +103,3 @@ impl NodeMembership for BasicNodeManager {
         Box::new(self.clone())
     }
 }
-

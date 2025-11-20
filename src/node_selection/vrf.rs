@@ -381,4 +381,3 @@ mod tests {
         assert!(!manager.is_self_selected_for_mpc());
     }
 }
-

@@ -3,15 +3,14 @@
 ///
 /// NOTE: This module contains the channel message handling logic from the original network/mod.rs
 /// The implementation should be ported from lines ~3561-5042 of the original file
-
 use anyhow::Result;
 use ff::PrimeField;
 use libp2p::{gossipsub, PeerId};
 use tracing::{debug, error, info, warn};
 
 use crate::{
+    signing::{BitcoinSigner, EthereumSigner},
     types::{rpc::RPCRequest, ChannelMessage, GossipsubMessage},
-    user_intent_manager::TransactionStatus,
 };
 
 use super::types::{MpcNetworkBehaviour, MpcNetworkLayer};
@@ -505,19 +504,24 @@ impl MpcNetworkLayer {
                             match chain_transaction {
                                 crate::chain_abstraction::ChainTransaction::Bitcoin(ref btc_tx) => {
                                     // For Bitcoin, use direct signing with tx_bytes and original transaction
-                                    signing_node
-                                        .sign_bitcoin_transaction(
-                                            tx_bytes.clone(),
-                                            Some(btc_tx.clone()),
-                                            user_eth_address.clone(),
-                                            Some(intent_hash.clone()),
-                                            Some(transaction_type.clone()),
-                                            signing_key,
-                                            None,
-                                        )
-                                        .await?;
+                                    {
+                                        let mut btc_signer = BitcoinSigner::new(signing_node);
+                                        btc_signer
+                                            .sign_transaction(
+                                                tx_bytes.clone(),
+                                                Some(btc_tx.clone()),
+                                                user_eth_address.clone(),
+                                                Some(intent_hash.clone()),
+                                                Some(transaction_type.clone()),
+                                                signing_key,
+                                                None,
+                                            )
+                                            .await?;
+                                    }
                                 }
-                                crate::chain_abstraction::ChainTransaction::Ethereum(ref eth_tx) => {
+                                crate::chain_abstraction::ChainTransaction::Ethereum(
+                                    ref eth_tx,
+                                ) => {
                                     let tx_bytes =
                                         crate::utils::transaction::create_transaction_for_signing(
                                             &eth_tx,
@@ -564,18 +568,20 @@ impl MpcNetworkLayer {
                                             }
                                         }
                                     };
-
-                                    signing_node
-                                        .sign_message(
-                                            tx_bytes.clone(),
-                                            &eth_tx,
-                                            user_tweaked_share,
-                                            user_eth_address.clone(),
-                                            Some(intent_hash.clone()),
-                                            Some(transaction_type.clone()),
-                                            None,
-                                        )
-                                        .await?;
+                                    {
+                                        let mut eth_signer = EthereumSigner::new(signing_node);
+                                        eth_signer
+                                            .sign_transaction(
+                                                tx_bytes.clone(),
+                                                &eth_tx,
+                                                user_tweaked_share,
+                                                user_eth_address.clone(),
+                                                Some(intent_hash.clone()),
+                                                Some(transaction_type.clone()),
+                                                None,
+                                            )
+                                            .await?;
+                                    }
                                     // // Only execute contract transaction for UserToVault transaction type
                                     // if matches!(transaction_type, crate::types::TransactionType::UserToVault) {
                                     //     info!("📝 [LOCAL] UserToVault transaction detected - executing contract call");
@@ -1104,17 +1110,21 @@ impl MpcNetworkLayer {
                                                         info!("🔐 [REWARD] Starting TICS reward signing process: 0x{}", hex::encode(tx_bytes.clone()));
 
                                                         // Sign with only necessary parameters for transaction
-                                                        signing_node
-                                                            .sign_message(
-                                                                tx_bytes,
-                                                                &eth_tx,
-                                                                None,
-                                                                None,
-                                                                None,
-                                                                None,
-                                                                Some(solver_address.clone()),
-                                                            )
-                                                            .await?;
+                                                        {
+                                                            let mut eth_signer =
+                                                                EthereumSigner::new(signing_node);
+                                                            eth_signer
+                                                                .sign_transaction(
+                                                                    tx_bytes,
+                                                                    &eth_tx,
+                                                                    None,
+                                                                    None,
+                                                                    None,
+                                                                    None,
+                                                                    Some(solver_address.clone()),
+                                                                )
+                                                                .await?;
+                                                        }
                                                         info!("✅ [REWARD] TICS reward signing completed");
                                                     } else {
                                                         info!("⏳ [REWARD] DKG not completed yet, no secret share available for TICS reward");
@@ -1219,17 +1229,21 @@ impl MpcNetworkLayer {
                                                         info!("🔐 [REWARD] Starting BTC reward signing process: 0x{}", hex::encode(tx_bytes.clone()));
 
                                                         // Sign with Bitcoin-specific parameters
-                                                        signing_node
-                                                            .sign_bitcoin_transaction(
-                                                                tx_bytes,
-                                                                Some(btc_tx),
-                                                                None,
-                                                                None,
-                                                                None,
-                                                                None,
-                                                                Some(solver_address.clone()),
-                                                            )
-                                                            .await?;
+                                                        {
+                                                            let mut btc_signer =
+                                                                BitcoinSigner::new(signing_node);
+                                                            btc_signer
+                                                                .sign_transaction(
+                                                                    tx_bytes,
+                                                                    Some(btc_tx),
+                                                                    None,
+                                                                    None,
+                                                                    None,
+                                                                    None,
+                                                                    Some(solver_address.clone()),
+                                                                )
+                                                                .await?;
+                                                        }
                                                         info!("✅ [REWARD] BTC reward signing completed");
                                                     } else {
                                                         info!("⏳ [REWARD] DKG not completed yet, no secret share available for BTC reward");
@@ -1268,4 +1282,3 @@ impl MpcNetworkLayer {
         Ok(())
     }
 }
-

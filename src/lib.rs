@@ -1,5 +1,3 @@
-
-
 pub mod chain_abstraction;
 pub mod commands;
 pub mod consensus;
@@ -37,6 +35,6 @@ pub use threshold_dkg::DKGNode;
 pub use types::{ECDSASignature, SigningMessage};
 pub use user_intent_manager::{UserIntentManager, UserRegistry};
 pub use vrf_selection::{
-    NodeSelectionResult, VrfNodeSelector, VrfOutput, VrfSelectedNodesBroadcast,
-    VrfSelectionFacade, VrfSelectionMessage, VrfService, VrfServiceConfig,
+    NodeSelectionResult, VrfNodeSelector, VrfOutput, VrfSelectedNodesBroadcast, VrfSelectionFacade,
+    VrfSelectionMessage, VrfService, VrfServiceConfig,
 };

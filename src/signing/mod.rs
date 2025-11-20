@@ -6,8 +6,7 @@ use crate::types::{
         BtcIndexedSignature, ECDSASignature, SignedMessage, SigningMessage, ThresholdSignatureShare,
     },
 };
-use anyhow::anyhow;
-use anyhow::Result;
+use anyhow::{anyhow, Error, Result};
 use k256::Scalar;
 // use ethereum_types::U64; // Removed unused import
 use hex;
@@ -22,12 +21,22 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::future::Future;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::sync::{mpsc, RwLock};
+use tokio::{
+    sync::{mpsc, RwLock},
+    time::{sleep, Duration},
+};
 use tracing::{error, info, warn};
 
+mod bitcoin;
+mod config;
 pub mod db_signing;
+mod ethereum;
+pub use bitcoin::BitcoinSigner;
+pub use config::{BroadcastConfig, ChainBroadcastConfig};
 pub use db_signing::DatabaseSigningNode;
+pub use ethereum::EthereumSigner;
 
 use num_bigint::{BigInt, ToBigInt};
 use secp256k1::{constants::CURVE_ORDER, ecdsa::RecoveryId};
@@ -38,7 +47,9 @@ use rand::thread_rng;
 
 use crate::chain_abstraction::{ChainHandler, ChainHandlerFactory, ChainTransaction};
 use crate::consensus::ConsensusNode;
-use crate::types::{p2p::SerializablePeerId, ChannelMessage, ConsensusMessage, ConsensusResult, TransactionStatus};
+use crate::types::{
+    p2p::SerializablePeerId, ChannelMessage, ConsensusMessage, ConsensusResult, TransactionStatus,
+};
 use crate::utils::get_eth_address_from_group_key;
 use crate::vrf_selection::{VrfSelectedNodesBroadcast, VrfSelectionFacade, VrfService};
 // Import BitcoinTransaction directly from chain module
@@ -183,7 +194,9 @@ impl SigningNode {
             broadcast_config: BroadcastConfig::from_env(), // Load configuration from environment
         }
     }
+}
 
+impl SigningNode {
     /// Print the current broadcast configuration
     pub fn print_broadcast_config(&self) {
         self.broadcast_config.print_config();
@@ -1867,15 +1880,16 @@ impl SigningNode {
         info!("📝 [SIGNING] Node {} starting to sign transaction", self.id);
 
         // Convert DummyTransaction to ChainTransaction for chain-agnostic handling with UTXO error handling
-        let chain_transaction = ChainTransaction::Ethereum(crate::chain_abstraction::EthereumTransaction {
-            to: transaction.to.clone(),
-            value: transaction.value.clone(),
-            gas_limit: transaction.gas_limit,
-            gas_price: transaction.gas_price.clone(),
-            nonce: transaction.nonce,
-            data: None,
-            chain_id: transaction.chain_id,
-        });
+        let chain_transaction =
+            ChainTransaction::Ethereum(crate::chain_abstraction::EthereumTransaction {
+                to: transaction.to.clone(),
+                value: transaction.value.clone(),
+                gas_limit: transaction.gas_limit,
+                gas_price: transaction.gas_price.clone(),
+                nonce: transaction.nonce,
+                data: None,
+                chain_id: transaction.chain_id,
+            });
 
         // Create transaction bytes using chain handler
         let tx_bytes = self
@@ -1971,15 +1985,16 @@ impl SigningNode {
         if intent_hash.is_none() {
             // This is a reward transaction - store in reward pending transactions
             if let Some(solver_addr) = solver_address {
-                let chain_tx = ChainTransaction::Ethereum(crate::chain_abstraction::EthereumTransaction {
-                    to: transaction.to.clone(),
-                    value: transaction.value.clone(),
-                    gas_limit: transaction.gas_limit,
-                    gas_price: transaction.gas_price.clone(),
-                    nonce: transaction.nonce,
-                    data: None,
-                    chain_id: transaction.chain_id,
-                });
+                let chain_tx =
+                    ChainTransaction::Ethereum(crate::chain_abstraction::EthereumTransaction {
+                        to: transaction.to.clone(),
+                        value: transaction.value.clone(),
+                        gas_limit: transaction.gas_limit,
+                        gas_price: transaction.gas_price.clone(),
+                        nonce: transaction.nonce,
+                        data: None,
+                        chain_id: transaction.chain_id,
+                    });
 
                 // Store in TICS reward pending transactions (assuming TICS for now)
                 // TODO: Determine network type based on transaction context
@@ -2015,15 +2030,16 @@ impl SigningNode {
         } else {
             // This is an intent-based transaction - store in regular pending transactions
             let mut pending_transactions = self.pending_transactions.write().await;
-            let chain_tx = ChainTransaction::Ethereum(crate::chain_abstraction::EthereumTransaction {
-                to: transaction.to.clone(),
-                value: transaction.value.clone(),
-                gas_limit: transaction.gas_limit,
-                gas_price: transaction.gas_price.clone(),
-                nonce: transaction.nonce,
-                data: None,
-                chain_id: transaction.chain_id,
-            });
+            let chain_tx =
+                ChainTransaction::Ethereum(crate::chain_abstraction::EthereumTransaction {
+                    to: transaction.to.clone(),
+                    value: transaction.value.clone(),
+                    gas_limit: transaction.gas_limit,
+                    gas_price: transaction.gas_price.clone(),
+                    nonce: transaction.nonce,
+                    data: None,
+                    chain_id: transaction.chain_id,
+                });
             pending_transactions.insert(
                 round,
                 (
@@ -2111,8 +2127,8 @@ impl SigningNode {
             data_bytes.len()
         );
 
-        let chain_transaction =
-            crate::chain_abstraction::ChainTransaction::Ethereum(crate::chain_abstraction::EthereumTransaction {
+        let chain_transaction = crate::chain_abstraction::ChainTransaction::Ethereum(
+            crate::chain_abstraction::EthereumTransaction {
                 to: transaction.to.clone(),
                 value: transaction.value.clone(),
                 gas_limit: transaction.gas_limit,
@@ -2120,7 +2136,8 @@ impl SigningNode {
                 nonce: transaction.nonce,
                 data: Some(data_bytes.clone()),
                 chain_id: transaction.chain_id,
-            });
+            },
+        );
 
         // Create transaction bytes using contract chain handler
         let tx_bytes = self
@@ -2218,20 +2235,21 @@ impl SigningNode {
 
         {
             let mut pending_transactions = self.pending_transactions.write().await;
-            let chain_tx = ChainTransaction::Ethereum(crate::chain_abstraction::EthereumTransaction {
-                to: transaction.to.clone(),
-                value: transaction.value.clone(),
-                gas_limit: transaction.gas_limit,
-                gas_price: transaction.gas_price.clone(),
-                nonce: transaction.nonce,
-                data: Some(data_bytes.clone()),
-                chain_id: transaction.chain_id,
-            });
+            let chain_tx =
+                ChainTransaction::Ethereum(crate::chain_abstraction::EthereumTransaction {
+                    to: transaction.to.clone(),
+                    value: transaction.value.clone(),
+                    gas_limit: transaction.gas_limit,
+                    gas_price: transaction.gas_price.clone(),
+                    nonce: transaction.nonce,
+                    data: Some(data_bytes.clone()),
+                    chain_id: transaction.chain_id,
+                });
             pending_transactions.insert(round, (chain_tx, tx_bytes.clone(), None, None));
             info!(
-                "💾 [SIGNING] Node {} stored original Ethereum transaction for round {} reconstruction",
-                self.id, round
-            );
+            "💾 [SIGNING] Node {} stored original Ethereum transaction for round {} reconstruction",
+            self.id, round
+        );
         }
 
         info!(
@@ -2436,9 +2454,9 @@ impl SigningNode {
                 message,
             } => {
                 info!(
-                    "📥 [SIGNING] Node {} received signature request for round {} from final node {}",
-                    self.id, round, final_node_id
-                );
+                "📥 [SIGNING] Node {} received signature request for round {} from final node {}",
+                self.id, round, final_node_id
+            );
                 self.handle_signature_request(round, final_node_id, message)
                     .await?;
             }
@@ -2977,7 +2995,10 @@ impl SigningNode {
                 self.id, network_round
             );
         } else {
-            info!("🆕 [SIGNING] Initialized VrfService for node {} with default round: 0 (first node)", self.id);
+            info!(
+            "🆕 [SIGNING] Initialized VrfService for node {} with default round: 0 (first node)",
+            self.id
+        );
         }
 
         self.vrf_service = Some(vrf_service);
@@ -3396,10 +3417,7 @@ impl SigningNode {
 
             // Update transaction status to confirmed
             if let Err(e) = user_intent_manager
-                .update_transaction_status(
-                    tx_id,
-                    TransactionStatus::Confirmed,
-                )
+                .update_transaction_status(tx_id, TransactionStatus::Confirmed)
                 .await
             {
                 error!(
@@ -3782,9 +3800,9 @@ impl SigningNode {
                             .await
                         {
                             error!(
-                                "❌ [SIGNING] Failed to store transaction status for reward tx {}: {}",
-                                tx_id, e
-                            );
+                            "❌ [SIGNING] Failed to store transaction status for reward tx {}: {}",
+                            tx_id, e
+                        );
                         }
 
                         info!(
@@ -3802,7 +3820,10 @@ impl SigningNode {
                         .await;
                     }
                 } else {
-                    info!("ℹ️ [SIGNING] No solver address available for reward transaction in round {}", round);
+                    info!(
+                    "ℹ️ [SIGNING] No solver address available for reward transaction in round {}",
+                    round
+                );
                 }
             }
             (_, None) => {
@@ -3931,9 +3952,9 @@ impl SigningNode {
                     .await
                 {
                     info!(
-                        "🎯 [VRF] Enough selections collected for round {}, triggering consensus check",
-                        round
-                    );
+                    "🎯 [VRF] Enough selections collected for round {}, triggering consensus check",
+                    round
+                );
 
                     if let Err(e) = signing_node_clone
                         .check_and_trigger_consensus(round, min_selections)
@@ -4181,9 +4202,9 @@ impl SigningNode {
                     ),
                     Err(e) => {
                         error!(
-                            "❌ [SIGNING] Failed to send signature for round {} to final node {}: {}",
-                            round, final_node_id, e
-                        );
+                        "❌ [SIGNING] Failed to send signature for round {} to final node {}: {}",
+                        round, final_node_id, e
+                    );
                         return Err(e);
                     }
                 }
@@ -4655,7 +4676,10 @@ impl SigningNode {
                                 }
                             }
                         } else {
-                            warn!("❌ [SIGNING] Failed to reconstruct Ethereum transaction for round {}", round);
+                            warn!(
+                            "❌ [SIGNING] Failed to reconstruct Ethereum transaction for round {}",
+                            round
+                        );
                         }
                     }
                     Err(e) => {
@@ -4793,7 +4817,12 @@ impl SigningNode {
             let r0 = &chosen[0].1.signature[0..32];
             for (_, s) in &chosen {
                 if s.signature.len() != 64 {
-                    error!("[handle_btc_signature_for_round] round {} input {}: bad sig length (got {})", round, idx, s.signature.len());
+                    error!(
+                    "[handle_btc_signature_for_round] round {} input {}: bad sig length (got {})",
+                    round,
+                    idx,
+                    s.signature.len()
+                );
                     bail!("round {} input {}: bad sig length", round, idx);
                 }
                 if &s.signature[0..32] != r0 {
@@ -4913,10 +4942,13 @@ impl SigningNode {
         let (should_finalize, total_inputs2, unsigned_tx2) = {
             let pt = self.pending_transactions_btc.read().await;
             let (chain_tx, _raw, _intent_hash, _tx_type_opt, _extras) =
-            pt.get(&round).ok_or_else(|| {
-                error!("[handle_btc_signature_for_round] No pending tx for round {} (finalize step)", round);
-                anyhow!("no pending tx for round {}", round)
-            })?;
+                pt.get(&round).ok_or_else(|| {
+                    error!(
+                    "[handle_btc_signature_for_round] No pending tx for round {} (finalize step)",
+                    round
+                );
+                    anyhow!("no pending tx for round {}", round)
+                })?;
             let btc_tx = match chain_tx {
                 ChainTransaction::Bitcoin(t) => t.clone(),
                 _ => {
@@ -5041,9 +5073,9 @@ impl SigningNode {
         round: u64,
     ) -> Result<()> {
         info!(
-            "📥 [SIGNING] Final node {} received signature from {} on signatures-to-final-node topic",
-            self.id, from
-        );
+        "📥 [SIGNING] Final node {} received signature from {} on signatures-to-final-node topic",
+        self.id, from
+    );
 
         // Check if this node is the final node for the specific round
         let is_final_node = {
@@ -5210,8 +5242,64 @@ impl SigningNode {
         }
 
         // No stored index found - this should not happen in normal operation
-        warn!("❌ [SIGNING] No peer index found in database for peer {} (sync), using default index 1", peer_id);
+        warn!(
+        "❌ [SIGNING] No peer index found in database for peer {} (sync), using default index 1",
+        peer_id
+    );
         1
+    }
+
+    async fn contract_call_with_retry<F, Fut, T>(
+        &self,
+        description: &str,
+        mut operation: F,
+    ) -> Result<T>
+    where
+        F: FnMut() -> Fut,
+        Fut: Future<Output = Result<T>>,
+    {
+        const MAX_ATTEMPTS: usize = 3;
+        let retry_delay = Duration::from_millis(750);
+
+        for attempt in 1..=MAX_ATTEMPTS {
+            match operation().await {
+                Ok(result) => return Ok(result),
+                Err(err) => {
+                    let should_retry = self.is_retryable_contract_error(&err);
+                    if attempt == MAX_ATTEMPTS || !should_retry {
+                        return Err(anyhow!(
+                            "{} failed after {} attempt(s): {}",
+                            description,
+                            attempt,
+                            err
+                        ));
+                    }
+
+                    warn!(
+                        "⚠️ [SOLVER] {} attempt {} failed: {} — retrying in {}ms",
+                        description,
+                        attempt,
+                        err,
+                        retry_delay.as_millis()
+                    );
+                    sleep(retry_delay).await;
+                }
+            }
+        }
+
+        unreachable!("Retry loop should always return or error")
+    }
+
+    fn is_retryable_contract_error(&self, err: &Error) -> bool {
+        let msg = err.to_string().to_lowercase();
+        msg.contains("502")
+            || msg.contains("503")
+            || msg.contains("504")
+            || msg.contains("timeout")
+            || msg.contains("temporar")
+            || msg.contains("connection reset")
+            || msg.contains("connection refused")
+            || msg.contains("deserialization error")
     }
 
     /// Update solver amounts for UserToVault transactions
@@ -5256,11 +5344,14 @@ impl SigningNode {
         let solver_contract = SolverManagerContract::new(&config, client.provider())
             .map_err(|e| anyhow::anyhow!("Failed to create solver contract: {}", e))?;
 
-        // Get all active solvers
-        let active_solvers = solver_contract
-            .get_active_solvers()
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to get active solvers: {}", e))?;
+        // Get all active solvers with retry to handle transient RPC failures (e.g., HTTP 502)
+        let contract_for_active = solver_contract.clone();
+        let active_solvers = self
+            .contract_call_with_retry("get_active_solvers", move || {
+                let contract = contract_for_active.clone();
+                async move { contract.get_active_solvers().await }
+            })
+            .await?;
 
         info!(
             "🔍 [SOLVER] Found {} active solvers: {:?}",
@@ -5275,16 +5366,32 @@ impl SigningNode {
 
         for solver_id in &active_solvers {
             // Get solver EVM address
-            let solver_evm_address = solver_contract
-                .get_solver_evm_address(solver_id)
+            let solver_id_owned = solver_id.clone();
+            let contract_for_address = solver_contract.clone();
+            let solver_evm_address = self
+                .contract_call_with_retry("get_solver_evm_address", move || {
+                    let contract = contract_for_address.clone();
+                    let solver_id = solver_id_owned.clone();
+                    async move { contract.get_solver_evm_address(&solver_id).await }
+                })
                 .await
                 .map_err(|e| {
-                    anyhow::anyhow!("Failed to get EVM address for solver {}: {}", solver_id, e)
+                    anyhow::anyhow!(
+                        "Failed to get EVM address for solver {}: {}",
+                        solver_id,
+                        e
+                    )
                 })?;
 
             // Call getSolverAllChainAmounts for each solver
-            let amounts = solver_contract
-                .get_all_chain_amounts(solver_id)
+            let solver_id_for_amounts = solver_id.clone();
+            let contract_for_amounts = solver_contract.clone();
+            let amounts = self
+                .contract_call_with_retry("get_solver_all_chain_amounts", move || {
+                    let contract = contract_for_amounts.clone();
+                    let solver_id = solver_id_for_amounts.clone();
+                    async move { contract.get_all_chain_amounts(&solver_id).await }
+                })
                 .await
                 .map_err(|e| {
                     anyhow::anyhow!("Failed to get amounts for solver {}: {}", solver_id, e)
@@ -5587,9 +5694,9 @@ impl SigningNode {
                 ),
                 Err(e) => {
                     error!(
-                        "❌ [SIGNING] Failed to send BTC signatures for round {} to final node {}: {}",
-                        round, final_node_id, e
-                    );
+                    "❌ [SIGNING] Failed to send BTC signatures for round {} to final node {}: {}",
+                    round, final_node_id, e
+                );
                     return Err(e);
                 }
             }
@@ -5679,161 +5786,5 @@ impl SigningNode {
             round
         );
         Ok(())
-    }
-}
-// Dynamic configuration structures for flexible broadcast behavior
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BroadcastConfig {
-    /// Whether to continue running when broadcast fails
-    pub continue_on_failure: bool,
-    /// Maximum retry attempts for failed broadcasts
-    pub max_retries: u32,
-    /// Delay between retry attempts (in milliseconds)
-    pub retry_delay_ms: u64,
-    /// Whether to log broadcast failures as warnings instead of errors
-    pub log_failures_as_warnings: bool,
-    /// Chain-specific configurations
-    pub chain_configs: HashMap<String, ChainBroadcastConfig>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChainBroadcastConfig {
-    /// Whether this chain is enabled for broadcasting
-    pub enabled: bool,
-    /// RPC endpoint for this chain
-    pub rpc_url: String,
-    /// Chain ID
-    pub chain_id: u64,
-    /// Whether to use testnet
-    pub testnet: bool,
-    /// Custom headers for RPC requests
-    pub custom_headers: HashMap<String, String>,
-    /// Timeout for RPC requests (in seconds)
-    pub timeout_seconds: u64,
-}
-
-impl Default for BroadcastConfig {
-    fn default() -> Self {
-        let mut chain_configs = HashMap::new();
-
-        // Default Ethereum configuration
-        chain_configs.insert(
-            "ethereum".to_string(),
-            ChainBroadcastConfig {
-                enabled: true,
-                rpc_url: String::new(),
-                chain_id: 9029,
-                testnet: true,
-                custom_headers: HashMap::new(),
-                timeout_seconds: 30,
-            },
-        );
-
-        // Default Bitcoin configuration - using public Bitcoin RPC service
-        chain_configs.insert(
-            "bitcoin".to_string(),
-            ChainBroadcastConfig {
-                enabled: true, // Enabled with public API
-                rpc_url: String::new(),
-                chain_id: 0,
-                testnet: true,
-                custom_headers: HashMap::new(),
-                timeout_seconds: 30,
-            },
-        );
-
-        Self {
-            continue_on_failure: true,
-            max_retries: 3,
-            retry_delay_ms: 1000,
-            log_failures_as_warnings: true,
-            chain_configs,
-        }
-    }
-}
-
-impl Default for ChainBroadcastConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            rpc_url: String::new(),
-            chain_id: 0,
-            testnet: true,
-            custom_headers: HashMap::new(),
-            timeout_seconds: 30,
-        }
-    }
-}
-
-// Configuration loading from environment variables
-impl BroadcastConfig {
-    pub fn from_env() -> Self {
-        let mut config = Self::default();
-
-        // Load from environment variables
-        if let Ok(val) = std::env::var("MPC_CONTINUE_ON_BROADCAST_FAILURE") {
-            config.continue_on_failure = val.parse().unwrap_or(true);
-        }
-
-        if let Ok(val) = std::env::var("MPC_MAX_BROADCAST_RETRIES") {
-            config.max_retries = val.parse().unwrap_or(3);
-        }
-
-        if let Ok(val) = std::env::var("MPC_RETRY_DELAY_MS") {
-            config.retry_delay_ms = val.parse().unwrap_or(1000);
-        }
-
-        if let Ok(val) = std::env::var("MPC_LOG_FAILURES_AS_WARNINGS") {
-            config.log_failures_as_warnings = val.parse().unwrap_or(true);
-        }
-
-        // Load chain-specific configurations
-        if let Some(eth_config) = config.chain_configs.get_mut("ethereum") {
-            eth_config.rpc_url = std::env::var("MPC_ETHEREUM_RPC_URL")
-                .unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string());
-        }
-
-        if let Ok(chain_id) = std::env::var("MPC_ETHEREUM_CHAIN_ID") {
-            if let Some(eth_config) = config.chain_configs.get_mut("ethereum") {
-                eth_config.chain_id = chain_id.parse().unwrap_or(9029);
-            }
-        }
-
-        if let Some(btc_config) = config.chain_configs.get_mut("bitcoin") {
-            btc_config.rpc_url = std::env::var("MPC_BITCOIN_RPC_URL").unwrap_or_else(|_| {
-                "https://api.blockcypher.com/v1/btc/test3/txs/push".to_string()
-            });
-        }
-
-        config
-    }
-
-    pub fn get_chain_config(&self, chain_type: &str) -> Option<&ChainBroadcastConfig> {
-        self.chain_configs.get(chain_type)
-    }
-
-    pub fn is_chain_enabled(&self, chain_type: &str) -> bool {
-        self.chain_configs
-            .get(chain_type)
-            .map(|config| config.enabled)
-            .unwrap_or(false)
-    }
-
-    pub fn print_config(&self) {
-        info!("�� [CONFIG] Broadcast Configuration:");
-        info!("   Continue on failure: {}", self.continue_on_failure);
-        info!("   Max retries: {}", self.max_retries);
-        info!("   Retry delay: {}ms", self.retry_delay_ms);
-        info!(
-            "   Log failures as warnings: {}",
-            self.log_failures_as_warnings
-        );
-
-        for (chain, config) in &self.chain_configs {
-            info!(
-                "   Chain {}: enabled={}, rpc={}, chain_id={}",
-                chain, config.enabled, config.rpc_url, config.chain_id
-            );
-        }
     }
 }

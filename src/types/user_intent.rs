@@ -78,4 +78,3 @@ pub struct UserRegistration {
 pub struct IntentRegistry {
     pub intents: HashMap<String, DepositIntent>, // intent_hash -> DepositIntent mapping
 }
-

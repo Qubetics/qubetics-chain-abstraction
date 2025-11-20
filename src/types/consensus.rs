@@ -16,4 +16,3 @@ pub enum ConsensusMessage {
     /// Broadcast the final consensus result
     FinalNodeResult { result: ConsensusResult, round: u64 },
 }
-

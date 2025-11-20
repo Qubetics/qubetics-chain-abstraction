@@ -289,7 +289,7 @@ impl MpcNetworkLayer {
 
         match self
             .db
-            .export_batch_with_prefix(
+            .export_batch_with_prefix_async(
                 crate::database::keys::USER_REGISTRATION,
                 batch_index * batch_size,
                 batch_size,

@@ -63,5 +63,3 @@ pub struct ChainSigningResult {
     pub signer_id: String,
     pub timestamp: u64,
 }
-
-

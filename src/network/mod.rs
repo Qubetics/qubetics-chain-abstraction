@@ -33,10 +33,10 @@ mod rpc_handlers;
 mod event_loop;
 
 // Event handlers (to be implemented with message handlers)
-mod swarm_events;
-mod gossipsub_handler;
 mod channel_handler;
+mod gossipsub_handler;
 mod message_handlers;
+mod swarm_events;
 
 // Re-export main types for public API
-pub use types::{DatabaseSyncState, MpcNetworkBehaviour, NetworkEvent, MpcNetworkLayer};
+pub use types::{DatabaseSyncState, MpcNetworkBehaviour, MpcNetworkLayer, NetworkEvent};

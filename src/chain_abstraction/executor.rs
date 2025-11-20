@@ -6,7 +6,7 @@ use libp2p::PeerId;
 use tracing::{debug, info, warn};
 
 use crate::node_selection::NodeMembership;
-use crate::signing::SigningNode;
+use crate::signing::{EthereumSigner, SigningNode};
 use crate::threshold_dkg::DKGNode;
 use crate::types::{ContractTransaction, DepositIntent, TransactionType};
 
@@ -17,12 +17,12 @@ pub struct MpcChainExecutor;
 
 impl MpcChainExecutor {
     /// Execute a contract call for a given transaction type and intent.
-    /// 
+    ///
     /// This method handles:
     /// - Contract ABI assembly (via create_chain_transaction_from_contract_call)
     /// - Signing node coordination (setting available nodes, getting vault shares)
     /// - Transaction signing
-    /// 
+    ///
     /// It does NOT handle networking concerns - those should be handled by the caller.
     pub async fn execute_contract_call(
         signing_node: &mut SigningNode,
@@ -58,7 +58,7 @@ impl MpcChainExecutor {
         match contract_call_result {
             Ok(contract_transaction) => {
                 info!("📝 [CHAIN_EXECUTOR] Created contract call transaction");
-                
+
                 // Update signing node with available nodes from network
                 let available_nodes: Vec<PeerId> =
                     node_manager.get_active_nodes().into_iter().collect();
@@ -80,7 +80,7 @@ impl MpcChainExecutor {
                                 .map(|d| format!("0x{}", hex::encode(d)))
                                 .unwrap_or_else(|| "0x".to_string()),
                         };
-                        
+
                         let contract_tx_bytes =
                             crate::utils::transaction::create_transaction_for_signing_contract(
                                 &contract_tx,
@@ -96,16 +96,19 @@ impl MpcChainExecutor {
                         } else {
                             None
                         };
-                        
+
                         // Execute the signing operation
-                        signing_node
-                            .sign_contract_message(
-                                contract_tx_bytes,
-                                &contract_tx,
-                                vault_tweaked_share,
-                                None,
-                            )
-                            .await?;
+                        {
+                            let mut eth_signer = EthereumSigner::new(signing_node);
+                            eth_signer
+                                .sign_contract_message(
+                                    contract_tx_bytes,
+                                    &contract_tx,
+                                    vault_tweaked_share,
+                                    None,
+                                )
+                                .await?;
+                        }
                     }
                     _ => {
                         info!(
@@ -125,4 +128,3 @@ impl MpcChainExecutor {
         Ok(())
     }
 }
-

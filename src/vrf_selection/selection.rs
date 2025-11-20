@@ -28,4 +28,3 @@ impl VrfSelectionFacade {
         VrfNodeSelector::new(node_id)
     }
 }
-

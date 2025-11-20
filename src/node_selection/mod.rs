@@ -11,4 +11,3 @@ pub mod vrf;
 pub use membership::{BasicNodeManager, NodeMembership};
 pub use threshold::{DefaultThresholdCalculator, ThresholdCalculator};
 pub use vrf::{VrfNodeManager, VrfNodeManagerConfig};
-

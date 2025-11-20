@@ -1,5 +1,5 @@
 /// Shared message handlers for common patterns between channel and gossipsub handlers
-/// 
+///
 /// This module extracts redundant code patterns to follow DRY principles and Rust best practices.
 use anyhow::Result;
 use tracing::{error, info, warn};
@@ -13,9 +13,7 @@ use super::types::MpcNetworkLayer;
 
 impl MpcNetworkLayer {
     /// Convert transaction type string to enum
-    pub(crate) fn parse_transaction_type(
-        tx_type_str: &str,
-    ) -> Result<TransactionType> {
+    pub(crate) fn parse_transaction_type(tx_type_str: &str) -> Result<TransactionType> {
         match tx_type_str {
             "user_to_vault" => Ok(TransactionType::UserToVault),
             "network_to_target" => Ok(TransactionType::NetworkToTarget),
@@ -87,9 +85,8 @@ impl MpcNetworkLayer {
                             "⚠️ [SIGNING] Failed to update solver amounts for UserToVault transaction: {}",
                             e
                         );
-                    } else if let Err(e) = signing_node
-                        .calculate_reward_per_solver(intent_hash)
-                        .await
+                    } else if let Err(e) =
+                        signing_node.calculate_reward_per_solver(intent_hash).await
                     {
                         warn!(
                             "⚠️ [SIGNING] Failed to calculate rewards for UserToVault transaction: {}",
@@ -107,19 +104,18 @@ impl MpcNetworkLayer {
                     .await
                     .map_err(|e| anyhow::anyhow!("{}", e))
             }
-            "network_to_target" => {
-                user_intent_manager
-                    .store_network_to_target_tx_id(intent_hash, transaction_id, node_id)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("{}", e))
-            }
-            "vault_to_network" => {
-                user_intent_manager
-                    .store_vault_to_network_tx_id(intent_hash, transaction_id, node_id)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("{}", e))
-            }
-            _ => Err(anyhow::anyhow!("Unknown transaction type: {}", transaction_type)),
+            "network_to_target" => user_intent_manager
+                .store_network_to_target_tx_id(intent_hash, transaction_id, node_id)
+                .await
+                .map_err(|e| anyhow::anyhow!("{}", e)),
+            "vault_to_network" => user_intent_manager
+                .store_vault_to_network_tx_id(intent_hash, transaction_id, node_id)
+                .await
+                .map_err(|e| anyhow::anyhow!("{}", e)),
+            _ => Err(anyhow::anyhow!(
+                "Unknown transaction type: {}",
+                transaction_type
+            )),
         }
     }
 
@@ -363,4 +359,3 @@ impl MpcNetworkLayer {
         Ok(())
     }
 }
-

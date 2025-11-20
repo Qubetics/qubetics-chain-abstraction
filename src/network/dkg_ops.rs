@@ -31,4 +31,3 @@ impl MpcNetworkLayer {
         info!("✅ Scheduled DKG to start at {}", start_time_unix);
     }
 }
-

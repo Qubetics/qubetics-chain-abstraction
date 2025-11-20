@@ -11,12 +11,12 @@ pub mod signing;
 pub mod user_intent;
 pub mod vrf;
 
-pub use consensus::{ConsensusMessage, ConsensusResult};
 pub use chain::bitcoin::{
     BitcoinInput, BitcoinOutput, BitcoinSignature, BitcoinTransaction, BitcoinUtxo, BitcoinWitness,
     BitcoinWitnessInput, BitcoinWitnessUtxo, SpendKind, UtxoStatus,
 };
 pub use chain::ethereum::{encode_hex_to_bytes, RlpEncoder};
+pub use consensus::{ConsensusMessage, ConsensusResult};
 pub use intent::{
     ContractTransaction, DepositIntent, DepositIntentResponse, DummyTransaction,
     TransactionNetwork, TransactionResponse, TransactionType,

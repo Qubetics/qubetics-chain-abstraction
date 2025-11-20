@@ -10,8 +10,8 @@ use tracing::{debug, error, info, warn};
 
 use crate::{
     database::key_utils,
+    signing::{BitcoinSigner, EthereumSigner},
     types::{rpc::RPCRequest, signing::SigningMessage, GossipsubMessage},
-    user_intent_manager::TransactionStatus,
 };
 
 use super::types::MpcNetworkLayer;
@@ -812,17 +812,20 @@ impl MpcNetworkLayer {
                             match chain_transaction {
                                 crate::chain_abstraction::ChainTransaction::Bitcoin(ref btc_tx) => {
                                     // For Bitcoin, use direct signing with tx_bytes and original transaction
-                                    signing_node
-                                        .sign_bitcoin_transaction(
-                                            tx_bytes.clone(),
-                                            Some(btc_tx.clone()),
-                                            user_eth_address.clone(),
-                                            Some(intent_hash.clone()),
-                                            Some(transaction_type.clone()),
-                                            signing_key,
-                                            None,
-                                        )
-                                        .await?;
+                                    {
+                                        let mut btc_signer = BitcoinSigner::new(signing_node);
+                                        btc_signer
+                                            .sign_transaction(
+                                                tx_bytes.clone(),
+                                                Some(btc_tx.clone()),
+                                                user_eth_address.clone(),
+                                                Some(intent_hash.clone()),
+                                                Some(transaction_type.clone()),
+                                                signing_key,
+                                                None,
+                                            )
+                                            .await?;
+                                    }
                                 }
                                 crate::chain_abstraction::ChainTransaction::Ethereum(
                                     ref eth_tx,
@@ -872,18 +875,20 @@ impl MpcNetworkLayer {
                                             }
                                         }
                                     };
-
-                                    signing_node
-                                        .sign_message(
-                                            tx_bytes.clone(),
-                                            &eth_tx,
-                                            user_tweaked_share,
-                                            user_eth_address.clone(),
-                                            Some(intent_hash.clone()),
-                                            Some(transaction_type.clone()),
-                                            None,
-                                        )
-                                        .await?; // // Only execute contract transaction for UserToVault transaction type
+                                    {
+                                        let mut eth_signer = EthereumSigner::new(signing_node);
+                                        eth_signer
+                                            .sign_transaction(
+                                                tx_bytes.clone(),
+                                                &eth_tx,
+                                                user_tweaked_share,
+                                                user_eth_address.clone(),
+                                                Some(intent_hash.clone()),
+                                                Some(transaction_type.clone()),
+                                                None,
+                                            )
+                                            .await?;
+                                    } // // Only execute contract transaction for UserToVault transaction type
                                                  // if matches!(transaction_type, crate::types::TransactionType::UserToVault) {
                                                  //     info!("📝 [GOSSIPSUB] UserToVault transaction detected - executing contract call");
 
@@ -1088,17 +1093,21 @@ impl MpcNetworkLayer {
                                                         info!("🔐 [GOSSIPSUB] Starting TICS reward signing process: 0x{}", hex::encode(tx_bytes.clone()));
 
                                                         // Sign with only necessary parameters for transaction
-                                                        signing_node
-                                                            .sign_message(
-                                                                tx_bytes,
-                                                                &eth_tx,
-                                                                None,
-                                                                None,
-                                                                None,
-                                                                None,
-                                                                Some(solver_address.clone()),
-                                                            )
-                                                            .await?;
+                                                        {
+                                                            let mut eth_signer =
+                                                                EthereumSigner::new(signing_node);
+                                                            eth_signer
+                                                                .sign_transaction(
+                                                                    tx_bytes,
+                                                                    &eth_tx,
+                                                                    None,
+                                                                    None,
+                                                                    None,
+                                                                    None,
+                                                                    Some(solver_address.clone()),
+                                                                )
+                                                                .await?;
+                                                        }
                                                         info!("✅ [GOSSIPSUB] TICS reward signing completed");
                                                     } else {
                                                         info!("⏳ [GOSSIPSUB] DKG not completed yet, no secret share available for TICS reward");
@@ -1198,17 +1207,21 @@ impl MpcNetworkLayer {
                                                         // Convert transaction to bytes for signing
 
                                                         // Sign with Bitcoin-specific parameters
-                                                        signing_node
-                                                            .sign_bitcoin_transaction(
-                                                                tx_bytes.clone(),
-                                                                Some(btc_tx),
-                                                                None,
-                                                                None,
-                                                                None,
-                                                                None,
-                                                                Some(solver_address.clone()),
-                                                            )
-                                                            .await?;
+                                                        {
+                                                            let mut btc_signer =
+                                                                BitcoinSigner::new(signing_node);
+                                                            btc_signer
+                                                                .sign_transaction(
+                                                                    tx_bytes.clone(),
+                                                                    Some(btc_tx),
+                                                                    None,
+                                                                    None,
+                                                                    None,
+                                                                    None,
+                                                                    Some(solver_address.clone()),
+                                                                )
+                                                                .await?;
+                                                        }
                                                         info!("✅ [GOSSIPSUB] BTC reward signing completed");
                                                     } else {
                                                         info!("⏳ [GOSSIPSUB] DKG not completed yet, no secret share available for BTC reward");

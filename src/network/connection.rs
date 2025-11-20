@@ -28,14 +28,17 @@ impl MpcNetworkLayer {
         }
 
         // Mark this disconnect as processed
-        self.peer_discovery.processed_disconnects.insert(peer_id, now);
+        self.peer_discovery
+            .processed_disconnects
+            .insert(peer_id, now);
         info!(
             "✅ [DISCONNECT] Marked disconnect for {} as processed at {:?}",
             peer_id, now
         );
 
         // Clean up old entries (older than dedup_window) to prevent memory growth
-        self.peer_discovery.processed_disconnects
+        self.peer_discovery
+            .processed_disconnects
             .retain(|_, &mut timestamp| now.duration_since(timestamp) < dedup_window);
 
         // Log active nodes BEFORE removal

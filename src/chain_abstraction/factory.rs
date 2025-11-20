@@ -1,9 +1,7 @@
 use anyhow::Result;
 use std::collections::HashMap;
 
-use crate::chain_abstraction::handlers::{
-    BitcoinChainHandler, ChainHandler, EthereumChainHandler,
-};
+use crate::chain_abstraction::handlers::{BitcoinChainHandler, ChainHandler, EthereumChainHandler};
 
 /// Chain handler factory helpers
 pub struct ChainHandlerFactory;
@@ -40,6 +38,3 @@ impl ChainHandlerFactory {
         }
     }
 }
-
-
-

@@ -25,4 +25,3 @@ impl Clone for Box<dyn ThresholdCalculator> {
         self.clone_box()
     }
 }
-

@@ -10,13 +10,11 @@ use super::types::MpcNetworkLayer;
 
 impl MpcNetworkLayer {
     /// Load existing keypair from keystore or create a new one
-    /// 
+    ///
     /// Accepts a KeyStore implementation (e.g., Database, remote KMS) to allow
     /// the MPC stack to control the identity lifecycle and swap storage backends
     /// without changing keypair management logic.
-    pub async fn load_or_create_keypair(
-        keystore: Arc<dyn KeyStore>,
-    ) -> Result<(Keypair, PeerId)> {
+    pub async fn load_or_create_keypair(keystore: Arc<dyn KeyStore>) -> Result<(Keypair, PeerId)> {
         // Try to load existing keypair
         if let Some(keypair_bytes) = keystore.get_keypair(keys::PEER_KEYPAIR)? {
             match Keypair::from_protobuf_encoding(&keypair_bytes) {
@@ -167,7 +165,7 @@ impl MpcNetworkLayer {
     }
 
     /// Execute contract call for a given transaction type and intent
-    /// 
+    ///
     /// This method delegates to MpcChainExecutor to keep contract execution
     /// logic separate from networking concerns.
     pub(crate) async fn execute_contract_call_for_transaction(
@@ -198,4 +196,3 @@ impl MpcNetworkLayer {
         }
     }
 }
-

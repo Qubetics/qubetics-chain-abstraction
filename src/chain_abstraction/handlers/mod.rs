@@ -45,4 +45,3 @@ pub trait ChainHandler: Send + Sync {
     /// Downcast to concrete type for type-specific operations
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
 }
-
