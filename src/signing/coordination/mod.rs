@@ -5,6 +5,23 @@ use libp2p::PeerId;
 use tokio::sync::mpsc;
 use tracing::info;
 
+pub fn derive_peer_id_from_string(id: &str) -> PeerId {
+    use sha2::{Digest, Sha256};
+
+    let mut hasher = Sha256::new();
+    hasher.update(id.as_bytes());
+    let hash = hasher.finalize();
+
+    let mut key_bytes = [0u8; 32];
+    key_bytes.copy_from_slice(&hash[..32]);
+
+    let ed_kp = libp2p::identity::ed25519::Keypair::try_from_bytes(&mut key_bytes)
+        .unwrap_or_else(|_| libp2p::identity::ed25519::Keypair::generate());
+    let kp = libp2p::identity::Keypair::from(ed_kp);
+
+    PeerId::from_public_key(&kp.public())
+}
+
 #[derive(Clone)]
 pub struct Coordination {
     pub vrf_service: Option<VrfService>,

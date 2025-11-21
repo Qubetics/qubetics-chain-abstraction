@@ -1,4 +1,4 @@
-use super::SigningNode;
+use crate::signing::SigningNode;
 use crate::{
     chain_abstraction::BitcoinTransaction,
     types::{signing::BtcIndexedSignature, SpendKind, TransactionType},

@@ -7,14 +7,12 @@ use crate::types::{
     },
 };
 use anyhow::{anyhow, Error, Result};
-use k256::Scalar;
-// use ethereum_types::U64; // Removed unused import
 use hex;
+use k256::Scalar;
 use libp2p::PeerId;
 use num_bigint::BigUint;
 use num_traits::identities::One;
 use secp256k1::{self, ecdsa::RecoverableSignature, Message, PublicKey, Secp256k1, SecretKey};
-use serde::{Deserialize, Serialize};
 use sha2::Digest as Sha2Digest;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -28,18 +26,21 @@ use tokio::{
 };
 use tracing::{error, info, warn};
 
-mod bitcoin;
+pub mod chains;
 mod config;
-mod coordination;
+pub mod coordination;
 pub mod db_signing;
-mod ethereum;
 mod key;
-pub use bitcoin::BitcoinSigner;
+pub mod state;
+pub use chains::{BitcoinSigner, EthereumSigner};
 pub use config::{BroadcastConfig, ChainBroadcastConfig};
 pub use coordination::Coordination;
 pub use db_signing::DatabaseSigningNode;
-pub use ethereum::EthereumSigner;
 pub use key::KeyStore;
+pub use state::{
+    BroadcastPolicy, BtcAggregationState, BtcRoundExtras, PendingStore, PendingValue,
+    SignatureStore, SigningEnvironmentBuilder,
+};
 
 use num_bigint::{BigInt, ToBigInt};
 use secp256k1::{constants::CURVE_ORDER, ecdsa::RecoveryId};
@@ -48,7 +49,7 @@ use num_traits::Zero;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
 
-use crate::chain_abstraction::{ChainHandler, ChainHandlerFactory, ChainTransaction};
+use crate::chain_abstraction::{ChainHandler, ChainTransaction};
 use crate::protocols::{VrfSelectedNodesBroadcast, VrfService};
 use crate::types::{
     p2p::SerializablePeerId, ChannelMessage, ConsensusMessage, ConsensusResult, TransactionStatus,
@@ -62,80 +63,24 @@ use anyhow::bail;
 use ethereum_types::U256 as EthereumU256;
 use ethers::types::U256;
 
-use serde_big_array::BigArray; // <- this exists when const-generics is enabled
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct BtcRoundExtras {
-    #[serde(with = "BigArray")] // works for any array length
-    pub pubkey33: [u8; 33],
-    pub signer_h160: [u8; 20],
-    pub from_kind: SpendKind,
-    pub is_testnet: bool,
-}
-type PendingValue = (
-    ChainTransaction,
-    Vec<u8>,
-    Option<String>, // intent_hash
-    Option<crate::types::TransactionType>,
-    Option<BtcRoundExtras>, // <-- NEW
-);
 #[derive(Clone)]
 pub struct SigningNode {
     id: String,
     threshold: usize,
     key_store: KeyStore,
-    public_keys: Arc<RwLock<HashMap<String, PublicKey>>>, // Other nodes' public keys
-    signatures: Arc<RwLock<HashMap<String, ECDSASignature>>>,
-    signatures_by_round: Arc<RwLock<HashMap<u64, HashMap<String, ECDSASignature>>>>, // round -> node_id -> signature
-    final_nodes_by_round: Arc<RwLock<HashMap<u64, String>>>, // round -> final_node_id
-    aggregated_rounds: Arc<RwLock<std::collections::HashSet<u64>>>, // Track rounds that have been aggregated
+    signatures: SignatureStore,
     message_tx: mpsc::Sender<ChannelMessage>,
     coordination: Coordination,
     chain_handler: Arc<dyn ChainHandler>, // Chain-specific operations for regular transactions
     contract_chain_handler: Arc<dyn ChainHandler>, // Chain handler specifically for contract transactions
-    pending_transactions: Arc<
-        RwLock<
-            HashMap<
-                u64,
-                (
-                    ChainTransaction,
-                    Vec<u8>,
-                    Option<String>,
-                    Option<crate::types::TransactionType>,
-                ),
-            >,
-        >,
-    >, // round -> (original_tx, tx_bytes, intent_hash, transaction_type)  // Available nodes from node manager
-    pending_transactions_btc: Arc<RwLock<HashMap<u64, PendingValue>>>,
-    reward_pending_transactions_tics: Arc<
-        RwLock<
-            HashMap<
-                u64,
-                (
-                    ChainTransaction,
-                    Vec<u8>,
-                    Option<String>,
-                    Option<crate::types::TransactionType>,
-                ),
-            >,
-        >,
-    >, // round -> (original_tx, tx_bytes, solver_address, None) for TICS rewards
-    reward_pending_transactions_btc: Arc<RwLock<HashMap<u64, PendingValue>>>, // round -> (original_tx, tx_bytes, solver_address, None, extras) for BTC rewards
-    // Store reward transaction rounds for easy identification
-    reward_rounds: Arc<RwLock<std::collections::HashSet<u64>>>, // Set of rounds that are reward transactions
-    // Store original transaction and bytes for reconstruction
-    /// round -> input_index -> peer_id -> raw partial sig (r||s, recid in ECDSASignature)
-    btc_sigs_by_round: Arc<RwLock<HashMap<u64, HashMap<usize, HashMap<String, ECDSASignature>>>>>,
-    /// round -> input_index -> aggregated recoverable signature
-    btc_agg_by_round: Arc<RwLock<HashMap<u64, HashMap<usize, RecoverableSignature>>>>,
-    /// round -> set of input indexes already aggregated
-    btc_done_inputs_by_round: Arc<RwLock<HashMap<u64, HashSet<usize>>>>,
+    pending: PendingStore,
+    btc_state: BtcAggregationState,
     // User registry for storing transaction IDs
     user_intent_manager: Option<Arc<UserIntentManager>>,
     // Database for storing solver amounts
     database: Option<Arc<crate::database::Database>>,
     // Dynamic broadcast configuration
-    broadcast_config: BroadcastConfig,
+    broadcast_policy: BroadcastPolicy,
 }
 
 impl SigningNode {
@@ -152,44 +97,25 @@ impl SigningNode {
     }
 
     pub fn new(id: String, threshold: usize, message_tx: mpsc::Sender<ChannelMessage>) -> Self {
-        // Parse the actual PeerId from the string ID
-        let peer_id = PeerId::from_str(&id).unwrap_or_else(|_| {
-            // Fallback to derived PeerId if parsing fails
-            Self::derive_peer_id_from_string(&id)
-        });
-
-        // Create default Ethereum chain handler (can be changed later)
-        let chain_handler = ChainHandlerFactory::create_ethereum_handler(9029);
-        let chain_handler: Arc<dyn ChainHandler> = chain_handler.into();
-
-        // Create contract chain handler - always Ethereum for contract transactions
-        let contract_chain_handler = ChainHandlerFactory::create_ethereum_handler(9029);
-        let contract_chain_handler: Arc<dyn ChainHandler> = contract_chain_handler.into();
+        let peer_id =
+            PeerId::from_str(&id).unwrap_or_else(|_| coordination::derive_peer_id_from_string(&id));
+        let environment = SigningEnvironmentBuilder::new(id.clone(), message_tx.clone())
+            .build_with_coordination(peer_id, Coordination::new(peer_id, message_tx.clone()));
 
         Self {
             id,
             threshold,
             key_store: KeyStore::new(),
-            public_keys: Arc::new(RwLock::new(HashMap::new())),
-            signatures: Arc::new(RwLock::new(HashMap::new())),
-            signatures_by_round: Arc::new(RwLock::new(HashMap::new())),
-            final_nodes_by_round: Arc::new(RwLock::new(HashMap::new())),
-            aggregated_rounds: Arc::new(RwLock::new(std::collections::HashSet::new())),
+            signatures: SignatureStore::new(),
             message_tx: message_tx.clone(),
-            coordination: Coordination::new(peer_id, message_tx),
-            chain_handler,
-            contract_chain_handler,
-            pending_transactions: Arc::new(RwLock::new(HashMap::new())),
-            pending_transactions_btc: Arc::new(RwLock::new(HashMap::new())),
-            reward_pending_transactions_tics: Arc::new(RwLock::new(HashMap::new())),
-            reward_pending_transactions_btc: Arc::new(RwLock::new(HashMap::new())),
-            reward_rounds: Arc::new(RwLock::new(std::collections::HashSet::new())),
-            btc_sigs_by_round: Arc::new(RwLock::new(HashMap::new())),
-            btc_agg_by_round: Arc::new(RwLock::new(HashMap::new())),
-            btc_done_inputs_by_round: Arc::new(RwLock::new(HashMap::new())),
+            coordination: environment.coordination,
+            chain_handler: environment.chain_handler,
+            contract_chain_handler: environment.contract_chain_handler,
+            pending: PendingStore::new(),
+            btc_state: BtcAggregationState::new(),
             user_intent_manager: None, // Will be set later via set_user_intent_manager
             database: None,            // Will be set later via set_database
-            broadcast_config: BroadcastConfig::from_env(), // Load configuration from environment
+            broadcast_policy: environment.broadcast_policy,
         }
     }
 }
@@ -197,26 +123,7 @@ impl SigningNode {
 impl SigningNode {
     /// Print the current broadcast configuration
     pub fn print_broadcast_config(&self) {
-        self.broadcast_config.print_config();
-    }
-
-    /// Derive a deterministic PeerId from a string ID
-    fn derive_peer_id_from_string(id: &str) -> PeerId {
-        use sha2::{Digest, Sha256};
-        let mut hasher = Sha256::new();
-        hasher.update(id.as_bytes());
-        let hash = hasher.finalize();
-
-        // Create a deterministic keypair from the hash
-        let mut key_bytes = [0u8; 32];
-        key_bytes.copy_from_slice(&hash[..32]);
-
-        // Create a deterministic Ed25519 keypair
-        let ed_kp = libp2p::identity::ed25519::Keypair::try_from_bytes(&mut key_bytes)
-            .unwrap_or_else(|_| libp2p::identity::ed25519::Keypair::generate());
-        let kp = libp2p::identity::Keypair::from(ed_kp);
-
-        PeerId::from_public_key(&kp.public())
+        self.broadcast_policy.config.print_config();
     }
 
     pub fn generate_key_pair(&mut self) -> Result<()> {
@@ -242,21 +149,27 @@ impl SigningNode {
 
     // Configuration methods
     pub fn set_broadcast_config(&mut self, config: BroadcastConfig) {
-        self.broadcast_config = config;
+        self.broadcast_policy.config = config;
     }
 
     pub fn get_broadcast_config(&self) -> &BroadcastConfig {
-        &self.broadcast_config
+        &self.broadcast_policy.config
     }
 
     pub fn update_chain_config(&mut self, chain_type: &str, config: ChainBroadcastConfig) {
-        self.broadcast_config
+        self.broadcast_policy
+            .config
             .chain_configs
             .insert(chain_type.to_string(), config);
     }
 
     pub fn enable_chain(&mut self, chain_type: &str, enabled: bool) {
-        if let Some(chain_config) = self.broadcast_config.chain_configs.get_mut(chain_type) {
+        if let Some(chain_config) = self
+            .broadcast_policy
+            .config
+            .chain_configs
+            .get_mut(chain_type)
+        {
             chain_config.enabled = enabled;
         }
     }
@@ -264,7 +177,7 @@ impl SigningNode {
     pub fn add_public_key(&self, node_id: String, public_key: PublicKey) {
         let node_id_clone = node_id.clone();
         tokio::spawn({
-            let public_keys = self.public_keys.clone();
+            let public_keys = self.signatures.public_keys.clone();
             async move {
                 public_keys.write().await.insert(node_id, public_key);
             }
@@ -471,7 +384,7 @@ impl SigningNode {
 
         // ===== Stash our signatures locally under (round → input_index → peer → sig) =====
         {
-            let mut by_round = self.btc_sigs_by_round.write().await;
+            let mut by_round = self.btc_state.btc_sigs_by_round.write().await;
             let rmap = by_round.entry(current_round).or_insert_with(HashMap::new);
             for btc_sig in &btc_sigs {
                 let imap = rmap.entry(btc_sig.input_index).or_insert_with(HashMap::new);
@@ -538,7 +451,7 @@ impl SigningNode {
 
                     // Insert round number into reward_rounds for reward transactions
                     {
-                        let mut reward_rounds = self.reward_rounds.write().await;
+                        let mut reward_rounds = self.pending.reward_rounds.write().await;
                         reward_rounds.insert(current_round);
                         info!(
                             "🎁 [BTC-SIGNING] Node {} added round {} to reward_rounds",
@@ -560,7 +473,7 @@ impl SigningNode {
                 }
             } else {
                 // This is an intent-based transaction - store in regular pending transactions
-                let mut pending = self.pending_transactions_btc.write().await;
+                let mut pending = self.pending.pending_transactions_btc.write().await;
                 pending.insert(
                     current_round,
                     (
@@ -969,13 +882,14 @@ impl SigningNode {
     ) -> Result<Option<String>> {
         // Check if this is a reward round first
         let is_reward_round = {
-            let reward_rounds = self.reward_rounds.read().await;
+            let reward_rounds = self.pending.reward_rounds.read().await;
             reward_rounds.contains(&round)
         };
 
         let (chain_tx, transaction_type) = if is_reward_round {
             // This is a reward transaction - check reward pending transactions
-            let reward_pending_transactions = self.reward_pending_transactions_tics.read().await;
+            let reward_pending_transactions =
+                self.pending.reward_pending_transactions_tics.read().await;
             if let Some((chain_tx, _tx_bytes, _solver_address, transaction_type)) =
                 reward_pending_transactions.get(&round)
             {
@@ -985,7 +899,7 @@ impl SigningNode {
             }
         } else {
             // This is a regular transaction - check regular pending transactions
-            let pending_transactions = self.pending_transactions.read().await;
+            let pending_transactions = self.pending.pending_transactions.read().await;
             if let Some((chain_tx, _tx_bytes, _intent_hash, transaction_type)) =
                 pending_transactions.get(&round)
             {
@@ -1037,7 +951,7 @@ impl SigningNode {
 
                 // Determine if this is a user transaction by checking signatures for this round
                 let user_eth_address = {
-                    let signatures_by_round = self.signatures_by_round.read().await;
+                    let signatures_by_round = self.signatures.signatures_by_round.read().await;
                     if let Some(round_signatures) = signatures_by_round.get(&round) {
                         // Get user_eth_address from any signature in this round (all should have the same value)
                         round_signatures
@@ -1863,7 +1777,7 @@ impl SigningNode {
 
         // Store signature by round
         {
-            let mut signatures_by_round = self.signatures_by_round.write().await;
+            let mut signatures_by_round = self.signatures.signatures_by_round.write().await;
             let round_signatures = signatures_by_round
                 .entry(round)
                 .or_insert_with(HashMap::new);
@@ -1921,7 +1835,7 @@ impl SigningNode {
                 // Insert round number into reward_rounds for reward transactions
                 {
                     let mut reward_rounds: tokio::sync::RwLockWriteGuard<'_, HashSet<u64>> =
-                        self.reward_rounds.write().await;
+                        self.pending.reward_rounds.write().await;
                     reward_rounds.insert(round);
                     info!(
                         "🎁 [SIGNING] Node {} added round {} to reward_rounds",
@@ -1941,7 +1855,7 @@ impl SigningNode {
             }
         } else {
             // This is an intent-based transaction - store in regular pending transactions
-            let mut pending_transactions = self.pending_transactions.write().await;
+            let mut pending_transactions = self.pending.pending_transactions.write().await;
             let chain_tx =
                 ChainTransaction::Ethereum(crate::chain_abstraction::EthereumTransaction {
                     to: transaction.to.clone(),
@@ -2124,7 +2038,7 @@ impl SigningNode {
 
         // Store signature by round
         {
-            let mut signatures_by_round = self.signatures_by_round.write().await;
+            let mut signatures_by_round = self.signatures.signatures_by_round.write().await;
             let round_signatures = signatures_by_round
                 .entry(round)
                 .or_insert_with(HashMap::new);
@@ -2146,7 +2060,7 @@ impl SigningNode {
         }
 
         {
-            let mut pending_transactions = self.pending_transactions.write().await;
+            let mut pending_transactions = self.pending.pending_transactions.write().await;
             let chain_tx =
                 ChainTransaction::Ethereum(crate::chain_abstraction::EthereumTransaction {
                     to: transaction.to.clone(),
@@ -2686,7 +2600,7 @@ impl SigningNode {
         info!("👥 [SIGNING] Signers: {:?}", signed_message.signer_ids);
         info!("🕒 [SIGNING] Timestamp: {}", signed_message.timestamp);
 
-        let public_keys = self.public_keys.read().await;
+        let public_keys = self.signatures.public_keys.read().await;
 
         // Check if we have public keys for all signers
         for signer_id in &signed_message.signer_ids {
@@ -2906,7 +2820,7 @@ impl SigningNode {
     ) {
         // Check if this round is a reward round first
         let is_reward_round = {
-            let reward_rounds = self.reward_rounds.read().await;
+            let reward_rounds = self.pending.reward_rounds.read().await;
             reward_rounds.contains(&round)
         };
 
@@ -2916,7 +2830,7 @@ impl SigningNode {
                 if is_reward_round {
                     // This is a reward round - check reward pending transactions for TICS
                     let reward_pending_transactions =
-                        self.reward_pending_transactions_tics.read().await;
+                        self.pending.reward_pending_transactions_tics.read().await;
                     if let Some((_tx, _tx_bytes, solver_address, transaction_type)) =
                         reward_pending_transactions.get(&round)
                     {
@@ -2926,7 +2840,7 @@ impl SigningNode {
                     }
                 } else {
                     // Check regular EVM pending transactions
-                    let pending = self.pending_transactions.read().await;
+                    let pending = self.pending.pending_transactions.read().await;
                     if let Some((_tx, _tx_bytes, intent_hash, tx_type)) = pending.get(&round) {
                         (intent_hash.clone(), tx_type.clone(), None)
                     } else {
@@ -2938,7 +2852,7 @@ impl SigningNode {
                 if is_reward_round {
                     // This is a reward round - check reward pending transactions for BTC
                     let reward_pending_transactions_btc =
-                        self.reward_pending_transactions_btc.read().await;
+                        self.pending.reward_pending_transactions_btc.read().await;
                     if let Some((_tx, _tx_bytes, solver_address, transaction_type, _extras)) =
                         reward_pending_transactions_btc.get(&round)
                     {
@@ -2948,7 +2862,7 @@ impl SigningNode {
                     }
                 } else {
                     // Check regular Bitcoin pending transactions
-                    let pending_btc = self.pending_transactions_btc.read().await;
+                    let pending_btc = self.pending.pending_transactions_btc.read().await;
                     if let Some((_tx, _tx_bytes, intent_hash, tx_type, _extras)) =
                         pending_btc.get(&round)
                     {
@@ -3139,7 +3053,7 @@ impl SigningNode {
         tx_bytes: Vec<u8>,
         solver_address: String,
     ) {
-        let mut pending = self.reward_pending_transactions_tics.write().await;
+        let mut pending = self.pending.reward_pending_transactions_tics.write().await;
         pending.insert(round, (chain_tx, tx_bytes, Some(solver_address), None));
         info!(
             "🎁 [SIGNING] Stored TICS reward transaction for round {} with solver address",
@@ -3156,7 +3070,7 @@ impl SigningNode {
         solver_address: String,
         extras: BtcRoundExtras,
     ) {
-        let mut pending = self.reward_pending_transactions_btc.write().await;
+        let mut pending = self.pending.reward_pending_transactions_btc.write().await;
         pending.insert(
             round,
             (chain_tx, tx_bytes, Some(solver_address), None, Some(extras)),
@@ -3176,7 +3090,7 @@ impl SigningNode {
         match network {
             crate::types::TransactionNetwork::TICS => {
                 let reward_pending_transactions =
-                    self.reward_pending_transactions_tics.read().await;
+                    self.pending.reward_pending_transactions_tics.read().await;
                 if let Some((chain_tx, _tx_bytes, _solver_address, _transaction_type)) =
                     reward_pending_transactions.get(&round)
                 {
@@ -3203,7 +3117,7 @@ impl SigningNode {
             }
             crate::types::TransactionNetwork::BTC => {
                 let reward_pending_transactions_btc =
-                    self.reward_pending_transactions_btc.read().await;
+                    self.pending.reward_pending_transactions_btc.read().await;
                 if let Some((chain_tx, _tx_bytes, _solver_address, _transaction_type, _extras)) =
                     reward_pending_transactions_btc.get(&round)
                 {
@@ -3403,7 +3317,7 @@ impl SigningNode {
     ) {
         // Check if this round is a reward round first
         let is_reward_round = {
-            let reward_rounds = self.reward_rounds.read().await;
+            let reward_rounds = self.pending.reward_rounds.read().await;
             reward_rounds.contains(&round)
         };
 
@@ -3414,7 +3328,7 @@ impl SigningNode {
                 if is_reward_round {
                     // This is a reward round - check reward pending transactions for TICS
                     let reward_pending_transactions =
-                        self.reward_pending_transactions_tics.read().await;
+                        self.pending.reward_pending_transactions_tics.read().await;
                     if let Some((_tx, _tx_bytes, solver_address, transaction_type)) =
                         reward_pending_transactions.get(&round)
                     {
@@ -3426,7 +3340,7 @@ impl SigningNode {
                     }
                 } else {
                     // Check regular EVM pending transactions
-                    let pending_transactions = self.pending_transactions.read().await;
+                    let pending_transactions = self.pending.pending_transactions.read().await;
                     if let Some((_tx, _tx_bytes, intent_hash, transaction_type)) =
                         pending_transactions.get(&round)
                     {
@@ -3440,7 +3354,7 @@ impl SigningNode {
                 if is_reward_round {
                     // This is a reward round - check reward pending transactions for BTC
                     let reward_pending_transactions_btc =
-                        self.reward_pending_transactions_btc.read().await;
+                        self.pending.reward_pending_transactions_btc.read().await;
                     if let Some((_tx, _tx_bytes, solver_address, transaction_type, _extras)) =
                         reward_pending_transactions_btc.get(&round)
                     {
@@ -3452,7 +3366,8 @@ impl SigningNode {
                     }
                 } else {
                     // Check regular Bitcoin pending transactions
-                    let pending_transactions_btc = self.pending_transactions_btc.read().await;
+                    let pending_transactions_btc =
+                        self.pending.pending_transactions_btc.read().await;
                     if let Some((_tx, _tx_bytes, intent_hash, transaction_type, _extras)) =
                         pending_transactions_btc.get(&round)
                     {
@@ -3937,7 +3852,7 @@ impl SigningNode {
 
                 // Store the final node for this round
                 {
-                    let mut final_nodes = self.final_nodes_by_round.write().await;
+                    let mut final_nodes = self.signatures.final_nodes_by_round.write().await;
                     final_nodes.insert(round, result.final_node.0.to_string());
                     info!(
                         "💾 [CONSENSUS] Stored final node {} for round {}",
@@ -3999,7 +3914,7 @@ impl SigningNode {
 
         // If we have BTC per-input signatures tracked for this round, request BTC signatures
         let is_btc_round = {
-            let map = self.btc_sigs_by_round.read().await;
+            let map = self.btc_state.btc_sigs_by_round.read().await;
             map.contains_key(&round)
         };
 
@@ -4043,7 +3958,7 @@ impl SigningNode {
         );
 
         // Get signature for this specific round
-        let signatures_by_round = self.signatures_by_round.read().await;
+        let signatures_by_round = self.signatures.signatures_by_round.read().await;
 
         if let Some(round_signatures) = signatures_by_round.get(&round) {
             if let Some(our_signature) = round_signatures.get(&self.id) {
@@ -4105,8 +4020,8 @@ impl SigningNode {
     //     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
 
     //     // Determine if this is a Bitcoin or EVM round by checking which mapping has data
-    //     let signatures_by_round = self.signatures_by_round.read().await;
-    //     let btc_sigs_by_round = self.btc_sigs_by_round.read().await;
+    //     let signatures_by_round = self.signatures.signatures_by_round.read().await;
+    //     let btc_sigs_by_round = self.btc_state.btc_sigs_by_round.read().await;
 
     //     let has_evm_sigs = signatures_by_round.contains_key(&round);
     //     let has_btc_sigs = btc_sigs_by_round.contains_key(&round);
@@ -4135,7 +4050,7 @@ impl SigningNode {
     //             );
 
     //             // Check which inputs have been aggregated
-    //             let btc_done_inputs = self.btc_done_inputs_by_round.read().await;
+    //             let btc_done_inputs = self.btc_state.btc_done_inputs_by_round.read().await;
     //             if let Some(done_inputs) = btc_done_inputs.get(&round) {
     //                 info!(
     //                     "✅ [SIGNING] Bitcoin round {} has {} inputs aggregated out of {} total inputs",
@@ -4190,7 +4105,7 @@ impl SigningNode {
 
         // Check if this round has already been aggregated
         let already_aggregated = {
-            let aggregated_rounds = self.aggregated_rounds.read().await;
+            let aggregated_rounds = self.signatures.aggregated_rounds.read().await;
             aggregated_rounds.contains(&round)
         };
 
@@ -4204,7 +4119,7 @@ impl SigningNode {
 
         // Store signature by round
         {
-            let mut signatures_by_round = self.signatures_by_round.write().await;
+            let mut signatures_by_round = self.signatures.signatures_by_round.write().await;
             let round_signatures = signatures_by_round
                 .entry(round)
                 .or_insert_with(HashMap::new);
@@ -4220,7 +4135,7 @@ impl SigningNode {
 
         // Check if we have enough signatures for this round
         let signatures_to_aggregate: Option<Result<Vec<RecoverableSignature>>> = {
-            let signatures_by_round = self.signatures_by_round.read().await;
+            let signatures_by_round = self.signatures.signatures_by_round.read().await;
             signatures_by_round.get(&round).map(|round_signatures| {
                 // Sort signatures by signer_id (PeerId) to ensure consistent ordering across rounds
                 let mut sorted_signatures: Vec<_> = round_signatures.iter().collect();
@@ -4299,7 +4214,7 @@ impl SigningNode {
             let signatures_vec = signatures_result?;
             // Check if this round has already been aggregated
             {
-                let aggregated_rounds = self.aggregated_rounds.read().await;
+                let aggregated_rounds = self.signatures.aggregated_rounds.read().await;
                 if aggregated_rounds.contains(&round) {
                     info!("⏭️ [SIGNING] Round {} already aggregated, skipping", round);
                     return Ok(());
@@ -4309,7 +4224,7 @@ impl SigningNode {
             if signatures_vec.len() >= self.threshold {
                 // Mark this round as aggregated BEFORE processing to prevent race conditions
                 {
-                    let mut aggregated_rounds = self.aggregated_rounds.write().await;
+                    let mut aggregated_rounds = self.signatures.aggregated_rounds.write().await;
                     aggregated_rounds.insert(round);
                 }
 
@@ -4336,7 +4251,7 @@ impl SigningNode {
                 // Calculate DKG indices for the selected signatures
                 let peer_to_dkg_index: Vec<(String, u32)> = {
                     // Get the peer IDs in the same order as threshold_signatures
-                    let signatures_by_round = self.signatures_by_round.read().await;
+                    let signatures_by_round = self.signatures.signatures_by_round.read().await;
                     if let Some(round_signatures) = signatures_by_round.get(&round) {
                         let mut sorted_signatures: Vec<_> = round_signatures.iter().collect();
                         sorted_signatures.sort_by(|a, b| a.0.cmp(b.0));
@@ -4437,14 +4352,14 @@ impl SigningNode {
                         // Check the actual transaction stored for this round to determine the correct chain type
                         // First check if this is a reward round
                         let is_reward_round = {
-                            let reward_rounds = self.reward_rounds.read().await;
+                            let reward_rounds = self.pending.reward_rounds.read().await;
                             reward_rounds.contains(&round)
                         };
 
                         let is_contract_tx = if is_reward_round {
                             // This is a reward transaction - check reward pending transactions for TICS (Ethereum)
                             let reward_pending_transactions =
-                                self.reward_pending_transactions_tics.read().await;
+                                self.pending.reward_pending_transactions_tics.read().await;
                             if let Some((chain_tx, _tx_bytes, _solver_address, _transaction_type)) =
                                 reward_pending_transactions.get(&round)
                             {
@@ -4460,7 +4375,8 @@ impl SigningNode {
                             }
                         } else {
                             // This is a regular transaction - check regular pending transactions for Ethereum
-                            let pending_transactions = self.pending_transactions.read().await;
+                            let pending_transactions =
+                                self.pending.pending_transactions.read().await;
                             if let Some((chain_tx, _tx_bytes, _intent_hash, _transaction_type)) =
                                 pending_transactions.get(&round)
                             {
@@ -4589,7 +4505,13 @@ impl SigningNode {
         use std::collections::{HashMap, HashSet};
 
         // If this round is already finalized, ignore the whole batch.
-        if self.aggregated_rounds.read().await.contains(&round) {
+        if self
+            .signatures
+            .aggregated_rounds
+            .read()
+            .await
+            .contains(&round)
+        {
             info!(
                 "⏭️ [BTC] round {} already finalized; ignoring batch from {}",
                 round, &from
@@ -4599,7 +4521,7 @@ impl SigningNode {
 
         // ---- 1) BULK STORE THE WHOLE BATCH (no await per item) ----
         {
-            let mut by_round = self.btc_sigs_by_round.write().await;
+            let mut by_round = self.btc_state.btc_sigs_by_round.write().await;
             let rmap = by_round.entry(round).or_insert_with(HashMap::new);
             for it in &items {
                 let imap = rmap.entry(it.input_index).or_insert_with(HashMap::new);
@@ -4615,7 +4537,7 @@ impl SigningNode {
         );
         // ---- 2) Pull unsigned tx + BTC extras from pending_transactions ----
         let (unsigned_tx, extras, total_inputs) = {
-            let pt = self.pending_transactions_btc.read().await;
+            let pt = self.pending.pending_transactions_btc.read().await;
             let (chain_tx, _raw, _intent_hash, _tx_type_opt, extras_opt) =
                 pt.get(&round).ok_or_else(|| {
                     error!(
@@ -4655,7 +4577,7 @@ impl SigningNode {
         for idx in 0..total_inputs {
             // skip if already aggregated
             let already_done = {
-                let done = self.btc_done_inputs_by_round.read().await;
+                let done = self.btc_state.btc_done_inputs_by_round.read().await;
                 done.get(&round).map_or(false, |s| s.contains(&idx))
             };
             if already_done {
@@ -4664,7 +4586,7 @@ impl SigningNode {
 
             // get all peer sigs for this input
             let peer_map: Option<HashMap<String, ECDSASignature>> = {
-                let by_round = self.btc_sigs_by_round.read().await;
+                let by_round = self.btc_state.btc_sigs_by_round.read().await;
                 by_round.get(&round).and_then(|r| r.get(&idx)).cloned()
             };
             let Some(peer_map) = peer_map else {
@@ -4793,14 +4715,14 @@ impl SigningNode {
             }
 
             {
-                let mut agg_map = self.btc_agg_by_round.write().await;
+                let mut agg_map = self.btc_state.btc_agg_by_round.write().await;
                 agg_map
                     .entry(round)
                     .or_insert_with(HashMap::new)
                     .insert(idx, agg);
             }
             {
-                let mut done = self.btc_done_inputs_by_round.write().await;
+                let mut done = self.btc_state.btc_done_inputs_by_round.write().await;
                 done.entry(round).or_insert_with(HashSet::new).insert(idx);
             }
             info!("✅ [BTC] aggregated input {} for round {}", idx, round);
@@ -4808,7 +4730,7 @@ impl SigningNode {
 
         // ---- 4) FINALIZE only when *all* inputs aggregated ----
         let (should_finalize, total_inputs2, unsigned_tx2) = {
-            let pt = self.pending_transactions_btc.read().await;
+            let pt = self.pending.pending_transactions_btc.read().await;
             let (chain_tx, _raw, _intent_hash, _tx_type_opt, _extras) =
                 pt.get(&round).ok_or_else(|| {
                     error!(
@@ -4824,7 +4746,7 @@ impl SigningNode {
                     bail!("round {} is not a Bitcoin round", round)
                 }
             };
-            let done = self.btc_done_inputs_by_round.read().await;
+            let done = self.btc_state.btc_done_inputs_by_round.read().await;
             let count_done = done.get(&round).map_or(0, |s| s.len());
             (
                 count_done == btc_tx.inputs.len(),
@@ -4840,7 +4762,7 @@ impl SigningNode {
 
         // collect aggregated sigs in input order
         let per_input_sigs: Vec<(usize, RecoverableSignature)> = {
-            let agg_map = self.btc_agg_by_round.read().await;
+            let agg_map = self.btc_state.btc_agg_by_round.read().await;
             let m = agg_map
                 .get(&round)
                 .ok_or_else(|| anyhow!("missing agg map for round {}", round))?;
@@ -4873,17 +4795,17 @@ impl SigningNode {
         }
 
         {
-            let mut aggregated_rounds = self.aggregated_rounds.write().await;
+            let mut aggregated_rounds = self.signatures.aggregated_rounds.write().await;
             aggregated_rounds.insert(round);
         }
 
         // Get intent hash and user_eth_address for proper error/success handling
         let (_intent_hash, _user_eth_address) = {
-            let pt = self.pending_transactions_btc.read().await;
+            let pt = self.pending.pending_transactions_btc.read().await;
             if let Some((_chain_tx, _raw, intent_hash, _tx_type_opt, _extras)) = pt.get(&round) {
                 // Get user_eth_address from the first signature we have
                 let user_eth_address = {
-                    let btc_sigs = self.btc_sigs_by_round.read().await;
+                    let btc_sigs = self.btc_state.btc_sigs_by_round.read().await;
                     if let Some(round_sigs) = btc_sigs.get(&round) {
                         // Get the first available signature to extract user_eth_address
                         round_sigs
@@ -4947,7 +4869,7 @@ impl SigningNode {
 
         // Check if this node is the final node for the specific round
         let is_final_node = {
-            let final_nodes = self.final_nodes_by_round.read().await;
+            let final_nodes = self.signatures.final_nodes_by_round.read().await;
             final_nodes
                 .get(&round)
                 .map(|node_id| node_id == &self.id)
@@ -5517,7 +5439,7 @@ impl SigningNode {
 
         // Fetch our stored per-input signatures for this round
         let maybe_sigs = {
-            let map = self.btc_sigs_by_round.read().await;
+            let map = self.btc_state.btc_sigs_by_round.read().await;
             if let Some(rmap) = map.get(&round) {
                 let mut all_sigs = Vec::new();
                 for (input_idx, imap) in rmap {
@@ -5612,7 +5534,7 @@ impl SigningNode {
 
         // Check if this node is the final node for the specific round
         let is_final_node = {
-            let final_nodes = self.final_nodes_by_round.read().await;
+            let final_nodes = self.signatures.final_nodes_by_round.read().await;
             final_nodes
                 .get(&round)
                 .map(|node_id| node_id == &self.id)
@@ -5627,7 +5549,7 @@ impl SigningNode {
 
             // // Store the BTC signatures for this round
             // {
-            //     let mut by_round = self.btc_sigs_by_round.write().await;
+            //     let mut by_round = self.btc_state.btc_sigs_by_round.write().await;
             //     let rmap = by_round.entry(round).or_insert_with(HashMap::new);
             //     for btc_sig in &signatures {
             //         let imap = rmap.entry(btc_sig.input_index).or_insert_with(HashMap::new);

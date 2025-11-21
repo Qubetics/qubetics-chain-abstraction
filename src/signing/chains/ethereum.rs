@@ -1,4 +1,4 @@
-use super::SigningNode;
+use crate::signing::SigningNode;
 use crate::{
     chain_abstraction::EthereumTransaction,
     types::{intent::ContractTransaction, TransactionType},
