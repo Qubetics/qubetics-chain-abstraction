@@ -277,10 +277,7 @@ impl UserIntentManager {
                 info!("✅ [DB_USER_REGISTRY] Successfully stored TICS txn hash");
             })
             .map_err(|e| {
-                error!(
-                    "❌ [DB_USER_REGISTRY] Failed to store TICS txn hash: {}",
-                    e
-                );
+                error!("❌ [DB_USER_REGISTRY] Failed to store TICS txn hash: {}", e);
                 e
             })
     }
@@ -355,10 +352,7 @@ impl UserIntentManager {
                 info!("✅ [DB_USER_REGISTRY] Successfully stored BTC txn hash");
             })
             .map_err(|e| {
-                error!(
-                    "❌ [DB_USER_REGISTRY] Failed to store BTC txn hash: {}",
-                    e
-                );
+                error!("❌ [DB_USER_REGISTRY] Failed to store BTC txn hash: {}", e);
                 e
             })
     }

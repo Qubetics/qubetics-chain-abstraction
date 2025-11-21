@@ -5,7 +5,7 @@ use tracing::info;
 use crate::types::p2p::SerializablePeerId;
 use crate::types::rpc::RPCRequest;
 
-use super::types::{MpcNetworkBehaviour, MpcNetworkLayer};
+use crate::network::transport::types::{MpcNetworkBehaviour, MpcNetworkLayer};
 
 impl MpcNetworkLayer {
     /// Sync database from an existing peer when joining the network

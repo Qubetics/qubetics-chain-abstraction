@@ -7,7 +7,7 @@ use crate::database::{key_utils, keys};
 use crate::types::dkg::MSG_TOPIC_PEER_DISCOVERY;
 use crate::types::{ChannelMessage, GossipsubMessage};
 
-use super::types::MpcNetworkLayer;
+use crate::network::transport::types::MpcNetworkLayer;
 
 impl MpcNetworkLayer {
     /// Get maximum peer index from database

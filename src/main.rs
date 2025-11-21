@@ -6,7 +6,7 @@ use mpc_node::{
     commands::CommandProcessor,
     consensus::{ConsensusNode, DatabaseConsensusNode},
     database::{Database, DatabaseConfig, DatabaseModule, DkgStorage, RewardStorage},
-    network::MpcNetworkLayer,
+    network::transport::types::MpcNetworkLayer,
     protocols::DKGNode,
     rpc_server,
     signing::{DatabaseSigningNode, SigningNode},

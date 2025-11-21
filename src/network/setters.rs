@@ -9,7 +9,7 @@ use crate::protocols::DKGNode;
 use crate::signing::{DatabaseSigningNode, SigningNode};
 use crate::user_intent_manager::UserIntentManager;
 
-use super::types::MpcNetworkLayer;
+use crate::network::transport::types::MpcNetworkLayer;
 
 impl MpcNetworkLayer {
     /// Set the DKG node

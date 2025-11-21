@@ -13,9 +13,8 @@ use tracing::info;
 use crate::database::{keys, Database, KeyStore};
 use crate::node_selection::NodeMembership;
 
-use super::types::{
-    DatabaseSyncState, MpcNetworkBehaviour, MpcNetworkLayer, PeerDiscoveryState, MPC_TOPICS,
-};
+use crate::network::discovery::types::{DatabaseSyncState, PeerDiscoveryState};
+use crate::network::transport::types::{MpcNetworkBehaviour, MpcNetworkLayer, MPC_TOPICS};
 
 impl MpcNetworkLayer {
     /// Create a new MpcNetworkLayer instance

@@ -10,7 +10,7 @@ use crate::types::p2p::SerializablePeerId;
 use crate::types::rpc::{RPCRequest, RPCResponse};
 use crate::types::PeerInfo;
 
-use super::types::{MpcNetworkBehaviour, MpcNetworkLayer};
+use crate::network::transport::types::{MpcNetworkBehaviour, MpcNetworkLayer};
 
 impl MpcNetworkLayer {
     /// Handle RPC requests from peers

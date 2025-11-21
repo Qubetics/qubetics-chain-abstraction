@@ -3,7 +3,7 @@ use tracing::info;
 
 use crate::types::ChannelMessage;
 
-use super::types::MpcNetworkLayer;
+use crate::network::transport::types::MpcNetworkLayer;
 
 impl MpcNetworkLayer {
     /// Schedule DKG to start at a specific Unix timestamp
