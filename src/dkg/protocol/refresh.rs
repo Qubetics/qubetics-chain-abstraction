@@ -377,9 +377,9 @@ impl DKGNode {
         );
 
         // CRITICAL: Use permanent index, not recalculated sorted position!
-        let my_index = self.permanent_index().ok_or_else(|| {
-            anyhow!("Permanent index not set during refresh share handling")
-        })?;
+        let my_index = self
+            .permanent_index()
+            .ok_or_else(|| anyhow!("Permanent index not set during refresh share handling"))?;
 
         info!("🔍 [REFRESH] My permanent index: {}", my_index);
         info!(
