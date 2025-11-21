@@ -26,7 +26,7 @@ pub use database::{
     SigningStorage, TransactionStatusStorage, UserStorage,
 };
 pub use intent_manager::prepare_unsigned_eip1559_tx;
-pub use network::MpcNetworkLayer;
+pub use network::transport::types::MpcNetworkLayer;
 pub use node_selection::{
     BasicNodeManager, DefaultThresholdCalculator, NodeMembership, ThresholdCalculator,
     VrfNodeManager, VrfNodeManagerConfig,

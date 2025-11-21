@@ -6,7 +6,7 @@ use tracing::{info, warn};
 
 use crate::database::{keys, KeyStore};
 
-use super::types::MpcNetworkLayer;
+use crate::network::transport::types::MpcNetworkLayer;
 
 impl MpcNetworkLayer {
     /// Load existing keypair from keystore or create a new one

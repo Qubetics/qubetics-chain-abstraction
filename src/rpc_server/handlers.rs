@@ -1097,8 +1097,7 @@ pub(crate) async fn handle_claim_reward(
         .get_solver_btc_txn_hash(solver_address.as_str())
         .await;
 
-    let expect_tics_tx =
-        reward_tics_str.is_some() && req.ethereum_address.as_ref().is_some();
+    let expect_tics_tx = reward_tics_str.is_some() && req.ethereum_address.as_ref().is_some();
     let expect_btc_tx = reward_btc_str.is_some() && req.btc_address.as_ref().is_some();
 
     if reward_btc_str.is_none() && reward_tics_str.is_none() {

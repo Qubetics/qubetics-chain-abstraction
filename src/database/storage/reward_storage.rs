@@ -199,10 +199,7 @@ impl RewardStorage {
 
     /// Get the latest TICS transaction hash for a specific solver.
     /// Supports legacy serialized Vec<String> values by returning the most recent entry.
-    pub async fn get_solver_tics_txn_hash(
-        &self,
-        solver_address: &str,
-    ) -> Result<Option<String>> {
+    pub async fn get_solver_tics_txn_hash(&self, solver_address: &str) -> Result<Option<String>> {
         let key = key_utils::solver_tics_txn_hashes_key(solver_address);
         if let Some(serialized) = self.db.get_string::<String>(&key)? {
             if let Ok(mut txn_hashes) = serde_json::from_str::<Vec<String>>(&serialized) {
@@ -223,7 +220,8 @@ impl RewardStorage {
         solver_address: &str,
         txn_hash: String,
     ) -> Result<()> {
-        self.set_solver_tics_txn_hash(solver_address, txn_hash).await
+        self.set_solver_tics_txn_hash(solver_address, txn_hash)
+            .await
     }
 
     /// Store the latest BTC transaction hash for a specific solver
@@ -238,10 +236,7 @@ impl RewardStorage {
     }
 
     /// Get the latest BTC transaction hash for a specific solver (supports legacy Vec<String>)
-    pub async fn get_solver_btc_txn_hash(
-        &self,
-        solver_address: &str,
-    ) -> Result<Option<String>> {
+    pub async fn get_solver_btc_txn_hash(&self, solver_address: &str) -> Result<Option<String>> {
         let key = key_utils::solver_btc_txn_hashes_key(solver_address);
         if let Some(serialized) = self.db.get_string::<String>(&key)? {
             if let Ok(mut txn_hashes) = serde_json::from_str::<Vec<String>>(&serialized) {

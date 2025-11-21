@@ -9,7 +9,7 @@ use crate::{
     user_intent_manager::TransactionStatus,
 };
 
-use super::types::MpcNetworkLayer;
+use crate::network::transport::types::MpcNetworkLayer;
 
 impl MpcNetworkLayer {
     /// Convert transaction type string to enum

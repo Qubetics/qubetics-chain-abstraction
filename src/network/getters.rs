@@ -6,7 +6,7 @@ use crate::signing::SigningNode;
 use crate::types::ChannelMessage;
 use crate::user_intent_manager::UserIntentManager;
 
-use super::types::MpcNetworkLayer;
+use crate::network::transport::types::MpcNetworkLayer;
 
 impl MpcNetworkLayer {
     /// Get mutable reference to DKG node
