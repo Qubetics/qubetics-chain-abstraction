@@ -1,6 +1,7 @@
 use crate::database::{key_utils, keys, Database};
 use anyhow::Result;
 use ethers::types::U256;
+use serde_json;
 
 /// Database-backed reward storage
 #[derive(Clone)]
@@ -185,90 +186,83 @@ impl RewardStorage {
         self.db.get_string(&key)
     }
 
-    /// Store TICS transaction hashes for a specific solver
-    pub async fn set_solver_tics_txn_hashes(
+    /// Store the latest TICS transaction hash for a specific solver
+    pub async fn set_solver_tics_txn_hash(
         &self,
         solver_address: &str,
-        txn_hashes: Vec<String>,
+        txn_hash: String,
     ) -> Result<()> {
         let key = key_utils::solver_tics_txn_hashes_key(solver_address);
-        let serialized = serde_json::to_string(&txn_hashes)
-            .map_err(|e| anyhow::anyhow!("Failed to serialize TICS txn hashes: {}", e))?;
-        self.db.put_string(&key, &serialized)?;
+        self.db.put_string(&key, &txn_hash)?;
         Ok(())
     }
 
-    /// Get TICS transaction hashes for a specific solver
-    pub async fn get_solver_tics_txn_hashes(
+    /// Get the latest TICS transaction hash for a specific solver.
+    /// Supports legacy serialized Vec<String> values by returning the most recent entry.
+    pub async fn get_solver_tics_txn_hash(
         &self,
         solver_address: &str,
-    ) -> Result<Option<Vec<String>>> {
+    ) -> Result<Option<String>> {
         let key = key_utils::solver_tics_txn_hashes_key(solver_address);
         if let Some(serialized) = self.db.get_string::<String>(&key)? {
-            let txn_hashes = serde_json::from_str(&serialized)
-                .map_err(|e| anyhow::anyhow!("Failed to deserialize TICS txn hashes: {}", e))?;
-            Ok(Some(txn_hashes))
+            if let Ok(mut txn_hashes) = serde_json::from_str::<Vec<String>>(&serialized) {
+                Ok(txn_hashes.pop())
+            } else if serialized.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(serialized))
+            }
         } else {
             Ok(None)
         }
     }
 
-    /// Add a single TICS transaction hash to a solver's list
+    /// Add a single TICS transaction hash (overwrites with the latest)
     pub async fn add_solver_tics_txn_hash(
         &self,
         solver_address: &str,
         txn_hash: String,
     ) -> Result<()> {
-        let mut existing_hashes = self
-            .get_solver_tics_txn_hashes(solver_address)
-            .await?
-            .unwrap_or_default();
-        existing_hashes.push(txn_hash);
-        self.set_solver_tics_txn_hashes(solver_address, existing_hashes)
-            .await
+        self.set_solver_tics_txn_hash(solver_address, txn_hash).await
     }
 
-    /// Store BTC transaction hashes for a specific solver
-    pub async fn set_solver_btc_txn_hashes(
+    /// Store the latest BTC transaction hash for a specific solver
+    pub async fn set_solver_btc_txn_hash(
         &self,
         solver_address: &str,
-        txn_hashes: Vec<String>,
+        txn_hash: String,
     ) -> Result<()> {
         let key = key_utils::solver_btc_txn_hashes_key(solver_address);
-        let serialized = serde_json::to_string(&txn_hashes)
-            .map_err(|e| anyhow::anyhow!("Failed to serialize BTC txn hashes: {}", e))?;
-        self.db.put_string(&key, &serialized)?;
+        self.db.put_string(&key, &txn_hash)?;
         Ok(())
     }
 
-    /// Get BTC transaction hashes for a specific solver
-    pub async fn get_solver_btc_txn_hashes(
+    /// Get the latest BTC transaction hash for a specific solver (supports legacy Vec<String>)
+    pub async fn get_solver_btc_txn_hash(
         &self,
         solver_address: &str,
-    ) -> Result<Option<Vec<String>>> {
+    ) -> Result<Option<String>> {
         let key = key_utils::solver_btc_txn_hashes_key(solver_address);
         if let Some(serialized) = self.db.get_string::<String>(&key)? {
-            let txn_hashes = serde_json::from_str(&serialized)
-                .map_err(|e| anyhow::anyhow!("Failed to deserialize BTC txn hashes: {}", e))?;
-            Ok(Some(txn_hashes))
+            if let Ok(mut txn_hashes) = serde_json::from_str::<Vec<String>>(&serialized) {
+                Ok(txn_hashes.pop())
+            } else if serialized.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(serialized))
+            }
         } else {
             Ok(None)
         }
     }
 
-    /// Add a single BTC transaction hash to a solver's list
+    /// Add a single BTC transaction hash (overwrites with the latest)
     pub async fn add_solver_btc_txn_hash(
         &self,
         solver_address: &str,
         txn_hash: String,
     ) -> Result<()> {
-        let mut existing_hashes = self
-            .get_solver_btc_txn_hashes(solver_address)
-            .await?
-            .unwrap_or_default();
-        existing_hashes.push(txn_hash);
-        self.set_solver_btc_txn_hashes(solver_address, existing_hashes)
-            .await
+        self.set_solver_btc_txn_hash(solver_address, txn_hash).await
     }
 
     /// Clear TICS transaction hashes for a specific solver

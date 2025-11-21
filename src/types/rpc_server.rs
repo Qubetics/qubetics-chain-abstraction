@@ -130,7 +130,8 @@ pub struct ClaimRewardResponse {
     pub btc_address: Option<String>,
     pub reward_btc: Option<String>,
     pub reward_tics: Option<String>,
-    pub total_reward: Option<String>,
+    pub tics_reward_tx_id: Option<String>,
+    pub btc_reward_tx_id: Option<String>,
     pub message: String,
     pub error_message: Option<String>,
 }

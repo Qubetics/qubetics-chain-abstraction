@@ -198,8 +198,11 @@ async function testClaimRewardEthOnly() {
                 if (result.reward_btc) {
                     console.log(`${colors.green}💰 BTC reward: ${result.reward_btc}${colors.reset}`);
                 }
-                if (result.total_reward) {
-                    console.log(`${colors.green}💰 Total reward: ${result.total_reward}${colors.reset}`);
+                if (result.tics_reward_tx_id) {
+                    console.log(`${colors.green}🧾 TICS reward tx id: ${result.tics_reward_tx_id}${colors.reset}`);
+                }
+                if (result.btc_reward_tx_id) {
+                    console.log(`${colors.green}🧾 BTC reward tx id: ${result.btc_reward_tx_id}${colors.reset}`);
                 }
             } else {
                 console.log(`${colors.red}❌ Claim reward failed: ${result.message || 'Unknown error'}${colors.reset}`);
@@ -251,8 +254,11 @@ async function testClaimRewardBtcOnly() {
                 if (result.reward_btc) {
                     console.log(`${colors.green}💰 BTC reward: ${result.reward_btc}${colors.reset}`);
                 }
-                if (result.total_reward) {
-                    console.log(`${colors.green}💰 Total reward: ${result.total_reward}${colors.reset}`);
+                if (result.tics_reward_tx_id) {
+                    console.log(`${colors.green}🧾 TICS reward tx id: ${result.tics_reward_tx_id}${colors.reset}`);
+                }
+                if (result.btc_reward_tx_id) {
+                    console.log(`${colors.green}🧾 BTC reward tx id: ${result.btc_reward_tx_id}${colors.reset}`);
                 }
             } else {
                 console.log(`${colors.red}❌ Claim reward failed: ${result.message || 'Unknown error'}${colors.reset}`);
@@ -304,8 +310,11 @@ async function testClaimRewardBoth() {
                 if (result.reward_btc) {
                     console.log(`${colors.green}💰 BTC reward: ${result.reward_btc}${colors.reset}`);
                 }
-                if (result.total_reward) {
-                    console.log(`${colors.green}💰 Total reward: ${result.total_reward}${colors.reset}`);
+                if (result.tics_reward_tx_id) {
+                    console.log(`${colors.green}🧾 TICS reward tx id: ${result.tics_reward_tx_id}${colors.reset}`);
+                }
+                if (result.btc_reward_tx_id) {
+                    console.log(`${colors.green}🧾 BTC reward tx id: ${result.btc_reward_tx_id}${colors.reset}`);
                 }
             } else {
                 console.log(`${colors.red}❌ Claim reward failed: ${result.message || 'Unknown error'}${colors.reset}`);

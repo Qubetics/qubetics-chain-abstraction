@@ -29,7 +29,8 @@ use super::{
     errors::{RpcError, TransactionError},
     utils::{
         convert_src_smallest_to_dst_smallest, fetch_crypto_prices, get_actual_dkg_secret_share,
-        normalize_eth_signature, recover_eth_address_secp, wait_for_transaction_result,
+        normalize_eth_signature, recover_eth_address_secp, wait_for_reward_transaction_ids,
+        wait_for_transaction_result,
     },
 };
 
@@ -996,9 +997,10 @@ pub(crate) async fn handle_claim_reward(
             btc_address: None,
             reward_btc: None,
             reward_tics: None,
-            total_reward: None,
             message: "At least one address must be provided".to_string(),
             error_message: Some("Both ethereum_address and btc_address cannot be None".to_string()),
+            tics_reward_tx_id: None,
+            btc_reward_tx_id: None,
         }));
     }
 
@@ -1013,9 +1015,10 @@ pub(crate) async fn handle_claim_reward(
                     btc_address: req.btc_address,
                     reward_btc: None,
                     reward_tics: None,
-                    total_reward: None,
                     message: "Invalid Ethereum address format".to_string(),
                     error_message: Some(format!("Invalid Ethereum address: {:?}", e)),
+                    tics_reward_tx_id: None,
+                    btc_reward_tx_id: None,
                 }));
             }
         }
@@ -1033,9 +1036,10 @@ pub(crate) async fn handle_claim_reward(
                 btc_address: req.btc_address,
                 reward_btc: None,
                 reward_tics: None,
-                total_reward: None,
                 message: "Invalid signature format".to_string(),
                 error_message: Some(format!("Invalid signature: {:?}", e)),
+                tics_reward_tx_id: None,
+                btc_reward_tx_id: None,
             }));
         }
     };
@@ -1057,12 +1061,13 @@ pub(crate) async fn handle_claim_reward(
                     btc_address: req.btc_address,
                     reward_btc: None,
                     reward_tics: None,
-                    total_reward: None,
                     message: "Failed to recover signature".to_string(),
                     error_message: Some(format!(
                         "Failed to recover signature: personal_sign={}, raw={}",
                         e1, e2
                     )),
+                    tics_reward_tx_id: None,
+                    btc_reward_tx_id: None,
                 }));
             }
         },
@@ -1075,32 +1080,42 @@ pub(crate) async fn handle_claim_reward(
 
     let reward_btc = user_intent_manager
         .get_solver_reward_btc(solver_address.as_str())
-        .await;
+        .await
+        .filter(|v| !v.is_zero());
     let reward_tics = user_intent_manager
         .get_solver_reward_tics(solver_address.as_str())
-        .await;
+        .await
+        .filter(|v| !v.is_zero());
 
     let reward_btc_str = reward_btc.as_ref().map(|v| v.to_string());
     let reward_tics_str = reward_tics.as_ref().map(|v| v.to_string());
 
-    let total_reward = match (reward_btc, reward_tics) {
-        (Some(btc), Some(tics)) => Some((btc + tics).to_string()),
-        (Some(btc), None) => Some(btc.to_string()),
-        (None, Some(tics)) => Some(tics.to_string()),
-        (None, None) => None,
-    };
+    let previous_tics_tx_id = user_intent_manager
+        .get_solver_tics_txn_hash(solver_address.as_str())
+        .await;
+    let previous_btc_tx_id = user_intent_manager
+        .get_solver_btc_txn_hash(solver_address.as_str())
+        .await;
+
+    let expect_tics_tx =
+        reward_tics_str.is_some() && req.ethereum_address.as_ref().is_some();
+    let expect_btc_tx = reward_btc_str.is_some() && req.btc_address.as_ref().is_some();
 
     if reward_btc_str.is_none() && reward_tics_str.is_none() {
-        info!("💰 No rewards available for address: {}", solver_address);
+        warn!(
+            "❌ No rewards available (non-zero) for solver address: {}",
+            solver_address
+        );
         return Ok(warp::reply::json(&ClaimRewardResponse {
-            status: "success".to_string(),
+            status: "error".to_string(),
             ethereum_address: normalized_eth_address,
             btc_address: req.btc_address,
             reward_btc: None,
             reward_tics: None,
-            total_reward: None,
             message: "No rewards available to claim".to_string(),
-            error_message: None,
+            error_message: Some("No rewards available to claim".to_string()),
+            tics_reward_tx_id: None,
+            btc_reward_tx_id: None,
         }));
     }
 
@@ -1121,10 +1136,53 @@ pub(crate) async fn handle_claim_reward(
             btc_address: req.btc_address,
             reward_btc: reward_btc_str,
             reward_tics: reward_tics_str,
-            total_reward,
             message: "Failed to process reward claim".to_string(),
             error_message: Some(format!("Network error: {}", e)),
+            tics_reward_tx_id: None,
+            btc_reward_tx_id: None,
         }));
+    }
+
+    drop(tx_sender);
+
+    let wait_timeout_secs = 40;
+    let (tics_reward_tx_id, btc_reward_tx_id) = if expect_tics_tx || expect_btc_tx {
+        wait_for_reward_transaction_ids(
+            &user_intent_manager,
+            solver_address.as_str(),
+            expect_tics_tx,
+            expect_btc_tx,
+            previous_tics_tx_id,
+            previous_btc_tx_id,
+            wait_timeout_secs,
+        )
+        .await
+    } else {
+        (None, None)
+    };
+
+    if let Some(ref tx_id) = tics_reward_tx_id {
+        info!(
+            "✅ Recorded TICS reward transaction ID {} for solver {}",
+            tx_id, solver_address
+        );
+    } else if expect_tics_tx {
+        warn!(
+            "⚠️ Timed out waiting for TICS reward transaction ID for solver {} after {} seconds",
+            solver_address, wait_timeout_secs
+        );
+    }
+
+    if let Some(ref tx_id) = btc_reward_tx_id {
+        info!(
+            "✅ Recorded BTC reward transaction ID {} for solver {}",
+            tx_id, solver_address
+        );
+    } else if expect_btc_tx {
+        warn!(
+            "⚠️ Timed out waiting for BTC reward transaction ID for solver {} after {} seconds",
+            solver_address, wait_timeout_secs
+        );
     }
 
     info!(
@@ -1138,8 +1196,9 @@ pub(crate) async fn handle_claim_reward(
         btc_address: req.btc_address,
         reward_btc: reward_btc_str,
         reward_tics: reward_tics_str,
-        total_reward,
         message: "Reward claim processed successfully".to_string(),
         error_message: None,
+        tics_reward_tx_id,
+        btc_reward_tx_id,
     }))
 }
