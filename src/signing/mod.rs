@@ -13,7 +13,6 @@ use hex;
 use libp2p::PeerId;
 use num_bigint::BigUint;
 use num_traits::identities::One;
-use rand::rngs::OsRng;
 use secp256k1::{self, ecdsa::RecoverableSignature, Message, PublicKey, Secp256k1, SecretKey};
 use serde::{Deserialize, Serialize};
 use sha2::Digest as Sha2Digest;
@@ -31,12 +30,16 @@ use tracing::{error, info, warn};
 
 mod bitcoin;
 mod config;
+mod coordination;
 pub mod db_signing;
 mod ethereum;
+mod key;
 pub use bitcoin::BitcoinSigner;
 pub use config::{BroadcastConfig, ChainBroadcastConfig};
+pub use coordination::Coordination;
 pub use db_signing::DatabaseSigningNode;
 pub use ethereum::EthereumSigner;
+pub use key::KeyStore;
 
 use num_bigint::{BigInt, ToBigInt};
 use secp256k1::{constants::CURVE_ORDER, ecdsa::RecoveryId};
@@ -46,8 +49,7 @@ use rand::seq::SliceRandom;
 use rand::thread_rng;
 
 use crate::chain_abstraction::{ChainHandler, ChainHandlerFactory, ChainTransaction};
-use crate::consensus::ConsensusNode;
-use crate::protocols::{VrfSelectedNodesBroadcast, VrfSelectionFacade, VrfService};
+use crate::protocols::VrfSelectedNodesBroadcast;
 use crate::types::{
     p2p::SerializablePeerId, ChannelMessage, ConsensusMessage, ConsensusResult, TransactionStatus,
 };
@@ -81,19 +83,16 @@ type PendingValue = (
 pub struct SigningNode {
     id: String,
     threshold: usize,
-    private_key: Option<SecretKey>,
-    public_key: Option<PublicKey>,
+    key_store: KeyStore,
     public_keys: Arc<RwLock<HashMap<String, PublicKey>>>, // Other nodes' public keys
     signatures: Arc<RwLock<HashMap<String, ECDSASignature>>>,
     signatures_by_round: Arc<RwLock<HashMap<u64, HashMap<String, ECDSASignature>>>>, // round -> node_id -> signature
     final_nodes_by_round: Arc<RwLock<HashMap<u64, String>>>, // round -> final_node_id
     aggregated_rounds: Arc<RwLock<std::collections::HashSet<u64>>>, // Track rounds that have been aggregated
     message_tx: mpsc::Sender<ChannelMessage>,
-    pub vrf_service: Option<VrfService>, // VRF service for node selection
+    coordination: Coordination,
     chain_handler: Arc<dyn ChainHandler>, // Chain-specific operations for regular transactions
     contract_chain_handler: Arc<dyn ChainHandler>, // Chain handler specifically for contract transactions
-    consensus_node: Option<ConsensusNode>,         // Consensus node for final node selection
-    available_nodes: Option<Vec<PeerId>>,
     pending_transactions: Arc<
         RwLock<
             HashMap<
@@ -131,10 +130,6 @@ pub struct SigningNode {
     btc_agg_by_round: Arc<RwLock<HashMap<u64, HashMap<usize, RecoverableSignature>>>>,
     /// round -> set of input indexes already aggregated
     btc_done_inputs_by_round: Arc<RwLock<HashMap<u64, HashSet<usize>>>>,
-    // ✅ Store DKG group public key
-    group_public_key: Option<k256::ProjectivePoint>, // DKG group public key for Bitcoin addresses
-    // ✅ Store vault group public key separately
-    vault_group_key: Option<k256::ProjectivePoint>, // Vault group public key for vault transactions
     // User registry for storing transaction IDs
     user_intent_manager: Option<Arc<UserIntentManager>>,
     // Database for storing solver amounts
@@ -166,19 +161,16 @@ impl SigningNode {
         Self {
             id,
             threshold,
-            private_key: None,
-            public_key: None,
+            key_store: KeyStore::new(),
             public_keys: Arc::new(RwLock::new(HashMap::new())),
             signatures: Arc::new(RwLock::new(HashMap::new())),
             signatures_by_round: Arc::new(RwLock::new(HashMap::new())),
             final_nodes_by_round: Arc::new(RwLock::new(HashMap::new())),
             aggregated_rounds: Arc::new(RwLock::new(std::collections::HashSet::new())),
             message_tx: message_tx.clone(),
-            vrf_service: Some(VrfSelectionFacade::new_service(peer_id, message_tx)),
+            coordination: Coordination::new(peer_id, message_tx),
             chain_handler,
             contract_chain_handler,
-            consensus_node: Some(ConsensusNode::new()),
-            available_nodes: None,
             pending_transactions: Arc::new(RwLock::new(HashMap::new())),
             pending_transactions_btc: Arc::new(RwLock::new(HashMap::new())),
             reward_pending_transactions_tics: Arc::new(RwLock::new(HashMap::new())),
@@ -187,8 +179,6 @@ impl SigningNode {
             btc_sigs_by_round: Arc::new(RwLock::new(HashMap::new())),
             btc_agg_by_round: Arc::new(RwLock::new(HashMap::new())),
             btc_done_inputs_by_round: Arc::new(RwLock::new(HashMap::new())),
-            group_public_key: None,    // ✅ Initialize DKG group public key
-            vault_group_key: None,     // ✅ Initialize vault group public key
             user_intent_manager: None, // Will be set later via set_user_intent_manager
             database: None,            // Will be set later via set_database
             broadcast_config: BroadcastConfig::from_env(), // Load configuration from environment
@@ -222,57 +212,24 @@ impl SigningNode {
     }
 
     pub fn generate_key_pair(&mut self) -> Result<()> {
-        let secp = Secp256k1::new();
-        let mut rng = OsRng;
-        let (private_key, public_key) = secp.generate_keypair(&mut rng);
-
-        self.private_key = Some(private_key);
-        self.public_key = Some(public_key);
-
-        info!("🔐 [SIGNING] Node {} generated ECDSA key pair", self.id);
-        info!("🔑 [SIGNING] Public key set");
-        Ok(())
+        self.key_store.generate_key_pair(&self.id)
     }
 
     pub fn set_private_key(&mut self, private_key: SecretKey) {
-        let secp = Secp256k1::new();
-        let public_key = PublicKey::from_secret_key(&secp, &private_key);
-        self.private_key = Some(private_key);
-        self.public_key = Some(public_key);
-        info!("🔐 [SIGNING] Node {} private key set", self.id);
+        self.key_store.set_private_key(private_key, &self.id);
     }
 
     pub fn set_private_key_from_scalar(&mut self, scalar: Scalar) {
-        let secret_key = match Self::derive_secp_secret(&scalar) {
-            Ok(key) => key,
-            Err(err) => {
-                error!(
-                    "❌ [SIGNING] Node {} failed to set private key from scalar: {}",
-                    self.id, err
-                );
-                return;
-            }
-        };
-
-        info!("🔐 [SIGNING] Node {} private key set from scalar", self.id);
-        // Redacted sensitive material (scalar bytes and secret key)
-
-        let secp = Secp256k1::new();
-        let public_key = PublicKey::from_secret_key(&secp, &secret_key);
-        info!("🔑 [SIGNING] Node {} public key set", self.id);
-
-        self.private_key = Some(secret_key);
-        self.public_key = Some(public_key);
-
-        info!(
-            "🔐 [SIGNING] Node {} private key set from scalar with proper Ethereum conversion",
-            self.id
-        );
+        if let Err(err) = self.key_store.set_private_key_from_scalar(scalar, &self.id) {
+            error!(
+                "❌ [SIGNING] Node {} failed to set private key from scalar: {}",
+                self.id, err
+            );
+        }
     }
 
     pub fn derive_secp_secret(scalar: &Scalar) -> Result<SecretKey> {
-        SecretKey::from_slice(scalar.to_bytes().as_slice())
-            .map_err(|e| anyhow!("Invalid secp256k1 scalar: {}", e))
+        KeyStore::derive_secp_secret(scalar)
     }
 
     // Configuration methods
@@ -311,7 +268,7 @@ impl SigningNode {
     }
 
     pub fn has_private_key(&self) -> bool {
-        self.private_key.is_some()
+        self.key_store.has_private_key()
     }
 
     /// Sign Bitcoin transaction – per-input (P2PKH / P2WPKH v0) and stash round context.
@@ -335,7 +292,7 @@ impl SigningNode {
             ));
         }
 
-        if self.private_key.is_none() {
+        if !self.key_store.has_private_key() {
             return Err(anyhow::anyhow!("No private key available"));
         }
 
@@ -430,8 +387,8 @@ impl SigningNode {
         }
 
         // ===== Select round via VRF =====
-        let available_nodes = self.get_available_nodes_from_manager().await;
-        let current_round = if let Some(vrf_service) = &self.vrf_service {
+        let available_nodes = self.coordination.get_available_nodes_from_manager().await;
+        let current_round = if let Some(vrf_service) = self.coordination.vrf_service() {
             let round = vrf_service.get_next_round().await;
             let _ = vrf_service
                 .perform_node_selection(&available_nodes, 1, round, "bitcoin")
@@ -450,8 +407,8 @@ impl SigningNode {
         let signing_key = if let Some(tweaked_share) = user_tweaked_share {
             Self::derive_secp_secret(&tweaked_share)?
         } else {
-            self.private_key
-                .clone()
+            self.key_store
+                .clone_private_key()
                 .ok_or_else(|| anyhow!("No private key available for signing"))?
         };
 
@@ -1124,13 +1081,14 @@ impl SigningNode {
                     }
                     Some(crate::types::TransactionType::NetworkToTarget) => {
                         // This is a network transaction - fetch nonce from network's group address
-                        let group_address = if let Some(group_key) = self.group_public_key {
-                            get_eth_address_from_group_key(group_key)
-                        } else {
-                            return Err(anyhow::anyhow!(
-                                "No group public key available for network transaction"
-                            ));
-                        };
+                        let group_address =
+                            if let Some(group_key) = self.key_store.get_group_public_key() {
+                                get_eth_address_from_group_key(group_key)
+                            } else {
+                                return Err(anyhow::anyhow!(
+                                    "No group public key available for network transaction"
+                                ));
+                            };
 
                         let nonce = Self::fetch_ethereum_nonce(&group_address, chain_id).await?;
                         info!("🔢 [SIGNING] NetworkToTarget transaction: fetching nonce {} from network group address {}", nonce, group_address);
@@ -1191,13 +1149,14 @@ impl SigningNode {
                             }
                         } else {
                             // This is either a network or vault transaction
-                            let group_address = if let Some(group_key) = self.group_public_key {
-                                get_eth_address_from_group_key(group_key)
-                            } else {
-                                return Err(anyhow::anyhow!(
-                                    "No group public key available for nonce fetching"
-                                ));
-                            };
+                            let group_address =
+                                if let Some(group_key) = self.key_store.get_group_public_key() {
+                                    get_eth_address_from_group_key(group_key)
+                                } else {
+                                    return Err(anyhow::anyhow!(
+                                        "No group public key available for nonce fetching"
+                                    ));
+                                };
 
                             let nonce =
                                 Self::fetch_ethereum_nonce(&group_address, chain_id).await?;
@@ -1649,79 +1608,13 @@ impl SigningNode {
         transaction_type: Option<crate::types::TransactionType>,
         user_eth_address: Option<String>,
     ) -> Result<Vec<u8>> {
-        match transaction_type {
-            Some(crate::types::TransactionType::UserToVault) => {
-                // UserToVault transactions use the user's specific group key from user registry
-                if let Some(user_addr) = &user_eth_address {
-                    if let Some(user_intent_manager) = &self.user_intent_manager {
-                        if let Some(user) = user_intent_manager.get_user_by_address(user_addr).await
-                        {
-                            if let Some(user_group_key) = &user.user_group_key {
-                                let affine_point = user_group_key.0; // user_group_key is SerializablePoint(AffinePoint)
-                                let encoded_point = k256::EncodedPoint::from(affine_point);
-                                let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
-
-                                info!("🔑 [SIGNING] UserToVault: Using user-specific group public key for {}", user_addr);
-                                Ok(compressed_bytes)
-                            } else {
-                                Err(anyhow::anyhow!("User {} has no group key available - ensure user registration and key derivation is completed", user_addr))
-                            }
-                        } else {
-                            Err(anyhow::anyhow!("User {} not found in registry", user_addr))
-                        }
-                    } else {
-                        Err(anyhow::anyhow!(
-                            "User registry not available for UserToVault transaction"
-                        ))
-                    }
-                } else {
-                    Err(anyhow::anyhow!(
-                        "UserToVault transaction requires user_eth_address"
-                    ))
-                }
-            }
-            Some(crate::types::TransactionType::NetworkToTarget) => {
-                // NetworkToTarget uses the DKG group public key
-                if let Some(group_key) = self.group_public_key {
-                    let affine_point = group_key.to_affine();
-                    let encoded_point = k256::EncodedPoint::from(affine_point);
-                    let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
-
-                    info!("🔑 [SIGNING] NetworkToTarget: Using DKG group public key");
-                    Ok(compressed_bytes)
-                } else {
-                    Err(anyhow::anyhow!("DKG group public key not available for NetworkToTarget transaction - ensure DKG process is completed"))
-                }
-            }
-            Some(crate::types::TransactionType::VaultToNetwork) => {
-                // VaultToNetwork uses the vault group key
-                if let Some(vault_key) = self.vault_group_key {
-                    let affine_point = vault_key.to_affine();
-                    let encoded_point = k256::EncodedPoint::from(affine_point);
-                    let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
-
-                    info!("🔑 [SIGNING] VaultToNetwork: Using vault group public key");
-                    Ok(compressed_bytes)
-                } else {
-                    Err(anyhow::anyhow!("Vault group public key not available for VaultToNetwork transaction - ensure vault key is set"))
-                }
-            }
-            None => {
-                // Fallback to DKG group public key for backward compatibility
-                if let Some(group_key) = self.group_public_key {
-                    let affine_point = group_key.to_affine();
-                    let encoded_point = k256::EncodedPoint::from(affine_point);
-                    let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
-
-                    info!("🔑 [SIGNING] Fallback: Using DKG group public key");
-                    Ok(compressed_bytes)
-                } else {
-                    Err(anyhow::anyhow!(
-                        "DKG group public key not available - ensure DKG process is completed"
-                    ))
-                }
-            }
-        }
+        self.key_store
+            .get_group_public_key_bytes(
+                transaction_type,
+                user_eth_address,
+                self.user_intent_manager.as_ref(),
+            )
+            .await
     }
 
     /// Encode varint for Bitcoin transaction serialization
@@ -1862,7 +1755,7 @@ impl SigningNode {
         } else {
             // Use network DKG share for network withdrawals
             info!("🔑 [SIGNING] Using network DKG share for signing");
-            match self.private_key.clone() {
+            match self.key_store.clone_private_key() {
                 Some(key) => key,
                 None => {
                     error!(
@@ -1915,10 +1808,10 @@ impl SigningNode {
         info!("Tx hash: 0x{}", hex::encode(&tx_hash));
 
         // Get available nodes and perform VRF selection
-        let available_nodes = self.get_available_nodes_from_manager().await;
+        let available_nodes = self.coordination.get_available_nodes_from_manager().await;
 
         // Use VrfService for node selection (chain-agnostic)
-        if let Some(vrf_service) = &self.vrf_service {
+        if let Some(vrf_service) = self.coordination.vrf_service() {
             let round = vrf_service.get_current_round().await;
             let _selection_result = vrf_service
                 .perform_node_selection(&available_nodes, 1, round, self.chain_handler.chain_type())
@@ -1954,7 +1847,7 @@ impl SigningNode {
         };
 
         // Get current round from VRF service
-        let round = if let Some(vrf_service) = &self.vrf_service {
+        let round = if let Some(vrf_service) = self.coordination.vrf_service() {
             vrf_service.get_next_round().await
         } else {
             0
@@ -2087,7 +1980,7 @@ impl SigningNode {
         } else {
             // Use network DKG share for network withdrawals
             info!("🔑 [SIGNING] Using network DKG share for signing");
-            match self.private_key.clone() {
+            match self.key_store.clone_private_key() {
                 Some(key) => key,
                 None => {
                     error!(
@@ -2169,7 +2062,7 @@ impl SigningNode {
         let available_nodes = self.get_available_nodes_from_manager().await;
 
         // Use VrfService for node selection (chain-agnostic)
-        if let Some(vrf_service) = &self.vrf_service {
+        if let Some(vrf_service) = self.coordination.vrf_service() {
             let round = vrf_service.get_current_round().await;
             let _selection_result = vrf_service
                 .perform_node_selection(&available_nodes, 1, round, "ethereum")
@@ -2215,7 +2108,7 @@ impl SigningNode {
         );
 
         // Get current round from VRF service
-        let round = if let Some(vrf_service) = &self.vrf_service {
+        let round = if let Some(vrf_service) = self.coordination.vrf_service() {
             vrf_service.get_next_round().await
         } else {
             0
@@ -2842,7 +2735,7 @@ impl SigningNode {
 
     /// Get VRF public key for this node
     pub async fn get_vrf_public_key(&self) -> Option<String> {
-        if let Some(vrf_service) = &self.vrf_service {
+        if let Some(vrf_service) = self.coordination.vrf_service() {
             Some(vrf_service.get_public_key_hex().await)
         } else {
             None
@@ -2851,7 +2744,7 @@ impl SigningNode {
 
     /// Get VRF public key as bytes
     pub async fn get_vrf_public_key_bytes(&self) -> Option<Vec<u8>> {
-        if let Some(vrf_service) = &self.vrf_service {
+        if let Some(vrf_service) = self.coordination.vrf_service() {
             Some(vrf_service.get_public_key().await)
         } else {
             None
@@ -2899,40 +2792,33 @@ impl SigningNode {
 
     /// Get available nodes as PeerIds derived from stored public keys
     async fn get_available_nodes(&self) -> Vec<PeerId> {
-        self.available_nodes.clone().unwrap()
+        self.coordination.get_available_nodes().await
     }
 
     /// Set available nodes from node manager
     pub fn set_available_nodes(&mut self, nodes: Vec<PeerId>) {
-        self.available_nodes = Some(nodes);
+        self.coordination.set_available_nodes(nodes);
     }
 
     /// Set the DKG group public key
     pub fn set_group_public_key(&mut self, group_key: k256::ProjectivePoint) {
-        info!(
-            "🔑 [SIGNING] Setting DKG group public key for node {}",
-            self.id
-        );
-        self.group_public_key = Some(group_key);
+        self.key_store.set_group_public_key(group_key, &self.id);
     }
 
     /// Set the vault group public key
     pub fn set_vault_group_key(&mut self, vault_group_key: k256::ProjectivePoint) {
-        info!(
-            "🔑 [SIGNING] Setting vault group public key for node {}",
-            self.id
-        );
-        self.vault_group_key = Some(vault_group_key);
+        self.key_store
+            .set_vault_group_key(vault_group_key, &self.id);
     }
 
     /// Get the DKG group public key
     pub fn get_group_public_key(&self) -> Option<k256::ProjectivePoint> {
-        self.group_public_key
+        self.key_store.get_group_public_key()
     }
 
     /// Get the vault group public key
     pub fn get_vault_group_key(&self) -> Option<k256::ProjectivePoint> {
-        self.vault_group_key
+        self.key_store.get_vault_group_key()
     }
 
     pub fn set_user_intent_manager(&mut self, user_intent_manager: Arc<UserIntentManager>) {
@@ -2985,39 +2871,19 @@ impl SigningNode {
     /// This should be called only after the node has connected to the network
     /// and received round information from other nodes
     pub async fn initialize_vrf_service_with_network_sync(&mut self, network_round: Option<u64>) {
-        if self.vrf_service.is_some() {
-            info!(
-                "🔄 [SIGNING] VrfService already initialized for node {}",
-                self.id
-            );
-            return;
-        }
-
         let peer_id = PeerId::from_str(&self.id).unwrap_or_else(|_| PeerId::random());
-
-        // Create VrfService with proper initial round
-        let mut vrf_service = VrfSelectionFacade::new_service(peer_id, self.message_tx.clone());
-
-        // Set the current round to match the network
-        if let Some(network_round) = network_round {
-            vrf_service.set_current_round(network_round).await;
-            info!(
-                "🔄 [SIGNING] Initialized VrfService for node {} with network round: {}",
-                self.id, network_round
-            );
-        } else {
-            info!(
-            "🆕 [SIGNING] Initialized VrfService for node {} with default round: 0 (first node)",
-            self.id
-        );
-        }
-
-        self.vrf_service = Some(vrf_service);
+        self.coordination
+            .initialize_vrf_service_with_network_sync(
+                peer_id,
+                self.message_tx.clone(),
+                network_round,
+            )
+            .await;
     }
 
     /// Sync VRF round with network (simple approach)
     pub async fn sync_vrf_round_with_network(&mut self, network_round: u64) {
-        if let Some(vrf_service) = &mut self.vrf_service {
+        if let Some(vrf_service) = self.coordination.vrf_service_mut() {
             vrf_service.set_current_round(network_round).await;
             info!("🔄 [SIGNING] Synced VRF round to: {}", network_round);
         }
@@ -3930,11 +3796,7 @@ impl SigningNode {
     }
 
     async fn get_available_nodes_from_manager(&self) -> Vec<PeerId> {
-        if let Some(ref nodes) = self.available_nodes {
-            nodes.clone()
-        } else {
-            self.get_available_nodes().await
-        }
+        self.coordination.get_available_nodes_from_manager().await
     }
 
     /// Handle VRF selected nodes broadcast from another node
@@ -3943,7 +3805,7 @@ impl SigningNode {
         total_nodes: usize,
         broadcast: VrfSelectedNodesBroadcast,
     ) {
-        if let Some(vrf_service) = &self.vrf_service {
+        if let Some(vrf_service) = self.coordination.vrf_service() {
             let round = broadcast.round;
             let min_selections = total_nodes;
 
@@ -4006,9 +3868,10 @@ impl SigningNode {
         // Get the node ID first to avoid borrow checker issues
         let own_node_id = SerializablePeerId(PeerId::from_str(&self.id)?);
 
-        if let (Some(vrf_service), Some(consensus_node)) =
-            (&self.vrf_service, &mut self.consensus_node)
-        {
+        if let (Some(vrf_service), Some(consensus_node)) = (
+            self.coordination.vrf_service(),
+            self.coordination.consensus_node_mut(),
+        ) {
             // Get all selected nodes with frequencies for this round
             let all_selected_nodes = vrf_service
                 .get_all_selected_nodes_with_frequencies(round)
@@ -4118,7 +3981,7 @@ impl SigningNode {
 
     /// Check if consensus can be started for a round
     pub async fn can_start_consensus(&self, round: u64, min_selections: usize) -> bool {
-        if let Some(vrf_service) = &self.vrf_service {
+        if let Some(vrf_service) = self.coordination.vrf_service() {
             vrf_service.can_start_consensus(round, min_selections).await
         } else {
             false
@@ -4127,7 +3990,7 @@ impl SigningNode {
 
     /// Handle consensus messages
     pub async fn handle_consensus_message(&mut self, msg: ConsensusMessage) -> Result<()> {
-        if let Some(consensus_node) = &mut self.consensus_node {
+        if let Some(consensus_node) = self.coordination.consensus_node_mut() {
             consensus_node.handle_message(msg).await?;
         }
         Ok(())
@@ -5211,7 +5074,7 @@ impl SigningNode {
 
     /// Get private key as hex string (for debugging only)
     pub fn get_private_key_hex(&self) -> Option<String> {
-        if let Some(private_key) = &self.private_key {
+        if let Some(private_key) = self.key_store.private_key() {
             let secret_key_bytes = private_key.secret_bytes();
             Some(format!("0x{}", hex::encode(secret_key_bytes)))
         } else {
