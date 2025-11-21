@@ -3,7 +3,7 @@ use std::collections::HashMap;
 
 use crate::types::p2p::SerializablePeerId;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ConsensusResult {
     pub final_node: SerializablePeerId,
     pub round: u64,
