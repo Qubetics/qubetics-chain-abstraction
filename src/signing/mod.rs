@@ -49,7 +49,7 @@ use rand::seq::SliceRandom;
 use rand::thread_rng;
 
 use crate::chain_abstraction::{ChainHandler, ChainHandlerFactory, ChainTransaction};
-use crate::protocols::VrfSelectedNodesBroadcast;
+use crate::protocols::{VrfSelectedNodesBroadcast, VrfService};
 use crate::types::{
     p2p::SerializablePeerId, ChannelMessage, ConsensusMessage, ConsensusResult, TransactionStatus,
 };
@@ -141,6 +141,14 @@ pub struct SigningNode {
 impl SigningNode {
     pub fn set_threshold(&mut self, new_threshold: usize) {
         self.threshold = new_threshold;
+    }
+
+    pub fn vrf_service(&self) -> Option<&VrfService> {
+        self.coordination.vrf_service()
+    }
+
+    pub fn vrf_service_mut(&mut self) -> Option<&mut VrfService> {
+        self.coordination.vrf_service_mut()
     }
 
     pub fn new(id: String, threshold: usize, message_tx: mpsc::Sender<ChannelMessage>) -> Self {
@@ -3868,114 +3876,100 @@ impl SigningNode {
         // Get the node ID first to avoid borrow checker issues
         let own_node_id = SerializablePeerId(PeerId::from_str(&self.id)?);
 
-        if let (Some(vrf_service), Some(consensus_node)) = (
-            self.coordination.vrf_service(),
-            self.coordination.consensus_node_mut(),
-        ) {
-            // Get all selected nodes with frequencies for this round
-            let all_selected_nodes = vrf_service
+        let all_selected_nodes = {
+            let vrf_service = self
+                .coordination
+                .vrf_service()
+                .ok_or_else(|| anyhow::anyhow!("VRF selector not available"))?;
+            vrf_service
                 .get_all_selected_nodes_with_frequencies(round)
-                .await;
+                .await
+        };
 
-            if all_selected_nodes.is_empty() {
+        if all_selected_nodes.is_empty() {
+            info!(
+                "⚠️ [CONSENSUS] No selected nodes available for consensus round {}",
+                round
+            );
+            return Ok(None);
+        }
+
+        let consensus_node = self
+            .coordination
+            .consensus_node_mut()
+            .ok_or_else(|| anyhow::anyhow!("Consensus node not available"))?;
+
+        info!(
+            "🎯 [CONSENSUS] Starting consensus for round {} with {} selected nodes",
+            round,
+            all_selected_nodes.len()
+        );
+
+        // Add selected nodes to consensus
+        consensus_node.add_selected_nodes(round, all_selected_nodes);
+
+        // Start consensus
+        match consensus_node.start_consensus(round) {
+            Ok(result) => {
                 info!(
-                    "⚠️ [CONSENSUS] No selected nodes available for consensus round {}",
+                    "✅ [CONSENSUS] Consensus completed for round {}: final node = {:?}",
+                    round, result.final_node
+                );
+
+                // Broadcast the consensus result
+                let consensus_msg = ConsensusMessage::FinalNodeResult {
+                    result: result.clone(),
+                    round,
+                };
+
+                let broadcast_data = serde_json::to_vec(&consensus_msg)?;
+
+                // Store the result for later use
+                let is_final_node = consensus_node.is_final_node(round, &own_node_id);
+
+                // Broadcast outside of the borrow
+                self.broadcast("consensus-result", &broadcast_data).await?;
+
+                info!(
+                    "📤 [CONSENSUS] Broadcasted consensus result for round {}",
                     round
                 );
-                return Ok(None);
-            }
 
-            info!(
-                "🎯 [CONSENSUS] Starting consensus for round {} with {} selected nodes",
-                round,
-                all_selected_nodes.len()
-            );
-
-            // Add selected nodes to consensus
-            consensus_node.add_selected_nodes(round, all_selected_nodes);
-
-            // Start consensus
-            match consensus_node.start_consensus(round) {
-                Ok(result) => {
+                // Store the final node for this round
+                {
+                    let mut final_nodes = self.final_nodes_by_round.write().await;
+                    final_nodes.insert(round, result.final_node.0.to_string());
                     info!(
-                        "✅ [CONSENSUS] Consensus completed for round {}: final node = {:?}",
-                        round, result.final_node
+                        "💾 [CONSENSUS] Stored final node {} for round {}",
+                        result.final_node.0, round
                     );
+                }
 
-                    // Broadcast the consensus result
-                    let consensus_msg = ConsensusMessage::FinalNodeResult {
-                        result: result.clone(),
-                        round,
-                    };
-
-                    let broadcast_data = serde_json::to_vec(&consensus_msg)?;
-
-                    // Store the result for later use
-                    let is_final_node = consensus_node.is_final_node(round, &own_node_id);
-
-                    // Broadcast outside of the borrow
-                    self.broadcast("consensus-result", &broadcast_data).await?;
-
+                // Check if this node is the final selected node
+                if is_final_node {
                     info!(
-                        "📤 [CONSENSUS] Broadcasted consensus result for round {}",
+                        "\x1b[32m🏆 [CONSENSUS] This node is the final selected node for round {}!\x1b[0m",
                         round
                     );
-
-                    // Store the final node for this round
-                    {
-                        let mut final_nodes = self.final_nodes_by_round.write().await;
-                        final_nodes.insert(round, result.final_node.0.to_string());
-                        info!(
-                            "💾 [CONSENSUS] Stored final node {} for round {}",
-                            result.final_node.0, round
-                        );
-                    }
-
-                    // Check if this node is the final selected node
-                    if is_final_node {
-                        info!(
-                            "\x1b[32m🏆 [CONSENSUS] This node is the final selected node for round {}!\x1b[0m",
-                            round
-                        );
-                        // Trigger aggregate signature for the final node
-                        self.trigger_aggregate_signature_for_final_node(round)
-                            .await?;
-
-                        // Start collecting signatures after a short delay
-                        // let mut signing_node_clone = self.clone();
-                        // tokio::spawn(async move {
-                        //     tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-                        //     if let Err(e) = signing_node_clone
-                        //         .collect_and_aggregate_signatures(round)
-                        //         .await
-                        //     {
-                        //         error!(
-                        //             "❌ [SIGNING] Failed to collect and aggregate signatures: {}",
-                        //             e
-                        //         );
-                        //     }
-                        // });
-                    } else {
-                        info!(
-                            "\x1b[31m📋 [CONSENSUS] This node is not the final selected node for round {}\x1b[0m",
-                            round
-                        );
-                    }
-
-                    Ok(Some(result))
-                }
-                Err(e) => {
-                    error!(
-                        "❌ [CONSENSUS] Failed to start consensus for round {}: {}",
-                        round, e
+                    // Trigger aggregate signature for the final node
+                    self.trigger_aggregate_signature_for_final_node(round)
+                        .await?;
+                } else {
+                    info!(
+                        "\x1b[31m📋 [CONSENSUS] This node is not the final selected node for round {}\x1b[0m",
+                        round
                     );
-                    Err(e)
                 }
+
+                Ok(Some(result))
             }
-        } else {
-            Err(anyhow::anyhow!(
-                "VRF selector or consensus node not available"
-            ))
+            Err(e) => {
+                error!(
+                    "❌ [CONSENSUS] Failed to start consensus for round {}: {}",
+                    round, e
+                );
+                Err(e)
+            }
         }
     }
 
@@ -5048,7 +5042,7 @@ impl SigningNode {
 
     /// Get Ethereum address from public key
     pub fn get_ethereum_address(&self) -> Option<String> {
-        if let Some(public_key) = &self.public_key {
+        if let Some(public_key) = self.key_store.public_key() {
             // Get the uncompressed public key (65 bytes)
             let public_key_bytes = public_key.serialize_uncompressed();
 

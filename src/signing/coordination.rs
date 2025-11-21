@@ -62,7 +62,9 @@ impl Coordination {
         if self.vrf_service.is_some() {
             info!("🔄 [VRF] VRF service already initialized, synchronizing round only");
             if let Some(vrf_service) = &mut self.vrf_service {
-                vrf_service.set_current_round(network_round).await;
+                if let Some(round) = network_round {
+                    vrf_service.set_current_round(round).await;
+                }
             }
             return;
         }
@@ -73,7 +75,7 @@ impl Coordination {
                 "🔄 [VRF] Synchronizing VRF round from network state: {}",
                 round
             );
-            vrf_service.set_current_round(network_round).await;
+            vrf_service.set_current_round(round).await;
         }
 
         self.vrf_service = Some(vrf_service);

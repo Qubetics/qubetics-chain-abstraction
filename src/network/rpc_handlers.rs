@@ -229,7 +229,7 @@ impl MpcNetworkLayer {
 
         // Check signing_node first
         if let Some(signing_node) = &self.signing_node {
-            if let Some(vrf_service) = &signing_node.vrf_service {
+            if let Some(vrf_service) = signing_node.vrf_service() {
                 current_round = Some(vrf_service.get_current_round().await);
             }
         }
