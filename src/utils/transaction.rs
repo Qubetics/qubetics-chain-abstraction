@@ -885,6 +885,15 @@ async fn create_chain_transaction_from_deposit_intent_internal(
         crate::types::TransactionType::UserToVault => &intent.source_chain.to_lowercase(),
         crate::types::TransactionType::NetworkToTarget => &intent.target_chain.to_lowercase(),
         crate::types::TransactionType::VaultToNetwork => &intent.source_chain.to_lowercase(),
+        crate::types::TransactionType::RewardTxn => {
+            // RewardTxn is not valid for intent flow
+            return Err(anyhow::anyhow!("RewardTxn is not valid for deposit intent flow"));
+        }
+        crate::types::TransactionType::WithdrawLiquidity => {
+            return Err(anyhow::anyhow!(
+                "WithdrawLiquidity is not valid for deposit intent flow"
+            ));
+        }
     };
 
     info!("amount::::: {}", amount);
@@ -930,6 +939,15 @@ async fn create_chain_transaction_from_deposit_intent_internal(
                     network_address
                 );
                 (vault_address.clone(), &network_address)
+            }
+            crate::types::TransactionType::RewardTxn => {
+                // RewardTxn is not valid for intent flow
+                return Err(anyhow::anyhow!("RewardTxn is not valid for deposit intent flow"));
+            }
+            crate::types::TransactionType::WithdrawLiquidity => {
+                return Err(anyhow::anyhow!(
+                    "WithdrawLiquidity is not valid for deposit intent flow"
+                ));
             }
         };
 
@@ -982,6 +1000,15 @@ async fn create_chain_transaction_from_deposit_intent_internal(
                     btc_network_address
                 );
                 (btc_vault_address.clone(), &btc_network_address)
+            }
+            crate::types::TransactionType::RewardTxn => {
+                // RewardTxn is not valid for intent flow
+                return Err(anyhow::anyhow!("RewardTxn is not valid for deposit intent flow"));
+            }
+            crate::types::TransactionType::WithdrawLiquidity => {
+                return Err(anyhow::anyhow!(
+                    "WithdrawLiquidity is not valid for deposit intent flow"
+                ));
             }
         };
 
@@ -1043,6 +1070,15 @@ pub async fn create_chain_transaction_from_contract_call(
                 intent_hash,
                 &intent.timestamp.to_string(),
             )
+        }
+        crate::types::TransactionType::RewardTxn => {
+            // RewardTxn is not valid for intent flow
+            return Err(anyhow::anyhow!("RewardTxn is not valid for deposit intent flow"));
+        }
+        crate::types::TransactionType::WithdrawLiquidity => {
+            return Err(anyhow::anyhow!(
+                "WithdrawLiquidity is not valid for deposit intent flow"
+            ));
         }
         _ => {
             info!(

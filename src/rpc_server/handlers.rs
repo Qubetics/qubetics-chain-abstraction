@@ -19,7 +19,7 @@ use crate::{
             EnhancedUserRegistrationResponse, GetRewardSolverRequest, GetRewardSolverResponse,
             HeartbeatResponse, NodeIdResponse, NodeStatus, RequestContext, UptimeResponse,
             UserInfoResponse, UserMpcDepositRequest, UserMpcDepositVerifyResponse,
-            UserRegistrationRequest,
+            UserRegistrationRequest, WithdrawLiquidityRequest, WithdrawLiquidityResponse,
         },
     },
     user_intent_manager::{checksum_from_any, UserIntentManager},
@@ -1124,6 +1124,7 @@ pub(crate) async fn handle_claim_reward(
         eth_address: req.ethereum_address.clone(),
         reward_btc: reward_btc_str.clone(),
         reward_tics: reward_tics_str.clone(),
+        transaction_type: "reward_txn".to_string(),
     };
 
     let tx_sender = message_tx.lock().await;
@@ -1199,5 +1200,286 @@ pub(crate) async fn handle_claim_reward(
         error_message: None,
         tics_reward_tx_id,
         btc_reward_tx_id,
+    }))
+}
+
+pub(crate) async fn handle_withdraw_liquidity(
+    req: WithdrawLiquidityRequest,
+    user_intent_manager: Arc<UserIntentManager>,
+    message_tx: Arc<Mutex<mpsc::Sender<ChannelMessage>>>,
+) -> Result<impl warp::Reply, warp::Rejection> {
+    info!(
+        "💧 HTTP: withdraw_liquidity request with message: {}",
+        req.message
+    );
+
+    // Normalize and validate signature
+    let (compact, v) = match normalize_eth_signature(&req.signature) {
+        Ok(t) => t,
+        Err(e) => {
+            warn!("❌ Invalid signature format: {}", e);
+            return Ok(warp::reply::json(&WithdrawLiquidityResponse {
+                status: "error".to_string(),
+                solver_address: "".to_string(),
+                liquidity_btc: None,
+                liquidity_tics: None,
+                ethereum_address: req.ethereum_address.clone(),
+                btc_address: req.btc_address.clone(),
+                message: "Invalid signature format".to_string(),
+                error_message: Some(format!("Invalid signature: {:?}", e)),
+            }));
+        }
+    };
+
+    // Recover address from signature
+    let msg_bytes = req.message.as_bytes();
+    let solver_address = match recover_eth_address_secp(msg_bytes, &compact, v, true) {
+        Ok(addr) => addr,
+        Err(e1) => match recover_eth_address_secp(msg_bytes, &compact, v, false) {
+            Ok(addr) => addr,
+            Err(e2) => {
+                error!(
+                    "❌ Failed to recover address: personal_sign={}, raw={}",
+                    e1, e2
+                );
+                return Ok(warp::reply::json(&WithdrawLiquidityResponse {
+                    status: "error".to_string(),
+                    solver_address: "".to_string(),
+                    liquidity_btc: None,
+                    liquidity_tics: None,
+                    ethereum_address: req.ethereum_address.clone(),
+                    btc_address: req.btc_address.clone(),
+                    message: "Failed to recover signature".to_string(),
+                    error_message: Some(format!(
+                        "Failed to recover signature: personal_sign={}, raw={}",
+                        e1, e2
+                    )),
+                }));
+            }
+        },
+    };
+
+    info!(
+        "🔐 Recovered solver address from signature: {}",
+        solver_address
+    );
+
+    // Normalize the solver address
+    let normalized_address = match checksum_from_any(&solver_address) {
+        Ok(addr) => addr,
+        Err(e) => {
+            warn!("❌ Invalid solver address format: {}", e);
+            return Ok(warp::reply::json(&WithdrawLiquidityResponse {
+                status: "error".to_string(),
+                solver_address: solver_address,
+                liquidity_btc: None,
+                liquidity_tics: None,
+                ethereum_address: req.ethereum_address.clone(),
+                btc_address: req.btc_address.clone(),
+                message: "Invalid solver address format".to_string(),
+                error_message: Some(format!("Invalid address format: {}", e)),
+            }));
+        }
+    };
+
+    // Check if address is a valid solver by checking liquidity in database
+    let database = user_intent_manager.get_database();
+    let solver_liquidity_key = format!("solver_liquidity:{}", normalized_address.to_lowercase());
+    
+    let liquidity_amounts: Option<Vec<String>> = match database.get_string::<Vec<String>>(&solver_liquidity_key) {
+        Ok(amounts) => amounts,
+        Err(e) => {
+            warn!("❌ Failed to get solver liquidity from database: {}", e);
+            return Ok(warp::reply::json(&WithdrawLiquidityResponse {
+                status: "error".to_string(),
+                solver_address: normalized_address,
+                liquidity_btc: None,
+                liquidity_tics: None,
+                ethereum_address: req.ethereum_address.clone(),
+                btc_address: req.btc_address.clone(),
+                message: "Failed to check solver liquidity".to_string(),
+                error_message: Some(format!("Database error: {}", e)),
+            }));
+        }
+    };
+
+    // Check if solver exists (has liquidity entry)
+    if liquidity_amounts.is_none() {
+        warn!(
+            "❌ Address {} is not a valid solver (no liquidity entry found)",
+            normalized_address
+        );
+        return Ok(warp::reply::json(&WithdrawLiquidityResponse {
+            status: "error".to_string(),
+            solver_address: normalized_address,
+            liquidity_btc: None,
+            liquidity_tics: None,
+            ethereum_address: req.ethereum_address.clone(),
+            btc_address: req.btc_address.clone(),
+            message: "Address is not a valid solver".to_string(),
+            error_message: Some("No liquidity entry found for this address".to_string()),
+        }));
+    }
+
+    // Extract liquidity amounts (BTC at index 0, TICS at index 1)
+    let amounts = liquidity_amounts.unwrap();
+    let liquidity_btc_str = amounts.get(0).and_then(|s| {
+        // Check if the string represents a non-zero value
+        if s.trim().is_empty() || s == "0" {
+            None
+        } else {
+            // Try to parse as U256 to validate, but keep original string
+            match s.parse::<u128>() {
+                Ok(val) if val > 0 => Some(s.clone()),
+                Err(_) => {
+                    // If it's too large for u128, check if it's not "0"
+                    if s != "0" {
+                        Some(s.clone())
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            }
+        }
+    });
+    let liquidity_tics_str = amounts.get(1).and_then(|s| {
+        // Check if the string represents a non-zero value
+        if s.trim().is_empty() || s == "0" {
+            None
+        } else {
+            // Try to parse as U256 to validate, but keep original string
+            match s.parse::<u128>() {
+                Ok(val) if val > 0 => Some(s.clone()),
+                Err(_) => {
+                    // If it's too large for u128, check if it's not "0"
+                    if s != "0" {
+                        Some(s.clone())
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            }
+        }
+    });
+
+    // Check if any liquidity is available
+    if liquidity_btc_str.is_none() && liquidity_tics_str.is_none() {
+        warn!(
+            "❌ No liquidity available for solver address: {}",
+            normalized_address
+        );
+        return Ok(warp::reply::json(&WithdrawLiquidityResponse {
+            status: "error".to_string(),
+            solver_address: normalized_address,
+            liquidity_btc: None,
+            liquidity_tics: None,
+            ethereum_address: req.ethereum_address.clone(),
+            btc_address: req.btc_address.clone(),
+            message: "No liquidity available to withdraw".to_string(),
+            error_message: Some("No liquidity available to withdraw".to_string()),
+        }));
+    }
+
+    info!(
+        "✅ Valid solver with liquidity - BTC: {:?}, TICS: {:?}",
+        liquidity_btc_str, liquidity_tics_str
+    );
+
+    // Initiate withdrawals for each provided address
+    let mut initiated_tics = false;
+    let mut initiated_btc = false;
+
+    if let (Some(address), Some(amount_str)) =
+        (req.ethereum_address.as_ref(), liquidity_tics_str.as_ref())
+    {
+        info!(
+            "🚰 [WITHDRAW] Initiating TICS withdrawal for solver {} -> {} (amount: {})",
+            normalized_address, address, amount_str
+        );
+        let msg = ChannelMessage::WithdrawLiquidity {
+            solver_address: normalized_address.clone(),
+            btc_address: None,
+            eth_address: Some(address.clone()),
+            amount_btc: None,
+            amount_tics: Some(amount_str.clone()),
+            transaction_type: "withdraw_liquidity".to_string(),
+        };
+        let tx_sender = message_tx.lock().await;
+        if let Err(e) = tx_sender.send(msg).await {
+            error!(
+                "❌ Failed to dispatch TICS withdraw message for solver {}: {}",
+                normalized_address, e
+            );
+            return Ok(warp::reply::json(&WithdrawLiquidityResponse {
+                status: "error".to_string(),
+                solver_address: normalized_address,
+                liquidity_btc: liquidity_btc_str,
+                liquidity_tics: liquidity_tics_str,
+                ethereum_address: req.ethereum_address.clone(),
+                btc_address: req.btc_address.clone(),
+                message: "Failed to initiate TICS withdrawal".to_string(),
+                error_message: Some(format!("Network error: {}", e)),
+            }));
+        }
+        initiated_tics = true;
+    }
+
+    if let (Some(address), Some(amount_str)) =
+        (req.btc_address.as_ref(), liquidity_btc_str.as_ref())
+    {
+        info!(
+            "🚰 [WITHDRAW] Initiating BTC withdrawal for solver {} -> {} (amount: {})",
+            normalized_address, address, amount_str
+        );
+        let msg = ChannelMessage::WithdrawLiquidity {
+            solver_address: normalized_address.clone(),
+            btc_address: Some(address.clone()),
+            eth_address: None,
+            amount_btc: Some(amount_str.clone()),
+            amount_tics: None,
+            transaction_type: "withdraw_liquidity".to_string(),
+        };
+        let tx_sender = message_tx.lock().await;
+        if let Err(e) = tx_sender.send(msg).await {
+            error!(
+                "❌ Failed to dispatch BTC withdraw message for solver {}: {}",
+                normalized_address, e
+            );
+            return Ok(warp::reply::json(&WithdrawLiquidityResponse {
+                status: "error".to_string(),
+                solver_address: normalized_address,
+                liquidity_btc: liquidity_btc_str,
+                liquidity_tics: liquidity_tics_str,
+                ethereum_address: req.ethereum_address.clone(),
+                btc_address: req.btc_address.clone(),
+                message: "Failed to initiate BTC withdrawal".to_string(),
+                error_message: Some(format!("Network error: {}", e)),
+            }));
+        }
+        initiated_btc = true;
+    }
+
+    let message = if initiated_tics || initiated_btc {
+        match (initiated_tics, initiated_btc) {
+            (true, true) => "Liquidity withdrawals initiated for both TICS and BTC".to_string(),
+            (true, false) => "Liquidity withdrawal initiated for TICS".to_string(),
+            (false, true) => "Liquidity withdrawal initiated for BTC".to_string(),
+            _ => unreachable!(),
+        }
+    } else {
+        "No withdrawals were initiated (missing address or zero liquidity)".to_string()
+    };
+
+    Ok(warp::reply::json(&WithdrawLiquidityResponse {
+        status: "success".to_string(),
+        solver_address: normalized_address,
+        liquidity_btc: liquidity_btc_str,
+        liquidity_tics: liquidity_tics_str,
+        ethereum_address: req.ethereum_address.clone(),
+        btc_address: req.btc_address.clone(),
+        message,
+        error_message: None,
     }))
 }

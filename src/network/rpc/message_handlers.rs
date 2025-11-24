@@ -5,7 +5,7 @@ use anyhow::Result;
 use tracing::{error, info, warn};
 
 use crate::{
-    types::{DepositIntent, TransactionType},
+    types::{DepositIntent, TransactionNetwork, TransactionType},
     user_intent_manager::TransactionStatus,
 };
 
@@ -18,6 +18,10 @@ impl MpcNetworkLayer {
             "user_to_vault" => Ok(TransactionType::UserToVault),
             "network_to_target" => Ok(TransactionType::NetworkToTarget),
             "vault_to_network" => Ok(TransactionType::VaultToNetwork),
+            "reward_txn" => Ok(TransactionType::RewardTxn),
+            "withdraw_liquidity" | "withdrawLiquidity" => {
+                Ok(TransactionType::WithdrawLiquidity)
+            }
             _ => Err(anyhow::anyhow!("Unknown transaction type: {}", tx_type_str)),
         }
     }
@@ -49,6 +53,16 @@ impl MpcNetworkLayer {
                     None
                 }
             }
+            TransactionType::RewardTxn => {
+                // RewardTxn is not valid for intent flow - return None
+                None
+            }
+            TransactionType::WithdrawLiquidity => {
+                warn!(
+                    "⚠️ [SIGNING] WithdrawLiquidity transaction type does not participate in intent signing keys"
+                );
+                None
+            }
         }
     }
 
@@ -61,6 +75,35 @@ impl MpcNetworkLayer {
             TransactionType::UserToVault => intent.source_chain.to_lowercase(),
             TransactionType::NetworkToTarget => intent.target_chain.to_lowercase(),
             TransactionType::VaultToNetwork => intent.source_chain.to_lowercase(),
+            TransactionType::RewardTxn => {
+                // RewardTxn is not valid for intent flow - return empty string
+                String::new()
+            }
+            TransactionType::WithdrawLiquidity => {
+                warn!(
+                    "⚠️ [SIGNING] WithdrawLiquidity transaction type not supported for intent routing"
+                );
+                String::new()
+            }
+        }
+    }
+
+    /// Validate transaction type for reward flow
+    /// Returns Ok(()) if transaction_type is RewardTxn, Err otherwise
+    pub(crate) fn validate_transaction_type_for_reward(
+        transaction_type: &TransactionType,
+    ) -> Result<()> {
+        match transaction_type {
+            TransactionType::RewardTxn => Ok(()),
+            TransactionType::UserToVault
+            | TransactionType::NetworkToTarget
+            | TransactionType::VaultToNetwork
+            | TransactionType::WithdrawLiquidity => {
+                Err(anyhow::anyhow!(
+                    "Transaction type {:?} is not valid for reward flow. Only RewardTxn is allowed.",
+                    transaction_type
+                ))
+            }
         }
     }
 
@@ -112,6 +155,13 @@ impl MpcNetworkLayer {
                 .store_vault_to_network_tx_id(intent_hash, transaction_id, node_id)
                 .await
                 .map_err(|e| anyhow::anyhow!("{}", e)),
+            "withdraw_liquidity" | "withdrawLiquidity" => {
+                warn!(
+                    "⚠️ [SIGNING] Received withdraw-liquidity transaction ID for intent {} but this flow is not implemented yet",
+                    intent_hash
+                );
+                Ok(())
+            }
             _ => Err(anyhow::anyhow!(
                 "Unknown transaction type: {}",
                 transaction_type
@@ -220,23 +270,26 @@ impl MpcNetworkLayer {
         transaction_type: &str,
     ) -> Result<()> {
         if let Some(user_intent_manager) = &self.user_intent_manager {
-            let storage_result = match transaction_type {
-                "tics_reward" => {
+            let Some(network) =
+                reward_network_from_tx_id(transaction_type, transaction_id)
+            else {
+                warn!(
+                    "❌ [NETWORK] Unknown reward transaction type '{}' for tx {}; skipping storage",
+                    transaction_type, transaction_id
+                );
+                return Ok(());
+            };
+
+            let storage_result = match network {
+                TransactionNetwork::TICS => {
                     user_intent_manager
                         .add_solver_tics_txn_hash(solver_address, transaction_id.to_string())
                         .await
                 }
-                "btc_reward" => {
+                TransactionNetwork::BTC => {
                     user_intent_manager
                         .add_solver_btc_txn_hash(solver_address, transaction_id.to_string())
                         .await
-                }
-                _ => {
-                    warn!(
-                        "❌ [NETWORK] Unknown reward transaction type: {}",
-                        transaction_type
-                    );
-                    return Ok(());
                 }
             };
 
@@ -253,12 +306,14 @@ impl MpcNetworkLayer {
                         );
                     }
                     info!(
-                        "✅ [NETWORK] Successfully synchronized reward transaction ID {} for solver {} (type: {})",
-                        transaction_id, solver_address, transaction_type
+                        "✅ [NETWORK] Successfully synchronized reward transaction ID {} for solver {} (network: {:?})",
+                        transaction_id,
+                        solver_address,
+                        network
                     );
 
                     // Update claimed amounts and reduce rewards
-                    self.update_reward_claims(solver_address, transaction_type, transaction_id)
+                    self.update_reward_claims(solver_address, network, transaction_id)
                         .await?;
                 }
                 Err(e) => {
@@ -278,26 +333,25 @@ impl MpcNetworkLayer {
     async fn update_reward_claims(
         &self,
         solver_address: &str,
-        transaction_type: &str,
+        reward_network: TransactionNetwork,
         transaction_id: &str,
     ) -> Result<()> {
         if let Some(user_intent_manager) = &self.user_intent_manager {
-            let (currency, current_reward) = if transaction_type == "tics_reward" {
-                (
+            let (currency_label, current_reward) = match reward_network {
+                TransactionNetwork::TICS => (
                     "tics",
                     user_intent_manager
                         .get_solver_reward_tics(solver_address)
                         .await
                         .unwrap_or_else(|| ethers::types::U256::zero()),
-                )
-            } else {
-                (
+                ),
+                TransactionNetwork::BTC => (
                     "btc",
                     user_intent_manager
                         .get_solver_reward_btc(solver_address)
                         .await
                         .unwrap_or_else(|| ethers::types::U256::zero()),
-                )
+                ),
             };
 
             if current_reward > ethers::types::U256::zero() {
@@ -325,37 +379,56 @@ impl MpcNetworkLayer {
                 }
 
                 // Set reward to 0 (all rewards claimed)
-                let result = if currency == "tics" {
-                    user_intent_manager
-                        .set_solver_reward_tics(solver_address, ethers::types::U256::zero())
-                        .await
-                } else {
-                    user_intent_manager
-                        .set_solver_reward_btc(solver_address, ethers::types::U256::zero())
-                        .await
+                let result = match reward_network {
+                    TransactionNetwork::TICS => {
+                        user_intent_manager
+                            .set_solver_reward_tics(solver_address, ethers::types::U256::zero())
+                            .await
+                    }
+                    TransactionNetwork::BTC => {
+                        user_intent_manager
+                            .set_solver_reward_btc(solver_address, ethers::types::U256::zero())
+                            .await
+                    }
                 };
 
                 match result {
                     Ok(()) => {
                         info!(
                             "✅ [NETWORK-REWARD] Successfully processed {} reward transaction {} for solver {}: claimed={}, remaining_reward=0",
-                            currency, transaction_id, solver_address, new_claimed
+                            currency_label, transaction_id, solver_address, new_claimed
                         );
                     }
                     Err(e) => {
                         error!(
                             "❌ [NETWORK-REWARD] Failed to reduce {} reward for solver {}: {}",
-                            currency, solver_address, e
+                            currency_label, solver_address, e
                         );
                     }
                 }
             } else {
                 info!(
                     "ℹ️ [NETWORK-REWARD] No {} reward to claim for solver {} (already claimed or zero)",
-                    currency, solver_address
+                    currency_label, solver_address
                 );
             }
         }
         Ok(())
+    }
+}
+
+fn reward_network_from_tx_id(
+    transaction_type: &str,
+    transaction_id: &str,
+) -> Option<TransactionNetwork> {
+    match transaction_type {
+        "reward_txn" => {
+            if transaction_id.starts_with("0x") {
+                Some(TransactionNetwork::TICS)
+            } else {
+                Some(TransactionNetwork::BTC)
+            }
+        }
+        _ => None,
     }
 }

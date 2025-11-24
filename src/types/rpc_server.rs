@@ -166,3 +166,23 @@ pub struct EnhancedUserRegistrationResponse {
     pub derived_btc_address: Option<String>,
     pub error: Option<ErrorResponse>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WithdrawLiquidityRequest {
+    pub signature: String,
+    pub message: String,
+    pub ethereum_address: Option<String>,
+    pub btc_address: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WithdrawLiquidityResponse {
+    pub status: String,
+    pub solver_address: String,
+    pub liquidity_btc: Option<String>,
+    pub liquidity_tics: Option<String>,
+    pub ethereum_address: Option<String>,
+    pub btc_address: Option<String>,
+    pub message: String,
+    pub error_message: Option<String>,
+}

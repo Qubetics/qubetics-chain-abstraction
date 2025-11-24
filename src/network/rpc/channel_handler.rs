@@ -1,3 +1,273 @@
+impl MpcNetworkLayer {
+    pub(crate) async fn process_liquidity_payout(
+        &mut self,
+        context: &str,
+        solver_address: &str,
+        btc_address: &Option<String>,
+        eth_address: &Option<String>,
+        amount_btc: &Option<String>,
+        amount_tics: &Option<String>,
+    ) -> Result<()> {
+        if amount_btc.is_none() && amount_tics.is_none() {
+            warn!(
+                "❌ [{}] No BTC or TICS amount specified for solver {}",
+                context, solver_address
+            );
+            return Ok(());
+        }
+
+        if let Some(amount_str) = amount_tics.clone() {
+            if let Some(eth_addr) = eth_address.clone() {
+                match amount_str.parse::<u128>() {
+                    Ok(tics_amount) => {
+                        info!(
+                            "💧 [{}] Processing TICS payout: {} -> {} (amount: {})",
+                            context, solver_address, eth_addr, tics_amount
+                        );
+                        if let Some(dkg_node) = &self.dkg_node {
+                            if let Some(group_key) = dkg_node.get_final_public_key().await {
+                                let network_address =
+                                    crate::utils::get_eth_address_from_group_key(group_key);
+                                match crate::utils::transaction::create_ethereum_transaction(
+                                    &network_address,
+                                    &eth_addr,
+                                    tics_amount,
+                                    "qubetics",
+                                )
+                                .await
+                                {
+                                    Ok(eth_tx) => {
+                                        info!(
+                                            "✅ [{}] Created TICS payout transaction: {:?}",
+                                            context, eth_tx
+                                        );
+                                        if let Some(signing_node) = &mut self.signing_node {
+                                            let available_nodes: Vec<PeerId> = self
+                                                .node_manager
+                                                .get_active_nodes()
+                                                .into_iter()
+                                                .collect();
+                                            signing_node.set_available_nodes(available_nodes);
+                                            signing_node.set_chain_handler(
+                                                crate::chain_abstraction::ChainHandlerFactory::create_ethereum_handler(eth_tx.chain_id).into(),
+                                            );
+
+                                            if let Some(secret_share) =
+                                                dkg_node.get_final_secret_share().await
+                                            {
+                                                signing_node
+                                                    .set_private_key_from_scalar(secret_share);
+                                                if let Some(group_key) =
+                                                    dkg_node.get_final_public_key().await
+                                                {
+                                                    signing_node
+                                                        .set_group_public_key(group_key);
+                                                }
+
+                                                let tx_bytes = crate::utils::transaction::create_transaction_for_signing(&eth_tx);
+                                                info!(
+                                                    "🔐 [{}] Starting TICS payout signing: 0x{}",
+                                                    context,
+                                                    hex::encode(tx_bytes.clone())
+                                                );
+                                                let mut eth_signer =
+                                                    EthereumSigner::new(signing_node);
+                                                eth_signer
+                                                    .sign_transaction(
+                                                        tx_bytes,
+                                                        &eth_tx,
+                                                        None,
+                                                        None,
+                                                        None,
+                                                        Some(
+                                                            crate::types::TransactionType::RewardTxn,
+                                                        ),
+                                                        Some(solver_address.to_string()),
+                                                    )
+                                                    .await?;
+                                                info!(
+                                                    "✅ [{}] TICS payout signing completed",
+                                                    context
+                                                );
+                                            } else {
+                                                info!(
+                                                    "⏳ [{}] DKG not completed yet, no secret share for TICS payout",
+                                                    context
+                                                );
+                                            }
+                                        } else {
+                                            warn!(
+                                                "❌ [{}] Signing node unavailable for TICS payout",
+                                                context
+                                            );
+                                        }
+                                    }
+                                    Err(e) => {
+                                        error!(
+                                            "❌ [{}] Failed to create TICS payout transaction: {}",
+                                            context, e
+                                        );
+                                    }
+                                }
+                            } else {
+                                warn!(
+                                    "❌ [{}] No group key available for TICS payout",
+                                    context
+                                );
+                            }
+                        } else {
+                            warn!(
+                                "❌ [{}] DKG node not available for TICS payout",
+                                context
+                            );
+                        }
+                    }
+                    Err(_) => {
+                        warn!(
+                            "❌ [{}] Invalid TICS payout amount: {}",
+                            context, amount_str
+                        );
+                    }
+                }
+            } else {
+                warn!(
+                    "❌ [{}] TICS payout requested but no ETH address provided",
+                    context
+                );
+            }
+        }
+
+        if let Some(amount_str) = amount_btc.clone() {
+            if let Some(btc_addr) = btc_address.clone() {
+                match amount_str.parse::<u128>() {
+                    Ok(btc_amount) => {
+                        info!(
+                            "💧 [{}] Processing BTC payout: {} -> {} (amount: {})",
+                            context, solver_address, btc_addr, btc_amount
+                        );
+                        if let Some(dkg_node) = &self.dkg_node {
+                            if let Some(group_key) = dkg_node.get_final_public_key().await {
+                                let network_btc_address =
+                                    crate::utils::get_btc_address_from_group_key(group_key);
+                                match crate::utils::transaction::create_bitcoin_transaction(
+                                    &network_btc_address,
+                                    &btc_addr,
+                                    btc_amount,
+                                )
+                                .await
+                                {
+                                    Ok(btc_tx) => {
+                                        info!(
+                                            "✅ [{}] Created BTC payout transaction: {:?}",
+                                            context, btc_tx
+                                        );
+                                        if let Some(signing_node) = &mut self.signing_node {
+                                            let available_nodes: Vec<PeerId> = self
+                                                .node_manager
+                                                .get_active_nodes()
+                                                .into_iter()
+                                                .collect();
+                                            signing_node.set_available_nodes(available_nodes);
+                                            signing_node.set_chain_handler(
+                                                crate::chain_abstraction::ChainHandlerFactory::create_bitcoin_handler("testnet".to_string()).into(),
+                                            );
+
+                                            if let Some(secret_share) =
+                                                dkg_node.get_final_secret_share().await
+                                            {
+                                                signing_node
+                                                    .set_private_key_from_scalar(secret_share);
+                                                if let Some(group_key) =
+                                                    dkg_node.get_final_public_key().await
+                                                {
+                                                    signing_node
+                                                        .set_group_public_key(group_key);
+                                                }
+
+                                                let chain_tx = crate::chain_abstraction::ChainTransaction::Bitcoin(btc_tx.clone());
+                                                let tx_bytes = signing_node
+                                                    .get_chain_handler()
+                                                    .create_transaction_bytes(&chain_tx)
+                                                    .unwrap();
+                                                info!(
+                                                    "🔐 [{}] Starting BTC payout signing: 0x{}",
+                                                    context,
+                                                    hex::encode(tx_bytes.clone())
+                                                );
+                                                let mut btc_signer =
+                                                    BitcoinSigner::new(signing_node);
+                                                btc_signer
+                                                    .sign_transaction(
+                                                        tx_bytes,
+                                                        Some(btc_tx),
+                                                        None,
+                                                        None,
+                                                        Some(
+                                                            crate::types::TransactionType::RewardTxn,
+                                                        ),
+                                                        None,
+                                                        Some(solver_address.to_string()),
+                                                    )
+                                                    .await?;
+                                                info!(
+                                                    "✅ [{}] BTC payout signing completed",
+                                                    context
+                                                );
+                                            } else {
+                                                info!(
+                                                    "⏳ [{}] DKG not completed yet, no secret share for BTC payout",
+                                                    context
+                                                );
+                                            }
+                                        } else {
+                                            warn!(
+                                                "❌ [{}] Signing node unavailable for BTC payout",
+                                                context
+                                            );
+                                        }
+                                    }
+                                    Err(e) => {
+                                        error!(
+                                            "❌ [{}] Failed to create BTC payout transaction: {}",
+                                            context, e
+                                        );
+                                    }
+                                }
+                            } else {
+                                warn!(
+                                    "❌ [{}] No group key available for BTC payout",
+                                    context
+                                );
+                            }
+                        } else {
+                            warn!(
+                                "❌ [{}] DKG node not available for BTC payout",
+                                context
+                            );
+                        }
+                    }
+                    Err(_) => {
+                        warn!(
+                            "❌ [{}] Invalid BTC payout amount: {}",
+                            context, amount_str
+                        );
+                    }
+                }
+            } else {
+                warn!(
+                    "❌ [{}] BTC payout requested but no BTC address provided",
+                    context
+                );
+            }
+        }
+
+        info!(
+            "✅ [{}] Liquidity payout processing complete for solver {}",
+            context, solver_address
+        );
+        Ok(())
+    }
+}
 /// Channel message handler
 /// Handles all internal channel messages: Broadcast, Unicast, DepositIntent, etc.
 ///
@@ -203,6 +473,17 @@ impl MpcNetworkLayer {
                     crate::types::TransactionType::VaultToNetwork => {
                         &intent.source_chain.to_lowercase()
                     }
+                    crate::types::TransactionType::RewardTxn => {
+                        // RewardTxn is not valid for intent flow
+                        warn!("❌ [LOCAL] RewardTxn is not valid for deposit intent flow");
+                        return Ok(());
+                    }
+                    crate::types::TransactionType::WithdrawLiquidity => {
+                        warn!(
+                            "❌ [LOCAL] WithdrawLiquidity is not supported in deposit intent flow"
+                        );
+                        return Ok(());
+                    }
                 };
                 info!(
                     "🔗 [LOCAL] Processing deposit intent for chain: {} (transaction_type: {:?})",
@@ -231,6 +512,16 @@ impl MpcNetworkLayer {
                         } else {
                             None
                         }
+                    }
+                    crate::types::TransactionType::RewardTxn => {
+                        // RewardTxn is not valid for intent flow
+                        None
+                    }
+                    crate::types::TransactionType::WithdrawLiquidity => {
+                        warn!(
+                            "❌ [LOCAL] WithdrawLiquidity is not supported for deposit intent signing"
+                        );
+                        None
                     }
                 };
 
@@ -330,6 +621,14 @@ impl MpcNetworkLayer {
                                     }
                                 }
                             }
+                            crate::types::TransactionType::RewardTxn => {
+                                // RewardTxn is not valid for intent flow
+                            }
+                            crate::types::TransactionType::WithdrawLiquidity => {
+                                warn!(
+                                    "❌ [LOCAL] WithdrawLiquidity is not supported for Bitcoin group key selection"
+                                );
+                            }
                         }
 
                         signing_node.set_chain_handler(chain_handler.into());
@@ -372,6 +671,16 @@ impl MpcNetworkLayer {
                         crate::types::TransactionType::NetworkToTarget
                         | crate::types::TransactionType::VaultToNetwork => {
                             // For network withdrawals and vault-to-network, no derived addresses needed
+                            (None, None)
+                        }
+                        crate::types::TransactionType::RewardTxn => {
+                            // RewardTxn is not valid for intent flow
+                            (None, None)
+                        }
+                        crate::types::TransactionType::WithdrawLiquidity => {
+                            warn!(
+                                "❌ [LOCAL] WithdrawLiquidity transaction type not supported for derived addresses"
+                            );
                             (None, None)
                         }
                     };
@@ -480,6 +789,14 @@ impl MpcNetworkLayer {
                                             }
                                         }
                                     }
+                                    crate::types::TransactionType::RewardTxn => {
+                                        // RewardTxn is not valid for intent flow
+                                    }
+                                    crate::types::TransactionType::WithdrawLiquidity => {
+                                        warn!(
+                                            "❌ [LOCAL] WithdrawLiquidity transaction type not supported for group public key assignment"
+                                        );
+                                    }
                                 }
                             } else {
                                 info!("❌ [LOCAL] Could not get signing key for deposit intent");
@@ -566,6 +883,16 @@ impl MpcNetworkLayer {
                                             } else {
                                                 None
                                             }
+                                        }
+                                        crate::types::TransactionType::RewardTxn => {
+                                            // RewardTxn is not valid for intent flow
+                                            None
+                                        }
+                                        crate::types::TransactionType::WithdrawLiquidity => {
+                                            warn!(
+                                                "❌ [LOCAL] WithdrawLiquidity transaction type not supported for deposit signing"
+                                            );
+                                            None
                                         }
                                     };
                                     {
@@ -1021,6 +1348,7 @@ impl MpcNetworkLayer {
                 eth_address,
                 reward_btc,
                 reward_tics,
+                transaction_type,
             } => {
                 info!("🎁 [NETWORK] Processing reward claim for solver: {}, ETH address: {:?}, BTC address: {:?}", 
                   solver_address, eth_address, btc_address);
@@ -1029,6 +1357,11 @@ impl MpcNetworkLayer {
                     reward_btc, reward_tics
                 );
 
+                // Validate transaction type for reward flow
+                // Note: If TransactionType is added to ClaimReward message in the future,
+                // use: Self::validate_transaction_type_for_reward(&transaction_type)?;
+                // For now, reward flow only processes RewardTxn type transactions
+
                 // Broadcast the reward claim to other nodes via gossipsub immediately
                 let claim_reward_msg = GossipsubMessage::ClaimReward {
                     solver_address: solver_address.clone(),
@@ -1036,6 +1369,7 @@ impl MpcNetworkLayer {
                     eth_address: eth_address.clone(),
                     reward_btc: reward_btc.clone(),
                     reward_tics: reward_tics.clone(),
+                    transaction_type: transaction_type.clone(),
                 };
                 let msg_bytes = serde_json::to_vec(&claim_reward_msg).map_err(|e| {
                     anyhow::anyhow!("Failed to serialize claim reward message: {}", e)
@@ -1049,240 +1383,58 @@ impl MpcNetworkLayer {
                     solver_address
                 );
 
-                // Validate that at least one reward type is present
-                if reward_btc.is_none() && reward_tics.is_none() {
-                    warn!("❌ [NETWORK] Invalid reward claim - both BTC and TICS rewards are None for solver: {}", solver_address);
-                    return Ok(());
-                }
-
-                // Process TICS rewards (Ethereum) if available
-                if let Some(ref tics_reward_str) = reward_tics {
-                    if let Some(ref eth_addr) = eth_address {
-                        if let Ok(tics_amount) = tics_reward_str.parse::<u128>() {
-                            info!(
-                                "🎁 [NETWORK] Processing TICS reward: {} -> {} (amount: {})",
-                                solver_address, eth_addr, tics_amount
-                            );
-
-                            // Get network address for sending rewards
-                            if let Some(dkg_node) = &self.dkg_node {
-                                if let Some(group_key) = dkg_node.get_final_public_key().await {
-                                    let network_address =
-                                        crate::utils::get_eth_address_from_group_key(group_key);
-
-                                    // Create Ethereum transaction for TICS reward
-                                    match crate::utils::transaction::create_ethereum_transaction(
-                                        &network_address,
-                                        &eth_addr,
-                                        tics_amount,
-                                        "qubetics", // Use Qubetics chain for TICS
-                                    )
-                                    .await
-                                    {
-                                        Ok(eth_tx) => {
-                                            info!("✅ [NETWORK] Created TICS reward transaction: {:?}", eth_tx);
-
-                                            // Sign the transaction using MPC
-                                            if let Some(signing_node) = &mut self.signing_node {
-                                                // Set available nodes from node manager before signing
-                                                let available_nodes: Vec<PeerId> = self
-                                                    .node_manager
-                                                    .get_active_nodes()
-                                                    .into_iter()
-                                                    .collect();
-                                                signing_node.set_available_nodes(available_nodes);
-                                                signing_node.set_chain_handler(crate::chain_abstraction::ChainHandlerFactory::create_ethereum_handler(eth_tx.chain_id).into());
-
-                                                if let Some(dkg_node) = &self.dkg_node {
-                                                    if let Some(secret_share) =
-                                                        dkg_node.get_final_secret_share().await
-                                                    {
-                                                        info!("🔐 [REWARD] Got secret share from DKG for TICS reward");
-                                                        signing_node.set_private_key_from_scalar(
-                                                            secret_share,
-                                                        );
-
-                                                        // Set the DKG group public key
-                                                        if let Some(group_key) =
-                                                            dkg_node.get_final_public_key().await
-                                                        {
-                                                            signing_node
-                                                                .set_group_public_key(group_key);
-                                                            info!("🔑 [REWARD] Set DKG group public key for TICS reward signing");
-                                                        }
-
-                                                        // Convert transaction to bytes for signing
-                                                        let tx_bytes = crate::utils::transaction::create_transaction_for_signing(&eth_tx);
-                                                        info!("🔐 [REWARD] Starting TICS reward signing process: 0x{}", hex::encode(tx_bytes.clone()));
-
-                                                        // Sign with only necessary parameters for transaction
-                                                        {
-                                                            let mut eth_signer =
-                                                                EthereumSigner::new(signing_node);
-                                                            eth_signer
-                                                                .sign_transaction(
-                                                                    tx_bytes,
-                                                                    &eth_tx,
-                                                                    None,
-                                                                    None,
-                                                                    None,
-                                                                    None,
-                                                                    Some(solver_address.clone()),
-                                                                )
-                                                                .await?;
-                                                        }
-                                                        info!("✅ [REWARD] TICS reward signing completed");
-                                                    } else {
-                                                        info!("⏳ [REWARD] DKG not completed yet, no secret share available for TICS reward");
-                                                    }
-                                                } else {
-                                                    info!("❌ [REWARD] DKG node not available for TICS reward");
-                                                }
-                                            } else {
-                                                warn!("❌ [REWARD] Signing node not available for TICS reward");
-                                            }
-                                        }
-                                        Err(e) => {
-                                            error!("❌ [NETWORK] Failed to create TICS reward transaction: {}", e);
-                                        }
-                                    }
-                                } else {
-                                    warn!("❌ [NETWORK] No group key available for TICS reward transaction");
-                                }
-                            } else {
-                                warn!("❌ [NETWORK] DKG node not available for TICS reward transaction");
-                            }
-                        } else {
-                            warn!(
-                                "❌ [NETWORK] Invalid TICS reward amount: {}",
-                                tics_reward_str
-                            );
-                        }
-                    } else {
-                        warn!("❌ [NETWORK] TICS reward available but no ETH address provided");
-                    }
-                }
-
-                // Process BTC rewards if available
-                if let Some(ref btc_reward_str) = reward_btc {
-                    if let Some(ref btc_addr) = btc_address {
-                        if let Ok(btc_amount) = btc_reward_str.parse::<u128>() {
-                            info!(
-                                "🎁 [NETWORK] Processing BTC reward: {} -> {} (amount: {})",
-                                solver_address, btc_addr, btc_amount
-                            );
-
-                            // Get network BTC address for sending rewards
-                            if let Some(dkg_node) = &self.dkg_node {
-                                if let Some(group_key) = dkg_node.get_final_public_key().await {
-                                    let network_btc_address =
-                                        crate::utils::get_btc_address_from_group_key(group_key);
-
-                                    // Create Bitcoin transaction for BTC reward
-                                    match crate::utils::transaction::create_bitcoin_transaction(
-                                        &network_btc_address,
-                                        &btc_addr,
-                                        btc_amount,
-                                    )
-                                    .await
-                                    {
-                                        Ok(btc_tx) => {
-                                            info!(
-                                                "✅ [NETWORK] Created BTC reward transaction: {:?}",
-                                                btc_tx
-                                            );
-
-                                            // Sign the transaction using MPC
-                                            if let Some(signing_node) = &mut self.signing_node {
-                                                // Set available nodes from node manager before signing
-                                                let available_nodes: Vec<PeerId> = self
-                                                    .node_manager
-                                                    .get_active_nodes()
-                                                    .into_iter()
-                                                    .collect();
-                                                signing_node.set_available_nodes(available_nodes);
-                                                signing_node.set_chain_handler(crate::chain_abstraction::ChainHandlerFactory::create_bitcoin_handler("testnet".to_string()).into());
-
-                                                if let Some(dkg_node) = &self.dkg_node {
-                                                    if let Some(secret_share) =
-                                                        dkg_node.get_final_secret_share().await
-                                                    {
-                                                        info!("🔐 [REWARD] Got secret share from DKG for BTC reward");
-                                                        signing_node.set_private_key_from_scalar(
-                                                            secret_share,
-                                                        );
-
-                                                        // Set the DKG group public key
-                                                        if let Some(group_key) =
-                                                            dkg_node.get_final_public_key().await
-                                                        {
-                                                            signing_node
-                                                                .set_group_public_key(group_key);
-                                                            info!("🔑 [REWARD] Set DKG group public key for BTC reward signing");
-                                                        }
-
-                                                        // Convert transaction to bytes for signing
-                                                        let chain_tx =
-                                                            crate::chain_abstraction::ChainTransaction::Bitcoin(
-                                                                btc_tx.clone(),
-                                                            );
-                                                        // set chain handler as btc
-                                                        signing_node.set_chain_handler(crate::chain_abstraction::ChainHandlerFactory::create_bitcoin_handler("testnet".to_string()).into());
-                                                        let tx_bytes = signing_node
-                                                            .get_chain_handler()
-                                                            .create_transaction_bytes(&chain_tx)
-                                                            .unwrap();
-                                                        info!("🔐 [REWARD] Starting BTC reward signing process: 0x{}", hex::encode(tx_bytes.clone()));
-
-                                                        // Sign with Bitcoin-specific parameters
-                                                        {
-                                                            let mut btc_signer =
-                                                                BitcoinSigner::new(signing_node);
-                                                            btc_signer
-                                                                .sign_transaction(
-                                                                    tx_bytes,
-                                                                    Some(btc_tx),
-                                                                    None,
-                                                                    None,
-                                                                    None,
-                                                                    None,
-                                                                    Some(solver_address.clone()),
-                                                                )
-                                                                .await?;
-                                                        }
-                                                        info!("✅ [REWARD] BTC reward signing completed");
-                                                    } else {
-                                                        info!("⏳ [REWARD] DKG not completed yet, no secret share available for BTC reward");
-                                                    }
-                                                } else {
-                                                    info!("❌ [REWARD] DKG node not available for BTC reward");
-                                                }
-                                            } else {
-                                                warn!("❌ [REWARD] Signing node not available for BTC reward");
-                                            }
-                                        }
-                                        Err(e) => {
-                                            error!("❌ [NETWORK] Failed to create BTC reward transaction: {}", e);
-                                        }
-                                    }
-                                } else {
-                                    warn!("❌ [NETWORK] No group key available for BTC reward transaction");
-                                }
-                            } else {
-                                warn!("❌ [NETWORK] DKG node not available for BTC reward transaction");
-                            }
-                        } else {
-                            warn!("❌ [NETWORK] Invalid BTC reward amount: {}", btc_reward_str);
-                        }
-                    } else {
-                        warn!("❌ [NETWORK] BTC reward available but no BTC address provided");
-                    }
-                }
-
+                self.process_liquidity_payout(
+                    "claim_reward",
+                    &solver_address,
+                    &btc_address,
+                    &eth_address,
+                    &reward_btc,
+                    &reward_tics,
+                )
+                .await?;
+            }
+            ChannelMessage::WithdrawLiquidity {
+                solver_address,
+                btc_address,
+                eth_address,
+                amount_btc,
+                amount_tics,
+                transaction_type,
+            } => {
                 info!(
-                    "✅ [NETWORK] Reward claim processed successfully for solver: {}",
+                    "💧 [NETWORK] Processing withdraw liquidity for solver {}",
                     solver_address
                 );
+
+                let withdraw_msg = GossipsubMessage::WithdrawLiquidity {
+                    solver_address: solver_address.clone(),
+                    btc_address: btc_address.clone(),
+                    eth_address: eth_address.clone(),
+                    amount_btc: amount_btc.clone(),
+                    amount_tics: amount_tics.clone(),
+                    transaction_type: transaction_type.clone(),
+                };
+                let msg_bytes =
+                    serde_json::to_vec(&withdraw_msg).map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                let topic = gossipsub::IdentTopic::new("withdraw-liquidity");
+                swarm
+                    .behaviour_mut()
+                    .gossipsub
+                    .publish(topic, msg_bytes)?;
+                info!(
+                    "📡 [NETWORK] Broadcasted withdraw liquidity request for solver {}",
+                    solver_address
+                );
+
+                self.process_liquidity_payout(
+                    "withdraw_liquidity",
+                    &solver_address,
+                    &btc_address,
+                    &eth_address,
+                    &amount_btc,
+                    &amount_tics,
+                )
+                .await?;
             }
         }
         Ok(())

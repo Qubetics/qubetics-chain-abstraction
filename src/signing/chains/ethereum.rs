@@ -193,12 +193,14 @@ impl SigningNode {
         transaction_type: Option<TransactionType>,
         solver_address: Option<String>,
     ) -> Result<()> {
-        // Validate parameters: if intent_hash is None, solver_address must be provided
-        if intent_hash.is_none() && solver_address.is_none() {
-            error!("❌ [SIGNING] Invalid parameters: when intent_hash is None, solver_address must be provided");
-            return Err(anyhow!(
-                "When intent_hash is None, solver_address must be provided"
-            ));
+        // Validate parameters: if transaction_type is RewardTxn, solver_address must be provided
+        if let Some(TransactionType::RewardTxn) = transaction_type {
+            if solver_address.is_none() {
+                error!("❌ [SIGNING] Invalid parameters: solver_address is required when transaction_type is RewardTxn");
+                return Err(anyhow!(
+                    "Solver address is required when transaction_type is RewardTxn"
+                ));
+            }
         }
 
         // Determine which key to use for signing
@@ -338,52 +340,47 @@ impl SigningNode {
         }
 
         // Store original transaction for reconstruction after aggregation
-        // Use reward pending transactions if intent_hash is None, otherwise use regular pending transactions
-        if intent_hash.is_none() {
+        // Use reward pending transactions if transaction_type is RewardTxn, otherwise use regular pending transactions
+        if let Some(TransactionType::RewardTxn) = transaction_type {
             // This is a reward transaction - store in reward pending transactions
-            if let Some(solver_addr) = solver_address {
-                let chain_tx =
-                    ChainTransaction::Ethereum(crate::chain_abstraction::EthereumTransaction {
-                        to: transaction.to.clone(),
-                        value: transaction.value.clone(),
-                        gas_limit: transaction.gas_limit,
-                        gas_price: transaction.gas_price.clone(),
-                        nonce: transaction.nonce,
-                        data: None,
-                        chain_id: transaction.chain_id,
-                    });
+            // solver_address is guaranteed to be Some due to validation above
+            let solver_addr = solver_address.expect("Solver address should be validated above");
+            let chain_tx =
+                ChainTransaction::Ethereum(crate::chain_abstraction::EthereumTransaction {
+                    to: transaction.to.clone(),
+                    value: transaction.value.clone(),
+                    gas_limit: transaction.gas_limit,
+                    gas_price: transaction.gas_price.clone(),
+                    nonce: transaction.nonce,
+                    data: None,
+                    chain_id: transaction.chain_id,
+                });
 
-                // Store in TICS reward pending transactions (assuming TICS for now)
-                // TODO: Determine network type based on transaction context
-                self.store_reward_transaction_tics(
-                    round,
-                    chain_tx,
-                    tx_bytes.clone(),
-                    solver_addr.clone(),
-                )
-                .await;
+            // Store in TICS reward pending transactions (assuming TICS for now)
+            // TODO: Determine network type based on transaction context
+            self.store_reward_transaction_tics(
+                round,
+                chain_tx,
+                tx_bytes.clone(),
+                solver_addr.clone(),
+            )
+            .await;
 
-                // Insert round number into reward_rounds for reward transactions
-                {
-                    let mut reward_rounds: tokio::sync::RwLockWriteGuard<'_, HashSet<u64>> =
-                        self.pending.reward_rounds.write().await;
-                    reward_rounds.insert(round);
-                    info!(
-                        "🎁 [SIGNING] Node {} added round {} to reward_rounds",
-                        self.id, round
-                    );
-                }
-
+            // Insert round number into reward_rounds for reward transactions
+            {
+                let mut reward_rounds: tokio::sync::RwLockWriteGuard<'_, HashSet<u64>> =
+                    self.pending.reward_rounds.write().await;
+                reward_rounds.insert(round);
                 info!(
-                    "💾 [SIGNING] Node {} stored reward transaction for round {} with solver address: {}",
-                    self.id, round, solver_addr
+                    "🎁 [SIGNING] Node {} added round {} to reward_rounds",
+                    self.id, round
                 );
-            } else {
-                error!("❌ [SIGNING] Solver address is required for reward transactions");
-                return Err(anyhow!(
-                    "Solver address is required for reward transactions"
-                ));
             }
+
+            info!(
+                "💾 [SIGNING] Node {} stored reward transaction for round {} with solver address: {}",
+                self.id, round, solver_addr
+            );
         } else {
             // This is an intent-based transaction - store in regular pending transactions
             let mut pending_transactions = self.pending.pending_transactions.write().await;
@@ -754,6 +751,26 @@ impl SigningNode {
                                 "User registry not available for vault transaction"
                             ));
                         }
+                    }
+                    Some(crate::types::TransactionType::RewardTxn) => {
+                        // For reward transactions, use network group address
+                        let group_address =
+                            if let Some(group_key) = self.key_store.get_group_public_key() {
+                                get_eth_address_from_group_key(group_key)
+                            } else {
+                                return Err(anyhow!(
+                                    "No group public key available for reward transaction"
+                                ));
+                            };
+                        let nonce =
+                            Self::fetch_ethereum_nonce(&group_address, chain_id).await?;
+                        info!("🔢 [SIGNING] RewardTxn transaction: fetching nonce {} from network group address {}", nonce, group_address);
+                        group_address
+                    }
+                    Some(crate::types::TransactionType::WithdrawLiquidity) => {
+                        return Err(anyhow!(
+                            "WithdrawLiquidity transaction type not supported for Ethereum aggregation"
+                        ));
                     }
                     None => {
                         if let Some(user_addr) = &user_eth_address {

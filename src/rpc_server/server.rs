@@ -17,11 +17,11 @@ use crate::{
 use super::handlers::{
     handle_claim_reward, handle_get_dkg_status, handle_get_node_id, handle_get_reward_solver,
     handle_get_status, handle_get_uptime, handle_get_user_info, handle_heartbeat,
-    handle_register_user, handle_start_dkg, handle_user_mpc_deposit,
+    handle_register_user, handle_start_dkg, handle_user_mpc_deposit, handle_withdraw_liquidity,
 };
 use crate::types::rpc_server::{
     ClaimRewardRequest, GetRewardSolverRequest, RequestContext, UserMpcDepositRequest,
-    UserMpcDepositVerifyResponse, UserRegistrationRequest,
+    UserMpcDepositVerifyResponse, UserRegistrationRequest, WithdrawLiquidityRequest,
 };
 
 const MAX_REQUEST_BODY_BYTES: u64 = 256 * 1024; // 256 KiB
@@ -111,6 +111,13 @@ pub async fn start_http_server(
         .and(with_message_tx(message_tx.clone()))
         .and_then(handle_claim_reward);
 
+    let withdraw_liquidity = warp::path("withdraw_liquidity")
+        .and(warp::post())
+        .and(limited_json_body::<WithdrawLiquidityRequest>())
+        .and(with_user_intent_manager(user_intent_manager.clone()))
+        .and(with_message_tx(message_tx.clone()))
+        .and_then(handle_withdraw_liquidity);
+
     let get_user_info = warp::path("user_info")
         .and(warp::path::param())
         .and(warp::get())
@@ -155,6 +162,7 @@ pub async fn start_http_server(
         .or(user_mpc_deposit)
         .or(get_reward_solver)
         .or(claim_reward)
+        .or(withdraw_liquidity)
         .or(heartbeat)
         .or(uptime);
 
