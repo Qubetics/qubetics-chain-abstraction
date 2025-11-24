@@ -161,6 +161,8 @@ pub struct NetworkLayer {
     pending_reconnects: std::collections::HashSet<PeerId>,
     // Track new nodes pending join (waiting for next periodic refresh to get shares)
     pending_joins: std::collections::HashSet<PeerId>,
+    // Track nodes pending permanent removal (disconnected for full refresh cycle, will be removed at next refresh)
+    pending_removal: std::collections::HashSet<PeerId>,
     // Handle for the periodic connection check task
     connection_check_task: Option<JoinHandle<()>>,
 }
@@ -213,16 +215,17 @@ impl NetworkLayer {
         idx
     }
 
-    /// Get active nodes that can participate in DKG/signing (excludes restricted, pending reconnects, and pending joins)
+    /// Get active nodes that can participate in DKG/signing (excludes restricted, pending reconnects, pending joins, and pending removal)
     fn get_participating_nodes(&self) -> Vec<PeerId> {
         self.node_manager
             .get_active_nodes()
             .into_iter()
             .filter(|peer_id| {
-                // Exclude restricted nodes, pending reconnects, and pending joins
+                // Exclude restricted nodes, pending reconnects, pending joins, and pending removal
                 !self.restricted_nodes.contains(peer_id) 
                     && !self.pending_reconnects.contains(peer_id)
                     && !self.pending_joins.contains(peer_id)
+                    && !self.pending_removal.contains(peer_id)
             })
             .collect()
     }
@@ -357,6 +360,7 @@ impl NetworkLayer {
             restricted_nodes: std::collections::HashSet::new(),
             pending_reconnects: std::collections::HashSet::new(),
             pending_joins: std::collections::HashSet::new(),
+            pending_removal: std::collections::HashSet::new(),
             connection_check_task: None,
         };
 
@@ -456,6 +460,24 @@ impl NetworkLayer {
 
     pub fn get_local_peer_id<'a>(&'a self) -> &'a PeerId {
         &self.local_peer_id
+    }
+
+    /// Get the count of active nodes that can participate in VRF/consensus
+    /// This excludes:
+    /// - Nodes in pending_joins (new nodes waiting for refresh)
+    /// - Nodes in restricted_nodes (disconnected, one refresh cycle grace period)
+    /// - Nodes in pending_removal (disconnected for full cycle, will be removed)
+    fn get_active_node_count(&self) -> usize {
+        let total = self.node_manager.get_total_nodes();
+        let excluded = self.pending_joins.len() + self.restricted_nodes.len() + self.pending_removal.len();
+        let active = total.saturating_sub(excluded);
+        
+        info!(
+            "📊 [ACTIVE_NODES] Total: {}, Pending joins: {}, Restricted: {}, Pending removal: {}, Active: {}",
+            total, self.pending_joins.len(), self.restricted_nodes.len(), self.pending_removal.len(), active
+        );
+        
+        active
     }
 
     /// Load existing keypair from database or create a new one
@@ -726,8 +748,27 @@ impl NetworkLayer {
             })?
             .build();
 
-        // Check if this is an existing node with DKG data - if so, subscribe to topics immediately
-        self.subscribe_to_default_topics(&mut swarm)?;
+        // Always subscribe to essential topics (DKG, peer-discovery)
+        info!("🔔 [INIT] Subscribing to essential topics (DKG, peer-discovery)");
+        self.subscribe_to_essential_topics(&mut swarm)?;
+        
+        // Determine if we should subscribe to transaction topics immediately:
+        // - If node has DKG data → Subscribe (existing node or restart)
+        // - If node has no DKG data → Delay decision until after peer discovery (spawn task to check later)
+        if let Some(dkg_node) = &self.dkg_node {
+            let has_dkg_data = dkg_node.get_final_secret_share().await.is_some();
+            
+            if has_dkg_data {
+                info!("✅ [INIT] Node has DKG data (existing node) - subscribing to transaction topics immediately");
+                self.subscribe_to_transaction_topics(&mut swarm)?;
+            } else {
+                info!("⏳ [INIT] Node has no DKG data - will check peer count after discovery to decide on subscription");
+                // Decision will be made in the event loop after peer discovery
+                // See the scheduled DKG start logic which handles this
+            }
+        } else {
+            info!("⚠️ [INIT] DKG node not initialized");
+        }
         
         info!("Starting Kademlia bootstrap...");
 
@@ -915,13 +956,27 @@ impl NetworkLayer {
         }
     }
 
-    fn subscribe_to_default_topics(
+    /// Subscribe to essential topics needed for DKG (always subscribe, even for new nodes)
+    fn subscribe_to_essential_topics(
         &mut self,
         swarm: &mut libp2p::Swarm<MPCBehaviour>,
     ) -> Result<()> {
         let topics = vec![
             MSG_TOPIC_DKG,
             MSG_TOPIC_PEER_DISCOVERY,
+            "dkg-commands",
+            "dkg",
+        ];
+        self.subscribe_to_topics(swarm, topics)?;
+        Ok(())
+    }
+
+    /// Subscribe to transaction-related topics (subscribe AFTER refresh for new nodes)
+    fn subscribe_to_transaction_topics(
+        &mut self,
+        swarm: &mut libp2p::Swarm<MPCBehaviour>,
+    ) -> Result<()> {
+        let topics = vec![
             "signing",
             "consensus",
             "commands",
@@ -929,15 +984,23 @@ impl NetworkLayer {
             "transactions",
             "deposit-intents",
             "intent-hashes",
-            "dkg-commands",
             "signatures-to-final-node",
             "user-registrations",
             "solver-rewards",
             "transaction-id-sync",
             "consensus-result",
             "transaction-error-sync",
-            "dkg"
         ];
+        self.subscribe_to_topics(swarm, topics)?;
+        Ok(())
+    }
+
+    /// Helper function to subscribe to a list of topics
+    fn subscribe_to_topics(
+        &mut self,
+        swarm: &mut libp2p::Swarm<MPCBehaviour>,
+        topics: Vec<&str>,
+    ) -> Result<()> {
         for topic in topics {
             let topic_hash = gossipsub::IdentTopic::new(topic);
             info!("🔔 Attempting to subscribe to topic: {}", topic);
@@ -1085,10 +1148,13 @@ impl NetworkLayer {
                 // Check if we already know this peer
                 let already_known = self.node_manager.get_active_nodes().contains(&peer_id);
                 
-                // Check if this node was restricted (disconnected) - if so, mark as pending reconnection
+                // Check if this node was restricted or pending removal (disconnected) - if so, mark as pending reconnection
                 if self.restricted_nodes.remove(&peer_id) {
                     self.pending_reconnects.insert(peer_id);
-                    info!("🔄 [RECONNECT] Node {} reconnected - marked as pending (will be unrestricted at next periodic refresh)", peer_id);
+                    info!("🔄 [RECONNECT] Node {} reconnected from restricted - marked as pending (will be unrestricted at next periodic refresh)", peer_id);
+                } else if self.pending_removal.remove(&peer_id) {
+                    self.pending_reconnects.insert(peer_id);
+                    info!("🎉 [RECONNECT] Node {} reconnected from pending removal - saved! Marked as pending (will be unrestricted at next periodic refresh)", peer_id);
                 } else if !already_known {
                     // This is a fresh node joining - mark as pending join
                     self.pending_joins.insert(peer_id);
@@ -2179,19 +2245,30 @@ impl NetworkLayer {
             GossipsubMessage::VrfSelectedNodes(broadcast_msg) => {
                 info!("📥 [VRF] Received VRF selected nodes broadcast: {:?}", broadcast_msg);
 
+                // Get active nodes that can actually participate in VRF
+                // Excludes new nodes (pending_joins) and temporarily down nodes (restricted_nodes)
+                let active_nodes = self.get_active_node_count();
+                let selector_node_id = broadcast_msg.selector_node_id.clone();
+                let round = broadcast_msg.round;
+                
                 // Store the received VRF selection in the signing node's VRF selector
                 if let Some(signing_node) = &mut self.signing_node {
-                    let selector_node_id = broadcast_msg.selector_node_id.clone();
-                    let round = broadcast_msg.round;
-                    signing_node.handle_vrf_selected_nodes_broadcast(self.node_manager.get_total_nodes(), broadcast_msg);
+                    signing_node.handle_vrf_selected_nodes_broadcast(active_nodes, broadcast_msg);
                     info!(
-                        "💾 [VRF] Stored VRF selected nodes from node {} for round {}",
-                        selector_node_id.0, round
+                        "💾 [VRF] Stored VRF selected nodes from node {} for round {} (active nodes: {})",
+                        selector_node_id.0, round, active_nodes
                     );
                 }
             }
             GossipsubMessage::Transaction(transaction) => {
                 info!("📝 Received transaction via gossipsub: {:?}", transaction);
+                
+                // Skip if this node is waiting for refresh (new node that hasn't been integrated yet)
+                if self.pending_joins.contains(&self.local_peer_id) {
+                    info!("⏸️ [TRANSACTION] Skipping transaction processing - node is pending refresh integration");
+                    return Ok(());
+                }
+                
                 // Here you can add transaction processing logic
                 // For example, validate the transaction, add to mempool, etc.
                 
@@ -2470,6 +2547,13 @@ impl NetworkLayer {
             }
             GossipsubMessage::SolverReward { solver_address, reward } => {
                 info!("💰 [REWARD] Received solver reward for {}: {}", solver_address, reward);
+                
+                // Skip if this node is waiting for refresh (new node that hasn't been integrated yet)
+                if self.pending_joins.contains(&self.local_peer_id) {
+                    info!("⏸️ [REWARD] Skipping solver reward processing - node is pending refresh integration");
+                    return Ok(());
+                }
+                
                 // Create dummy transaction paying the solver
                 // Fetch chain_id on the basis of tics (assuming tics is the chain name or identifier)
                 let chain_to_use = "qubetics"; // Replace this with the actual tics variable if available
@@ -2571,6 +2655,12 @@ impl NetworkLayer {
             }
             GossipsubMessage::DepositIntent { intent, intent_id, user_eth_address, transaction_type, amount } => {
                 info!("📝 [GOSSIPSUB] Processing deposit intent received via gossipsub: {:?} (ID: {})", intent, intent_id);
+
+                // Skip if this node is waiting for refresh (new node that hasn't been integrated yet)
+                if self.pending_joins.contains(&self.local_peer_id) {
+                    info!("⏸️ [GOSSIPSUB] Skipping deposit intent processing - node is pending refresh integration");
+                    return Ok(());
+                }
 
                 // Calculate intent hash for transaction ID storage
                 let intent_hash = crate::utils::calculate_intent_hash(&intent);
@@ -3127,6 +3217,12 @@ impl NetworkLayer {
             // Handle local transaction processing (for the node that receives the HTTP request)
             ChannelMessage::LocalTransaction { transaction } => {
                 info!("🔐 [LOCAL] Processing transaction locally: {:?}", transaction);
+
+                // Skip if this node is waiting for refresh (new node that hasn't been integrated yet)
+                if self.pending_joins.contains(&self.local_peer_id) {
+                    info!("⏸️ [LOCAL] Skipping local transaction processing - node is pending refresh integration");
+                    return Ok(());
+                }
 
                 // Get participating nodes before borrowing signing_node
                 let available_nodes: Vec<PeerId> = self.get_participating_nodes();
@@ -3904,22 +4000,38 @@ impl NetworkLayer {
                 let total = self.node_manager.get_total_nodes();
                 let threshold = self.node_manager.get_threshold();
                 
+                // Check if initial DKG is already complete
+                let initial_dkg_complete = if let Some(dkg) = &self.dkg_node {
+                    dkg.is_initial_dkg_complete().await
+                } else {
+                    false
+                };
+                
+                if initial_dkg_complete {
+                    warn!("⚠️ [DKG] ScheduledDKGStart called but initial DKG already complete. This should not happen.");
+                    return Ok(());
+                }
+                
+                // Start the initial DKG with 4 nodes
+                info!("🚀 [DKG] Starting initial DKG with {} nodes", total);
+                
+                if total != 4 {
+                    warn!("⚠️ [DKG] Expected 4 nodes for initial DKG, but have {}", total);
+                }
+                
+                // Subscribe to transaction topics for initial 4 nodes (if not already subscribed)
+                // These nodes need to participate in transactions from the start
+                let deposit_intents_topic = gossipsub::IdentTopic::new("deposit-intents");
+                if !self.topics.contains(&deposit_intents_topic.hash()) {
+                    info!("🔔 [DKG] Initial 4 nodes - subscribing to transaction topics before starting DKG");
+                    if let Err(e) = self.subscribe_to_transaction_topics(swarm) {
+                        error!("❌ [DKG] Failed to subscribe to transaction topics: {}", e);
+                    } else {
+                        info!("✅ [DKG] Successfully subscribed to transaction topics");
+                    }
+                }
+                
                 if let Some(dkg) = &mut self.dkg_node {
-                    // This should only be called for initial DKG with 4 nodes
-                    let initial_dkg_complete = dkg.is_initial_dkg_complete().await;
-                    
-                    if initial_dkg_complete {
-                        warn!("⚠️ [DKG] ScheduledDKGStart called but initial DKG already complete. This should not happen.");
-                        return Ok(());
-                    }
-                    
-                    // Start the initial DKG with 4 nodes
-                    info!("🚀 [DKG] Starting initial DKG with {} nodes", total);
-                    
-                    if total != 4 {
-                        warn!("⚠️ [DKG] Expected 4 nodes for initial DKG, but have {}", total);
-                    }
-                    
                     dkg.update_node_params(total, threshold);
                     dkg.reset().await;
                     if let Some(signing_node) = &mut self.signing_node {
@@ -3942,26 +4054,45 @@ impl NetworkLayer {
                 let restricted: Vec<PeerId> = self.restricted_nodes.iter().cloned().collect();
                 let pending_reconnects: Vec<PeerId> = self.pending_reconnects.iter().cloned().collect();
                 let pending_joins: Vec<PeerId> = self.pending_joins.iter().cloned().collect();
+                let pending_removal: Vec<PeerId> = self.pending_removal.iter().cloned().collect();
                 
-                info!("🔍 [PERIODIC_REFRESH] Found {} restricted, {} pending reconnects, {} pending joins", 
-                      restricted.len(), pending_reconnects.len(), pending_joins.len());
+                info!("🔍 [PERIODIC_REFRESH] Found {} restricted, {} pending reconnects, {} pending joins, {} pending removal", 
+                      restricted.len(), pending_reconnects.len(), pending_joins.len(), pending_removal.len());
                 
                 let mut needs_refresh = false;
-                let mut nodes_to_remove: Vec<PeerId> = Vec::new();
                 let mut has_new_nodes_joining = false;
+                let mut nodes_to_remove: Vec<PeerId> = Vec::new();
                 
-                // Process restricted (disconnected) nodes
-                for peer_id in restricted {
+                // STEP 1: Process nodes pending permanent removal (disconnected for full refresh cycle)
+                for peer_id in pending_removal {
                     if swarm.is_connected(&peer_id) {
-                        // Node reconnected (should have been moved to pending_reconnects)
-                        self.restricted_nodes.remove(&peer_id);
-                        info!("✅ [PERIODIC_REFRESH] Node {} reconnected", peer_id);
+                        // Node reconnected at the last moment! Move to pending_reconnects
+                        self.pending_removal.remove(&peer_id);
+                        self.pending_reconnects.insert(peer_id);
+                        needs_refresh = true;
+                        info!("🎉 [PERIODIC_REFRESH] Node {} reconnected at last moment - saved from removal!", peer_id);
                     } else {
-                        // Node still disconnected - remove and trigger refresh
-                        self.restricted_nodes.remove(&peer_id);
+                        // Node still disconnected after full grace period - permanently remove
+                        self.pending_removal.remove(&peer_id);
                         nodes_to_remove.push(peer_id);
                         needs_refresh = true;
-                        info!("🔄 [PERIODIC_REFRESH] Node {} still disconnected - will be removed", peer_id);
+                        warn!("❌ [PERIODIC_REFRESH] Node {} disconnected for full cycle - will be permanently removed", peer_id);
+                    }
+                }
+                
+                // STEP 2: Process restricted (disconnected) nodes - first refresh cycle
+                for peer_id in restricted {
+                    if swarm.is_connected(&peer_id) {
+                        // Node reconnected! Move to pending_reconnects
+                        self.restricted_nodes.remove(&peer_id);
+                        self.pending_reconnects.insert(peer_id);
+                        needs_refresh = true;
+                        info!("✅ [PERIODIC_REFRESH] Node {} reconnected - will be unrestricted", peer_id);
+                    } else {
+                        // Node still disconnected - move to pending_removal (grace period ending)
+                        self.restricted_nodes.remove(&peer_id);
+                        self.pending_removal.insert(peer_id);
+                        warn!("⏰ [PERIODIC_REFRESH] Node {} still disconnected - moved to pending removal (will be removed next cycle if still down)", peer_id);
                     }
                 }
                 
@@ -4023,61 +4154,106 @@ impl NetworkLayer {
                 }
                 
                 // If new nodes are joining, schedule a delayed refresh WITHOUT blocking
+                // BUT only if total > 4 (refresh only happens after initial DKG with 4 nodes)
                 if has_new_nodes_joining {
-                    let delay_secs = Self::NEW_NODE_SHARE_COLLECTION_DELAY_SECS;
-                    info!("⏰ [PERIODIC_REFRESH] New nodes are joining - scheduling refresh in {} seconds (non-blocking)...", delay_secs);
-                    
-                    // Clone the message sender to use in the spawned task
-                    let tx = self.message_tx.clone();
-                    
-                    // Spawn a non-blocking task that will send DelayedRefreshTrigger after delay
-                    tokio::spawn(async move {
-                        tokio::time::sleep(tokio::time::Duration::from_secs(delay_secs)).await;
-                        info!("⏰ [DELAYED_REFRESH] {} seconds elapsed - triggering refresh now", delay_secs);
+                    let total = self.node_manager.get_total_nodes();
+                    if total > 4 {
+                        let delay_secs = Self::NEW_NODE_SHARE_COLLECTION_DELAY_SECS;
+                        info!("⏰ [PERIODIC_REFRESH] New nodes are joining (total: {}) - scheduling refresh in {} seconds (non-blocking)...", total, delay_secs);
                         
-                        if let Err(e) = tx.send(ChannelMessage::DelayedRefreshTrigger).await {
-                            error!("❌ [DELAYED_REFRESH] Failed to send delayed refresh trigger: {}", e);
-                        }
-                    });
-                    
-                    info!("✅ [PERIODIC_REFRESH] Refresh scheduled - event loop continues processing messages");
+                        // Clone the message sender to use in the spawned task
+                        let tx = self.message_tx.clone();
+                        
+                        // Spawn a non-blocking task that will send DelayedRefreshTrigger after delay
+                        tokio::spawn(async move {
+                            tokio::time::sleep(tokio::time::Duration::from_secs(delay_secs)).await;
+                            info!("⏰ [DELAYED_REFRESH] {} seconds elapsed - triggering refresh now", delay_secs);
+                            
+                            if let Err(e) = tx.send(ChannelMessage::DelayedRefreshTrigger).await {
+                                error!("❌ [DELAYED_REFRESH] Failed to send delayed refresh trigger: {}", e);
+                            }
+                        });
+                        
+                        info!("✅ [PERIODIC_REFRESH] Refresh scheduled - event loop continues processing messages");
+                    } else {
+                        info!("⏸️ [PERIODIC_REFRESH] New nodes joining but total ({}) <= 4 - skipping refresh (initial DKG will handle this)", total);
+                    }
                 } 
                 // Process disconnected/reconnected nodes ONLY if no new nodes are joining
+                // BUT only if total > 4 (refresh only happens after initial DKG with 4 nodes)
                 else if needs_refresh {
-                    info!("🔄 [PERIODIC_REFRESH] Triggering refresh for disconnect/reconnect changes");
-                    
-                    // Remove disconnected nodes from node_manager
-                    for peer_id in nodes_to_remove {
-                        if let Err(e) = self.node_manager.remove_node(peer_id) {
+                    // Permanently remove nodes that are pending removal
+                    info!("🗑️ [PERIODIC_REFRESH] Permanently removing {} nodes that were disconnected for full cycle", nodes_to_remove.len());
+                    for peer_id in &nodes_to_remove {
+                        if let Err(e) = self.node_manager.remove_node(*peer_id) {
                             warn!("⚠️ [PERIODIC_REFRESH] Failed to remove node {}: {}", peer_id, e);
+                        } else {
+                            warn!("❌ [PERIODIC_REFRESH] Permanently removed node {} (disconnected too long)", peer_id);
                         }
                     }
                     
-                    // Update parameters
+                    // Temporarily remove nodes in pending_removal (still being given last chance) before refresh
+                    let temp_removed_for_refresh: Vec<PeerId> = self.pending_removal.iter().cloned().collect();
+                    
+                    info!("🔄 [PERIODIC_REFRESH] Temporarily removing {} pending-removal nodes before refresh", temp_removed_for_refresh.len());
+                    for peer_id in &temp_removed_for_refresh {
+                        if let Err(e) = self.node_manager.remove_node(*peer_id) {
+                            warn!("⚠️ [PERIODIC_REFRESH] Failed to temporarily remove node {}: {}", peer_id, e);
+                        } else {
+                            info!("📤 [PERIODIC_REFRESH] Temporarily removed pending-removal node {}", peer_id);
+                        }
+                    }
+                    
+                    // Update parameters with active nodes only
                     let new_total = self.node_manager.get_total_nodes();
                     let new_threshold = self.node_manager.get_threshold();
                     
-                    if let Some(dkg_node) = &mut self.dkg_node {
-                        dkg_node.update_node_params(new_total, new_threshold);
-                    }
-                    
-                    if let Some(signing_node) = &mut self.signing_node {
-                        signing_node.set_threshold(new_threshold);
-                    }
-                    
-                    // Execute refresh
-                    if let Some(dkg_node) = &mut self.dkg_node {
-                        let dkg_status = dkg_node.get_status();
-                        if matches!(dkg_status, DKGStatus::Completed) {
-                            info!("🔄 [PERIODIC_REFRESH] Executing polynomial refresh with {} nodes", new_total);
-                            
-                            if let Err(e) = dkg_node.execute_polynomial_refresh(self.node_manager.clone()).await {
-                                error!("❌ [PERIODIC_REFRESH] Failed to execute resharing: {}", e);
+                    // Only trigger refresh if total > 4 (after initial DKG)
+                    if new_total > 4 {
+                        info!("🔄 [PERIODIC_REFRESH] Triggering refresh for disconnect/reconnect changes ({} active nodes)", new_total);
+                        
+                        if let Some(dkg_node) = &mut self.dkg_node {
+                            dkg_node.update_node_params(new_total, new_threshold);
+                        }
+                        
+                        if let Some(signing_node) = &mut self.signing_node {
+                            signing_node.set_threshold(new_threshold);
+                        }
+                        
+                        // Execute refresh
+                        if let Some(dkg_node) = &mut self.dkg_node {
+                            let dkg_status = dkg_node.get_status();
+                            if matches!(dkg_status, DKGStatus::Completed) {
+                                info!("🔄 [PERIODIC_REFRESH] Executing polynomial refresh with {} active nodes", new_total);
+                                
+                                if let Err(e) = dkg_node.execute_polynomial_refresh(self.node_manager.clone()).await {
+                                    error!("❌ [PERIODIC_REFRESH] Failed to execute resharing: {}", e);
+                                } else {
+                                    info!("✅ [PERIODIC_REFRESH] Resharing completed successfully");
+                                }
                             } else {
-                                info!("✅ [PERIODIC_REFRESH] Resharing completed successfully");
+                                warn!("⚠️ [PERIODIC_REFRESH] DKG not completed yet, skipping resharing");
                             }
+                        }
+                    } else {
+                        info!("⏸️ [PERIODIC_REFRESH] Disconnect/reconnect changes but active nodes ({}) <= 4 - skipping refresh", new_total);
+                        // Still update parameters even if not refreshing
+                        if let Some(dkg_node) = &mut self.dkg_node {
+                            dkg_node.update_node_params(new_total, new_threshold);
+                        }
+                        
+                        if let Some(signing_node) = &mut self.signing_node {
+                            signing_node.set_threshold(new_threshold);
+                        }
+                    }
+                    
+                    // Re-add pending-removal nodes back to node_manager (still have one more chance to reconnect)
+                    info!("🔄 [PERIODIC_REFRESH] Re-adding {} pending-removal nodes to node_manager", temp_removed_for_refresh.len());
+                    for peer_id in temp_removed_for_refresh {
+                        if let Err(e) = self.node_manager.add_node(peer_id) {
+                            warn!("⚠️ [PERIODIC_REFRESH] Failed to re-add node {}: {}", peer_id, e);
                         } else {
-                            warn!("⚠️ [PERIODIC_REFRESH] DKG not completed yet, skipping resharing");
+                            info!("📥 [PERIODIC_REFRESH] Re-added pending-removal node {} (last chance to reconnect)", peer_id);
                         }
                     }
                 } else {
@@ -4088,6 +4264,14 @@ impl NetworkLayer {
                 info!("🔄 [DELAYED_REFRESH] Delayed refresh trigger received - executing refresh now");
                 
                 // Execute the refresh that was scheduled after share collection delay
+                // BUT only if total > 4 (refresh only happens after initial DKG with 4 nodes)
+                let current_total = self.node_manager.get_total_nodes();
+                
+                if current_total <= 4 {
+                    info!("⏸️ [DELAYED_REFRESH] Total ({}) <= 4 - skipping refresh (initial DKG will handle this)", current_total);
+                    return Ok(());
+                }
+                
                 if let Some(dkg_node) = &mut self.dkg_node {
                     let dkg_status = dkg_node.get_status();
                     if matches!(dkg_status, DKGStatus::Completed) {
@@ -4106,6 +4290,23 @@ impl NetworkLayer {
                             error!("❌ [DELAYED_REFRESH] Failed to execute refresh: {}", e);
                         } else {
                             info!("✅ [DELAYED_REFRESH] Refresh completed successfully - new nodes now fully integrated");
+                            
+                            // Remove all nodes from pending_joins - they're now fully integrated
+                            let pending_count = self.pending_joins.len();
+                            self.pending_joins.clear();
+                            info!("✅ [DELAYED_REFRESH] Removed {} nodes from pending_joins - now ready for transactions", pending_count);
+                            
+                            // Subscribe to transaction topics now that refresh is complete
+                            // New nodes are now ready to participate in transactions
+                            let deposit_intents_topic = gossipsub::IdentTopic::new("deposit-intents");
+                            if !self.topics.contains(&deposit_intents_topic.hash()) {
+                                info!("🔔 [DELAYED_REFRESH] New node ready - subscribing to transaction topics");
+                                if let Err(e) = self.subscribe_to_transaction_topics(swarm) {
+                                    error!("❌ [DELAYED_REFRESH] Failed to subscribe to transaction topics: {}", e);
+                                } else {
+                                    info!("✅ [DELAYED_REFRESH] Successfully subscribed to transaction topics - node now ready for transactions");
+                                }
+                            }
                         }
                     } else {
                         warn!("⚠️ [DELAYED_REFRESH] DKG not completed yet, skipping refresh");
