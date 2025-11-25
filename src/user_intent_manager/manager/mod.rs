@@ -8,7 +8,7 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use super::checksum_from_any;
-use crate::database::RewardStorage;
+use crate::database::{LiquidityStorage, RewardStorage};
 use crate::database::{
     Database, DatabaseModule, IntentStorage, TransactionStatusStorage, UserStorage,
 };
@@ -33,6 +33,7 @@ pub struct UserIntentManager {
     intent_storage: IntentStorage,
     tx_status_storage: TransactionStatusStorage,
     reward_storage: RewardStorage,
+    liquidity_storage: LiquidityStorage,
     chain_code: [u8; 32],
     idempotency_index: Arc<Mutex<HashMap<String, String>>>,
 }
@@ -59,6 +60,7 @@ impl UserIntentManager {
             intent_storage: database_module.intent_storage(),
             tx_status_storage: database_module.transaction_status_storage(),
             reward_storage: database_module.reward_storage(),
+            liquidity_storage: database_module.liquidity_storage(),
             chain_code,
             idempotency_index: Arc::new(Mutex::new(HashMap::new())),
         }

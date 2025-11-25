@@ -5,7 +5,7 @@ use k256::{EncodedPoint, ProjectivePoint, Scalar};
 use rand::rngs::OsRng;
 use secp256k1::{PublicKey, Secp256k1, SecretKey};
 use std::sync::Arc;
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
 #[derive(Clone)]
 pub struct KeyStore {
@@ -200,8 +200,18 @@ impl KeyStore {
                 }
             }
             Some(TransactionType::WithdrawLiquidity) => {
-                warn!("❌ [SIGNING] WithdrawLiquidity transaction type not supported for key retrieval");
-                Err(anyhow!("WithdrawLiquidity transaction type not supported"))
+                if let Some(group_key) = self.group_public_key {
+                    let affine_point = group_key.to_affine();
+                    let encoded_point = EncodedPoint::from(affine_point);
+                    let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
+
+                    info!("🔑 [SIGNING] WithdrawLiquidity: Using DKG group public key");
+                    Ok(compressed_bytes)
+                } else {
+                    Err(anyhow!(
+                        "DKG group public key not available for WithdrawLiquidity transaction - ensure DKG process is completed"
+                    ))
+                }
             }
             None => {
                 if let Some(group_key) = self.group_public_key {

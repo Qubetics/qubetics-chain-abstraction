@@ -418,6 +418,28 @@ pub(crate) async fn wait_for_reward_transaction_ids(
     (latest_tics_tx, latest_btc_tx)
 }
 
+pub(crate) async fn wait_for_withdraw_liquidity_transaction_ids(
+    user_intent_manager: &UserIntentManager,
+    solver_address: &str,
+    expect_tics: bool,
+    expect_btc: bool,
+    previous_tics_tx_id: Option<String>,
+    previous_btc_tx_id: Option<String>,
+    timeout_secs: u64,
+) -> (Option<String>, Option<String>) {
+    // Reuse the same mechanism as rewards since both use solver transaction storage
+    wait_for_reward_transaction_ids(
+        user_intent_manager,
+        solver_address,
+        expect_tics,
+        expect_btc,
+        previous_tics_tx_id,
+        previous_btc_tx_id,
+        timeout_secs,
+    )
+    .await
+}
+
 // Helper function to get the actual DKG secret share from shared state
 pub(crate) async fn get_actual_dkg_secret_share(dkg_storage: Arc<DkgStorage>) -> Option<Scalar> {
     match dkg_storage.get_final_secret().await {

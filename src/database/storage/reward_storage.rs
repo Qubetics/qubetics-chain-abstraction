@@ -273,4 +273,5 @@ impl RewardStorage {
         self.db.delete_string(&key)?;
         Ok(())
     }
+
 }

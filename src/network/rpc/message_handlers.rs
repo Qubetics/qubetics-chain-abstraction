@@ -264,7 +264,7 @@ impl MpcNetworkLayer {
 
     /// Handle reward transaction ID storage
     pub(crate) async fn handle_reward_transaction_id_storage(
-        &self,
+        &mut self,
         solver_address: &str,
         transaction_id: &str,
         transaction_type: &str,
@@ -312,9 +312,56 @@ impl MpcNetworkLayer {
                         network
                     );
 
+                    if let Err(e) = user_intent_manager
+                        .set_solver_add_liquidity_txn_hash(
+                            solver_address,
+                            network,
+                            transaction_id.to_string(),
+                        )
+                        .await
+                    {
+                        warn!(
+                            "⚠️ [NETWORK] Failed to store add-liquidity txn hash for solver {}: {}",
+                            solver_address, e
+                        );
+                    }
+
                     // Update claimed amounts and reduce rewards
-                    self.update_reward_claims(solver_address, network, transaction_id)
-                        .await?;
+                    if let Some(amount) = self
+                        .update_reward_claims(solver_address, network, transaction_id)
+                        .await?
+                    {
+                        let (btc_amount, tics_amount) = match network {
+                            TransactionNetwork::BTC => (Some(amount), None),
+                            TransactionNetwork::TICS => (None, Some(amount)),
+                        };
+
+                        let convert_amount = |value: Option<ethers::types::U256>| -> Option<u128> {
+                            value.and_then(|v| {
+                                if v.bits() > 128 {
+                                    warn!(
+                                        "⚠️ [NETWORK] Reward amount {} exceeds u128, skipping contract update",
+                                        v
+                                    );
+                                    None
+                                } else {
+                                    Some(v.low_u128())
+                                }
+                            })
+                        };
+
+                        let btc_u128 = convert_amount(btc_amount);
+                        let tics_u128 = convert_amount(tics_amount);
+
+                        if btc_u128.is_some() || tics_u128.is_some() {
+                            self.submit_solver_reward_contract_update(
+                                solver_address,
+                                btc_u128,
+                                tics_u128,
+                            )
+                            .await?;
+                        }
+                    }
                 }
                 Err(e) => {
                     error!(
@@ -335,7 +382,7 @@ impl MpcNetworkLayer {
         solver_address: &str,
         reward_network: TransactionNetwork,
         transaction_id: &str,
-    ) -> Result<()> {
+    ) -> Result<Option<ethers::types::U256>> {
         if let Some(user_intent_manager) = &self.user_intent_manager {
             let (currency_label, current_reward) = match reward_network {
                 TransactionNetwork::TICS => (
@@ -398,6 +445,7 @@ impl MpcNetworkLayer {
                             "✅ [NETWORK-REWARD] Successfully processed {} reward transaction {} for solver {}: claimed={}, remaining_reward=0",
                             currency_label, transaction_id, solver_address, new_claimed
                         );
+                        return Ok(Some(current_reward));
                     }
                     Err(e) => {
                         error!(
@@ -413,6 +461,125 @@ impl MpcNetworkLayer {
                 );
             }
         }
+        Ok(None)
+    }
+
+    /// Handle withdraw liquidity transaction ID storage
+    pub(crate) async fn handle_withdraw_liquidity_transaction_id_storage(
+        &mut self,
+        solver_address: &str,
+        transaction_id: &str,
+        transaction_type: &str,
+    ) -> Result<()> {
+        if let Some(user_intent_manager) = &self.user_intent_manager {
+            let Some(network) =
+                withdraw_liquidity_network_from_tx_id(transaction_type, transaction_id)
+            else {
+                warn!(
+                    "❌ [NETWORK] Unknown withdraw liquidity transaction type '{}' for tx {}; skipping storage",
+                    transaction_type, transaction_id
+                );
+                return Ok(());
+            };
+
+            let storage_result = match network {
+                TransactionNetwork::TICS => {
+                    user_intent_manager
+                        .add_solver_tics_txn_hash(solver_address, transaction_id.to_string())
+                        .await
+                }
+                TransactionNetwork::BTC => {
+                    user_intent_manager
+                        .add_solver_btc_txn_hash(solver_address, transaction_id.to_string())
+                        .await
+                }
+            };
+
+            match storage_result {
+                Ok(()) => {
+                    // Store transaction status
+                    if let Err(e) = user_intent_manager
+                        .store_transaction_status(&transaction_id, TransactionStatus::Pending)
+                        .await
+                    {
+                        error!(
+                            "❌ [NETWORK] Failed to store transaction status for withdraw liquidity tx {}: {}",
+                            transaction_id, e
+                        );
+                    }
+                    info!(
+                        "✅ [NETWORK] Successfully synchronized withdraw liquidity transaction ID {} for solver {} (network: {:?})",
+                        transaction_id,
+                        solver_address,
+                        network
+                    );
+
+                    if let Err(e) = user_intent_manager
+                        .add_solver_remove_liquidity_txn_hash(
+                            solver_address,
+                            network,
+                            transaction_id.to_string(),
+                        )
+                        .await
+                    {
+                        warn!(
+                            "⚠️ [NETWORK] Failed to store remove-liquidity txn hash for solver {}: {}",
+                            solver_address, e
+                        );
+                    }
+
+                    info!(
+                        "💧 [NETWORK] Checking pending withdraw amount for solver {} ({:?})",
+                        solver_address, network
+                    );
+                    if let Some(amount) = self
+                        .take_pending_liquidity_contract_update_amount(solver_address, network)
+                        .await
+                    {
+                        let chain_name = match network {
+                            TransactionNetwork::TICS => "qubetics",
+                            TransactionNetwork::BTC => "btc",
+                        };
+                        info!(
+                            "💧 [NETWORK] Initiating contract liquidity update for solver {} on {} amount {} after tx {}",
+                            solver_address, chain_name, amount, transaction_id
+                        );
+                        if let Err(e) = self
+                            .submit_solver_liquidity_contract_update(
+                                solver_address,
+                                chain_name,
+                                amount,
+                            )
+                            .await
+                        {
+                            error!(
+                                "❌ [NETWORK] Failed to submit contract liquidity update for solver {} after tx {}: {}",
+                                solver_address, transaction_id, e
+                            );
+                        } else {
+                            info!(
+                                "✅ [NETWORK] Submitted contract liquidity update for solver {} (chain: {}, amount: {})",
+                                solver_address, chain_name, amount
+                            );
+                        }
+                    } else {
+                        info!(
+                            "ℹ️ [NETWORK] No pending liquidity update amount found for solver {} after tx {}; skipping contract update",
+                            solver_address, transaction_id
+                        );
+                    }
+
+                }
+                Err(e) => {
+                    error!(
+                        "❌ [NETWORK] Failed to store synchronized withdraw liquidity transaction ID for solver {}: {}",
+                        solver_address, e
+                    );
+                }
+            }
+        } else {
+            warn!("❌ [NETWORK] No user registry available to store synchronized transaction ID");
+        }
         Ok(())
     }
 }
@@ -423,6 +590,22 @@ fn reward_network_from_tx_id(
 ) -> Option<TransactionNetwork> {
     match transaction_type {
         "reward_txn" => {
+            if transaction_id.starts_with("0x") {
+                Some(TransactionNetwork::TICS)
+            } else {
+                Some(TransactionNetwork::BTC)
+            }
+        }
+        _ => None,
+    }
+}
+
+fn withdraw_liquidity_network_from_tx_id(
+    transaction_type: &str,
+    transaction_id: &str,
+) -> Option<TransactionNetwork> {
+    match transaction_type {
+        "withdraw_liquidity" | "withdrawLiquidity" => {
             if transaction_id.starts_with("0x") {
                 Some(TransactionNetwork::TICS)
             } else {

@@ -1,7 +1,10 @@
 use super::SigningNode;
 use crate::{
     chain_abstraction::ChainTransaction,
-    types::{intent::DepositIntent, ChannelMessage, TransactionNetwork, TransactionStatus},
+    types::{
+        intent::DepositIntent, ChannelMessage, TransactionNetwork, TransactionStatus,
+        TransactionType,
+    },
 };
 use anyhow::{anyhow, Result};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -27,6 +30,62 @@ impl SigningNode {
         );
     }
 
+    pub(crate) async fn store_withdraw_transaction_tics(
+        &self,
+        round: u64,
+        chain_tx: ChainTransaction,
+        tx_bytes: Vec<u8>,
+        solver_address: String,
+    ) {
+        let mut pending = self
+            .pending
+            .withdraw_pending_transactions_tics
+            .write()
+            .await;
+        pending.insert(
+            round,
+            (
+                chain_tx,
+                tx_bytes,
+                Some(solver_address),
+                Some(TransactionType::WithdrawLiquidity),
+            ),
+        );
+        info!(
+            "💧 [SIGNING] Stored TICS withdraw-liquidity transaction for round {} with solver address",
+            round
+        );
+    }
+
+    pub(crate) async fn store_withdraw_transaction_btc(
+        &self,
+        round: u64,
+        chain_tx: ChainTransaction,
+        tx_bytes: Vec<u8>,
+        solver_address: String,
+        extras: crate::signing::state::BtcRoundExtras,
+    ) {
+        let mut pending = self
+            .pending
+            .withdraw_pending_transactions_btc
+            .write()
+            .await;
+        pending.insert(
+            round,
+            (
+                chain_tx,
+                tx_bytes,
+                Some(solver_address),
+                Some(TransactionType::WithdrawLiquidity),
+                Some(extras),
+            ),
+        );
+        info!(
+            "💧 [SIGNING] Stored BTC withdraw-liquidity transaction for round {} with solver address",
+            round
+        );
+    }
+
     pub(crate) async fn store_transaction_error_for_round(
         &self,
         round: u64,
@@ -38,6 +97,11 @@ impl SigningNode {
             reward_rounds.contains(&round)
         };
 
+        let is_withdraw_round = {
+            let withdraw_rounds = self.pending.withdraw_rounds.read().await;
+            withdraw_rounds.contains(&round)
+        };
+
         let (intent_hash, transaction_type, retrieved_solver_address) = match txn_network {
             TransactionNetwork::TICS => {
                 if is_reward_round {
@@ -45,6 +109,16 @@ impl SigningNode {
                         self.pending.reward_pending_transactions_tics.read().await;
                     if let Some((_tx, _tx_bytes, solver_address, transaction_type)) =
                         reward_pending_transactions.get(&round)
+                    {
+                        (None, transaction_type.clone(), solver_address.clone())
+                    } else {
+                        (None, None, None)
+                    }
+                } else if is_withdraw_round {
+                    let withdraw_pending_transactions =
+                        self.pending.withdraw_pending_transactions_tics.read().await;
+                    if let Some((_tx, _tx_bytes, solver_address, transaction_type)) =
+                        withdraw_pending_transactions.get(&round)
                     {
                         (None, transaction_type.clone(), solver_address.clone())
                     } else {
@@ -65,6 +139,16 @@ impl SigningNode {
                         self.pending.reward_pending_transactions_btc.read().await;
                     if let Some((_tx, _tx_bytes, solver_address, transaction_type, _extras)) =
                         reward_pending_transactions_btc.get(&round)
+                    {
+                        (None, transaction_type.clone(), solver_address.clone())
+                    } else {
+                        (None, None, None)
+                    }
+                } else if is_withdraw_round {
+                    let withdraw_pending_transactions_btc =
+                        self.pending.withdraw_pending_transactions_btc.read().await;
+                    if let Some((_tx, _tx_bytes, solver_address, transaction_type, _extras)) =
+                        withdraw_pending_transactions_btc.get(&round)
                     {
                         (None, transaction_type.clone(), solver_address.clone())
                     } else {
@@ -277,6 +361,12 @@ impl SigningNode {
             "💾 [SIGNING] Is reward round: {}",
             is_reward_round
         );
+        let is_withdraw_round = {
+            let withdraw_rounds = self.pending.withdraw_rounds.read().await;
+            withdraw_rounds.contains(&round)
+        };
+        info!("💾 [SIGNING] Is withdraw round: {}", is_withdraw_round);
+
         let (intent_hash, transaction_type, retrieved_solver_address) = match txn_network {
             TransactionNetwork::TICS => {
                 if is_reward_round {
@@ -289,6 +379,18 @@ impl SigningNode {
                         (None, transaction_type.clone(), solver_address.clone())
                     } else {
                         warn!("[store_transaction_id_for_round] [TICS][Reward] No entry in reward_pending_transactions_tics for round {}", round);
+                        (None, None, None)
+                    }
+                } else if is_withdraw_round {
+                    let withdraw_pending_transactions =
+                        self.pending.withdraw_pending_transactions_tics.read().await;
+                    if let Some((_tx, _tx_bytes, solver_address, transaction_type)) =
+                        withdraw_pending_transactions.get(&round)
+                    {
+                        info!("[store_transaction_id_for_round] [TICS][Withdraw] Found withdraw_pending_transactions_tics entry for round {}: solver_address={:?}, transaction_type={:?}", round, solver_address, transaction_type);
+                        (None, transaction_type.clone(), solver_address.clone())
+                    } else {
+                        warn!("[store_transaction_id_for_round] [TICS][Withdraw] No entry in withdraw_pending_transactions_tics for round {}", round);
                         (None, None, None)
                     }
                 } else {
@@ -315,6 +417,18 @@ impl SigningNode {
                         (None, transaction_type.clone(), solver_address.clone())
                     } else {
                         warn!("[store_transaction_id_for_round] [BTC][Reward] No entry in reward_pending_transactions_btc for round {}", round);
+                        (None, None, None)
+                    }
+                } else if is_withdraw_round {
+                    let withdraw_pending_transactions_btc =
+                        self.pending.withdraw_pending_transactions_btc.read().await;
+                    if let Some((_tx, _tx_bytes, solver_address, transaction_type, _extras)) =
+                        withdraw_pending_transactions_btc.get(&round)
+                    {
+                        info!("[store_transaction_id_for_round] [BTC][Withdraw] Found withdraw_pending_transactions_btc entry for round {}: solver_address={:?}, transaction_type={:?}", round, solver_address, transaction_type);
+                        (None, transaction_type.clone(), solver_address.clone())
+                    } else {
+                        warn!("[store_transaction_id_for_round] [BTC][Withdraw] No entry in withdraw_pending_transactions_btc for round {}", round);
                         (None, None, None)
                     }
                 } else {
@@ -398,11 +512,15 @@ impl SigningNode {
                         ("vault_to_network", result)
                     }
                     Some(crate::types::TransactionType::WithdrawLiquidity) => {
-                        warn!(
-                            "⚠️ [SIGNING] WithdrawLiquidity transaction type is not supported in store_transaction_id_for_round (round {}, tx_id={})",
-                            round, tx_id
+                        // Withdraw liquidity transactions should never have an intent_hash
+                        // If we reach here, it's an error condition
+                        error!(
+                            "❌ [SIGNING] WithdrawLiquidity transaction type found with intent_hash - this is invalid. Withdraw liquidity transactions should not have intent_hash."
                         );
-                        return;
+                        (
+                            "withdraw_liquidity",
+                            Err("WithdrawLiquidity should not have intent_hash".to_string()),
+                        )
                     }
                     Some(crate::types::TransactionType::RewardTxn) => {
                         // Reward transactions should never have an intent_hash
@@ -485,12 +603,13 @@ impl SigningNode {
                         );
                     }
 
-                    // For reward transactions, broadcast with None for intent_hash and solver_address
+                    // For reward and withdraw liquidity transactions, broadcast with None for intent_hash and solver_address
                     // For other transaction types, broadcast with intent_hash
-                    if transaction_type_str == "reward_txn" {
+                    if transaction_type_str == "reward_txn" || transaction_type_str == "withdraw_liquidity" || transaction_type_str == "withdrawLiquidity" {
+                        let tx_type_label = if transaction_type_str == "reward_txn" { "reward" } else { "withdraw liquidity" };
                         info!(
-                            "✅ [SIGNING] Successfully synchronized reward transaction ID {} for solver {:?} (type: {})",
-                            tx_id, retrieved_solver_address, transaction_type_str
+                            "✅ [SIGNING] Successfully synchronized {} transaction ID {} for solver {:?} (type: {})",
+                            tx_type_label, tx_id, retrieved_solver_address, transaction_type_str
                         );
 
                         self.broadcast_transaction_id(
@@ -610,10 +729,77 @@ impl SigningNode {
                     transaction_type,
                     Some(crate::types::TransactionType::WithdrawLiquidity)
                 ) {
-                    warn!(
-                        "⚠️ [SIGNING] WithdrawLiquidity transaction type not supported in reward path (round {}, tx_id={})",
-                        round, tx_id
-                    );
+                    // Handle withdraw liquidity transactions similar to rewards
+                    if let Some(solver_addr) = retrieved_solver_address.as_ref() {
+                        let (transaction_type_str, storage_result) = match txn_network {
+                            TransactionNetwork::TICS => {
+                                let result = user_intent_manager
+                                    .add_solver_tics_txn_hash(solver_addr, tx_id.to_string())
+                                    .await
+                                    .map_err(|e| e.to_string());
+                                if let Err(e) = &result {
+                                    error!(
+                                        "❌ [SIGNING] Failed to store TICS withdraw liquidity transaction hash for solver {}: {}",
+                                        solver_addr, e
+                                    );
+                                } else {
+                                    info!(
+                                        "💾 [SIGNING] Stored TICS withdraw liquidity transaction hash {} for solver {} (round {})",
+                                        tx_id, solver_addr, round
+                                    );
+                                }
+                                ("withdraw_liquidity", result)
+                            }
+                            TransactionNetwork::BTC => {
+                                let result = user_intent_manager
+                                    .add_solver_btc_txn_hash(solver_addr, tx_id.to_string())
+                                    .await
+                                    .map_err(|e| e.to_string());
+                                if let Err(e) = &result {
+                                    error!(
+                                        "❌ [SIGNING] Failed to store BTC withdraw liquidity transaction hash for solver {}: {}",
+                                        solver_addr, e
+                                    );
+                                } else {
+                                    info!(
+                                        "💾 [SIGNING] Stored BTC withdraw liquidity transaction hash {} for solver {} (round {})",
+                                        tx_id, solver_addr, round
+                                    );
+                                }
+                                ("withdraw_liquidity", result)
+                            }
+                        };
+
+                        if storage_result.is_ok() {
+                            if let Err(e) = user_intent_manager
+                                .store_transaction_status(tx_id, TransactionStatus::Pending)
+                                .await
+                            {
+                                error!(
+                                    "❌ [SIGNING] Failed to store transaction status for withdraw liquidity tx {}: {}",
+                                    tx_id, e
+                                );
+                            }
+
+                            info!(
+                                "✅ [SIGNING] Successfully synchronized withdraw liquidity transaction ID {} for solver {} (type: {})",
+                                tx_id, solver_addr, transaction_type_str
+                            );
+
+                            self.broadcast_transaction_id(
+                                None,
+                                tx_id,
+                                transaction_type_str,
+                                Some(solver_addr),
+                            )
+                            .await;
+                        }
+                    } else {
+                        warn!(
+                            "⚠️ [SIGNING] WithdrawLiquidity transaction type requires solver_address, but none was found in round {} (tx_id={})",
+                            round, tx_id
+                        );
+                    }
                 }
             }
             (_, None) => {

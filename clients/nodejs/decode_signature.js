@@ -1,7 +1,7 @@
 import { ethers } from 'ethers';
 
 // Raw signed transaction from your logs
-const rawTx = '0xf86b8007830493e094cbe1cd9e71f6f5b2c7d08b3c7d0fc608b1b64e9389015f1ba7f471620000808246aea024653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1ca02ea3c5687c7edeb6cee3ea3e83894d29f7511972f401a8f00ff362a58678461d';
+const rawTx = '0xf86201078301c62f9449bb70cad5e237ca1866bf860d3a45b89413498680808246ada024653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1ca0699c5d1c405213662cc3af76d18577c3ab5eaf9c803e6dbc1ec47bfc2cbfd993';
 
 try {
     // Parse the transaction (ethers v6)

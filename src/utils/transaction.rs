@@ -1155,6 +1155,142 @@ pub async fn create_chain_transaction_from_contract_call(
     Ok(ChainTransaction::Ethereum(ethereum_tx))
 }
 
+pub async fn create_solver_rewards_update_transaction(
+    from_address: &str,
+    solver_address: &str,
+    rewards: &[U256],
+    contract_address: &str,
+    chain_id: u64,
+    chain_name: &str,
+) -> Result<ChainTransaction> {
+    let normalized_contract_address = if contract_address.starts_with("0x") {
+        contract_address.to_string()
+    } else {
+        format!("0x{}", contract_address)
+    };
+
+    info!("🔧 [CONTRACT] Solver address: {}", solver_address);
+    info!("🔧 [CONTRACT] Rewards: {:?}", rewards);
+    info!("🔧 [CONTRACT] Contract address: {}", normalized_contract_address);
+    info!("🔧 [CONTRACT] Chain ID: {}", chain_id);
+    info!("🔧 [CONTRACT] Chain name: {}", chain_name);
+    info!("🔧 [CONTRACT] From address: {}", from_address);
+
+    let calldata = encode_update_solver_rewards_calldata(solver_address, rewards);
+    info!("🔧 [CONTRACT] Calldata: {:?}", calldata);
+    let calldata_hex = calldata
+    .as_ref()
+    .map(|d| format!("0x{}", hex::encode(d)))
+    .unwrap_or_else(|| "0x".to_string());
+
+    info!("🔧 [CONTRACT] Calldata prepared: {}", calldata_hex);
+
+    let estimated_gas = estimate_gas_for_deposit_intent(
+        from_address,
+        &normalized_contract_address,
+        &calldata_hex,
+        chain_id,
+    )
+    .await
+    .unwrap_or(300000);
+    let gas_limit = estimated_gas + (estimated_gas / 10); 
+
+    let gas_price = get_gas_price_for_chain("qubetics", chain_id)
+        .await
+        .unwrap_or_else(|e| {
+            warn!("⚠️ Failed to get dynamic gas price: {}, using fallback", e);
+            get_default_gas_price_for_chain("qubetics")
+        });
+    let nonce = fetch_ethereum_nonce(from_address, chain_id).await?;
+
+    let ethereum_tx = EthereumTransaction {
+        to: normalized_contract_address,
+        value: "0x0".to_string(),
+        gas_limit,
+        gas_price,
+        nonce,
+        data: calldata,
+        chain_id,
+    };
+
+    Ok(ChainTransaction::Ethereum(ethereum_tx))
+}
+
+pub async fn create_solver_remove_liquidity_transaction(
+    from_address: &str,
+    solver_id: &str,
+    asset_chain_id: U256,
+    amount: U256,
+    contract_address: &str,
+    chain_id: u64,
+    chain_name: &str,
+) -> Result<EthereumTransaction> {
+    let normalized_contract_address = if contract_address.starts_with("0x") {
+        contract_address.to_string()
+    } else {
+        format!("0x{}", contract_address)
+    };
+
+    info!(
+        "🔧 [CONTRACT][LIQ] Preparing removeLiquidity(solver_id={}, asset_chain_id={}, amount={}) call on {} (chain_id={}, chain_name={}, from={})",
+        solver_id,
+        asset_chain_id,
+        amount,
+        normalized_contract_address,
+        chain_id,
+        chain_name,
+        from_address
+    );
+
+    let calldata = encode_remove_liquidity_calldata(solver_id, asset_chain_id, amount)
+        .ok_or_else(|| anyhow::anyhow!("Failed to encode removeLiquidity calldata"))?;
+    let calldata_hex = format!("0x{}", hex::encode(&calldata));
+    info!(
+        "🔧 [CONTRACT][LIQ] removeLiquidity calldata: {} ({} bytes)",
+        calldata_hex,
+        calldata.len()
+    );
+
+    let estimated_gas = estimate_gas_for_deposit_intent(
+        from_address,
+        &normalized_contract_address,
+        &calldata_hex,
+        chain_id,
+    )
+    .await
+    .unwrap_or(200000);
+    let gas_limit = estimated_gas + (estimated_gas / 5).max(25_000);
+    info!(
+        "🔧 [CONTRACT][LIQ] Estimated gas={} -> gas_limit={}",
+        estimated_gas, gas_limit
+    );
+
+    let gas_price = get_gas_price_for_chain(chain_name, chain_id)
+        .await
+        .unwrap_or_else(|_| get_default_gas_price_for_chain(chain_name));
+    info!(
+        "🔧 [CONTRACT][LIQ] Gas price (wei): {}",
+        gas_price
+    );
+    let nonce = fetch_ethereum_nonce(from_address, chain_id).await?;
+    info!(
+        "🔧 [CONTRACT][LIQ] Nonce for {} on chain {}: {}",
+        from_address, chain_id, nonce
+    );
+
+    let ethereum_tx = EthereumTransaction {
+        to: normalized_contract_address,
+        value: "0x0".to_string(),
+        gas_limit,
+        gas_price,
+        nonce,
+        data: Some(calldata),
+        chain_id,
+    };
+
+    Ok(ethereum_tx)
+}
+
 pub fn encode_deposit_intent_calldata(
     source_address: &str,
     target_address: &str,
@@ -1326,6 +1462,86 @@ pub fn encode_fulfill_intent_calldata(
         Token::String(transaction_hash.to_owned()),
         Token::String(intent_id.to_owned()),
         Token::String(timestamp.to_owned()),
+    ];
+
+    f.encode_input(&tokens).ok()
+}
+
+pub fn encode_update_solver_rewards_calldata(
+    solver_address: &str,
+    rewards: &[U256],
+) -> Option<Vec<u8>> {
+    #[allow(deprecated)]
+    let f = Function {
+        name: "updateSolverRewards".to_owned(),
+        inputs: vec![
+            Param {
+                name: "solverAddress".into(),
+                kind: ParamType::Address,
+                internal_type: None,
+            },
+            Param {
+                name: "rewards".into(),
+                kind: ParamType::Array(Box::new(ParamType::Uint(256))),
+                internal_type: None,
+            },
+        ],
+        outputs: vec![],
+        constant: None,
+        state_mutability: StateMutability::NonPayable,
+    };
+
+    let solver_addr = solver_address
+        .parse::<ethers::types::Address>()
+        .ok()?;
+
+    let tokens = vec![
+        Token::Address(solver_addr),
+        Token::Array(
+            rewards
+                .iter()
+                .map(|value| Token::Uint(*value))
+                .collect::<Vec<_>>(),
+        ),
+    ];
+
+    f.encode_input(&tokens).ok()
+}
+
+pub fn encode_remove_liquidity_calldata(
+    solver_id: &str,
+    chain_id: U256,
+    amount: U256,
+) -> Option<Vec<u8>> {
+    #[allow(deprecated)]
+    let f = Function {
+        name: "removeLiquidity".to_owned(),
+        inputs: vec![
+            Param {
+                name: "solverId".into(),
+                kind: ParamType::String,
+                internal_type: None,
+            },
+            Param {
+                name: "chainId".into(),
+                kind: ParamType::Uint(256),
+                internal_type: None,
+            },
+            Param {
+                name: "amount".into(),
+                kind: ParamType::Uint(256),
+                internal_type: None,
+            },
+        ],
+        outputs: vec![],
+        constant: None,
+        state_mutability: StateMutability::NonPayable,
+    };
+
+    let tokens = vec![
+        Token::String(solver_id.to_owned()),
+        Token::Uint(chain_id),
+        Token::Uint(amount),
     ];
 
     f.encode_input(&tokens).ok()

@@ -173,6 +173,8 @@ pub struct WithdrawLiquidityRequest {
     pub message: String,
     pub ethereum_address: Option<String>,
     pub btc_address: Option<String>,
+    pub amount_tics: Option<String>,
+    pub amount_btc: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -183,6 +185,8 @@ pub struct WithdrawLiquidityResponse {
     pub liquidity_tics: Option<String>,
     pub ethereum_address: Option<String>,
     pub btc_address: Option<String>,
+    pub tics_withdraw_tx_id: Option<String>,
+    pub btc_withdraw_tx_id: Option<String>,
     pub message: String,
     pub error_message: Option<String>,
 }

@@ -1,4 +1,5 @@
 use super::*;
+use crate::types::intent::TransactionNetwork;
 use tracing::{error, info};
 
 impl UserIntentManager {
@@ -449,6 +450,77 @@ impl UserIntentManager {
                     e
                 );
                 e
+            })
+    }
+
+    pub async fn set_solver_add_liquidity_txn_hash(
+        &self,
+        solver_address: &str,
+        network: TransactionNetwork,
+        tx_id: String,
+    ) -> Result<(), String> {
+        self.liquidity_storage
+            .set_add_liquidity_tx_id(solver_address, network, tx_id)
+            .await
+            .map_err(|e| {
+                error!(
+                    "❌ [DB_USER_REGISTRY] Failed to store add-liquidity txn hash for solver {}: {}",
+                    solver_address, e
+                );
+                e.to_string()
+            })
+    }
+
+    pub async fn add_solver_remove_liquidity_txn_hash(
+        &self,
+        solver_address: &str,
+        network: TransactionNetwork,
+        tx_id: String,
+    ) -> Result<(), String> {
+        self.liquidity_storage
+            .set_remove_liquidity_tx_id(solver_address, network, tx_id)
+            .await
+            .map_err(|e| {
+                error!(
+                    "❌ [DB_USER_REGISTRY] Failed to store remove-liquidity txn hash for solver {}: {}",
+                    solver_address, e
+                );
+                e.to_string()
+            })
+    }
+
+    pub async fn set_pending_remove_liquidity_amount(
+        &self,
+        solver_address: &str,
+        network: TransactionNetwork,
+        amount: String,
+    ) -> Result<(), String> {
+        self.liquidity_storage
+            .set_pending_remove_liquidity_amount(solver_address, network, amount)
+            .await
+            .map_err(|e| {
+                error!(
+                    "❌ [DB_USER_REGISTRY] Failed to store pending remove-liquidity amount for solver {}: {}",
+                    solver_address, e
+                );
+                e.to_string()
+            })
+    }
+
+    pub async fn take_pending_remove_liquidity_amount(
+        &self,
+        solver_address: &str,
+        network: TransactionNetwork,
+    ) -> Result<Option<String>, String> {
+        self.liquidity_storage
+            .take_pending_remove_liquidity_amount(solver_address, network)
+            .await
+            .map_err(|e| {
+                error!(
+                    "❌ [DB_USER_REGISTRY] Failed to read pending remove-liquidity amount for solver {}: {}",
+                    solver_address, e
+                );
+                e.to_string()
             })
     }
 }

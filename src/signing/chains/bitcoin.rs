@@ -363,6 +363,30 @@ impl SigningNode {
                     "💾 [BTC-SIGNING] Node {} stored BTC reward transaction for round {} with solver address: {} (inputs={})",
                     self.id, current_round, solver_addr, original_tx.inputs.len()
                 );
+            } else if let Some(TransactionType::WithdrawLiquidity) = transaction_type {
+                let solver_addr = solver_address.expect("Solver address should be validated above");
+                self.store_withdraw_transaction_btc(
+                    current_round,
+                    ChainTransaction::Bitcoin(original_tx.clone()),
+                    tx_bytes.clone(),
+                    solver_addr.clone(),
+                    extras,
+                )
+                .await;
+
+                {
+                    let mut withdraw_rounds = self.pending.withdraw_rounds.write().await;
+                    withdraw_rounds.insert(current_round);
+                    info!(
+                        "💧 [BTC-SIGNING] Node {} added round {} to withdraw_rounds",
+                        self.id, current_round
+                    );
+                }
+
+                info!(
+                    "💾 [BTC-SIGNING] Node {} stored BTC withdraw-liquidity transaction for round {} with solver address: {} (inputs={})",
+                    self.id, current_round, solver_addr, original_tx.inputs.len()
+                );
             } else {
                 // This is an intent-based transaction - store in regular pending transactions
                 let mut pending = self.pending.pending_transactions_btc.write().await;

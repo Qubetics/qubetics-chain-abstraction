@@ -80,6 +80,21 @@ pub struct PendingStore {
     >,
     pub reward_pending_transactions_btc: Arc<RwLock<HashMap<u64, PendingValue>>>, // round -> (original_tx, tx_bytes, solver_address, None, extras) for BTC rewards
     pub reward_rounds: Arc<RwLock<HashSet<u64>>>, // Set of rounds that are reward transactions
+    pub withdraw_pending_transactions_tics: Arc<
+        RwLock<
+            HashMap<
+                u64,
+                (
+                    ChainTransaction,
+                    Vec<u8>,
+                    Option<String>,
+                    Option<TransactionType>,
+                ),
+            >,
+        >,
+    >,
+    pub withdraw_pending_transactions_btc: Arc<RwLock<HashMap<u64, PendingValue>>>,
+    pub withdraw_rounds: Arc<RwLock<HashSet<u64>>>,
 }
 
 impl PendingStore {
@@ -90,6 +105,9 @@ impl PendingStore {
             reward_pending_transactions_tics: Arc::new(RwLock::new(HashMap::new())),
             reward_pending_transactions_btc: Arc::new(RwLock::new(HashMap::new())),
             reward_rounds: Arc::new(RwLock::new(HashSet::new())),
+            withdraw_pending_transactions_tics: Arc::new(RwLock::new(HashMap::new())),
+            withdraw_pending_transactions_btc: Arc::new(RwLock::new(HashMap::new())),
+            withdraw_rounds: Arc::new(RwLock::new(HashSet::new())),
         }
     }
 }

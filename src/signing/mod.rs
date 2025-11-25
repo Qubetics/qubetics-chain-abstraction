@@ -1793,6 +1793,10 @@ impl SigningNode {
                             let reward_rounds = self.pending.reward_rounds.read().await;
                             reward_rounds.contains(&round)
                         };
+                        let is_withdraw_round = {
+                            let withdraw_rounds = self.pending.withdraw_rounds.read().await;
+                            withdraw_rounds.contains(&round)
+                        };
 
                         let is_contract_tx = if is_reward_round {
                             // This is a reward transaction - check reward pending transactions for TICS (Ethereum)
@@ -1807,6 +1811,22 @@ impl SigningNode {
                                             && !eth_tx.data.as_ref().unwrap().is_empty()
                                     }
                                     _ => false, // Only handle Ethereum transactions in this function
+                                }
+                            } else {
+                                false
+                            }
+                        } else if is_withdraw_round {
+                            let withdraw_pending_transactions =
+                                self.pending.withdraw_pending_transactions_tics.read().await;
+                            if let Some((chain_tx, _tx_bytes, _solver_address, _transaction_type)) =
+                                withdraw_pending_transactions.get(&round)
+                            {
+                                match chain_tx {
+                                    ChainTransaction::Ethereum(eth_tx) => {
+                                        eth_tx.data.is_some()
+                                            && !eth_tx.data.as_ref().unwrap().is_empty()
+                                    }
+                                    _ => false,
                                 }
                             } else {
                                 false

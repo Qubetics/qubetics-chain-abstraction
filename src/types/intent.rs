@@ -9,7 +9,7 @@ pub enum TransactionType {
     WithdrawLiquidity,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum TransactionNetwork {
     /// EVM/TICS transactions
     TICS,

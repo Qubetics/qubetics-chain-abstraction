@@ -381,6 +381,40 @@ impl SigningNode {
                 "💾 [SIGNING] Node {} stored reward transaction for round {} with solver address: {}",
                 self.id, round, solver_addr
             );
+        } else if let Some(TransactionType::WithdrawLiquidity) = transaction_type {
+            let solver_addr = solver_address.expect("Solver address should be validated above");
+            let chain_tx =
+                ChainTransaction::Ethereum(crate::chain_abstraction::EthereumTransaction {
+                    to: transaction.to.clone(),
+                    value: transaction.value.clone(),
+                    gas_limit: transaction.gas_limit,
+                    gas_price: transaction.gas_price.clone(),
+                    nonce: transaction.nonce,
+                    data: None,
+                    chain_id: transaction.chain_id,
+                });
+
+            self.store_withdraw_transaction_tics(
+                round,
+                chain_tx,
+                tx_bytes.clone(),
+                solver_addr.clone(),
+            )
+            .await;
+
+            {
+                let mut withdraw_rounds = self.pending.withdraw_rounds.write().await;
+                withdraw_rounds.insert(round);
+                info!(
+                    "💧 [SIGNING] Node {} added round {} to withdraw_rounds",
+                    self.id, round
+                );
+            }
+
+            info!(
+                "💾 [SIGNING] Node {} stored withdraw-liquidity transaction for round {} with solver address: {}",
+                self.id, round, solver_addr
+            );
         } else {
             // This is an intent-based transaction - store in regular pending transactions
             let mut pending_transactions = self.pending.pending_transactions.write().await;
@@ -611,12 +645,26 @@ impl SigningNode {
             let reward_rounds = self.pending.reward_rounds.read().await;
             reward_rounds.contains(&round)
         };
+        let is_withdraw_round = {
+            let withdraw_rounds = self.pending.withdraw_rounds.read().await;
+            withdraw_rounds.contains(&round)
+        };
 
         let (chain_tx, transaction_type) = if is_reward_round {
             let reward_pending_transactions =
                 self.pending.reward_pending_transactions_tics.read().await;
             if let Some((chain_tx, _tx_bytes, _solver_address, transaction_type)) =
                 reward_pending_transactions.get(&round)
+            {
+                (Some(chain_tx.clone()), transaction_type.clone())
+            } else {
+                (None, None)
+            }
+        } else if is_withdraw_round {
+            let withdraw_pending_transactions =
+                self.pending.withdraw_pending_transactions_tics.read().await;
+            if let Some((chain_tx, _tx_bytes, _solver_address, transaction_type)) =
+                withdraw_pending_transactions.get(&round)
             {
                 (Some(chain_tx.clone()), transaction_type.clone())
             } else {
@@ -768,9 +816,19 @@ impl SigningNode {
                         group_address
                     }
                     Some(crate::types::TransactionType::WithdrawLiquidity) => {
-                        return Err(anyhow!(
-                            "WithdrawLiquidity transaction type not supported for Ethereum aggregation"
-                        ));
+                        // Withdraw liquidity payouts reuse the network group key path (same as rewards)
+                        let group_address =
+                            if let Some(group_key) = self.key_store.get_group_public_key() {
+                                get_eth_address_from_group_key(group_key)
+                            } else {
+                                return Err(anyhow!(
+                                    "No group public key available for withdraw-liquidity transaction"
+                                ));
+                            };
+                        let nonce =
+                            Self::fetch_ethereum_nonce(&group_address, chain_id).await?;
+                        info!("🔢 [SIGNING] WithdrawLiquidity transaction: fetching nonce {} from network group address {}", nonce, group_address);
+                        group_address
                     }
                     None => {
                         if let Some(user_addr) = &user_eth_address {

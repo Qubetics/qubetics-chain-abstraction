@@ -373,17 +373,40 @@ impl MpcNetworkLayer {
                         }
                     }
                     (None, Some(solver_addr)) => {
-                        if let Err(e) = self
-                            .handle_reward_transaction_id_storage(
-                                solver_addr,
-                                &transaction_id,
-                                &transaction_type,
-                            )
-                            .await
+                        if transaction_type == "reward_txn" {
+                            if let Err(e) = self
+                                .handle_reward_transaction_id_storage(
+                                    solver_addr,
+                                    &transaction_id,
+                                    &transaction_type,
+                                )
+                                .await
+                            {
+                                error!(
+                                    "❌ [NETWORK] Failed to handle reward transaction ID storage: {}",
+                                    e
+                                );
+                            }
+                        } else if transaction_type == "withdraw_liquidity"
+                            || transaction_type == "withdrawLiquidity"
                         {
-                            error!(
-                                "❌ [NETWORK] Failed to handle reward transaction ID storage: {}",
-                                e
+                            if let Err(e) = self
+                                .handle_withdraw_liquidity_transaction_id_storage(
+                                    solver_addr,
+                                    &transaction_id,
+                                    &transaction_type,
+                                )
+                                .await
+                            {
+                                error!(
+                                    "❌ [NETWORK] Failed to handle withdraw liquidity transaction ID storage: {}",
+                                    e
+                                );
+                            }
+                        } else {
+                            warn!(
+                                "⚠️ [NETWORK] Unknown solver-based transaction type '{}' in gossipsub handler",
+                                transaction_type
                             );
                         }
                     }
@@ -1083,7 +1106,7 @@ impl MpcNetworkLayer {
                 );
                 info!("🏷️ [GOSSIPSUB] Transaction type: {}", transaction_type);
 
-                self.process_liquidity_payout(
+                self.process_payout(
                     "claim_reward",
                     &solver_address,
                     &btc_address,
@@ -1116,7 +1139,7 @@ impl MpcNetworkLayer {
                 );
                 info!("💧 [GOSSIPSUB] Transaction type: {}", transaction_type);
 
-                self.process_liquidity_payout(
+                self.process_payout(
                     "withdraw_liquidity",
                     &solver_address,
                     &btc_address,
