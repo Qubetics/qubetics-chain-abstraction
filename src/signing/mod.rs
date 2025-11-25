@@ -3104,7 +3104,9 @@ pub async fn sign_bitcoin_transaction(
                         round,
                     };
 
-                    let broadcast_data = serde_json::to_vec(&consensus_msg)?;
+                    // Wrap in GossipsubMessage::Consensus for proper deserialization
+                    let gossip_msg = crate::types::GossipsubMessage::Consensus(consensus_msg);
+                    let broadcast_data = serde_json::to_vec(&gossip_msg)?;
 
                     // Store the result for later use
                     let is_final_node = consensus_node.is_final_node(round, &own_node_id);

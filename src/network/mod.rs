@@ -4223,14 +4223,10 @@ impl NetworkLayer {
                         let share_request_delay_secs = delay_secs / 2;
                         let db_sync_delay_secs = delay_secs - share_request_delay_secs;
 
-                        let sync_peer_for_new_node = if pending_joins.contains(&self.local_peer_id) {
-                            swarm
+                        let sync_peer_for_new_node = swarm
                                 .connected_peers()
                                 .find(|pid| **pid != self.local_peer_id)
-                                .cloned()
-                        } else {
-                            None
-                        };
+                                .cloned();
                         info!("⏰ [PERIODIC_REFRESH] New nodes are joining (total: {}) - scheduling refresh in {} seconds (non-blocking)...", total, delay_secs);
 
                         // Clone the message sender to use in the spawned task
