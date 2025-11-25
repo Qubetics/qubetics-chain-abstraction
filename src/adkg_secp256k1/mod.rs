@@ -55,6 +55,11 @@ pub enum DKGMessage {
         disconnected_node_id: String,
         broadcaster_node_id: String,
     },
+    /// Broadcasted when a node rejoins so everyone can unrestrict it immediately
+    NodeReconnected {
+        reconnected_node_id: String,
+        broadcaster_node_id: String,
+    },
     /// Refresh shares sent from each node during proactive refresh
     RefreshShare {
         from: String,
@@ -522,6 +527,11 @@ impl DKGNode {
                 // This message is handled in the network layer, not here
                 // The network layer will call handle_node_disconnected when it processes this
                 info!("📢 [DISCONNECT] Message will be processed by network layer");
+            }
+            DKGMessage::NodeReconnected { reconnected_node_id, broadcaster_node_id } => {
+                info!("📢 [RECONNECT] Received reconnect notification from {}: Node {} reconnected", 
+                      broadcaster_node_id, reconnected_node_id);
+                // Network layer handles this; nothing to do here
             }
             DKGMessage::RefreshShare { from, shares, commitments } => {
                 info!("🔄 [REFRESH] Received refresh shares from {}", from);
@@ -1459,8 +1469,8 @@ impl DKGNode {
             }
             
             info!("🏦 [NEW_NODE] === VAULT GENERATION COMPLETED ===");
+            //sync here ///
         }
-        
         Ok(())
     }
 

@@ -157,12 +157,8 @@ pub struct NetworkLayer {
     processed_disconnects: std::collections::HashMap<PeerId, std::time::Instant>,
     // Track restricted nodes (disconnected, waiting for next periodic refresh)
     restricted_nodes: std::collections::HashSet<PeerId>,
-    // Track nodes pending reconnection (reconnected, waiting for next periodic refresh to unrestrict)
-    pending_reconnects: std::collections::HashSet<PeerId>,
     // Track new nodes pending join (waiting for next periodic refresh to get shares)
     pending_joins: std::collections::HashSet<PeerId>,
-    // Track nodes pending permanent removal (disconnected for full refresh cycle, will be removed at next refresh)
-    pending_removal: std::collections::HashSet<PeerId>,
     // Handle for the periodic connection check task
     connection_check_task: Option<JoinHandle<()>>,
 }
@@ -221,11 +217,9 @@ impl NetworkLayer {
             .get_active_nodes()
             .into_iter()
             .filter(|peer_id| {
-                // Exclude restricted nodes, pending reconnects, pending joins, and pending removal
+                // Exclude restricted nodes and pending joins
                 !self.restricted_nodes.contains(peer_id) 
-                    && !self.pending_reconnects.contains(peer_id)
                     && !self.pending_joins.contains(peer_id)
-                    && !self.pending_removal.contains(peer_id)
             })
             .collect()
     }
@@ -358,9 +352,7 @@ impl NetworkLayer {
             needs_database_sync: false,
             processed_disconnects: std::collections::HashMap::new(),
             restricted_nodes: std::collections::HashSet::new(),
-            pending_reconnects: std::collections::HashSet::new(),
             pending_joins: std::collections::HashSet::new(),
-            pending_removal: std::collections::HashSet::new(),
             connection_check_task: None,
         };
 
@@ -466,15 +458,14 @@ impl NetworkLayer {
     /// This excludes:
     /// - Nodes in pending_joins (new nodes waiting for refresh)
     /// - Nodes in restricted_nodes (disconnected, one refresh cycle grace period)
-    /// - Nodes in pending_removal (disconnected for full cycle, will be removed)
     fn get_active_node_count(&self) -> usize {
         let total = self.node_manager.get_total_nodes();
-        let excluded = self.pending_joins.len() + self.restricted_nodes.len() + self.pending_removal.len();
+        let excluded = self.pending_joins.len() + self.restricted_nodes.len();
         let active = total.saturating_sub(excluded);
         
         info!(
-            "📊 [ACTIVE_NODES] Total: {}, Pending joins: {}, Restricted: {}, Pending removal: {}, Active: {}",
-            total, self.pending_joins.len(), self.restricted_nodes.len(), self.pending_removal.len(), active
+            "📊 [ACTIVE_NODES] Total: {}, Pending joins: {}, Restricted: {}, Active: {}",
+            total, self.pending_joins.len(), self.restricted_nodes.len(), active
         );
         
         active
@@ -860,98 +851,98 @@ impl NetworkLayer {
                     }
                 }
 
-                _ = peerlist_logger.tick() => {
-                    let peers = self.node_manager.get_active_nodes();
-                    let mut entries: Vec<String> = Vec::new();
-                    for p in &peers {
-                        let idx = match self.peer_indices.get(p).cloned() {
-                            Some(i) => Some(i),
-                            None => {
-                                let key = crate::database::key_utils::peer_index_key(&p.to_string());
-                                match self.db.get_string::<usize>(&key) { Ok(Some(i)) => Some(i), _ => None }
-                            }
-                        };
-                        match idx { Some(i) => entries.push(format!("{}=>{}", p, i)), None => entries.push(format!("{}=>?", p)) }
-                    }
-                    let display_str = entries.join(", ");
-                    info!(
-                        "🕒 PeerList snapshot ({} peers): {}",
-                        peers.len(),
-                        display_str
-                    );
-                }
-                 _ = bootstrap_timer.tick() => {
-                    // Periodic bootstrap to discover new peers
-                    info!("Performing periodic bootstrap...");
-                    if let Err(e) = swarm.behaviour_mut().kademlia.bootstrap() {
-                        warn!("Periodic bootstrap failed: {:?}", e);
-                    }
-                }
+                // _ = peerlist_logger.tick() => {
+                //     let peers = self.node_manager.get_active_nodes();
+                //     let mut entries: Vec<String> = Vec::new();
+                //     for p in &peers {
+                //         let idx = match self.peer_indices.get(p).cloned() {
+                //             Some(i) => Some(i),
+                //             None => {
+                //                 let key = crate::database::key_utils::peer_index_key(&p.to_string());
+                //                 match self.db.get_string::<usize>(&key) { Ok(Some(i)) => Some(i), _ => None }
+                //             }
+                //         };
+                //         match idx { Some(i) => entries.push(format!("{}=>{}", p, i)), None => entries.push(format!("{}=>?", p)) }
+                //     }
+                //     let display_str = entries.join(", ");
+                //     info!(
+                //         "🕒 PeerList snapshot ({} peers): {}",
+                //         peers.len(),
+                //         display_str
+                //     );
+                // }
+                //  _ = bootstrap_timer.tick() => {
+                //     // Periodic bootstrap to discover new peers
+                //     info!("Performing periodic bootstrap...");
+                //     if let Err(e) = swarm.behaviour_mut().kademlia.bootstrap() {
+                //         warn!("Periodic bootstrap failed: {:?}", e);
+                //     }
+                // }
 
-                _ = discovery_timer.tick() => {
-                    // Periodic peer discovery
-                    info!("🔄 Performing periodic peer discovery...");
+                // _ = discovery_timer.tick() => {
+                //     // Periodic peer discovery
+                //     info!("🔄 Performing periodic peer discovery...");
 
-                    // Debug: Show current state before discovery
-                    let current_total = self.node_manager.get_total_nodes();
-                    let active_nodes = self.node_manager.get_active_nodes();
-                    info!("📊 Current node manager state - Total: {}, Active nodes: {:?}", current_total, active_nodes);
+                //     // Debug: Show current state before discovery
+                //     let current_total = self.node_manager.get_total_nodes();
+                //     let active_nodes = self.node_manager.get_active_nodes();
+                //     info!("📊 Current node manager state - Total: {}, Active nodes: {:?}", current_total, active_nodes);
 
-                    // Log gossipsub state
-                    let gossipsub_peers = swarm.behaviour_mut().gossipsub.all_peers().count();
-                    info!("📡 Gossipsub connected peers: {}", gossipsub_peers);
+                //     // Log gossipsub state
+                //     let gossipsub_peers = swarm.behaviour_mut().gossipsub.all_peers().count();
+                //     info!("📡 Gossipsub connected peers: {}", gossipsub_peers);
 
-                    // Log Kademlia state
-                    let kbucket_count: usize = swarm
-                        .behaviour_mut()
-                        .kademlia
-                        .kbuckets()
-                        .map(|bucket| bucket.num_entries())
-                        .sum();
-                    info!("🌐 Kademlia routing table entries: {}", kbucket_count);
+                //     // Log Kademlia state
+                //     let kbucket_count: usize = swarm
+                //         .behaviour_mut()
+                //         .kademlia
+                //         .kbuckets()
+                //         .map(|bucket| bucket.num_entries())
+                //         .sum();
+                //     info!("🌐 Kademlia routing table entries: {}", kbucket_count);
 
-                    swarm.behaviour_mut().kademlia.get_closest_peers(self.local_peer_id);
+                //     swarm.behaviour_mut().kademlia.get_closest_peers(self.local_peer_id);
 
-                    // Also search for random peers to populate routing table
-                    let random_peer = PeerId::random();
-                    swarm.behaviour_mut().kademlia.get_closest_peers(random_peer);
+                //     // Also search for random peers to populate routing table
+                //     let random_peer = PeerId::random();
+                //     swarm.behaviour_mut().kademlia.get_closest_peers(random_peer);
 
-                    // Proactively request indices from peers we lack index for
-                    let active = self.node_manager.get_active_nodes();
-                    for p in active {
-                        let known = self.peer_indices.contains_key(&p) || {
-                            let key = crate::database::key_utils::peer_index_key(&p.to_string());
-                            self.db.get_string::<usize>(&key).ok().flatten().is_some()
-                        };
-                        if !known {
-                            info!("🔎 Requesting PeerList from {} to learn indices", p);
-                            swarm.behaviour_mut()
-                                .request_response
-                                .send_request(&p, RPCRequest::GetPeerList);
-                        }
-                    }
-                }
+                //     // Proactively request indices from peers we lack index for
+                //     let active = self.node_manager.get_active_nodes();
+                //     for p in active {
+                //         let known = self.peer_indices.contains_key(&p) || {
+                //             let key = crate::database::key_utils::peer_index_key(&p.to_string());
+                //             self.db.get_string::<usize>(&key).ok().flatten().is_some()
+                //         };
+                //         if !known {
+                //             info!("🔎 Requesting PeerList from {} to learn indices", p);
+                //             swarm.behaviour_mut()
+                //                 .request_response
+                //                 .send_request(&p, RPCRequest::GetPeerList);
+                //         }
+                //     }
+                // }
 
-                _ = dkg_status_timer.tick() => {
-                    // Periodic DKG status check
-                    if let Some(dkg_node) = &self.dkg_node {
-                        let status = dkg_node.get_status();
-                        info!("📊 DKG Status Check - Current status: {:?}", status);
+                // _ = dkg_status_timer.tick() => {
+                //     // Periodic DKG status check
+                //     if let Some(dkg_node) = &self.dkg_node {
+                //         let status = dkg_node.get_status();
+                //         info!("📊 DKG Status Check - Current status: {:?}", status);
 
-                        if let DKGStatus::Completed = status {
-                            // DKG is completed, log final results
-                            if let Some(secret_share) = dkg_node.get_final_secret_share().await {
-                                info!("🎯 DKG COMPLETED - Final secret share: {:?}", secret_share);
-                            }
-                            if let Some(public_key) = dkg_node.get_final_public_key().await {
-                                info!("🔑 DKG COMPLETED - Final public key: {:?}", public_key);
-                            }
-                        } else if let DKGStatus::Started = status {
-                            // DKG is in progress, check progress
-                            info!("⏳ DKG in progress...");
-                        }
-                    }
-                }
+                //         if let DKGStatus::Completed = status {
+                //             // DKG is completed, log final results
+                //             if let Some(secret_share) = dkg_node.get_final_secret_share().await {
+                //                 info!("🎯 DKG COMPLETED - Final secret share: {:?}", secret_share);
+                //             }
+                //             if let Some(public_key) = dkg_node.get_final_public_key().await {
+                //                 info!("🔑 DKG COMPLETED - Final public key: {:?}", public_key);
+                //             }
+                //         } else if let DKGStatus::Started = status {
+                //             // DKG is in progress, check progress
+                //             info!("⏳ DKG in progress...");
+                //         }
+                //     }
+                // }
             };
         }
     }
@@ -1148,17 +1139,76 @@ impl NetworkLayer {
                 // Check if we already know this peer
                 let already_known = self.node_manager.get_active_nodes().contains(&peer_id);
                 
-                // Check if this node was restricted or pending removal (disconnected) - if so, mark as pending reconnection
+                // Check if this node was restricted (disconnected) - if so, unrestrict immediately
                 if self.restricted_nodes.remove(&peer_id) {
-                    self.pending_reconnects.insert(peer_id);
-                    info!("🔄 [RECONNECT] Node {} reconnected from restricted - marked as pending (will be unrestricted at next periodic refresh)", peer_id);
-                } else if self.pending_removal.remove(&peer_id) {
-                    self.pending_reconnects.insert(peer_id);
-                    info!("🎉 [RECONNECT] Node {} reconnected from pending removal - saved! Marked as pending (will be unrestricted at next periodic refresh)", peer_id);
+                    info!("🔄 [RECONNECT] Node {} reconnected - immediately unrestricted and can participate", peer_id);
+
+                    // Broadcast so every node removes it from their restricted list right away
+                    use crate::adkg_secp256k1::DKGMessage;
+                    use crate::types::{ChannelMessage, GossipsubMessage};
+
+                    let msg = DKGMessage::NodeReconnected {
+                        reconnected_node_id: peer_id.to_string(),
+                        broadcaster_node_id: self.local_peer_id.to_string(),
+                    };
+
+                    if let Ok(bytes) = serde_json::to_vec(&GossipsubMessage::DKG(msg)) {
+                        if let Err(err) = self
+                            .message_tx
+                            .send(ChannelMessage::Broadcast {
+                                topic: "dkg".to_string(),
+                                data: bytes,
+                            })
+                            .await
+                        {
+                            warn!(
+                                "⚠️ [RECONNECT] Failed to broadcast rejoin for {}: {}",
+                                peer_id, err
+                            );
+                        } else {
+                            info!(
+                                "📢 [RECONNECT] Broadcasted NodeReconnected for {} to all peers",
+                                peer_id
+                            );
+                        }
+                    }
                 } else if !already_known {
-                    // This is a fresh node joining - mark as pending join
-                    self.pending_joins.insert(peer_id);
-                    info!("🆕 [NEW_NODE] Fresh node {} joined - marked as pending (will receive shares at next periodic refresh)", peer_id);
+                    // Check if initial DKG is complete - only treat as "new node" if network is already established
+                    let is_initial_dkg_done = if let Some(dkg) = &self.dkg_node {
+                        dkg.is_initial_dkg_complete().await
+                    } else {
+                        false
+                    };
+                    
+                    if is_initial_dkg_done {
+                        // This is a fresh node joining an established network - mark as pending join LOCALLY
+                        self.pending_joins.insert(peer_id);
+                        info!("🆕 [NEW_NODE] Fresh node {} joined established network - marked as pending (will receive shares at next periodic refresh)", peer_id);
+                        
+                        // BROADCAST to ALL nodes so they also mark it as pending join
+                        // This ensures consistent network state across all nodes
+                        use crate::adkg_secp256k1::DKGMessage;
+                        use crate::types::{GossipsubMessage, ChannelMessage};
+                        
+                        let new_node_msg = DKGMessage::NewNodeJoined {
+                            new_node_id: peer_id.to_string(),
+                            new_node_index: usize::MAX,
+                        };
+                        
+                        let gossip_wrap = GossipsubMessage::DKG(new_node_msg);
+                        if let Ok(msg_bytes) = serde_json::to_vec(&gossip_wrap) {
+                            if let Err(e) = self.message_tx.send(ChannelMessage::Broadcast {
+                                topic: "dkg".to_string(),
+                                data: msg_bytes,
+                            }).await {
+                                error!("❌ [NEW_NODE] Failed to broadcast new node notification: {}", e);
+                            } else {
+                                info!("📢 [NEW_NODE] Broadcasted new node notification for {} to all nodes", peer_id);
+                            }
+                        }
+                    } else {
+                        info!("🔗 [INITIAL_DKG] Node {} connected during initial DKG setup - NOT marking as new node", peer_id);
+                    }
                 }
 
                 // Determine whether they dialed us (we're the listener) or we dialed them
@@ -2124,8 +2174,66 @@ impl NetworkLayer {
             // this must be used by broadcast in dkg (sending end)
             // so, here it must match on the recieving end
             GossipsubMessage::DKG(dkg_msg) => {
+                // Check if this is a NewNodeJoined message - handle it specially to sync pending_joins
+                if let crate::adkg_secp256k1::DKGMessage::NewNodeJoined { 
+                    ref new_node_id, 
+                    new_node_index 
+                } = dkg_msg {
+                    info!("📢 [NEW_NODE] Received new node joined broadcast: {}", new_node_id);
+                    
+                    // Only process if initial DKG is complete (network is established)
+                    let is_initial_dkg_done = if let Some(dkg) = &self.dkg_node {
+                        dkg.is_initial_dkg_complete().await
+                    } else {
+                        false
+                    };
+                    
+                    if is_initial_dkg_done {
+                        // Parse the new node ID
+                        if let Ok(peer_id) = new_node_id.parse::<PeerId>() {
+                            // ALL nodes (including the new node itself) add it to pending_joins
+                            if !self.pending_joins.contains(&peer_id) {
+                                self.pending_joins.insert(peer_id);
+                                info!("📢 [NEW_NODE] Added node {} to pending_joins (via broadcast)", peer_id);
+                                
+                                // If this is the local node, also log that we're aware we need refresh
+                                if peer_id == self.local_peer_id {
+                                    info!("🆕 [NEW_NODE] This is ME - I'm now in pending_joins and will trigger refresh");
+                                }
+                            }
+                        }
+                        
+                        // Still pass to DKG node for share generation logic
+                        if let Some(dkg_node) = &mut self.dkg_node {
+                            if new_node_index != usize::MAX {
+                                dkg_node.handle_message(dkg_msg,self.node_manager.clone()).await?;
+                            }
+                        }
+                    } else {
+                        info!("🔗 [INITIAL_DKG] Ignoring NewNodeJoined during initial DKG setup");
+                    }
+                }
+                else if let crate::adkg_secp256k1::DKGMessage::NodeReconnected {
+                    ref reconnected_node_id,
+                    ref broadcaster_node_id,
+                } = dkg_msg
+                {
+                    info!(
+                        "📢 [RECONNECT] Received NodeReconnected broadcast for {} (from {})",
+                        reconnected_node_id, broadcaster_node_id
+                    );
+
+                    if let Ok(peer_id) = reconnected_node_id.parse::<PeerId>() {
+                        if self.restricted_nodes.remove(&peer_id) {
+                            info!(
+                                "🔓 [RECONNECT] Removed {} from restricted_nodes via broadcast",
+                                peer_id
+                            );
+                        }
+                    }
+                }
                 // Check if this is a NodeDisconnected message - handle it specially
-                if let crate::adkg_secp256k1::DKGMessage::NodeDisconnected { 
+                else if let crate::adkg_secp256k1::DKGMessage::NodeDisconnected { 
                     ref disconnected_node_id, 
                     ref broadcaster_node_id 
                 } = dkg_msg {
@@ -4052,104 +4160,57 @@ impl NetworkLayer {
                 
                 // Clone all pending states to avoid borrow issues
                 let restricted: Vec<PeerId> = self.restricted_nodes.iter().cloned().collect();
-                let pending_reconnects: Vec<PeerId> = self.pending_reconnects.iter().cloned().collect();
                 let pending_joins: Vec<PeerId> = self.pending_joins.iter().cloned().collect();
-                let pending_removal: Vec<PeerId> = self.pending_removal.iter().cloned().collect();
                 
-                info!("🔍 [PERIODIC_REFRESH] Found {} restricted, {} pending reconnects, {} pending joins, {} pending removal", 
-                      restricted.len(), pending_reconnects.len(), pending_joins.len(), pending_removal.len());
+                info!("🔍 [PERIODIC_REFRESH] Found {} restricted, {} pending joins", 
+                      restricted.len(), pending_joins.len());
                 
                 let mut needs_refresh = false;
                 let mut has_new_nodes_joining = false;
                 let mut nodes_to_remove: Vec<PeerId> = Vec::new();
                 
-                // STEP 1: Process nodes pending permanent removal (disconnected for full refresh cycle)
-                for peer_id in pending_removal {
-                    if swarm.is_connected(&peer_id) {
-                        // Node reconnected at the last moment! Move to pending_reconnects
-                        self.pending_removal.remove(&peer_id);
-                        self.pending_reconnects.insert(peer_id);
-                        needs_refresh = true;
-                        info!("🎉 [PERIODIC_REFRESH] Node {} reconnected at last moment - saved from removal!", peer_id);
-                    } else {
-                        // Node still disconnected after full grace period - permanently remove
-                        self.pending_removal.remove(&peer_id);
-                        nodes_to_remove.push(peer_id);
-                        needs_refresh = true;
-                        warn!("❌ [PERIODIC_REFRESH] Node {} disconnected for full cycle - will be permanently removed", peer_id);
-                    }
-                }
-                
-                // STEP 2: Process restricted (disconnected) nodes - first refresh cycle
+                // STEP 1: Process restricted (disconnected) nodes
+                // If still disconnected at this refresh → permanently remove
                 for peer_id in restricted {
                     if swarm.is_connected(&peer_id) {
-                        // Node reconnected! Move to pending_reconnects
+                        // Node reconnected! Already unrestricted in ConnectionEstablished
                         self.restricted_nodes.remove(&peer_id);
-                        self.pending_reconnects.insert(peer_id);
-                        needs_refresh = true;
-                        info!("✅ [PERIODIC_REFRESH] Node {} reconnected - will be unrestricted", peer_id);
+                        info!("✅ [PERIODIC_REFRESH] Node {} reconnected - already unrestricted", peer_id);
                     } else {
-                        // Node still disconnected - move to pending_removal (grace period ending)
+                        // Node still disconnected - permanently remove immediately
                         self.restricted_nodes.remove(&peer_id);
-                        self.pending_removal.insert(peer_id);
-                        warn!("⏰ [PERIODIC_REFRESH] Node {} still disconnected - moved to pending removal (will be removed next cycle if still down)", peer_id);
+                        nodes_to_remove.push(peer_id);
+                        needs_refresh = true;
+                        warn!("❌ [PERIODIC_REFRESH] Node {} still disconnected - will be permanently removed", peer_id);
                     }
                 }
                 
-                // Process pending reconnections
-                for peer_id in pending_reconnects {
-                    if !swarm.is_connected(&peer_id) {
-                        // Node disconnected again - move back to restricted
-                        self.pending_reconnects.remove(&peer_id);
-                        self.restricted_nodes.insert(peer_id);
-                        info!("⚠️ [PERIODIC_REFRESH] Node {} disconnected again - back to restricted", peer_id);
-                    } else {
-                        // Node stable - unrestrict it
-                        self.pending_reconnects.remove(&peer_id);
-                        needs_refresh = true;
-                        info!("✅ [PERIODIC_REFRESH] Node {} stable - fully unrestricting", peer_id);
-                    }
-                }
-                
-                // Process pending joins (new nodes) - they will REQUEST shares at this interval
+                // STEP 2: Process pending joins (new nodes) - they will REQUEST shares at this interval
+                // NOTE: No connectivity check for remote nodes - gossipsub works in mesh without direct connections
                 for peer_id in pending_joins.clone() {
-                    // Special case: if peer_id is the local node, skip connectivity check
-                    // (a node can't be "connected" to itself in swarm terms)
-                    let is_connected = if peer_id == self.local_peer_id {
-                        true  // Always consider ourselves "connected"
-                    } else {
-                        swarm.is_connected(&peer_id)
-                    };
+                    // New node ready - will request shares now
+                    self.pending_joins.remove(&peer_id);
+                    has_new_nodes_joining = true;
                     
-                    if is_connected {
-                        // New node stable - will request shares now
-                        self.pending_joins.remove(&peer_id);
-                        has_new_nodes_joining = true;
+                    // Check if this is the local node (we're the new node)
+                    if peer_id == self.local_peer_id {
+                        info!("🆕 [PERIODIC_REFRESH] I am a new node - requesting shares from existing nodes");
                         
-                        // Check if this is the local node (we're the new node)
-                        if peer_id == self.local_peer_id {
-                            info!("🆕 [PERIODIC_REFRESH] I am a new node - requesting shares from existing nodes");
-                            
-                            // Get my assigned index
-                            if let Some(my_index) = self.peer_indices.get(&peer_id) {
-                                if let Some(dkg_node) = &mut self.dkg_node {
-                                    // Request shares from existing nodes
-                                    if let Err(e) = dkg_node.request_shares_as_new_node(*my_index).await {
-                                        warn!("❌ [PERIODIC_REFRESH] Failed to request shares: {:?}", e);
-                                    } else {
-                                        info!("✅ [PERIODIC_REFRESH] Share request broadcasted - existing nodes will respond");
-                                    }
+                        // Get my assigned index
+                        if let Some(my_index) = self.peer_indices.get(&peer_id) {
+                            if let Some(dkg_node) = &mut self.dkg_node {
+                                // Request shares from existing nodes
+                                if let Err(e) = dkg_node.request_shares_as_new_node(*my_index).await {
+                                    warn!("❌ [PERIODIC_REFRESH] Failed to request shares: {:?}", e);
+                                } else {
+                                    info!("✅ [PERIODIC_REFRESH] Share request broadcasted - existing nodes will respond");
                                 }
-                            } else {
-                                warn!("⚠️ [PERIODIC_REFRESH] No index assigned to new node {}", peer_id);
                             }
                         } else {
-                            info!("🆕 [PERIODIC_REFRESH] Remote node {} is joining - will respond with shares", peer_id);
+                            warn!("⚠️ [PERIODIC_REFRESH] No index assigned to new node {}", peer_id);
                         }
                     } else {
-                        // New node disconnected before requesting shares - remove
-                        self.pending_joins.remove(&peer_id);
-                        info!("⚠️ [PERIODIC_REFRESH] New node {} disconnected - removing", peer_id);
+                        info!("🆕 [PERIODIC_REFRESH] Remote node {} is joining - will respond with shares", peer_id);
                     }
                 }
                 
@@ -4189,18 +4250,6 @@ impl NetworkLayer {
                             warn!("⚠️ [PERIODIC_REFRESH] Failed to remove node {}: {}", peer_id, e);
                         } else {
                             warn!("❌ [PERIODIC_REFRESH] Permanently removed node {} (disconnected too long)", peer_id);
-                        }
-                    }
-                    
-                    // Temporarily remove nodes in pending_removal (still being given last chance) before refresh
-                    let temp_removed_for_refresh: Vec<PeerId> = self.pending_removal.iter().cloned().collect();
-                    
-                    info!("🔄 [PERIODIC_REFRESH] Temporarily removing {} pending-removal nodes before refresh", temp_removed_for_refresh.len());
-                    for peer_id in &temp_removed_for_refresh {
-                        if let Err(e) = self.node_manager.remove_node(*peer_id) {
-                            warn!("⚠️ [PERIODIC_REFRESH] Failed to temporarily remove node {}: {}", peer_id, e);
-                        } else {
-                            info!("📤 [PERIODIC_REFRESH] Temporarily removed pending-removal node {}", peer_id);
                         }
                     }
                     
@@ -4244,16 +4293,6 @@ impl NetworkLayer {
                         
                         if let Some(signing_node) = &mut self.signing_node {
                             signing_node.set_threshold(new_threshold);
-                        }
-                    }
-                    
-                    // Re-add pending-removal nodes back to node_manager (still have one more chance to reconnect)
-                    info!("🔄 [PERIODIC_REFRESH] Re-adding {} pending-removal nodes to node_manager", temp_removed_for_refresh.len());
-                    for peer_id in temp_removed_for_refresh {
-                        if let Err(e) = self.node_manager.add_node(peer_id) {
-                            warn!("⚠️ [PERIODIC_REFRESH] Failed to re-add node {}: {}", peer_id, e);
-                        } else {
-                            info!("📥 [PERIODIC_REFRESH] Re-added pending-removal node {} (last chance to reconnect)", peer_id);
                         }
                     }
                 } else {
