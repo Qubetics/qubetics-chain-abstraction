@@ -10,8 +10,8 @@ pub enum TransactionType {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TransactionNetwork {
-    TICS,  // EVM/TICS transactions
-    BTC,   // Bitcoin transactions
+    TICS, // EVM/TICS transactions
+    BTC,  // Bitcoin transactions
 }
 
 mod secp;
@@ -76,6 +76,9 @@ pub enum ChannelMessage {
     },
     PeriodicConnectionCheck,
     DelayedRefreshTrigger,
+    NewNodeDatabaseSync {
+        sync_peer: libp2p::PeerId,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

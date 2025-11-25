@@ -4220,16 +4220,39 @@ impl NetworkLayer {
                     let total = self.node_manager.get_total_nodes();
                     if total > 4 {
                         let delay_secs = Self::NEW_NODE_SHARE_COLLECTION_DELAY_SECS;
+                        let share_request_delay_secs = delay_secs / 2;
+                        let db_sync_delay_secs = delay_secs - share_request_delay_secs;
+
+                        let sync_peer_for_new_node = if pending_joins.contains(&self.local_peer_id) {
+                            swarm
+                                .connected_peers()
+                                .find(|pid| **pid != self.local_peer_id)
+                                .cloned()
+                        } else {
+                            None
+                        };
                         info!("⏰ [PERIODIC_REFRESH] New nodes are joining (total: {}) - scheduling refresh in {} seconds (non-blocking)...", total, delay_secs);
-                        
+
                         // Clone the message sender to use in the spawned task
                         let tx = self.message_tx.clone();
-                        
+
                         // Spawn a non-blocking task that will send DelayedRefreshTrigger after delay
                         tokio::spawn(async move {
-                            tokio::time::sleep(tokio::time::Duration::from_secs(delay_secs)).await;
+                            tokio::time::sleep(tokio::time::Duration::from_secs(share_request_delay_secs)).await;
+                            info!("⏰ [DELAYED_REFRESH] {} seconds elapsed - triggering database sync for new node", share_request_delay_secs);
+
+                            if let Some(sync_peer) = sync_peer_for_new_node {
+                                if let Err(e) = tx
+                                    .send(ChannelMessage::NewNodeDatabaseSync { sync_peer })
+                                    .await
+                                {
+                                    error!("❌ [DELAYED_REFRESH] Failed to send database sync trigger: {}", e);
+                                }
+                            }
+
+                            tokio::time::sleep(tokio::time::Duration::from_secs(db_sync_delay_secs)).await;
                             info!("⏰ [DELAYED_REFRESH] {} seconds elapsed - triggering refresh now", delay_secs);
-                            
+
                             if let Err(e) = tx.send(ChannelMessage::DelayedRefreshTrigger).await {
                                 error!("❌ [DELAYED_REFRESH] Failed to send delayed refresh trigger: {}", e);
                             }
@@ -4299,6 +4322,16 @@ impl NetworkLayer {
                     info!("✅ [PERIODIC_REFRESH] No changes requiring refresh");
                 }
             }
+            ChannelMessage::NewNodeDatabaseSync { sync_peer } => {
+                info!("📦 [DELAYED_REFRESH] Initiating database sync for new node from peer: {}", sync_peer);
+
+                if let Err(e) = self.sync_database_from_peer(swarm, sync_peer).await {
+                    warn!("❌ [DELAYED_REFRESH] Failed to start database sync for new node: {:?}", e);
+                } else {
+                    info!("✅ [DELAYED_REFRESH] Database sync for new node initiated");
+                }
+            }
+
             ChannelMessage::DelayedRefreshTrigger => {
                 info!("🔄 [DELAYED_REFRESH] Delayed refresh trigger received - executing refresh now");
                 
