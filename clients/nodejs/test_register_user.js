@@ -605,7 +605,7 @@ async function runTests() {
   log(`\n🔑 Derived signer address from TEST_PRIVKEY: ${signerAddr}`, 'blue');
 
   // // 1) DKG status
-  await testDKGStatus();
+  // await testDKGStatus();
 
   // // // 2) Register ONLY the derived address 
   // const reg = await testRegisterUser(signerAddr);

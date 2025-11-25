@@ -11,11 +11,7 @@ impl MpcNetworkLayer {
 
         if let Some(user_intent_manager) = &self.user_intent_manager {
             if let Err(e) = user_intent_manager
-                .set_pending_remove_liquidity_amount(
-                    solver_address,
-                    network,
-                    amount.to_string(),
-                )
+                .set_pending_remove_liquidity_amount(solver_address, network, amount.to_string())
                 .await
             {
                 warn!(
@@ -68,7 +64,7 @@ impl MpcNetworkLayer {
                         solver_address, network
                     );
                     None
-                },
+                }
                 Err(e) => {
                     warn!(
                         "⚠️ [NETWORK] Failed to read pending liquidity amount for solver {}: {}",
@@ -152,7 +148,7 @@ impl MpcNetworkLayer {
         amount: u128,
     ) -> Result<()> {
         let tx_type = Self::get_transaction_type_from_context(context);
-        
+
         info!(
             "💧 [{}] Processing TICS payout: {} -> {} (amount: {})",
             context, solver_address, eth_address, amount
@@ -185,12 +181,18 @@ impl MpcNetworkLayer {
         {
             Ok(tx) => tx,
             Err(e) => {
-                error!("❌ [{}] Failed to create TICS payout transaction: {}", context, e);
+                error!(
+                    "❌ [{}] Failed to create TICS payout transaction: {}",
+                    context, e
+                );
                 return Ok(());
             }
         };
 
-        info!("✅ [{}] Created TICS payout transaction: {:?}", context, eth_tx);
+        info!(
+            "✅ [{}] Created TICS payout transaction: {:?}",
+            context, eth_tx
+        );
 
         let signing_node = match &mut self.signing_node {
             Some(node) => node,
@@ -200,20 +202,21 @@ impl MpcNetworkLayer {
             }
         };
 
-        let available_nodes: Vec<PeerId> = self
-            .node_manager
-            .get_active_nodes()
-            .into_iter()
-            .collect();
+        let available_nodes: Vec<PeerId> =
+            self.node_manager.get_active_nodes().into_iter().collect();
         signing_node.set_available_nodes(available_nodes);
         signing_node.set_chain_handler(
-            crate::chain_abstraction::ChainHandlerFactory::create_ethereum_handler(eth_tx.chain_id).into(),
+            crate::chain_abstraction::ChainHandlerFactory::create_ethereum_handler(eth_tx.chain_id)
+                .into(),
         );
 
         let secret_share = match dkg_node.get_final_secret_share().await {
             Some(share) => share,
             None => {
-                info!("⏳ [{}] DKG not completed yet, no secret share for TICS payout", context);
+                info!(
+                    "⏳ [{}] DKG not completed yet, no secret share for TICS payout",
+                    context
+                );
                 return Ok(());
             }
         };
@@ -263,7 +266,7 @@ impl MpcNetworkLayer {
         amount: u128,
     ) -> Result<()> {
         let tx_type = Self::get_transaction_type_from_context(context);
-        
+
         info!(
             "💧 [{}] Processing BTC payout: {} -> {} (amount: {})",
             context, solver_address, btc_address, amount
@@ -295,12 +298,18 @@ impl MpcNetworkLayer {
         {
             Ok(tx) => tx,
             Err(e) => {
-                error!("❌ [{}] Failed to create BTC payout transaction: {}", context, e);
+                error!(
+                    "❌ [{}] Failed to create BTC payout transaction: {}",
+                    context, e
+                );
                 return Ok(());
             }
         };
 
-        info!("✅ [{}] Created BTC payout transaction: {:?}", context, btc_tx);
+        info!(
+            "✅ [{}] Created BTC payout transaction: {:?}",
+            context, btc_tx
+        );
 
         let signing_node = match &mut self.signing_node {
             Some(node) => node,
@@ -310,20 +319,23 @@ impl MpcNetworkLayer {
             }
         };
 
-        let available_nodes: Vec<PeerId> = self
-            .node_manager
-            .get_active_nodes()
-            .into_iter()
-            .collect();
+        let available_nodes: Vec<PeerId> =
+            self.node_manager.get_active_nodes().into_iter().collect();
         signing_node.set_available_nodes(available_nodes);
         signing_node.set_chain_handler(
-            crate::chain_abstraction::ChainHandlerFactory::create_bitcoin_handler("testnet".to_string()).into(),
+            crate::chain_abstraction::ChainHandlerFactory::create_bitcoin_handler(
+                "testnet".to_string(),
+            )
+            .into(),
         );
 
         let secret_share = match dkg_node.get_final_secret_share().await {
             Some(share) => share,
             None => {
-                info!("⏳ [{}] DKG not completed yet, no secret share for BTC payout", context);
+                info!(
+                    "⏳ [{}] DKG not completed yet, no secret share for BTC payout",
+                    context
+                );
                 return Ok(());
             }
         };
@@ -338,7 +350,7 @@ impl MpcNetworkLayer {
             .get_chain_handler()
             .create_transaction_bytes(&chain_tx)
             .unwrap();
-        
+
         info!(
             "🔐 [{}] Starting BTC payout signing: 0x{}",
             context,
@@ -395,11 +407,17 @@ impl MpcNetworkLayer {
                             .await?;
                     }
                     Err(_) => {
-                        warn!("❌ [{}] Invalid TICS payout amount: {}", context, amount_str);
+                        warn!(
+                            "❌ [{}] Invalid TICS payout amount: {}",
+                            context, amount_str
+                        );
                     }
                 }
             } else {
-                warn!("❌ [{}] TICS payout requested but no ETH address provided", context);
+                warn!(
+                    "❌ [{}] TICS payout requested but no ETH address provided",
+                    context
+                );
             }
         }
 
@@ -415,7 +433,10 @@ impl MpcNetworkLayer {
                     }
                 }
             } else {
-                warn!("❌ [{}] BTC payout requested but no BTC address provided", context);
+                warn!(
+                    "❌ [{}] BTC payout requested but no BTC address provided",
+                    context
+                );
             }
         }
 
@@ -446,7 +467,11 @@ impl MpcNetworkLayer {
             .unwrap_or_else(|_| "9029".to_string())
             .parse::<u64>()
             .unwrap_or(9029);
-        let chain_name = if chain_id == 9029 { "qubetics" } else { "ethereum" };
+        let chain_name = if chain_id == 9029 {
+            "qubetics"
+        } else {
+            "ethereum"
+        };
 
         let rewards_payload = vec![
             U256::from(reward_btc.unwrap_or(0)),
@@ -463,11 +488,7 @@ impl MpcNetworkLayer {
 
         info!(
             "🧮 [SOLVER] Reward payload for {} -> btc: {}, tics: {} (contract: {}, chain_id: {})",
-            solver_address,
-            rewards_payload[0],
-            rewards_payload[1],
-            contract_address,
-            chain_id
+            solver_address, rewards_payload[0], rewards_payload[1], contract_address, chain_id
         );
 
         let dkg_node = if let Some(node) = &self.dkg_node {
@@ -518,11 +539,8 @@ impl MpcNetworkLayer {
         };
 
         if let Some(signing_node) = &mut self.signing_node {
-            let available_nodes: Vec<PeerId> = self
-                .node_manager
-                .get_active_nodes()
-                .into_iter()
-                .collect();
+            let available_nodes: Vec<PeerId> =
+                self.node_manager.get_active_nodes().into_iter().collect();
             signing_node.set_available_nodes(available_nodes);
             signing_node.set_chain_handler(
                 crate::chain_abstraction::ChainHandlerFactory::create_ethereum_handler(
@@ -531,8 +549,10 @@ impl MpcNetworkLayer {
                 .into(),
             );
 
-            if let Some(secret_share) = dkg_node.get_vault_tweaked_secret_share().await {
-                signing_node.set_private_key_from_scalar(secret_share);
+            let vault_tweaked_share = dkg_node.get_vault_tweaked_secret_share().await;
+
+            if let Some(ref secret_share) = vault_tweaked_share {
+                signing_node.set_private_key_from_scalar(secret_share.clone());
                 signing_node.set_group_public_key(group_public_key);
                 signing_node.set_vault_group_key(group_public_key);
 
@@ -549,33 +569,41 @@ impl MpcNetworkLayer {
                         .map(|d| format!("0x{}", hex::encode(d)))
                         .unwrap_or_else(|| "0x".to_string()),
                 };
-                info!("🔧 [CONTRACT] Contract transaction: {:?}", contract_tx.clone());
-                info!("🔧 [CONTRACT] Contract transaction data: {:?}", contract_tx.data);
-                info!("🔧 [CONTRACT] Contract transaction data hex: {:?}", hex::encode(contract_tx.data.clone()));
+                info!(
+                    "🔧 [CONTRACT] Contract transaction: {:?}",
+                    contract_tx.clone()
+                );
+                info!(
+                    "🔧 [CONTRACT] Contract transaction data: {:?}",
+                    contract_tx.data
+                );
+                info!(
+                    "🔧 [CONTRACT] Contract transaction data hex: {:?}",
+                    hex::encode(contract_tx.data.clone())
+                );
                 // info!("🔧 [CONTRACT] Contract transaction data length: {:?}", contract_tx.data.len());
                 // info!("🔧 [COONTRACT] Contract transaction data as ref: {:?}", contract_tx.data.as_ref());
                 // info!("🔧 [CNTRACT] Contract transaction data as ref hex: {:?}", hex::encode(contract_tx.data.as_ref()));
                 // info!("🔧 [CONTRACT] Contract transaction data as ref length: {:?}", contract_tx.data.as_ref().len());
                 // info!("🔧 [CONTRACT] Contract transaction data as ref as ref: {:?}", contract_tx.data.as_ref().as_ref());
                 // info!("🔧 [CONTRACT] Contract transaction data as ref as ref hex: {:?}", hex::encode(contract_tx.data.as_ref().as_ref()));
-                let tx_bytes = crate::utils::transaction::create_transaction_for_signing_contract(
-                    &contract_tx,
-                );
+                let contract_tx_bytes =
+                    crate::utils::transaction::create_transaction_for_signing_contract(
+                        &contract_tx,
+                    );
                 info!(
                     "🔐 [SOLVER] Starting contract update signing for {}: 0x{}",
                     solver_address,
-                    hex::encode(&tx_bytes)
+                    hex::encode(&contract_tx_bytes)
                 );
+
                 let mut eth_signer = EthereumSigner::new(signing_node);
                 eth_signer
-                    .sign_transaction(
-                        tx_bytes,
-                        &eth_tx,
+                    .sign_contract_message(
+                        contract_tx_bytes,
+                        &contract_tx,
+                        vault_tweaked_share,
                         None,
-                        None,
-                        None,
-                        Some(crate::types::TransactionType::RewardTxn),
-                        Some(solver_address.to_string()),
                     )
                     .await?;
                 info!(
@@ -630,8 +658,8 @@ impl MpcNetworkLayer {
             "ethereum"
         };
 
-        let asset_chain_id_value = crate::utils::transaction::get_chain_id_from_name(asset_chain_name)
-            .unwrap_or(0);
+        let asset_chain_id_value =
+            crate::utils::transaction::get_chain_id_from_name(asset_chain_name).unwrap_or(0);
         let asset_chain_id_u256 = U256::from(asset_chain_id_value);
         let amount_u256 = U256::from(amount);
 
@@ -639,10 +667,7 @@ impl MpcNetworkLayer {
             return Ok(());
         }
 
-        let solver_id = match self
-            .fetch_solver_id_for_address(solver_address)
-            .await
-        {
+        let solver_id = match self.fetch_solver_id_for_address(solver_address).await {
             Ok(id) => id,
             Err(e) => {
                 warn!(
@@ -706,8 +731,10 @@ impl MpcNetworkLayer {
                 .into(),
             );
 
-            if let Some(secret_share) = dkg_node.get_vault_tweaked_secret_share().await {
-                signing_node.set_private_key_from_scalar(secret_share);
+            let vault_tweaked_share = dkg_node.get_vault_tweaked_secret_share().await;
+
+            if let Some(ref secret_share) = vault_tweaked_share {
+                signing_node.set_private_key_from_scalar(secret_share.clone());
                 signing_node.set_group_public_key(group_public_key);
                 signing_node.set_vault_group_key(group_public_key);
 
@@ -735,15 +762,7 @@ impl MpcNetworkLayer {
                 );
                 let mut eth_signer = EthereumSigner::new(signing_node);
                 eth_signer
-                    .sign_transaction(
-                        tx_bytes,
-                        &eth_tx,
-                        None,
-                        None,
-                        None,
-                        Some(crate::types::TransactionType::WithdrawLiquidity),
-                        Some(solver_address.to_string()),
-                    )
+                    .sign_contract_message(tx_bytes, &contract_tx, vault_tweaked_share, None)
                     .await?;
                 info!(
                     "✅ [SOLVER] Contract liquidity update transaction signed for solver {} (chain_id: {}, amount: {})",
@@ -781,12 +800,7 @@ use tracing::{debug, error, info, warn};
 use crate::{
     contract::{ContractClient, ContractConfig, SolverManagerContract},
     signing::{BitcoinSigner, EthereumSigner},
-    types::{
-        intent::TransactionNetwork,
-        rpc::RPCRequest,
-        ChannelMessage,
-        GossipsubMessage,
-    },
+    types::{intent::TransactionNetwork, rpc::RPCRequest, ChannelMessage, GossipsubMessage},
 };
 
 use crate::network::transport::types::{MpcNetworkBehaviour, MpcNetworkLayer};
@@ -1626,7 +1640,9 @@ impl MpcNetworkLayer {
                                     e
                                 );
                             }
-                        } else if transaction_type == "withdraw_liquidity" || transaction_type == "withdrawLiquidity" {
+                        } else if transaction_type == "withdraw_liquidity"
+                            || transaction_type == "withdrawLiquidity"
+                        {
                             if let Err(e) = self
                                 .handle_withdraw_liquidity_transaction_id_storage(
                                     solver_addr,
@@ -1942,13 +1958,10 @@ impl MpcNetworkLayer {
                     amount_tics: amount_tics.clone(),
                     transaction_type: transaction_type.clone(),
                 };
-                let msg_bytes =
-                    serde_json::to_vec(&withdraw_msg).map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                let msg_bytes = serde_json::to_vec(&withdraw_msg)
+                    .map_err(|e| anyhow::anyhow!(e.to_string()))?;
                 let topic = gossipsub::IdentTopic::new("withdraw-liquidity");
-                swarm
-                    .behaviour_mut()
-                    .gossipsub
-                    .publish(topic, msg_bytes)?;
+                swarm.behaviour_mut().gossipsub.publish(topic, msg_bytes)?;
                 info!(
                     "📡 [NETWORK] Broadcasted withdraw liquidity request for solver {}",
                     solver_address

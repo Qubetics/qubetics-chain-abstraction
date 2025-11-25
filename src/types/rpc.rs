@@ -246,9 +246,7 @@ impl RequestResponseCodec for MPCCodec {
 }
 
 /// Build a libp2p request‑response behaviour using our MPCCodec + CBOR.
-///
 /// You can then add this to your Swarm.
-///
 pub fn build_mpc_behaviour() -> CborReqRespBehaviour<MPCCodecRequest, MPCCodecResponse> {
     let cfg = RequestResponseConfig::default();
     let proto = StreamProtocol::new(MPCProtocol.as_ref());

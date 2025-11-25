@@ -18,7 +18,7 @@ impl UserIntentManager {
         };
 
         // Fetch all users
-        let users = self.user_storage.get_all_users().await?;
+        let users: HashMap<String, UserRegistration> = self.user_storage.get_all_users().await?;
         info!(
             "👥 [DB_USER_REGISTRY] Users loaded for refresh: {}",
             users.len()

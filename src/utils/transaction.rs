@@ -1201,6 +1201,9 @@ pub async fn create_solver_rewards_update_transaction(
             warn!("⚠️ Failed to get dynamic gas price: {}, using fallback", e);
             get_default_gas_price_for_chain("qubetics")
         });
+
+    info!("🔧 [CONTRACT] Gas price: {}", gas_price);
+    info!("🔧 [CONTRACT] Gas limit: {}", gas_limit);
     let nonce = fetch_ethereum_nonce(from_address, chain_id).await?;
 
     let ethereum_tx = EthereumTransaction {
