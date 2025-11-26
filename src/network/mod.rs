@@ -4326,6 +4326,15 @@ impl NetworkLayer {
                 } else {
                     info!("✅ [DELAYED_REFRESH] Database sync for new node initiated");
                 }
+                
+                // Also sync VRF round from the same peer
+                info!("🔄 [DELAYED_REFRESH] Requesting current VRF round from peer: {}", sync_peer);
+                let vrf_request = RPCRequest::RequestCurrentVrfRound;
+                swarm
+                    .behaviour_mut()
+                    .request_response
+                    .send_request(&sync_peer, vrf_request);
+                info!("✅ [DELAYED_REFRESH] VRF round sync request sent to peer: {}", sync_peer);
             }
 
             ChannelMessage::DelayedRefreshTrigger => {
