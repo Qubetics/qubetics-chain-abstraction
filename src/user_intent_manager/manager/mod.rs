@@ -8,10 +8,10 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use super::checksum_from_any;
-use crate::database::{LiquidityStorage, RewardStorage};
 use crate::database::{
     Database, DatabaseModule, IntentStorage, TransactionStatusStorage, UserStorage,
 };
+use crate::database::{LiquidityStorage, RewardStorage};
 pub use crate::types::{
     DepositIntent, IntentStatus, IntentTransactionIds, SerializablePoint, SerializableScalar,
     TransactionStatus, UserRegistration,

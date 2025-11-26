@@ -50,6 +50,12 @@ pub enum ChannelMessage {
         reward_tics: Option<String>,
         transaction_type: String,
     },
+    AddLiquidity {
+        solver_address: String,
+        solver_id: String,
+        amount_btc: Option<String>,
+        amount_tics: Option<String>,
+    },
     WithdrawLiquidity {
         solver_address: String,
         btc_address: Option<String>,
@@ -118,6 +124,12 @@ pub enum GossipsubMessage {
         reward_tics: Option<String>,
         transaction_type: String,
     },
+    AddLiquidity {
+        solver_address: String,
+        solver_id: String,
+        amount_btc: Option<String>,
+        amount_tics: Option<String>,
+    },
     WithdrawLiquidity {
         solver_address: String,
         btc_address: Option<String>,
@@ -135,7 +147,7 @@ pub enum GossipsubMessage {
     TransactionIdBroadcast {
         intent_hash: Option<String>,
         transaction_id: String,
-        /// "user_to_network", "network_to_target", "vault_to_network", or reward types 
+        /// "user_to_network", "network_to_target", "vault_to_network", or reward types
         transaction_type: String,
         solver_address: Option<String>,
         /// Node that broadcasted the transaction

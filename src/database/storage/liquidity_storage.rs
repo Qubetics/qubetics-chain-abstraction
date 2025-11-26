@@ -31,9 +31,7 @@ impl LiquidityStorage {
             TransactionNetwork::TICS => {
                 key_utils::solver_add_liquidity_tics_txn_key(solver_address)
             }
-            TransactionNetwork::BTC => {
-                key_utils::solver_add_liquidity_btc_txn_key(solver_address)
-            }
+            TransactionNetwork::BTC => key_utils::solver_add_liquidity_btc_txn_key(solver_address),
         }
     }
 
@@ -134,4 +132,3 @@ impl LiquidityStorage {
         Ok(pending)
     }
 }
-

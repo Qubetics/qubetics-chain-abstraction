@@ -545,7 +545,9 @@ impl MpcNetworkLayer {
                         return Ok(());
                     }
                     crate::types::TransactionType::WithdrawLiquidity => {
-                        warn!("❌ [GOSSIPSUB] WithdrawLiquidity is not valid for deposit intent flow");
+                        warn!(
+                            "❌ [GOSSIPSUB] WithdrawLiquidity is not valid for deposit intent flow"
+                        );
                         return Ok(());
                     }
                 };
@@ -1115,7 +1117,6 @@ impl MpcNetworkLayer {
                     &reward_tics,
                 )
                 .await?;
-
             }
             GossipsubMessage::WithdrawLiquidity {
                 solver_address,
@@ -1148,6 +1149,22 @@ impl MpcNetworkLayer {
                     &amount_tics,
                 )
                 .await?;
+            }
+            GossipsubMessage::AddLiquidity {
+                solver_address,
+                solver_id,
+                amount_btc,
+                amount_tics,
+            } => {
+                info!(
+                    "💧 [GOSSIPSUB] Received add-liquidity broadcast for solver {} (solver_id: {})",
+                    solver_address, solver_id
+                );
+                info!(
+                    "💧 [GOSSIPSUB] Amounts - BTC: {:?}, TICS: {:?}",
+                    amount_btc, amount_tics
+                );
+                // TODO: implement contract/state updates once add-liquidity flow is finalized.
             }
             GossipsubMessage::PeerDiscovered {
                 peer,

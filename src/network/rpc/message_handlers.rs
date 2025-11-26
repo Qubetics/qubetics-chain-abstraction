@@ -19,9 +19,7 @@ impl MpcNetworkLayer {
             "network_to_target" => Ok(TransactionType::NetworkToTarget),
             "vault_to_network" => Ok(TransactionType::VaultToNetwork),
             "reward_txn" => Ok(TransactionType::RewardTxn),
-            "withdraw_liquidity" | "withdrawLiquidity" => {
-                Ok(TransactionType::WithdrawLiquidity)
-            }
+            "withdraw_liquidity" | "withdrawLiquidity" => Ok(TransactionType::WithdrawLiquidity),
             _ => Err(anyhow::anyhow!("Unknown transaction type: {}", tx_type_str)),
         }
     }
@@ -98,12 +96,10 @@ impl MpcNetworkLayer {
             TransactionType::UserToVault
             | TransactionType::NetworkToTarget
             | TransactionType::VaultToNetwork
-            | TransactionType::WithdrawLiquidity => {
-                Err(anyhow::anyhow!(
-                    "Transaction type {:?} is not valid for reward flow. Only RewardTxn is allowed.",
-                    transaction_type
-                ))
-            }
+            | TransactionType::WithdrawLiquidity => Err(anyhow::anyhow!(
+                "Transaction type {:?} is not valid for reward flow. Only RewardTxn is allowed.",
+                transaction_type
+            )),
         }
     }
 
@@ -270,9 +266,7 @@ impl MpcNetworkLayer {
         transaction_type: &str,
     ) -> Result<()> {
         if let Some(user_intent_manager) = &self.user_intent_manager {
-            let Some(network) =
-                reward_network_from_tx_id(transaction_type, transaction_id)
-            else {
+            let Some(network) = reward_network_from_tx_id(transaction_type, transaction_id) else {
                 warn!(
                     "❌ [NETWORK] Unknown reward transaction type '{}' for tx {}; skipping storage",
                     transaction_type, transaction_id
@@ -568,7 +562,6 @@ impl MpcNetworkLayer {
                             solver_address, transaction_id
                         );
                     }
-
                 }
                 Err(e) => {
                     error!(

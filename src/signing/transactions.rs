@@ -65,11 +65,7 @@ impl SigningNode {
         solver_address: String,
         extras: crate::signing::state::BtcRoundExtras,
     ) {
-        let mut pending = self
-            .pending
-            .withdraw_pending_transactions_btc
-            .write()
-            .await;
+        let mut pending = self.pending.withdraw_pending_transactions_btc.write().await;
         pending.insert(
             round,
             (
@@ -169,8 +165,10 @@ impl SigningNode {
 
         // Reward transactions should never have an intent hash. If we see one, drop it and
         // handle as a reward transaction using the solver address instead.
-        let intent_hash = if matches!(transaction_type, Some(crate::types::TransactionType::RewardTxn))
-            && intent_hash.is_some()
+        let intent_hash = if matches!(
+            transaction_type,
+            Some(crate::types::TransactionType::RewardTxn)
+        ) && intent_hash.is_some()
         {
             warn!(
                 "⚠️ [SIGNING] RewardTxn transaction type found with intent hash; \
@@ -357,10 +355,7 @@ impl SigningNode {
             let reward_rounds = self.pending.reward_rounds.read().await;
             reward_rounds.contains(&round)
         };
-        info!(
-            "💾 [SIGNING] Is reward round: {}",
-            is_reward_round
-        );
+        info!("💾 [SIGNING] Is reward round: {}", is_reward_round);
         let is_withdraw_round = {
             let withdraw_rounds = self.pending.withdraw_rounds.read().await;
             withdraw_rounds.contains(&round)
@@ -449,7 +444,11 @@ impl SigningNode {
 
         // Reward transactions should never have an intent_hash
         // If transaction_type is RewardTxn but we have an intent_hash, log a warning
-        if matches!(transaction_type, Some(crate::types::TransactionType::RewardTxn)) && intent_hash.is_some() {
+        if matches!(
+            transaction_type,
+            Some(crate::types::TransactionType::RewardTxn)
+        ) && intent_hash.is_some()
+        {
             warn!(
                 "⚠️ [SIGNING] RewardTxn transaction type found with intent_hash (round={}, tx_id={}); clearing intent hash path is expected",
                 round,
@@ -560,10 +559,7 @@ impl SigningNode {
                                     "❌ [SIGNING] No solver address available for TICS reward transaction storage (retrieved: {:?})",
                                     retrieved_solver_address
                                 );
-                                (
-                                    "reward_txn",
-                                    Err("No solver address available".to_string()),
-                                )
+                                ("reward_txn", Err("No solver address available".to_string()))
                             }
                         } else if let Some(eth_addr) = solver_address_to_use {
                             let result = user_intent_manager
@@ -605,8 +601,15 @@ impl SigningNode {
 
                     // For reward and withdraw liquidity transactions, broadcast with None for intent_hash and solver_address
                     // For other transaction types, broadcast with intent_hash
-                    if transaction_type_str == "reward_txn" || transaction_type_str == "withdraw_liquidity" || transaction_type_str == "withdrawLiquidity" {
-                        let tx_type_label = if transaction_type_str == "reward_txn" { "reward" } else { "withdraw liquidity" };
+                    if transaction_type_str == "reward_txn"
+                        || transaction_type_str == "withdraw_liquidity"
+                        || transaction_type_str == "withdrawLiquidity"
+                    {
+                        let tx_type_label = if transaction_type_str == "reward_txn" {
+                            "reward"
+                        } else {
+                            "withdraw liquidity"
+                        };
                         info!(
                             "✅ [SIGNING] Successfully synchronized {} transaction ID {} for solver {:?} (type: {})",
                             tx_type_label, tx_id, retrieved_solver_address, transaction_type_str
@@ -638,8 +641,11 @@ impl SigningNode {
             (None, Some(user_intent_manager)) => {
                 // Handle reward transactions (RewardTxn) - they should always have None for intent_hash
                 // Also handle cases where transaction_type is None but we have a solver_address (legacy reward transactions)
-                if matches!(transaction_type, Some(crate::types::TransactionType::RewardTxn)) || 
-                   (transaction_type.is_none() && retrieved_solver_address.is_some()) {
+                if matches!(
+                    transaction_type,
+                    Some(crate::types::TransactionType::RewardTxn)
+                ) || (transaction_type.is_none() && retrieved_solver_address.is_some())
+                {
                     info!(
                         "🧾 [SIGNING] Reward path (round {}, network {:?}) solver_address_present={} tx_id={}",
                         round,
@@ -687,32 +693,35 @@ impl SigningNode {
                             }
                         };
 
-                    if storage_result.is_ok() {
-                        if let Err(e) = user_intent_manager
-                            .store_transaction_status(tx_id, TransactionStatus::Pending)
-                            .await
-                        {
-                            error!(
+                        if storage_result.is_ok() {
+                            if let Err(e) = user_intent_manager
+                                .store_transaction_status(tx_id, TransactionStatus::Pending)
+                                .await
+                            {
+                                error!(
                                 "❌ [SIGNING] Failed to store transaction status for reward tx {}: {}",
                                 tx_id, e
                             );
-                        }
+                            }
 
-                        info!(
+                            info!(
                             "✅ [SIGNING] Successfully synchronized reward transaction ID {} for solver {} (type: {})",
                             tx_id, solver_addr, transaction_type_str
                         );
 
-                        self.broadcast_transaction_id(
-                            None,
-                            tx_id,
-                            transaction_type_str,
-                            Some(solver_addr),
-                        )
-                        .await;
-                    }
+                            self.broadcast_transaction_id(
+                                None,
+                                tx_id,
+                                transaction_type_str,
+                                Some(solver_addr),
+                            )
+                            .await;
+                        }
                     } else {
-                        if matches!(transaction_type, Some(crate::types::TransactionType::RewardTxn)) {
+                        if matches!(
+                            transaction_type,
+                            Some(crate::types::TransactionType::RewardTxn)
+                        ) {
                             error!(
                                 "❌ [SIGNING] RewardTxn transaction type requires solver_address, but none was found in round {} (tx_id={})",
                                 round,

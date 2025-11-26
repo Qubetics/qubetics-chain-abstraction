@@ -1937,6 +1937,32 @@ impl MpcNetworkLayer {
                 )
                 .await?;
             }
+            ChannelMessage::AddLiquidity {
+                solver_address,
+                solver_id,
+                amount_btc,
+                amount_tics,
+            } => {
+                info!(
+                    "💧 [NETWORK] Processing add liquidity for solver {} (solver_id: {})",
+                    solver_address, solver_id
+                );
+
+                let add_msg = GossipsubMessage::AddLiquidity {
+                    solver_address: solver_address.clone(),
+                    solver_id: solver_id.clone(),
+                    amount_btc: amount_btc.clone(),
+                    amount_tics: amount_tics.clone(),
+                };
+                let msg_bytes = serde_json::to_vec(&add_msg)
+                    .map_err(|e| anyhow::anyhow!("Failed to serialize add-liquidity msg: {}", e))?;
+                let topic = gossipsub::IdentTopic::new("add-liquidity");
+                swarm.behaviour_mut().gossipsub.publish(topic, msg_bytes)?;
+                info!(
+                    "📡 [NETWORK] Broadcasted add liquidity request for solver {}",
+                    solver_address
+                );
+            }
             ChannelMessage::WithdrawLiquidity {
                 solver_address,
                 btc_address,
