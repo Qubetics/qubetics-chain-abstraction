@@ -53,7 +53,7 @@ impl MpcNetworkLayer {
         if let Err(e) = self.db.put_string(&key, &next) {
             warn!("Failed to persist peer index: {:?}", e);
         }
-        self.peer_discovery.peer_indices.insert(pid.clone(), next);
+        self.peer_discovery.peer_indices.insert(*pid, next);
         next
     }
 
@@ -62,7 +62,7 @@ impl MpcNetworkLayer {
         if let Some(idx) = self.get_index_from_db(&self.local_peer_id) {
             self.peer_discovery
                 .peer_indices
-                .insert(self.local_peer_id.clone(), idx);
+                .insert(self.local_peer_id, idx);
             return idx;
         }
         // If no peers indexed yet, start at 1; otherwise next max+1
@@ -74,7 +74,7 @@ impl MpcNetworkLayer {
         }
         self.peer_discovery
             .peer_indices
-            .insert(self.local_peer_id.clone(), idx);
+            .insert(self.local_peer_id, idx);
         idx
     }
 
@@ -166,7 +166,7 @@ impl MpcNetworkLayer {
         }
 
         let msg = GossipsubMessage::PeerDiscovered {
-            peer: self.local_peer_id.clone(),
+            peer: self.local_peer_id,
             sequence: Some(1),
             index: Some(my_index),
         };

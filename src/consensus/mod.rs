@@ -13,6 +13,12 @@ pub struct ConsensusNode {
     consensus_results: HashMap<u64, ConsensusResult>,
 }
 
+impl Default for ConsensusNode {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ConsensusNode {
     pub fn new() -> Self {
         Self {

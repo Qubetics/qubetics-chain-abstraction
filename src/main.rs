@@ -110,7 +110,7 @@ impl NodeContext {
     fn init_logging(&self) -> Result<()> {
         let rand_num: u32 = thread_rng().gen_range(1000..9999);
         let file_appender =
-            tracing_appender::rolling::never("logs", format!("mpcn-{}.log", rand_num));
+            tracing_appender::rolling::never("logs", format!("mpcn-{rand_num}.log"));
         let (writer, _guard) = non_blocking(file_appender);
         let file_layer = fmt::layer::<_>()
             .with_writer(writer)

@@ -86,7 +86,7 @@ impl SigningNode {
                 .await
                 .map_err(|e| anyhow!("Failed to get amounts for solver {}: {}", solver_id, e))?;
 
-            if let Some(btc_amount) = amounts.get(0) {
+            if let Some(btc_amount) = amounts.first() {
                 total_btc += *btc_amount;
             }
             if let Some(tics_amount) = amounts.get(1) {
@@ -96,7 +96,7 @@ impl SigningNode {
             let liquidity_amounts: Vec<String> = amounts.iter().map(|u| u.to_string()).collect();
             let solver_liquidity_key = format!(
                 "solver_liquidity:{}",
-                format!("{:?}", solver_evm_address).to_lowercase()
+                format!("{solver_evm_address:?}").to_lowercase()
             );
 
             if let Some(ref database) = self.database {
@@ -116,7 +116,7 @@ impl SigningNode {
             }
 
             solver_liquidity_map.insert(
-                format!("{:?}", solver_evm_address).to_lowercase(),
+                format!("{solver_evm_address:?}").to_lowercase(),
                 liquidity_amounts,
             );
         }
@@ -209,8 +209,7 @@ impl SigningNode {
 
         for (solver, amounts) in solver_liquidity_map.iter() {
             let reward = if source_chain == "btc" || source_chain == "bitcoin" {
-                let solver_btc = amounts
-                    .get(0)
+                let solver_btc = amounts.first()
                     .and_then(|v| EthereumU256::from_dec_str(v).ok())
                     .unwrap_or_else(EthereumU256::zero);
                 if solver_btc.is_zero() || total_btc.is_zero() {

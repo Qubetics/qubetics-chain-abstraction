@@ -109,7 +109,7 @@ impl VrfNodeManager {
 
     fn register_node_internal(&mut self, node_id: PeerId) -> Result<(), String> {
         if self.nodes.contains_key(&node_id) {
-            return Err(format!("Node {} already exists", node_id));
+            return Err(format!("Node {node_id} already exists"));
         }
         self.nodes
             .insert(node_id, NodeRecord::new(node_id));
@@ -121,7 +121,7 @@ impl VrfNodeManager {
         self.nodes
             .values()
             .filter(|record| record.is_active)
-            .map(|record| record.peer_id.clone())
+            .map(|record| record.peer_id)
             .collect()
     }
 
@@ -138,7 +138,7 @@ impl VrfNodeManager {
         }
 
         // Sort deterministically to ensure consistent synthetic submissions
-        available_nodes.sort_by(|a, b| a.to_bytes().cmp(&b.to_bytes()));
+        available_nodes.sort_by_key(|a| a.to_bytes());
 
         let computed_threshold = self.get_threshold();
         let threshold = if computed_threshold > available_nodes.len() {
@@ -275,7 +275,7 @@ impl NodeMembership for VrfNodeManager {
 
     fn remove_node(&mut self, node_id: PeerId) -> Result<(), String> {
         if !self.nodes.contains_key(&node_id) {
-            return Err(format!("Node {} not found", node_id));
+            return Err(format!("Node {node_id} not found"));
         }
         self.nodes.remove(&node_id);
         info!("Removed node {} from VRF node manager", node_id);
@@ -304,7 +304,7 @@ impl NodeMembership for VrfNodeManager {
         self.nodes
             .values()
             .filter(|record| record.is_active)
-            .map(|record| record.peer_id.clone())
+            .map(|record| record.peer_id)
             .collect()
     }
 

@@ -429,7 +429,7 @@ impl SigningNode {
             "🧮 [SIGNING] peer_to_dkg_index used for aggregation: {:?}",
             peer_to_dkg_index
                 .iter()
-                .map(|(p, i)| format!("{}->{}", p, i))
+                .map(|(p, i)| format!("{p}->{i}"))
                 .collect::<Vec<_>>()
         );
 
@@ -1331,7 +1331,7 @@ impl SigningNode {
                     round,
                     peer_to_index_map
                         .iter()
-                        .map(|(peer, idx)| format!("{}->{}", peer, idx))
+                        .map(|(peer, idx)| format!("{peer}->{idx}"))
                         .collect::<Vec<_>>()
                 );
 
@@ -1411,7 +1411,7 @@ impl SigningNode {
                     "🔢 [SIGNING] DKG indices for threshold signatures: {:?}",
                     peer_to_dkg_index
                         .iter()
-                        .map(|(peer, idx)| format!("{}->{}", peer, idx))
+                        .map(|(peer, idx)| format!("{peer}->{idx}"))
                         .collect::<Vec<_>>()
                 );
 
@@ -1467,8 +1467,8 @@ impl SigningNode {
                             round
                         );
                         info!("  v: {}", v);
-                        info!("  r (canonical): 0x{}", hex::encode(&r));
-                        info!("  s (canonical): 0x{}", hex::encode(&s));
+                        info!("  r (canonical): 0x{}", hex::encode(r));
+                        info!("  s (canonical): 0x{}", hex::encode(s));
                         info!("  recovery_id: {}", recovery_id.to_i32());
                         info!("  original_signature: 0x{}", hex::encode(signature_bytes));
                         info!(
@@ -1727,7 +1727,7 @@ impl SigningNode {
             // skip if already aggregated
             let already_done = {
                 let done = self.btc_state.btc_done_inputs_by_round.read().await;
-                done.get(&round).map_or(false, |s| s.contains(&idx))
+                done.get(&round).is_some_and(|s| s.contains(&idx))
             };
             if already_done {
                 continue;
@@ -2003,7 +2003,6 @@ impl SigningNode {
         Ok(())
     }
     /// Broadcast transaction to Bitcoin network
-
     /// Handle signature received on the signatures-to-final-node topic
     pub async fn handle_signature_to_final_node(
         &mut self,

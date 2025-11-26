@@ -397,7 +397,7 @@ impl DKGNode {
 
         for (sid, _) in solver_with_indices {
             if let Some(comms) = commitments.get(&sid) {
-                if let Some(c0) = comms.get(0) {
+                if let Some(c0) = comms.first() {
                     final_public_key += ProjectivePoint::from(*c0);
                 } else {
                     warn!("⚠️ [DKG] Solver {} has no C0 (index 0 missing)", sid);

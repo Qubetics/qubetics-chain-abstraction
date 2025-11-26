@@ -51,8 +51,8 @@ pub fn amount_to_hex_string(amount: u128) -> String {
     }
 
     // Convert to hex and remove leading zeros
-    let hex_str = format!("{:x}", amount);
-    format!("0x{}", hex_str)
+    let hex_str = format!("{amount:x}");
+    format!("0x{hex_str}")
 }
 
 /// Validate and normalize hex string for amounts
@@ -72,7 +72,7 @@ pub fn validate_and_normalize_hex_amount(hex_str: &str) -> Result<String> {
     let trimmed = clean_hex.trim_start_matches('0');
     let normalized = if trimmed.is_empty() { "0" } else { trimmed };
 
-    Ok(format!("0x{}", normalized))
+    Ok(format!("0x{normalized}"))
 }
 
 /// Validate that a transaction has proper hex formatting for value and gas_price
@@ -143,7 +143,7 @@ pub async fn fetch_bitcoin_utxos(address: &str, is_testnet: bool) -> Result<Vec<
     // Prefer custom API if provided: BTC_UTXO_API_BASE=http://host:port
     if let Ok(custom_base) = std::env::var("BTC_UTXO_API_BASE") {
         let base = custom_base.trim_end_matches('/');
-        let url = format!("{}/api/v1/utxos?address={}", base, address);
+        let url = format!("{base}/api/v1/utxos?address={address}");
         tracing::info!("🌐 Using custom UTXO API: {}", url);
         let client = reqwest::Client::new();
         let response = client.get(&url).send().await?;
@@ -191,7 +191,7 @@ pub async fn fetch_bitcoin_utxos(address: &str, is_testnet: bool) -> Result<Vec<
         "https://mempool.space/api"
     };
 
-    let url = format!("{}/address/{}/utxo", base_url, address);
+    let url = format!("{base_url}/address/{address}/utxo");
     tracing::info!("🌐 Using mempool.space Esplora API: {}", url);
     let client = reqwest::Client::new();
     let response = client.get(&url).send().await?;
@@ -289,7 +289,6 @@ pub fn select_utxos_for_amount(
 
     let mut confirmed_utxos: Vec<_> = utxos
         .iter()
-        .cloned()
         .filter(|utxo| {
             if !utxo.status.confirmed {
                 tracing::debug!(
@@ -319,6 +318,7 @@ pub fn select_utxos_for_amount(
 
             true
         })
+        .cloned()
         .collect();
 
     if confirmed_utxos.is_empty() {
@@ -758,7 +758,7 @@ async fn estimate_gas_for_deposit_intent(
 /// - UserToVault: User deposit - FROM derived address TO vault address (on source chain)
 /// - NetworkToTarget: Network withdrawal - FROM network address TO target address (on target chain)
 /// - VaultToNetwork: Vault to network - FROM vault address TO network address (on source chain)
-/// derived_eth_addr and derived_btc_addr are the actual addresses that hold user funds
+///   derived_eth_addr and derived_btc_addr are the actual addresses that hold user funds
 pub async fn create_chain_transaction_from_deposit_intent(
     intent: &DepositIntent,
     group_public_key: Option<k256::ProjectivePoint>,
@@ -1035,7 +1035,7 @@ async fn create_chain_transaction_from_deposit_intent_internal(
 
         tracing::info!("Using Bitcoin source address for UTXOs: {}", from_address);
 
-        let bitcoin_tx = create_bitcoin_transaction(&from_address, &to_address, amount).await?;
+        let bitcoin_tx = create_bitcoin_transaction(&from_address, to_address, amount).await?;
 
         Ok(ChainTransaction::Bitcoin(bitcoin_tx))
     } else {
@@ -1087,7 +1087,7 @@ pub async fn create_chain_transaction_from_contract_call(
                 amount,
                 &intent.source_token,
                 &intent.target_token,
-                &tx_hash,
+                tx_hash,
                 intent_hash,
                 &intent.timestamp.to_string(),
             )
@@ -1166,7 +1166,7 @@ pub async fn create_chain_transaction_from_contract_call(
         "  - Calldata: 0x{}",
         calldata
             .as_ref()
-            .map(|d| hex::encode(d))
+            .map(hex::encode)
             .unwrap_or_else(|| "".to_string())
     );
 
@@ -1194,7 +1194,7 @@ pub async fn create_solver_rewards_update_transaction(
     let normalized_contract_address = if contract_address.starts_with("0x") {
         contract_address.to_string()
     } else {
-        format!("0x{}", contract_address)
+        format!("0x{contract_address}")
     };
 
     info!("🔧 [CONTRACT] Solver address: {}", solver_address);
@@ -1262,7 +1262,7 @@ pub async fn create_solver_remove_liquidity_transaction(
     let normalized_contract_address = if contract_address.starts_with("0x") {
         contract_address.to_string()
     } else {
-        format!("0x{}", contract_address)
+        format!("0x{contract_address}")
     };
 
     info!(
@@ -1334,7 +1334,7 @@ pub async fn create_solver_add_liquidity_transaction(
     let normalized_contract_address = if contract_address.starts_with("0x") {
         contract_address.to_string()
     } else {
-        format!("0x{}", contract_address)
+        format!("0x{contract_address}")
     };
 
     info!(

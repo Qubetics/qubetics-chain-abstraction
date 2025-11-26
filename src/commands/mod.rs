@@ -13,6 +13,12 @@ pub struct CommandProcessor {
     handlers: HashMap<String, Box<dyn Fn(Command) -> anyhow::Result<()> + Send + Sync>>,
 }
 
+impl Default for CommandProcessor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CommandProcessor {
     pub fn new() -> Self {
         Self {

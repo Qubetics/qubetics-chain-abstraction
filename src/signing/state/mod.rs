@@ -36,6 +36,12 @@ pub struct SignatureStore {
     pub aggregated_rounds: Arc<RwLock<HashSet<u64>>>, // Track rounds that have been aggregated
 }
 
+impl Default for SignatureStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SignatureStore {
     pub fn new() -> Self {
         Self {
@@ -96,6 +102,12 @@ pub struct PendingStore {
     pub withdraw_rounds: Arc<RwLock<HashSet<u64>>>,
 }
 
+impl Default for PendingStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PendingStore {
     pub fn new() -> Self {
         Self {
@@ -117,6 +129,12 @@ pub struct BtcAggregationState {
         Arc<RwLock<HashMap<u64, HashMap<usize, HashMap<String, ECDSASignature>>>>>,
     pub btc_agg_by_round: Arc<RwLock<HashMap<u64, HashMap<usize, RecoverableSignature>>>>,
     pub btc_done_inputs_by_round: Arc<RwLock<HashMap<u64, HashSet<usize>>>>,
+}
+
+impl Default for BtcAggregationState {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl BtcAggregationState {

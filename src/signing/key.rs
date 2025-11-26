@@ -15,6 +15,12 @@ pub struct KeyStore {
     vault_group_key: Option<ProjectivePoint>,
 }
 
+impl Default for KeyStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl KeyStore {
     pub fn new() -> Self {
         Self {
@@ -88,7 +94,7 @@ impl KeyStore {
     }
 
     pub fn clone_private_key(&self) -> Option<SecretKey> {
-        self.private_key.clone()
+        self.private_key
     }
 
     pub fn public_key(&self) -> Option<&PublicKey> {

@@ -53,7 +53,7 @@ impl MpcNetworkLayer {
         this.bootstrap_peer_ids = this
             .bootstrap_addresses
             .iter()
-            .filter_map(|addr| Self::extract_peer_id(addr))
+            .filter_map(Self::extract_peer_id)
             .collect();
 
         // Preload any persisted peer indices into memory
@@ -108,7 +108,7 @@ impl MpcNetworkLayer {
     fn extract_peer_id(addr: &Multiaddr) -> Option<PeerId> {
         addr.iter().find_map(|proto| match proto {
             libp2p::multiaddr::Protocol::P2p(multihash) => {
-                PeerId::from_multihash(multihash.clone().into()).ok()
+                PeerId::from_multihash(multihash.into()).ok()
             }
             _ => None,
         })

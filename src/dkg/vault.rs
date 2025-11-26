@@ -48,7 +48,7 @@ impl DKGNode {
             "🔢 [DKG] Processing commitments in peer index order: {:?}",
             solver_with_indices
                 .iter()
-                .map(|(sid, idx)| format!("{}:{}", sid, idx))
+                .map(|(sid, idx)| format!("{sid}:{idx}"))
                 .collect::<Vec<_>>()
         );
 
@@ -56,7 +56,7 @@ impl DKGNode {
         let mut added = 0usize;
         for (sid, _) in &solver_with_indices {
             if let Some(comms) = commitments.get(sid) {
-                if let Some(c0) = comms.get(0) {
+                if let Some(c0) = comms.first() {
                     p_base += ProjectivePoint::from(*c0);
                     added += 1;
                 } else {
@@ -71,7 +71,7 @@ impl DKGNode {
             ));
         }
 
-        let tweak_point = ProjectivePoint::GENERATOR * &tweak_scalar;
+        let tweak_point = ProjectivePoint::GENERATOR * tweak_scalar;
         let p_user = p_base + tweak_point;
 
         if let Some(stored) = self.storage.get_final_public().await? {
@@ -108,7 +108,7 @@ impl DKGNode {
             "🔢 [VAULT] Processing original commitments in peer index order: {:?}",
             solver_with_indices
                 .iter()
-                .map(|(sid, idx)| format!("{}:{}", sid, idx))
+                .map(|(sid, idx)| format!("{sid}:{idx}"))
                 .collect::<Vec<_>>()
         );
 
@@ -116,7 +116,7 @@ impl DKGNode {
         let mut added = 0usize;
         for (sid, _) in &solver_with_indices {
             if let Some(comms) = commitments.get(sid) {
-                if let Some(c0) = comms.get(0) {
+                if let Some(c0) = comms.first() {
                     p_base += ProjectivePoint::from(*c0);
                     added += 1;
                 } else {
@@ -139,7 +139,7 @@ impl DKGNode {
             added
         );
 
-        let tweak_point = ProjectivePoint::GENERATOR * &tweak_scalar;
+        let tweak_point = ProjectivePoint::GENERATOR * tweak_scalar;
         Ok(p_base + tweak_point)
     }
 }

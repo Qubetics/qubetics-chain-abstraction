@@ -62,7 +62,7 @@ impl DKGNode {
             coefficients.len(),
             coefficients
                 .iter()
-                .map(|c| format!("{:?}", c))
+                .map(|c| format!("{c:?}"))
                 .collect::<Vec<String>>()
         );
         Ok(coefficients)

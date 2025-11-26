@@ -182,13 +182,13 @@ impl DKGNode {
                 "🔢 [NEW_NODE] Summing commitment C0 terms in peer index order: {:?}",
                 solver_with_indices
                     .iter()
-                    .map(|(sid, idx)| format!("{}:{}", sid, idx))
+                    .map(|(sid, idx)| format!("{sid}:{idx}"))
                     .collect::<Vec<_>>()
             );
 
             for (sid, _) in solver_with_indices {
                 if let Some(comms) = commitments_map.get(&sid) {
-                    if let Some(c0) = comms.get(0) {
+                    if let Some(c0) = comms.first() {
                         info!("✅ [NEW_NODE] Adding commitment C0 from {}: {:?}", sid, c0);
                         final_public_key += ProjectivePoint::from(*c0);
                     } else {

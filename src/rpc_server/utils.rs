@@ -146,14 +146,14 @@ pub(crate) fn convert_src_smallest_to_dst_smallest(
 pub async fn fetch_crypto_prices() -> Result<HashMap<String, Decimal>, String> {
     let base_url =
         std::env::var("BACKEND_API_URL").unwrap_or_else(|_| "http://172.16.15.63:7322".to_string());
-    let url = format!("{}/api/v1/cryptos/prices?symbols=BTC,TICS", base_url);
+    let url = format!("{base_url}/api/v1/cryptos/prices?symbols=BTC,TICS");
     let client = Client::new();
 
     info!("Fetching crypto prices from URL: {}", url);
 
     let resp = client.get(&url).send().await.map_err(|e| {
         error!("Failed to fetch crypto prices: {}", e);
-        format!("Failed to fetch crypto prices: {}", e)
+        format!("Failed to fetch crypto prices: {e}")
     })?;
 
     let status = resp.status();
@@ -161,7 +161,7 @@ pub async fn fetch_crypto_prices() -> Result<HashMap<String, Decimal>, String> {
 
     let resp_text = resp.text().await.map_err(|e| {
         error!("Failed to read crypto prices response text: {}", e);
-        format!("Failed to read crypto prices response text: {}", e)
+        format!("Failed to read crypto prices response text: {e}")
     })?;
 
     debug!("Crypto prices API response body: {}", resp_text);
@@ -172,14 +172,13 @@ pub async fn fetch_crypto_prices() -> Result<HashMap<String, Decimal>, String> {
             status, resp_text
         );
         return Err(format!(
-            "Crypto prices API returned non-success status {}: {}",
-            status, resp_text
+            "Crypto prices API returned non-success status {status}: {resp_text}"
         ));
     }
 
     let resp_json: Value = serde_json::from_str(&resp_text).map_err(|e| {
         error!("Failed to parse crypto prices response: {}", e);
-        format!("Failed to parse crypto prices response: {}", e)
+        format!("Failed to parse crypto prices response: {e}")
     })?;
 
     debug!("Crypto prices API response JSON: {:?}", resp_json);
@@ -190,7 +189,7 @@ pub async fn fetch_crypto_prices() -> Result<HashMap<String, Decimal>, String> {
             .and_then(|v| v.as_str())
             .unwrap_or("Unknown error");
         error!("Crypto prices API error: {}", msg);
-        return Err(format!("Crypto prices API error: {}", msg));
+        return Err(format!("Crypto prices API error: {msg}"));
     }
 
     let data = resp_json.get("data").ok_or_else(|| {

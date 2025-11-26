@@ -781,11 +781,11 @@ impl MpcNetworkLayer {
                         if let Some(registry) = &self.user_intent_manager {
                             let database = registry.get_database();
                             let vault_eth = database
-                                .get_string(&crate::database::keys::DKG_VAULT_ETH_ADDRESS)
+                                .get_string(crate::database::keys::DKG_VAULT_ETH_ADDRESS)
                                 .ok()
                                 .flatten();
                             let vault_btc = database
-                                .get_string(&crate::database::keys::DKG_VAULT_BTC_ADDRESS)
+                                .get_string(crate::database::keys::DKG_VAULT_BTC_ADDRESS)
                                 .ok()
                                 .flatten();
                             (vault_eth, vault_btc)
@@ -928,7 +928,7 @@ impl MpcNetworkLayer {
                                 ) => {
                                     let tx_bytes =
                                         crate::utils::transaction::create_transaction_for_signing(
-                                            &eth_tx,
+                                            eth_tx,
                                         );
                                     debug!("→ RLP payload: 0x{}", hex::encode(&tx_bytes));
 
@@ -992,7 +992,7 @@ impl MpcNetworkLayer {
                                         eth_signer
                                             .sign_transaction(
                                                 tx_bytes.clone(),
-                                                &eth_tx,
+                                                eth_tx,
                                                 user_tweaked_share,
                                                 user_eth_address.clone(),
                                                 Some(intent_hash.clone()),
@@ -1124,7 +1124,7 @@ impl MpcNetworkLayer {
 
                 // If index provided, store and persist it
                 if let Some(idx) = index {
-                    self.peer_discovery.peer_indices.insert(peer.clone(), idx);
+                    self.peer_discovery.peer_indices.insert(peer, idx);
                     let key = key_utils::peer_index_key(&peer.to_string());
                     if let Err(e) = self.db.put_string_async(&key, &idx).await {
                         warn!("Failed to persist peer index: {:?}", e);

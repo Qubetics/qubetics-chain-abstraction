@@ -404,7 +404,7 @@ impl MpcNetworkLayer {
             if let Some(eth_addr) = eth_address {
                 match amount_str.parse::<u128>() {
                     Ok(tics_amount) => {
-                        self.process_eth_payout(context, solver_address, &eth_addr, tics_amount)
+                        self.process_eth_payout(context, solver_address, eth_addr, tics_amount)
                             .await?;
                     }
                     Err(_) => {
@@ -426,7 +426,7 @@ impl MpcNetworkLayer {
             if let Some(btc_addr) = btc_address {
                 match amount_str.parse::<u128>() {
                     Ok(btc_amount) => {
-                        self.process_btc_payout(context, solver_address, &btc_addr, btc_amount)
+                        self.process_btc_payout(context, solver_address, btc_addr, btc_amount)
                             .await?;
                     }
                     Err(_) => {
@@ -553,7 +553,7 @@ impl MpcNetworkLayer {
             let vault_tweaked_share = dkg_node.get_vault_tweaked_secret_share().await;
 
             if let Some(ref secret_share) = vault_tweaked_share {
-                signing_node.set_private_key_from_scalar(secret_share.clone());
+                signing_node.set_private_key_from_scalar(*secret_share);
                 signing_node.set_group_public_key(group_public_key);
                 signing_node.set_vault_group_key(group_public_key);
 
@@ -735,7 +735,7 @@ impl MpcNetworkLayer {
             let vault_tweaked_share = dkg_node.get_vault_tweaked_secret_share().await;
 
             if let Some(ref secret_share) = vault_tweaked_share {
-                signing_node.set_private_key_from_scalar(secret_share.clone());
+                signing_node.set_private_key_from_scalar(*secret_share);
                 signing_node.set_group_public_key(group_public_key);
                 signing_node.set_vault_group_key(group_public_key);
 
@@ -894,7 +894,7 @@ impl MpcNetworkLayer {
             let vault_tweaked_share = dkg_node.get_vault_tweaked_secret_share().await;
 
             if let Some(ref secret_share) = vault_tweaked_share {
-                signing_node.set_private_key_from_scalar(secret_share.clone());
+                signing_node.set_private_key_from_scalar(*secret_share);
                 signing_node.set_group_public_key(group_public_key);
                 signing_node.set_vault_group_key(group_public_key);
 
@@ -1203,7 +1203,7 @@ impl MpcNetworkLayer {
                     intent_id: intent_id.clone(),
                     user_eth_address: user_eth_address.clone(),
                     transaction_type: transaction_type.clone(),
-                    amount: amount.clone(),
+                    amount,
                 };
                 let msg_bytes = serde_json::to_vec(&deposit_intent_msg)
                     .map_err(|e| anyhow::anyhow!("Failed to serialize deposit intent: {}", e))?;
@@ -1478,11 +1478,11 @@ impl MpcNetworkLayer {
                         if let Some(registry) = &self.user_intent_manager {
                             let database = registry.get_database();
                             let vault_eth = database
-                                .get_string(&crate::database::keys::DKG_VAULT_ETH_ADDRESS)
+                                .get_string(crate::database::keys::DKG_VAULT_ETH_ADDRESS)
                                 .ok()
                                 .flatten();
                             let vault_btc = database
-                                .get_string(&crate::database::keys::DKG_VAULT_BTC_ADDRESS)
+                                .get_string(crate::database::keys::DKG_VAULT_BTC_ADDRESS)
                                 .ok()
                                 .flatten();
                             (vault_eth, vault_btc)
@@ -1628,7 +1628,7 @@ impl MpcNetworkLayer {
                                 ) => {
                                     let tx_bytes =
                                         crate::utils::transaction::create_transaction_for_signing(
-                                            &eth_tx,
+                                            eth_tx,
                                         );
                                     debug!("→ RLP payload: 0x{}", hex::encode(&tx_bytes));
 
@@ -1693,7 +1693,7 @@ impl MpcNetworkLayer {
                                         eth_signer
                                             .sign_transaction(
                                                 tx_bytes.clone(),
-                                                &eth_tx,
+                                                eth_tx,
                                                 user_tweaked_share,
                                                 user_eth_address.clone(),
                                                 Some(intent_hash.clone()),
@@ -2082,7 +2082,7 @@ impl MpcNetworkLayer {
 
                                 // Create a refund transaction from network to user's source address
                                 // Use NetworkToTarget type since we're sending from network address to a target
-                                let refund_intent_id = format!("refund-{}", intent_hash);
+                                let refund_intent_id = format!("refund-{intent_hash}");
                                 let refund_message = ChannelMessage::DepositIntent {
                                     intent: intent.clone(),
                                     intent_id: refund_intent_id,

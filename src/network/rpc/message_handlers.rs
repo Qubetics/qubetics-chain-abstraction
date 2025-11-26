@@ -111,7 +111,7 @@ impl MpcNetworkLayer {
                 Ok(()) => {
                     // Store transaction status
                     if let Err(e) = user_intent_manager
-                        .store_transaction_status(&transaction_id, TransactionStatus::Pending)
+                        .store_transaction_status(transaction_id, TransactionStatus::Pending)
                         .await
                     {
                         error!(
@@ -214,7 +214,7 @@ impl MpcNetworkLayer {
                 Ok(()) => {
                     // Store transaction status
                     if let Err(e) = user_intent_manager
-                        .store_transaction_status(&transaction_id, TransactionStatus::Pending)
+                        .store_transaction_status(transaction_id, TransactionStatus::Pending)
                         .await
                     {
                         error!(
@@ -307,14 +307,14 @@ impl MpcNetworkLayer {
                     user_intent_manager
                         .get_solver_reward_tics(solver_address)
                         .await
-                        .unwrap_or_else(|| ethers::types::U256::zero()),
+                        .unwrap_or_else(ethers::types::U256::zero),
                 ),
                 TransactionNetwork::BTC => (
                     "btc",
                     user_intent_manager
                         .get_solver_reward_btc(solver_address)
                         .await
-                        .unwrap_or_else(|| ethers::types::U256::zero()),
+                        .unwrap_or_else(ethers::types::U256::zero),
                 ),
             };
 
@@ -323,7 +323,7 @@ impl MpcNetworkLayer {
                 let current_claimed = user_intent_manager
                     .get_solver_claimed_request_amount(solver_address)
                     .await
-                    .unwrap_or_else(|| ethers::types::U256::zero());
+                    .unwrap_or_else(ethers::types::U256::zero);
 
                 // Update claimed amount
                 let new_claimed = current_claimed + current_reward;
@@ -416,7 +416,7 @@ impl MpcNetworkLayer {
                 Ok(()) => {
                     // Store transaction status
                     if let Err(e) = user_intent_manager
-                        .store_transaction_status(&transaction_id, TransactionStatus::Pending)
+                        .store_transaction_status(transaction_id, TransactionStatus::Pending)
                         .await
                     {
                         error!(

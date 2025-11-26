@@ -140,7 +140,7 @@ pub fn get_btc_address_from_group_key_p2pkh(pubkey: ProjectivePoint) -> Result<S
     let compressed = CompressedPublicKey::from_slice(&secp_pubkey.serialize()).unwrap();
 
     // Generate P2PKH (Legacy): OP_DUP OP_HASH160 <20-byte-hash> OP_EQUALVERIFY OP_CHECKSIG
-    let btc_address = bitcoin::Address::p2pkh(&compressed, Network::Testnet);
+    let btc_address = bitcoin::Address::p2pkh(compressed, Network::Testnet);
 
     Ok(btc_address.to_string())
 }
