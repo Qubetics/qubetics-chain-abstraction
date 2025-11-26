@@ -165,7 +165,7 @@ pub struct NetworkLayer {
 
 impl NetworkLayer {
     const MAX_PEER_DISCOVERY_RETRIES: u8 = 10;
-    const PERIODIC_REFRESH_INTERVAL_SECS: u64 = 600; // 10 minutes
+    const PERIODIC_REFRESH_INTERVAL_SECS: u64 = 300; // 10 minutes
     const NEW_NODE_SHARE_COLLECTION_DELAY_SECS: u64 = 10; // Wait time for new nodes to collect shares before refresh
 
     fn get_max_peer_index_from_db(&self) -> usize {
@@ -2188,8 +2188,11 @@ impl NetworkLayer {
                         false
                     };
                     
-                    if is_initial_dkg_done {
-                        // Parse the new node ID
+
+                    let network_established =
+                        is_initial_dkg_done || self.node_manager.get_total_nodes() > 4;
+
+                    if network_established {                        // Parse the new node ID
                         if let Ok(peer_id) = new_node_id.parse::<PeerId>() {
                             // ALL nodes (including the new node itself) add it to pending_joins
                             if !self.pending_joins.contains(&peer_id) {
@@ -4167,6 +4170,7 @@ impl NetworkLayer {
                 
                 let mut needs_refresh = false;
                 let mut has_new_nodes_joining = false;
+                let mut local_node_joining = false;
                 let mut nodes_to_remove: Vec<PeerId> = Vec::new();
                 
                 // STEP 1: Process restricted (disconnected) nodes
@@ -4194,6 +4198,7 @@ impl NetworkLayer {
                     
                     // Check if this is the local node (we're the new node)
                     if peer_id == self.local_peer_id {
+                        local_node_joining = true;
                         info!("🆕 [PERIODIC_REFRESH] I am a new node - requesting shares from existing nodes");
                         
                         // Get my assigned index
@@ -4223,10 +4228,14 @@ impl NetworkLayer {
                         let share_request_delay_secs = delay_secs / 2;
                         let db_sync_delay_secs = delay_secs - share_request_delay_secs;
 
-                        let sync_peer_for_new_node = swarm
+                        let sync_peer_for_new_node = if local_node_joining {
+                            swarm
                                 .connected_peers()
                                 .find(|pid| **pid != self.local_peer_id)
-                                .cloned();
+                                .cloned()
+                        } else {
+                            None
+                        };
                         info!("⏰ [PERIODIC_REFRESH] New nodes are joining (total: {}) - scheduling refresh in {} seconds (non-blocking)...", total, delay_secs);
 
                         // Clone the message sender to use in the spawned task
