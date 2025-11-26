@@ -816,18 +816,22 @@ impl SigningNode {
                     }
                     Some(crate::types::TransactionType::WithdrawLiquidity) => {
                         // Withdraw liquidity payouts reuse the network group key path (same as rewards)
-                        let group_address = if let Some(group_key) =
-                            self.key_store.get_group_public_key()
-                        {
-                            get_eth_address_from_group_key(group_key)
-                        } else {
-                            return Err(anyhow!(
+                        let group_address =
+                            if let Some(group_key) = self.key_store.get_group_public_key() {
+                                get_eth_address_from_group_key(group_key)
+                            } else {
+                                return Err(anyhow!(
                                 "No group public key available for withdraw-liquidity transaction"
                             ));
-                        };
+                            };
                         let nonce = Self::fetch_ethereum_nonce(&group_address, chain_id).await?;
                         info!("🔢 [SIGNING] WithdrawLiquidity transaction: fetching nonce {} from network group address {}", nonce, group_address);
                         group_address
+                    }
+                    Some(crate::types::TransactionType::AddLiquidity) => {
+                        return Err(anyhow!(
+                            "AddLiquidity transactions are not supported in the Ethereum signing path"
+                        ));
                     }
                     None => {
                         if let Some(user_addr) = &user_eth_address {

@@ -7,6 +7,7 @@ pub enum TransactionType {
     VaultToNetwork,
     RewardTxn,
     WithdrawLiquidity,
+    AddLiquidity,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]

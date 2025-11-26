@@ -1,6 +1,6 @@
 use std::{sync::Arc, time::Instant};
 
-use ethers::types::U256;
+use ethers::types::{Address, U256};
 use hex;
 use serde_json;
 use sha3::{Digest, Keccak256};
@@ -10,6 +10,7 @@ use tracing::{error, info, info_span, warn};
 use uuid::Uuid;
 
 use crate::{
+    contract::{ContractClient, ContractConfig, SolverManagerContract},
     database::{DkgStorage, RewardStorage},
     types::{
         intent::{DepositIntent, DepositIntentResponse, TransactionResponse, TransactionType},
@@ -1327,8 +1328,8 @@ pub(crate) async fn handle_withdraw_liquidity(
                     error_message: Some(format!(
                         "Failed to recover signature: personal_sign={}, raw={}",
                         e1, e2
-                )),
-            }));
+                    )),
+                }));
             }
         },
     };
@@ -1866,6 +1867,237 @@ pub(crate) async fn handle_add_liquidity(
             }));
         }
     };
+
+    // Fetch solver address from contract to validate solver_id
+    let solver_contract_address = std::env::var("SOLVER_CONTRACT_ADDRESS").unwrap_or_default();
+    let solver_contract_rpc = std::env::var("SOLVER_CONTRACT_RPC_URL").unwrap_or_default();
+    let solver_contract_chain_id = std::env::var("SOLVER_CONTRACT_CHAIN_ID")
+        .unwrap_or_else(|_| "9029".to_string())
+        .parse::<u64>()
+        .unwrap_or(9029);
+
+    if solver_contract_address.is_empty() || solver_contract_rpc.is_empty() {
+        let msg = "Solver contract configuration missing".to_string();
+        return Ok(warp::reply::json(&AddLiquidityResponse {
+            status: "error".to_string(),
+            solver_address: normalized_address.clone(),
+            solver_id: normalized_solver_id,
+            amount_tics: requested_tics,
+            amount_btc: requested_btc,
+            message: msg.clone(),
+            error_message: Some(msg),
+        }));
+    }
+
+    let contract_address = match solver_contract_address.parse::<ethers::types::Address>() {
+        Ok(addr) => addr,
+        Err(e) => {
+            let msg = format!("Invalid solver contract address: {}", e);
+            return Ok(warp::reply::json(&AddLiquidityResponse {
+                status: "error".to_string(),
+                solver_address: normalized_address.clone(),
+                solver_id: normalized_solver_id,
+                amount_tics: requested_tics,
+                amount_btc: requested_btc,
+                message: msg.clone(),
+                error_message: Some(msg),
+            }));
+        }
+    };
+
+    let contract_config = crate::contract::ContractConfig {
+        rpc_url: solver_contract_rpc,
+        contract_address,
+        chain_id: solver_contract_chain_id,
+    };
+
+    let contract_client = match crate::contract::ContractClient::new(contract_config.clone()) {
+        Ok(client) => client,
+        Err(e) => {
+            let msg = format!("Failed to create solver contract client: {}", e);
+            return Ok(warp::reply::json(&AddLiquidityResponse {
+                status: "error".to_string(),
+                solver_address: normalized_address.clone(),
+                solver_id: normalized_solver_id,
+                amount_tics: requested_tics,
+                amount_btc: requested_btc,
+                message: msg.clone(),
+                error_message: Some(msg),
+            }));
+        }
+    };
+
+    let solver_contract = match crate::contract::SolverManagerContract::new(
+        &contract_config,
+        contract_client.provider(),
+    ) {
+        Ok(contract) => contract,
+        Err(e) => {
+            let msg = format!("Failed to initialize solver contract: {}", e);
+            return Ok(warp::reply::json(&AddLiquidityResponse {
+                status: "error".to_string(),
+                solver_address: normalized_address.clone(),
+                solver_id: normalized_solver_id,
+                amount_tics: requested_tics,
+                amount_btc: requested_btc,
+                message: msg.clone(),
+                error_message: Some(msg),
+            }));
+        }
+    };
+
+    let solver_evm_address = match solver_contract
+        .get_solver_evm_address(&normalized_solver_id)
+        .await
+    {
+        Ok(addr) => addr,
+        Err(e) => {
+            let msg = format!(
+                "Solver not found for solver_id {}: {}",
+                normalized_solver_id, e
+            );
+            return Ok(warp::reply::json(&AddLiquidityResponse {
+                status: "error".to_string(),
+                solver_address: normalized_address.clone(),
+                solver_id: normalized_solver_id,
+                amount_tics: requested_tics,
+                amount_btc: requested_btc,
+                message: "Invalid solver_id".to_string(),
+                error_message: Some(msg),
+            }));
+        }
+    };
+
+    let solver_address_from_contract = format!("{:?}", solver_evm_address);
+    let solver_contract_address = std::env::var("SOLVER_CONTRACT_ADDRESS").unwrap_or_default();
+    let solver_contract_rpc = std::env::var("SOLVER_CONTRACT_RPC_URL").unwrap_or_default();
+    let solver_contract_chain_id = std::env::var("SOLVER_CONTRACT_CHAIN_ID")
+        .unwrap_or_else(|_| "9029".to_string())
+        .parse::<u64>()
+        .unwrap_or(9029);
+
+    if solver_contract_address.trim().is_empty() || solver_contract_rpc.trim().is_empty() {
+        let msg = "Solver contract configuration missing".to_string();
+        return Ok(warp::reply::json(&AddLiquidityResponse {
+            status: "error".to_string(),
+            solver_address: normalized_address.clone(),
+            solver_id: normalized_solver_id,
+            amount_tics: requested_tics,
+            amount_btc: requested_btc,
+            message: msg.clone(),
+            error_message: Some(msg),
+        }));
+    }
+
+    let parsed_contract_address = match solver_contract_address.parse::<Address>() {
+        Ok(addr) => addr,
+        Err(e) => {
+            let msg = format!("Invalid solver contract address: {}", e);
+            return Ok(warp::reply::json(&AddLiquidityResponse {
+                status: "error".to_string(),
+                solver_address: normalized_address.clone(),
+                solver_id: normalized_solver_id,
+                amount_tics: requested_tics,
+                amount_btc: requested_btc,
+                message: msg.clone(),
+                error_message: Some(msg),
+            }));
+        }
+    };
+
+    let contract_config = ContractConfig {
+        rpc_url: solver_contract_rpc,
+        contract_address: parsed_contract_address,
+        chain_id: solver_contract_chain_id,
+    };
+
+    let contract_client = match ContractClient::new(contract_config.clone()) {
+        Ok(client) => client,
+        Err(e) => {
+            let msg = format!("Failed to create solver contract client: {}", e);
+            return Ok(warp::reply::json(&AddLiquidityResponse {
+                status: "error".to_string(),
+                solver_address: normalized_address.clone(),
+                solver_id: normalized_solver_id,
+                amount_tics: requested_tics,
+                amount_btc: requested_btc,
+                message: msg.clone(),
+                error_message: Some(msg),
+            }));
+        }
+    };
+
+    let solver_contract =
+        match SolverManagerContract::new(&contract_config, contract_client.provider()) {
+            Ok(contract) => contract,
+            Err(e) => {
+                let msg = format!("Failed to initialize solver contract: {}", e);
+                return Ok(warp::reply::json(&AddLiquidityResponse {
+                    status: "error".to_string(),
+                    solver_address: normalized_address.clone(),
+                    solver_id: normalized_solver_id,
+                    amount_tics: requested_tics,
+                    amount_btc: requested_btc,
+                    message: msg.clone(),
+                    error_message: Some(msg),
+                }));
+            }
+        };
+
+    let solver_address_onchain = match solver_contract
+        .get_solver_evm_address(&normalized_solver_id)
+        .await
+    {
+        Ok(addr) => addr,
+        Err(e) => {
+            let msg = format!(
+                "Solver not found for solver_id {}: {}",
+                normalized_solver_id, e
+            );
+            return Ok(warp::reply::json(&AddLiquidityResponse {
+                status: "error".to_string(),
+                solver_address: normalized_address.clone(),
+                solver_id: normalized_solver_id,
+                amount_tics: requested_tics,
+                amount_btc: requested_btc,
+                message: "Invalid solver_id".to_string(),
+                error_message: Some(msg),
+            }));
+        }
+    };
+
+    if solver_address_onchain == Address::zero() {
+        let msg = format!(
+            "Solver {} is not registered on contract",
+            normalized_solver_id
+        );
+        return Ok(warp::reply::json(&AddLiquidityResponse {
+            status: "error".to_string(),
+            solver_address: normalized_address.clone(),
+            solver_id: normalized_solver_id,
+            amount_tics: requested_tics,
+            amount_btc: requested_btc,
+            message: "Invalid solver_id".to_string(),
+            error_message: Some(msg),
+        }));
+    }
+
+    let contract_solver_address = format!("{:#x}", solver_address_onchain);
+    if contract_solver_address.to_lowercase() != normalized_address.to_lowercase() {
+        let msg = format!(
+            "Solver address mismatch: signature {}, contract {}",
+            normalized_address, contract_solver_address
+        );
+        return Ok(warp::reply::json(&AddLiquidityResponse {
+            status: "error".to_string(),
+            solver_address: normalized_address.clone(),
+            solver_id: normalized_solver_id,
+            amount_tics: requested_tics,
+            amount_btc: requested_btc,
+            message: "Invalid solver (address mismatch)".to_string(),
+            error_message: Some(msg),
+        }));
+    }
 
     let channel_msg = ChannelMessage::AddLiquidity {
         solver_address: normalized_address.clone(),

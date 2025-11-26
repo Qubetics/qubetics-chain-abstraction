@@ -207,6 +207,13 @@ impl SigningNode {
                                 );
                                 "withdraw_liquidity"
                             }
+                            Some(crate::types::TransactionType::AddLiquidity) => {
+                                warn!(
+                                    "⚠️ [SIGNING] AddLiquidity transaction type encountered while storing errors for intent {}; unsupported",
+                                    intent_hash
+                                );
+                                "add_liquidity"
+                            }
                             None => "user_to_network",
                         };
 
@@ -519,6 +526,15 @@ impl SigningNode {
                         (
                             "withdraw_liquidity",
                             Err("WithdrawLiquidity should not have intent_hash".to_string()),
+                        )
+                    }
+                    Some(crate::types::TransactionType::AddLiquidity) => {
+                        error!(
+                            "❌ [SIGNING] AddLiquidity transaction type found with intent_hash - this flow is not supported in transaction storage."
+                        );
+                        (
+                            "add_liquidity",
+                            Err("AddLiquidity should not have intent_hash".to_string()),
                         )
                     }
                     Some(crate::types::TransactionType::RewardTxn) => {

@@ -896,6 +896,11 @@ async fn create_chain_transaction_from_deposit_intent_internal(
                 "WithdrawLiquidity is not valid for deposit intent flow"
             ));
         }
+        crate::types::TransactionType::AddLiquidity => {
+            return Err(anyhow::anyhow!(
+                "AddLiquidity is not valid for deposit intent flow"
+            ));
+        }
     };
 
     info!("amount::::: {}", amount);
@@ -951,6 +956,11 @@ async fn create_chain_transaction_from_deposit_intent_internal(
             crate::types::TransactionType::WithdrawLiquidity => {
                 return Err(anyhow::anyhow!(
                     "WithdrawLiquidity is not valid for deposit intent flow"
+                ));
+            }
+            crate::types::TransactionType::AddLiquidity => {
+                return Err(anyhow::anyhow!(
+                    "AddLiquidity is not valid for deposit intent flow"
                 ));
             }
         };
@@ -1014,6 +1024,11 @@ async fn create_chain_transaction_from_deposit_intent_internal(
             crate::types::TransactionType::WithdrawLiquidity => {
                 return Err(anyhow::anyhow!(
                     "WithdrawLiquidity is not valid for deposit intent flow"
+                ));
+            }
+            crate::types::TransactionType::AddLiquidity => {
+                return Err(anyhow::anyhow!(
+                    "AddLiquidity is not valid for deposit intent flow"
                 ));
             }
         };
@@ -1086,6 +1101,11 @@ pub async fn create_chain_transaction_from_contract_call(
         crate::types::TransactionType::WithdrawLiquidity => {
             return Err(anyhow::anyhow!(
                 "WithdrawLiquidity is not valid for deposit intent flow"
+            ));
+        }
+        crate::types::TransactionType::AddLiquidity => {
+            return Err(anyhow::anyhow!(
+                "AddLiquidity is not valid for deposit intent flow"
             ));
         }
         _ => {
@@ -1204,7 +1224,7 @@ pub async fn create_solver_rewards_update_transaction(
     )
     .await
     .unwrap_or(300000);
-    let gas_limit = estimated_gas + (estimated_gas / 10); 
+    let gas_limit = estimated_gas + (estimated_gas / 10);
 
     let gas_price = get_gas_price_for_chain("qubetics", chain_id)
         .await
@@ -1282,10 +1302,7 @@ pub async fn create_solver_remove_liquidity_transaction(
     let gas_price = get_gas_price_for_chain(chain_name, chain_id)
         .await
         .unwrap_or_else(|_| get_default_gas_price_for_chain(chain_name));
-    info!(
-        "🔧 [CONTRACT][LIQ] Gas price (wei): {}",
-        gas_price
-    );
+    info!("🔧 [CONTRACT][LIQ] Gas price (wei): {}", gas_price);
     let nonce = fetch_ethereum_nonce(from_address, chain_id).await?;
     info!(
         "🔧 [CONTRACT][LIQ] Nonce for {} on chain {}: {}",
@@ -1303,6 +1320,78 @@ pub async fn create_solver_remove_liquidity_transaction(
     };
 
     Ok(ethereum_tx)
+}
+
+pub async fn create_solver_add_liquidity_transaction(
+    from_address: &str,
+    solver_id: &str,
+    asset_chain_id: U256,
+    amount: U256,
+    contract_address: &str,
+    chain_id: u64,
+    chain_name: &str,
+) -> Result<ChainTransaction> {
+    let normalized_contract_address = if contract_address.starts_with("0x") {
+        contract_address.to_string()
+    } else {
+        format!("0x{}", contract_address)
+    };
+
+    info!(
+        "🔧 [CONTRACT][LIQ] Preparing addLiquidity(solver_id={}, asset_chain_id={}, amount={}) call on {} (chain_id={}, chain_name={}, from={})",
+        solver_id,
+        asset_chain_id,
+        amount,
+        normalized_contract_address,
+        chain_id,
+        chain_name,
+        from_address
+    );
+
+    let calldata = encode_add_liquidity_calldata(solver_id, asset_chain_id, amount)
+        .ok_or_else(|| anyhow::anyhow!("Failed to encode addLiquidity calldata"))?;
+    let calldata_hex = format!("0x{}", hex::encode(&calldata));
+    info!(
+        "🔧 [CONTRACT][LIQ] addLiquidity calldata: {} ({} bytes)",
+        calldata_hex,
+        calldata.len()
+    );
+
+    let estimated_gas = estimate_gas_for_deposit_intent(
+        from_address,
+        &normalized_contract_address,
+        &calldata_hex,
+        chain_id,
+    )
+    .await
+    .unwrap_or(200000);
+    let gas_limit = estimated_gas + (estimated_gas / 5).max(25_000);
+    info!(
+        "🔧 [CONTRACT][LIQ] Estimated gas={} -> gas_limit={}",
+        estimated_gas, gas_limit
+    );
+
+    let gas_price = get_gas_price_for_chain(chain_name, chain_id)
+        .await
+        .unwrap_or_else(|_| get_default_gas_price_for_chain(chain_name));
+    info!("🔧 [CONTRACT][LIQ] Gas price (wei): {}", gas_price);
+    let nonce = fetch_ethereum_nonce(from_address, chain_id).await?;
+    info!(
+        "🔧 [CONTRACT][LIQ] Nonce for {} on chain {}: {}",
+        from_address, chain_id, nonce
+    );
+
+    let ethereum_tx = EthereumTransaction {
+        to: normalized_contract_address,
+        value: "0x0".to_string(),
+        gas_limit,
+        gas_price,
+        nonce,
+        data: Some(calldata),
+        chain_id,
+    };
+
+    Ok(ChainTransaction::Ethereum(ethereum_tx))
 }
 
 pub fn encode_deposit_intent_calldata(
@@ -1505,9 +1594,7 @@ pub fn encode_update_solver_rewards_calldata(
         state_mutability: StateMutability::NonPayable,
     };
 
-    let solver_addr = solver_address
-        .parse::<ethers::types::Address>()
-        .ok()?;
+    let solver_addr = solver_address.parse::<ethers::types::Address>().ok()?;
 
     let tokens = vec![
         Token::Address(solver_addr),
@@ -1530,6 +1617,45 @@ pub fn encode_remove_liquidity_calldata(
     #[allow(deprecated)]
     let f = Function {
         name: "removeLiquidity".to_owned(),
+        inputs: vec![
+            Param {
+                name: "solverId".into(),
+                kind: ParamType::String,
+                internal_type: None,
+            },
+            Param {
+                name: "chainId".into(),
+                kind: ParamType::Uint(256),
+                internal_type: None,
+            },
+            Param {
+                name: "amount".into(),
+                kind: ParamType::Uint(256),
+                internal_type: None,
+            },
+        ],
+        outputs: vec![],
+        constant: None,
+        state_mutability: StateMutability::NonPayable,
+    };
+
+    let tokens = vec![
+        Token::String(solver_id.to_owned()),
+        Token::Uint(chain_id),
+        Token::Uint(amount),
+    ];
+
+    f.encode_input(&tokens).ok()
+}
+
+pub fn encode_add_liquidity_calldata(
+    solver_id: &str,
+    chain_id: U256,
+    amount: U256,
+) -> Option<Vec<u8>> {
+    #[allow(deprecated)]
+    let f = Function {
+        name: "addLiquidity".to_owned(),
         inputs: vec![
             Param {
                 name: "solverId".into(),

@@ -213,6 +213,9 @@ impl KeyStore {
                     ))
                 }
             }
+            Some(TransactionType::AddLiquidity) => Err(anyhow!(
+                "AddLiquidity transactions do not require group public key bytes"
+            )),
             None => {
                 if let Some(group_key) = self.group_public_key {
                     let affine_point = group_key.to_affine();

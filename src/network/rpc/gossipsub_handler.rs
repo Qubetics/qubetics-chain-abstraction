@@ -550,6 +550,10 @@ impl MpcNetworkLayer {
                         );
                         return Ok(());
                     }
+                    crate::types::TransactionType::AddLiquidity => {
+                        warn!("❌ [GOSSIPSUB] AddLiquidity is not valid for deposit intent flow");
+                        return Ok(());
+                    }
                 };
                 info!("🔗 [GOSSIPSUB] Processing deposit intent for chain: {} (transaction_type: {:?})",
                       chain_to_use, transaction_type);
@@ -584,6 +588,12 @@ impl MpcNetworkLayer {
                     crate::types::TransactionType::WithdrawLiquidity => {
                         warn!(
                             "❌ [GOSSIPSUB] WithdrawLiquidity is not supported for deposit intent signing"
+                        );
+                        None
+                    }
+                    crate::types::TransactionType::AddLiquidity => {
+                        warn!(
+                            "❌ [GOSSIPSUB] AddLiquidity is not supported for deposit intent signing"
                         );
                         None
                     }
@@ -692,6 +702,11 @@ impl MpcNetworkLayer {
                                     "❌ [GOSSIPSUB] WithdrawLiquidity is not supported for Bitcoin deposit handling"
                                 );
                             }
+                            crate::types::TransactionType::AddLiquidity => {
+                                warn!(
+                                    "❌ [GOSSIPSUB] AddLiquidity is not supported for Bitcoin deposit handling"
+                                );
+                            }
                         }
 
                         signing_node.set_chain_handler(chain_handler.into());
@@ -744,6 +759,12 @@ impl MpcNetworkLayer {
                         crate::types::TransactionType::WithdrawLiquidity => {
                             warn!(
                                 "❌ [GOSSIPSUB] WithdrawLiquidity transaction type not supported for derived addresses"
+                            );
+                            (None, None)
+                        }
+                        crate::types::TransactionType::AddLiquidity => {
+                            warn!(
+                                "❌ [GOSSIPSUB] AddLiquidity transaction type not supported for derived addresses"
                             );
                             (None, None)
                         }
@@ -859,6 +880,11 @@ impl MpcNetworkLayer {
                                             "❌ [GOSSIPSUB] WithdrawLiquidity transaction type not supported for group public key assignment"
                                         );
                                     }
+                                    crate::types::TransactionType::AddLiquidity => {
+                                        warn!(
+                                            "❌ [GOSSIPSUB] AddLiquidity transaction type not supported for group public key assignment"
+                                        );
+                                    }
                                 }
                             } else {
                                 info!(
@@ -951,6 +977,12 @@ impl MpcNetworkLayer {
                                         crate::types::TransactionType::WithdrawLiquidity => {
                                             warn!(
                                                 "❌ [GOSSIPSUB] WithdrawLiquidity transaction type not supported for deposit signing"
+                                            );
+                                            None
+                                        }
+                                        crate::types::TransactionType::AddLiquidity => {
+                                            warn!(
+                                                "❌ [GOSSIPSUB] AddLiquidity transaction type not supported for deposit signing"
                                             );
                                             None
                                         }
@@ -1164,7 +1196,13 @@ impl MpcNetworkLayer {
                     "💧 [GOSSIPSUB] Amounts - BTC: {:?}, TICS: {:?}",
                     amount_btc, amount_tics
                 );
-                // TODO: implement contract/state updates once add-liquidity flow is finalized.
+                self.handle_add_liquidity_contract_calls(
+                    &solver_address,
+                    &solver_id,
+                    &amount_btc,
+                    &amount_tics,
+                )
+                .await?;
             }
             GossipsubMessage::PeerDiscovered {
                 peer,

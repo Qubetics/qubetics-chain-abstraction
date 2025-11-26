@@ -20,6 +20,7 @@ impl MpcNetworkLayer {
             "vault_to_network" => Ok(TransactionType::VaultToNetwork),
             "reward_txn" => Ok(TransactionType::RewardTxn),
             "withdraw_liquidity" | "withdrawLiquidity" => Ok(TransactionType::WithdrawLiquidity),
+            "add_liquidity" | "addLiquidity" => Ok(TransactionType::AddLiquidity),
             _ => Err(anyhow::anyhow!("Unknown transaction type: {}", tx_type_str)),
         }
     }
@@ -61,6 +62,12 @@ impl MpcNetworkLayer {
                 );
                 None
             }
+            TransactionType::AddLiquidity => {
+                warn!(
+                    "⚠️ [SIGNING] AddLiquidity transaction type does not require intent signing keys"
+                );
+                None
+            }
         }
     }
 
@@ -83,6 +90,12 @@ impl MpcNetworkLayer {
                 );
                 String::new()
             }
+            TransactionType::AddLiquidity => {
+                warn!(
+                    "⚠️ [SIGNING] AddLiquidity transaction type not supported for intent routing"
+                );
+                String::new()
+            }
         }
     }
 
@@ -96,7 +109,8 @@ impl MpcNetworkLayer {
             TransactionType::UserToVault
             | TransactionType::NetworkToTarget
             | TransactionType::VaultToNetwork
-            | TransactionType::WithdrawLiquidity => Err(anyhow::anyhow!(
+            | TransactionType::WithdrawLiquidity
+            | TransactionType::AddLiquidity => Err(anyhow::anyhow!(
                 "Transaction type {:?} is not valid for reward flow. Only RewardTxn is allowed.",
                 transaction_type
             )),

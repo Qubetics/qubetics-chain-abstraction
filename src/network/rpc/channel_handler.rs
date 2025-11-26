@@ -136,6 +136,7 @@ impl MpcNetworkLayer {
         match context {
             "withdraw_liquidity" => crate::types::TransactionType::WithdrawLiquidity,
             "claim_reward" | "reward_txn" => crate::types::TransactionType::RewardTxn,
+            "add_liquidity" => crate::types::TransactionType::AddLiquidity,
             _ => crate::types::TransactionType::RewardTxn,
         }
     }
@@ -785,6 +786,245 @@ impl MpcNetworkLayer {
 
         Ok(())
     }
+
+    pub(crate) async fn submit_solver_add_liquidity_contract_update(
+        &mut self,
+        solver_address: &str,
+        solver_id: &str,
+        asset_chain_name: &str,
+        amount: u128,
+    ) -> Result<()> {
+        if amount == 0 {
+            return Ok(());
+        }
+
+        let contract_address = std::env::var("SOLVER_CONTRACT_ADDRESS")
+            .unwrap_or_else(|_| "0x0000000000000000000000000000000000000000".to_string());
+        if contract_address == "0x0000000000000000000000000000000000000000" {
+            info!(
+                "⏭️ [SOLVER] Skipping contract add-liquidity for {} - solver contract address not configured",
+                solver_address
+            );
+            return Ok(());
+        }
+
+        let contract_chain_id = std::env::var("SOLVER_CONTRACT_CHAIN_ID")
+            .unwrap_or_else(|_| "9029".to_string())
+            .parse::<u64>()
+            .unwrap_or(9029);
+        let contract_chain_name = if contract_chain_id == 9029 {
+            "qubetics"
+        } else {
+            "ethereum"
+        };
+
+        let asset_chain_id_value =
+            crate::utils::transaction::get_chain_id_from_name(asset_chain_name).unwrap_or(0);
+        let asset_chain_id_u256 = U256::from(asset_chain_id_value);
+        let amount_u256 = U256::from(amount);
+
+        if amount_u256.is_zero() {
+            return Ok(());
+        }
+
+        let dkg_node = if let Some(node) = &self.dkg_node {
+            node
+        } else {
+            warn!(
+                "❌ [SOLVER] Cannot add liquidity on contract for {} - DKG node unavailable",
+                solver_address
+            );
+            return Ok(());
+        };
+
+        let group_public_key = if let Some(key) = dkg_node.get_vault_group_key().await {
+            key
+        } else {
+            warn!(
+                "❌ [SOLVER] Cannot add liquidity on contract for {} - vault group key unavailable",
+                solver_address
+            );
+            return Ok(());
+        };
+
+        let vault_address = crate::utils::get_eth_address_from_group_key(group_public_key);
+        info!(
+            "🧾 [SOLVER] Submitting addLiquidity for solver {} (solver_id={}, chain_id={}, amount={}, contract={}, from={})",
+            solver_address,
+            solver_id,
+            asset_chain_id_value,
+            amount,
+            contract_address,
+            vault_address
+        );
+
+        let chain_tx = crate::utils::transaction::create_solver_add_liquidity_transaction(
+            &vault_address,
+            solver_id,
+            asset_chain_id_u256,
+            amount_u256,
+            &contract_address,
+            contract_chain_id,
+            contract_chain_name,
+        )
+        .await?;
+
+        let eth_tx = match chain_tx {
+            ChainTransaction::Ethereum(tx) => tx,
+            ChainTransaction::Bitcoin(_) => {
+                warn!(
+                    "⚠️ [SOLVER] addLiquidity contract call only supported on EVM chains; skipping solver {}",
+                    solver_address
+                );
+                return Ok(());
+            }
+        };
+
+        if let Some(signing_node) = &mut self.signing_node {
+            let available_nodes: Vec<PeerId> =
+                self.node_manager.get_active_nodes().into_iter().collect();
+            signing_node.set_available_nodes(available_nodes);
+            signing_node.set_chain_handler(
+                crate::chain_abstraction::ChainHandlerFactory::create_ethereum_handler(
+                    eth_tx.chain_id,
+                )
+                .into(),
+            );
+
+            let vault_tweaked_share = dkg_node.get_vault_tweaked_secret_share().await;
+
+            if let Some(ref secret_share) = vault_tweaked_share {
+                signing_node.set_private_key_from_scalar(secret_share.clone());
+                signing_node.set_group_public_key(group_public_key);
+                signing_node.set_vault_group_key(group_public_key);
+
+                let contract_tx = crate::types::intent::ContractTransaction {
+                    to: eth_tx.to.clone(),
+                    value: eth_tx.value.clone(),
+                    nonce: eth_tx.nonce,
+                    gas_limit: eth_tx.gas_limit,
+                    gas_price: eth_tx.gas_price.clone(),
+                    chain_id: eth_tx.chain_id,
+                    data: eth_tx
+                        .data
+                        .as_ref()
+                        .map(|d| format!("0x{}", hex::encode(d)))
+                        .unwrap_or_else(|| "0x".to_string()),
+                };
+
+                let tx_bytes =
+                    crate::utils::transaction::create_transaction_for_signing_contract(
+                        &contract_tx,
+                    );
+                info!(
+                    "🔐 [SOLVER] Starting contract add-liquidity signing for {} on {} (amount: {})",
+                    solver_address, asset_chain_name, amount
+                );
+                let mut eth_signer = EthereumSigner::new(signing_node);
+                eth_signer
+                    .sign_contract_message(tx_bytes, &contract_tx, vault_tweaked_share, None)
+                    .await?;
+                info!(
+                    "✅ [SOLVER] Contract add-liquidity transaction signed for solver {} (chain: {}, amount: {})",
+                    solver_address, asset_chain_id_value, amount
+                );
+            } else {
+                warn!(
+                    "⚠️ [SOLVER] Skipping contract add-liquidity for {} - missing vault secret share",
+                    solver_address
+                );
+            }
+        } else {
+            warn!(
+                "❌ [SOLVER] Signing node unavailable for contract add-liquidity for {}",
+                solver_address
+            );
+        }
+
+        Ok(())
+    }
+
+    fn parse_liquidity_amount_value(amount_str: &str, asset_label: &str) -> Option<u128> {
+        match U256::from_dec_str(amount_str) {
+            Ok(value) => {
+                if value.is_zero() {
+                    warn!(
+                        "⚠️ [ADD-LIQ] {} add-liquidity amount is zero; skipping contract submission",
+                        asset_label
+                    );
+                    None
+                } else if value.bits() > 128 {
+                    warn!(
+                        "⚠️ [ADD-LIQ] {} add-liquidity amount {} exceeds u128 bounds; skipping",
+                        asset_label, amount_str
+                    );
+                    None
+                } else {
+                    Some(value.low_u128())
+                }
+            }
+            Err(e) => {
+                warn!(
+                    "⚠️ [ADD-LIQ] Failed to parse {} add-liquidity amount '{}': {}",
+                    asset_label, amount_str, e
+                );
+                None
+            }
+        }
+    }
+
+    pub(crate) async fn handle_add_liquidity_contract_calls(
+        &mut self,
+        solver_address: &str,
+        solver_id: &str,
+        amount_btc: &Option<String>,
+        amount_tics: &Option<String>,
+    ) -> Result<()> {
+        let mut dispatched = false;
+
+        if let Some(amount_str) = amount_tics.as_ref() {
+            if let Some(amount) = Self::parse_liquidity_amount_value(amount_str, "TICS") {
+                info!(
+                    "💧 [ADD-LIQ] Dispatching contract update for solver {} on qubetics (amount: {})",
+                    solver_address, amount_str
+                );
+                self.submit_solver_add_liquidity_contract_update(
+                    solver_address,
+                    solver_id,
+                    "qubetics",
+                    amount,
+                )
+                .await?;
+                dispatched = true;
+            }
+        }
+
+        if let Some(amount_str) = amount_btc.as_ref() {
+            if let Some(amount) = Self::parse_liquidity_amount_value(amount_str, "BTC") {
+                info!(
+                    "💧 [ADD-LIQ] Dispatching contract update for solver {} on btc (amount: {})",
+                    solver_address, amount_str
+                );
+                self.submit_solver_add_liquidity_contract_update(
+                    solver_address,
+                    solver_id,
+                    "btc",
+                    amount,
+                )
+                .await?;
+                dispatched = true;
+            }
+        }
+
+        if !dispatched {
+            info!(
+                "ℹ️ [ADD-LIQ] No valid add-liquidity amounts provided for solver {}; skipping contract update",
+                solver_address
+            );
+        }
+
+        Ok(())
+    }
 }
 /// Channel message handler
 /// Handles all internal channel messages: Broadcast, Unicast, DepositIntent, etc.
@@ -798,6 +1038,7 @@ use libp2p::{gossipsub, PeerId};
 use tracing::{debug, error, info, warn};
 
 use crate::{
+    chain_abstraction::transactions::ChainTransaction,
     contract::{ContractClient, ContractConfig, SolverManagerContract},
     signing::{BitcoinSigner, EthereumSigner},
     types::{intent::TransactionNetwork, rpc::RPCRequest, ChannelMessage, GossipsubMessage},
@@ -1004,6 +1245,10 @@ impl MpcNetworkLayer {
                         );
                         return Ok(());
                     }
+                    crate::types::TransactionType::AddLiquidity => {
+                        warn!("❌ [LOCAL] AddLiquidity is not supported in deposit intent flow");
+                        return Ok(());
+                    }
                 };
                 info!(
                     "🔗 [LOCAL] Processing deposit intent for chain: {} (transaction_type: {:?})",
@@ -1040,6 +1285,12 @@ impl MpcNetworkLayer {
                     crate::types::TransactionType::WithdrawLiquidity => {
                         warn!(
                             "❌ [LOCAL] WithdrawLiquidity is not supported for deposit intent signing"
+                        );
+                        None
+                    }
+                    crate::types::TransactionType::AddLiquidity => {
+                        warn!(
+                            "❌ [LOCAL] AddLiquidity is not supported for deposit intent signing"
                         );
                         None
                     }
@@ -1149,6 +1400,11 @@ impl MpcNetworkLayer {
                                     "❌ [LOCAL] WithdrawLiquidity is not supported for Bitcoin group key selection"
                                 );
                             }
+                            crate::types::TransactionType::AddLiquidity => {
+                                warn!(
+                                    "❌ [LOCAL] AddLiquidity is not supported for Bitcoin group key selection"
+                                );
+                            }
                         }
 
                         signing_node.set_chain_handler(chain_handler.into());
@@ -1200,6 +1456,12 @@ impl MpcNetworkLayer {
                         crate::types::TransactionType::WithdrawLiquidity => {
                             warn!(
                                 "❌ [LOCAL] WithdrawLiquidity transaction type not supported for derived addresses"
+                            );
+                            (None, None)
+                        }
+                        crate::types::TransactionType::AddLiquidity => {
+                            warn!(
+                                "❌ [LOCAL] AddLiquidity is not supported for derived address lookup"
                             );
                             (None, None)
                         }
@@ -1317,6 +1579,11 @@ impl MpcNetworkLayer {
                                             "❌ [LOCAL] WithdrawLiquidity transaction type not supported for group public key assignment"
                                         );
                                     }
+                                    crate::types::TransactionType::AddLiquidity => {
+                                        warn!(
+                                            "❌ [LOCAL] AddLiquidity transaction type not supported for group public key assignment"
+                                        );
+                                    }
                                 }
                             } else {
                                 info!("❌ [LOCAL] Could not get signing key for deposit intent");
@@ -1411,6 +1678,12 @@ impl MpcNetworkLayer {
                                         crate::types::TransactionType::WithdrawLiquidity => {
                                             warn!(
                                                 "❌ [LOCAL] WithdrawLiquidity transaction type not supported for deposit signing"
+                                            );
+                                            None
+                                        }
+                                        crate::types::TransactionType::AddLiquidity => {
+                                            warn!(
+                                                "❌ [LOCAL] AddLiquidity transaction type not supported for deposit signing"
                                             );
                                             None
                                         }
@@ -1962,6 +2235,13 @@ impl MpcNetworkLayer {
                     "📡 [NETWORK] Broadcasted add liquidity request for solver {}",
                     solver_address
                 );
+                self.handle_add_liquidity_contract_calls(
+                    &solver_address,
+                    &solver_id,
+                    &amount_btc,
+                    &amount_tics,
+                )
+                .await?;
             }
             ChannelMessage::WithdrawLiquidity {
                 solver_address,
