@@ -1979,30 +1979,6 @@ mod tests {
     }
 }
 
-/// Detect Bitcoin address type - only P2PKH is supported
-// fn detect_bitcoin_address_type(address: &str) -> DetectedAddressType {
-//     if is_p2pkh_address(address) {
-//         DetectedAddressType::P2PKH
-//     } else {
-//         DetectedAddressType::Unsupported
-//     }
-// }
-
-/// Check if address is P2PKH format
-// fn is_p2pkh_address(address: &str) -> bool {
-//     // Mainnet P2PKH: starts with '1'
-//     // Testnet P2PKH: starts with 'm' or 'n'
-//     (address.starts_with('1') && address.len() >= 26 && address.len() <= 35)
-//         || ((address.starts_with('m') || address.starts_with('n'))
-//             && address.len() >= 26
-//             && address.len() <= 35)
-// }
-
-/// Check if address is testnet P2PKH
-// fn is_testnet_p2pkh_address(address: &str) -> bool {
-//     address.starts_with('m') || address.starts_with('n')
-// }
-
 fn create_bitcoin_script_pubkey(address: &str) -> Result<Vec<u8>> {
     use bitcoin::Address;
     use std::str::FromStr;
@@ -2010,14 +1986,6 @@ fn create_bitcoin_script_pubkey(address: &str) -> Result<Vec<u8>> {
     // Parse the address and determine network
     let parsed_address = Address::from_str(address)
         .map_err(|e| anyhow::anyhow!("Invalid Bitcoin address '{}': {}", address, e))?;
-
-    // Only support P2PKH addresses
-    // if !is_p2pkh_address(address) {
-    //     return Err(anyhow::anyhow!(
-    //         "Only P2PKH addresses (1.../m.../n...) are supported, got: {}",
-    //         address
-    //     ));
-    // }
 
     // Require the network to get a checked address. This preserves the network encoded
     // in the string (mainnet vs testnet/regtest) and prevents silent mismatches.
@@ -2029,23 +1997,6 @@ fn create_bitcoin_script_pubkey(address: &str) -> Result<Vec<u8>> {
     // Convert to script_pubkey
     let script_pubkey = checked_address.script_pubkey();
     let script_bytes = script_pubkey.to_bytes();
-
-    // Log address type for debugging
-    // let detected_type = detect_bitcoin_address_type(address);
-    // match detected_type {
-    //     DetectedAddressType::P2PKH => {
-    //         tracing::info!(
-    //             "✅ [TRANSACTION] Address {} is P2PKH (Legacy) - supported",
-    //             address
-    //         );
-    //     }
-    //     DetectedAddressType::Unsupported => {
-    //         return Err(anyhow::anyhow!(
-    //             "Unsupported Bitcoin address type: {}. Only P2PKH addresses (1.../m.../n...) are supported.",
-    //             address
-    //         ));
-    //     }
-    // }
 
     Ok(script_bytes)
 }

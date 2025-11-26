@@ -3,9 +3,7 @@ use crate::dkg::{
     DKGNode,
 };
 use crate::types::dkg::MSG_TOPIC_DKG;
-use crate::types::{
-    ChannelMessage, GossipsubMessage, KeyShare, SerializablePoint, SerializableScalar,
-};
+use crate::types::{GossipsubMessage, KeyShare, SerializablePoint, SerializableScalar};
 use crate::utils::hmac_helper::hmac256_from_addr;
 use crate::{utils, NodeMembership};
 use anyhow::{anyhow, Result};

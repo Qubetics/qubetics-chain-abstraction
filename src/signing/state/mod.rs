@@ -4,7 +4,6 @@ use crate::signing::coordination::{self, Coordination};
 use crate::types::signing::ECDSASignature;
 use crate::types::TransactionType;
 use crate::types::{ChannelMessage, SpendKind};
-use libp2p::PeerId;
 use secp256k1::{ecdsa::RecoverableSignature, PublicKey};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -188,7 +187,6 @@ impl SigningEnvironmentBuilder {
 
     pub fn build_with_coordination(
         self,
-        peer_id: PeerId,
         coordination: Coordination,
     ) -> SigningEnvironment {
         let chain_handler = ChainHandlerFactory::create_ethereum_handler(9029);

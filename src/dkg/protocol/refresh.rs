@@ -1,14 +1,10 @@
-use crate::dkg::{
-    artifacts::{DKGMessage, DKGStatus},
-    DKGNode,
-};
+use crate::dkg::{artifacts::DKGMessage, DKGNode};
 use crate::types::dkg::MSG_TOPIC_DKG;
 use crate::types::{GossipsubMessage, KeyShare, SerializablePoint};
 use crate::utils::hmac_helper::hmac256_from_addr;
 use crate::{utils, NodeMembership};
 use anyhow::{anyhow, Result};
 use ff::{Field, PrimeField};
-use k256::elliptic_curve::group::Group;
 use k256::{AffinePoint, ProjectivePoint, Scalar};
 use serde_json;
 use std::collections::HashMap;
@@ -449,7 +445,7 @@ impl DKGNode {
             );
             info!("🎉 [REFRESH] Now computing new secret share...");
             info!("🎉 [REFRESH] ═══════════════════════════════════════════════════");
-            self.compute_refreshed_secret(node_manager).await?;
+            self.compute_refreshed_secret().await?;
         } else {
             info!(
                 "⏳ [REFRESH] Waiting for more refresh shares ({}/{})",
@@ -460,10 +456,7 @@ impl DKGNode {
         Ok(())
     }
 
-    async fn compute_refreshed_secret(
-        &mut self,
-        node_manager: Box<dyn NodeMembership>,
-    ) -> Result<()> {
+    async fn compute_refreshed_secret(&mut self) -> Result<()> {
         info!("🔄 [REFRESH] ═══════════════════════════════════════════════════");
         info!("🔄 [REFRESH] COMPUTING REFRESHED SECRET SHARE");
         info!("🔄 [REFRESH] ═══════════════════════════════════════════════════");

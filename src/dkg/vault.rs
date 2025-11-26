@@ -1,8 +1,5 @@
 use super::node::DKGNode;
-use crate::utils;
-use crate::utils::hmac_helper::hmac256_from_addr;
 use anyhow::{anyhow, Result};
-use k256::elliptic_curve::group::Group;
 use k256::{ProjectivePoint, Scalar};
 use tracing::{info, warn};
 

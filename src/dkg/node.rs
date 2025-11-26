@@ -1,24 +1,13 @@
-use crate::utils::hmac_helper::hmac256_from_addr;
-use crate::{utils, NodeMembership};
 use anyhow::{anyhow, ensure, Result};
-use ethers::core::k256::ecdsa::Error;
-use ff::{Field, PrimeField};
-use k256::elliptic_curve::group::Group;
-use k256::{AffinePoint, ProjectivePoint, Scalar};
-use rand::rngs::OsRng;
-use std::collections::HashMap;
+use k256::{ProjectivePoint, Scalar};
 use std::sync::{Arc, RwLock};
-use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tracing::info;
 use tracing::warn;
 
-use super::artifacts::{DKGCompletionCallback, DKGMessage, DKGStatus};
+use super::artifacts::{DKGCompletionCallback, DKGStatus};
 use crate::database::DkgStorage;
-use crate::types::dkg::MSG_TOPIC_DKG;
-use crate::types::{
-    ChannelMessage, GossipsubMessage, KeyShare, SerializablePoint, SerializableScalar,
-};
+use crate::types::ChannelMessage;
 
 #[derive(Clone)]
 struct DKGState {
@@ -309,6 +298,7 @@ impl DKGNode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use k256::AffinePoint;
     use crate::database::{Database, DatabaseConfig};
     use tempfile::TempDir;
 

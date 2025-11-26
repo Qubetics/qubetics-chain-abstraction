@@ -31,16 +31,14 @@ impl Default for VrfNodeManagerConfig {
 #[derive(Debug, Clone)]
 struct NodeRecord {
     peer_id: PeerId,
-    vrf_public_key: Option<Vec<u8>>,
     last_seen: SystemTime,
     is_active: bool,
 }
 
 impl NodeRecord {
-    fn new(peer_id: PeerId, vrf_public_key: Option<Vec<u8>>) -> Self {
+    fn new(peer_id: PeerId) -> Self {
         Self {
             peer_id,
-            vrf_public_key,
             last_seen: SystemTime::now(),
             is_active: true,
         }
@@ -92,14 +90,6 @@ impl VrfNodeManager {
         }
     }
 
-    pub fn register_node_with_vrf(
-        &mut self,
-        node_id: PeerId,
-        vrf_public_key: Vec<u8>,
-    ) -> Result<(), String> {
-        self.register_node_internal(node_id, Some(vrf_public_key))
-    }
-
     pub fn mark_node_heartbeat(&mut self, node_id: &PeerId) {
         if let Some(record) = self.nodes.get_mut(node_id) {
             record.mark_heartbeat();
@@ -117,16 +107,12 @@ impl VrfNodeManager {
         }
     }
 
-    fn register_node_internal(
-        &mut self,
-        node_id: PeerId,
-        vrf_public_key: Option<Vec<u8>>,
-    ) -> Result<(), String> {
+    fn register_node_internal(&mut self, node_id: PeerId) -> Result<(), String> {
         if self.nodes.contains_key(&node_id) {
             return Err(format!("Node {} already exists", node_id));
         }
         self.nodes
-            .insert(node_id, NodeRecord::new(node_id, vrf_public_key));
+            .insert(node_id, NodeRecord::new(node_id));
         info!("Registered node {} with VRF manager", node_id);
         Ok(())
     }
@@ -280,7 +266,7 @@ impl Clone for VrfNodeManager {
 
 impl NodeMembership for VrfNodeManager {
     fn add_node(&mut self, node_id: PeerId) -> Result<(), String> {
-        self.register_node_internal(node_id, None)
+        self.register_node_internal(node_id)
     }
 
     fn clone_box(&self) -> Box<dyn NodeMembership> {

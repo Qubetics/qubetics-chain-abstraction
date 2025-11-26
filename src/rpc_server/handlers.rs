@@ -1256,6 +1256,34 @@ pub(crate) async fn handle_claim_reward(
         );
     }
 
+    let missing_tics_tx = expect_tics_tx && tics_reward_tx_id.is_none();
+    let missing_btc_tx = expect_btc_tx && btc_reward_tx_id.is_none();
+    if missing_tics_tx || missing_btc_tx {
+        let mut missing_networks = Vec::new();
+        if missing_tics_tx {
+            missing_networks.push("TICS");
+        }
+        if missing_btc_tx {
+            missing_networks.push("BTC");
+        }
+        let missing_list = missing_networks.join(" & ");
+        let msg = format!(
+            "Timed out waiting for {} reward transaction confirmation for solver {}",
+            missing_list, solver_address
+        );
+        return Ok(warp::reply::json(&ClaimRewardResponse {
+            status: "error".to_string(),
+            ethereum_address: normalized_eth_address,
+            btc_address: req.btc_address,
+            reward_btc: reward_btc_str,
+            reward_tics: reward_tics_str,
+            message: msg.clone(),
+            error_message: Some(msg),
+            tics_reward_tx_id,
+            btc_reward_tx_id,
+        }));
+    }
+
     info!(
         "✅ Reward claim processed successfully for solver: {}, BTC: {:?}",
         solver_address, req.btc_address
@@ -1717,6 +1745,35 @@ pub(crate) async fn handle_withdraw_liquidity(
         );
     }
 
+    let missing_tics_tx = initiated_tics && tics_withdraw_tx_id.is_none();
+    let missing_btc_tx = initiated_btc && btc_withdraw_tx_id.is_none();
+    if missing_tics_tx || missing_btc_tx {
+        let mut missing_networks = Vec::new();
+        if missing_tics_tx {
+            missing_networks.push("TICS");
+        }
+        if missing_btc_tx {
+            missing_networks.push("BTC");
+        }
+        let missing_list = missing_networks.join(" & ");
+        let msg = format!(
+            "Timed out waiting for {} withdraw liquidity transaction confirmation for solver {}",
+            missing_list, normalized_address
+        );
+        return Ok(warp::reply::json(&WithdrawLiquidityResponse {
+            status: "error".to_string(),
+            solver_address: normalized_address,
+            liquidity_btc: liquidity_btc_str,
+            liquidity_tics: liquidity_tics_str,
+            ethereum_address: req.ethereum_address.clone(),
+            btc_address: req.btc_address.clone(),
+            tics_withdraw_tx_id,
+            btc_withdraw_tx_id,
+            message: msg.clone(),
+            error_message: Some(msg),
+        }));
+    }
+
     let message = if initiated_tics || initiated_btc {
         match (initiated_tics, initiated_btc) {
             (true, true) => "Liquidity withdrawals initiated for both TICS and BTC".to_string(),
@@ -1868,107 +1925,6 @@ pub(crate) async fn handle_add_liquidity(
         }
     };
 
-    // Fetch solver address from contract to validate solver_id
-    let solver_contract_address = std::env::var("SOLVER_CONTRACT_ADDRESS").unwrap_or_default();
-    let solver_contract_rpc = std::env::var("SOLVER_CONTRACT_RPC_URL").unwrap_or_default();
-    let solver_contract_chain_id = std::env::var("SOLVER_CONTRACT_CHAIN_ID")
-        .unwrap_or_else(|_| "9029".to_string())
-        .parse::<u64>()
-        .unwrap_or(9029);
-
-    if solver_contract_address.is_empty() || solver_contract_rpc.is_empty() {
-        let msg = "Solver contract configuration missing".to_string();
-        return Ok(warp::reply::json(&AddLiquidityResponse {
-            status: "error".to_string(),
-            solver_address: normalized_address.clone(),
-            solver_id: normalized_solver_id,
-            amount_tics: requested_tics,
-            amount_btc: requested_btc,
-            message: msg.clone(),
-            error_message: Some(msg),
-        }));
-    }
-
-    let contract_address = match solver_contract_address.parse::<ethers::types::Address>() {
-        Ok(addr) => addr,
-        Err(e) => {
-            let msg = format!("Invalid solver contract address: {}", e);
-            return Ok(warp::reply::json(&AddLiquidityResponse {
-                status: "error".to_string(),
-                solver_address: normalized_address.clone(),
-                solver_id: normalized_solver_id,
-                amount_tics: requested_tics,
-                amount_btc: requested_btc,
-                message: msg.clone(),
-                error_message: Some(msg),
-            }));
-        }
-    };
-
-    let contract_config = crate::contract::ContractConfig {
-        rpc_url: solver_contract_rpc,
-        contract_address,
-        chain_id: solver_contract_chain_id,
-    };
-
-    let contract_client = match crate::contract::ContractClient::new(contract_config.clone()) {
-        Ok(client) => client,
-        Err(e) => {
-            let msg = format!("Failed to create solver contract client: {}", e);
-            return Ok(warp::reply::json(&AddLiquidityResponse {
-                status: "error".to_string(),
-                solver_address: normalized_address.clone(),
-                solver_id: normalized_solver_id,
-                amount_tics: requested_tics,
-                amount_btc: requested_btc,
-                message: msg.clone(),
-                error_message: Some(msg),
-            }));
-        }
-    };
-
-    let solver_contract = match crate::contract::SolverManagerContract::new(
-        &contract_config,
-        contract_client.provider(),
-    ) {
-        Ok(contract) => contract,
-        Err(e) => {
-            let msg = format!("Failed to initialize solver contract: {}", e);
-            return Ok(warp::reply::json(&AddLiquidityResponse {
-                status: "error".to_string(),
-                solver_address: normalized_address.clone(),
-                solver_id: normalized_solver_id,
-                amount_tics: requested_tics,
-                amount_btc: requested_btc,
-                message: msg.clone(),
-                error_message: Some(msg),
-            }));
-        }
-    };
-
-    let solver_evm_address = match solver_contract
-        .get_solver_evm_address(&normalized_solver_id)
-        .await
-    {
-        Ok(addr) => addr,
-        Err(e) => {
-            let msg = format!(
-                "Solver not found for solver_id {}: {}",
-                normalized_solver_id, e
-            );
-            return Ok(warp::reply::json(&AddLiquidityResponse {
-                status: "error".to_string(),
-                solver_address: normalized_address.clone(),
-                solver_id: normalized_solver_id,
-                amount_tics: requested_tics,
-                amount_btc: requested_btc,
-                message: "Invalid solver_id".to_string(),
-                error_message: Some(msg),
-            }));
-        }
-    };
-
-    let solver_address_from_contract = format!("{:?}", solver_evm_address);
     let solver_contract_address = std::env::var("SOLVER_CONTRACT_ADDRESS").unwrap_or_default();
     let solver_contract_rpc = std::env::var("SOLVER_CONTRACT_RPC_URL").unwrap_or_default();
     let solver_contract_chain_id = std::env::var("SOLVER_CONTRACT_CHAIN_ID")

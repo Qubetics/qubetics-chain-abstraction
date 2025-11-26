@@ -1,6 +1,5 @@
 use anyhow::{anyhow, Result};
 use ethers::{
-    prelude::*,
     providers::{Http, Provider},
     types::Address,
 };

@@ -931,31 +931,4 @@ impl SigningNode {
         }
     }
 
-    pub(crate) async fn store_transaction_error_for_intent(
-        &self,
-        intent_hash: &str,
-        error_message: &str,
-    ) {
-        if let Some(user_intent_manager) = &self.user_intent_manager {
-            if let Err(e) = user_intent_manager
-                .store_transaction_error(intent_hash, error_message, None)
-                .await
-            {
-                error!(
-                    "❌ [SIGNING] Failed to store transaction error for intent {}: {}",
-                    intent_hash, e
-                );
-            } else {
-                info!(
-                    "✅ [SIGNING] Stored transaction error for intent {}: {}",
-                    intent_hash, error_message
-                );
-            }
-        } else {
-            warn!(
-                "⚠️ [SIGNING] No user registry available to store transaction error for intent {}",
-                intent_hash
-            );
-        }
-    }
 }
