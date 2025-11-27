@@ -79,8 +79,7 @@ impl UserRegistry {
             Ok(a) => a,
             Err(e) => {
                 return Err(format!(
-                    "Invalid ethereum_address '{}': {}",
-                    ethereum_address, e
+                    "Invalid ethereum_address '{ethereum_address}': {e}"
                 ))
             }
         };
@@ -403,7 +402,7 @@ impl UserRegistry {
 
     /// Generate HMAC constant for an address
     fn generate_hmac_constant(&self, address: &str) -> [u8; 32] {
-        hmac256_from_addr(address, &self.chain_code).unwrap_or_else(|_| [0u8; 32])
+        hmac256_from_addr(address, &self.chain_code).unwrap_or([0u8; 32])
         // Fallback to zero array if HMAC fails
     }
 

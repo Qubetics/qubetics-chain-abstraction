@@ -63,7 +63,7 @@ impl NodeMembership for BasicNodeManager {
 
     fn add_node(&mut self, node_id: PeerId) -> Result<(), String> {
         if self.nodes.contains(&node_id) {
-            return Err(format!("Node {} already exists", node_id));
+            return Err(format!("Node {node_id} already exists"));
         }
         info!("Adding node: {:?}", node_id);
         self.nodes.insert(node_id);
@@ -72,7 +72,7 @@ impl NodeMembership for BasicNodeManager {
 
     fn remove_node(&mut self, node_id: PeerId) -> Result<(), String> {
         if !self.nodes.contains(&node_id) {
-            return Err(format!("Node {} not found", node_id));
+            return Err(format!("Node {node_id} not found"));
         }
         self.nodes.remove(&node_id);
         Ok(())

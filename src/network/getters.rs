@@ -35,7 +35,7 @@ impl MpcNetworkLayer {
     }
 
     /// Get local peer ID
-    pub fn get_local_peer_id<'a>(&'a self) -> &'a PeerId {
+    pub fn get_local_peer_id(&self) -> &PeerId {
         &self.local_peer_id
     }
 }

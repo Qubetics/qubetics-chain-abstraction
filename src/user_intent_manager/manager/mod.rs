@@ -8,10 +8,10 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use super::checksum_from_any;
-use crate::database::{LiquidityStorage, RewardStorage};
 use crate::database::{
     Database, DatabaseModule, IntentStorage, TransactionStatusStorage, UserStorage,
 };
+use crate::database::{LiquidityStorage, RewardStorage};
 pub use crate::types::{
     DepositIntent, IntentStatus, IntentTransactionIds, SerializablePoint, SerializableScalar,
     TransactionStatus, UserRegistration,
@@ -78,8 +78,7 @@ impl UserIntentManager {
             }
 
             return Err(format!(
-                "Idempotency key {} already mapped to intent {}",
-                idempotency_key, existing_intent
+                "Idempotency key {idempotency_key} already mapped to intent {existing_intent}"
             ));
         }
 

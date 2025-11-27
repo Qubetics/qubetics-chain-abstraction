@@ -39,9 +39,9 @@ impl VrfNodeSelector {
     }
 
     pub fn ensure_local_submission(&mut self, round: u64) {
-        let node_id = self.node_id.clone();
+        let node_id = self.node_id;
         let already_present = {
-            let round_entry = self.submissions.entry(round).or_insert_with(HashMap::new);
+            let round_entry = self.submissions.entry(round).or_default();
             round_entry.contains_key(&node_id)
         };
 
@@ -49,7 +49,7 @@ impl VrfNodeSelector {
             let proof = self.generate_selection_proof(round);
             self.submissions
                 .entry(round)
-                .or_insert_with(HashMap::new)
+                .or_default()
                 .insert(node_id, proof);
         }
     }
@@ -163,7 +163,7 @@ impl VrfNodeSelector {
         let submissions_for_round = self
             .submissions
             .entry(round)
-            .or_insert_with(HashMap::new)
+            .or_default()
             .clone();
 
         let mut working_set = submissions_for_round;
@@ -171,7 +171,7 @@ impl VrfNodeSelector {
         if allow_synthetic {
             for peer_id in &allowed {
                 working_set
-                    .entry(peer_id.clone())
+                    .entry(*peer_id)
                     .or_insert_with(|| Self::synthetic_submission(round, peer_id));
             }
         }
@@ -187,7 +187,7 @@ impl VrfNodeSelector {
         let mut node_vrf_pairs: Vec<(SerializablePeerId, u64)> = working_set
             .iter()
             .filter(|(peer_id, _)| allowed.contains(peer_id))
-            .map(|(peer_id, output)| (SerializablePeerId(peer_id.clone()), output.value))
+            .map(|(peer_id, output)| (SerializablePeerId(*peer_id), output.value))
             .collect();
 
         if node_vrf_pairs.len() < threshold {
@@ -308,7 +308,7 @@ impl VrfNodeSelector {
 
         self.submissions
             .entry(round)
-            .or_insert_with(HashMap::new)
+            .or_default()
             .insert(node_id, vrf_output);
 
         Ok(())
@@ -377,7 +377,7 @@ impl VrfNodeSelector {
         let round = broadcast.round;
         self.received_selections
             .entry(round)
-            .or_insert_with(HashMap::new)
+            .or_default()
             .insert(broadcast.selector_node_id.clone(), broadcast);
 
         let all_selected = self.get_all_selected_nodes_for_round(round);

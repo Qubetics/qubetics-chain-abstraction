@@ -262,7 +262,7 @@ impl SigningNode {
             sha3::Keccak256::new();
         hasher.update(&tx_bytes);
         let tx_hash = hasher.finalize();
-        info!("Tx hash: 0x{}", hex::encode(&tx_hash));
+        info!("Tx hash: 0x{}", hex::encode(tx_hash));
 
         // Get available nodes and perform VRF selection
         let available_nodes = self.coordination.get_available_nodes_from_manager().await;
@@ -540,7 +540,7 @@ impl SigningNode {
             sha3::Keccak256::new();
         hasher.update(&tx_bytes);
         let tx_hash = hasher.finalize();
-        info!("Tx hash: 0x{}", hex::encode(&tx_hash));
+        info!("Tx hash: 0x{}", hex::encode(tx_hash));
         // Get available nodes and perform VRF selection
         let available_nodes = self.get_available_nodes_from_manager().await;
 
@@ -783,7 +783,7 @@ impl SigningNode {
                         if let Some(user_intent_manager) = &self.user_intent_manager {
                             let database = user_intent_manager.get_database();
                             let vault_eth_address: String = database
-                                .get_string(&crate::database::keys::DKG_VAULT_ETH_ADDRESS)
+                                .get_string(crate::database::keys::DKG_VAULT_ETH_ADDRESS)
                                 .ok()
                                 .flatten()
                                 .ok_or_else(|| {
@@ -810,8 +810,7 @@ impl SigningNode {
                                     "No group public key available for reward transaction"
                                 ));
                             };
-                        let nonce =
-                            Self::fetch_ethereum_nonce(&group_address, chain_id).await?;
+                        let nonce = Self::fetch_ethereum_nonce(&group_address, chain_id).await?;
                         info!("🔢 [SIGNING] RewardTxn transaction: fetching nonce {} from network group address {}", nonce, group_address);
                         group_address
                     }
@@ -822,13 +821,17 @@ impl SigningNode {
                                 get_eth_address_from_group_key(group_key)
                             } else {
                                 return Err(anyhow!(
-                                    "No group public key available for withdraw-liquidity transaction"
-                                ));
+                                "No group public key available for withdraw-liquidity transaction"
+                            ));
                             };
-                        let nonce =
-                            Self::fetch_ethereum_nonce(&group_address, chain_id).await?;
+                        let nonce = Self::fetch_ethereum_nonce(&group_address, chain_id).await?;
                         info!("🔢 [SIGNING] WithdrawLiquidity transaction: fetching nonce {} from network group address {}", nonce, group_address);
                         group_address
+                    }
+                    Some(crate::types::TransactionType::AddLiquidity) => {
+                        return Err(anyhow!(
+                            "AddLiquidity transactions are not supported in the Ethereum signing path"
+                        ));
                     }
                     None => {
                         if let Some(user_addr) = &user_eth_address {

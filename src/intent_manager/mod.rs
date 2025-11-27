@@ -10,7 +10,7 @@ use ethers::{
     },
 };
 use rlp::RlpStream;
-use secp256k1::{self, ecdsa::RecoverableSignature, Message, PublicKey, Secp256k1, SecretKey};
+use secp256k1::SecretKey;
 use serde_json;
 
 // ===== ABI LOADER (keep your ABI file next to this source) =====
@@ -59,7 +59,7 @@ pub async fn prepare_unsigned_eip1559_tx(
     if let Some(g) = manual_gas {
         req = req.gas(g);
     } else {
-        let mut tmp = TypedTransaction::Eip1559(req.clone());
+        let tmp = TypedTransaction::Eip1559(req.clone());
         let g = provider.as_ref().estimate_gas(&tmp, None).await?;
         req = req.gas(g);
     }
@@ -152,7 +152,7 @@ fn encode_unsigned_payload_eip1559(req: &Eip1559TransactionRequest) -> Result<Ve
 
 pub fn sign_unsigned_preimage_to_raw_with_secp(
     unsigned_preimage_hex: &str,
-    sk: &secp256k1::SecretKey,
+    sk: &SecretKey,
 ) -> anyhow::Result<(
     ethers::types::Bytes,
     ethers::types::H256,
@@ -190,7 +190,7 @@ pub fn sign_unsigned_preimage_to_raw_with_secp(
 
     // 3) sign with secp256k1 ≤0.27 API
     let secp = Secp256k1::new();
-    let msg = Message::from_slice(sighash.as_bytes())?;
+    let msg = Message::from_digest_slice(sighash.as_bytes())?;
     let rec_sig: RecoverableSignature = secp.sign_ecdsa_recoverable(&msg, sk);
 
     // NOTE (≤0.27): tuple order is (RecoveryId, [u8; 64])
