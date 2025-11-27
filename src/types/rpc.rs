@@ -90,6 +90,7 @@ pub enum RPCResponse {
     PeerList {
         peers: Vec<SerializablePeerId>,
         indices: Vec<Option<usize>>, // index per peer, None if unknown
+        pending_joins: Vec<SerializablePeerId>, // peers that are pending join (new nodes waiting for shares)
     },
     Custom {
         id: String,

@@ -224,6 +224,30 @@ impl NetworkLayer {
             .collect()
     }
 
+    fn get_active_dkg_params(&self) -> (usize, usize) {
+        let total_nodes = self.node_manager.get_total_nodes();
+        let pending_new_nodes = self.pending_joins.len();
+        let active_nodes = total_nodes.saturating_sub(pending_new_nodes);
+        let threshold = if active_nodes > 0 {
+            active_nodes / 2 + 1
+        } else {
+            0
+        };
+        (active_nodes, threshold)
+    }
+
+    fn get_effective_dkg_params(&self) -> (usize, usize) {
+        let (active, threshold) = self.get_active_dkg_params();
+        if active == 0 || threshold == 0 {
+            (
+                self.node_manager.get_total_nodes(),
+                self.node_manager.get_threshold(),
+            )
+        } else {
+            (active, threshold)
+        }
+    }
+
     fn has_additional_peers(&self) -> bool {
         let local = self.get_local_peer_id();
         if self
@@ -1173,17 +1197,18 @@ impl NetworkLayer {
                         }
                     }
                 } else if !already_known {
-                    // Check if initial DKG is complete - only treat as "new node" if network is already established
-                    let is_initial_dkg_done = if let Some(dkg) = &self.dkg_node {
-                        dkg.is_initial_dkg_complete().await
-                    } else {
-                        false
-                    };
+                    // Check if network is established (has 4+ nodes) - only treat as "new node" if network is already established
+                    // We check total_nodes >= 4 rather than just is_initial_dkg_complete() because:
+                    // 1. Network is established once we have 4+ nodes, regardless of the initial DKG flag
+                    // 2. The initial DKG flag is just a marker for the first 4-node setup
+                    // 3. We want consistent behavior for nodes joining established networks
+                    let total_nodes = self.node_manager.get_total_nodes();
+                    let network_established = total_nodes >= 4;
                     
-                    if is_initial_dkg_done {
+                    if network_established {
                         // This is a fresh node joining an established network - mark as pending join LOCALLY
                         self.pending_joins.insert(peer_id);
-                        info!("🆕 [NEW_NODE] Fresh node {} joined established network - marked as pending (will receive shares at next periodic refresh)", peer_id);
+                        info!("🆕 [NEW_NODE] Fresh node {} joined established network ({} nodes) - marked as pending (will receive shares at next periodic refresh)", peer_id, total_nodes);
                         
                         // BROADCAST to ALL nodes so they also mark it as pending join
                         // This ensures consistent network state across all nodes
@@ -1207,7 +1232,7 @@ impl NetworkLayer {
                             }
                         }
                     } else {
-                        info!("🔗 [INITIAL_DKG] Node {} connected during initial DKG setup - NOT marking as new node", peer_id);
+                        info!("🔗 [INITIAL_DKG] Node {} connected during initial DKG setup ({} nodes) - NOT marking as new node", peer_id, total_nodes);
                     }
                 }
 
@@ -1433,16 +1458,25 @@ impl NetworkLayer {
                                     })
                                     .collect();
 
+                                // Include pending_joins in the response so new nodes know about other pending joins
+                                let pending_joins: Vec<SerializablePeerId> = self
+                                    .pending_joins
+                                    .iter()
+                                    .map(|pid| SerializablePeerId(pid.clone()))
+                                    .collect();
+
                                 // Log how many peers we're returning (and list them if you like)
                                 info!(
-                                    "📋 Sending PeerList response to {}: {} entries: {:?} {:?}",
+                                    "📋 Sending PeerList response to {}: {} entries: {:?} {:?}, {} pending joins: {:?}",
                                     peer,
                                     peers.len(),
                                     peers,
-                                    indices
+                                    indices,
+                                    pending_joins.len(),
+                                    pending_joins
                                 );
 
-                                RPCResponse::PeerList { peers, indices }
+                                RPCResponse::PeerList { peers, indices, pending_joins }
                             }
                             RPCRequest::Ping => RPCResponse::Pong,
                             RPCRequest::GetPeerInfo => {
@@ -1459,21 +1493,25 @@ impl NetworkLayer {
                             RPCRequest::StartADKG// {n, threshold }
                             => {
                                 // handle dkg start
+                                let total = self.node_manager.get_total_nodes();
+                                let (effective_total, effective_threshold) =
+                                    self.get_effective_dkg_params();
                                 match self.dkg_node.as_mut() {
                                     Some(dkg) => {
                                         info!("🚀 Received DKG start request from peer {}", peer);
 
                                         // Update DKG parameters with current network state
-                                        let total = self.node_manager.get_total_nodes();
-                                        let threshold = self.node_manager.get_threshold();
-                                        dkg.update_node_params(total, threshold);
+                                        dkg.update_node_params(effective_total, effective_threshold);
                                         dkg.reset().await;
                                         if let Some(signing_node) = &mut self.signing_node {
                                             signing_node.set_threshold(self.node_manager.get_total_nodes() - 1);
                                         }
                                         self.node_manager
                                             .set_threshold(total - 1);
-                                        info!("🔄 DKG parameters updated: total_nodes={}, threshold={}", total, threshold);
+                                        info!(
+                                            "🔄 DKG parameters updated: total_nodes={}, threshold={}",
+                                            effective_total, effective_threshold
+                                        );
 
                                         match dkg.start_dkg(self.node_manager.clone()).await {
                                             Ok(_) => {
@@ -1634,9 +1672,33 @@ impl NetworkLayer {
                         info!("📥 Got RPC response {:?} from {}", response, peer);
                         // peer.r
                         match response {
-                            RPCResponse::PeerList { peers, indices } => {
+                            RPCResponse::PeerList { peers, indices, pending_joins } => {
                                 info!("🔄 Merging peer‐set from {}: {:?}", peer, peers);
                                 info!("🔄 Received indices: {:?}", indices);
+                                info!("🔄 Received pending_joins: {:?}", pending_joins);
+                                
+                                for SerializablePeerId(pending_peer) in &pending_joins {
+                                    if !self.pending_joins.contains(pending_peer) {
+                                        self.pending_joins.insert(pending_peer.clone());
+                                        info!("📢 [PEER_LIST] Added pending join {} from peer list (learned about another new node)", pending_peer);
+                                        
+                                        // If this is a new node learning about another new node, update expected_share_providers
+                                        if let Some(dkg_node) = &mut self.dkg_node {
+                                            let has_dkg_data = dkg_node.get_final_secret_share().await.is_some();
+                                            if !has_dkg_data && *pending_peer != self.local_peer_id {
+                                                let total_nodes = self.node_manager.get_total_nodes();
+                                                let pending_count = self.pending_joins.len();
+                                                let share_provider_count = total_nodes.saturating_sub(pending_count);
+                                                
+                                                if share_provider_count > 0 {
+                                                    dkg_node.set_expected_share_providers(share_provider_count);
+                                                    info!("🔄 [PEER_LIST] Updated expected_share_providers to {} (learned about {} pending joins from peer list, total: {})", 
+                                                          share_provider_count, pending_count, total_nodes);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                                 
                                 for (i, SerializablePeerId(p)) in peers.into_iter().enumerate() {
                                     // Add peer to node_manager if not already present
@@ -1687,65 +1749,90 @@ impl NetworkLayer {
                                 info!("📊 [PEER_LIST] Updated peer_indices mapping: {} entries", self.peer_indices.len());
                                 
                                 // After learning about all peers, check if this is a new node joining existing network
-                                let (should_sync, sync_peer_opt, new_node_index_opt, needs_retry) = if let Some(dkg_node) = &mut self.dkg_node {
-                                    let total = self.node_manager.get_total_nodes();
-                                    let threshold = self.node_manager.get_threshold();
-                                    
+                                let (effective_total, effective_threshold) =
+                                    self.get_effective_dkg_params();
+                                let mut should_sync = false;
+                                let mut sync_peer_opt: Option<PeerId> = None;
+                                let mut new_node_index_opt: Option<usize> = None;
+                                let mut needs_retry = false;
+
+                                if let Some(dkg_node) = self.dkg_node.as_mut() {
                                     // Update DKG node parameters with current network size
-                                    dkg_node.update_node_params(total, threshold);
-                                    info!("🔄 [NEW_NODE] Updated DKG params: total_nodes={}, threshold={}", total, threshold);
-                                    
-                                    let has_dkg_data = dkg_node.get_final_secret_share().await.is_some();
+                                    dkg_node.update_node_params(effective_total, effective_threshold);
+                                    info!(
+                                        "🔄 [NEW_NODE] Updated DKG params: total_nodes={}, threshold={}",
+                                        effective_total, effective_threshold
+                                    );
+
+                                    let has_dkg_data =
+                                        dkg_node.get_final_secret_share().await.is_some();
                                     info!("🔍 [NEW_NODE] Has DKG data: {}", has_dkg_data);
-                                    
+
                                     // If this node has no DKG data and network has > 4 nodes, it's a new node joining
-                                    if !has_dkg_data && total > 4 {
-                                        info!("🆕 [NEW_NODE] Learned about {} total nodes, triggering database sync and share request", total);
-                                        
-                                        let connected_peers: Vec<PeerId> = swarm.connected_peers().cloned().collect();
-                                        info!("🔗 [NEW_NODE] Currently connected to {} peers: {:?}", connected_peers.len(), connected_peers);
-                                        
+                                    if !has_dkg_data && effective_total > 4 {
+                                        info!(
+                                            "🆕 [NEW_NODE] Learned about {} total nodes, triggering database sync and share request",
+                                            effective_total
+                                        );
+
+                                        let connected_peers: Vec<PeerId> =
+                                            swarm.connected_peers().cloned().collect();
+                                        info!(
+                                            "🔗 [NEW_NODE] Currently connected to {} peers: {:?}",
+                                            connected_peers.len(),
+                                            connected_peers
+                                        );
+
                                         // Find first connected peer for sync (excluding ourselves)
-                                        let sync_peer = connected_peers.iter()
+                                        let sync_peer = connected_peers
+                                            .iter()
                                             .find(|pid| **pid != self.local_peer_id)
                                             .cloned();
-                                        
+
                                         let should_proceed = if let Some(ref peer) = sync_peer {
                                             info!("✅ [NEW_NODE] Selected connected peer for sync: {}", peer);
                                             true
                                         } else {
                                             warn!("⚠️ [NEW_NODE] No connected peers available for database sync!");
                                             warn!("⚠️ [NEW_NODE] Will retry database sync when a connection is established");
-                                            // Set flag to retry when connection is available
                                             false
                                         };
-                                        
+
                                         // CRITICAL: Check if this is a REJOINING node or a truly NEW node
                                         // Rejoining nodes should reuse their old index
-                                        let new_node_index = if let Some(existing_index) = self.get_index_from_db(&self.local_peer_id) {
-                                            // This node is REJOINING - reuse its old index
-                                            info!("🔄 [REJOIN] Node rejoining with existing index: {}", existing_index);
-                                            existing_index
-                                        } else {
-                                            // This is a truly NEW node - assign max_index + 1
-                                            // Get all assigned indices from peer_indices
-                                            let all_assigned_indices: Vec<usize> = self.peer_indices.values().cloned().collect();
-                                            let max_index = all_assigned_indices.iter().max().cloned().unwrap_or(0);
-                                            
-                                            // Always assign next sequential index (max + 1)
-                                            let final_index = max_index + 1;
-                                            info!("🆕 [NEW_NODE] Assigned permanent index: {} (max_existing={}, total_nodes={})", 
-                                                  final_index, max_index, total);
-                                            final_index
-                                        };
-                                        
-                                        (should_proceed, sync_peer, Some(new_node_index), !should_proceed)
-                                    } else {
-                                        (false, None, None, false)
+                                        let new_node_index =
+                                            if let Some(existing_index) =
+                                                self.get_index_from_db(&self.local_peer_id)
+                                            {
+                                                info!(
+                                                    "🔄 [REJOIN] Node rejoining with existing index: {}",
+                                                    existing_index
+                                                );
+                                                existing_index
+                                            } else {
+                                                // This is a truly NEW node - assign max_index + 1
+                                                let all_assigned_indices: Vec<usize> =
+                                                    self.peer_indices.values().cloned().collect();
+                                                let max_index = all_assigned_indices
+                                                    .iter()
+                                                    .max()
+                                                    .cloned()
+                                                    .unwrap_or(0);
+
+                                                let final_index = max_index + 1;
+                                                info!(
+                                                    "🆕 [NEW_NODE] Assigned permanent index: {} (max_existing={}, total_nodes={})",
+                                                    final_index, max_index, effective_total
+                                                );
+                                                final_index
+                                            };
+
+                                        should_sync = should_proceed;
+                                        sync_peer_opt = sync_peer;
+                                        new_node_index_opt = Some(new_node_index);
+                                        needs_retry = !should_proceed;
                                     }
-                                } else {
-                                    (false, None, None, false)
-                                };
+                                }
                                 
                                 if needs_retry {
                                     self.needs_database_sync = true;
@@ -2195,7 +2282,8 @@ impl NetworkLayer {
                     if network_established {                        // Parse the new node ID
                         if let Ok(peer_id) = new_node_id.parse::<PeerId>() {
                             // ALL nodes (including the new node itself) add it to pending_joins
-                            if !self.pending_joins.contains(&peer_id) {
+                            let was_added = !self.pending_joins.contains(&peer_id);
+                            if was_added {
                                 self.pending_joins.insert(peer_id);
                                 info!("📢 [NEW_NODE] Added node {} to pending_joins (via broadcast)", peer_id);
                                 
@@ -2204,12 +2292,32 @@ impl NetworkLayer {
                                     info!("🆕 [NEW_NODE] This is ME - I'm now in pending_joins and will trigger refresh");
                                 }
                             }
+                        
+                            if let Some(dkg_node) = &mut self.dkg_node {
+                                let has_dkg_data = dkg_node.get_final_secret_share().await.is_some();
+                                if !has_dkg_data && peer_id != self.local_peer_id && was_added {
+                                    let total_nodes = self.node_manager.get_total_nodes();
+                                    let pending_count = self.pending_joins.len();
+                                    let share_provider_count = total_nodes.saturating_sub(pending_count);
+                                    
+                                    if share_provider_count > 0 {
+                                        dkg_node.set_expected_share_providers(share_provider_count);
+                                        info!("🔄 [NEW_NODE] Updated expected_share_providers to {} (learned about {} pending joins, total: {})", 
+                                              share_provider_count, pending_count, total_nodes);
+                                    }
+                                }
+                            }
                         }
                         
-                        // Still pass to DKG node for share generation logic
+                        // Only existing nodes that already have DKG data should generate shares for newcomers
                         if let Some(dkg_node) = &mut self.dkg_node {
-                            if new_node_index != usize::MAX {
-                                dkg_node.handle_message(dkg_msg,self.node_manager.clone()).await?;
+                            let has_dkg_data = dkg_node.get_final_secret_share().await.is_some();
+                            if has_dkg_data && new_node_index != usize::MAX {
+                                dkg_node
+                                    .handle_message(dkg_msg, self.node_manager.clone())
+                                    .await?;
+                            } else if !has_dkg_data {
+                                info!("ℹ️ [NEW_NODE] Skipping share generation - this node is still acquiring shares");
                             }
                         }
                     } else {
@@ -4163,10 +4271,10 @@ impl NetworkLayer {
                 
                 // Clone all pending states to avoid borrow issues
                 let restricted: Vec<PeerId> = self.restricted_nodes.iter().cloned().collect();
-                let pending_joins: Vec<PeerId> = self.pending_joins.iter().cloned().collect();
+                let pending_joins_snapshot: Vec<PeerId> = self.pending_joins.iter().cloned().collect();
                 
                 info!("🔍 [PERIODIC_REFRESH] Found {} restricted, {} pending joins", 
-                      restricted.len(), pending_joins.len());
+                      restricted.len(), pending_joins_snapshot.len());
                 
                 let mut needs_refresh = false;
                 let mut has_new_nodes_joining = false;
@@ -4191,7 +4299,12 @@ impl NetworkLayer {
                 
                 // STEP 2: Process pending joins (new nodes) - they will REQUEST shares at this interval
                 // NOTE: No connectivity check for remote nodes - gossipsub works in mesh without direct connections
-                for peer_id in pending_joins.clone() {
+                let share_provider_count = self
+                    .node_manager
+                    .get_total_nodes()
+                    .saturating_sub(pending_joins_snapshot.len());
+
+                for peer_id in pending_joins_snapshot.clone() {
                     // New node ready - will request shares now
                     self.pending_joins.remove(&peer_id);
                     has_new_nodes_joining = true;
@@ -4204,6 +4317,11 @@ impl NetworkLayer {
                         // Get my assigned index
                         if let Some(my_index) = self.peer_indices.get(&peer_id) {
                             if let Some(dkg_node) = &mut self.dkg_node {
+                                if share_provider_count > 0 {
+                                    dkg_node.set_expected_share_providers(share_provider_count);
+                                } else {
+                                    warn!("⚠️ [PERIODIC_REFRESH] No existing nodes available to send shares");
+                                }
                                 // Request shares from existing nodes
                                 if let Err(e) = dkg_node.request_shares_as_new_node(*my_index).await {
                                     warn!("❌ [PERIODIC_REFRESH] Failed to request shares: {:?}", e);
@@ -4289,8 +4407,9 @@ impl NetworkLayer {
                     if new_total > 4 {
                         info!("🔄 [PERIODIC_REFRESH] Triggering refresh for disconnect/reconnect changes ({} active nodes)", new_total);
                         
+                        let (active_total, active_threshold) = self.get_effective_dkg_params();
                         if let Some(dkg_node) = &mut self.dkg_node {
-                            dkg_node.update_node_params(new_total, new_threshold);
+                            dkg_node.update_node_params(active_total, active_threshold);
                         }
                         
                         if let Some(signing_node) = &mut self.signing_node {
@@ -4315,8 +4434,9 @@ impl NetworkLayer {
                     } else {
                         info!("⏸️ [PERIODIC_REFRESH] Disconnect/reconnect changes but active nodes ({}) <= 4 - skipping refresh", new_total);
                         // Still update parameters even if not refreshing
+                        let (active_total, active_threshold) = self.get_effective_dkg_params();
                         if let Some(dkg_node) = &mut self.dkg_node {
-                            dkg_node.update_node_params(new_total, new_threshold);
+                            dkg_node.update_node_params(active_total, active_threshold);
                         }
                         
                         if let Some(signing_node) = &mut self.signing_node {
@@ -4358,13 +4478,15 @@ impl NetworkLayer {
                     return Ok(());
                 }
                 
+                let new_total = self.node_manager.get_total_nodes();
+                let new_threshold = self.node_manager.get_threshold();
+                let (active_total, active_threshold) = self.get_effective_dkg_params();
+                let node_manager_snapshot = self.node_manager.clone();
+
                 if let Some(dkg_node) = &mut self.dkg_node {
                     let dkg_status = dkg_node.get_status();
                     if matches!(dkg_status, DKGStatus::Completed) {
-                        // Update parameters first
-                        let new_total = self.node_manager.get_total_nodes();
-                        let new_threshold = self.node_manager.get_threshold();
-                        dkg_node.update_node_params(new_total, new_threshold);
+                        dkg_node.update_node_params(active_total, active_threshold);
                         
                         if let Some(signing_node) = &mut self.signing_node {
                             signing_node.set_threshold(new_threshold);
@@ -4372,7 +4494,7 @@ impl NetworkLayer {
                         
                         info!("🔄 [DELAYED_REFRESH] Executing polynomial refresh with {} nodes, threshold {}", new_total, new_threshold);
                         
-                        if let Err(e) = dkg_node.execute_polynomial_refresh(self.node_manager.clone()).await {
+                        if let Err(e) = dkg_node.execute_polynomial_refresh(node_manager_snapshot.clone()).await {
                             error!("❌ [DELAYED_REFRESH] Failed to execute refresh: {}", e);
                         } else {
                             info!("✅ [DELAYED_REFRESH] Refresh completed successfully - new nodes now fully integrated");

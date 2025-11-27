@@ -90,6 +90,7 @@ pub struct DKGNode {
     chain_code: [u8; 32],
     my_permanent_index: Option<usize>, // Index assigned during initial DKG, never changes
     user_registry: Option<std::sync::Arc<crate::user_registry::DatabaseUserRegistry>>, // optional handle to update users after refresh
+    expected_share_providers: Option<usize>, // number of existing nodes that should send shares to a new node
 }
 
 impl DKGNode {
@@ -113,7 +114,13 @@ impl DKGNode {
             chain_code,
             my_permanent_index: None, // Will be set during DKG completion or when joining
             user_registry: None,
+            expected_share_providers: None,
         }
+    }
+
+    pub fn set_expected_share_providers(&mut self, count: usize) {
+        self.expected_share_providers = Some(count);
+        info!("📊 [NEW_NODE] Expecting shares from {} existing nodes", count);
     }
 
     pub fn set_user_registry(
@@ -153,6 +160,7 @@ impl DKGNode {
             warn!("Failed to delete polynomial: {}", e);
         }
 
+        self.expected_share_providers = None;
         self.status = DKGStatus::New;
         self.round += 1;
     }
@@ -1307,13 +1315,20 @@ impl DKGNode {
         
         info!("💾 [NEW_NODE] Stored share from {}", from);
         
-        // Check if we have received shares from all existing nodes
+        // Check if we have received shares from all expected existing nodes
         let shares = self.storage.get_all_shares().await?;
         let commitments_map = self.storage.get_all_commitments().await?;
-        info!("📊 [NEW_NODE] Total shares received: {}/{}", shares.len(), self.total_nodes - 1);
+        let required_shares = self
+            .expected_share_providers
+            .unwrap_or_else(|| self.total_nodes.saturating_sub(1));
+        info!(
+            "📊 [NEW_NODE] Total shares received: {}/{} (expected providers)",
+            shares.len(),
+            required_shares
+        );
         
-        // If we have shares from all existing nodes (total_nodes - 1), calculate the final secret share
-        if shares.len() >= self.total_nodes - 1 {
+        // If we have shares from all expected existing nodes, calculate the final secret share
+        if required_shares > 0 && shares.len() >= required_shares {
             info!("🎉 [NEW_NODE] Received all shares from existing nodes! Calculating final secret share...");
             
             // Calculate final secret share by summing all received shares
@@ -1371,6 +1386,9 @@ impl DKGNode {
             self.my_permanent_index = Some(new_node_index);
             info!("🔢 [NEW_NODE] Stored permanent index: {} (assigned by existing nodes)", new_node_index);
             
+            // Reset expectation tracking after successful reconstruction
+            self.expected_share_providers = None;
+
             // Store all commitments as ORIGINAL commitments (these will nesver change)
             info!("🏦 [NEW_NODE] Storing original commitments for permanent vault derivation...");
             for (from, comms) in commitments_map.iter() {
