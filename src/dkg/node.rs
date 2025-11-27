@@ -151,6 +151,12 @@ impl DKGNode {
         if let Err(e) = self.storage.delete_final_public().await {
             failures.push(format!("delete final public key: {e}"));
         }
+        if let Err(e) = self.storage.delete_vault_tweaked_secret().await {
+            failures.push(format!("delete vault tweaked secret: {e}"));
+        }
+        if let Err(e) = self.storage.delete_vault_group_key().await {
+            failures.push(format!("delete vault group key: {e}"));
+        }
         if let Err(e) = self.storage.delete_polynomial().await {
             failures.push(format!("delete polynomial: {e}"));
         }
