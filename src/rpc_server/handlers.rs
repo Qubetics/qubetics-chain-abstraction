@@ -413,51 +413,7 @@ pub(crate) async fn handle_user_mpc_deposit(
 
     info!("🧾 HTTP: user_mpc_deposit received");
 
-    if let Some(ref idempotency_key) = request_context.idempotency_key {
-        match user_intent_manager
-            .register_idempotency_key(idempotency_key, &intent_hash_hex)
-            .await
-        {
-            Ok(already_seen) => {
-                if already_seen {
-                    info!(
-                        request_id = %request_context.request_id,
-                        "♻️ Idempotent replay detected for deposit intent"
-                    );
-                } else {
-                    info!(
-                        request_id = %request_context.request_id,
-                        "🆔 Recorded new idempotency key for deposit intent"
-                    );
-                }
-            }
-            Err(e) => {
-                error!(
-                    request_id = %request_context.request_id,
-                    error = %e,
-                    "❌ Idempotency key reuse with different intent"
-                );
-                return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
-                    status: "error".to_string(),
-                    signer_address: "".to_string(),
-                    is_registered: false,
-                    amount: req.msg.amount,
-                    user_to_network_tx_id: None,
-                    network_to_target_tx_id: None,
-                    vault_to_network_tx_id: None,
-                    final_solver_id: None,
-                    error_message: Some(
-                        "Idempotency key already used for another intent".to_string(),
-                    ),
-                }));
-            }
-        }
-    } else {
-        warn!(
-            request_id = %request_context.request_id,
-            "⚠️ No Idempotency-Key header provided for deposit request"
-        );
-    }
+    info!("🧾 HTTP: user_mpc_deposit received");
 
     let mut transaction_ids = Vec::new();
     let tx_mapping = user_intent_manager
