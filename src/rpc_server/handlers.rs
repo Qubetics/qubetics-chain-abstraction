@@ -1091,6 +1091,24 @@ pub(crate) async fn handle_claim_reward(
         None
     };
 
+    let wants_tics = normalized_eth_address.is_some();
+    let wants_btc = req.btc_address.as_ref().is_some();
+
+    if wants_tics && wants_btc {
+        let msg = "Only one reward type can be claimed per request. Provide either ethereum_address or btc_address.".to_string();
+        return Ok(warp::reply::json(&ClaimRewardResponse {
+            status: "error".to_string(),
+            ethereum_address: normalized_eth_address,
+            btc_address: req.btc_address,
+            reward_btc: None,
+            reward_tics: None,
+            message: msg.clone(),
+            error_message: Some(msg),
+            tics_reward_tx_id: None,
+            btc_reward_tx_id: None,
+        }));
+    }
+
     let (compact, v) = match normalize_eth_signature(&req.signature) {
         Ok(t) => t,
         Err(e) => {
@@ -1142,14 +1160,22 @@ pub(crate) async fn handle_claim_reward(
         solver_address
     );
 
-    let reward_btc = user_intent_manager
-        .get_solver_reward_btc(solver_address.as_str())
-        .await
-        .filter(|v| !v.is_zero());
-    let reward_tics = user_intent_manager
-        .get_solver_reward_tics(solver_address.as_str())
-        .await
-        .filter(|v| !v.is_zero());
+    let reward_btc = if wants_btc {
+        user_intent_manager
+            .get_solver_reward_btc(solver_address.as_str())
+            .await
+            .filter(|v| !v.is_zero())
+    } else {
+        None
+    };
+    let reward_tics = if wants_tics {
+        user_intent_manager
+            .get_solver_reward_tics(solver_address.as_str())
+            .await
+            .filter(|v| !v.is_zero())
+    } else {
+        None
+    };
 
     let reward_btc_str = reward_btc.as_ref().map(|v| v.to_string());
     let reward_tics_str = reward_tics.as_ref().map(|v| v.to_string());
@@ -1161,22 +1187,36 @@ pub(crate) async fn handle_claim_reward(
         .get_solver_btc_txn_hash(solver_address.as_str())
         .await;
 
-    let expect_tics_tx = reward_tics_str.is_some() && req.ethereum_address.as_ref().is_some();
-    let expect_btc_tx = reward_btc_str.is_some() && req.btc_address.as_ref().is_some();
+    let expect_tics_tx = wants_tics && reward_tics_str.is_some();
+    let expect_btc_tx = wants_btc && reward_btc_str.is_some();
 
-    if reward_btc_str.is_none() && reward_tics_str.is_none() {
-        warn!(
-            "❌ No rewards available (non-zero) for solver address: {}",
-            solver_address
-        );
+    if wants_tics && reward_tics_str.is_none() {
+        let msg = "No TICS rewards available to claim".to_string();
+        warn!("❌ {}", msg);
         return Ok(warp::reply::json(&ClaimRewardResponse {
             status: "error".to_string(),
             ethereum_address: normalized_eth_address,
             btc_address: req.btc_address,
             reward_btc: None,
             reward_tics: None,
-            message: "No rewards available to claim".to_string(),
-            error_message: Some("No rewards available to claim".to_string()),
+            message: msg.clone(),
+            error_message: Some(msg),
+            tics_reward_tx_id: None,
+            btc_reward_tx_id: None,
+        }));
+    }
+
+    if wants_btc && reward_btc_str.is_none() {
+        let msg = "No BTC rewards available to claim".to_string();
+        warn!("❌ {}", msg);
+        return Ok(warp::reply::json(&ClaimRewardResponse {
+            status: "error".to_string(),
+            ethereum_address: normalized_eth_address,
+            btc_address: req.btc_address,
+            reward_btc: None,
+            reward_tics: None,
+            message: msg.clone(),
+            error_message: Some(msg),
             tics_reward_tx_id: None,
             btc_reward_tx_id: None,
         }));
@@ -1276,9 +1316,16 @@ pub(crate) async fn handle_claim_reward(
         }));
     }
 
+    let success_message = if wants_tics {
+        "TICS reward claim processed successfully".to_string()
+    } else {
+        "BTC reward claim processed successfully".to_string()
+    };
+
     info!(
-        "✅ Reward claim processed successfully for solver: {}, BTC: {:?}",
-        solver_address, req.btc_address
+        "✅ Reward claim processed successfully for solver: {}, reward_type: {}",
+        solver_address,
+        if wants_tics { "TICS" } else { "BTC" }
     );
 
     Ok(warp::reply::json(&ClaimRewardResponse {
@@ -1287,7 +1334,7 @@ pub(crate) async fn handle_claim_reward(
         btc_address: req.btc_address,
         reward_btc: reward_btc_str,
         reward_tics: reward_tics_str,
-        message: "Reward claim processed successfully".to_string(),
+        message: success_message,
         error_message: None,
         tics_reward_tx_id,
         btc_reward_tx_id,
@@ -1543,6 +1590,24 @@ pub(crate) async fn handle_withdraw_liquidity(
         None
     };
 
+    if withdraw_tics_amount.is_some() && withdraw_btc_amount.is_some() {
+        let msg =
+            "Only one liquidity type can be withdrawn per request. Provide amount_tics or amount_btc."
+                .to_string();
+        return Ok(warp::reply::json(&WithdrawLiquidityResponse {
+            status: "error".to_string(),
+            solver_address: normalized_address.clone(),
+            liquidity_btc: liquidity_btc_str.clone(),
+            liquidity_tics: liquidity_tics_str.clone(),
+            ethereum_address: req.ethereum_address.clone(),
+            btc_address: req.btc_address.clone(),
+            tics_withdraw_tx_id: None,
+            btc_withdraw_tx_id: None,
+            message: msg.clone(),
+            error_message: Some(msg),
+        }));
+    }
+
 
     if withdraw_tics_amount.is_some() && req.ethereum_address.is_none() {
         let msg = "Ethereum address is required to withdraw TICS liquidity".to_string();
@@ -1764,13 +1829,10 @@ pub(crate) async fn handle_withdraw_liquidity(
         }));
     }
 
-    let message = if initiated_tics || initiated_btc {
-        match (initiated_tics, initiated_btc) {
-            (true, true) => "Liquidity withdrawals initiated for both TICS and BTC".to_string(),
-            (true, false) => "Liquidity withdrawal initiated for TICS".to_string(),
-            (false, true) => "Liquidity withdrawal initiated for BTC".to_string(),
-            _ => unreachable!(),
-        }
+    let message = if initiated_tics {
+        "Liquidity withdrawal initiated for TICS".to_string()
+    } else if initiated_btc {
+        "Liquidity withdrawal initiated for BTC".to_string()
     } else {
         "No withdrawals were initiated (missing address or zero liquidity)".to_string()
     };
@@ -1852,7 +1914,22 @@ pub(crate) async fn handle_add_liquidity(
         return Ok(warp::reply::json(&AddLiquidityResponse {
             status: "error".to_string(),
             solver_address: "".to_string(),
-            solver_id: normalized_solver_id,
+            solver_id: normalized_solver_id.clone(),
+            amount_tics: requested_tics,
+            amount_btc: requested_btc,
+            message: msg.clone(),
+            error_message: Some(msg),
+        }));
+    }
+
+    if requested_tics.is_some() && requested_btc.is_some() {
+        let msg =
+            "Only one liquidity type can be added per request. Provide amount_tics or amount_btc."
+                .to_string();
+        return Ok(warp::reply::json(&AddLiquidityResponse {
+            status: "error".to_string(),
+            solver_address: "".to_string(),
+            solver_id: normalized_solver_id.clone(),
             amount_tics: requested_tics,
             amount_btc: requested_btc,
             message: msg.clone(),
@@ -2067,13 +2144,19 @@ pub(crate) async fn handle_add_liquidity(
         normalized_address, normalized_solver_id
     );
 
+    let success_msg = if requested_tics.is_some() {
+        "Add liquidity request submitted for TICS.".to_string()
+    } else {
+        "Add liquidity request submitted for BTC.".to_string()
+    };
+
     Ok(warp::reply::json(&AddLiquidityResponse {
         status: "success".to_string(),
         solver_address: normalized_address,
         solver_id: normalized_solver_id,
         amount_tics: requested_tics,
         amount_btc: requested_btc,
-        message: "Add liquidity request submitted to network".to_string(),
+        message: success_msg,
         error_message: None,
     }))
 }

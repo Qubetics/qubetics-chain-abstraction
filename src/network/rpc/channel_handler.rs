@@ -453,6 +453,7 @@ impl MpcNetworkLayer {
         solver_address: &str,
         reward_btc: Option<u128>,
         reward_tics: Option<u128>,
+        transaction_hash: &str,
     ) -> Result<()> {
         let contract_address = std::env::var("SOLVER_CONTRACT_ADDRESS")
             .unwrap_or_else(|_| "0x0000000000000000000000000000000000000000".to_string());
@@ -522,6 +523,7 @@ impl MpcNetworkLayer {
             &vault_address,
             solver_address,
             &rewards_payload,
+            transaction_hash,
             &contract_address,
             chain_id,
             chain_name,
@@ -634,6 +636,7 @@ impl MpcNetworkLayer {
         solver_address: &str,
         asset_chain_name: &str,
         amount: u128,
+        transaction_hash: &str,
     ) -> Result<()> {
         if amount == 0 {
             return Ok(());
@@ -715,6 +718,7 @@ impl MpcNetworkLayer {
             &solver_id,
             asset_chain_id_u256,
             amount_u256,
+            transaction_hash,
             &contract_address,
             contract_chain_id,
             contract_chain_name,
