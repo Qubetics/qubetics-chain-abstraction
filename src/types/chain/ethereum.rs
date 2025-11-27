@@ -3,6 +3,12 @@ pub struct RlpEncoder {
     pub data: Vec<u8>,
 }
 
+impl Default for RlpEncoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RlpEncoder {
     pub fn new() -> Self {
         Self { data: Vec::new() }
@@ -83,7 +89,7 @@ pub fn encode_hex_to_bytes(hex_str: &str) -> Vec<u8> {
 
     let mut final_hex = trimmed.to_string();
     if final_hex.len() % 2 == 1 {
-        final_hex = format!("0{}", final_hex);
+        final_hex = format!("0{final_hex}");
     }
 
     hex::decode(&final_hex).expect("Invalid hex string")

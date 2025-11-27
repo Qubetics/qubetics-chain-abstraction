@@ -1,11 +1,11 @@
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 
-/// ===============
+///    ===============
 /// 1) hmac256_from_addr
-/// ===============
-/// Takes an Ethereum-style address (20 bytes, hex string with/without 0x),
-/// runs HMAC-SHA256 with a secret key, and returns a full 32-byte digest.
+///    ===============
+///    Takes an Ethereum-style address (20 bytes, hex string with/without 0x),
+///    runs HMAC-SHA256 with a secret key, and returns a full 32-byte digest.
 ///
 /// Use case: whenever you want a deterministic 32-byte constant
 /// tied to a user's address but hidden behind your server's secret key.
@@ -26,12 +26,12 @@ pub fn hmac256_from_addr(addr: &str, key: &[u8]) -> Result<[u8; 32], String> {
 /// ===============
 /// 2) hmac64_from_addr
 /// ===============
-/// Convenience wrapper around hmac256_from_addr:
-/// - still HMACs the address with the key
-/// - but only returns the first 8 bytes (big-endian) as a u64.
+///    Convenience wrapper around hmac256_from_addr:
+///    - still HMACs the address with the key
+///    - but only returns the first 8 bytes (big-endian) as a u64.
 ///
-/// Use case: when you want a small constant (e.g., numeric ID, seed, index)
-/// instead of carrying around 32 bytes.
+///    Use case: when you want a small constant (e.g., numeric ID, seed, index)
+///    instead of carrying around 32 bytes.
 pub fn hmac64_from_addr(addr: &str, key: &[u8]) -> Result<u64, String> {
     let h = hmac256_from_addr(addr, key)?;
     Ok(u64::from_be_bytes(h[0..8].try_into().unwrap()))

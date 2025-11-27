@@ -635,7 +635,7 @@ impl SigningNode {
                             None,
                             tx_id,
                             transaction_type_str,
-                            retrieved_solver_address.as_ref().map(|s| s.as_str()),
+                            retrieved_solver_address.as_deref(),
                         )
                         .await;
                     } else {
@@ -645,7 +645,7 @@ impl SigningNode {
                         );
 
                         self.broadcast_transaction_id(
-                            Some(&intent_hash),
+                            Some(intent_hash),
                             tx_id,
                             transaction_type_str,
                             None,
@@ -733,22 +733,20 @@ impl SigningNode {
                             )
                             .await;
                         }
+                    } else if matches!(
+                        transaction_type,
+                        Some(crate::types::TransactionType::RewardTxn)
+                    ) {
+                        error!(
+                            "❌ [SIGNING] RewardTxn transaction type requires solver_address, but none was found in round {} (tx_id={})",
+                            round,
+                            tx_id
+                        );
                     } else {
-                        if matches!(
-                            transaction_type,
-                            Some(crate::types::TransactionType::RewardTxn)
-                        ) {
-                            error!(
-                                "❌ [SIGNING] RewardTxn transaction type requires solver_address, but none was found in round {} (tx_id={})",
-                                round,
-                                tx_id
-                            );
-                        } else {
-                            info!(
-                                "ℹ️ [SIGNING] No solver address available for reward transaction in round {}",
-                                round
-                            );
-                        }
+                        info!(
+                            "ℹ️ [SIGNING] No solver address available for reward transaction in round {}",
+                            round
+                        );
                     }
                 } else if matches!(
                     transaction_type,
@@ -931,31 +929,4 @@ impl SigningNode {
         }
     }
 
-    pub(crate) async fn store_transaction_error_for_intent(
-        &self,
-        intent_hash: &str,
-        error_message: &str,
-    ) {
-        if let Some(user_intent_manager) = &self.user_intent_manager {
-            if let Err(e) = user_intent_manager
-                .store_transaction_error(intent_hash, error_message, None)
-                .await
-            {
-                error!(
-                    "❌ [SIGNING] Failed to store transaction error for intent {}: {}",
-                    intent_hash, e
-                );
-            } else {
-                info!(
-                    "✅ [SIGNING] Stored transaction error for intent {}: {}",
-                    intent_hash, error_message
-                );
-            }
-        } else {
-            warn!(
-                "⚠️ [SIGNING] No user registry available to store transaction error for intent {}",
-                intent_hash
-            );
-        }
-    }
 }

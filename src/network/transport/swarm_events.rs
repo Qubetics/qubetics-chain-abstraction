@@ -414,7 +414,7 @@ impl MpcNetworkLayer {
                 if !self.peer_discovery.peer_indices.contains_key(pid) {
                     if let Some(db_idx) = self.get_index_from_db_async(pid).await {
                         info!("🔢 Loaded index {} for peer {} from database", db_idx, pid);
-                        self.peer_discovery.peer_indices.insert(pid.clone(), db_idx);
+                        self.peer_discovery.peer_indices.insert(*pid, db_idx);
                     }
                 }
             }
@@ -444,7 +444,7 @@ impl MpcNetworkLayer {
         info!("Listening on {}", address);
         let full = address
             .clone()
-            .with(Protocol::P2p(self.local_peer_id.clone().into()));
+            .with(Protocol::P2p(self.local_peer_id));
         info!("📡 multiaddress   : {}", full);
         info!(
             "Listening for RPC connections on {}{}",
@@ -461,17 +461,14 @@ impl MpcNetworkLayer {
         cause: Option<ConnectionError>,
     ) {
         if let Some(ca) = cause {
-            match ca {
-                ConnectionError::IO(e) => {
-                    info!(
-                        "[ERROR] Kind: {} RAW: {:?} ref: {:?} Full: {}",
-                        e.kind(),
-                        e.raw_os_error(),
-                        e.get_ref().as_slice(),
-                        e
-                    );
-                }
-                _ => {}
+            if let ConnectionError::IO(e) = ca {
+                info!(
+                    "[ERROR] Kind: {} RAW: {:?} ref: {:?} Full: {}",
+                    e.kind(),
+                    e.raw_os_error(),
+                    e.get_ref().as_slice(),
+                    e
+                );
             }
         }
 

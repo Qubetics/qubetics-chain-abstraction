@@ -14,6 +14,12 @@ pub struct DatabaseSyncState {
     pub entries_synced: usize,
 }
 
+impl Default for DatabaseSyncState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DatabaseSyncState {
     pub fn new() -> Self {
         Self {
@@ -33,7 +39,7 @@ impl DatabaseSyncState {
         self.total_entries = total_entries;
         self.batch_size = batch_size;
         self.current_batch = 0;
-        self.total_batches = (total_entries + batch_size - 1) / batch_size;
+        self.total_batches = total_entries.div_ceil(batch_size);
         self.entries_synced = 0;
     }
 

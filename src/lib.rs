@@ -3,10 +3,6 @@ pub mod commands;
 pub mod consensus;
 pub mod contract;
 pub mod database;
-#[allow(dead_code)]
-#[allow(unused_imports)]
-#[allow(non_snake_case)]
-#[allow(unused_variables)]
 pub mod dkg;
 pub mod intent_manager;
 pub mod network;

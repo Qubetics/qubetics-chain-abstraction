@@ -78,8 +78,7 @@ impl UserIntentManager {
             }
 
             return Err(format!(
-                "Idempotency key {} already mapped to intent {}",
-                idempotency_key, existing_intent
+                "Idempotency key {idempotency_key} already mapped to intent {existing_intent}"
             ));
         }
 

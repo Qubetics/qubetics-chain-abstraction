@@ -5,7 +5,7 @@ use anyhow::Result;
 use tracing::{error, info, warn};
 
 use crate::{
-    types::{DepositIntent, TransactionNetwork, TransactionType},
+    types::{TransactionNetwork, TransactionType},
     user_intent_manager::TransactionStatus,
 };
 
@@ -25,97 +25,6 @@ impl MpcNetworkLayer {
         }
     }
 
-    /// Get the appropriate signing key based on transaction type
-    pub(crate) async fn get_signing_key_for_transaction_type(
-        &self,
-        transaction_type: &TransactionType,
-        user_eth_address: Option<&String>,
-    ) -> Option<k256::Scalar> {
-        match transaction_type {
-            TransactionType::UserToVault => {
-                // For user deposits, use user's tweaked secret share
-                self.get_signing_key_for_user(user_eth_address).await
-            }
-            TransactionType::NetworkToTarget => {
-                // For network withdrawals, use network's DKG secret share
-                if let Some(dkg_node) = &self.dkg_node {
-                    dkg_node.get_final_secret_share().await
-                } else {
-                    None
-                }
-            }
-            TransactionType::VaultToNetwork => {
-                // For vault-to-network, use vault's tweaked secret share
-                if let Some(dkg_node) = &self.dkg_node {
-                    dkg_node.get_vault_tweaked_secret_share().await
-                } else {
-                    None
-                }
-            }
-            TransactionType::RewardTxn => {
-                // RewardTxn is not valid for intent flow - return None
-                None
-            }
-            TransactionType::WithdrawLiquidity => {
-                warn!(
-                    "⚠️ [SIGNING] WithdrawLiquidity transaction type does not participate in intent signing keys"
-                );
-                None
-            }
-            TransactionType::AddLiquidity => {
-                warn!(
-                    "⚠️ [SIGNING] AddLiquidity transaction type does not require intent signing keys"
-                );
-                None
-            }
-        }
-    }
-
-    /// Determine which chain to use based on transaction type
-    pub(crate) fn get_chain_for_transaction_type(
-        intent: &DepositIntent,
-        transaction_type: &TransactionType,
-    ) -> String {
-        match transaction_type {
-            TransactionType::UserToVault => intent.source_chain.to_lowercase(),
-            TransactionType::NetworkToTarget => intent.target_chain.to_lowercase(),
-            TransactionType::VaultToNetwork => intent.source_chain.to_lowercase(),
-            TransactionType::RewardTxn => {
-                // RewardTxn is not valid for intent flow - return empty string
-                String::new()
-            }
-            TransactionType::WithdrawLiquidity => {
-                warn!(
-                    "⚠️ [SIGNING] WithdrawLiquidity transaction type not supported for intent routing"
-                );
-                String::new()
-            }
-            TransactionType::AddLiquidity => {
-                warn!(
-                    "⚠️ [SIGNING] AddLiquidity transaction type not supported for intent routing"
-                );
-                String::new()
-            }
-        }
-    }
-
-    /// Validate transaction type for reward flow
-    /// Returns Ok(()) if transaction_type is RewardTxn, Err otherwise
-    pub(crate) fn validate_transaction_type_for_reward(
-        transaction_type: &TransactionType,
-    ) -> Result<()> {
-        match transaction_type {
-            TransactionType::RewardTxn => Ok(()),
-            TransactionType::UserToVault
-            | TransactionType::NetworkToTarget
-            | TransactionType::VaultToNetwork
-            | TransactionType::WithdrawLiquidity
-            | TransactionType::AddLiquidity => Err(anyhow::anyhow!(
-                "Transaction type {:?} is not valid for reward flow. Only RewardTxn is allowed.",
-                transaction_type
-            )),
-        }
-    }
 
     /// Store transaction ID based on transaction type
     pub(crate) async fn store_transaction_id_by_type(
@@ -202,7 +111,7 @@ impl MpcNetworkLayer {
                 Ok(()) => {
                     // Store transaction status
                     if let Err(e) = user_intent_manager
-                        .store_transaction_status(&transaction_id, TransactionStatus::Pending)
+                        .store_transaction_status(transaction_id, TransactionStatus::Pending)
                         .await
                     {
                         error!(
@@ -305,7 +214,7 @@ impl MpcNetworkLayer {
                 Ok(()) => {
                     // Store transaction status
                     if let Err(e) = user_intent_manager
-                        .store_transaction_status(&transaction_id, TransactionStatus::Pending)
+                        .store_transaction_status(transaction_id, TransactionStatus::Pending)
                         .await
                     {
                         error!(
@@ -398,14 +307,14 @@ impl MpcNetworkLayer {
                     user_intent_manager
                         .get_solver_reward_tics(solver_address)
                         .await
-                        .unwrap_or_else(|| ethers::types::U256::zero()),
+                        .unwrap_or_else(ethers::types::U256::zero),
                 ),
                 TransactionNetwork::BTC => (
                     "btc",
                     user_intent_manager
                         .get_solver_reward_btc(solver_address)
                         .await
-                        .unwrap_or_else(|| ethers::types::U256::zero()),
+                        .unwrap_or_else(ethers::types::U256::zero),
                 ),
             };
 
@@ -414,7 +323,7 @@ impl MpcNetworkLayer {
                 let current_claimed = user_intent_manager
                     .get_solver_claimed_request_amount(solver_address)
                     .await
-                    .unwrap_or_else(|| ethers::types::U256::zero());
+                    .unwrap_or_else(ethers::types::U256::zero);
 
                 // Update claimed amount
                 let new_claimed = current_claimed + current_reward;
@@ -507,7 +416,7 @@ impl MpcNetworkLayer {
                 Ok(()) => {
                     // Store transaction status
                     if let Err(e) = user_intent_manager
-                        .store_transaction_status(&transaction_id, TransactionStatus::Pending)
+                        .store_transaction_status(transaction_id, TransactionStatus::Pending)
                         .await
                     {
                         error!(

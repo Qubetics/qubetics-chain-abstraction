@@ -123,20 +123,18 @@ pub(crate) async fn handle_deposit_intent(
 
 fn parse_withdraw_amount(value: &str, asset_label: &str) -> Result<U256, String> {
     U256::from_dec_str(value)
-        .map_err(|_| format!("Invalid {} withdraw amount: {}", asset_label, value))
+        .map_err(|_| format!("Invalid {asset_label} withdraw amount: {value}"))
 }
 
 fn ensure_withdraw_amount_bounds(value: &U256, asset_label: &str) -> Result<(), String> {
     if value.is_zero() {
         return Err(format!(
-            "{} withdraw amount must be greater than zero",
-            asset_label
+            "{asset_label} withdraw amount must be greater than zero"
         ));
     }
     if value.bits() > 128 {
         return Err(format!(
-            "{} withdraw amount exceeds supported limit",
-            asset_label
+            "{asset_label} withdraw amount exceeds supported limit"
         ));
     }
     Ok(())
@@ -154,15 +152,13 @@ fn select_withdraw_amount(
             let avail_val = parse_withdraw_amount(avail, asset_label)?;
             if req_val > avail_val {
                 return Err(format!(
-                    "{} withdraw amount exceeds available liquidity",
-                    asset_label
+                    "{asset_label} withdraw amount exceeds available liquidity"
                 ));
             }
             Ok(Some(req.clone()))
         }
         (Some(_), None) => Err(format!(
-            "No {} liquidity available to fulfill withdrawal",
-            asset_label
+            "No {asset_label} liquidity available to fulfill withdrawal"
         )),
         (None, Some(avail)) => {
             let avail_val = parse_withdraw_amount(avail, asset_label)?;
@@ -542,7 +538,7 @@ pub(crate) async fn handle_user_mpc_deposit(
                                 network_to_target_tx_id: None,
                                 vault_to_network_tx_id: None,
                                 final_solver_id: None,
-                                error_message: Some(format!("Invalid signature format: {}", e)),
+                                error_message: Some(format!("Invalid signature format: {e}")),
                             }));
                         }
                     };
@@ -572,8 +568,7 @@ pub(crate) async fn handle_user_mpc_deposit(
                                         vault_to_network_tx_id: None,
                                         final_solver_id: None,
                                         error_message: Some(format!(
-                                            "Failed to recover signature: personal_sign={}, raw={}",
-                                            e1, e2
+                                            "Failed to recover signature: personal_sign={e1}, raw={e2}"
                                         )),
                                     }));
                                 }
@@ -616,7 +611,7 @@ pub(crate) async fn handle_user_mpc_deposit(
                             network_to_target_tx_id: None,
                             vault_to_network_tx_id: None,
                             final_solver_id: None,
-                            error_message: Some(format!("Failed to process deposit intent: {}", e)),
+                            error_message: Some(format!("Failed to process deposit intent: {e}")),
                         }));
                     }
 
@@ -698,7 +693,7 @@ pub(crate) async fn handle_user_mpc_deposit(
             error!("❌ Failed to process deposit intent: {:?}", e);
 
             // Just return the raw error message as it is
-            let error_message = format!("{:?}", e);
+            let error_message = format!("{e:?}");
 
             return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
                 status: "error".to_string(),
@@ -714,7 +709,7 @@ pub(crate) async fn handle_user_mpc_deposit(
         }
     }
 
-    let intent_hash_hex = hex::encode(&intent_hash);
+    let intent_hash_hex = hex::encode(intent_hash);
     info!(
         "✅ Deposit intent submitted successfully. Intent hash: {}",
         intent_hash_hex
@@ -795,8 +790,7 @@ pub(crate) async fn handle_user_mpc_deposit(
             vault_to_network_tx_id: None,
             final_solver_id,
             error_message: Some(format!(
-                "Transaction processing timeout. Intent hash: {}. The transaction may still be processing or may have failed. Please check the status later.",
-                intent_hash_hex
+                "Transaction processing timeout. Intent hash: {intent_hash_hex}. The transaction may still be processing or may have failed. Please check the status later."
             )),
         }))
     }
@@ -872,7 +866,7 @@ pub(crate) async fn handle_get_user_info(
                 derived_btc_address: None,
                 created_at: None,
                 error: Some(
-                    RpcError::UserNotFound(format!("User with address {} not found", addr_cs))
+                    RpcError::UserNotFound(format!("User with address {addr_cs} not found"))
                         .to_error_response(),
                 ),
             };
@@ -1013,7 +1007,7 @@ pub(crate) async fn handle_get_reward_solver(
                 reward_btc: None,
                 reward_tics: None,
                 message: "Invalid solver address format".to_string(),
-                error_message: Some(format!("Invalid address format: {}", e)),
+                error_message: Some(format!("Invalid address format: {e}")),
             }));
         }
     };
@@ -1087,7 +1081,7 @@ pub(crate) async fn handle_claim_reward(
                     reward_btc: None,
                     reward_tics: None,
                     message: "Invalid Ethereum address format".to_string(),
-                    error_message: Some(format!("Invalid Ethereum address: {:?}", e)),
+                    error_message: Some(format!("Invalid Ethereum address: {e:?}")),
                     tics_reward_tx_id: None,
                     btc_reward_tx_id: None,
                 }));
@@ -1108,7 +1102,7 @@ pub(crate) async fn handle_claim_reward(
                 reward_btc: None,
                 reward_tics: None,
                 message: "Invalid signature format".to_string(),
-                error_message: Some(format!("Invalid signature: {:?}", e)),
+                error_message: Some(format!("Invalid signature: {e:?}")),
                 tics_reward_tx_id: None,
                 btc_reward_tx_id: None,
             }));
@@ -1134,8 +1128,7 @@ pub(crate) async fn handle_claim_reward(
                     reward_tics: None,
                     message: "Failed to recover signature".to_string(),
                     error_message: Some(format!(
-                        "Failed to recover signature: personal_sign={}, raw={}",
-                        e1, e2
+                        "Failed to recover signature: personal_sign={e1}, raw={e2}"
                     )),
                     tics_reward_tx_id: None,
                     btc_reward_tx_id: None,
@@ -1208,7 +1201,7 @@ pub(crate) async fn handle_claim_reward(
             reward_btc: reward_btc_str,
             reward_tics: reward_tics_str,
             message: "Failed to process reward claim".to_string(),
-            error_message: Some(format!("Network error: {}", e)),
+            error_message: Some(format!("Network error: {e}")),
             tics_reward_tx_id: None,
             btc_reward_tx_id: None,
         }));
@@ -1256,6 +1249,33 @@ pub(crate) async fn handle_claim_reward(
         );
     }
 
+    let missing_tics_tx = expect_tics_tx && tics_reward_tx_id.is_none();
+    let missing_btc_tx = expect_btc_tx && btc_reward_tx_id.is_none();
+    if missing_tics_tx || missing_btc_tx {
+        let mut missing_networks = Vec::new();
+        if missing_tics_tx {
+            missing_networks.push("TICS");
+        }
+        if missing_btc_tx {
+            missing_networks.push("BTC");
+        }
+        let missing_list = missing_networks.join(" & ");
+        let msg = format!(
+            "Timed out waiting for {missing_list} reward transaction confirmation for solver {solver_address}"
+        );
+        return Ok(warp::reply::json(&ClaimRewardResponse {
+            status: "error".to_string(),
+            ethereum_address: normalized_eth_address,
+            btc_address: req.btc_address,
+            reward_btc: reward_btc_str,
+            reward_tics: reward_tics_str,
+            message: msg.clone(),
+            error_message: Some(msg),
+            tics_reward_tx_id,
+            btc_reward_tx_id,
+        }));
+    }
+
     info!(
         "✅ Reward claim processed successfully for solver: {}, BTC: {:?}",
         solver_address, req.btc_address
@@ -1299,7 +1319,7 @@ pub(crate) async fn handle_withdraw_liquidity(
                 tics_withdraw_tx_id: None,
                 btc_withdraw_tx_id: None,
                 message: "Invalid signature format".to_string(),
-                error_message: Some(format!("Invalid signature: {:?}", e)),
+                error_message: Some(format!("Invalid signature: {e:?}")),
             }));
         }
     };
@@ -1326,8 +1346,7 @@ pub(crate) async fn handle_withdraw_liquidity(
                     btc_withdraw_tx_id: None,
                     message: "Failed to recover signature".to_string(),
                     error_message: Some(format!(
-                        "Failed to recover signature: personal_sign={}, raw={}",
-                        e1, e2
+                        "Failed to recover signature: personal_sign={e1}, raw={e2}"
                     )),
                 }));
             }
@@ -1346,7 +1365,7 @@ pub(crate) async fn handle_withdraw_liquidity(
             warn!("❌ Invalid solver address format: {}", e);
             return Ok(warp::reply::json(&WithdrawLiquidityResponse {
                 status: "error".to_string(),
-                solver_address: solver_address,
+                solver_address,
                 liquidity_btc: None,
                 liquidity_tics: None,
                 ethereum_address: req.ethereum_address.clone(),
@@ -1354,7 +1373,7 @@ pub(crate) async fn handle_withdraw_liquidity(
                 tics_withdraw_tx_id: None,
                 btc_withdraw_tx_id: None,
                 message: "Invalid solver address format".to_string(),
-                error_message: Some(format!("Invalid address format: {}", e)),
+                error_message: Some(format!("Invalid address format: {e}")),
             }));
         }
     };
@@ -1377,7 +1396,7 @@ pub(crate) async fn handle_withdraw_liquidity(
                 tics_withdraw_tx_id: None,
                 btc_withdraw_tx_id: None,
                 message: "Failed to check solver liquidity".to_string(),
-                error_message: Some(format!("Database error: {}", e)),
+                error_message: Some(format!("Database error: {e}")),
             }));
         }
     };
@@ -1404,7 +1423,7 @@ pub(crate) async fn handle_withdraw_liquidity(
 
     // Extract liquidity amounts (BTC at index 0, TICS at index 1)
     let amounts = liquidity_amounts.unwrap();
-    let liquidity_btc_str = amounts.get(0).and_then(|s| {
+    let liquidity_btc_str = amounts.first().and_then(|s| {
         // Check if the string represents a non-zero value
         if s.trim().is_empty() || s == "0" {
             None
@@ -1591,7 +1610,7 @@ pub(crate) async fn handle_withdraw_liquidity(
                     tics_withdraw_tx_id: None,
                     btc_withdraw_tx_id: None,
                     message: "Failed to initiate TICS withdrawal".to_string(),
-                    error_message: Some(format!("Network error: {}", e)),
+                    error_message: Some(format!("Network error: {e}")),
                 }));
             }
             initiated_tics = true;
@@ -1645,7 +1664,7 @@ pub(crate) async fn handle_withdraw_liquidity(
                     tics_withdraw_tx_id: None,
                     btc_withdraw_tx_id: None,
                     message: "Failed to initiate BTC withdrawal".to_string(),
-                    error_message: Some(format!("Network error: {}", e)),
+                    error_message: Some(format!("Network error: {e}")),
                 }));
             }
             initiated_btc = true;
@@ -1715,6 +1734,34 @@ pub(crate) async fn handle_withdraw_liquidity(
             "⚠️ Timed out waiting for BTC withdraw liquidity transaction ID for solver {} after {} seconds",
             normalized_address, wait_timeout_secs
         );
+    }
+
+    let missing_tics_tx = initiated_tics && tics_withdraw_tx_id.is_none();
+    let missing_btc_tx = initiated_btc && btc_withdraw_tx_id.is_none();
+    if missing_tics_tx || missing_btc_tx {
+        let mut missing_networks = Vec::new();
+        if missing_tics_tx {
+            missing_networks.push("TICS");
+        }
+        if missing_btc_tx {
+            missing_networks.push("BTC");
+        }
+        let missing_list = missing_networks.join(" & ");
+        let msg = format!(
+            "Timed out waiting for {missing_list} withdraw liquidity transaction confirmation for solver {normalized_address}"
+        );
+        return Ok(warp::reply::json(&WithdrawLiquidityResponse {
+            status: "error".to_string(),
+            solver_address: normalized_address,
+            liquidity_btc: liquidity_btc_str,
+            liquidity_tics: liquidity_tics_str,
+            ethereum_address: req.ethereum_address.clone(),
+            btc_address: req.btc_address.clone(),
+            tics_withdraw_tx_id,
+            btc_withdraw_tx_id,
+            message: msg.clone(),
+            error_message: Some(msg),
+        }));
     }
 
     let message = if initiated_tics || initiated_btc {
@@ -1816,7 +1863,7 @@ pub(crate) async fn handle_add_liquidity(
     let (compact, v) = match normalize_eth_signature(&req.signature) {
         Ok(t) => t,
         Err(e) => {
-            let err_msg = format!("Invalid signature: {:?}", e);
+            let err_msg = format!("Invalid signature: {e:?}");
             return Ok(warp::reply::json(&AddLiquidityResponse {
                 status: "error".to_string(),
                 solver_address: "".to_string(),
@@ -1836,8 +1883,7 @@ pub(crate) async fn handle_add_liquidity(
             Ok(addr) => addr,
             Err(e2) => {
                 let err_msg = format!(
-                    "Failed to recover signature: personal_sign={}, raw={}",
-                    e1, e2
+                    "Failed to recover signature: personal_sign={e1}, raw={e2}"
                 );
                 return Ok(warp::reply::json(&AddLiquidityResponse {
                     status: "error".to_string(),
@@ -1855,7 +1901,7 @@ pub(crate) async fn handle_add_liquidity(
     let normalized_address = match checksum_from_any(&solver_address) {
         Ok(addr) => addr,
         Err(e) => {
-            let err_msg = format!("Invalid solver address format: {}", e);
+            let err_msg = format!("Invalid solver address format: {e}");
             return Ok(warp::reply::json(&AddLiquidityResponse {
                 status: "error".to_string(),
                 solver_address,
@@ -1868,107 +1914,6 @@ pub(crate) async fn handle_add_liquidity(
         }
     };
 
-    // Fetch solver address from contract to validate solver_id
-    let solver_contract_address = std::env::var("SOLVER_CONTRACT_ADDRESS").unwrap_or_default();
-    let solver_contract_rpc = std::env::var("SOLVER_CONTRACT_RPC_URL").unwrap_or_default();
-    let solver_contract_chain_id = std::env::var("SOLVER_CONTRACT_CHAIN_ID")
-        .unwrap_or_else(|_| "9029".to_string())
-        .parse::<u64>()
-        .unwrap_or(9029);
-
-    if solver_contract_address.is_empty() || solver_contract_rpc.is_empty() {
-        let msg = "Solver contract configuration missing".to_string();
-        return Ok(warp::reply::json(&AddLiquidityResponse {
-            status: "error".to_string(),
-            solver_address: normalized_address.clone(),
-            solver_id: normalized_solver_id,
-            amount_tics: requested_tics,
-            amount_btc: requested_btc,
-            message: msg.clone(),
-            error_message: Some(msg),
-        }));
-    }
-
-    let contract_address = match solver_contract_address.parse::<ethers::types::Address>() {
-        Ok(addr) => addr,
-        Err(e) => {
-            let msg = format!("Invalid solver contract address: {}", e);
-            return Ok(warp::reply::json(&AddLiquidityResponse {
-                status: "error".to_string(),
-                solver_address: normalized_address.clone(),
-                solver_id: normalized_solver_id,
-                amount_tics: requested_tics,
-                amount_btc: requested_btc,
-                message: msg.clone(),
-                error_message: Some(msg),
-            }));
-        }
-    };
-
-    let contract_config = crate::contract::ContractConfig {
-        rpc_url: solver_contract_rpc,
-        contract_address,
-        chain_id: solver_contract_chain_id,
-    };
-
-    let contract_client = match crate::contract::ContractClient::new(contract_config.clone()) {
-        Ok(client) => client,
-        Err(e) => {
-            let msg = format!("Failed to create solver contract client: {}", e);
-            return Ok(warp::reply::json(&AddLiquidityResponse {
-                status: "error".to_string(),
-                solver_address: normalized_address.clone(),
-                solver_id: normalized_solver_id,
-                amount_tics: requested_tics,
-                amount_btc: requested_btc,
-                message: msg.clone(),
-                error_message: Some(msg),
-            }));
-        }
-    };
-
-    let solver_contract = match crate::contract::SolverManagerContract::new(
-        &contract_config,
-        contract_client.provider(),
-    ) {
-        Ok(contract) => contract,
-        Err(e) => {
-            let msg = format!("Failed to initialize solver contract: {}", e);
-            return Ok(warp::reply::json(&AddLiquidityResponse {
-                status: "error".to_string(),
-                solver_address: normalized_address.clone(),
-                solver_id: normalized_solver_id,
-                amount_tics: requested_tics,
-                amount_btc: requested_btc,
-                message: msg.clone(),
-                error_message: Some(msg),
-            }));
-        }
-    };
-
-    let solver_evm_address = match solver_contract
-        .get_solver_evm_address(&normalized_solver_id)
-        .await
-    {
-        Ok(addr) => addr,
-        Err(e) => {
-            let msg = format!(
-                "Solver not found for solver_id {}: {}",
-                normalized_solver_id, e
-            );
-            return Ok(warp::reply::json(&AddLiquidityResponse {
-                status: "error".to_string(),
-                solver_address: normalized_address.clone(),
-                solver_id: normalized_solver_id,
-                amount_tics: requested_tics,
-                amount_btc: requested_btc,
-                message: "Invalid solver_id".to_string(),
-                error_message: Some(msg),
-            }));
-        }
-    };
-
-    let solver_address_from_contract = format!("{:?}", solver_evm_address);
     let solver_contract_address = std::env::var("SOLVER_CONTRACT_ADDRESS").unwrap_or_default();
     let solver_contract_rpc = std::env::var("SOLVER_CONTRACT_RPC_URL").unwrap_or_default();
     let solver_contract_chain_id = std::env::var("SOLVER_CONTRACT_CHAIN_ID")
@@ -1992,7 +1937,7 @@ pub(crate) async fn handle_add_liquidity(
     let parsed_contract_address = match solver_contract_address.parse::<Address>() {
         Ok(addr) => addr,
         Err(e) => {
-            let msg = format!("Invalid solver contract address: {}", e);
+            let msg = format!("Invalid solver contract address: {e}");
             return Ok(warp::reply::json(&AddLiquidityResponse {
                 status: "error".to_string(),
                 solver_address: normalized_address.clone(),
@@ -2014,7 +1959,7 @@ pub(crate) async fn handle_add_liquidity(
     let contract_client = match ContractClient::new(contract_config.clone()) {
         Ok(client) => client,
         Err(e) => {
-            let msg = format!("Failed to create solver contract client: {}", e);
+            let msg = format!("Failed to create solver contract client: {e}");
             return Ok(warp::reply::json(&AddLiquidityResponse {
                 status: "error".to_string(),
                 solver_address: normalized_address.clone(),
@@ -2031,7 +1976,7 @@ pub(crate) async fn handle_add_liquidity(
         match SolverManagerContract::new(&contract_config, contract_client.provider()) {
             Ok(contract) => contract,
             Err(e) => {
-                let msg = format!("Failed to initialize solver contract: {}", e);
+                let msg = format!("Failed to initialize solver contract: {e}");
                 return Ok(warp::reply::json(&AddLiquidityResponse {
                     status: "error".to_string(),
                     solver_address: normalized_address.clone(),
@@ -2051,8 +1996,7 @@ pub(crate) async fn handle_add_liquidity(
         Ok(addr) => addr,
         Err(e) => {
             let msg = format!(
-                "Solver not found for solver_id {}: {}",
-                normalized_solver_id, e
+                "Solver not found for solver_id {normalized_solver_id}: {e}"
             );
             return Ok(warp::reply::json(&AddLiquidityResponse {
                 status: "error".to_string(),
@@ -2068,8 +2012,7 @@ pub(crate) async fn handle_add_liquidity(
 
     if solver_address_onchain == Address::zero() {
         let msg = format!(
-            "Solver {} is not registered on contract",
-            normalized_solver_id
+            "Solver {normalized_solver_id} is not registered on contract"
         );
         return Ok(warp::reply::json(&AddLiquidityResponse {
             status: "error".to_string(),
@@ -2082,11 +2025,10 @@ pub(crate) async fn handle_add_liquidity(
         }));
     }
 
-    let contract_solver_address = format!("{:#x}", solver_address_onchain);
+    let contract_solver_address = format!("{solver_address_onchain:#x}");
     if contract_solver_address.to_lowercase() != normalized_address.to_lowercase() {
         let msg = format!(
-            "Solver address mismatch: signature {}, contract {}",
-            normalized_address, contract_solver_address
+            "Solver address mismatch: signature {normalized_address}, contract {contract_solver_address}"
         );
         return Ok(warp::reply::json(&AddLiquidityResponse {
             status: "error".to_string(),
@@ -2108,7 +2050,7 @@ pub(crate) async fn handle_add_liquidity(
 
     let tx_sender = message_tx.lock().await;
     if let Err(e) = tx_sender.send(channel_msg).await {
-        let err_msg = format!("Network error: {}", e);
+        let err_msg = format!("Network error: {e}");
         return Ok(warp::reply::json(&AddLiquidityResponse {
             status: "error".to_string(),
             solver_address: normalized_address,

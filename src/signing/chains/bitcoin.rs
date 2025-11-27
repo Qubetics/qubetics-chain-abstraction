@@ -142,7 +142,7 @@ impl SigningNode {
         fn hash160(data: &[u8]) -> [u8; 20] {
             use sha2::Digest;
             let sha = sha2::Sha256::digest(data);
-            let rip = ripemd::Ripemd160::digest(&sha);
+            let rip = ripemd::Ripemd160::digest(sha);
             let mut out = [0u8; 20];
             out.copy_from_slice(&rip);
             out
@@ -527,7 +527,7 @@ impl SigningNode {
                 prev.reverse();
                 out.extend_from_slice(&prev);
 
-                out.extend_from_slice(&(inp.vout as u32).to_le_bytes());
+                out.extend_from_slice(&inp.vout.to_le_bytes());
 
                 match from_kind {
                     SpendKind::P2PKH => {
@@ -572,7 +572,7 @@ impl SigningNode {
                     let mut prev = hex::decode(&inp.txid)?;
                     prev.reverse();
                     out.extend_from_slice(&prev);
-                    out.extend_from_slice(&(inp.vout as u32).to_le_bytes());
+                    out.extend_from_slice(&inp.vout.to_le_bytes());
                     Self::push_varint(&mut out, 0); // empty scriptSig
                     out.extend_from_slice(&inp.sequence.to_le_bytes());
                 }
@@ -617,7 +617,7 @@ impl SigningNode {
         use secp256k1::ecdsa::Signature as StdSig;
         let mut std: StdSig = rsig.to_standard();
         // low-s
-        let _ = std.normalize_s();
+        std.normalize_s();
         let mut der = std.serialize_der().to_vec();
         der.push(0x01); // SIGHASH_ALL
         Ok(der)
@@ -665,7 +665,7 @@ impl SigningNode {
     pub(crate) fn dsha256(bytes: &[u8]) -> [u8; 32] {
         use sha2::Digest;
         let h1 = sha2::Sha256::digest(bytes);
-        let h2 = sha2::Sha256::digest(&h1);
+        let h2 = sha2::Sha256::digest(h1);
         let mut out = [0u8; 32];
         out.copy_from_slice(&h2);
         out
@@ -694,7 +694,7 @@ impl SigningNode {
             let mut txid = hex::decode(&inp.txid)?;
             txid.reverse(); // txid LE
             hpv.extend_from_slice(&txid);
-            hpv.extend_from_slice(&(inp.vout as u32).to_le_bytes());
+            hpv.extend_from_slice(&inp.vout.to_le_bytes());
         }
         let hash_prevouts = Self::dsha256(&hpv);
 
@@ -736,7 +736,7 @@ impl SigningNode {
         let mut txid_i = hex::decode(&tx.inputs[idx].txid)?;
         txid_i.reverse();
         pre.extend_from_slice(&txid_i);
-        pre.extend_from_slice(&(tx.inputs[idx].vout as u32).to_le_bytes());
+        pre.extend_from_slice(&tx.inputs[idx].vout.to_le_bytes());
 
         pre.extend_from_slice(&sc);
         pre.extend_from_slice(&prev_value.to_le_bytes());
@@ -765,7 +765,7 @@ impl SigningNode {
             let mut txid = hex::decode(&inp.txid)?;
             txid.reverse();
             pre.extend_from_slice(&txid);
-            pre.extend_from_slice(&(inp.vout as u32).to_le_bytes());
+            pre.extend_from_slice(&inp.vout.to_le_bytes());
 
             if j == idx {
                 // scriptSig = prevout scriptPubKey
@@ -809,7 +809,7 @@ impl SigningNode {
             if let Some(rmap) = map.get(&round) {
                 let mut all_sigs = Vec::new();
                 for (input_idx, imap) in rmap {
-                    for (_peer_id, ecsig) in imap {
+                    for ecsig in imap.values() {
                         all_sigs.push(BtcIndexedSignature {
                             input_index: *input_idx,
                             signature: ecsig.clone(),

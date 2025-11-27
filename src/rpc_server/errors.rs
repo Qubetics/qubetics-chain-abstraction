@@ -113,8 +113,7 @@ pub(crate) fn validate_ethereum_address(address: &str) -> Result<String, RpcErro
     match checksum_from_any(address) {
         Ok(normalized) => Ok(normalized),
         Err(e) => Err(RpcError::InvalidAddress(format!(
-            "Invalid address format: {}",
-            e
+            "Invalid address format: {e}"
         ))),
     }
 }

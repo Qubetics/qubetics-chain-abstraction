@@ -43,8 +43,6 @@ use rand::thread_rng;
 use crate::chain_abstraction::{ChainHandler, ChainTransaction};
 use crate::protocols::{VrfSelectedNodesBroadcast, VrfService};
 use crate::types::{p2p::SerializablePeerId, ChannelMessage, ConsensusMessage, ConsensusResult};
-// Import BitcoinTransaction directly from chain module
-use crate::chain_abstraction::{BitcoinInput, BitcoinTransaction};
 use crate::user_intent_manager::UserIntentManager;
 use anyhow::bail;
 
@@ -85,7 +83,7 @@ impl SigningNode {
         let peer_id =
             PeerId::from_str(&id).unwrap_or_else(|_| coordination::derive_peer_id_from_string(&id));
         let environment = SigningEnvironmentBuilder::new(id.clone(), message_tx.clone())
-            .build_with_coordination(peer_id, Coordination::new(peer_id, message_tx.clone()));
+            .build_with_coordination(Coordination::new(peer_id, message_tx.clone()));
 
         Self {
             id,
@@ -177,48 +175,6 @@ impl SigningNode {
         self.key_store.has_private_key()
     }
 
-    fn der_encode_int_be(&self, raw: &[u8]) -> Vec<u8> {
-        // 1) Strip leading zeros (minimal encoding)
-        let mut i = 0;
-        while i < raw.len() && raw[i] == 0 {
-            i += 1;
-        }
-        // If the value is zero, encode as single 0x00
-        let mut v = if i == raw.len() {
-            vec![0u8]
-        } else {
-            raw[i..].to_vec()
-        };
-
-        // 2) If MSB set, prepend 0x00 so it's interpreted as positive
-        if v[0] & 0x80 != 0 {
-            let mut with_pad = Vec::with_capacity(v.len() + 1);
-            with_pad.push(0x00);
-            with_pad.extend_from_slice(&v);
-            v = with_pad;
-        }
-
-        // 3) INTEGER: 0x02 | length | value
-        let mut out = Vec::with_capacity(2 + v.len());
-        out.push(0x02);
-        out.push(u8::try_from(v.len()).unwrap()); // short-form length (< 128)
-        out.extend_from_slice(&v);
-        out
-    }
-
-    fn normalize_low_s(&self, s: &[u8]) -> [u8; 32] {
-        let n = BigUint::from_bytes_be(&CURVE_ORDER);
-        let half = &n >> 1;
-        let mut sv = BigUint::from_bytes_be(s);
-        if sv > half {
-            sv = &n - sv;
-        }
-        let mut out = [0u8; 32];
-        let b = sv.to_bytes_be();
-        out[32 - b.len()..].copy_from_slice(&b);
-        out
-    }
-
     /// Create DER-encoded ECDSA signature with SIGHASH_ALL (based on working implementation)
     pub fn create_der_signature_p2wpkh(r32: &[u8; 32], s32: &[u8; 32]) -> Vec<u8> {
         // Encode integer with proper DER rules
@@ -253,191 +209,6 @@ impl SigningNode {
 
         der
     }
-    async fn create_signed_bitcoin_transaction(
-        &self,
-        original_tx: &BitcoinTransaction,
-        signature: &[u8],
-        transaction_type: &Option<crate::types::TransactionType>,
-        user_eth_address: Option<String>,
-    ) -> Result<Vec<u8>> {
-        let mut signed_tx = Vec::new();
-
-        // Version (4 bytes, little-endian)
-        signed_tx.extend_from_slice(&original_tx.version.to_le_bytes());
-
-        // Check if this is a SegWit transaction
-        let is_segwit = original_tx.witness.is_some();
-
-        if is_segwit {
-            // SegWit marker and flag
-            signed_tx.push(0x00); // SegWit marker
-            signed_tx.push(0x01); // SegWit flag
-        }
-
-        // Input count (varint)
-        signed_tx.extend_from_slice(&self.encode_varint(original_tx.inputs.len() as u64));
-
-        // Inputs with signatures
-        for (i, input) in original_tx.inputs.iter().enumerate() {
-            // Previous output hash (32 bytes, reversed)
-            let mut txid_bytes =
-                hex::decode(&input.txid).map_err(|e| anyhow::anyhow!("Invalid txid hex: {}", e))?;
-            txid_bytes.reverse(); // Bitcoin uses reversed byte order
-            signed_tx.extend_from_slice(&txid_bytes);
-
-            // Previous output index (4 bytes, little-endian)
-            signed_tx.extend_from_slice(&input.vout.to_le_bytes());
-
-            // Create script_sig based on address type
-            let script_sig = if i == 0 {
-                self.create_script_sig_for_input(
-                    input,
-                    signature,
-                    transaction_type,
-                    user_eth_address.clone(),
-                )
-                .await?
-            } else {
-                vec![] // Empty for other inputs for now
-            };
-
-            // Script sig length and content
-            signed_tx.extend_from_slice(&self.encode_varint(script_sig.len() as u64));
-            signed_tx.extend_from_slice(&script_sig);
-
-            // Sequence (4 bytes, little-endian)
-            signed_tx.extend_from_slice(&input.sequence.to_le_bytes());
-        }
-
-        // Output count (varint)
-        signed_tx.extend_from_slice(&self.encode_varint(original_tx.outputs.len() as u64));
-
-        // Outputs - preserve original script_pubkey format
-        for output in &original_tx.outputs {
-            // Value (8 bytes, little-endian)
-            signed_tx.extend_from_slice(&output.value.to_le_bytes());
-
-            // Script pubkey length and content
-            signed_tx.extend_from_slice(&self.encode_varint(output.script_pubkey.len() as u64));
-            signed_tx.extend_from_slice(&output.script_pubkey);
-        }
-
-        // Witness data for SegWit transactions
-        if is_segwit {
-            if let Some(witness) = &original_tx.witness {
-                for (i, _witness_input) in witness.inputs.iter().enumerate() {
-                    if i == 0 {
-                        // Create witness stack for the first input
-                        let witness_stack = self
-                            .create_witness_stack_for_input(
-                                &original_tx.inputs[i],
-                                signature,
-                                transaction_type,
-                                user_eth_address.clone(),
-                            )
-                            .await?;
-                        signed_tx
-                            .extend_from_slice(&self.encode_varint(witness_stack.len() as u64));
-                        for item in witness_stack {
-                            signed_tx.extend_from_slice(&self.encode_varint(item.len() as u64));
-                            signed_tx.extend_from_slice(&item);
-                        }
-                    } else {
-                        // Empty witness for other inputs
-                        signed_tx.extend_from_slice(&self.encode_varint(0));
-                    }
-                }
-            }
-        }
-
-        // Lock time (4 bytes, little-endian)
-        signed_tx.extend_from_slice(&original_tx.lock_time.to_le_bytes());
-
-        Ok(signed_tx)
-    }
-
-    /// Create script_sig for different input types
-    async fn create_script_sig_for_input(
-        &self,
-        input: &BitcoinInput,
-        signature: &[u8],
-        transaction_type: &Option<crate::types::TransactionType>,
-        user_eth_address: Option<String>,
-    ) -> Result<Vec<u8>> {
-        if let Some(witness_utxo) = &input.witness_utxo {
-            // For SegWit inputs, script_sig is usually empty or contains redeem script
-            match witness_utxo.script_pubkey.len() {
-                22 if witness_utxo.script_pubkey[0] == 0x00
-                    && witness_utxo.script_pubkey[1] == 0x14 =>
-                {
-                    // P2WPKH - empty script_sig
-                    Ok(vec![])
-                }
-                34 if witness_utxo.script_pubkey[0] == 0x00
-                    && witness_utxo.script_pubkey[1] == 0x20 =>
-                {
-                    // P2WSH - empty script_sig
-                    Ok(vec![])
-                }
-                34 if witness_utxo.script_pubkey[0] == 0x51
-                    && witness_utxo.script_pubkey[1] == 0x20 =>
-                {
-                    // P2TR - empty script_sig
-                    Ok(vec![])
-                }
-                _ => {
-                    // P2SH-wrapped SegWit - need redeem script
-                    Ok(vec![])
-                }
-            }
-        } else {
-            // Legacy P2PKH - create standard script_sig
-            let group_key_bytes = self
-                .get_group_public_key_bytes(transaction_type.clone(), user_eth_address.clone())
-                .await?;
-            info!(
-                "🔍 [SIGNING] Using public key: {}",
-                hex::encode(&group_key_bytes)
-            );
-            let mut script_sig = Vec::new();
-
-            // Push signature (DER format)
-            script_sig.push(signature.len() as u8);
-            script_sig.extend_from_slice(signature);
-
-            // Push public key
-            script_sig.push(group_key_bytes.len() as u8);
-            script_sig.extend_from_slice(&group_key_bytes);
-
-            Ok(script_sig)
-        }
-    }
-
-    /// Create witness stack for SegWit inputs
-    async fn create_witness_stack_for_input(
-        &self,
-        input: &BitcoinInput,
-        signature: &[u8],
-        transaction_type: &Option<crate::types::TransactionType>,
-        user_eth_address: Option<String>,
-    ) -> Result<Vec<Vec<u8>>> {
-        // All inputs are P2WPKH, so they all have witness UTXOs
-        if let Some(_witness_utxo) = &input.witness_utxo {
-            // P2WPKH witness stack: [signature, pubkey]
-            let group_key_bytes = self
-                .get_group_public_key_bytes(transaction_type.clone(), user_eth_address.clone())
-                .await?;
-            info!(
-                "🔍 [SIGNING] P2WPKH witness stack - signature: {} bytes, pubkey: {} bytes",
-                signature.len(),
-                group_key_bytes.len()
-            );
-            Ok(vec![signature.to_vec(), group_key_bytes])
-        } else {
-            return Err(anyhow::anyhow!("P2WPKH input must have witness UTXO"));
-        }
-    }
-
     /// Get the appropriate public key bytes based on transaction type
     async fn get_group_public_key_bytes(
         &self,
@@ -451,25 +222,6 @@ impl SigningNode {
                 self.user_intent_manager.as_ref(),
             )
             .await
-    }
-
-    /// Encode varint for Bitcoin transaction serialization
-    fn encode_varint(&self, value: u64) -> Vec<u8> {
-        if value < 0xfd {
-            vec![value as u8]
-        } else if value <= 0xffff {
-            let mut bytes = vec![0xfd];
-            bytes.extend_from_slice(&(value as u16).to_le_bytes());
-            bytes
-        } else if value <= 0xffffffff {
-            let mut bytes = vec![0xfe];
-            bytes.extend_from_slice(&(value as u32).to_le_bytes());
-            bytes
-        } else {
-            let mut bytes = vec![0xff];
-            bytes.extend_from_slice(&value.to_le_bytes());
-            bytes
-        }
     }
 
     pub async fn broadcast(&self, topic: &str, data: &[u8]) -> Result<()> {
@@ -677,7 +429,7 @@ impl SigningNode {
             "🧮 [SIGNING] peer_to_dkg_index used for aggregation: {:?}",
             peer_to_dkg_index
                 .iter()
-                .map(|(p, i)| format!("{}->{}", p, i))
+                .map(|(p, i)| format!("{p}->{i}"))
                 .collect::<Vec<_>>()
         );
 
@@ -1051,11 +803,6 @@ impl SigningNode {
     /// Get chain parameters
     pub fn get_chain_params(&self) -> std::collections::HashMap<String, String> {
         self.chain_handler.get_chain_params()
-    }
-
-    /// Get available nodes as PeerIds derived from stored public keys
-    async fn get_available_nodes(&self) -> Vec<PeerId> {
-        self.coordination.get_available_nodes().await
     }
 
     /// Set available nodes from node manager
@@ -1447,63 +1194,7 @@ impl SigningNode {
         Ok(())
     }
 
-    /// Collect signatures and perform aggregation (for final selected node)
-    // pub async fn collect_and_aggregate_signatures(&mut self, round: u64) -> Result<()> {
-    //     info!(
-    //         "🔍 [SIGNING] Final node {} waiting for signatures for round {}",
-    //         self.id, round
-    //     );
-
-    //     // Wait a bit for signatures to arrive
-    //     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-
-    //     // Determine if this is a Bitcoin or EVM round by checking which mapping has data
-    //     let signatures_by_round = self.signatures.signatures_by_round.read().await;
-    //     let btc_sigs_by_round = self.btc_state.btc_sigs_by_round.read().await;
-
-    //     let has_evm_sigs = signatures_by_round.contains_key(&round);
-    //     let has_btc_sigs = btc_sigs_by_round.contains_key(&round);
-
-    //     if has_evm_sigs {
-    //         // This is an EVM round
-    //         if let Some(round_signatures) = signatures_by_round.get(&round) {
-    //             info!(
-    //                 "📊 [SIGNING] Final node {} has {} EVM signatures for round {}",
-    //                 self.id,
-    //                 round_signatures.len(),
-    //                 round
-    //             );
-    //         }
-    //     } else if has_btc_sigs {
-    //         // This is a Bitcoin round
-    //         if let Some(round_btc_sigs) = btc_sigs_by_round.get(&round) {
-    //             let total_btc_sigs: usize = round_btc_sigs.values().map(|input_sigs| input_sigs.len()).sum();
-    //             let input_count = round_btc_sigs.len();
-    //             info!(
-    //                 "📊 [SIGNING] Final node {} has {} Bitcoin signatures across {} inputs for round {}",
-    //                 self.id,
-    //                 total_btc_sigs,
-    //                 input_count,
-    //                 round
-    //             );
-
-    //             // Check which inputs have been aggregated
-    //             let btc_done_inputs = self.btc_state.btc_done_inputs_by_round.read().await;
-    //             if let Some(done_inputs) = btc_done_inputs.get(&round) {
-    //                 info!(
-    //                     "✅ [SIGNING] Bitcoin round {} has {} inputs aggregated out of {} total inputs",
-    //                     round,
-    //                     done_inputs.len(),
-    //                     input_count
-    //                 );
-    //             }
-    //         }
-    //     } else {
-    //         info!("⚠️ [SIGNING] No signatures found for round {} (neither EVM nor Bitcoin)", round);
-    //     }
-
-    //     Ok(())
-    // }
+  
 
     /// Handle signature request from final selected node
     async fn handle_signature_request(
@@ -1640,7 +1331,7 @@ impl SigningNode {
                     round,
                     peer_to_index_map
                         .iter()
-                        .map(|(peer, idx)| format!("{}->{}", peer, idx))
+                        .map(|(peer, idx)| format!("{peer}->{idx}"))
                         .collect::<Vec<_>>()
                 );
 
@@ -1720,7 +1411,7 @@ impl SigningNode {
                     "🔢 [SIGNING] DKG indices for threshold signatures: {:?}",
                     peer_to_dkg_index
                         .iter()
-                        .map(|(peer, idx)| format!("{}->{}", peer, idx))
+                        .map(|(peer, idx)| format!("{peer}->{idx}"))
                         .collect::<Vec<_>>()
                 );
 
@@ -1776,8 +1467,8 @@ impl SigningNode {
                             round
                         );
                         info!("  v: {}", v);
-                        info!("  r (canonical): 0x{}", hex::encode(&r));
-                        info!("  s (canonical): 0x{}", hex::encode(&s));
+                        info!("  r (canonical): 0x{}", hex::encode(r));
+                        info!("  s (canonical): 0x{}", hex::encode(s));
                         info!("  recovery_id: {}", recovery_id.to_i32());
                         info!("  original_signature: 0x{}", hex::encode(signature_bytes));
                         info!(
@@ -2036,7 +1727,7 @@ impl SigningNode {
             // skip if already aggregated
             let already_done = {
                 let done = self.btc_state.btc_done_inputs_by_round.read().await;
-                done.get(&round).map_or(false, |s| s.contains(&idx))
+                done.get(&round).is_some_and(|s| s.contains(&idx))
             };
             if already_done {
                 continue;
@@ -2312,7 +2003,6 @@ impl SigningNode {
         Ok(())
     }
     /// Broadcast transaction to Bitcoin network
-
     /// Handle signature received on the signatures-to-final-node topic
     pub async fn handle_signature_to_final_node(
         &mut self,

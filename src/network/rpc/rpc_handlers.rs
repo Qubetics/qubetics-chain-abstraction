@@ -80,7 +80,7 @@ impl MpcNetworkLayer {
                         "🔢 [PEER_LIST_SEND] Loaded index {} for peer {} from database",
                         db_idx, pid
                     );
-                    self.peer_discovery.peer_indices.insert(pid.clone(), db_idx);
+                    self.peer_discovery.peer_indices.insert(*pid, db_idx);
                 }
             }
         }
@@ -99,7 +99,7 @@ impl MpcNetworkLayer {
                             "🔢 [PEER_LIST_SEND] Loading index {} for peer {} from database",
                             idx, pid
                         );
-                        self.peer_discovery.peer_indices.insert(pid.clone(), idx);
+                        self.peer_discovery.peer_indices.insert(*pid, idx);
                         indices.push(Some(idx));
                     }
                     Ok(None) => indices.push(None),
@@ -137,11 +137,11 @@ impl MpcNetworkLayer {
                 let threshold = self.node_manager.get_threshold();
                 if let Err(e) = dkg.update_node_params(total, threshold) {
                     warn!("❌ Invalid DKG params: {}", e);
-                    return RPCResponse::DKGError(format!("Invalid DKG params: {}", e));
+                    return RPCResponse::DKGError(format!("Invalid DKG params: {e}"));
                 }
                 if let Err(e) = dkg.reset().await {
                     warn!("❌ Failed to reset DKG state: {}", e);
-                    return RPCResponse::DKGError(format!("Failed to reset DKG: {}", e));
+                    return RPCResponse::DKGError(format!("Failed to reset DKG: {e}"));
                 }
                 if let Some(signing_node) = &mut self.signing_node {
                     signing_node.set_threshold(self.node_manager.get_total_nodes() - 1);
@@ -161,7 +161,7 @@ impl MpcNetworkLayer {
                     }
                     Err(e) => {
                         warn!("❌ Failed to start DKG: {:?}", e);
-                        RPCResponse::DKGError(format!("Failed to start DKG: {:?}", e))
+                        RPCResponse::DKGError(format!("Failed to start DKG: {e:?}"))
                     }
                 }
             }
@@ -276,7 +276,7 @@ impl MpcNetworkLayer {
             }
             Err(e) => {
                 error!("❌ [DB_SYNC] Failed to count user database entries: {}", e);
-                RPCResponse::Error(format!("Failed to count user database entries: {}", e))
+                RPCResponse::Error(format!("Failed to count user database entries: {e}"))
             }
         }
     }
@@ -323,7 +323,7 @@ impl MpcNetworkLayer {
             }
             Err(e) => {
                 error!("❌ [DB_SYNC] Failed to export batch: {}", e);
-                RPCResponse::Error(format!("Failed to export batch: {}", e))
+                RPCResponse::Error(format!("Failed to export batch: {e}"))
             }
         }
     }
@@ -426,7 +426,7 @@ impl MpcNetworkLayer {
             // Add peer to node_manager if not already present
             if !self.node_manager.get_active_nodes().contains(&p) {
                 self.node_manager
-                    .add_node(p.clone())
+                    .add_node(p)
                     .map_err(|e| anyhow::anyhow!(e))?;
 
                 // Update signing node threshold after adding peer
@@ -471,7 +471,7 @@ impl MpcNetworkLayer {
 
             // Update peer_indices and persist to database if we have an index
             if let Some(idx) = index_to_use {
-                self.peer_discovery.peer_indices.insert(p.clone(), idx);
+                self.peer_discovery.peer_indices.insert(p, idx);
                 let key = key_utils::peer_index_key(&p.to_string());
                 batch_updates.push((key, idx));
             }

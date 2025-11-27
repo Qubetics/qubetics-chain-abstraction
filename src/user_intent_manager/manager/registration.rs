@@ -77,8 +77,7 @@ impl UserIntentManager {
             Ok(a) => a,
             Err(e) => {
                 return Err(format!(
-                    "Invalid ethereum_address '{}': {}",
-                    ethereum_address, e
+                    "Invalid ethereum_address '{ethereum_address}': {e}"
                 ))
             }
         };
@@ -190,7 +189,7 @@ impl UserIntentManager {
     /// Get all registered users
     pub async fn get_all_users(&self) -> Vec<UserRegistration> {
         match self.user_storage.get_all_users().await {
-            Ok(users) => users.into_iter().map(|(_, user)| user).collect(),
+            Ok(users) => users.into_values().collect(),
             Err(e) => {
                 tracing::error!("Failed to get all users: {}", e);
                 Vec::new()

@@ -22,7 +22,7 @@ impl MpcNetworkLayer {
 
         // Node manager will determine if this is the first node
         self.node_manager
-            .add_node(self.local_peer_id.clone())
+            .add_node(self.local_peer_id)
             .map_err(|e| anyhow::anyhow!(e))?;
 
         // Bootstrap with the configured nodes
@@ -169,8 +169,8 @@ impl MpcNetworkLayer {
                 }
             };
             match idx {
-                Some(i) => entries.push(format!("{}=>{}", p, i)),
-                None => entries.push(format!("{}=>?", p)),
+                Some(i) => entries.push(format!("{p}=>{i}")),
+                None => entries.push(format!("{p}=>?")),
             }
         }
         let display_str = entries.join(", ");
