@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::{collections::HashMap, future::Future, pin::Pin};
 use tracing::warn;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -10,8 +10,10 @@ pub enum Command {
     ConsensusProposal { round: u64, value: Vec<u8> },
 }
 
+type CommandFuture = Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>>;
+
 pub struct CommandProcessor {
-    handlers: HashMap<CommandKind, Box<dyn Fn(Command) -> anyhow::Result<()> + Send + Sync>>,
+    handlers: HashMap<CommandKind, Box<dyn Fn(Command) -> CommandFuture + Send + Sync>>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -46,19 +48,21 @@ impl CommandProcessor {
         }
     }
 
-    pub fn register_handler<F>(&mut self, command_kind: CommandKind, handler: F)
+    pub fn register_handler<F, Fut>(&mut self, command_kind: CommandKind, handler: F)
     where
-        F: Fn(Command) -> anyhow::Result<()> + Send + Sync + 'static,
+        F: Fn(Command) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = anyhow::Result<()>> + Send + 'static,
     {
-        self.handlers.insert(command_kind, Box::new(handler));
+        self.handlers
+            .insert(command_kind, Box::new(move |cmd| Box::pin(handler(cmd))));
     }
 
-    pub async fn handle_message(&mut self, msg: Command) -> anyhow::Result<()> {
+    pub async fn handle_message(&self, msg: Command) -> anyhow::Result<()> {
         let kind = msg.kind();
 
         match (kind, self.handlers.get(&kind)) {
             (_, Some(handler)) => {
-                handler(msg)?;
+                (handler)(msg).await?;
             }
             (missing_kind, None) => {
                 warn!("No handler registered for command kind: {:?}", missing_kind);
