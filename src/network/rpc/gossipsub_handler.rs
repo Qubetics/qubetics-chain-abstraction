@@ -163,7 +163,7 @@ impl MpcNetworkLayer {
                 }
             }
             GossipsubMessage::Command(cmd) => {
-                if let Some(cmd_processor) = &mut self.command_processor {
+                if let Some(cmd_processor) = self.command_processor.as_ref() {
                     cmd_processor.handle_message(cmd).await?;
                 }
             }
