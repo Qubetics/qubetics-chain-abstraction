@@ -22,7 +22,7 @@ const TICS_AMOUNT = 1000; // Amount in TICS (whole units)
 const TICS_DECIMALS = 18; // Standard for native EVM tokens (adjust to 10 if TICS uses 10 decimals)
 
 // Test private key (for testing only - DO NOT use in production)
-const TEST_PRIVATE_KEY = '0x93cc7fbc4bfd7fcfd83d11c85ba522f8fa1c03ece1a3b5f1782bc164996844d9';
+const TEST_PRIVATE_KEY = '0x2f1765e04f0a5c394eb3b07ee38bf210008473f6e679a4f901f554905f7f3f89';
 
 // Colors for console output
 const colors = {
@@ -97,11 +97,20 @@ async function transferTics(recipientAddress) {
 
     // Estimate gas
     log('📊 Estimating gas...', 'yellow');
-    const gasEstimate = await provider.estimateGas({
-      to: recipientAddress,
-      value: amountInSmallestUnits,
-    });
-    log(`   Estimated gas: ${gasEstimate.toString()}`, 'cyan');
+    let gasEstimate;
+    try {
+      gasEstimate = await provider.estimateGas({
+        to: recipientAddress,
+        value: amountInSmallestUnits,
+      });
+      log(`   Estimated gas: ${gasEstimate.toString()}`, 'cyan');
+    } catch (estimateError) {
+      gasEstimate = 21_000n;
+      log(
+        `   ⚠️ Gas estimation failed (${estimateError?.message ?? 'unknown error'}). Falling back to 21,000.`,
+        'yellow'
+      );
+    }
 
     // Create transaction
     log('📝 Creating transaction...', 'yellow');
@@ -151,33 +160,51 @@ async function transferTics(recipientAddress) {
   }
 }
 
+async function transferSequentially(addresses) {
+  for (const [index, addr] of addresses.entries()) {
+    log(`\n===== 🎯 Transfer ${index + 1} of ${addresses.length} =====`, 'blue');
+    try {
+      await transferTics(addr);
+      log(`🎉 Transfer ${index + 1} succeeded!`, 'green');
+    } catch (error) {
+      log(`💥 Transfer ${index + 1} failed!`, 'red');
+      throw error;
+    }
+  }
+}
+
 async function main() {
   const args = process.argv.slice(2);
 
   if (args.length === 0) {
-    console.log('Usage: node transfer_tics.js <recipient_address>');
+    console.log('Usage: node transfer_tics.js <recipient_address> [recipient_address2] [recipient_address3]');
     console.log('');
     console.log('Arguments:');
-    console.log('  recipient_address  Ethereum address to receive TICS (required)');
+    console.log('  recipient_address   Ethereum address to receive TICS (required, up to 3 addresses supported)');
     console.log('');
     console.log('Environment variables:');
-    console.log('  QUBETICS_RPC_URL   RPC URL for Qubetics chain (default: https://rpc-testnet.qubetics.work)');
+    console.log('  QUBETICS_RPC_URL    RPC URL for Qubetics chain (default: https://rpc-testnet.qubetics.work)');
     console.log('');
     console.log('Examples:');
     console.log('  node transfer_tics.js 0x742d35Cc6634C0532925a3b8D5A42DCA0e23e4');
+    console.log('  node transfer_tics.js 0x742d...e4 0xDeaD...Beef');
+    console.log('  node transfer_tics.js 0x742d...e4 0xDeaD...Beef 0xCafe...Babe');
     console.log('');
     console.log('⚠️  WARNING: This script uses a hardcoded test private key.');
     console.log('   DO NOT use this script in production or with real funds.');
     process.exit(1);
   }
 
-  const recipientAddress = args[0];
+  if (args.length > 3) {
+    console.log('⚠️  Only up to 3 recipient addresses are supported per run.');
+    process.exit(1);
+  }
 
   try {
-    await transferTics(recipientAddress);
-    log('\n🎉 Transfer completed successfully!', 'green');
+    await transferSequentially(args);
+    log('\n🎉 All transfers completed successfully!', 'green');
   } catch (error) {
-    log('\n💥 Transfer failed!', 'red');
+    log('\n💥 One or more transfers failed!', 'red');
     process.exit(1);
   }
 }

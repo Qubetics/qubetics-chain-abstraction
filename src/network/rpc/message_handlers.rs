@@ -275,6 +275,7 @@ impl MpcNetworkLayer {
                                 solver_address,
                                 btc_u128,
                                 tics_u128,
+                                transaction_id,
                             )
                             .await?;
                         }
@@ -466,6 +467,7 @@ impl MpcNetworkLayer {
                                 solver_address,
                                 chain_name,
                                 amount,
+                                transaction_id,
                             )
                             .await
                         {
