@@ -1187,6 +1187,7 @@ pub async fn create_solver_rewards_update_transaction(
     from_address: &str,
     solver_address: &str,
     rewards: &[U256],
+    transaction_hash: &str,
     contract_address: &str,
     chain_id: u64,
     chain_name: &str,
@@ -1199,6 +1200,7 @@ pub async fn create_solver_rewards_update_transaction(
 
     info!("🔧 [CONTRACT] Solver address: {}", solver_address);
     info!("🔧 [CONTRACT] Rewards: {:?}", rewards);
+    info!("🔧 [CONTRACT] Transaction hash: {}", transaction_hash);
     info!(
         "🔧 [CONTRACT] Contract address: {}",
         normalized_contract_address
@@ -1207,7 +1209,8 @@ pub async fn create_solver_rewards_update_transaction(
     info!("🔧 [CONTRACT] Chain name: {}", chain_name);
     info!("🔧 [CONTRACT] From address: {}", from_address);
 
-    let calldata = encode_update_solver_rewards_calldata(solver_address, rewards);
+    let calldata =
+        encode_update_solver_rewards_calldata(solver_address, rewards, transaction_hash);
     info!("🔧 [CONTRACT] Calldata: {:?}", calldata);
     let calldata_hex = calldata
         .as_ref()
@@ -1255,6 +1258,7 @@ pub async fn create_solver_remove_liquidity_transaction(
     solver_id: &str,
     asset_chain_id: U256,
     amount: U256,
+    transaction_hash: &str,
     contract_address: &str,
     chain_id: u64,
     chain_name: &str,
@@ -1266,17 +1270,19 @@ pub async fn create_solver_remove_liquidity_transaction(
     };
 
     info!(
-        "🔧 [CONTRACT][LIQ] Preparing removeLiquidity(solver_id={}, asset_chain_id={}, amount={}) call on {} (chain_id={}, chain_name={}, from={})",
+        "🔧 [CONTRACT][LIQ] Preparing removeLiquidity(solver_id={}, asset_chain_id={}, amount={}, tx_hash={}) call on {} (chain_id={}, chain_name={}, from={})",
         solver_id,
         asset_chain_id,
         amount,
+        transaction_hash,
         normalized_contract_address,
         chain_id,
         chain_name,
         from_address
     );
 
-    let calldata = encode_remove_liquidity_calldata(solver_id, asset_chain_id, amount)
+    let calldata =
+        encode_remove_liquidity_calldata(solver_id, asset_chain_id, amount, transaction_hash)
         .ok_or_else(|| anyhow::anyhow!("Failed to encode removeLiquidity calldata"))?;
     let calldata_hex = format!("0x{}", hex::encode(&calldata));
     info!(
@@ -1573,6 +1579,7 @@ pub fn encode_fulfill_intent_calldata(
 pub fn encode_update_solver_rewards_calldata(
     solver_address: &str,
     rewards: &[U256],
+    transaction_hash: &str,
 ) -> Option<Vec<u8>> {
     #[allow(deprecated)]
     let f = Function {
@@ -1586,6 +1593,11 @@ pub fn encode_update_solver_rewards_calldata(
             Param {
                 name: "rewards".into(),
                 kind: ParamType::Array(Box::new(ParamType::Uint(256))),
+                internal_type: None,
+            },
+            Param {
+                name: "transactionHash".into(),
+                kind: ParamType::String,
                 internal_type: None,
             },
         ],
@@ -1604,6 +1616,7 @@ pub fn encode_update_solver_rewards_calldata(
                 .map(|value| Token::Uint(*value))
                 .collect::<Vec<_>>(),
         ),
+        Token::String(transaction_hash.to_owned()),
     ];
 
     f.encode_input(&tokens).ok()
@@ -1613,6 +1626,7 @@ pub fn encode_remove_liquidity_calldata(
     solver_id: &str,
     chain_id: U256,
     amount: U256,
+    transaction_hash: &str,
 ) -> Option<Vec<u8>> {
     #[allow(deprecated)]
     let f = Function {
@@ -1633,6 +1647,11 @@ pub fn encode_remove_liquidity_calldata(
                 kind: ParamType::Uint(256),
                 internal_type: None,
             },
+            Param {
+                name: "transactionHash".into(),
+                kind: ParamType::String,
+                internal_type: None,
+            },
         ],
         outputs: vec![],
         constant: None,
@@ -1643,6 +1662,7 @@ pub fn encode_remove_liquidity_calldata(
         Token::String(solver_id.to_owned()),
         Token::Uint(chain_id),
         Token::Uint(amount),
+        Token::String(transaction_hash.to_owned()),
     ];
 
     f.encode_input(&tokens).ok()
