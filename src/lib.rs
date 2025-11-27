@@ -15,7 +15,7 @@ pub mod user_intent_manager;
 pub mod utils;
 pub mod vrf;
 
-pub use commands::CommandProcessor;
+pub use commands::{CommandKind, CommandProcessor};
 pub use consensus::{ConsensusNode, DatabaseConsensusNode};
 pub use database::{
     ConsensusStorage, Database, DatabaseConfig, DkgStorage, IntentStorage, RewardStorage,

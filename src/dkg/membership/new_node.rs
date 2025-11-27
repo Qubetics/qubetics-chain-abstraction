@@ -62,8 +62,8 @@ impl DKGNode {
         }
 
         info!(
-            "🔍 [NEW_NODE] Share for new node at index {}: {:?}",
-            new_node_index, y
+            "🔍 [NEW_NODE] Share computed for new node at index {}",
+            new_node_index
         );
 
         let share = KeyShare {
@@ -105,10 +105,7 @@ impl DKGNode {
         node_manager: Box<dyn NodeMembership>,
     ) -> Result<()> {
         info!("📨 [NEW_NODE] Received share from existing node {}", from);
-        info!(
-            "📨 [NEW_NODE] Share index: {}, value: {:?}",
-            share.index, share.value.0
-        );
+        info!("📨 [NEW_NODE] Share index: {}", share.index);
 
         // Verify the share
         if !self.verify_share(&share.value, share.index, &commitments) {
@@ -147,21 +144,11 @@ impl DKGNode {
             let mut final_secret_share = Scalar::ZERO;
 
             info!("🔍 [NEW_NODE] === FINAL SECRET SHARE CALCULATION ===");
-            info!(
-                "🔍 [NEW_NODE] Starting with final_secret_share = {:?}",
-                final_secret_share
-            );
+            info!("🔍 [NEW_NODE] Starting final secret share accumulation");
 
             for (from_node, share) in shares.iter() {
-                info!(
-                    "✅ [NEW_NODE] Adding share from {} - value: {:?}",
-                    from_node, share.value.0
-                );
+                info!("✅ [NEW_NODE] Adding share from {}", from_node);
                 final_secret_share += share.value.0;
-                info!(
-                    "🔍 [NEW_NODE] New final_secret_share = {:?}",
-                    final_secret_share
-                );
             }
 
             info!("🔍 [NEW_NODE] === END FINAL SECRET SHARE CALCULATION ===");
@@ -228,7 +215,10 @@ impl DKGNode {
 
             // Log the final results
             info!("🎯 [NEW_NODE] DKG COMPLETED for new node {}!", self.id);
-            info!("🔐 [NEW_NODE] Final secret share: {:?}", final_secret_share);
+            info!(
+                "🔐 [NEW_NODE] Final secret share computed and stored for new node {}",
+                self.id
+            );
             info!("🔑 [NEW_NODE] Final public key: {:?}", final_public_key);
             info!("📊 [NEW_NODE] Total shares collected: {}", shares.len());
             info!("✅ [NEW_NODE] DKG status: {:?}", self.get_status());
@@ -257,10 +247,12 @@ impl DKGNode {
 
             info!("🏦 [NEW_NODE] === VAULT GENERATION STARTED ===");
             info!("🏦 [NEW_NODE] Main ETH address: {}", eth_address);
-            info!("🏦 [NEW_NODE] Vault HMAC: {:?}", vault_hmac);
+            info!("🏦 [NEW_NODE] Vault HMAC derived (value redacted)");
 
             let tweak_scalar = Scalar::from_repr(vault_hmac.into()).unwrap();
-            info!("🏦 [NEW_NODE] Vault tweak scalar: {:?}", tweak_scalar);
+            info!(
+                "🏦 [NEW_NODE] Vault tweak scalar derived from HMAC (value redacted)"
+            );
 
             // Calculate and store the vault tweaked secret share
             match self
@@ -269,8 +261,7 @@ impl DKGNode {
             {
                 Ok(vault_tweaked_secret) => {
                     info!(
-                        "🔐 [NEW_NODE] Successfully calculated vault tweaked secret share: {:?}",
-                        vault_tweaked_secret
+                        "🔐 [NEW_NODE] Successfully calculated vault tweaked secret share"
                     );
                     if let Err(e) = self
                         .storage

@@ -6,15 +6,13 @@ use uuid::Uuid;
 #[derive(Debug, Clone)]
 pub struct RequestContext {
     pub request_id: String,
-    pub idempotency_key: Option<String>,
     pub started_at: Instant,
 }
 
 impl RequestContext {
-    pub fn new(idempotency_key: Option<String>) -> Self {
+    pub fn new() -> Self {
         Self {
             request_id: Uuid::new_v4().to_string(),
-            idempotency_key,
             started_at: Instant::now(),
         }
     }

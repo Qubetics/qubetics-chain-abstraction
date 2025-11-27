@@ -56,6 +56,7 @@ pub async fn start_http_server(
         .and(with_dkg_storage(dkg_storage.clone()))
         .and(with_message_tx(message_tx.clone()))
         .and(with_node_id(node_id.clone()))
+        .and(with_auth())
         .and_then(handle_register_user);
 
     let user_mpc_deposit = warp::path("user_mpc_deposit")
@@ -65,6 +66,7 @@ pub async fn start_http_server(
         .and(with_message_tx(message_tx.clone()))
         .and(with_dkg_storage(dkg_storage.clone()))
         .and(with_request_context())
+        .and(with_auth())
         .and_then(|req, uim, tx, dkg, ctx: RequestContext| async move {
             match tokio::time::timeout(
                 Duration::from_secs(REQUEST_TIMEOUT_SECONDS),
@@ -111,6 +113,7 @@ pub async fn start_http_server(
         .and(with_user_intent_manager(user_intent_manager.clone()))
         .and(with_reward_storage(reward_storage.clone()))
         .and(with_message_tx(message_tx.clone()))
+        .and(with_auth())
         .and_then(handle_claim_reward);
 
     let withdraw_liquidity = warp::path("withdraw_liquidity")
@@ -118,6 +121,7 @@ pub async fn start_http_server(
         .and(limited_json_body::<WithdrawLiquidityRequest>())
         .and(with_user_intent_manager(user_intent_manager.clone()))
         .and(with_message_tx(message_tx.clone()))
+        .and(with_auth())
         .and_then(handle_withdraw_liquidity);
 
     let add_liquidity = warp::path("add_liquidity")
@@ -125,6 +129,7 @@ pub async fn start_http_server(
         .and(limited_json_body::<AddLiquidityRequest>())
         .and(with_user_intent_manager(user_intent_manager.clone()))
         .and(with_message_tx(message_tx.clone()))
+        .and(with_auth())
         .and_then(handle_add_liquidity);
 
     let get_user_info = warp::path("user_info")
@@ -189,7 +194,7 @@ pub async fn start_http_server(
             "Authorization",
             "X-Api-Key",
             "X-Auth-Token",
-            "Idempotency-Key",
+            "X-Auth-Token",
             "X-Requested-With",
             "X-CSRF-Token",
             "Cache-Control",
@@ -215,10 +220,54 @@ pub async fn start_http_server(
             "X-Requested-By",
         ]);
 
-    warp::serve(routes.with(cors))
+    warp::serve(routes.with(cors).recover(handle_rejection))
         .run(([0, 0, 0, 0], port))
         .await;
     Ok(())
+}
+
+async fn handle_rejection(err: warp::Rejection) -> Result<impl Reply, Infallible> {
+    let (code, response) = if err.is_not_found() {
+        (
+            warp::http::StatusCode::NOT_FOUND,
+            crate::types::rpc_server::ErrorResponse {
+                status: "error".to_string(),
+                error_code: "NOT_FOUND".to_string(),
+                message: "Not Found".to_string(),
+                details: None,
+            },
+        )
+    } else if let Some(e) = err.find::<super::errors::RpcError>() {
+        let code = match e {
+            super::errors::RpcError::Unauthorized(_) => warp::http::StatusCode::UNAUTHORIZED,
+            super::errors::RpcError::InternalError(_) => warp::http::StatusCode::INTERNAL_SERVER_ERROR,
+            _ => warp::http::StatusCode::BAD_REQUEST,
+        };
+        (code, e.to_error_response())
+    } else if let Some(_) = err.find::<warp::reject::MethodNotAllowed>() {
+        (
+            warp::http::StatusCode::METHOD_NOT_ALLOWED,
+            crate::types::rpc_server::ErrorResponse {
+                status: "error".to_string(),
+                error_code: "METHOD_NOT_ALLOWED".to_string(),
+                message: "Method Not Allowed".to_string(),
+                details: None,
+            },
+        )
+    } else {
+        error!("Unhandled rejection: {:?}", err);
+        (
+            warp::http::StatusCode::INTERNAL_SERVER_ERROR,
+            crate::types::rpc_server::ErrorResponse {
+                status: "error".to_string(),
+                error_code: "INTERNAL_SERVER_ERROR".to_string(),
+                message: "Internal Server Error".to_string(),
+                details: Some(format!("{:?}", err)),
+            },
+        )
+    };
+
+    Ok(warp::reply::with_status(warp::reply::json(&response), code))
 }
 
 fn limited_json_body<T>() -> impl Filter<Extract = (T,), Error = warp::Rejection> + Clone
@@ -266,7 +315,21 @@ fn with_start_time(
 }
 
 fn with_request_context(
-) -> impl Filter<Extract = (RequestContext,), Error = warp::Rejection> + Clone {
-    warp::header::optional("Idempotency-Key")
-        .map(|idempotency_key: Option<String>| RequestContext::new(idempotency_key))
+) -> impl Filter<Extract = (RequestContext,), Error = Infallible> + Clone {
+    warp::any().map(|| RequestContext::new())
+}
+
+fn with_auth() -> impl Filter<Extract = (), Error = warp::Rejection> + Clone {
+    warp::header::optional::<String>("X-API-KEY")
+        .and_then(|api_key: Option<String>| async move {
+            let expected_key = std::env::var("RPC_API_KEY").unwrap_or_else(|_| "default_dev_key".to_string());
+            info!("🔐 Auth Check: Received '{:?}', Expected '{}'", api_key, expected_key);
+            match api_key {
+                Some(key) if key == expected_key => Ok(()),
+                _ => Err(warp::reject::custom(super::errors::RpcError::Unauthorized(
+                    "Invalid or missing API key".to_string(),
+                ))),
+            }
+        })
+        .untuple_one()
 }

@@ -20,6 +20,7 @@ pub enum RpcError {
     // General errors
     InternalError(String),
     SerializationError(String),
+    Unauthorized(String),
 }
 
 impl RpcError {
@@ -89,6 +90,12 @@ impl RpcError {
                 status: "error".to_string(),
                 error_code: "SERIALIZATION_ERROR".to_string(),
                 message: "Data serialization failed".to_string(),
+                details: Some(msg.clone()),
+            },
+            RpcError::Unauthorized(msg) => ErrorResponse {
+                status: "error".to_string(),
+                error_code: "UNAUTHORIZED".to_string(),
+                message: "Unauthorized access".to_string(),
                 details: Some(msg.clone()),
             },
         }
