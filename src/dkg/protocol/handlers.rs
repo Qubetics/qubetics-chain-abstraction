@@ -106,7 +106,7 @@ impl DKGNode {
     ) -> Result<()> {
         let raw_commitments: Vec<AffinePoint> = commitments.into_iter().map(|c| c.0).collect();
 
-        let node_index = self.get_node_index(node_manager.clone());
+        let node_index = self.get_node_index(node_manager.clone())?;
 
         info!("🔍 [DKG] === SHARE DISTRIBUTION RECEIVED ===");
         info!(
@@ -189,7 +189,7 @@ impl DKGNode {
         Ok(())
     }
 
-    fn get_node_index(&self, _node_manager: Box<dyn NodeMembership>) -> usize {
+    fn get_node_index(&self, _node_manager: Box<dyn NodeMembership>) -> Result<usize> {
         info!("🔍 [DKG] === NODE INDEX LOOKUP (DB-only) ===");
         info!("🔍 [DKG] Current node ID: {}", self.id);
 
@@ -199,22 +199,17 @@ impl DKGNode {
                     "🔢 [DKG] Using stored peer index {} for node {}",
                     idx, self.id
                 );
-                idx
+                Ok(idx)
             }
-            Ok(None) => {
-                warn!(
-                    "❌ [DKG] No stored peer index found for {}. Using default index 1.",
-                    self.id
-                );
-                1
-            }
-            Err(e) => {
-                warn!(
-                    "❌ [DKG] Failed to read peer index from DB for {}: {:?}. Using default index 1.",
-                    self.id, e
-                );
-                1
-            }
+            Ok(None) => Err(anyhow!(
+                "No stored peer index found for {}; cannot determine node index",
+                self.id
+            )),
+            Err(e) => Err(anyhow!(
+                "Failed to read peer index from DB for {}: {:?}",
+                self.id,
+                e
+            )),
         }
     }
 
@@ -354,7 +349,7 @@ impl DKGNode {
     async fn generate_group_key(&mut self, node_manager: Box<dyn NodeMembership>) -> Result<()> {
         let shares = self.storage.get_all_shares().await?;
         let commitments = self.storage.get_all_commitments().await?;
-        let node_index = self.get_node_index(node_manager);
+        let node_index = self.get_node_index(node_manager)?;
         info!(
             "🔍 [DKG] Node {} calculating final secret share using shares for index {}",
             self.id, node_index
