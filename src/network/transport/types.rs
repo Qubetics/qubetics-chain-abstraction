@@ -57,6 +57,25 @@ impl From<ReqRespEvent<RPCRequest, RPCResponse>> for NetworkEvent {
     }
 }
 
+pub const TOPIC_SIGNING: &str = "signing";
+pub const TOPIC_CONSENSUS: &str = "consensus";
+pub const TOPIC_COMMANDS: &str = "commands";
+pub const TOPIC_VRF_SELECTION: &str = "vrf-selection";
+pub const TOPIC_TRANSACTIONS: &str = "transactions";
+pub const TOPIC_DEPOSIT_INTENTS: &str = "deposit-intents";
+pub const TOPIC_INTENT_HASHES: &str = "intent-hashes";
+pub const TOPIC_DKG_COMMANDS: &str = "dkg-commands";
+pub const TOPIC_SIGNATURES_TO_FINAL_NODE: &str = "signatures-to-final-node";
+pub const TOPIC_USER_REGISTRATIONS: &str = "user-registrations";
+pub const TOPIC_SOLVER_REWARDS: &str = "solver-rewards";
+pub const TOPIC_CLAIM_REWARDS: &str = "claim-rewards";
+pub const TOPIC_ADD_LIQUIDITY: &str = "add-liquidity";
+pub const TOPIC_WITHDRAW_LIQUIDITY: &str = "withdraw-liquidity";
+pub const TOPIC_TRANSACTION_ID_SYNC: &str = "transaction-id-sync";
+pub const TOPIC_CONSENSUS_RESULT: &str = "consensus-result";
+pub const TOPIC_TRANSACTION_ERROR_SYNC: &str = "transaction-error-sync";
+pub const TOPIC_LEGACY_DKG: &str = "dkg";
+
 /// Typed view of the gossipsub topics this MPC node participates in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GossipTopic {
@@ -110,24 +129,24 @@ impl GossipTopic {
         match self {
             GossipTopic::Dkg => MSG_TOPIC_DKG,
             GossipTopic::PeerDiscovery => MSG_TOPIC_PEER_DISCOVERY,
-            GossipTopic::Signing => "signing",
-            GossipTopic::Consensus => "consensus",
-            GossipTopic::Commands => "commands",
-            GossipTopic::VrfSelection => "vrf-selection",
-            GossipTopic::Transactions => "transactions",
-            GossipTopic::DepositIntents => "deposit-intents",
-            GossipTopic::IntentHashes => "intent-hashes",
-            GossipTopic::DkgCommands => "dkg-commands",
-            GossipTopic::SignaturesToFinalNode => "signatures-to-final-node",
-            GossipTopic::UserRegistrations => "user-registrations",
-            GossipTopic::SolverRewards => "solver-rewards",
-            GossipTopic::ClaimRewards => "claim-rewards",
-            GossipTopic::AddLiquidity => "add-liquidity",
-            GossipTopic::WithdrawLiquidity => "withdraw-liquidity",
-            GossipTopic::TransactionIdSync => "transaction-id-sync",
-            GossipTopic::ConsensusResult => "consensus-result",
-            GossipTopic::TransactionErrorSync => "transaction-error-sync",
-            GossipTopic::LegacyDkg => "dkg",
+            GossipTopic::Signing => TOPIC_SIGNING,
+            GossipTopic::Consensus => TOPIC_CONSENSUS,
+            GossipTopic::Commands => TOPIC_COMMANDS,
+            GossipTopic::VrfSelection => TOPIC_VRF_SELECTION,
+            GossipTopic::Transactions => TOPIC_TRANSACTIONS,
+            GossipTopic::DepositIntents => TOPIC_DEPOSIT_INTENTS,
+            GossipTopic::IntentHashes => TOPIC_INTENT_HASHES,
+            GossipTopic::DkgCommands => TOPIC_DKG_COMMANDS,
+            GossipTopic::SignaturesToFinalNode => TOPIC_SIGNATURES_TO_FINAL_NODE,
+            GossipTopic::UserRegistrations => TOPIC_USER_REGISTRATIONS,
+            GossipTopic::SolverRewards => TOPIC_SOLVER_REWARDS,
+            GossipTopic::ClaimRewards => TOPIC_CLAIM_REWARDS,
+            GossipTopic::AddLiquidity => TOPIC_ADD_LIQUIDITY,
+            GossipTopic::WithdrawLiquidity => TOPIC_WITHDRAW_LIQUIDITY,
+            GossipTopic::TransactionIdSync => TOPIC_TRANSACTION_ID_SYNC,
+            GossipTopic::ConsensusResult => TOPIC_CONSENSUS_RESULT,
+            GossipTopic::TransactionErrorSync => TOPIC_TRANSACTION_ERROR_SYNC,
+            GossipTopic::LegacyDkg => TOPIC_LEGACY_DKG,
         }
     }
 }
