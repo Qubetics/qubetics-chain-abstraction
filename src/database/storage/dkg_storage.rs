@@ -211,10 +211,7 @@ impl DkgStorage {
     pub async fn set_vault_tweaked_secret(&self, tweaked_secret: Scalar) -> Result<()> {
         let ser = SerializableScalar(tweaked_secret);
         self.db.put_string(keys::DKG_VAULT_TWEAKED_SECRET, &ser)?;
-        tracing::info!(
-            "💾 [DKG_STORAGE] Stored vault tweaked secret share: {:?}",
-            tweaked_secret
-        );
+        tracing::info!("💾 [DKG_STORAGE] Stored vault tweaked secret share");
         Ok(())
     }
 
@@ -225,10 +222,7 @@ impl DkgStorage {
             .map(|s| s.0);
 
         if result.is_some() {
-            tracing::info!(
-                "🔍 [DKG_STORAGE] Retrieved vault tweaked secret share: {:?}",
-                result.unwrap()
-            );
+            tracing::info!("🔍 [DKG_STORAGE] Retrieved vault tweaked secret share");
         } else {
             tracing::debug!("🔍 [DKG_STORAGE] No vault tweaked secret share found in database");
         }

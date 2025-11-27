@@ -2,8 +2,7 @@ use anyhow::{anyhow, ensure, Result};
 use k256::{ProjectivePoint, Scalar};
 use std::sync::{Arc, RwLock};
 use tokio::sync::mpsc;
-use tracing::info;
-use tracing::warn;
+use tracing::{debug, info, warn};
 
 use super::artifacts::{DKGCompletionCallback, DKGStatus};
 use crate::database::DkgStorage;
@@ -242,45 +241,57 @@ impl DKGNode {
 
     // Test function to verify share generation
     pub fn test_share_generation(&self) -> Result<()> {
-        info!("🧪 Testing share generation for node {}", self.id);
+        debug!("🧪 Testing share generation for node {}", self.id);
 
         let polynomial = self.generate_polynomial()?;
         let shares = self.generate_shares(&polynomial)?;
 
-        info!("🔬 Node {} generated {} shares", self.id, shares.len());
-        info!(
-            "🔬 First share value: {:?}",
-            shares.first().map(|s| s.value.0)
-        );
-        info!(
-            "🔬 Last share value: {:?}",
-            shares.last().map(|s| s.value.0)
-        );
+        debug!("🔬 Node {} generated {} shares", self.id, shares.len());
+        #[cfg(debug_assertions)]
+        {
+            debug!(
+                "🔬 First share value: {:?}",
+                shares.first().map(|s| s.value.0)
+            );
+            debug!(
+                "🔬 Last share value: {:?}",
+                shares.last().map(|s| s.value.0)
+            );
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            debug!("🔬 Share value logging skipped in release builds");
+        }
 
         Ok(())
     }
 
     // Debug function to log all current shares
     pub async fn log_all_shares(&self) {
+        if !cfg!(debug_assertions) {
+            debug!("📊 [DKG] log_all_shares is disabled in release builds");
+            return;
+        }
+
         match self.storage.get_all_shares().await {
             Ok(shares) => {
-                info!("📊 [DKG] === CURRENT SHARES DEBUG ===");
-                info!(
+                debug!("📊 [DKG] === CURRENT SHARES DEBUG ===");
+                debug!(
                     "📊 [DKG] Node {} has {} shares stored",
                     self.id,
                     shares.len()
                 );
                 if shares.is_empty() {
-                    info!("📊 [DKG] No shares currently stored");
+                    debug!("📊 [DKG] No shares currently stored");
                 } else {
                     for (sender, share) in shares.iter() {
-                        info!(
+                        debug!(
                             "📊 [DKG] Share from {}: index={}, value={:?}",
                             sender, share.index, share.value.0
                         );
                     }
                 }
-                info!("📊 [DKG] === END CURRENT SHARES DEBUG ===");
+                debug!("📊 [DKG] === END CURRENT SHARES DEBUG ===");
             }
             Err(e) => {
                 warn!("Failed to load shares for logging: {}", e);
@@ -295,6 +306,7 @@ mod tests {
     use k256::AffinePoint;
     use crate::database::{Database, DatabaseConfig};
     use tempfile::TempDir;
+    use crate::utils;
 
     /// Helper to create a test database
     fn create_test_db() -> (Database, TempDir) {

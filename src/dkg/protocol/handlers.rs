@@ -118,12 +118,7 @@ impl DKGNode {
 
         info!("🔍 [DKG] All shares received from {}:", from);
         for (i, share) in shares.iter().enumerate() {
-            info!(
-                "🔍 [DKG] Share {}: index={}, value={:?}",
-                i + 1,
-                share.index,
-                share.value.0
-            );
+            info!("🔍 [DKG] Share {}: index={}", i + 1, share.index);
         }
 
         info!(
@@ -137,8 +132,8 @@ impl DKGNode {
             let my_share = shares.into_iter().find(|s| s.index == node_index);
             if let Some(share) = my_share {
                 info!(
-                    "✅ [DKG] Found valid share for node {} from {}, share value: {:?}",
-                    self.id, from, share.value.0
+                    "✅ [DKG] Found valid share for node {} from {}",
+                    self.id, from
                 );
 
                 self.storage.store_share(&from, &share).await?;
@@ -359,8 +354,6 @@ impl DKGNode {
     async fn generate_group_key(&mut self, node_manager: Box<dyn NodeMembership>) -> Result<()> {
         let shares = self.storage.get_all_shares().await?;
         let commitments = self.storage.get_all_commitments().await?;
-        info!("🔐 [DKG] Commitments: {:?}", commitments);
-
         let node_index = self.get_node_index(node_manager);
         info!(
             "🔍 [DKG] Node {} calculating final secret share using shares for index {}",
@@ -373,14 +366,14 @@ impl DKGNode {
         for (from, share) in shares.iter() {
             if share.index == node_index {
                 info!(
-                    "✅ [DKG] Using share from {} with index {} - value: {:?}",
-                    from, share.index, share.value.0
+                    "✅ [DKG] Using share from {} with index {}",
+                    from, share.index
                 );
                 final_secret_share += share.value.0;
             } else {
                 info!(
-                    "❌ [DKG] Skipping share from {} with index {} - value: {:?}",
-                    from, share.index, share.value.0
+                    "❌ [DKG] Skipping share from {} with index {}",
+                    from, share.index
                 );
             }
         }
@@ -423,7 +416,10 @@ impl DKGNode {
         self.transition_status(DKGStatus::Completed)?;
 
         info!("🎯 [DKG] DKG COMPLETED for node {}!", self.id);
-        info!("🔐 [DKG] Final secret share: {:?}", final_secret_share);
+        info!(
+            "🔐 [DKG] Final secret share computed and stored for node {}",
+            self.id
+        );
         info!("🔑 [DKG] Final public key: {:?}", final_public_key);
 
         if let Some(callback) = self.completion_callback.take() {
@@ -441,20 +437,17 @@ impl DKGNode {
 
         info!("🏦 [DKG] === VAULT GENERATION STARTED ===");
         info!("🏦 [DKG] Main ETH address: {}", eth_address);
-        info!("🏦 [DKG] Vault HMAC: {:?}", vault_hmac);
+        info!("🏦 [DKG] Vault HMAC derived (value redacted)");
 
         let tweak_scalar = Scalar::from_repr(vault_hmac.into()).unwrap();
-        info!("🏦 [DKG] Vault tweak scalar: {:?}", tweak_scalar);
+        info!("🏦 [DKG] Vault tweak scalar derived from HMAC (value redacted)");
 
         match self
             .calculate_vault_tweaked_secret_share(tweak_scalar)
             .await
         {
             Ok(vault_tweaked_secret) => {
-                info!(
-                    "🔐 [DKG] Successfully calculated vault tweaked secret share: {:?}",
-                    vault_tweaked_secret
-                );
+                info!("🔐 [DKG] Successfully calculated vault tweaked secret share");
                 if let Err(e) = self
                     .storage
                     .set_vault_tweaked_secret(vault_tweaked_secret)
