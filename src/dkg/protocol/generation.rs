@@ -1,8 +1,6 @@
 use crate::dkg::{artifacts::DKGMessage, DKGNode};
 use crate::types::dkg::MSG_TOPIC_DKG;
-use crate::types::{
-    ChannelMessage, GossipsubMessage, KeyShare, SerializablePoint, SerializableScalar,
-};
+use crate::types::{GossipsubMessage, KeyShare, SerializablePoint, SerializableScalar};
 use crate::NodeMembership;
 use anyhow::Result;
 use ff::Field;
@@ -64,7 +62,7 @@ impl DKGNode {
             coefficients.len(),
             coefficients
                 .iter()
-                .map(|c| format!("{:?}", c))
+                .map(|c| format!("{c:?}"))
                 .collect::<Vec<String>>()
         );
         Ok(coefficients)

@@ -1,24 +1,13 @@
-use crate::utils::hmac_helper::hmac256_from_addr;
-use crate::{utils, NodeMembership};
 use anyhow::{anyhow, ensure, Result};
-use ethers::core::k256::ecdsa::Error;
-use ff::{Field, PrimeField};
-use k256::elliptic_curve::group::Group;
-use k256::{AffinePoint, ProjectivePoint, Scalar};
-use rand::rngs::OsRng;
-use std::collections::HashMap;
+use k256::{ProjectivePoint, Scalar};
 use std::sync::{Arc, RwLock};
-use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tracing::info;
 use tracing::warn;
 
-use super::artifacts::{DKGCompletionCallback, DKGMessage, DKGStatus};
+use super::artifacts::{DKGCompletionCallback, DKGStatus};
 use crate::database::DkgStorage;
-use crate::types::dkg::MSG_TOPIC_DKG;
-use crate::types::{
-    ChannelMessage, GossipsubMessage, KeyShare, SerializablePoint, SerializableScalar,
-};
+use crate::types::ChannelMessage;
 
 #[derive(Clone)]
 struct DKGState {
@@ -149,22 +138,22 @@ impl DKGNode {
         let mut failures = Vec::new();
 
         if let Err(e) = self.storage.clear_shares().await {
-            failures.push(format!("clear shares: {}", e));
+            failures.push(format!("clear shares: {e}"));
         }
         if let Err(e) = self.storage.clear_commitments().await {
-            failures.push(format!("clear commitments: {}", e));
+            failures.push(format!("clear commitments: {e}"));
         }
         if let Err(e) = self.storage.clear_validations().await {
-            failures.push(format!("clear validations: {}", e));
+            failures.push(format!("clear validations: {e}"));
         }
         if let Err(e) = self.storage.delete_final_secret().await {
-            failures.push(format!("delete final secret: {}", e));
+            failures.push(format!("delete final secret: {e}"));
         }
         if let Err(e) = self.storage.delete_final_public().await {
-            failures.push(format!("delete final public key: {}", e));
+            failures.push(format!("delete final public key: {e}"));
         }
         if let Err(e) = self.storage.delete_polynomial().await {
-            failures.push(format!("delete polynomial: {}", e));
+            failures.push(format!("delete polynomial: {e}"));
         }
 
         if failures.is_empty() {
@@ -175,7 +164,7 @@ impl DKGNode {
             let message = failures.join("; ");
             warn!("Failed to fully reset DKG node {}: {}", self.id, message);
             self.transition_status(DKGStatus::Error {
-                kind: format!("reset_failed: {}", message),
+                kind: format!("reset_failed: {message}"),
             })?;
             Err(anyhow!("Failed to reset DKG node: {}", message))
         }
@@ -219,31 +208,25 @@ impl DKGNode {
     }
 
     pub async fn get_final_secret_share(&self) -> Option<Scalar> {
-        match self.storage.get_final_secret().await {
-            Ok(v) => v,
-            Err(_) => None,
-        }
+        self.storage.get_final_secret().await.unwrap_or_default()
     }
 
     pub async fn get_final_public_key(&self) -> Option<ProjectivePoint> {
-        match self.storage.get_final_public().await {
-            Ok(v) => v,
-            Err(_) => None,
-        }
+        self.storage.get_final_public().await.unwrap_or_default()
     }
 
     pub async fn get_vault_tweaked_secret_share(&self) -> Option<Scalar> {
-        match self.storage.get_vault_tweaked_secret().await {
-            Ok(v) => v,
-            Err(_) => None,
-        }
+        self.storage
+            .get_vault_tweaked_secret()
+            .await
+            .unwrap_or_default()
     }
 
     pub async fn get_vault_group_key(&self) -> Option<ProjectivePoint> {
-        match self.storage.get_vault_group_key().await {
-            Ok(v) => v,
-            Err(_) => None,
-        }
+        self.storage
+            .get_vault_group_key()
+            .await
+            .unwrap_or_default()
     }
 
     pub async fn is_completed(&self) -> bool {
@@ -309,6 +292,7 @@ impl DKGNode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use k256::AffinePoint;
     use crate::database::{Database, DatabaseConfig};
     use tempfile::TempDir;
 

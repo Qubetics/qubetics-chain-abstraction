@@ -15,6 +15,12 @@ pub struct KeyStore {
     vault_group_key: Option<ProjectivePoint>,
 }
 
+impl Default for KeyStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl KeyStore {
     pub fn new() -> Self {
         Self {
@@ -88,7 +94,7 @@ impl KeyStore {
     }
 
     pub fn clone_private_key(&self) -> Option<SecretKey> {
-        self.private_key.clone()
+        self.private_key
     }
 
     pub fn public_key(&self) -> Option<&PublicKey> {
@@ -184,6 +190,38 @@ impl KeyStore {
                     ))
                 }
             }
+            Some(TransactionType::RewardTxn) => {
+                // Reward transactions use the DKG group public key (network's key)
+                if let Some(group_key) = self.group_public_key {
+                    let affine_point = group_key.to_affine();
+                    let encoded_point = EncodedPoint::from(affine_point);
+                    let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
+
+                    info!("🔑 [SIGNING] RewardTxn: Using DKG group public key");
+                    Ok(compressed_bytes)
+                } else {
+                    Err(anyhow!(
+                        "DKG group public key not available for RewardTxn transaction - ensure DKG process is completed"
+                    ))
+                }
+            }
+            Some(TransactionType::WithdrawLiquidity) => {
+                if let Some(group_key) = self.group_public_key {
+                    let affine_point = group_key.to_affine();
+                    let encoded_point = EncodedPoint::from(affine_point);
+                    let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
+
+                    info!("🔑 [SIGNING] WithdrawLiquidity: Using DKG group public key");
+                    Ok(compressed_bytes)
+                } else {
+                    Err(anyhow!(
+                        "DKG group public key not available for WithdrawLiquidity transaction - ensure DKG process is completed"
+                    ))
+                }
+            }
+            Some(TransactionType::AddLiquidity) => Err(anyhow!(
+                "AddLiquidity transactions do not require group public key bytes"
+            )),
             None => {
                 if let Some(group_key) = self.group_public_key {
                     let affine_point = group_key.to_affine();

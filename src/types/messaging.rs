@@ -48,6 +48,22 @@ pub enum ChannelMessage {
         eth_address: Option<String>,
         reward_btc: Option<String>,
         reward_tics: Option<String>,
+        transaction_type: String,
+    },
+    AddLiquidity {
+        solver_address: String,
+        solver_id: String,
+        amount_btc: Option<String>,
+        amount_tics: Option<String>,
+    },
+    WithdrawLiquidity {
+        solver_address: String,
+        btc_address: Option<String>,
+        eth_address: Option<String>,
+        amount_btc: Option<String>,
+        amount_tics: Option<String>,
+        /// "withdraw_liquidity"
+        transaction_type: String,
     },
     TransactionIdBroadcast {
         intent_hash: Option<String>,
@@ -106,6 +122,21 @@ pub enum GossipsubMessage {
         eth_address: Option<String>,
         reward_btc: Option<String>,
         reward_tics: Option<String>,
+        transaction_type: String,
+    },
+    AddLiquidity {
+        solver_address: String,
+        solver_id: String,
+        amount_btc: Option<String>,
+        amount_tics: Option<String>,
+    },
+    WithdrawLiquidity {
+        solver_address: String,
+        btc_address: Option<String>,
+        eth_address: Option<String>,
+        amount_btc: Option<String>,
+        amount_tics: Option<String>,
+        transaction_type: String,
     },
     DKGCommand(RPCRequest),
     UserRegistration {

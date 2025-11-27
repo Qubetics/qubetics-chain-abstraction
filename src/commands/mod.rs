@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use tokio::sync::mpsc;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Command {
@@ -11,17 +10,18 @@ pub enum Command {
 }
 
 pub struct CommandProcessor {
-    command_tx: mpsc::Sender<Command>,
-    command_rx: mpsc::Receiver<Command>,
     handlers: HashMap<String, Box<dyn Fn(Command) -> anyhow::Result<()> + Send + Sync>>,
+}
+
+impl Default for CommandProcessor {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl CommandProcessor {
     pub fn new() -> Self {
-        let (tx, rx) = mpsc::channel(100);
         Self {
-            command_tx: tx,
-            command_rx: rx,
             handlers: HashMap::new(),
         }
     }

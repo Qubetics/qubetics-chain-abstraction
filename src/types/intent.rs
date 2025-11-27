@@ -5,9 +5,12 @@ pub enum TransactionType {
     UserToVault,
     NetworkToTarget,
     VaultToNetwork,
+    RewardTxn,
+    WithdrawLiquidity,
+    AddLiquidity,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum TransactionNetwork {
     /// EVM/TICS transactions
     TICS,

@@ -9,7 +9,8 @@
     "broadcast-btc": "node broadcast_bitcoin_transaction.js",
     "broadcast-example": "node broadcast_example.js",
     "node-id": "node get_node_id.js",
-    "get-reward-solver": "node get_reward_solver.js"
+    "get-reward-solver": "node get_reward_solver.js",
+    "test-add-liquidity": "node test_add_liquidity.js"
   },
   "keywords": [],
   "author": "",

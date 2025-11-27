@@ -163,7 +163,7 @@ impl MpcNetworkLayer {
         info!("assigned_index : {:?}", tentative_index);
 
         let msg = GossipsubMessage::PeerDiscovered {
-            peer: peer_id.clone(),
+            peer: peer_id,
             sequence: Some(1),
             index: Some(tentative_index),
         };

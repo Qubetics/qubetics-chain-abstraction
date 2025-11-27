@@ -54,7 +54,7 @@ impl MpcNetworkLayer {
         self.db_sync_state
             .start_sync(peer_id, total_entries, batch_size);
 
-        let total_batches = (total_entries + batch_size - 1) / batch_size;
+        let total_batches = total_entries.div_ceil(batch_size);
         info!(
             "📦 [DB_SYNC] Starting batch sync: {} entries in {} batches from peer {}",
             total_entries, total_batches, peer_id

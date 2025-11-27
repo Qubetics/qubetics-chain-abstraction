@@ -44,7 +44,7 @@ impl ChainHandler for EthereumChainHandler {
                     )
                 } else {
                     Ok(crate::utils::transaction::create_transaction_for_signing(
-                        &eth_tx,
+                        eth_tx,
                     ))
                 }
             }
@@ -74,7 +74,7 @@ impl ChainHandler for EthereumChainHandler {
                     )
                 } else {
                     Ok(crate::utils::transaction::create_transaction_for_signing(
-                        &eth_tx,
+                        eth_tx,
                     ))
                 }
             }

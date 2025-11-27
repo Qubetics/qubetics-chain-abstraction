@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Context, Result};
 use dotenv::dotenv;
+use hex::FromHex;
 use libp2p::{identity::Keypair, PeerId};
 use mpc_node::node_selection::{DefaultThresholdCalculator, NodeMembership, VrfNodeManager};
 use mpc_node::{
@@ -20,6 +21,8 @@ use tracing::level_filters::LevelFilter;
 use tracing::{info, warn};
 use tracing_appender::non_blocking;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+
+const CHAIN_CODE_ENV: &str = "CHAIN_CODE_HEX";
 
 #[derive(Clone)]
 struct Config {
@@ -77,9 +80,23 @@ impl ConfigBuilder {
     }
 }
 
+fn load_chain_code() -> Result<[u8; 32]> {
+    let raw = std::env::var(CHAIN_CODE_ENV).map_err(|_| {
+        anyhow!(
+            "{} env var missing; provide 32-byte secret hex (optionally 0x-prefixed)",
+            CHAIN_CODE_ENV
+        )
+    })?;
+    let sanitized = raw.trim().trim_start_matches("0x");
+    let chain_code =
+        <[u8; 32]>::from_hex(sanitized).map_err(|e| anyhow!("invalid {} value: {}", CHAIN_CODE_ENV, e))?;
+    Ok(chain_code)
+}
+
 struct NodeContext {
     config: Config,
     peer_id: PeerId,
+    chain_code: [u8; 32],
     database_module: Option<DatabaseModule>,
     database: Option<Arc<Database>>,
     network: Option<MpcNetworkLayer>,
@@ -93,10 +110,12 @@ impl NodeContext {
     fn new(config: Config) -> Result<Self> {
         let keypair = Keypair::generate_ed25519();
         let peer_id = PeerId::from(keypair.public());
+        let chain_code = load_chain_code()?;
 
         Ok(Self {
             config,
             peer_id,
+            chain_code,
             database_module: None,
             database: None,
             network: None,
@@ -110,7 +129,7 @@ impl NodeContext {
     fn init_logging(&self) -> Result<()> {
         let rand_num: u32 = thread_rng().gen_range(1000..9999);
         let file_appender =
-            tracing_appender::rolling::never("logs", format!("mpcn-{}.log", rand_num));
+            tracing_appender::rolling::never("logs", format!("mpcn-{rand_num}.log"));
         let (writer, _guard) = non_blocking(file_appender);
         let file_layer = fmt::layer::<_>()
             .with_writer(writer)
@@ -215,7 +234,7 @@ impl NodeContext {
 
         let dkg_storage: DkgStorage = database_module.dkg_storage();
         let reward_storage: RewardStorage = database_module.reward_storage();
-        let chain_code = [42u8; 32];
+        let chain_code = self.chain_code;
         let mut dkg_node = DKGNode::new(
             network.get_local_peer_id().to_string(),
             threshold,

@@ -40,7 +40,7 @@ fn create_p2pkh_script_for_signing(group_public_key: &[u8]) -> Result<Vec<u8>> {
     }
 
     let sha256_hash = Sha256::digest(group_public_key);
-    let pubkey_hash = Ripemd160::new().chain_update(&sha256_hash).finalize();
+    let pubkey_hash = Ripemd160::new().chain_update(sha256_hash).finalize();
 
     let mut script = Vec::new();
     script.push(0x76); // OP_DUP
@@ -92,7 +92,7 @@ impl ChainHandler for BitcoinChainHandler {
 
                     let dbl_sha256 = |data: &[u8]| -> Vec<u8> {
                         let hash1 = Sha256::digest(data);
-                        let hash2 = Sha256::digest(&hash1);
+                        let hash2 = Sha256::digest(hash1);
                         hash2.to_vec()
                     };
 
@@ -227,7 +227,7 @@ impl ChainHandler for BitcoinChainHandler {
                     )
                 } else {
                     Ok(crate::utils::transaction::create_transaction_for_signing(
-                        &eth_tx,
+                        eth_tx,
                     ))
                 }
             }

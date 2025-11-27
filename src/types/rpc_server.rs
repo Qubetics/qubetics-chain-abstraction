@@ -166,3 +166,47 @@ pub struct EnhancedUserRegistrationResponse {
     pub derived_btc_address: Option<String>,
     pub error: Option<ErrorResponse>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WithdrawLiquidityRequest {
+    pub signature: String,
+    pub message: String,
+    pub ethereum_address: Option<String>,
+    pub btc_address: Option<String>,
+    pub amount_tics: Option<String>,
+    pub amount_btc: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WithdrawLiquidityResponse {
+    pub status: String,
+    pub solver_address: String,
+    pub liquidity_btc: Option<String>,
+    pub liquidity_tics: Option<String>,
+    pub ethereum_address: Option<String>,
+    pub btc_address: Option<String>,
+    pub tics_withdraw_tx_id: Option<String>,
+    pub btc_withdraw_tx_id: Option<String>,
+    pub message: String,
+    pub error_message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AddLiquidityRequest {
+    pub signature: String,
+    pub message: String,
+    pub solver_id: String,
+    pub amount_tics: Option<String>,
+    pub amount_btc: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AddLiquidityResponse {
+    pub status: String,
+    pub solver_address: String,
+    pub solver_id: String,
+    pub amount_tics: Option<String>,
+    pub amount_btc: Option<String>,
+    pub message: String,
+    pub error_message: Option<String>,
+}

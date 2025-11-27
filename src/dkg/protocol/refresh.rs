@@ -1,14 +1,10 @@
-use crate::dkg::{
-    artifacts::{DKGMessage, DKGStatus},
-    DKGNode,
-};
+use crate::dkg::{artifacts::DKGMessage, DKGNode};
 use crate::types::dkg::MSG_TOPIC_DKG;
 use crate::types::{GossipsubMessage, KeyShare, SerializablePoint};
 use crate::utils::hmac_helper::hmac256_from_addr;
 use crate::{utils, NodeMembership};
 use anyhow::{anyhow, Result};
 use ff::{Field, PrimeField};
-use k256::elliptic_curve::group::Group;
 use k256::{AffinePoint, ProjectivePoint, Scalar};
 use serde_json;
 use std::collections::HashMap;
@@ -399,7 +395,7 @@ impl DKGNode {
         );
 
         // Store refresh share temporarily with "refresh_" prefix
-        let key = format!("refresh_{}", from);
+        let key = format!("refresh_{from}");
         self.storage.store_share(&key, my_refresh_share).await?;
         self.storage
             .store_commitments(&key, &raw_commitments)
@@ -449,7 +445,7 @@ impl DKGNode {
             );
             info!("🎉 [REFRESH] Now computing new secret share...");
             info!("🎉 [REFRESH] ═══════════════════════════════════════════════════");
-            self.compute_refreshed_secret(node_manager).await?;
+            self.compute_refreshed_secret().await?;
         } else {
             info!(
                 "⏳ [REFRESH] Waiting for more refresh shares ({}/{})",
@@ -460,10 +456,7 @@ impl DKGNode {
         Ok(())
     }
 
-    async fn compute_refreshed_secret(
-        &mut self,
-        node_manager: Box<dyn NodeMembership>,
-    ) -> Result<()> {
+    async fn compute_refreshed_secret(&mut self) -> Result<()> {
         info!("🔄 [REFRESH] ═══════════════════════════════════════════════════");
         info!("🔄 [REFRESH] COMPUTING REFRESHED SECRET SHARE");
         info!("🔄 [REFRESH] ═══════════════════════════════════════════════════");
@@ -589,7 +582,7 @@ impl DKGNode {
 
         for (refresh_key, _) in refresh_with_indices {
             if let Some(comms) = refresh_commitment_entries.get(&refresh_key) {
-                if let Some(c0) = comms.get(0) {
+                if let Some(c0) = comms.first() {
                     new_final_public_key += ProjectivePoint::from(*c0);
                     info!(
                         "✅ [REFRESH] Added C0 from {}: {:?}",
@@ -719,7 +712,7 @@ impl DKGNode {
             }
         }
 
-        let tweak_point = ProjectivePoint::GENERATOR * &tweak_scalar;
+        let tweak_point = ProjectivePoint::GENERATOR * tweak_scalar;
         let vault_group_key = new_final_public_key + tweak_point;
 
         let vault_eth = utils::get_eth_address_from_group_key(vault_group_key);

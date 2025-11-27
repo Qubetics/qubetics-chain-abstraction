@@ -178,7 +178,7 @@ impl UserIntentManager {
                     "❌ [DB_USER_REGISTRY] Failed to store transaction error: {}",
                     e
                 );
-                Err(format!("Database error: {}", e))
+                Err(format!("Database error: {e}"))
             }
         }
     }

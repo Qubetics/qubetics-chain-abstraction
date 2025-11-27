@@ -104,12 +104,14 @@ impl SigningNode {
     ) -> Result<()> {
         use secp256k1::{ecdsa::RecoverableSignature, Message};
 
-        // Validate parameters: if intent_hash is None, solver_address must be provided
-        if intent_hash.is_none() && solver_address.is_none() {
-            error!("❌ [BTC-SIGNING] Invalid parameters: when intent_hash is None, solver_address must be provided");
-            return Err(anyhow!(
-                "When intent_hash is None, solver_address must be provided"
-            ));
+        // Validate parameters: if transaction_type is RewardTxn, solver_address must be provided
+        if let Some(TransactionType::RewardTxn) = transaction_type {
+            if solver_address.is_none() {
+                error!("❌ [BTC-SIGNING] Invalid parameters: solver_address is required when transaction_type is RewardTxn");
+                return Err(anyhow!(
+                    "Solver address is required when transaction_type is RewardTxn"
+                ));
+            }
         }
 
         if !self.key_store.has_private_key() {
@@ -140,7 +142,7 @@ impl SigningNode {
         fn hash160(data: &[u8]) -> [u8; 20] {
             use sha2::Digest;
             let sha = sha2::Sha256::digest(data);
-            let rip = ripemd::Ripemd160::digest(&sha);
+            let rip = ripemd::Ripemd160::digest(sha);
             let mut out = [0u8; 20];
             out.copy_from_slice(&rip);
             out
@@ -333,41 +335,58 @@ impl SigningNode {
 
         // Store tx + extras under this round (so final node can reconstruct without re-deriving)
         if let Some(original_tx) = &original_tx {
-            if intent_hash.is_none() {
+            if let Some(TransactionType::RewardTxn) = transaction_type {
                 // This is a reward transaction - store in reward pending transactions
-                if let Some(solver_addr) = solver_address {
-                    // Store in BTC reward pending transactions
-                    self.store_reward_transaction_btc(
-                        current_round,
-                        ChainTransaction::Bitcoin(original_tx.clone()),
-                        tx_bytes.clone(),
-                        solver_addr.clone(),
-                        extras,
-                    )
-                    .await;
+                // solver_address is guaranteed to be Some due to validation above
+                let solver_addr = solver_address.expect("Solver address should be validated above");
+                // Store in BTC reward pending transactions
+                self.store_reward_transaction_btc(
+                    current_round,
+                    ChainTransaction::Bitcoin(original_tx.clone()),
+                    tx_bytes.clone(),
+                    solver_addr.clone(),
+                    extras,
+                )
+                .await;
 
-                    // Insert round number into reward_rounds for reward transactions
-                    {
-                        let mut reward_rounds = self.pending.reward_rounds.write().await;
-                        reward_rounds.insert(current_round);
-                        info!(
-                            "🎁 [BTC-SIGNING] Node {} added round {} to reward_rounds",
-                            self.id, current_round
-                        );
-                    }
-
+                // Insert round number into reward_rounds for reward transactions
+                {
+                    let mut reward_rounds = self.pending.reward_rounds.write().await;
+                    reward_rounds.insert(current_round);
                     info!(
+                        "🎁 [BTC-SIGNING] Node {} added round {} to reward_rounds",
+                        self.id, current_round
+                    );
+                }
+
+                info!(
                     "💾 [BTC-SIGNING] Node {} stored BTC reward transaction for round {} with solver address: {} (inputs={})",
                     self.id, current_round, solver_addr, original_tx.inputs.len()
                 );
-                } else {
-                    error!(
-                        "❌ [BTC-SIGNING] Solver address is required for BTC reward transactions"
+            } else if let Some(TransactionType::WithdrawLiquidity) = transaction_type {
+                let solver_addr = solver_address.expect("Solver address should be validated above");
+                self.store_withdraw_transaction_btc(
+                    current_round,
+                    ChainTransaction::Bitcoin(original_tx.clone()),
+                    tx_bytes.clone(),
+                    solver_addr.clone(),
+                    extras,
+                )
+                .await;
+
+                {
+                    let mut withdraw_rounds = self.pending.withdraw_rounds.write().await;
+                    withdraw_rounds.insert(current_round);
+                    info!(
+                        "💧 [BTC-SIGNING] Node {} added round {} to withdraw_rounds",
+                        self.id, current_round
                     );
-                    return Err(anyhow!(
-                        "Solver address is required for BTC reward transactions"
-                    ));
                 }
+
+                info!(
+                    "💾 [BTC-SIGNING] Node {} stored BTC withdraw-liquidity transaction for round {} with solver address: {} (inputs={})",
+                    self.id, current_round, solver_addr, original_tx.inputs.len()
+                );
             } else {
                 // This is an intent-based transaction - store in regular pending transactions
                 let mut pending = self.pending.pending_transactions_btc.write().await;
@@ -508,7 +527,7 @@ impl SigningNode {
                 prev.reverse();
                 out.extend_from_slice(&prev);
 
-                out.extend_from_slice(&(inp.vout as u32).to_le_bytes());
+                out.extend_from_slice(&inp.vout.to_le_bytes());
 
                 match from_kind {
                     SpendKind::P2PKH => {
@@ -553,7 +572,7 @@ impl SigningNode {
                     let mut prev = hex::decode(&inp.txid)?;
                     prev.reverse();
                     out.extend_from_slice(&prev);
-                    out.extend_from_slice(&(inp.vout as u32).to_le_bytes());
+                    out.extend_from_slice(&inp.vout.to_le_bytes());
                     Self::push_varint(&mut out, 0); // empty scriptSig
                     out.extend_from_slice(&inp.sequence.to_le_bytes());
                 }
@@ -598,7 +617,7 @@ impl SigningNode {
         use secp256k1::ecdsa::Signature as StdSig;
         let mut std: StdSig = rsig.to_standard();
         // low-s
-        let _ = std.normalize_s();
+        std.normalize_s();
         let mut der = std.serialize_der().to_vec();
         der.push(0x01); // SIGHASH_ALL
         Ok(der)
@@ -646,7 +665,7 @@ impl SigningNode {
     pub(crate) fn dsha256(bytes: &[u8]) -> [u8; 32] {
         use sha2::Digest;
         let h1 = sha2::Sha256::digest(bytes);
-        let h2 = sha2::Sha256::digest(&h1);
+        let h2 = sha2::Sha256::digest(h1);
         let mut out = [0u8; 32];
         out.copy_from_slice(&h2);
         out
@@ -675,7 +694,7 @@ impl SigningNode {
             let mut txid = hex::decode(&inp.txid)?;
             txid.reverse(); // txid LE
             hpv.extend_from_slice(&txid);
-            hpv.extend_from_slice(&(inp.vout as u32).to_le_bytes());
+            hpv.extend_from_slice(&inp.vout.to_le_bytes());
         }
         let hash_prevouts = Self::dsha256(&hpv);
 
@@ -717,7 +736,7 @@ impl SigningNode {
         let mut txid_i = hex::decode(&tx.inputs[idx].txid)?;
         txid_i.reverse();
         pre.extend_from_slice(&txid_i);
-        pre.extend_from_slice(&(tx.inputs[idx].vout as u32).to_le_bytes());
+        pre.extend_from_slice(&tx.inputs[idx].vout.to_le_bytes());
 
         pre.extend_from_slice(&sc);
         pre.extend_from_slice(&prev_value.to_le_bytes());
@@ -746,7 +765,7 @@ impl SigningNode {
             let mut txid = hex::decode(&inp.txid)?;
             txid.reverse();
             pre.extend_from_slice(&txid);
-            pre.extend_from_slice(&(inp.vout as u32).to_le_bytes());
+            pre.extend_from_slice(&inp.vout.to_le_bytes());
 
             if j == idx {
                 // scriptSig = prevout scriptPubKey
@@ -790,7 +809,7 @@ impl SigningNode {
             if let Some(rmap) = map.get(&round) {
                 let mut all_sigs = Vec::new();
                 for (input_idx, imap) in rmap {
-                    for (_peer_id, ecsig) in imap {
+                    for ecsig in imap.values() {
                         all_sigs.push(BtcIndexedSignature {
                             input_index: *input_idx,
                             signature: ecsig.clone(),

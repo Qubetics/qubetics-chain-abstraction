@@ -4,7 +4,6 @@ use crate::signing::coordination::{self, Coordination};
 use crate::types::signing::ECDSASignature;
 use crate::types::TransactionType;
 use crate::types::{ChannelMessage, SpendKind};
-use libp2p::PeerId;
 use secp256k1::{ecdsa::RecoverableSignature, PublicKey};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -35,6 +34,12 @@ pub struct SignatureStore {
     pub signatures_by_round: Arc<RwLock<HashMap<u64, HashMap<String, ECDSASignature>>>>, // round -> node_id -> signature
     pub final_nodes_by_round: Arc<RwLock<HashMap<u64, String>>>, // round -> final_node_id
     pub aggregated_rounds: Arc<RwLock<HashSet<u64>>>, // Track rounds that have been aggregated
+}
+
+impl Default for SignatureStore {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl SignatureStore {
@@ -80,6 +85,27 @@ pub struct PendingStore {
     >,
     pub reward_pending_transactions_btc: Arc<RwLock<HashMap<u64, PendingValue>>>, // round -> (original_tx, tx_bytes, solver_address, None, extras) for BTC rewards
     pub reward_rounds: Arc<RwLock<HashSet<u64>>>, // Set of rounds that are reward transactions
+    pub withdraw_pending_transactions_tics: Arc<
+        RwLock<
+            HashMap<
+                u64,
+                (
+                    ChainTransaction,
+                    Vec<u8>,
+                    Option<String>,
+                    Option<TransactionType>,
+                ),
+            >,
+        >,
+    >,
+    pub withdraw_pending_transactions_btc: Arc<RwLock<HashMap<u64, PendingValue>>>,
+    pub withdraw_rounds: Arc<RwLock<HashSet<u64>>>,
+}
+
+impl Default for PendingStore {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl PendingStore {
@@ -90,6 +116,9 @@ impl PendingStore {
             reward_pending_transactions_tics: Arc::new(RwLock::new(HashMap::new())),
             reward_pending_transactions_btc: Arc::new(RwLock::new(HashMap::new())),
             reward_rounds: Arc::new(RwLock::new(HashSet::new())),
+            withdraw_pending_transactions_tics: Arc::new(RwLock::new(HashMap::new())),
+            withdraw_pending_transactions_btc: Arc::new(RwLock::new(HashMap::new())),
+            withdraw_rounds: Arc::new(RwLock::new(HashSet::new())),
         }
     }
 }
@@ -100,6 +129,12 @@ pub struct BtcAggregationState {
         Arc<RwLock<HashMap<u64, HashMap<usize, HashMap<String, ECDSASignature>>>>>,
     pub btc_agg_by_round: Arc<RwLock<HashMap<u64, HashMap<usize, RecoverableSignature>>>>,
     pub btc_done_inputs_by_round: Arc<RwLock<HashMap<u64, HashSet<usize>>>>,
+}
+
+impl Default for BtcAggregationState {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl BtcAggregationState {
@@ -170,7 +205,6 @@ impl SigningEnvironmentBuilder {
 
     pub fn build_with_coordination(
         self,
-        peer_id: PeerId,
         coordination: Coordination,
     ) -> SigningEnvironment {
         let chain_handler = ChainHandlerFactory::create_ethereum_handler(9029);

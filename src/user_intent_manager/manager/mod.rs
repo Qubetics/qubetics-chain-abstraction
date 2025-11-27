@@ -8,10 +8,10 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use super::checksum_from_any;
-use crate::database::RewardStorage;
 use crate::database::{
     Database, DatabaseModule, IntentStorage, TransactionStatusStorage, UserStorage,
 };
+use crate::database::{LiquidityStorage, RewardStorage};
 pub use crate::types::{
     DepositIntent, IntentStatus, IntentTransactionIds, SerializablePoint, SerializableScalar,
     TransactionStatus, UserRegistration,
@@ -33,6 +33,7 @@ pub struct UserIntentManager {
     intent_storage: IntentStorage,
     tx_status_storage: TransactionStatusStorage,
     reward_storage: RewardStorage,
+    liquidity_storage: LiquidityStorage,
     chain_code: [u8; 32],
     idempotency_index: Arc<Mutex<HashMap<String, String>>>,
 }
@@ -59,6 +60,7 @@ impl UserIntentManager {
             intent_storage: database_module.intent_storage(),
             tx_status_storage: database_module.transaction_status_storage(),
             reward_storage: database_module.reward_storage(),
+            liquidity_storage: database_module.liquidity_storage(),
             chain_code,
             idempotency_index: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -76,8 +78,7 @@ impl UserIntentManager {
             }
 
             return Err(format!(
-                "Idempotency key {} already mapped to intent {}",
-                idempotency_key, existing_intent
+                "Idempotency key {idempotency_key} already mapped to intent {existing_intent}"
             ));
         }
 

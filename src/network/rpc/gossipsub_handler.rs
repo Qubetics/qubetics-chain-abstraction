@@ -373,17 +373,40 @@ impl MpcNetworkLayer {
                         }
                     }
                     (None, Some(solver_addr)) => {
-                        if let Err(e) = self
-                            .handle_reward_transaction_id_storage(
-                                solver_addr,
-                                &transaction_id,
-                                &transaction_type,
-                            )
-                            .await
+                        if transaction_type == "reward_txn" {
+                            if let Err(e) = self
+                                .handle_reward_transaction_id_storage(
+                                    solver_addr,
+                                    &transaction_id,
+                                    &transaction_type,
+                                )
+                                .await
+                            {
+                                error!(
+                                    "❌ [NETWORK] Failed to handle reward transaction ID storage: {}",
+                                    e
+                                );
+                            }
+                        } else if transaction_type == "withdraw_liquidity"
+                            || transaction_type == "withdrawLiquidity"
                         {
-                            error!(
-                                "❌ [NETWORK] Failed to handle reward transaction ID storage: {}",
-                                e
+                            if let Err(e) = self
+                                .handle_withdraw_liquidity_transaction_id_storage(
+                                    solver_addr,
+                                    &transaction_id,
+                                    &transaction_type,
+                                )
+                                .await
+                            {
+                                error!(
+                                    "❌ [NETWORK] Failed to handle withdraw liquidity transaction ID storage: {}",
+                                    e
+                                );
+                            }
+                        } else {
+                            warn!(
+                                "⚠️ [NETWORK] Unknown solver-based transaction type '{}' in gossipsub handler",
+                                transaction_type
                             );
                         }
                     }
@@ -516,6 +539,21 @@ impl MpcNetworkLayer {
                     crate::types::TransactionType::VaultToNetwork => {
                         &intent.source_chain.to_lowercase()
                     }
+                    crate::types::TransactionType::RewardTxn => {
+                        // RewardTxn is not valid for intent flow
+                        warn!("❌ [GOSSIPSUB] RewardTxn is not valid for deposit intent flow");
+                        return Ok(());
+                    }
+                    crate::types::TransactionType::WithdrawLiquidity => {
+                        warn!(
+                            "❌ [GOSSIPSUB] WithdrawLiquidity is not valid for deposit intent flow"
+                        );
+                        return Ok(());
+                    }
+                    crate::types::TransactionType::AddLiquidity => {
+                        warn!("❌ [GOSSIPSUB] AddLiquidity is not valid for deposit intent flow");
+                        return Ok(());
+                    }
                 };
                 info!("🔗 [GOSSIPSUB] Processing deposit intent for chain: {} (transaction_type: {:?})",
                       chain_to_use, transaction_type);
@@ -542,6 +580,22 @@ impl MpcNetworkLayer {
                         } else {
                             None
                         }
+                    }
+                    crate::types::TransactionType::RewardTxn => {
+                        // RewardTxn is not valid for intent flow
+                        None
+                    }
+                    crate::types::TransactionType::WithdrawLiquidity => {
+                        warn!(
+                            "❌ [GOSSIPSUB] WithdrawLiquidity is not supported for deposit intent signing"
+                        );
+                        None
+                    }
+                    crate::types::TransactionType::AddLiquidity => {
+                        warn!(
+                            "❌ [GOSSIPSUB] AddLiquidity is not supported for deposit intent signing"
+                        );
+                        None
                     }
                 };
 
@@ -640,6 +694,19 @@ impl MpcNetworkLayer {
                                     }
                                 }
                             }
+                            crate::types::TransactionType::RewardTxn => {
+                                // RewardTxn is not valid for intent flow
+                            }
+                            crate::types::TransactionType::WithdrawLiquidity => {
+                                warn!(
+                                    "❌ [GOSSIPSUB] WithdrawLiquidity is not supported for Bitcoin deposit handling"
+                                );
+                            }
+                            crate::types::TransactionType::AddLiquidity => {
+                                warn!(
+                                    "❌ [GOSSIPSUB] AddLiquidity is not supported for Bitcoin deposit handling"
+                                );
+                            }
                         }
 
                         signing_node.set_chain_handler(chain_handler.into());
@@ -685,6 +752,22 @@ impl MpcNetworkLayer {
                             // For network withdrawals and vault-to-network, no derived addresses needed
                             (None, None)
                         }
+                        crate::types::TransactionType::RewardTxn => {
+                            // RewardTxn is not valid for intent flow
+                            (None, None)
+                        }
+                        crate::types::TransactionType::WithdrawLiquidity => {
+                            warn!(
+                                "❌ [GOSSIPSUB] WithdrawLiquidity transaction type not supported for derived addresses"
+                            );
+                            (None, None)
+                        }
+                        crate::types::TransactionType::AddLiquidity => {
+                            warn!(
+                                "❌ [GOSSIPSUB] AddLiquidity transaction type not supported for derived addresses"
+                            );
+                            (None, None)
+                        }
                     };
 
                     let group_public_key = if let Some(dkg_node) = &self.dkg_node {
@@ -698,11 +781,11 @@ impl MpcNetworkLayer {
                         if let Some(registry) = &self.user_intent_manager {
                             let database = registry.get_database();
                             let vault_eth = database
-                                .get_string(&crate::database::keys::DKG_VAULT_ETH_ADDRESS)
+                                .get_string(crate::database::keys::DKG_VAULT_ETH_ADDRESS)
                                 .ok()
                                 .flatten();
                             let vault_btc = database
-                                .get_string(&crate::database::keys::DKG_VAULT_BTC_ADDRESS)
+                                .get_string(crate::database::keys::DKG_VAULT_BTC_ADDRESS)
                                 .ok()
                                 .flatten();
                             (vault_eth, vault_btc)
@@ -789,6 +872,19 @@ impl MpcNetworkLayer {
                                             }
                                         }
                                     }
+                                    crate::types::TransactionType::RewardTxn => {
+                                        // RewardTxn is not valid for intent flow
+                                    }
+                                    crate::types::TransactionType::WithdrawLiquidity => {
+                                        warn!(
+                                            "❌ [GOSSIPSUB] WithdrawLiquidity transaction type not supported for group public key assignment"
+                                        );
+                                    }
+                                    crate::types::TransactionType::AddLiquidity => {
+                                        warn!(
+                                            "❌ [GOSSIPSUB] AddLiquidity transaction type not supported for group public key assignment"
+                                        );
+                                    }
                                 }
                             } else {
                                 info!(
@@ -832,7 +928,7 @@ impl MpcNetworkLayer {
                                 ) => {
                                     let tx_bytes =
                                         crate::utils::transaction::create_transaction_for_signing(
-                                            &eth_tx,
+                                            eth_tx,
                                         );
                                     debug!("→ RLP payload: 0x{}", hex::encode(&tx_bytes));
 
@@ -874,13 +970,29 @@ impl MpcNetworkLayer {
                                                 None
                                             }
                                         }
+                                        crate::types::TransactionType::RewardTxn => {
+                                            // RewardTxn is not valid for intent flow
+                                            None
+                                        }
+                                        crate::types::TransactionType::WithdrawLiquidity => {
+                                            warn!(
+                                                "❌ [GOSSIPSUB] WithdrawLiquidity transaction type not supported for deposit signing"
+                                            );
+                                            None
+                                        }
+                                        crate::types::TransactionType::AddLiquidity => {
+                                            warn!(
+                                                "❌ [GOSSIPSUB] AddLiquidity transaction type not supported for deposit signing"
+                                            );
+                                            None
+                                        }
                                     };
                                     {
                                         let mut eth_signer = EthereumSigner::new(signing_node);
                                         eth_signer
                                             .sign_transaction(
                                                 tx_bytes.clone(),
-                                                &eth_tx,
+                                                eth_tx,
                                                 user_tweaked_share,
                                                 user_eth_address.clone(),
                                                 Some(intent_hash.clone()),
@@ -888,106 +1000,7 @@ impl MpcNetworkLayer {
                                                 None,
                                             )
                                             .await?;
-                                    } // // Only execute contract transaction for UserToVault transaction type
-                                      // if matches!(transaction_type, crate::types::TransactionType::UserToVault) {
-                                      //     info!("📝 [GOSSIPSUB] UserToVault transaction detected - executing contract call");
-
-                                    //     let mut hasher: sha2::digest::core_api::CoreWrapper<sha3::Keccak256Core> = sha3::Keccak256::new();
-                                    //     hasher.update(&tx_bytes);
-                                    //     let tx_hash = hasher.finalize();
-                                    //     info!("Tx hash contract call: 0x{}", hex::encode(&tx_hash));
-
-                                    //     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-
-                                    //     let contract_call_result = crate::utils::transaction::create_chain_transaction_from_contract_call(vault_group_key, amount, &intent, &intent_hash, tx_hash.to_vec(), transaction_type.clone()).await;
-
-                                    //     match contract_call_result {
-                                    //         Ok(contract_transaction) => {
-
-                                    //             info!("📝 [GOSSIPSUB] Created contract call transaction");
-                                    //             let available_nodes: Vec<PeerId> = self.node_manager.get_active_nodes().into_iter().collect();
-                                    //             signing_node.set_available_nodes(available_nodes);
-
-                                    //             match contract_transaction {
-                                    //                 crate::chain_abstraction::ChainTransaction::Ethereum(ref eth_tx) => {
-                                    //                     let contract_tx = crate::types::ContractTransaction {
-                                    //                         to: eth_tx.to.clone(),
-                                    //                         value: eth_tx.value.clone(),
-                                    //                         nonce: eth_tx.nonce,
-                                    //                         gas_limit: eth_tx.gas_limit,
-                                    //                         gas_price: eth_tx.gas_price.clone(),
-                                    //                         chain_id: eth_tx.chain_id,
-                                    //                         data: eth_tx.data.as_ref().map(|d| format!("0x{}", hex::encode(d))).unwrap_or_else(|| "0x".to_string()),
-                                    //                     };
-                                    //                     let contract_tx_bytes = crate::utils::transaction::create_transaction_for_signing_contract(&contract_tx);
-                                    //                     debug!("→ RLP payload contract call: 0x{}", hex::encode(&contract_tx_bytes));
-
-                                    //                     let vault_tweaked_share = if let Some(dkg_node) = &self.dkg_node {
-                                    //                         dkg_node.get_vault_tweaked_secret_share().await
-                                    //                     } else {
-                                    //                         None
-                                    //                     };
-                                    //                     signing_node.sign_contract_message(contract_tx_bytes, &contract_tx, vault_tweaked_share, None).await?;
-                                    //                 }
-                                    //                 _ => {
-                                    //                     info!("📝 [GOSSIPSUB] Contract call transaction is not Ethereum type, skipping");
-                                    //                 }
-                                    //             }
-                                    //         }
-                                    //         Err(e) => {
-                                    //             warn!("❌ [GOSSIPSUB] Failed to create contract call transaction: {}", e);
-                                    //         }
-                                    //     }
-                                    // } else if matches!(transaction_type, crate::types::TransactionType::NetworkToTarget){
-                                    //     info!("📝 [GOSSIPSUB] networkToTarget transaction detected - executing contract call");
-
-                                    //     let mut hasher: sha2::digest::core_api::CoreWrapper<sha3::Keccak256Core> = sha3::Keccak256::new();
-                                    //     hasher.update(&tx_bytes);
-                                    //     let tx_hash = hasher.finalize();
-                                    //     info!("Tx hash contract call: 0x{}", hex::encode(&tx_hash));
-
-                                    //     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-
-                                    //     let contract_call_result = crate::utils::transaction::create_chain_transaction_from_contract_call(vault_group_key, amount, &intent, &intent_hash, tx_hash.to_vec(), transaction_type.clone()).await;
-
-                                    //     match contract_call_result {
-                                    //         Ok(contract_transaction) => {
-
-                                    //             info!("📝 [GOSSIPSUB] Created contract call transaction");
-                                    //             let available_nodes: Vec<PeerId> = self.node_manager.get_active_nodes().into_iter().collect();
-                                    //             signing_node.set_available_nodes(available_nodes);
-
-                                    //             match contract_transaction {
-                                    //                 crate::chain_abstraction::ChainTransaction::Ethereum(ref eth_tx) => {
-                                    //                     let contract_tx = crate::types::ContractTransaction {
-                                    //                         to: eth_tx.to.clone(),
-                                    //                         value: eth_tx.value.clone(),
-                                    //                         nonce: eth_tx.nonce,
-                                    //                         gas_limit: eth_tx.gas_limit,
-                                    //                         gas_price: eth_tx.gas_price.clone(),
-                                    //                         chain_id: eth_tx.chain_id,
-                                    //                         data: eth_tx.data.as_ref().map(|d| format!("0x{}", hex::encode(d))).unwrap_or_else(|| "0x".to_string()),
-                                    //                     };
-                                    //                     let contract_tx_bytes = crate::utils::transaction::create_transaction_for_signing_contract(&contract_tx);
-                                    //                     debug!("→ RLP payload contract call: 0x{}", hex::encode(&contract_tx_bytes));
-
-                                    //                     let vault_tweaked_share = if let Some(dkg_node) = &self.dkg_node {
-                                    //                         dkg_node.get_vault_tweaked_secret_share().await
-                                    //                     } else {
-                                    //                         None
-                                    //                     };
-                                    //                     signing_node.sign_contract_message(contract_tx_bytes, &contract_tx, vault_tweaked_share, None).await?;
-                                    //                 }
-                                    //                 _ => {
-                                    //                     info!("📝 [GOSSIPSUB] Contract call transaction is not Ethereum type, skipping");
-                                    //                 }
-                                    //             }
-                                    //         }
-                                    //         Err(e) => {
-                                    //             warn!("❌ [GOSSIPSUB] Failed to create contract call transaction: {}", e);
-                                    //         }
-                                    //     }
-                                    // }
+                                    }
                                 }
                             }
                             info!(
@@ -1012,6 +1025,7 @@ impl MpcNetworkLayer {
                 eth_address,
                 reward_btc,
                 reward_tics,
+                transaction_type,
             } => {
                 info!(
                     "🎁 [GOSSIPSUB] Processing claim reward received via gossipsub for solver: {}",
@@ -1025,239 +1039,71 @@ impl MpcNetworkLayer {
                     "📍 [GOSSIPSUB] Addresses - ETH: {:?}, BTC: {:?}",
                     eth_address, btc_address
                 );
+                info!("🏷️ [GOSSIPSUB] Transaction type: {}", transaction_type);
 
-                // Validate that at least one reward type is present
-                if reward_btc.is_none() && reward_tics.is_none() {
-                    warn!("❌ [GOSSIPSUB] Invalid reward claim - both BTC and TICS rewards are None for solver: {}", solver_address);
-                    return Ok(());
-                }
-
-                // Process TICS rewards (Ethereum) if available
-                if let Some(tics_reward_str) = reward_tics {
-                    if let Some(eth_addr) = eth_address {
-                        if let Ok(tics_amount) = tics_reward_str.parse::<u128>() {
-                            info!(
-                                "🎁 [GOSSIPSUB] Processing TICS reward: {} -> {} (amount: {})",
-                                solver_address, eth_addr, tics_amount
-                            );
-
-                            // Get network address for sending rewards
-                            if let Some(dkg_node) = &self.dkg_node {
-                                if let Some(group_key) = dkg_node.get_final_public_key().await {
-                                    let network_address =
-                                        crate::utils::get_eth_address_from_group_key(group_key);
-
-                                    // Create Ethereum transaction for TICS reward
-                                    match crate::utils::transaction::create_ethereum_transaction(
-                                        &network_address,
-                                        &eth_addr,
-                                        tics_amount,
-                                        "qubetics", // Use Qubetics chain for TICS
-                                    )
-                                    .await
-                                    {
-                                        Ok(eth_tx) => {
-                                            info!("✅ [GOSSIPSUB] Created TICS reward transaction: {:?}", eth_tx);
-
-                                            // Sign the transaction using MPC
-                                            if let Some(signing_node) = &mut self.signing_node {
-                                                // Set available nodes from node manager before signing
-                                                let available_nodes: Vec<PeerId> = self
-                                                    .node_manager
-                                                    .get_active_nodes()
-                                                    .into_iter()
-                                                    .collect();
-                                                signing_node.set_available_nodes(available_nodes);
-                                                signing_node.set_chain_handler(crate::chain_abstraction::ChainHandlerFactory::create_ethereum_handler(eth_tx.chain_id).into());
-
-                                                if let Some(dkg_node) = &self.dkg_node {
-                                                    if let Some(secret_share) =
-                                                        dkg_node.get_final_secret_share().await
-                                                    {
-                                                        info!("🔐 [GOSSIPSUB] Got secret share from DKG for TICS reward");
-                                                        signing_node.set_private_key_from_scalar(
-                                                            secret_share,
-                                                        );
-
-                                                        // Set the DKG group public key
-                                                        if let Some(group_key) =
-                                                            dkg_node.get_final_public_key().await
-                                                        {
-                                                            signing_node
-                                                                .set_group_public_key(group_key);
-                                                            info!("🔑 [GOSSIPSUB] Set DKG group public key for TICS reward signing");
-                                                        }
-
-                                                        // Convert transaction to bytes for signing
-                                                        let tx_bytes = crate::utils::transaction::create_transaction_for_signing(&eth_tx);
-                                                        info!("🔐 [GOSSIPSUB] Starting TICS reward signing process: 0x{}", hex::encode(tx_bytes.clone()));
-
-                                                        // Sign with only necessary parameters for transaction
-                                                        {
-                                                            let mut eth_signer =
-                                                                EthereumSigner::new(signing_node);
-                                                            eth_signer
-                                                                .sign_transaction(
-                                                                    tx_bytes,
-                                                                    &eth_tx,
-                                                                    None,
-                                                                    None,
-                                                                    None,
-                                                                    None,
-                                                                    Some(solver_address.clone()),
-                                                                )
-                                                                .await?;
-                                                        }
-                                                        info!("✅ [GOSSIPSUB] TICS reward signing completed");
-                                                    } else {
-                                                        info!("⏳ [GOSSIPSUB] DKG not completed yet, no secret share available for TICS reward");
-                                                    }
-                                                } else {
-                                                    info!("❌ [GOSSIPSUB] DKG node not available for TICS reward");
-                                                }
-                                            } else {
-                                                warn!("❌ [GOSSIPSUB] Signing node not available for TICS reward");
-                                            }
-                                        }
-                                        Err(e) => {
-                                            error!("❌ [GOSSIPSUB] Failed to create TICS reward transaction: {}", e);
-                                        }
-                                    }
-                                } else {
-                                    warn!("❌ [GOSSIPSUB] No group key available for TICS reward transaction");
-                                }
-                            } else {
-                                warn!("❌ [GOSSIPSUB] DKG node not available for TICS reward transaction");
-                            }
-                        } else {
-                            warn!(
-                                "❌ [GOSSIPSUB] Invalid TICS reward amount: {}",
-                                tics_reward_str
-                            );
-                        }
-                    } else {
-                        warn!("❌ [GOSSIPSUB] TICS reward available but no ETH address provided");
-                    }
-                }
-
-                // Process BTC rewards if available
-                if let Some(btc_reward_str) = reward_btc {
-                    if let Some(btc_addr) = btc_address {
-                        if let Ok(btc_amount) = btc_reward_str.parse::<u128>() {
-                            info!(
-                                "🎁 [GOSSIPSUB] Processing BTC reward: {} -> {} (amount: {})",
-                                solver_address, btc_addr, btc_amount
-                            );
-
-                            // Get network BTC address for sending rewards
-                            if let Some(dkg_node) = &self.dkg_node {
-                                if let Some(group_key) = dkg_node.get_final_public_key().await {
-                                    let network_btc_address =
-                                        crate::utils::get_btc_address_from_group_key(group_key);
-
-                                    // Create Bitcoin transaction for BTC reward
-                                    match crate::utils::transaction::create_bitcoin_transaction(
-                                        &network_btc_address,
-                                        &btc_addr,
-                                        btc_amount,
-                                    )
-                                    .await
-                                    {
-                                        Ok(btc_tx) => {
-                                            info!("✅ [GOSSIPSUB] Created BTC reward transaction: {:?}", btc_tx);
-
-                                            // Sign the transaction using MPC
-                                            if let Some(signing_node) = &mut self.signing_node {
-                                                // Set available nodes from node manager before signing
-                                                let available_nodes: Vec<PeerId> = self
-                                                    .node_manager
-                                                    .get_active_nodes()
-                                                    .into_iter()
-                                                    .collect();
-                                                signing_node.set_available_nodes(available_nodes);
-                                                signing_node.set_chain_handler(crate::chain_abstraction::ChainHandlerFactory::create_bitcoin_handler("testnet".to_string()).into());
-
-                                                if let Some(dkg_node) = &self.dkg_node {
-                                                    if let Some(secret_share) =
-                                                        dkg_node.get_final_secret_share().await
-                                                    {
-                                                        info!("🔐 [GOSSIPSUB] Got secret share from DKG for BTC reward");
-                                                        signing_node.set_private_key_from_scalar(
-                                                            secret_share,
-                                                        );
-
-                                                        // Set the DKG group public key
-                                                        if let Some(group_key) =
-                                                            dkg_node.get_final_public_key().await
-                                                        {
-                                                            signing_node
-                                                                .set_group_public_key(group_key);
-                                                            info!("🔑 [GOSSIPSUB] Set DKG group public key for BTC reward signing");
-                                                        }
-                                                        let chain_tx =
-                                                            crate::chain_abstraction::ChainTransaction::Bitcoin(
-                                                                btc_tx.clone(),
-                                                            );
-                                                        // set chain handler as btc
-                                                        signing_node.set_chain_handler(crate::chain_abstraction::ChainHandlerFactory::create_bitcoin_handler("testnet".to_string()).into());
-                                                        let tx_bytes = signing_node
-                                                            .get_chain_handler()
-                                                            .create_transaction_bytes(&chain_tx)
-                                                            .unwrap();
-                                                        // Convert transaction to bytes for signing
-
-                                                        // Sign with Bitcoin-specific parameters
-                                                        {
-                                                            let mut btc_signer =
-                                                                BitcoinSigner::new(signing_node);
-                                                            btc_signer
-                                                                .sign_transaction(
-                                                                    tx_bytes.clone(),
-                                                                    Some(btc_tx),
-                                                                    None,
-                                                                    None,
-                                                                    None,
-                                                                    None,
-                                                                    Some(solver_address.clone()),
-                                                                )
-                                                                .await?;
-                                                        }
-                                                        info!("✅ [GOSSIPSUB] BTC reward signing completed");
-                                                    } else {
-                                                        info!("⏳ [GOSSIPSUB] DKG not completed yet, no secret share available for BTC reward");
-                                                    }
-                                                } else {
-                                                    info!("❌ [GOSSIPSUB] DKG node not available for BTC reward");
-                                                }
-                                            } else {
-                                                warn!("❌ [GOSSIPSUB] Signing node not available for BTC reward");
-                                            }
-                                        }
-                                        Err(e) => {
-                                            error!("❌ [GOSSIPSUB] Failed to create BTC reward transaction: {}", e);
-                                        }
-                                    }
-                                } else {
-                                    warn!("❌ [GOSSIPSUB] No group key available for BTC reward transaction");
-                                }
-                            } else {
-                                warn!("❌ [GOSSIPSUB] DKG node not available for BTC reward transaction");
-                            }
-                        } else {
-                            warn!(
-                                "❌ [GOSSIPSUB] Invalid BTC reward amount: {}",
-                                btc_reward_str
-                            );
-                        }
-                    } else {
-                        warn!("❌ [GOSSIPSUB] BTC reward available but no BTC address provided");
-                    }
-                }
-
+                self.process_payout(
+                    "claim_reward",
+                    &solver_address,
+                    &btc_address,
+                    &eth_address,
+                    &reward_btc,
+                    &reward_tics,
+                )
+                .await?;
+            }
+            GossipsubMessage::WithdrawLiquidity {
+                solver_address,
+                btc_address,
+                eth_address,
+                amount_btc,
+                amount_tics,
+                transaction_type,
+            } => {
                 info!(
-                    "✅ [GOSSIPSUB] Reward claim processed successfully for solver: {}",
+                    "💧 [GOSSIPSUB] Received withdraw-liquidity request for solver {}",
                     solver_address
                 );
+                info!(
+                    "💧 [GOSSIPSUB] Target addresses - ETH: {:?}, BTC: {:?}",
+                    eth_address, btc_address
+                );
+                info!(
+                    "💧 [GOSSIPSUB] Amounts - BTC: {:?}, TICS: {:?}",
+                    amount_btc, amount_tics
+                );
+                info!("💧 [GOSSIPSUB] Transaction type: {}", transaction_type);
+
+                self.process_payout(
+                    "withdraw_liquidity",
+                    &solver_address,
+                    &btc_address,
+                    &eth_address,
+                    &amount_btc,
+                    &amount_tics,
+                )
+                .await?;
+            }
+            GossipsubMessage::AddLiquidity {
+                solver_address,
+                solver_id,
+                amount_btc,
+                amount_tics,
+            } => {
+                info!(
+                    "💧 [GOSSIPSUB] Received add-liquidity broadcast for solver {} (solver_id: {})",
+                    solver_address, solver_id
+                );
+                info!(
+                    "💧 [GOSSIPSUB] Amounts - BTC: {:?}, TICS: {:?}",
+                    amount_btc, amount_tics
+                );
+                self.handle_add_liquidity_contract_calls(
+                    &solver_address,
+                    &solver_id,
+                    &amount_btc,
+                    &amount_tics,
+                )
+                .await?;
             }
             GossipsubMessage::PeerDiscovered {
                 peer,
@@ -1278,7 +1124,7 @@ impl MpcNetworkLayer {
 
                 // If index provided, store and persist it
                 if let Some(idx) = index {
-                    self.peer_discovery.peer_indices.insert(peer.clone(), idx);
+                    self.peer_discovery.peer_indices.insert(peer, idx);
                     let key = key_utils::peer_index_key(&peer.to_string());
                     if let Err(e) = self.db.put_string_async(&key, &idx).await {
                         warn!("Failed to persist peer index: {:?}", e);
