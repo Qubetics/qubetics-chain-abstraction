@@ -292,7 +292,7 @@ impl DKGNode {
         is_valid: bool,
         node_manager: Box<dyn NodeMembership>,
     ) -> Result<()> {
-        self.storage.add_validation(&to, is_valid).await?;
+        self.storage.add_validation(&to, &from, is_valid).await?;
         info!("📊 Validation from {} to {}: {}", from, to, is_valid);
         self.check_completion(node_manager).await?;
         Ok(())
@@ -314,7 +314,7 @@ impl DKGNode {
             info!("🎉 [DKG] Validations: {:?}", validations);
             let valid_validations: usize = validations
                 .values()
-                .map(|v| v.iter().filter(|&&valid| valid).count())
+                .map(|v| v.values().filter(|&&valid| valid).count())
                 .sum();
             (shares.len(), validations.len(), valid_validations)
         };
