@@ -471,7 +471,7 @@ impl SigningNode {
                     "✅ Transaction broadcasted successfully, but no txid found in response: {}",
                     body_trimmed
                 );
-                Ok(Some("broadcast_success".to_string()))
+                Ok(None)
             }
         } else {
             let error_text = response.text().await?;
