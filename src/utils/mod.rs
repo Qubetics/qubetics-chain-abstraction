@@ -118,7 +118,7 @@ fn derive_child_key(parent_key: Scalar, child_number: u32) -> Result<Scalar> {
 }
 
 fn parse_nonzero_scalar(bytes: [u8; 32], label: &str) -> Result<Scalar> {
-    let scalar = Scalar::from_repr(bytes.into())
+    let scalar = Option::<Scalar>::from(Scalar::from_repr(bytes.into()))
         .ok_or_else(|| anyhow::anyhow!("Invalid {} scalar: bytes not within curve order", label))?;
 
     if bool::from(scalar.is_zero()) {
