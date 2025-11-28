@@ -442,9 +442,7 @@ impl MpcNetworkLayer {
     /// Handle new listen address
     fn handle_new_listen_addr(&self, address: libp2p::Multiaddr) {
         info!("Listening on {}", address);
-        let full = address
-            .clone()
-            .with(Protocol::P2p(self.local_peer_id));
+        let full = address.clone().with(Protocol::P2p(self.local_peer_id));
         info!("📡 multiaddress   : {}", full);
         info!(
             "Listening for RPC connections on {}{}",

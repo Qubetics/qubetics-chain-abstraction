@@ -160,11 +160,7 @@ impl VrfNodeSelector {
         );
 
         let allowed: HashSet<PeerId> = available_nodes.iter().cloned().collect();
-        let submissions_for_round = self
-            .submissions
-            .entry(round)
-            .or_default()
-            .clone();
+        let submissions_for_round = self.submissions.entry(round).or_default().clone();
 
         let mut working_set = submissions_for_round;
 

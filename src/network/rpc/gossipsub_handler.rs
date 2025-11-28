@@ -11,7 +11,7 @@ use tracing::{debug, error, info, warn};
 use crate::{
     database::key_utils,
     signing::{BitcoinSigner, EthereumSigner},
-    types::{rpc::RPCRequest, signing::SigningMessage, GossipsubMessage},
+    types::{network as network_cfg, rpc::RPCRequest, signing::SigningMessage, GossipsubMessage},
 };
 
 use crate::network::transport::types::MpcNetworkLayer;
@@ -618,7 +618,9 @@ impl MpcNetworkLayer {
                     } else if chain_to_use == "bitcoin" || chain_to_use == "btc" {
                         let mut chain_handler =
                             crate::chain_abstraction::ChainHandlerFactory::create_bitcoin_handler(
-                                "testnet".to_string(),
+                                network_cfg::network_type()
+                                    .bitcoin_network_label()
+                                    .to_string(),
                             );
 
                         // Set appropriate group public key in Bitcoin chain handler based on transaction type

@@ -250,9 +250,7 @@ impl DKGNode {
             info!("🏦 [NEW_NODE] Vault HMAC derived (value redacted)");
 
             let tweak_scalar = Scalar::from_repr(vault_hmac.into()).unwrap();
-            info!(
-                "🏦 [NEW_NODE] Vault tweak scalar derived from HMAC (value redacted)"
-            );
+            info!("🏦 [NEW_NODE] Vault tweak scalar derived from HMAC (value redacted)");
 
             // Calculate and store the vault tweaked secret share
             match self
@@ -260,9 +258,7 @@ impl DKGNode {
                 .await
             {
                 Ok(vault_tweaked_secret) => {
-                    info!(
-                        "🔐 [NEW_NODE] Successfully calculated vault tweaked secret share"
-                    );
+                    info!("🔐 [NEW_NODE] Successfully calculated vault tweaked secret share");
                     if let Err(e) = self
                         .storage
                         .set_vault_tweaked_secret(vault_tweaked_secret)

@@ -122,8 +122,7 @@ pub(crate) async fn handle_deposit_intent(
 }
 
 fn parse_withdraw_amount(value: &str, asset_label: &str) -> Result<U256, String> {
-    U256::from_dec_str(value)
-        .map_err(|_| format!("Invalid {asset_label} withdraw amount: {value}"))
+    U256::from_dec_str(value).map_err(|_| format!("Invalid {asset_label} withdraw amount: {value}"))
 }
 
 fn ensure_withdraw_amount_bounds(value: &U256, asset_label: &str) -> Result<(), String> {
@@ -1384,25 +1383,26 @@ pub(crate) async fn handle_withdraw_liquidity(
     // Check if address is a valid solver by checking liquidity in database
     let database = user_intent_manager.get_database();
     let solver_liquidity_key = format!("solver_liquidity:{}", normalized_address.to_lowercase());
-    
-    let liquidity_amounts: Option<Vec<String>> = match database.get_string::<Vec<String>>(&solver_liquidity_key) {
-        Ok(amounts) => amounts,
-        Err(e) => {
-            warn!("❌ Failed to get solver liquidity from database: {}", e);
-            return Ok(warp::reply::json(&WithdrawLiquidityResponse {
-                status: "error".to_string(),
-                solver_address: normalized_address,
-                liquidity_btc: None,
-                liquidity_tics: None,
-                ethereum_address: req.ethereum_address.clone(),
-                btc_address: req.btc_address.clone(),
-                tics_withdraw_tx_id: None,
-                btc_withdraw_tx_id: None,
-                message: "Failed to check solver liquidity".to_string(),
-                error_message: Some(format!("Database error: {e}")),
-            }));
-        }
-    };
+
+    let liquidity_amounts: Option<Vec<String>> =
+        match database.get_string::<Vec<String>>(&solver_liquidity_key) {
+            Ok(amounts) => amounts,
+            Err(e) => {
+                warn!("❌ Failed to get solver liquidity from database: {}", e);
+                return Ok(warp::reply::json(&WithdrawLiquidityResponse {
+                    status: "error".to_string(),
+                    solver_address: normalized_address,
+                    liquidity_btc: None,
+                    liquidity_tics: None,
+                    ethereum_address: req.ethereum_address.clone(),
+                    btc_address: req.btc_address.clone(),
+                    tics_withdraw_tx_id: None,
+                    btc_withdraw_tx_id: None,
+                    message: "Failed to check solver liquidity".to_string(),
+                    error_message: Some(format!("Database error: {e}")),
+                }));
+            }
+        };
 
     // Check if solver exists (has liquidity entry)
     if liquidity_amounts.is_none() {
@@ -1520,11 +1520,7 @@ pub(crate) async fn handle_withdraw_liquidity(
     };
 
     let withdraw_btc_amount: Option<String> = if req.amount_btc.is_some() {
-        match select_withdraw_amount(
-            req.amount_btc.as_ref(),
-            liquidity_btc_str.as_ref(),
-            "BTC",
-        ) {
+        match select_withdraw_amount(req.amount_btc.as_ref(), liquidity_btc_str.as_ref(), "BTC") {
             Ok(value) => value,
             Err(msg) => {
                 return Ok(warp::reply::json(&WithdrawLiquidityResponse {
@@ -1563,7 +1559,6 @@ pub(crate) async fn handle_withdraw_liquidity(
             error_message: Some(msg),
         }));
     }
-
 
     if withdraw_tics_amount.is_some() && req.ethereum_address.is_none() {
         let msg = "Ethereum address is required to withdraw TICS liquidity".to_string();
@@ -1915,9 +1910,7 @@ pub(crate) async fn handle_add_liquidity(
         Err(e1) => match recover_eth_address_secp(msg_bytes, &compact, v, false) {
             Ok(addr) => addr,
             Err(e2) => {
-                let err_msg = format!(
-                    "Failed to recover signature: personal_sign={e1}, raw={e2}"
-                );
+                let err_msg = format!("Failed to recover signature: personal_sign={e1}, raw={e2}");
                 return Ok(warp::reply::json(&AddLiquidityResponse {
                     status: "error".to_string(),
                     solver_address: "".to_string(),
@@ -2028,9 +2021,7 @@ pub(crate) async fn handle_add_liquidity(
     {
         Ok(addr) => addr,
         Err(e) => {
-            let msg = format!(
-                "Solver not found for solver_id {normalized_solver_id}: {e}"
-            );
+            let msg = format!("Solver not found for solver_id {normalized_solver_id}: {e}");
             return Ok(warp::reply::json(&AddLiquidityResponse {
                 status: "error".to_string(),
                 solver_address: normalized_address.clone(),
@@ -2044,9 +2035,7 @@ pub(crate) async fn handle_add_liquidity(
     };
 
     if solver_address_onchain == Address::zero() {
-        let msg = format!(
-            "Solver {normalized_solver_id} is not registered on contract"
-        );
+        let msg = format!("Solver {normalized_solver_id} is not registered on contract");
         return Ok(warp::reply::json(&AddLiquidityResponse {
             status: "error".to_string(),
             solver_address: normalized_address.clone(),

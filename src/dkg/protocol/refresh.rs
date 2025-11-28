@@ -135,7 +135,10 @@ impl DKGNode {
         // The constant term: Gi(0) = Si * λi(0) + 0 = Si * λi(0)
         refresh_poly[0] = constant_contribution;
 
-        info!("🔄 [REFRESH] Refresh polynomial G_{}(x) constructed", my_index);
+        info!(
+            "🔄 [REFRESH] Refresh polynomial G_{}(x) constructed",
+            my_index
+        );
         info!("🔄 [REFRESH] ═══════════════════════════════════════════════════");
 
         Ok(refresh_poly)
@@ -478,10 +481,7 @@ impl DKGNode {
         );
         for (from, share) in refresh_shares.iter() {
             let node_id = from.trim_start_matches("refresh_");
-            info!(
-                "🔍 [REFRESH]   From {}: index={}",
-                node_id, share.index
-            );
+            info!("🔍 [REFRESH]   From {}: index={}", node_id, share.index);
             if share.index != my_index {
                 warn!(
                     "⚠️ [REFRESH] ERROR: Share from {} has WRONG index {} (expected {})",

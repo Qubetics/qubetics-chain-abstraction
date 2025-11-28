@@ -928,5 +928,4 @@ impl SigningNode {
             }
         }
     }
-
 }

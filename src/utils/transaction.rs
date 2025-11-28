@@ -1,8 +1,8 @@
 use crate::chain_abstraction::{ChainTransaction, EthereumTransaction};
 use crate::types::{
-    BitcoinInput, BitcoinOutput, BitcoinTransaction, BitcoinUtxo, BitcoinWitness,
-    BitcoinWitnessUtxo, ContractTransaction, DepositIntent, DummyTransaction, RlpEncoder,
-    SpendKind, UtxoStatus,
+    network as network_cfg, BitcoinInput, BitcoinOutput, BitcoinTransaction, BitcoinUtxo,
+    BitcoinWitness, BitcoinWitnessUtxo, ContractTransaction, DepositIntent, DummyTransaction,
+    RlpEncoder, SpendKind, UtxoStatus,
 };
 use crate::utils::get_eth_address_from_group_key;
 use anyhow::{bail, Result};
@@ -422,8 +422,7 @@ pub fn extract_utxo_identifiers(utxos: &[BitcoinUtxo]) -> Vec<(String, u32)> {
 
 pub async fn fetch_ethereum_nonce(address: &str, chain_id: u64) -> Result<u64> {
     let rpc_url = match chain_id {
-        9029 => std::env::var("MPC_ETHEREUM_RPC_URL")
-            .unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string()),
+        9029 => network_cfg::qubetics_rpc_url_from_env()?,
         1 => "https://mainnet.infura.io/v3/YOUR_PROJECT_ID".to_string(), // Ethereum mainnet
         _ => {
             return Err(anyhow::anyhow!(
@@ -696,8 +695,7 @@ async fn estimate_gas_for_deposit_intent(
     chain_id: u64,
 ) -> Result<u64> {
     let rpc_url = match chain_id {
-        9029 => std::env::var("MPC_ETHEREUM_RPC_URL")
-            .unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string()),
+        9029 => network_cfg::qubetics_rpc_url_from_env()?,
         1 => "https://mainnet.infura.io/v3/YOUR_PROJECT_ID".to_string(),
         _ => {
             return Err(anyhow::anyhow!(
@@ -1209,8 +1207,7 @@ pub async fn create_solver_rewards_update_transaction(
     info!("🔧 [CONTRACT] Chain name: {}", chain_name);
     info!("🔧 [CONTRACT] From address: {}", from_address);
 
-    let calldata =
-        encode_update_solver_rewards_calldata(solver_address, rewards, transaction_hash);
+    let calldata = encode_update_solver_rewards_calldata(solver_address, rewards, transaction_hash);
     info!("🔧 [CONTRACT] Calldata: {:?}", calldata);
     let calldata_hex = calldata
         .as_ref()
@@ -1283,7 +1280,7 @@ pub async fn create_solver_remove_liquidity_transaction(
 
     let calldata =
         encode_remove_liquidity_calldata(solver_id, asset_chain_id, amount, transaction_hash)
-        .ok_or_else(|| anyhow::anyhow!("Failed to encode removeLiquidity calldata"))?;
+            .ok_or_else(|| anyhow::anyhow!("Failed to encode removeLiquidity calldata"))?;
     let calldata_hex = format!("0x{}", hex::encode(&calldata));
     info!(
         "🔧 [CONTRACT][LIQ] removeLiquidity calldata: {} ({} bytes)",
@@ -1710,8 +1707,7 @@ pub fn encode_add_liquidity_calldata(
 /// Fetch current gas price from RPC for Qubetics chain
 pub async fn fetch_qubetics_gas_price(chain_id: u64) -> Result<String> {
     let rpc_url = match chain_id {
-        9029 => std::env::var("MPC_ETHEREUM_RPC_URL")
-            .unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string()),
+        9029 => network_cfg::qubetics_rpc_url_from_env()?,
         _ => {
             return Err(anyhow::anyhow!(
                 "Unsupported chain ID for gas price fetching: {}",
@@ -1849,8 +1845,14 @@ pub enum DetectedAddressType {
 mod tests {
     use super::*;
 
+    fn ensure_testnet_network_type() {
+        std::env::set_var(crate::types::NETWORK_ENV_KEY, "testnet");
+        let _ = crate::types::init_network_type_from_env();
+    }
+
     #[test]
     fn test_qubetics_static_gas_price() {
+        ensure_testnet_network_type();
         // Test Qubetics static gas price (fallback value)
         let static_price = get_default_gas_price_for_chain("qubetics");
         println!("🔧 Qubetics static gas price: {}", static_price);
@@ -1867,6 +1869,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_qubetics_dynamic_gas_price_fallback() {
+        ensure_testnet_network_type();
         // Test that Qubetics falls back to static price when RPC fails
         // This test uses an invalid RPC URL to trigger the fallback
         let original_url = std::env::var("MPC_ETHEREUM_RPC_URL").unwrap_or_default();
@@ -1914,6 +1917,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_qubetics_unsupported_chain() {
+        ensure_testnet_network_type();
         // Test that unsupported chain IDs return an error
         let result = fetch_qubetics_gas_price(1).await; // Ethereum mainnet
         assert!(result.is_err());
@@ -1924,6 +1928,7 @@ mod tests {
 
     #[test]
     fn test_qubetics_gas_price_hex_conversion() {
+        ensure_testnet_network_type();
         // Test that Qubetics hex values are correct
         let qubetics_hex = "0x3B9ACA00";
         let price_decimal = u64::from_str_radix("3B9ACA00", 16).unwrap();
@@ -1940,6 +1945,7 @@ mod tests {
 
     #[test]
     fn test_qubetics_gas_price_consistency() {
+        ensure_testnet_network_type();
         // Test that Qubetics gas price function returns consistent results
         let price1 = get_default_gas_price_for_chain("qubetics");
         let price2 = get_default_gas_price_for_chain("qubetics");
@@ -1954,6 +1960,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_qubetics_gas_price_with_real_rpc() {
+        ensure_testnet_network_type();
         // Test with the actual Qubetics RPC URL (if available)
         // This test will show what happens with a real RPC call
         let original_url = std::env::var("MPC_ETHEREUM_RPC_URL").unwrap_or_default();
@@ -2007,9 +2014,12 @@ fn create_bitcoin_script_pubkey(address: &str) -> Result<Vec<u8>> {
     let parsed_address = Address::from_str(address)
         .map_err(|e| anyhow::anyhow!("Invalid Bitcoin address '{}': {}", address, e))?;
 
-    // Require the network to get a checked address. This preserves the network encoded
-    // in the string (mainnet vs testnet/regtest) and prevents silent mismatches.
-    let network = bitcoin::Network::Testnet;
+    // Require the network to match the configured deployment (testnet/mainnet).
+    let network = if network_cfg::network_type().is_testnet() {
+        bitcoin::Network::Testnet
+    } else {
+        bitcoin::Network::Bitcoin
+    };
     let checked_address = parsed_address
         .require_network(network)
         .map_err(|e| anyhow::anyhow!("Address network mismatch for '{}': {}", address, e))?;

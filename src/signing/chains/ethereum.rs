@@ -3,6 +3,7 @@ use crate::{
     chain_abstraction::{ChainTransaction, EthereumTransaction},
     types::{
         intent::{ContractTransaction, DummyTransaction},
+        network as network_cfg,
         signing::ECDSASignature,
         TransactionType,
     },
@@ -74,8 +75,7 @@ impl<'a> EthereumSigner<'a> {
 impl SigningNode {
     pub async fn fetch_ethereum_nonce(address: &str, chain_id: u64) -> Result<u64> {
         let rpc_url = match chain_id {
-            9029 => std::env::var("MPC_ETHEREUM_RPC_URL")
-                .unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string()),
+            9029 => network_cfg::qubetics_rpc_url_from_env()?,
             1 => "https://mainnet.infura.io/v3/YOUR_PROJECT_ID".to_string(),
             _ => {
                 return Err(anyhow!(
@@ -132,8 +132,7 @@ impl SigningNode {
         chain_id: u64,
     ) -> Result<Option<String>> {
         let rpc_url = match chain_id {
-            9029 => std::env::var("MPC_ETHEREUM_RPC_URL")
-                .unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string()),
+            9029 => network_cfg::qubetics_rpc_url_from_env()?,
             1 => "https://mainnet.infura.io/v3/YOUR_PROJECT_ID".to_string(),
             _ => {
                 return Err(anyhow!(

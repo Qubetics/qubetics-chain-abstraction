@@ -111,8 +111,7 @@ impl VrfNodeManager {
         if self.nodes.contains_key(&node_id) {
             return Err(format!("Node {node_id} already exists"));
         }
-        self.nodes
-            .insert(node_id, NodeRecord::new(node_id));
+        self.nodes.insert(node_id, NodeRecord::new(node_id));
         info!("Registered node {} with VRF manager", node_id);
         Ok(())
     }

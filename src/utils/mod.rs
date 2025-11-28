@@ -1,4 +1,4 @@
-use crate::types::DepositIntent;
+use crate::types::{network as network_cfg, DepositIntent};
 use bitcoin::secp256k1::PublicKey as SecpPublicKey;
 use bitcoin::{key::CompressedPublicKey, Network};
 use ethers_core::utils::keccak256;
@@ -140,7 +140,12 @@ pub fn get_btc_address_from_group_key_p2pkh(pubkey: ProjectivePoint) -> Result<S
     let compressed = CompressedPublicKey::from_slice(&secp_pubkey.serialize()).unwrap();
 
     // Generate P2PKH (Legacy): OP_DUP OP_HASH160 <20-byte-hash> OP_EQUALVERIFY OP_CHECKSIG
-    let btc_address = bitcoin::Address::p2pkh(compressed, Network::Testnet);
+    let target_network = if network_cfg::network_type().is_testnet() {
+        Network::Testnet
+    } else {
+        Network::Bitcoin
+    };
+    let btc_address = bitcoin::Address::p2pkh(compressed, target_network);
 
     Ok(btc_address.to_string())
 }

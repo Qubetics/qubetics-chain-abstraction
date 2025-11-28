@@ -2,6 +2,7 @@ use crate::signing::{state::BtcRoundExtras, SigningNode};
 use crate::{
     chain_abstraction::{BitcoinTransaction, ChainTransaction},
     types::{
+        network as network_cfg,
         signing::{BtcIndexedSignature, ECDSASignature},
         GossipsubMessage, SigningMessage, SpendKind, TransactionType,
     },
@@ -323,8 +324,8 @@ impl SigningNode {
             .try_into()
             .map_err(|_| anyhow!("Compressed pubkey must be 33 bytes"))?;
 
-        // Choose broadcast network (or derive from addresses if you prefer)
-        let is_testnet = true;
+        // Choose broadcast network from the configured NETWORK_TYPE
+        let is_testnet = network_cfg::network_type().is_testnet();
 
         let extras = BtcRoundExtras {
             pubkey33: pubkey33_arr,
@@ -412,12 +413,12 @@ impl SigningNode {
 
     pub(crate) async fn broadcast_transaction(
         raw_tx_hex: &str,
-        mainnet: bool,
+        is_testnet: bool,
     ) -> Result<Option<String>> {
-        let default_url = if mainnet {
-            "https://mempool.space/api/tx"
-        } else {
+        let default_url = if is_testnet {
             "https://mempool.space/testnet/api/tx"
+        } else {
+            "https://mempool.space/api/tx"
         };
 
         let url = std::env::var("MPC_BITCOIN_RPC_URL").unwrap_or_else(|_| default_url.to_string());

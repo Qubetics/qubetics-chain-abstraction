@@ -325,7 +325,9 @@ impl MpcNetworkLayer {
         signing_node.set_available_nodes(available_nodes);
         signing_node.set_chain_handler(
             crate::chain_abstraction::ChainHandlerFactory::create_bitcoin_handler(
-                "testnet".to_string(),
+                crate::types::network::network_type()
+                    .bitcoin_network_label()
+                    .to_string(),
             )
             .into(),
         );
@@ -916,10 +918,9 @@ impl MpcNetworkLayer {
                         .unwrap_or_else(|| "0x".to_string()),
                 };
 
-                let tx_bytes =
-                    crate::utils::transaction::create_transaction_for_signing_contract(
-                        &contract_tx,
-                    );
+                let tx_bytes = crate::utils::transaction::create_transaction_for_signing_contract(
+                    &contract_tx,
+                );
                 info!(
                     "🔐 [SOLVER] Starting contract add-liquidity signing for {} on {} (amount: {})",
                     solver_address, asset_chain_name, amount
@@ -1320,7 +1321,9 @@ impl MpcNetworkLayer {
                     } else if chain_to_use == "bitcoin" || chain_to_use == "btc" {
                         let mut chain_handler =
                             crate::chain_abstraction::ChainHandlerFactory::create_bitcoin_handler(
-                                "testnet".to_string(),
+                                crate::types::network::network_type()
+                                    .bitcoin_network_label()
+                                    .to_string(),
                             );
 
                         // Set appropriate group public key in Bitcoin chain handler based on transaction type

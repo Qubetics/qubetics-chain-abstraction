@@ -240,7 +240,9 @@ async fn handle_rejection(err: warp::Rejection) -> Result<impl Reply, Infallible
     } else if let Some(e) = err.find::<super::errors::RpcError>() {
         let code = match e {
             super::errors::RpcError::Unauthorized(_) => warp::http::StatusCode::UNAUTHORIZED,
-            super::errors::RpcError::InternalError(_) => warp::http::StatusCode::INTERNAL_SERVER_ERROR,
+            super::errors::RpcError::InternalError(_) => {
+                warp::http::StatusCode::INTERNAL_SERVER_ERROR
+            }
             _ => warp::http::StatusCode::BAD_REQUEST,
         };
         (code, e.to_error_response())
@@ -314,16 +316,19 @@ fn with_start_time(
     warp::any().map(move || start_time.clone())
 }
 
-fn with_request_context(
-) -> impl Filter<Extract = (RequestContext,), Error = Infallible> + Clone {
+fn with_request_context() -> impl Filter<Extract = (RequestContext,), Error = Infallible> + Clone {
     warp::any().map(|| RequestContext::new())
 }
 
 fn with_auth() -> impl Filter<Extract = (), Error = warp::Rejection> + Clone {
     warp::header::optional::<String>("X-API-KEY")
         .and_then(|api_key: Option<String>| async move {
-            let expected_key = std::env::var("RPC_API_KEY").unwrap_or_else(|_| "default_dev_key".to_string());
-            info!("🔐 Auth Check: Received '{:?}', Expected '{}'", api_key, expected_key);
+            let expected_key =
+                std::env::var("RPC_API_KEY").unwrap_or_else(|_| "default_dev_key".to_string());
+            info!(
+                "🔐 Auth Check: Received '{:?}', Expected '{}'",
+                api_key, expected_key
+            );
             match api_key {
                 Some(key) if key == expected_key => Ok(()),
                 _ => Err(warp::reject::custom(super::errors::RpcError::Unauthorized(

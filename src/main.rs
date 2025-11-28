@@ -11,6 +11,7 @@ use mpc_node::{
     protocols::DKGNode,
     rpc_server,
     signing::{DatabaseSigningNode, SigningNode},
+    types::network::init_network_type_from_env,
     user_intent_manager::UserIntentManager,
 };
 use rand::{thread_rng, Rng};
@@ -88,8 +89,8 @@ fn load_chain_code() -> Result<[u8; 32]> {
         )
     })?;
     let sanitized = raw.trim().trim_start_matches("0x");
-    let chain_code =
-        <[u8; 32]>::from_hex(sanitized).map_err(|e| anyhow!("invalid {} value: {}", CHAIN_CODE_ENV, e))?;
+    let chain_code = <[u8; 32]>::from_hex(sanitized)
+        .map_err(|e| anyhow!("invalid {} value: {}", CHAIN_CODE_ENV, e))?;
     Ok(chain_code)
 }
 
@@ -348,6 +349,7 @@ impl NodeContext {
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenv().ok();
+    init_network_type_from_env()?;
 
     let config = ConfigBuilder::new().build()?;
     let mut context = NodeContext::new(config)?;

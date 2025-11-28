@@ -2,6 +2,7 @@ use anyhow::Result;
 use std::collections::HashMap;
 
 use crate::chain_abstraction::handlers::{BitcoinChainHandler, ChainHandler, EthereumChainHandler};
+use crate::types::network as network_cfg;
 
 /// Chain handler factory helpers
 pub struct ChainHandlerFactory;
@@ -28,10 +29,11 @@ impl ChainHandlerFactory {
                 Ok(Self::create_ethereum_handler(chain_id))
             }
             "bitcoin" => {
-                let network = params
-                    .get("network")
-                    .unwrap_or(&"mainnet".to_string())
-                    .clone();
+                let network = params.get("network").cloned().unwrap_or_else(|| {
+                    network_cfg::network_type()
+                        .bitcoin_network_label()
+                        .to_string()
+                });
                 Ok(Self::create_bitcoin_handler(network))
             }
             _ => Err(anyhow::anyhow!("Unsupported chain type: {}", chain_type)),

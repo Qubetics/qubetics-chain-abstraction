@@ -1194,8 +1194,6 @@ impl SigningNode {
         Ok(())
     }
 
-  
-
     /// Handle signature request from final selected node
     async fn handle_signature_request(
         &mut self,

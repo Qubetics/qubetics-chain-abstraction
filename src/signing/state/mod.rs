@@ -203,10 +203,7 @@ impl SigningEnvironmentBuilder {
         }
     }
 
-    pub fn build_with_coordination(
-        self,
-        coordination: Coordination,
-    ) -> SigningEnvironment {
+    pub fn build_with_coordination(self, coordination: Coordination) -> SigningEnvironment {
         let chain_handler = ChainHandlerFactory::create_ethereum_handler(9029);
         let chain_handler: Arc<dyn ChainHandler> = chain_handler.into();
 

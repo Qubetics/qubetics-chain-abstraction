@@ -43,7 +43,7 @@ async function testRegisterUser(ethereumAddress) {
     const response = await axios.post(
       `${RPC_BASE_URL}/register_user`,
       { ethereum_address: ethereumAddress },
-      { headers: { 'Content-Type': 'application/json', 'X-API-KEY': "arpit" }, timeout: 10000 }
+      { headers: { 'Content-Type': 'application/json', 'X-API-KEY': "2919cd546f2c4338bccb4794a3d6afba2282e5729653fc2c2ff6c5e0e194ar45" }, timeout: 10000 }
     );
 
     log(`✅ Registration successful!`, 'green');
@@ -178,7 +178,7 @@ async function testUserMpcDeposit({ wallet, amount, idempotencyKey }) {
       `${RPC_BASE_URL}/user_mpc_deposit`,
       { signature, msg: depositIntent },
       {
-        headers: { 'Content-Type': 'application/json', 'X-API-KEY': "arpit" },
+        headers: { 'Content-Type': 'application/json', 'X-API-KEY': "2919cd546f2c4338bccb4794a3d6afba2282e5729653fc2c2ff6c5e0e194ar45" },
         timeout: 60000 // 15 seconds timeout to match server processing time
       }
     );
@@ -285,7 +285,7 @@ async function runTests() {
   // // 1) DKG status
   // await testDKGStatus();
 
-  // // 2) Register ONLY the derived address 
+  // // // 2) Register ONLY the derived address 
   // const reg = await testRegisterUser(signerAddr);
 
   // if (reg.success) {
