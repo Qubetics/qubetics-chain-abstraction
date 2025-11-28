@@ -296,6 +296,7 @@ pub(crate) async fn handle_register_user(
             const MAX_ATTEMPTS: u8 = 10; // Wait up to 10 seconds
 
             let mut final_registration = registration.clone();
+            let mut user_disappeared = false;
             while attempts < MAX_ATTEMPTS {
                 match user_intent_manager.get_user_by_address(&addr_cs).await {
                     Some(updated_user) => {
@@ -309,6 +310,7 @@ pub(crate) async fn handle_register_user(
                     }
                     None => {
                         error!("❌ User disappeared from registry during address derivation");
+                        user_disappeared = true;
                         break;
                     }
                 }
@@ -323,11 +325,53 @@ pub(crate) async fn handle_register_user(
                 }
             }
 
-            if attempts >= MAX_ATTEMPTS {
-                warn!(
-                    "⚠️ Derived addresses not available after {} attempts",
-                    MAX_ATTEMPTS
+            // Check if user disappeared from registry
+            if user_disappeared {
+                error!(
+                    "❌ HTTP: User registration failed - user disappeared from registry during address derivation"
                 );
+                let error_response = EnhancedUserRegistrationResponse {
+                    status: "error".to_string(),
+                    message:
+                        "User registration failed - user disappeared during address derivation"
+                            .to_string(),
+                    derived_eth_address: None,
+                    derived_btc_address: None,
+                    error: Some(
+                        RpcError::InternalError(
+                            "User disappeared from registry during address derivation".to_string(),
+                        )
+                        .to_error_response(),
+                    ),
+                };
+                return Ok(warp::reply::json(&error_response));
+            }
+
+            // Check if addresses were generated within the timeout
+            if final_registration.derived_eth_address.is_none()
+                || final_registration.derived_btc_address.is_none()
+            {
+                error!(
+                    "❌ HTTP: Derived addresses not available after {} attempts ({} seconds)",
+                    MAX_ATTEMPTS, MAX_ATTEMPTS
+                );
+                let error_response = EnhancedUserRegistrationResponse {
+                    status: "error".to_string(),
+                    message: format!(
+                        "Derived addresses (ETH/BTC) were not generated within {} seconds. Please try again later.",
+                        MAX_ATTEMPTS
+                    ),
+                    derived_eth_address: final_registration.derived_eth_address,
+                    derived_btc_address: final_registration.derived_btc_address,
+                    error: Some(
+                        RpcError::Timeout(format!(
+                            "Derived addresses not generated within {} seconds",
+                            MAX_ATTEMPTS
+                        ))
+                        .to_error_response(),
+                    ),
+                };
+                return Ok(warp::reply::json(&error_response));
             }
 
             if let Some(eth_addr) = &final_registration.derived_eth_address {
