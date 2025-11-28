@@ -53,7 +53,7 @@ pub fn get_eth_address_from_group_key_with_path(
     // Create a master private key (this is a simplified approach)
     let mut scalar_bytes = [0u8; 32];
     scalar_bytes.copy_from_slice(&master_key_bytes[..32]);
-    let master_scalar = Scalar::from_repr(scalar_bytes.into()).unwrap();
+    let master_scalar = parse_nonzero_scalar(scalar_bytes, "master")?;
 
     // Derive the child key using the path
     let derived_scalar = derive_key_from_path(master_scalar, &path)?;
@@ -109,12 +109,23 @@ fn derive_child_key(parent_key: Scalar, child_number: u32) -> Result<Scalar> {
     let child_key_bytes = &hash[0..32];
     let mut scalar_bytes = [0u8; 32];
     scalar_bytes.copy_from_slice(child_key_bytes);
-    let child_scalar = Scalar::from_repr(scalar_bytes.into()).unwrap();
+    let child_scalar = parse_nonzero_scalar(scalar_bytes, "child")?;
 
     // Add the parent key to the child key (modulo curve order)
     let derived_key = parent_key + child_scalar;
 
     Ok(derived_key)
+}
+
+fn parse_nonzero_scalar(bytes: [u8; 32], label: &str) -> Result<Scalar> {
+    let scalar = Scalar::from_repr(bytes.into())
+        .ok_or_else(|| anyhow::anyhow!("Invalid {} scalar: bytes not within curve order", label))?;
+
+    if bool::from(scalar.is_zero()) {
+        anyhow::bail!("Invalid {} scalar: zero is not allowed", label);
+    }
+
+    Ok(scalar)
 }
 
 pub fn get_btc_address_from_group_key(pubkey: ProjectivePoint) -> String {
