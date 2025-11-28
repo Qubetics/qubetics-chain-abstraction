@@ -22,6 +22,7 @@ pub struct VrfNodeSelector {
 }
 
 impl VrfNodeSelector {
+    const VRF_PROOF_DOMAIN: &'static [u8] = b"adkg-vrf-challenge";
     const SELECTION_CONTEXT: &'static [u8] = b"mpc-node-vrf-selection";
 
     pub fn new(node_id: PeerId) -> Self {
@@ -87,16 +88,24 @@ impl VrfNodeSelector {
         }
     }
 
-    pub fn generate_vrf_proof(&self, input: &[u8]) -> VrfOutput {
-        let (hash, proof) = prove(input, &self.vrf_secret_key);
+    fn vrf_challenge(input: &[u8]) -> [u8; 32] {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(Self::VRF_PROOF_DOMAIN);
+        hasher.update(input);
+        hasher.finalize().into()
+    }
 
-        let value = if hash.len() >= 8 {
-            u64::from_le_bytes([
-                hash[0], hash[1], hash[2], hash[3], hash[4], hash[5], hash[6], hash[7],
-            ])
-        } else {
-            0
-        };
+    fn selection_value(output_hash: &[u8]) -> u64 {
+        let digest = hash(output_hash);
+        let mut bytes = [0u8; 8];
+        bytes.copy_from_slice(&digest.as_bytes()[..8]);
+        u64::from_le_bytes(bytes)
+    }
+
+    pub fn generate_vrf_proof(&self, input: &[u8]) -> VrfOutput {
+        let challenge = Self::vrf_challenge(input);
+        let (hash, proof) = prove(&challenge, &self.vrf_secret_key);
+        let value = Self::selection_value(&hash);
 
         VrfOutput {
             proof: proof.to_bytes().to_vec(),
@@ -128,8 +137,9 @@ impl VrfNodeSelector {
             }
         };
 
+        let challenge = Self::vrf_challenge(input);
         let hash: [u8; 32] = output.hash.clone().try_into().unwrap_or([0; 32]);
-        verify(input, &pubkey, &hash, &proof)
+        verify(&challenge, &pubkey, &hash, &proof)
     }
 
     pub fn generate_selection_proof(&self, round: u64) -> VrfOutput {
@@ -286,20 +296,21 @@ impl VrfNodeSelector {
             node_id, round
         );
 
-        if !public_key.is_empty() {
-            let input = Self::selection_input(round, &node_id);
-            if !self.verify_vrf_proof(&public_key, &input, &vrf_output) {
-                return Err(anyhow!(
-                    "invalid VRF submission from node {} for round {}",
-                    node_id,
-                    round
-                ));
-            }
-        } else {
-            warn!(
-                "Node {} submitted VRF output without public key; skipping verification",
-                node_id
-            );
+        let input = Self::selection_input(round, &node_id);
+        if public_key.is_empty() {
+            return Err(anyhow!(
+                "node {} submitted VRF output without public key for round {}",
+                node_id,
+                round
+            ));
+        }
+
+        if !self.verify_vrf_proof(&public_key, &input, &vrf_output) {
+            return Err(anyhow!(
+                "invalid VRF submission from node {} for round {}",
+                node_id,
+                round
+            ));
         }
 
         self.submissions
