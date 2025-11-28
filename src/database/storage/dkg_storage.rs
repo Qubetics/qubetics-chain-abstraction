@@ -124,21 +124,28 @@ impl DkgStorage {
         Ok(map)
     }
 
-    pub async fn add_validation(&self, to: &str, is_valid: bool) -> Result<()> {
-        let key = format!("{}{}", keys::DKG_VALIDATION, to);
-        let mut current: Vec<bool> = self.db.get_string(&key)?.unwrap_or_default();
-        current.push(is_valid);
-        self.db.put_string(&key, &current)?;
+    pub async fn add_validation(&self, to: &str, from: &str, is_valid: bool) -> Result<()> {
+        let key = format!("{}{}:{}", keys::DKG_VALIDATION, to, from);
+        self.db.put_string(&key, &is_valid)?;
         Ok(())
     }
 
-    pub async fn get_all_validations(&self) -> Result<HashMap<String, Vec<bool>>> {
+    pub async fn get_all_validations(&self) -> Result<HashMap<String, HashMap<String, bool>>> {
         let prefix = keys::DKG_VALIDATION;
-        let results: Vec<(String, Vec<bool>)> = self.db.get_values_with_prefix(prefix)?;
-        let mut map = HashMap::new();
-        for (key, vals) in results {
-            if let Some(id) = key.strip_prefix(prefix) {
-                map.insert(id.to_string(), vals);
+        let results: Vec<(String, bool)> = self.db.get_values_with_prefix(prefix)?;
+        let mut map: HashMap<String, HashMap<String, bool>> = HashMap::new();
+        for (key, is_valid) in results {
+            if let Some(stripped) = key.strip_prefix(prefix) {
+                if let Some((to, from)) = stripped.split_once(':') {
+                    map.entry(to.to_string())
+                        .or_default()
+                        .insert(from.to_string(), is_valid);
+                } else {
+                    tracing::warn!(
+                        "⚠️ [DKG_STORAGE] Skipping malformed validation key: {}",
+                        key
+                    );
+                }
             }
         }
         Ok(map)
