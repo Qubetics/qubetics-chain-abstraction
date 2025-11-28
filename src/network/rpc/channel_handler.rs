@@ -1219,7 +1219,8 @@ impl MpcNetworkLayer {
                 info!("📡 [NETWORK] Broadcasted deposit intent to P2P network");
 
                 // Calculate intent hash for transaction ID storage
-                let intent_hash = crate::utils::calculate_intent_hash(&intent);
+                let intent_hash = crate::utils::calculate_intent_hash(&intent)
+                    .map_err(|e| anyhow::anyhow!("Failed to calculate intent hash: {}", e))?;
                 info!("🔐 [LOCAL] Calculated intent hash: {}", intent_hash);
 
                 // Prepare unsigned transaction for on-chain deposit intent recording

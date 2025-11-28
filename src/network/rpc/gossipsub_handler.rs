@@ -522,7 +522,8 @@ impl MpcNetworkLayer {
                 info!("📝 [GOSSIPSUB] Processing deposit intent received via gossipsub: {:?} (ID: {})", intent, intent_id);
 
                 // Calculate intent hash for transaction ID storage
-                let intent_hash = crate::utils::calculate_intent_hash(&intent);
+                let intent_hash = crate::utils::calculate_intent_hash(&intent)
+                    .map_err(|e| anyhow::anyhow!("Failed to calculate intent hash: {}", e))?;
                 info!("🔐 [GOSSIPSUB] Calculated intent hash: {}", intent_hash);
 
                 // Determine chain type based on transaction type:
