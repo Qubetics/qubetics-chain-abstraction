@@ -4,7 +4,7 @@ use blake3::hash;
 use ecvrf::{keygen, prove, verify, VrfPk, VrfProof, VrfSk};
 use libp2p::PeerId;
 use std::collections::{HashMap, HashSet};
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use super::types::{
     NodeSelectionResult, VrfOutput, VrfSelectedNodesBroadcast, VrfSelectionMessage,

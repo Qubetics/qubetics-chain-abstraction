@@ -1,11 +1,11 @@
 use crate::dkg::{artifacts::DKGMessage, DKGNode};
 use crate::types::dkg::MSG_TOPIC_DKG;
 use crate::types::{GossipsubMessage, KeyShare, SerializablePoint};
-use crate::utils::hmac_helper::hmac256_from_addr;
+use crate::utils::hmac_helper::hmac_scalar_mod_n;
 use crate::{utils, NodeMembership};
 use anyhow::{anyhow, Result};
 use ff::{Field, PrimeField};
-use k256::{AffinePoint, FieldBytes, ProjectivePoint, Scalar};
+use k256::{AffinePoint, ProjectivePoint, Scalar};
 use serde_json;
 use std::collections::HashMap;
 use tokio::time::Duration;
@@ -641,11 +641,14 @@ impl DKGNode {
             eth_address
         );
 
-        let vault_hmac = hmac256_from_addr(&eth_address, &self.chain_code)
+        // Use hmac_scalar_mod_n to safely reduce HMAC modulo curve order
+        let vault_hmac_reduced = hmac_scalar_mod_n(&eth_address, &self.chain_code)
             .map_err(|e| anyhow!("Failed to generate vault HMAC: {}", e))?;
-        info!("🏦 [REFRESH] Vault HMAC derived (value redacted)");
+        info!("🏦 [REFRESH] Vault HMAC derived and reduced mod curve order (value redacted)");
 
-        let tweak_scalar = k256::Scalar::from_bytes_reduced(&FieldBytes::from(vault_hmac));
+        // from_repr will always succeed since vault_hmac_reduced is already reduced mod curve order
+        let tweak_scalar = Option::from(k256::Scalar::from_repr(vault_hmac_reduced.into()))
+            .ok_or_else(|| anyhow!("Failed to create scalar from reduced vault HMAC"))?;
         info!("🏦 [REFRESH] Vault tweak scalar derived from HMAC (value redacted)");
 
         info!("💾 [REFRESH] Computing refreshed polynomial share for VAULT...");

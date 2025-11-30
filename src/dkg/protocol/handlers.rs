@@ -4,11 +4,11 @@ use crate::dkg::{
 };
 use crate::types::dkg::MSG_TOPIC_DKG;
 use crate::types::{GossipsubMessage, KeyShare, SerializablePoint, SerializableScalar};
-use crate::utils::hmac_helper::hmac256_from_addr;
+use crate::utils::hmac_helper::hmac_scalar_mod_n;
 use crate::{utils, NodeMembership};
 use anyhow::{anyhow, Result};
 use ff::PrimeField;
-use k256::{AffinePoint, FieldBytes, ProjectivePoint, Scalar};
+use k256::{AffinePoint, ProjectivePoint, Scalar};
 use serde_json;
 use tracing::{info, warn};
 
@@ -427,14 +427,17 @@ impl DKGNode {
         info!("📬 Ethereum Address from Group Key: {}", eth_address);
         info!("📬 Bitcoin Address from Group Key: {}", btc_address);
 
-        let vault_hmac = hmac256_from_addr(&eth_address, &self.chain_code)
+        // Use hmac_scalar_mod_n to safely reduce HMAC modulo curve order
+        let vault_hmac_reduced = hmac_scalar_mod_n(&eth_address, &self.chain_code)
             .map_err(|e| anyhow!("Failed to generate vault HMAC: {}", e))?;
 
         info!("🏦 [DKG] === VAULT GENERATION STARTED ===");
         info!("🏦 [DKG] Main ETH address: {}", eth_address);
-        info!("🏦 [DKG] Vault HMAC derived (value redacted)");
+        info!("🏦 [DKG] Vault HMAC derived and reduced mod curve order (value redacted)");
 
-        let tweak_scalar = Scalar::from_bytes_reduced(&FieldBytes::from(vault_hmac));
+        // from_repr will always succeed since vault_hmac_reduced is already reduced mod curve order
+        let tweak_scalar = Option::from(Scalar::from_repr(vault_hmac_reduced.into()))
+            .ok_or_else(|| anyhow!("Failed to create scalar from reduced vault HMAC"))?;
         info!("🏦 [DKG] Vault tweak scalar derived from HMAC (value redacted)");
 
         match self

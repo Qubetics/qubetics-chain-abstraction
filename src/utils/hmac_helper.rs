@@ -73,6 +73,37 @@ pub fn hmac_scalar_mod_n(addr: &str, key: &[u8]) -> Result<[u8; 32], String> {
     Ok(out)
 }
 
+/// ===============
+/// 4) bytes_to_scalar_mod_n
+/// ===============
+/// Safely converts arbitrary 32-byte array to a secp256k1 scalar by reducing modulo curve order.
+/// - Takes any 32-byte array
+/// - Reduces it mod the curve order `n`
+/// - Returns the reduced bytes (in [0..n-1])
+///
+/// Use case: when you have bytes that might be >= curve order and need to safely
+/// convert them to a scalar without panicking.
+pub fn bytes_to_scalar_mod_n(bytes: &[u8; 32]) -> [u8; 32] {
+    use num_bigint::BigUint;
+
+    let n = BigUint::parse_bytes(
+        b"FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141",
+        16,
+    )
+    .unwrap();
+
+    let x = BigUint::from_bytes_be(bytes);
+    let x = x % &n; // reduce mod n
+
+    let mut be = x.to_bytes_be();
+    if be.len() > 32 {
+        be = be[be.len() - 32..].to_vec();
+    }
+    let mut out = [0u8; 32];
+    out[32 - be.len()..].copy_from_slice(&be);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

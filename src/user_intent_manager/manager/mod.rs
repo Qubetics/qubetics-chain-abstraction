@@ -16,7 +16,6 @@ pub use crate::types::{
     DepositIntent, IntentStatus, IntentTransactionIds, SerializablePoint, SerializableScalar,
     TransactionStatus, UserRegistration,
 };
-use crate::utils::hmac_helper::hmac256_from_addr;
 use anyhow::Result;
 use tracing::info;
 
