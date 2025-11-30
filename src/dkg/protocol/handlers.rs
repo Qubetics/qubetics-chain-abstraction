@@ -8,7 +8,7 @@ use crate::utils::hmac_helper::hmac256_from_addr;
 use crate::{utils, NodeMembership};
 use anyhow::{anyhow, Result};
 use ff::PrimeField;
-use k256::{AffinePoint, ProjectivePoint, Scalar};
+use k256::{AffinePoint, FieldBytes, ProjectivePoint, Scalar};
 use serde_json;
 use tracing::{info, warn};
 
@@ -434,7 +434,7 @@ impl DKGNode {
         info!("🏦 [DKG] Main ETH address: {}", eth_address);
         info!("🏦 [DKG] Vault HMAC derived (value redacted)");
 
-        let tweak_scalar = Scalar::from_repr(vault_hmac.into()).unwrap();
+        let tweak_scalar = Scalar::from_bytes_reduced(&FieldBytes::from(vault_hmac));
         info!("🏦 [DKG] Vault tweak scalar derived from HMAC (value redacted)");
 
         match self

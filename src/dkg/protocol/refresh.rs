@@ -5,7 +5,7 @@ use crate::utils::hmac_helper::hmac256_from_addr;
 use crate::{utils, NodeMembership};
 use anyhow::{anyhow, Result};
 use ff::{Field, PrimeField};
-use k256::{AffinePoint, ProjectivePoint, Scalar};
+use k256::{AffinePoint, FieldBytes, ProjectivePoint, Scalar};
 use serde_json;
 use std::collections::HashMap;
 use tokio::time::Duration;
@@ -645,7 +645,7 @@ impl DKGNode {
             .map_err(|e| anyhow!("Failed to generate vault HMAC: {}", e))?;
         info!("🏦 [REFRESH] Vault HMAC derived (value redacted)");
 
-        let tweak_scalar = k256::Scalar::from_repr(vault_hmac.into()).unwrap();
+        let tweak_scalar = k256::Scalar::from_bytes_reduced(&FieldBytes::from(vault_hmac));
         info!("🏦 [REFRESH] Vault tweak scalar derived from HMAC (value redacted)");
 
         info!("💾 [REFRESH] Computing refreshed polynomial share for VAULT...");
