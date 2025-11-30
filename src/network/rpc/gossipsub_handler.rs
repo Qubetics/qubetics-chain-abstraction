@@ -3,7 +3,7 @@
 ///
 /// NOTE: This module contains the gossipsub message handling logic from the original network/mod.rs
 /// The implementation should be ported from lines ~2038-3559 of the original file
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use ff::PrimeField;
 use libp2p::{gossipsub::Message, PeerId};
 use tracing::{debug, error, info, warn};
@@ -715,10 +715,11 @@ impl MpcNetworkLayer {
                         signing_node.set_chain_handler(chain_handler.into());
                         info!("🔗 [GOSSIPSUB] Set Bitcoin chain handler");
                     } else {
-                        warn!(
-                            "❌ [GOSSIPSUB] Unsupported chain: {}, using default Ethereum handler",
+                        error!(
+                            "❌ [GOSSIPSUB] Unsupported chain requested: {}",
                             chain_to_use
                         );
+                        return Err(anyhow!("Unsupported chain: {}", chain_to_use));
                     }
 
                     // Get derived addresses based on transaction type
