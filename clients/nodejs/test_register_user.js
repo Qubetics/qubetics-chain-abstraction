@@ -90,7 +90,6 @@ async function testGetUserInfo(ethereumAddress) {
     log(`📊 User Info:`, 'cyan');
     log(`   User ID: ${response.data.user_id}`, 'cyan');
     log(`   Ethereum Address: ${response.data.ethereum_address}`, 'cyan');
-    log(`   HMAC Constant: ${response.data.hmac_constant}`, 'cyan');
     log(`   Has Tweaked Share: ${response.data.has_tweaked_share}`, 'cyan');
     log(`   Has User Group Key: ${response.data.has_user_group_key}`, 'cyan');
     log(`   Derived ETH Address: ${response.data.derived_eth_address || 'Not available'}`, 'cyan');
