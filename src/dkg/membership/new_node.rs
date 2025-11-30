@@ -4,7 +4,7 @@ use crate::dkg::{
 };
 use anyhow::{anyhow, Result};
 use ff::PrimeField;
-use k256::{AffinePoint, ProjectivePoint, Scalar};
+use k256::{AffinePoint, FieldBytes, ProjectivePoint, Scalar};
 use tracing::{info, warn};
 
 use crate::types::dkg::MSG_TOPIC_DKG;
@@ -249,7 +249,7 @@ impl DKGNode {
             info!("🏦 [NEW_NODE] Main ETH address: {}", eth_address);
             info!("🏦 [NEW_NODE] Vault HMAC derived (value redacted)");
 
-            let tweak_scalar = Scalar::from_repr(vault_hmac.into()).unwrap();
+            let tweak_scalar = Scalar::from_bytes_reduced(&FieldBytes::from(vault_hmac));
             info!("🏦 [NEW_NODE] Vault tweak scalar derived from HMAC (value redacted)");
 
             // Calculate and store the vault tweaked secret share
