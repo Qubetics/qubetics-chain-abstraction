@@ -296,7 +296,6 @@ pub(crate) async fn handle_register_user(
             const MAX_ATTEMPTS: u8 = 10; // Wait up to 10 seconds
 
             let mut final_registration = registration.clone();
-            let mut user_disappeared = false;
             while attempts < MAX_ATTEMPTS {
                 match user_intent_manager.get_user_by_address(&addr_cs).await {
                     Some(updated_user) => {
@@ -309,9 +308,9 @@ pub(crate) async fn handle_register_user(
                         }
                     }
                     None => {
-                        error!("❌ User disappeared from registry during address derivation");
-                        user_disappeared = true;
-                        break;
+                        warn!(
+                            "⚠️ User temporarily missing from registry during address derivation, retrying..."
+                        );
                     }
                 }
 
@@ -323,28 +322,6 @@ pub(crate) async fn handle_register_user(
                     );
                     sleep(Duration::from_secs(1)).await;
                 }
-            }
-
-            // Check if user disappeared from registry
-            if user_disappeared {
-                error!(
-                    "❌ HTTP: User registration failed - user disappeared from registry during address derivation"
-                );
-                let error_response = EnhancedUserRegistrationResponse {
-                    status: "error".to_string(),
-                    message:
-                        "User registration failed - user disappeared during address derivation"
-                            .to_string(),
-                    derived_eth_address: None,
-                    derived_btc_address: None,
-                    error: Some(
-                        RpcError::InternalError(
-                            "User disappeared from registry during address derivation".to_string(),
-                        )
-                        .to_error_response(),
-                    ),
-                };
-                return Ok(warp::reply::json(&error_response));
             }
 
             // Check if addresses were generated within the timeout
