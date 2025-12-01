@@ -144,9 +144,14 @@ impl MpcNetworkLayer {
                     return RPCResponse::DKGError(format!("Failed to reset DKG: {e}"));
                 }
                 if let Some(signing_node) = &mut self.signing_node {
-                    signing_node.set_threshold(self.node_manager.get_total_nodes() - 1);
+                    // Keep signing threshold consistent with the node manager's threshold
+                    let new_threshold = self.node_manager.get_threshold();
+                    signing_node.set_threshold(new_threshold);
+                    info!(
+                        "🔄 [THRESHOLD] Updated signing node threshold to {} (total nodes: {})",
+                        new_threshold, total
+                    );
                 }
-                self.node_manager.set_threshold(total - 1);
                 info!(
                     "🔄 DKG parameters updated: total_nodes={}, threshold={}",
                     total, threshold

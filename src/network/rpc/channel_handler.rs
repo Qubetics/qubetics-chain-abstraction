@@ -2153,9 +2153,9 @@ impl MpcNetworkLayer {
                         return Ok(());
                     }
                     if let Some(signing_node) = &mut self.signing_node {
-                        signing_node.set_threshold(total / 2 + 1);
+                        // Align signing threshold with the node manager's configured threshold
+                        signing_node.set_threshold(threshold);
                     }
-                    self.node_manager.set_threshold(total / 2 + 1);
                     info!(
                         "🔄 DKG parameters updated: total_nodes={}, threshold={}",
                         total, threshold
