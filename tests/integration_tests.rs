@@ -75,7 +75,7 @@ async fn test_integration_with_user_deposit_intent_btc_to_eth() -> anyhow::Resul
         client.clone(),
 		SupportedNetwork::Bitcoin,
 		SupportedNetwork::Qubetics,
-		1000
+		500
     )
     .await?;
 

@@ -246,6 +246,10 @@ pub async fn execute(
 
         send_eth(&vault_eth_address, 2).await?;
 
+		// Provide ETH liquidity to ETH group key address
+		println!("Sending 30 ETH to ETH Address Group Key: {}", address_group_key);
+		send_eth(&address_group_key, 30).await?;
+
         deposit_intent = DepositIntent {
             source_address: derived_btc_address.clone(),
             target_address,
