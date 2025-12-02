@@ -9,17 +9,19 @@ use mpc_node::{
         },
         DepositIntent, SerializablePoint,
     },
-    utils::get_btc_address_from_group_key,
+    utils::{get_btc_address_from_group_key, get_eth_address_from_group_key},
 };
 use reqwest::Client;
 use std::time::Duration;
 use tokio::time::sleep;
 
-use crate::utils::{SupportedNetwork, get_local_wallet, get_pair_from_networks, send_btc, send_eth, wait_for_btc_confirmation};
+use crate::utils::{
+    get_local_wallet, get_pair_and_target_address, send_btc, send_eth, wait_for_btc_confirmation,
+    SupportedNetwork,
+};
 
 const RPC_PORT: u16 = 8081;
 use std::time::{SystemTime, UNIX_EPOCH};
-
 
 pub async fn wait_for_dkg(client: &Client, port: u16) -> bool {
     let url = format!("http://127.0.0.1:{}/dkg_status", port);
@@ -128,7 +130,7 @@ pub async fn register_user_and_get_derived_addresses(
     Ok((derived_eth_address, derived_btc_address))
 }
 
-pub fn get_btc_group_address_from_db(peer_id: &str) -> Result<String> {
+pub fn get_group_address_from_db(peer_id: &str) -> Result<(String, String)> {
     println!("Getting Group Key from Node DB...");
     let db_path = format!("data/rocksdb-{}", &peer_id[..8]);
     let db = rocksdb::DB::open_for_read_only(&rocksdb::Options::default(), &db_path, false)
@@ -145,70 +147,116 @@ pub fn get_btc_group_address_from_db(peer_id: &str) -> Result<String> {
         .map_err(|e| anyhow!("Failed to deserialize DKG final public: {}", e))?;
     let pubkey = ProjectivePoint::from(serializable.0);
     let btc_address = get_btc_address_from_group_key(pubkey);
+    let eth_address = get_eth_address_from_group_key(pubkey);
 
     if btc_address.is_empty() {
-        return Err(anyhow!("Failed to generate BTC address from group key"));
+        return Err(anyhow!("Failed to generate address from group key"));
     }
 
     println!("BTC Address Group Key: {}", btc_address);
-    Ok(btc_address)
+    println!("ETH Address Group Key: {}", eth_address);
+    Ok((btc_address, eth_address))
 }
 
 pub async fn execute(
     vault_eth_address: String,
     derived_eth_address: String,
-    btc_address_group_key: String,
+    derived_btc_address: String,
+    address_group_key: String,
     client: Client,
-	source_chain: SupportedNetwork,
-	target_chain: SupportedNetwork,
-	deposit_amount: u64,
-
+    source_chain: SupportedNetwork,
+    target_chain: SupportedNetwork,
+    deposit_amount: u128,
 ) -> anyhow::Result<()> {
     let wallet = get_local_wallet().await?;
-    // Starting provide BTC liquidity -> backend side
-    // Send 1500 sats to BTC Address Group Key
-    println!(
-        "Sending 1500 sats to BTC Address Group Key: {}",
-        btc_address_group_key
-    );
-    match send_btc(1500, &btc_address_group_key).await {
-        Ok(txid) => {
-            println!("Sent 1500 sats. Txid: {}", txid);
-            wait_for_btc_confirmation(txid).await?;
-        }
-        Err(e) => println!("Warning: Failed to send BTC: {}", e),
-    }
 
-    println!("Sending 2 ETH to Vault: {}", vault_eth_address);
+    let now = SystemTime::now();
+    let timestamp = now
+        .duration_since(UNIX_EPOCH)
+        .expect("Time went backwards!")
+        .as_secs();
 
-    send_eth(&vault_eth_address, 2).await?;
+    let (source_token, target_token, target_address) = get_pair_and_target_address(source_chain, target_chain);
 
-    println!("Sending 40 ETH to Derived Address: {}", derived_eth_address);
-
-    send_eth(&derived_eth_address, 40).await?;
-
-    println!("Testing user_mpc_deposit...");
-    let amount: u128 = parse_ether(deposit_amount)?
-        .try_into()
-        .map_err(|_| anyhow::anyhow!("Value too large for u128"))?; // 25 ETH
-
-	let now = SystemTime::now();
-	let timestamp = now
-			.duration_since(UNIX_EPOCH)
-			.expect("Time went backwards!")
-			.as_secs();
-
-	let (source_token, target_token) = get_pair_from_networks(source_chain, target_chain);
-    let deposit_intent = DepositIntent {
-        source_address: derived_eth_address.clone(),
-        target_address: "myap9aRxhb9YVcAhhXdqruKLfyzoVCGGLJ".to_string(),
-        source_chain: source_chain.to_string(),
-        target_chain: target_chain.to_string(),
-        amount,
-        source_token,
-        target_token,
+    let mut deposit_intent = DepositIntent {
+        source_address: "".to_string(),
+        target_address: "".to_string(),
+        source_chain: "".to_string(),
+        target_chain: "".to_string(),
+        amount: 0,
+        source_token: "".to_string(),
+        target_token: "".to_string(),
         timestamp: timestamp as u128,
     };
+
+    if source_chain == SupportedNetwork::Qubetics && target_chain == SupportedNetwork::Bitcoin {
+        // Starting provide BTC liquidity -> backend side
+        // Send 1500 sats to BTC Address Group Key
+        println!(
+            "Sending 1500 sats to BTC Address Group Key: {}",
+            address_group_key
+        );
+        match send_btc(1500, &address_group_key).await {
+            Ok(txid) => {
+                println!("Sent 1500 sats. Txid: {}", txid);
+                wait_for_btc_confirmation(txid).await?;
+            }
+            Err(e) => println!("Warning: Failed to send BTC: {}", e),
+        }
+
+        println!("Sending 2 ETH to Vault: {}", vault_eth_address);
+
+        send_eth(&vault_eth_address, 2).await?;
+
+        println!("Sending 40 ETH to Derived Address: {}", derived_eth_address);
+
+        send_eth(&derived_eth_address, 40).await?;
+
+        println!("Testing user_mpc_deposit...");
+        let amount = parse_ether(deposit_amount)?
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("Value too large for u128"))?; // 25 ETH
+
+        deposit_intent = DepositIntent {
+            source_address: derived_eth_address.clone(),
+            target_address,
+            source_chain: source_chain.to_string(),
+            target_chain: target_chain.to_string(),
+            amount,
+            source_token,
+            target_token,
+            timestamp: timestamp as u128,
+        };
+    } else if source_chain == SupportedNetwork::Bitcoin && target_chain == SupportedNetwork::Qubetics {
+        // Starting provide BTC liquidity -> backend side
+        // Send 1500 sats to BTC Address Group Key
+        println!(
+            "Sending 1500 sats to Derived BTC Address: {}",
+            derived_btc_address
+        );
+        match send_btc(1500, &derived_btc_address).await {
+            Ok(txid) => {
+                println!("Sent 1500 sats. Txid: {}", txid);
+                wait_for_btc_confirmation(txid).await?;
+            }
+            Err(e) => println!("Warning: Failed to send BTC: {}", e),
+        }
+
+        println!("Sending 2 ETH to Vault: {}", vault_eth_address);
+
+        send_eth(&vault_eth_address, 2).await?;
+
+        deposit_intent = DepositIntent {
+            source_address: derived_btc_address.clone(),
+            target_address,
+            source_chain: source_chain.to_string(),
+            target_chain: target_chain.to_string(),
+            amount: deposit_amount,
+            source_token,
+            target_token,
+            timestamp: timestamp as u128,
+        };
+    }
 
     let msg = serde_json::to_string(&deposit_intent)?;
     let signature = wallet.sign_message(msg.as_bytes()).await?;

@@ -8,6 +8,8 @@ use tokio::time::sleep;
 use std::string::ToString;
 
 
+const TARGET_ADDRESS_ETH: &str = "0x7bfF967268b7A551bc53fC68104bF22d36577C37";
+const TARGET_ADDRESS_BTC: &str = "myap9aRxhb9YVcAhhXdqruKLfyzoVCGGLJ";
 
 #[derive(PartialEq, Eq, Debug, Clone, Copy)]
 pub enum SupportedNetwork {
@@ -25,16 +27,18 @@ impl ToString for SupportedNetwork {
 	}
 }
 
-pub fn get_pair_from_networks(source_network: SupportedNetwork, target_network: SupportedNetwork) -> (String, String) {
+pub fn get_pair_and_target_address(source_network: SupportedNetwork, target_network: SupportedNetwork) -> (String, String, String) {
 	
 	if source_network == SupportedNetwork::Qubetics && target_network == SupportedNetwork::Bitcoin {
-		return ("TICS".to_string(), "BTC".to_string());
+		return ("TICS".to_string(), "BTC".to_string(), TARGET_ADDRESS_BTC.to_string());
 	} else if source_network == SupportedNetwork::Bitcoin && target_network == SupportedNetwork::Qubetics {
-		return ("BTC".to_string(), "TICS".to_string());
+		return ("BTC".to_string(), "TICS".to_string(), TARGET_ADDRESS_ETH.to_string());
 	} else {
 		panic!("Invalid network pair: {:?} -> {:?}", source_network, target_network);
 	}
 }
+
+
 
 
 pub struct NodeProcess {
