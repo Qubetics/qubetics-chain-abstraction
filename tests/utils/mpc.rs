@@ -159,6 +159,7 @@ pub fn get_group_address_from_db(peer_id: &str) -> Result<(String, String)> {
 }
 
 pub async fn execute(
+    private_key: String,
     vault_eth_address: String,
     derived_eth_address: String,
     derived_btc_address: String,
@@ -168,7 +169,7 @@ pub async fn execute(
     target_chain: SupportedNetwork,
     deposit_amount: u128,
 ) -> anyhow::Result<()> {
-    let wallet = get_local_wallet().await?;
+    let wallet = get_local_wallet(&private_key).await?;
 
     let now = SystemTime::now();
     let timestamp = now
@@ -206,11 +207,11 @@ pub async fn execute(
 
         println!("Sending 2 ETH to Vault: {}", vault_eth_address);
 
-        send_eth(&vault_eth_address, 2).await?;
+        send_eth(&private_key, &vault_eth_address, 2).await?;
 
         println!("Sending 40 ETH to Derived Address: {}", derived_eth_address);
 
-        send_eth(&derived_eth_address, 40).await?;
+        send_eth(&private_key, &derived_eth_address, 40).await?;
 
         println!("Testing user_mpc_deposit...");
         let amount = parse_ether(deposit_amount)?
@@ -244,11 +245,11 @@ pub async fn execute(
 
         println!("Sending 2 ETH to Vault: {}", vault_eth_address);
 
-        send_eth(&vault_eth_address, 2).await?;
+        send_eth(&private_key, &vault_eth_address, 2).await?;
 
 		// Provide ETH liquidity to ETH group key address
 		println!("Sending 30 ETH to ETH Address Group Key: {}", address_group_key);
-		send_eth(&address_group_key, 30).await?;
+		send_eth(&private_key, &address_group_key, 30).await?;
 
         deposit_intent = DepositIntent {
             source_address: derived_btc_address.clone(),
