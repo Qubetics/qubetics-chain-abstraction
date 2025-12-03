@@ -197,6 +197,26 @@ pub(crate) async fn handle_register_user(
         request.ethereum_address
     );
 
+    // Block user registration while DKG shares are being refreshed
+    if dkg_storage
+        .is_refresh_in_progress()
+        .await
+        .unwrap_or(false)
+    {
+        warn!("⚠️ HTTP: Blocking register_user - shares are getting refreshed");
+        let error_response = EnhancedUserRegistrationResponse {
+            status: "error".to_string(),
+            message: "shares are getting refreshed".to_string(),
+            derived_eth_address: None,
+            derived_btc_address: None,
+            error: Some(
+                RpcError::DkgNotReady("shares are getting refreshed".to_string())
+                    .to_error_response(),
+            ),
+        };
+        return Ok(warp::reply::json(&error_response));
+    }
+
     // Input validation
     let addr_cs = match super::errors::validate_ethereum_address(&request.ethereum_address) {
         Ok(normalized) => normalized,
@@ -400,6 +420,29 @@ pub(crate) async fn handle_user_mpc_deposit(
     dkg_storage: Arc<DkgStorage>,
     request_context: RequestContext,
 ) -> Result<impl warp::Reply, warp::Rejection> {
+    // Block deposits while DKG shares are being refreshed
+    if dkg_storage
+        .is_refresh_in_progress()
+        .await
+        .unwrap_or(false)
+    {
+        warn!(
+            request_id = %request_context.request_id,
+            "⚠️ HTTP: Blocking user_mpc_deposit - shares are getting refreshed"
+        );
+        return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+            status: "error".to_string(),
+            signer_address: "".to_string(),
+            is_registered: false,
+            amount: req.msg.amount,
+            user_to_network_tx_id: None,
+            network_to_target_tx_id: None,
+            vault_to_network_tx_id: None,
+            final_solver_id: None,
+            error_message: Some("shares are getting refreshed".to_string()),
+        }));
+    }
+
     let intent_json = match serde_json::to_string(&req.msg) {
         Ok(json) => json,
         Err(e) => {
@@ -920,7 +963,22 @@ pub(crate) async fn handle_get_dkg_status(
 
 pub(crate) async fn handle_start_dkg(
     message_tx: Arc<Mutex<mpsc::Sender<ChannelMessage>>>,
+    dkg_storage: Arc<DkgStorage>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
+    // Block manual DKG start while a refresh is in progress
+    if dkg_storage
+        .is_refresh_in_progress()
+        .await
+        .unwrap_or(false)
+    {
+        warn!("⚠️ HTTP: Blocking start_dkg - shares are getting refreshed");
+        return Ok(warp::reply::json(&TransactionResponse {
+            tx_hash: "".to_string(),
+            status: "error".to_string(),
+            message: "shares are getting refreshed".to_string(),
+        }));
+    }
+
     info!("🚀 HTTP: RPC request to start DKG");
 
     let dkg_request = RPCRequest::StartADKG;
@@ -1022,7 +1080,28 @@ pub(crate) async fn handle_claim_reward(
     user_intent_manager: Arc<UserIntentManager>,
     _reward_storage: Arc<RewardStorage>,
     message_tx: Arc<Mutex<mpsc::Sender<ChannelMessage>>>,
+    dkg_storage: Arc<DkgStorage>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
+    // Block reward claims while DKG shares are being refreshed
+    if dkg_storage
+        .is_refresh_in_progress()
+        .await
+        .unwrap_or(false)
+    {
+        warn!("⚠️ HTTP: Blocking claim_reward - shares are getting refreshed");
+        return Ok(warp::reply::json(&ClaimRewardResponse {
+            status: "error".to_string(),
+            ethereum_address: req.ethereum_address,
+            btc_address: req.btc_address,
+            reward_btc: None,
+            reward_tics: None,
+            message: "shares are getting refreshed".to_string(),
+            error_message: Some("shares are getting refreshed".to_string()),
+            tics_reward_tx_id: None,
+            btc_reward_tx_id: None,
+        }));
+    }
+
     info!(
         "🎁 HTTP: claim_reward request for ETH: {:?}, BTC: {:?}",
         req.ethereum_address, req.btc_address
@@ -1318,7 +1397,29 @@ pub(crate) async fn handle_withdraw_liquidity(
     req: WithdrawLiquidityRequest,
     user_intent_manager: Arc<UserIntentManager>,
     message_tx: Arc<Mutex<mpsc::Sender<ChannelMessage>>>,
+    dkg_storage: Arc<DkgStorage>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
+    // Block liquidity withdrawals while DKG shares are being refreshed
+    if dkg_storage
+        .is_refresh_in_progress()
+        .await
+        .unwrap_or(false)
+    {
+        warn!("⚠️ HTTP: Blocking withdraw_liquidity - shares are getting refreshed");
+        return Ok(warp::reply::json(&WithdrawLiquidityResponse {
+            status: "error".to_string(),
+            solver_address: "".to_string(),
+            liquidity_btc: None,
+            liquidity_tics: None,
+            ethereum_address: req.ethereum_address.clone(),
+            btc_address: req.btc_address.clone(),
+            tics_withdraw_tx_id: None,
+            btc_withdraw_tx_id: None,
+            message: "shares are getting refreshed".to_string(),
+            error_message: Some("shares are getting refreshed".to_string()),
+        }));
+    }
+
     info!(
         "💧 HTTP: withdraw_liquidity request with message: {}",
         req.message
@@ -1829,7 +1930,26 @@ pub(crate) async fn handle_add_liquidity(
     req: AddLiquidityRequest,
     _user_intent_manager: Arc<UserIntentManager>,
     message_tx: Arc<Mutex<mpsc::Sender<ChannelMessage>>>,
+    dkg_storage: Arc<DkgStorage>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
+    // Block add_liquidity while DKG shares are being refreshed
+    if dkg_storage
+        .is_refresh_in_progress()
+        .await
+        .unwrap_or(false)
+    {
+        warn!("⚠️ HTTP: Blocking add_liquidity - shares are getting refreshed");
+        return Ok(warp::reply::json(&AddLiquidityResponse {
+            status: "error".to_string(),
+            solver_address: "".to_string(),
+            solver_id: req.solver_id.clone(),
+            amount_tics: req.amount_tics.clone(),
+            amount_btc: req.amount_btc.clone(),
+            message: "shares are getting refreshed".to_string(),
+            error_message: Some("shares are getting refreshed".to_string()),
+        }));
+    }
+
     info!(
         "💧 HTTP: add_liquidity request with message: {}, solver_id: {}",
         req.message, req.solver_id
