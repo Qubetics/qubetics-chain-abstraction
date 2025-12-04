@@ -550,9 +550,10 @@ impl SigningNode {
         }
 
         // Select exactly threshold shares deterministically by sorting on DKG index.
-        let mut selected_shares = shares.to_vec();
-        selected_shares.sort_by_key(|(x, _)| *x);
-        selected_shares.truncate(self.threshold);
+        let mut sorted_shares = shares.to_vec();
+        sorted_shares.sort_by_key(|(x, _)| *x);
+        let selected_shares: Vec<(u32, Vec<u8>)> =
+            sorted_shares.into_iter().take(self.threshold).collect();
 
         // Log chosen indices to aid debugging and ensure determinism across nodes.
         let selected_indices: Vec<u32> = selected_shares.iter().map(|(idx, _)| *idx).collect();
