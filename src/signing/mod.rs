@@ -36,15 +36,12 @@ pub use state::{
 use num_bigint::{BigInt, ToBigInt};
 use secp256k1::{constants::CURVE_ORDER, ecdsa::RecoveryId};
 
-use num_traits::Zero;
-use rand::seq::SliceRandom;
-use rand::thread_rng;
-
 use crate::chain_abstraction::{ChainHandler, ChainTransaction};
 use crate::protocols::{VrfSelectedNodesBroadcast, VrfService};
 use crate::types::{p2p::SerializablePeerId, ChannelMessage, ConsensusMessage, ConsensusResult};
 use crate::user_intent_manager::UserIntentManager;
 use anyhow::bail;
+use num_traits::Zero;
 
 #[derive(Clone)]
 pub struct SigningNode {
@@ -552,20 +549,17 @@ impl SigningNode {
             ));
         }
 
-        // Debug logging removed
-
-        // // 🔧 FIX 1: Select exactly threshold shares deterministically
-        // let mut selected_shares = shares.to_vec();
-        // selected_shares.sort_by_key(|(x, _)| *x);
-        // selected_shares.truncate(self.threshold);
-
-        // With this:
-        let mut rng = thread_rng();
+        // Select exactly threshold shares deterministically by sorting on DKG index.
         let mut selected_shares = shares.to_vec();
-        selected_shares.shuffle(&mut rng);
+        selected_shares.sort_by_key(|(x, _)| *x);
         selected_shares.truncate(self.threshold);
 
-        // Selected shares processed without logging
+        // Log chosen indices to aid debugging and ensure determinism across nodes.
+        let selected_indices: Vec<u32> = selected_shares.iter().map(|(idx, _)| *idx).collect();
+        info!(
+            "🔍 [SIGNING] Using shares with indices for Lagrange interpolation: {:?}",
+            selected_indices
+        );
 
         let n = BigUint::from_bytes_be(&CURVE_ORDER);
 
