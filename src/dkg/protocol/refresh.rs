@@ -174,6 +174,14 @@ impl DKGNode {
         info!("🔄 [REFRESH] ═══════════════════════════════════════════════════");
         info!("🔄 [REFRESH] Node: {}", self.id);
 
+        // Mark refresh as in progress so external RPCs can block user actions safely
+        if let Err(e) = self.storage.set_refresh_in_progress(true).await {
+            warn!(
+                "⚠️ [REFRESH] Failed to set refresh_in_progress flag at start of refresh: {}",
+                e
+            );
+        }
+
         // Get all active nodes and their indices from database (DB-first ordering)
         let active_nodes: Vec<String> = node_manager
             .get_active_nodes()
@@ -487,6 +495,13 @@ impl DKGNode {
                     "⚠️ [REFRESH] ERROR: Share from {} has WRONG index {} (expected {})",
                     node_id, share.index, my_index
                 );
+                // Clear the in-progress flag on hard failure
+                if let Err(e) = self.storage.set_refresh_in_progress(false).await {
+                    warn!(
+                        "⚠️ [REFRESH] Failed to clear refresh_in_progress flag after error: {}",
+                        e
+                    );
+                }
                 return Err(anyhow!("Refresh share has wrong index"));
             }
         }
@@ -723,6 +738,14 @@ impl DKGNode {
             }
         } else {
             warn!("⚠️ [REFRESH] No user registry attached; cannot refresh user tweaked shares");
+        }
+
+        // Refresh completed successfully; clear the in-progress flag
+        if let Err(e) = self.storage.set_refresh_in_progress(false).await {
+            warn!(
+                "⚠️ [REFRESH] Failed to clear refresh_in_progress flag after completion: {}",
+                e
+            );
         }
 
         Ok(())

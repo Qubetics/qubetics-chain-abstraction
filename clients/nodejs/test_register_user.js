@@ -7,8 +7,8 @@ import { randomUUID } from 'crypto';
 // =========================
 // Configuration
 // =========================
-const RPC_BASE_URL = 'http://127.0.0.1:8084';
-const API_KEY = "arpit";
+const RPC_BASE_URL = 'http://127.0.0.1:8082';
+const API_KEY = "2919cd546f2c4338bccb4794a3d6afba2282e5729653fc2c2ff6c5e0e194ar45";
 
 // 👉 Private key you provided (hex, no 0x prefix needed)
 const TEST_PRIVKEY = '11d281397918948a90ce5ce2a72945ee7929a5a932e5bb3d22664ba98f86755e';
@@ -27,11 +27,10 @@ const colors = {
   green: '\x1b[32m'
 };
 
-const oooo = 4752452342635
+const oooo = 2323232
 function log(message, color = 'reset') {
   console.log(`${colors[color]}${message}${colors.reset}`);
 }
-
 
 // =========================
 // HTTP helpers
@@ -90,6 +89,7 @@ async function testGetUserInfo(ethereumAddress) {
     log(`📊 User Info:`, 'cyan');
     log(`   User ID: ${response.data.user_id}`, 'cyan');
     log(`   Ethereum Address: ${response.data.ethereum_address}`, 'cyan');
+    log(`   HMAC Constant: ${response.data.hmac_constant}`, 'cyan');
     log(`   Has Tweaked Share: ${response.data.has_tweaked_share}`, 'cyan');
     log(`   Has User Group Key: ${response.data.has_user_group_key}`, 'cyan');
     log(`   Derived ETH Address: ${response.data.derived_eth_address || 'Not available'}`, 'cyan');
@@ -156,11 +156,11 @@ async function testUserMpcDeposit({ wallet, amount, idempotencyKey }) {
     // Construct DepositIntent
     const depositIntent = {
       source_address: userInfo.data.derived_eth_address, // Use canonical address
-      target_address: '0xfbc7e1789af2496ce49652a9f86bbf952bda2d36',
+      target_address: userInfo.data.derived_btc_address,
       source_chain: 'qubetics',
-      target_chain: 'qubetics',
+      target_chain: 'bitcoin',
       amount: amount, // Use the passed amount parameter
-      source_token: 'TICS',
+      source_token: 'BTC',
       target_token: 'TICS',
       timestamp: oooo,
     };
@@ -281,10 +281,10 @@ async function runTests() {
   const signerAddr = await wallet.getAddress();
   log(`\n🔑 Derived signer address from TEST_PRIVKEY: ${signerAddr}`, 'blue');
 
-  // // 1) DKG status
-  // await testDKGStatus();
+  // 1) DKG status
+  await testDKGStatus();
 
-  // // // 2) Register ONLY the derived address 
+  // 2) Register ONLY the derived address 
   const reg = await testRegisterUser(signerAddr);
 
   if (reg.success) {
@@ -299,6 +299,9 @@ async function runTests() {
   log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
   const amount = 21000000000000000000
   await testUserMpcDeposit({ wallet, amount });
+  // log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
+  // const amount = 13000000000000000000
+  // await testUserMpcDeposit({ wallet, amount });
 
   // const address = '0xbac113cebd9CB2fBD2a01B5CBC43D0fC0EBed5e9';
   // await testGetRewardSolver(address);

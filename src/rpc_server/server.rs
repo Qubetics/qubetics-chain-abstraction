@@ -113,6 +113,7 @@ pub async fn start_http_server(
         .and(with_user_intent_manager(user_intent_manager.clone()))
         .and(with_reward_storage(reward_storage.clone()))
         .and(with_message_tx(message_tx.clone()))
+        .and(with_dkg_storage(dkg_storage.clone()))
         .and(with_auth())
         .and_then(handle_claim_reward);
 
@@ -121,6 +122,7 @@ pub async fn start_http_server(
         .and(limited_json_body::<WithdrawLiquidityRequest>())
         .and(with_user_intent_manager(user_intent_manager.clone()))
         .and(with_message_tx(message_tx.clone()))
+        .and(with_dkg_storage(dkg_storage.clone()))
         .and(with_auth())
         .and_then(handle_withdraw_liquidity);
 
@@ -129,6 +131,7 @@ pub async fn start_http_server(
         .and(limited_json_body::<AddLiquidityRequest>())
         .and(with_user_intent_manager(user_intent_manager.clone()))
         .and(with_message_tx(message_tx.clone()))
+        .and(with_dkg_storage(dkg_storage.clone()))
         .and(with_auth())
         .and_then(handle_add_liquidity);
 
@@ -165,6 +168,7 @@ pub async fn start_http_server(
     let start_dkg = warp::path("start_dkg")
         .and(warp::post())
         .and(with_message_tx(message_tx.clone()))
+        .and(with_dkg_storage(dkg_storage.clone()))
         .and_then(handle_start_dkg);
 
     let routes = register_user
