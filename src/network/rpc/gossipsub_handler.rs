@@ -1086,6 +1086,30 @@ impl MpcNetworkLayer {
                     &amount_tics,
                 )
                 .await?;
+
+                // After processing the withdraw payout, refresh on-chain solver liquidity
+                // so this node's DB (and global totals) reflect the decreased amounts.
+                if let Some(signing_node) = &self.signing_node {
+                    match signing_node.update_solver_liquidity(&solver_address).await {
+                        Ok(()) => {
+                            info!(
+                                "✅ [GOSSIPSUB] Refreshed solver liquidity from contract after withdraw-liquidity for {}",
+                                solver_address
+                            );
+                        }
+                        Err(e) => {
+                            warn!(
+                                "⚠️ [GOSSIPSUB] Failed to refresh solver liquidity after withdraw-liquidity for {}: {}",
+                                solver_address, e
+                            );
+                        }
+                    }
+                } else {
+                    warn!(
+                        "⚠️ [GOSSIPSUB] Signing node unavailable; cannot refresh solver liquidity after withdraw-liquidity for {}",
+                        solver_address
+                    );
+                }
             }
             GossipsubMessage::AddLiquidity {
                 solver_address,
@@ -1101,6 +1125,7 @@ impl MpcNetworkLayer {
                     "💧 [GOSSIPSUB] Amounts - BTC: {:?}, TICS: {:?}",
                     amount_btc, amount_tics
                 );
+                // 1) Submit / relay the add-liquidity contract call on this node (if applicable)
                 self.handle_add_liquidity_contract_calls(
                     &solver_address,
                     &solver_id,
@@ -1108,6 +1133,31 @@ impl MpcNetworkLayer {
                     &amount_tics,
                 )
                 .await?;
+
+                // 2) After contract submission, refresh solver liquidity from the on-chain contract
+                //    so local DB (and global totals) stay in sync. This uses the per-solver updater
+                //    which also recomputes total liquidity across all solvers.
+                if let Some(signing_node) = &self.signing_node {
+                    match signing_node.update_solver_liquidity(&solver_address).await {
+                        Ok(()) => {
+                            info!(
+                                "✅ [GOSSIPSUB] Refreshed solver liquidity from contract after add-liquidity for {}",
+                                solver_address
+                            );
+                        }
+                        Err(e) => {
+                            warn!(
+                                "⚠️ [GOSSIPSUB] Failed to refresh solver liquidity after add-liquidity for {}: {}",
+                                solver_address, e
+                            );
+                        }
+                    }
+                } else {
+                    warn!(
+                        "⚠️ [GOSSIPSUB] Signing node unavailable; cannot refresh solver liquidity after add-liquidity for {}",
+                        solver_address
+                    );
+                }
             }
             GossipsubMessage::PeerDiscovered {
                 peer,

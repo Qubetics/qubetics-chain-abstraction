@@ -116,20 +116,27 @@ pub fn validate_contract_transaction_hex_fields(tx: &ContractTransaction) -> Res
 pub fn get_chain_id_from_name(chain_name: &str) -> Option<u64> {
     match chain_name.to_lowercase().as_str() {
         "ethereum" | "eth" => Some(1),
+        // Qubetics EVM chain
         "qubetics" => Some(9029),
+        // Bitcoin uses a structural chain id of 0 (non-EVM, used for routing/metadata)
+        "btc" | "bitcoin" => Some(0),
         "polygon" | "matic" => Some(137),
         "bsc" | "binance" => Some(56),
         "avalanche" | "avax" => Some(43114),
         "arbitrum" => Some(42161),
         "optimism" => Some(10),
         "base" => Some(8453),
-        _ => None, // Bitcoin and other non-EVM chains return None
+        _ => None,
     }
 }
 
 /// Determine if a chain is EVM-compatible
 pub fn is_evm_chain(chain_name: &str) -> bool {
-    get_chain_id_from_name(chain_name).is_some()
+    match chain_name.to_lowercase().as_str() {
+        // Explicitly treat Bitcoin as non-EVM even though it has a structural ID (0)
+        "btc" | "bitcoin" => false,
+        _ => get_chain_id_from_name(chain_name).is_some(),
+    }
 }
 
 /// Fetch UTXOs for a Bitcoin address from Mempool.space Esplora API

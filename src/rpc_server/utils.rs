@@ -50,6 +50,15 @@ pub(crate) fn convert_src_smallest_to_dst_smallest(
     dst_chain: &str,
     prices: &HashMap<String, Decimal>,
 ) -> Result<u128, TransactionError> {
+    // If source and destination chains are the same, do not perform any conversion.
+    if src_chain.eq_ignore_ascii_case(dst_chain) {
+        info!(
+            "🔄 [CONVERSION] Skipped: source and destination chains are the same ({}). Using original amount: {}",
+            src_chain, amount_src_smallest
+        );
+        return Ok(amount_src_smallest);
+    }
+
     let src_sym = symbol_for(src_chain);
     let dst_sym = symbol_for(dst_chain);
 

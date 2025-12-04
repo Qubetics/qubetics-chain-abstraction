@@ -2243,6 +2243,7 @@ impl MpcNetworkLayer {
                     "📡 [NETWORK] Broadcasted add liquidity request for solver {}",
                     solver_address
                 );
+                // 1) Dispatch contract calls from this local node (if applicable)
                 self.handle_add_liquidity_contract_calls(
                     &solver_address,
                     &solver_id,
@@ -2250,6 +2251,30 @@ impl MpcNetworkLayer {
                     &amount_tics,
                 )
                 .await?;
+
+                // 2) Refresh solver liquidity from the on-chain contract on this node
+                //    so local DB and global totals reflect the new state.
+                if let Some(signing_node) = &self.signing_node {
+                    match signing_node.update_solver_liquidity(&solver_address).await {
+                        Ok(()) => {
+                            info!(
+                                "✅ [NETWORK] Refreshed solver liquidity from contract after local add-liquidity for {}",
+                                solver_address
+                            );
+                        }
+                        Err(e) => {
+                            warn!(
+                                "⚠️ [NETWORK] Failed to refresh solver liquidity after local add-liquidity for {}: {}",
+                                solver_address, e
+                            );
+                        }
+                    }
+                } else {
+                    warn!(
+                        "⚠️ [NETWORK] Signing node unavailable; cannot refresh solver liquidity after local add-liquidity for {}",
+                        solver_address
+                    );
+                }
             }
             ChannelMessage::WithdrawLiquidity {
                 solver_address,
@@ -2290,6 +2315,30 @@ impl MpcNetworkLayer {
                     &amount_tics,
                 )
                 .await?;
+
+                // After processing the withdraw payout on this node, refresh on-chain solver
+                // liquidity so local DB and totals reflect the decreased liquidity.
+                if let Some(signing_node) = &self.signing_node {
+                    match signing_node.update_solver_liquidity(&solver_address).await {
+                        Ok(()) => {
+                            info!(
+                                "✅ [NETWORK] Refreshed solver liquidity from contract after local withdraw-liquidity for {}",
+                                solver_address
+                            );
+                        }
+                        Err(e) => {
+                            warn!(
+                                "⚠️ [NETWORK] Failed to refresh solver liquidity after local withdraw-liquidity for {}: {}",
+                                solver_address, e
+                            );
+                        }
+                    }
+                } else {
+                    warn!(
+                        "⚠️ [NETWORK] Signing node unavailable; cannot refresh solver liquidity after local withdraw-liquidity for {}",
+                        solver_address
+                    );
+                }
             }
         }
         Ok(())
