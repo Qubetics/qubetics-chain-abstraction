@@ -3,6 +3,7 @@ use crate::{
     chain_abstraction::{ChainTransaction, EthereumTransaction},
     types::{
         intent::{ContractTransaction, DummyTransaction},
+        network as network_cfg,
         signing::ECDSASignature,
         TransactionType,
     },
@@ -74,8 +75,7 @@ impl<'a> EthereumSigner<'a> {
 impl SigningNode {
     pub async fn fetch_ethereum_nonce(address: &str, chain_id: u64) -> Result<u64> {
         let rpc_url = match chain_id {
-            9029 => std::env::var("MPC_ETHEREUM_RPC_URL")
-                .unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string()),
+            9029 => network_cfg::qubetics_rpc_url_from_env()?,
             1 => "https://mainnet.infura.io/v3/YOUR_PROJECT_ID".to_string(),
             _ => {
                 return Err(anyhow!(
@@ -132,8 +132,7 @@ impl SigningNode {
         chain_id: u64,
     ) -> Result<Option<String>> {
         let rpc_url = match chain_id {
-            9029 => std::env::var("MPC_ETHEREUM_RPC_URL")
-                .unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string()),
+            9029 => network_cfg::qubetics_rpc_url_from_env()?,
             1 => "https://mainnet.infura.io/v3/YOUR_PROJECT_ID".to_string(),
             _ => {
                 return Err(anyhow!(
@@ -308,7 +307,8 @@ impl SigningNode {
             0
         };
 
-        // Store signature by round
+        // Store signature by round before touching any pending transaction locks to maintain
+        // a consistent lock acquisition order across signing and reconstruction paths
         {
             let mut signatures_by_round = self.signatures.signatures_by_round.write().await;
             let round_signatures = signatures_by_round
@@ -583,7 +583,8 @@ impl SigningNode {
             0
         };
 
-        // Store signature by round
+        // Store signature by round before acquiring any pending transaction locks to keep
+        // lock ordering consistent across signing paths
         {
             let mut signatures_by_round = self.signatures.signatures_by_round.write().await;
             let round_signatures = signatures_by_round
@@ -648,6 +649,18 @@ impl SigningNode {
         let is_withdraw_round = {
             let withdraw_rounds = self.pending.withdraw_rounds.read().await;
             withdraw_rounds.contains(&round)
+        };
+
+        let user_eth_address = {
+            let signatures_by_round = self.signatures.signatures_by_round.read().await;
+            if let Some(round_signatures) = signatures_by_round.get(&round) {
+                round_signatures
+                    .values()
+                    .next()
+                    .and_then(|sig| sig.user_eth_address.clone())
+            } else {
+                None
+            }
         };
 
         let (chain_tx, transaction_type) = if is_reward_round {
@@ -716,18 +729,6 @@ impl SigningNode {
                     .unwrap_or(9029);
 
                 let v = recovery_id as u64 + 35 + chain_id * 2;
-
-                let user_eth_address = {
-                    let signatures_by_round = self.signatures.signatures_by_round.read().await;
-                    if let Some(round_signatures) = signatures_by_round.get(&round) {
-                        round_signatures
-                            .values()
-                            .next()
-                            .and_then(|sig| sig.user_eth_address.clone())
-                    } else {
-                        None
-                    }
-                };
 
                 let nonce_address = match transaction_type {
                     Some(crate::types::TransactionType::UserToVault) => {

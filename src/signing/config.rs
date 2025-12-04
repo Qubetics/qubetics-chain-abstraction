@@ -1,3 +1,4 @@
+use crate::types::network as network_cfg;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tracing::info;
@@ -35,6 +36,7 @@ pub struct ChainBroadcastConfig {
 
 impl Default for BroadcastConfig {
     fn default() -> Self {
+        let is_testnet = network_cfg::network_type().is_testnet();
         let mut chain_configs = HashMap::new();
 
         // Default Ethereum configuration
@@ -44,7 +46,7 @@ impl Default for BroadcastConfig {
                 enabled: true,
                 rpc_url: String::new(),
                 chain_id: 9029,
-                testnet: true,
+                testnet: is_testnet,
                 custom_headers: HashMap::new(),
                 timeout_seconds: 30,
             },
@@ -57,7 +59,7 @@ impl Default for BroadcastConfig {
                 enabled: true, // Enabled with public API
                 rpc_url: String::new(),
                 chain_id: 0,
-                testnet: true,
+                testnet: is_testnet,
                 custom_headers: HashMap::new(),
                 timeout_seconds: 30,
             },
@@ -75,11 +77,12 @@ impl Default for BroadcastConfig {
 
 impl Default for ChainBroadcastConfig {
     fn default() -> Self {
+        let is_testnet = network_cfg::network_type().is_testnet();
         Self {
             enabled: true,
             rpc_url: String::new(),
             chain_id: 0,
-            testnet: true,
+            testnet: is_testnet,
             custom_headers: HashMap::new(),
             timeout_seconds: 30,
         }
@@ -110,8 +113,8 @@ impl BroadcastConfig {
 
         // Load chain-specific configurations
         if let Some(eth_config) = config.chain_configs.get_mut("ethereum") {
-            eth_config.rpc_url = std::env::var("MPC_ETHEREUM_RPC_URL")
-                .unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string());
+            eth_config.rpc_url = network_cfg::qubetics_rpc_url_from_env()
+                .expect("Unable to determine MPC_ETHEREUM_RPC_URL for Qubetics chain");
         }
 
         if let Ok(chain_id) = std::env::var("MPC_ETHEREUM_CHAIN_ID") {

@@ -1,4 +1,4 @@
-use crate::types::DepositIntent;
+use crate::types::{network as network_cfg, DepositIntent};
 use bitcoin::secp256k1::PublicKey as SecpPublicKey;
 use bitcoin::{key::CompressedPublicKey, Network};
 use ethers_core::utils::keccak256;
@@ -10,7 +10,7 @@ pub mod bigint;
 pub mod hmac_helper;
 pub mod transaction;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use bip32::DerivationPath;
 use std::str::FromStr;
 
@@ -34,7 +34,7 @@ pub fn get_eth_address_from_group_key_with_path(
 ) -> Result<String> {
     // Parse the derivation path (e.g., "m/44'/60'/0'/0/0" for Ethereum)
     let path = DerivationPath::from_str(derivation_path)
-        .map_err(|e| anyhow::anyhow!("Invalid derivation path '{}': {}", derivation_path, e))?;
+        .map_err(|e| anyhow!("Invalid derivation path '{}': {}", derivation_path, e))?;
 
     // Convert the group key to a scalar for derivation
     let affine = AffinePoint::from(pubkey);
@@ -53,7 +53,7 @@ pub fn get_eth_address_from_group_key_with_path(
     // Create a master private key (this is a simplified approach)
     let mut scalar_bytes = [0u8; 32];
     scalar_bytes.copy_from_slice(&master_key_bytes[..32]);
-    let master_scalar = Scalar::from_repr(scalar_bytes.into()).unwrap();
+    let master_scalar = parse_nonzero_scalar(scalar_bytes, "master")?;
 
     // Derive the child key using the path
     let derived_scalar = derive_key_from_path(master_scalar, &path)?;
@@ -97,7 +97,7 @@ fn derive_child_key(parent_key: Scalar, child_number: u32) -> Result<Scalar> {
     type HmacSha512 = Hmac<sha2::Sha512>;
 
     let mut mac = HmacSha512::new_from_slice(b"Bitcoin seed") // Using Bitcoin's chain code
-        .map_err(|e| anyhow::anyhow!("HMAC key error: {}", e))?;
+        .map_err(|e| anyhow!("HMAC key error: {}", e))?;
 
     mac.update(parent_ep.as_bytes());
     mac.update(&child_number.to_be_bytes());
@@ -109,12 +109,23 @@ fn derive_child_key(parent_key: Scalar, child_number: u32) -> Result<Scalar> {
     let child_key_bytes = &hash[0..32];
     let mut scalar_bytes = [0u8; 32];
     scalar_bytes.copy_from_slice(child_key_bytes);
-    let child_scalar = Scalar::from_repr(scalar_bytes.into()).unwrap();
+    let child_scalar = parse_nonzero_scalar(scalar_bytes, "child")?;
 
     // Add the parent key to the child key (modulo curve order)
     let derived_key = parent_key + child_scalar;
 
     Ok(derived_key)
+}
+
+fn parse_nonzero_scalar(bytes: [u8; 32], label: &str) -> Result<Scalar> {
+    let scalar = Option::<Scalar>::from(Scalar::from_repr(bytes.into()))
+        .ok_or_else(|| anyhow::anyhow!("Invalid {} scalar: bytes not within curve order", label))?;
+
+    if bool::from(scalar.is_zero()) {
+        anyhow::bail!("Invalid {} scalar: zero is not allowed", label);
+    }
+
+    Ok(scalar)
 }
 
 pub fn get_btc_address_from_group_key(pubkey: ProjectivePoint) -> String {
@@ -124,23 +135,31 @@ pub fn get_btc_address_from_group_key(pubkey: ProjectivePoint) -> String {
 }
 
 /// Calculate intent hash from DepositIntent using the same method as in RPC server
-pub fn calculate_intent_hash(intent: &DepositIntent) -> String {
+pub fn calculate_intent_hash(intent: &DepositIntent) -> Result<String> {
     // Serialize the DepositIntent to match the client's JSON.stringify() format
     // Use compact JSON serialization (no spaces) to match JavaScript's JSON.stringify()
-    let intent_json = serde_json::to_string(intent).unwrap();
+    let intent_json = serde_json::to_string(intent)
+        .map_err(|e| anyhow!("Failed to serialize DepositIntent: {}", e))?;
     let intent_bytes = intent_json.as_bytes();
     let intent_hash = Keccak256::digest(intent_bytes);
-    hex::encode(intent_hash)
+    Ok(hex::encode(intent_hash))
 }
 
 pub fn get_btc_address_from_group_key_p2pkh(pubkey: ProjectivePoint) -> Result<String> {
     let affine = AffinePoint::from(pubkey);
     let ep = affine.to_encoded_point(true); // compressed 33 bytes
-    let secp_pubkey = SecpPublicKey::from_slice(ep.as_bytes()).unwrap();
-    let compressed = CompressedPublicKey::from_slice(&secp_pubkey.serialize()).unwrap();
+    let secp_pubkey = SecpPublicKey::from_slice(ep.as_bytes())
+        .map_err(|e| anyhow!("Invalid secp256k1 public key: {}", e))?;
+    let compressed = CompressedPublicKey::from_slice(&secp_pubkey.serialize())
+        .map_err(|e| anyhow!("Failed to compress secp256k1 public key: {}", e))?;
 
     // Generate P2PKH (Legacy): OP_DUP OP_HASH160 <20-byte-hash> OP_EQUALVERIFY OP_CHECKSIG
-    let btc_address = bitcoin::Address::p2pkh(compressed, Network::Testnet);
+    let target_network = if network_cfg::network_type().is_testnet() {
+        Network::Testnet
+    } else {
+        Network::Bitcoin
+    };
+    let btc_address = bitcoin::Address::p2pkh(compressed, target_network);
 
     Ok(btc_address.to_string())
 }

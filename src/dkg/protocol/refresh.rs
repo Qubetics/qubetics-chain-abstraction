@@ -1,7 +1,7 @@
 use crate::dkg::{artifacts::DKGMessage, DKGNode};
 use crate::types::dkg::MSG_TOPIC_DKG;
 use crate::types::{GossipsubMessage, KeyShare, SerializablePoint};
-use crate::utils::hmac_helper::hmac256_from_addr;
+use crate::utils::hmac_helper::hmac_scalar_mod_n;
 use crate::{utils, NodeMembership};
 use anyhow::{anyhow, Result};
 use ff::{Field, PrimeField};
@@ -135,7 +135,10 @@ impl DKGNode {
         // The constant term: Gi(0) = Si * λi(0) + 0 = Si * λi(0)
         refresh_poly[0] = constant_contribution;
 
-        info!("🔄 [REFRESH] Refresh polynomial G_{}(x) constructed", my_index);
+        info!(
+            "🔄 [REFRESH] Refresh polynomial G_{}(x) constructed",
+            my_index
+        );
         info!("🔄 [REFRESH] ═══════════════════════════════════════════════════");
 
         Ok(refresh_poly)
@@ -170,6 +173,14 @@ impl DKGNode {
         info!("🔄 [REFRESH] EXECUTING POLYNOMIAL REFRESH");
         info!("🔄 [REFRESH] ═══════════════════════════════════════════════════");
         info!("🔄 [REFRESH] Node: {}", self.id);
+
+        // Mark refresh as in progress so external RPCs can block user actions safely
+        if let Err(e) = self.storage.set_refresh_in_progress(true).await {
+            warn!(
+                "⚠️ [REFRESH] Failed to set refresh_in_progress flag at start of refresh: {}",
+                e
+            );
+        }
 
         // Get all active nodes and their indices from database (DB-first ordering)
         let active_nodes: Vec<String> = node_manager
@@ -478,15 +489,19 @@ impl DKGNode {
         );
         for (from, share) in refresh_shares.iter() {
             let node_id = from.trim_start_matches("refresh_");
-            info!(
-                "🔍 [REFRESH]   From {}: index={}",
-                node_id, share.index
-            );
+            info!("🔍 [REFRESH]   From {}: index={}", node_id, share.index);
             if share.index != my_index {
                 warn!(
                     "⚠️ [REFRESH] ERROR: Share from {} has WRONG index {} (expected {})",
                     node_id, share.index, my_index
                 );
+                // Clear the in-progress flag on hard failure
+                if let Err(e) = self.storage.set_refresh_in_progress(false).await {
+                    warn!(
+                        "⚠️ [REFRESH] Failed to clear refresh_in_progress flag after error: {}",
+                        e
+                    );
+                }
                 return Err(anyhow!("Refresh share has wrong index"));
             }
         }
@@ -641,11 +656,14 @@ impl DKGNode {
             eth_address
         );
 
-        let vault_hmac = hmac256_from_addr(&eth_address, &self.chain_code)
+        // Use hmac_scalar_mod_n to safely reduce HMAC modulo curve order
+        let vault_hmac_reduced = hmac_scalar_mod_n(&eth_address, &self.chain_code)
             .map_err(|e| anyhow!("Failed to generate vault HMAC: {}", e))?;
-        info!("🏦 [REFRESH] Vault HMAC derived (value redacted)");
+        info!("🏦 [REFRESH] Vault HMAC derived and reduced mod curve order (value redacted)");
 
-        let tweak_scalar = k256::Scalar::from_repr(vault_hmac.into()).unwrap();
+        // from_repr will always succeed since vault_hmac_reduced is already reduced mod curve order
+        let tweak_scalar = Option::from(k256::Scalar::from_repr(vault_hmac_reduced.into()))
+            .ok_or_else(|| anyhow!("Failed to create scalar from reduced vault HMAC"))?;
         info!("🏦 [REFRESH] Vault tweak scalar derived from HMAC (value redacted)");
 
         info!("💾 [REFRESH] Computing refreshed polynomial share for VAULT...");
@@ -720,6 +738,14 @@ impl DKGNode {
             }
         } else {
             warn!("⚠️ [REFRESH] No user registry attached; cannot refresh user tweaked shares");
+        }
+
+        // Refresh completed successfully; clear the in-progress flag
+        if let Err(e) = self.storage.set_refresh_in_progress(false).await {
+            warn!(
+                "⚠️ [REFRESH] Failed to clear refresh_in_progress flag after completion: {}",
+                e
+            );
         }
 
         Ok(())

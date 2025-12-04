@@ -3924,6 +3924,7 @@ dependencies = [
  "num-bigint",
  "num-integer",
  "num-traits",
+ "once_cell",
  "parking_lot",
  "prost 0.13.5",
  "rand 0.8.5",

@@ -147,7 +147,6 @@ pub struct UserInfoResponse {
     pub status: String,
     pub user_id: Option<String>,
     pub ethereum_address: Option<String>,
-    pub hmac_constant: Option<String>,
     pub has_tweaked_share: Option<bool>,
     pub has_user_group_key: Option<bool>,
     pub derived_eth_address: Option<String>,

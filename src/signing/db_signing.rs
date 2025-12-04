@@ -71,15 +71,20 @@ impl DatabaseSigningNode {
 
     /// Derive a PeerId from a string (fallback method)
     fn derive_peer_id_from_string(id: &str) -> PeerId {
-        use libp2p::identity::Keypair;
+        use libp2p::identity::{ed25519, Keypair};
         use sha2::{Digest, Sha256};
 
         let mut hasher = Sha256::new();
         hasher.update(id.as_bytes());
-        let _hash = hasher.finalize();
-        // Use the hash as seed to generate a deterministic keypair
-        let keypair = Keypair::generate_ed25519();
-        PeerId::from(keypair.public())
+        let hash = hasher.finalize();
+
+        let mut key_bytes = [0u8; 32];
+        key_bytes.copy_from_slice(&hash[..32]);
+
+        let ed_kp = ed25519::Keypair::try_from_bytes(&mut key_bytes)
+            .unwrap_or_else(|_| ed25519::Keypair::generate());
+        let keypair = Keypair::from(ed_kp);
+        PeerId::from_public_key(&keypair.public())
     }
 
     pub fn set_threshold(&mut self, new_threshold: usize) {

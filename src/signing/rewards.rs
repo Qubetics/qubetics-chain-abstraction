@@ -209,7 +209,8 @@ impl SigningNode {
 
         for (solver, amounts) in solver_liquidity_map.iter() {
             let reward = if source_chain == "btc" || source_chain == "bitcoin" {
-                let solver_btc = amounts.first()
+                let solver_btc = amounts
+                    .first()
                     .and_then(|v| EthereumU256::from_dec_str(v).ok())
                     .unwrap_or_else(EthereumU256::zero);
                 if solver_btc.is_zero() || total_btc.is_zero() {

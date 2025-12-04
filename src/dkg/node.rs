@@ -151,6 +151,12 @@ impl DKGNode {
         if let Err(e) = self.storage.delete_final_public().await {
             failures.push(format!("delete final public key: {e}"));
         }
+        if let Err(e) = self.storage.delete_vault_tweaked_secret().await {
+            failures.push(format!("delete vault tweaked secret: {e}"));
+        }
+        if let Err(e) = self.storage.delete_vault_group_key().await {
+            failures.push(format!("delete vault group key: {e}"));
+        }
         if let Err(e) = self.storage.delete_polynomial().await {
             failures.push(format!("delete polynomial: {e}"));
         }
@@ -222,10 +228,7 @@ impl DKGNode {
     }
 
     pub async fn get_vault_group_key(&self) -> Option<ProjectivePoint> {
-        self.storage
-            .get_vault_group_key()
-            .await
-            .unwrap_or_default()
+        self.storage.get_vault_group_key().await.unwrap_or_default()
     }
 
     pub async fn is_completed(&self) -> bool {
@@ -303,10 +306,10 @@ impl DKGNode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use k256::AffinePoint;
     use crate::database::{Database, DatabaseConfig};
-    use tempfile::TempDir;
     use crate::utils;
+    use k256::AffinePoint;
+    use tempfile::TempDir;
 
     /// Helper to create a test database
     fn create_test_db() -> (Database, TempDir) {

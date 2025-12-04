@@ -3,7 +3,7 @@
 ///
 /// NOTE: This module contains the gossipsub message handling logic from the original network/mod.rs
 /// The implementation should be ported from lines ~2038-3559 of the original file
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use ff::PrimeField;
 use libp2p::{gossipsub::Message, PeerId};
 use tracing::{debug, error, info, warn};
@@ -11,7 +11,7 @@ use tracing::{debug, error, info, warn};
 use crate::{
     database::key_utils,
     signing::{BitcoinSigner, EthereumSigner},
-    types::{rpc::RPCRequest, signing::SigningMessage, GossipsubMessage},
+    types::{network as network_cfg, rpc::RPCRequest, signing::SigningMessage, GossipsubMessage},
 };
 
 use crate::network::transport::types::MpcNetworkLayer;
@@ -522,7 +522,8 @@ impl MpcNetworkLayer {
                 info!("📝 [GOSSIPSUB] Processing deposit intent received via gossipsub: {:?} (ID: {})", intent, intent_id);
 
                 // Calculate intent hash for transaction ID storage
-                let intent_hash = crate::utils::calculate_intent_hash(&intent);
+                let intent_hash = crate::utils::calculate_intent_hash(&intent)
+                    .map_err(|e| anyhow::anyhow!("Failed to calculate intent hash: {}", e))?;
                 info!("🔐 [GOSSIPSUB] Calculated intent hash: {}", intent_hash);
 
                 // Determine chain type based on transaction type:
@@ -618,7 +619,9 @@ impl MpcNetworkLayer {
                     } else if chain_to_use == "bitcoin" || chain_to_use == "btc" {
                         let mut chain_handler =
                             crate::chain_abstraction::ChainHandlerFactory::create_bitcoin_handler(
-                                "testnet".to_string(),
+                                network_cfg::network_type()
+                                    .bitcoin_network_label()
+                                    .to_string(),
                             );
 
                         // Set appropriate group public key in Bitcoin chain handler based on transaction type
@@ -712,10 +715,11 @@ impl MpcNetworkLayer {
                         signing_node.set_chain_handler(chain_handler.into());
                         info!("🔗 [GOSSIPSUB] Set Bitcoin chain handler");
                     } else {
-                        warn!(
-                            "❌ [GOSSIPSUB] Unsupported chain: {}, using default Ethereum handler",
+                        error!(
+                            "❌ [GOSSIPSUB] Unsupported chain requested: {}",
                             chain_to_use
                         );
+                        return Err(anyhow!("Unsupported chain: {}", chain_to_use));
                     }
 
                     // Get derived addresses based on transaction type

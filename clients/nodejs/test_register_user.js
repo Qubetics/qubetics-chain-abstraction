@@ -8,7 +8,7 @@ import { randomUUID } from 'crypto';
 // Configuration
 // =========================
 const RPC_BASE_URL = 'http://127.0.0.1:8082';
-const API_KEY = "arpit";
+const API_KEY = "2919cd546f2c4338bccb4794a3d6afba2282e5729653fc2c2ff6c5e0e194ar45";
 
 // 👉 Private key you provided (hex, no 0x prefix needed)
 const TEST_PRIVKEY = '11d281397918948a90ce5ce2a72945ee7929a5a932e5bb3d22664ba98f86755e';
@@ -27,11 +27,10 @@ const colors = {
   green: '\x1b[32m'
 };
 
-const oooo = 4752452342635
+const oooo = 2323232
 function log(message, color = 'reset') {
   console.log(`${colors[color]}${message}${colors.reset}`);
 }
-
 
 // =========================
 // HTTP helpers
@@ -43,7 +42,7 @@ async function testRegisterUser(ethereumAddress) {
     const response = await axios.post(
       `${RPC_BASE_URL}/register_user`,
       { ethereum_address: ethereumAddress },
-      { headers: { 'Content-Type': 'application/json', 'X-API-KEY': "arpit" }, timeout: 10000 }
+      { headers: { 'Content-Type': 'application/json', 'X-API-KEY': "2919cd546f2c4338bccb4794a3d6afba2282e5729653fc2c2ff6c5e0e194ar45" }, timeout: 10000 }
     );
 
     log(`✅ Registration successful!`, 'green');
@@ -157,12 +156,12 @@ async function testUserMpcDeposit({ wallet, amount, idempotencyKey }) {
     // Construct DepositIntent
     const depositIntent = {
       source_address: userInfo.data.derived_eth_address, // Use canonical address
-      target_address: 'mjM7dnr6ssFeKFVMj9i6quhTnD7fy3k3pG',
+      target_address: userInfo.data.derived_btc_address,
       source_chain: 'qubetics',
       target_chain: 'bitcoin',
       amount: amount, // Use the passed amount parameter
-      source_token: 'TICS',
-      target_token: 'BTC',
+      source_token: 'BTC',
+      target_token: 'TICS',
       timestamp: oooo,
     };
     console.log(`📊 Deposit Intent: ${JSON.stringify(depositIntent)}`, 'cyan');
@@ -178,7 +177,7 @@ async function testUserMpcDeposit({ wallet, amount, idempotencyKey }) {
       `${RPC_BASE_URL}/user_mpc_deposit`,
       { signature, msg: depositIntent },
       {
-        headers: { 'Content-Type': 'application/json', 'X-API-KEY': "arpit" },
+        headers: { 'Content-Type': 'application/json', 'X-API-KEY': "2919cd546f2c4338bccb4794a3d6afba2282e5729653fc2c2ff6c5e0e194ar45" },
         timeout: 60000 // 15 seconds timeout to match server processing time
       }
     );
@@ -282,24 +281,24 @@ async function runTests() {
   const signerAddr = await wallet.getAddress();
   log(`\n🔑 Derived signer address from TEST_PRIVKEY: ${signerAddr}`, 'blue');
 
-  // // 1) DKG status
-  // await testDKGStatus();
+  // 1) DKG status
+  await testDKGStatus();
 
-  // // 2) Register ONLY the derived address 
-  // const reg = await testRegisterUser(signerAddr);
+  // 2) Register ONLY the derived address 
+  const reg = await testRegisterUser(signerAddr);
 
-  // if (reg.success) {
-  //   log(`\n⏳ Waiting 2 seconds before checking user info...`, 'yellow');
-  //   await new Promise(r => setTimeout(r, 2000));
-  //   await testGetUserInfo(signerAddr);
-  // } else {
-  //   log(`\n⚠️ Registration failed; continuing to deposit test (is_registered may be false).`, 'yellow');
-  // }
+  if (reg.success) {
+    log(`\n⏳ Waiting 2 seconds before checking user info...`, 'yellow');
+    await new Promise(r => setTimeout(r, 2000));
+    await testGetUserInfo(signerAddr);
+  } else {
+    log(`\n⚠️ Registration failed; continuing to deposit test (is_registered may be false).`, 'yellow');
+  }
 
   // 3) MPC deposit test WITHOUT tx_id (should pass Some(signer) to handle_deposit_intent)
-  log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
-  const amount = 26000000000000000000
-  await testUserMpcDeposit({ wallet, amount });
+  // log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
+  // const amount = 13000000000000000000
+  // await testUserMpcDeposit({ wallet, amount });
 
   // const address = '0xbac113cebd9CB2fBD2a01B5CBC43D0fC0EBed5e9';
   // await testGetRewardSolver(address);

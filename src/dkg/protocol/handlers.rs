@@ -4,7 +4,7 @@ use crate::dkg::{
 };
 use crate::types::dkg::MSG_TOPIC_DKG;
 use crate::types::{GossipsubMessage, KeyShare, SerializablePoint, SerializableScalar};
-use crate::utils::hmac_helper::hmac256_from_addr;
+use crate::utils::hmac_helper::hmac_scalar_mod_n;
 use crate::{utils, NodeMembership};
 use anyhow::{anyhow, Result};
 use ff::PrimeField;
@@ -106,7 +106,7 @@ impl DKGNode {
     ) -> Result<()> {
         let raw_commitments: Vec<AffinePoint> = commitments.into_iter().map(|c| c.0).collect();
 
-        let node_index = self.get_node_index(node_manager.clone());
+        let node_index = self.get_node_index(node_manager.clone())?;
 
         info!("🔍 [DKG] === SHARE DISTRIBUTION RECEIVED ===");
         info!(
@@ -189,7 +189,7 @@ impl DKGNode {
         Ok(())
     }
 
-    fn get_node_index(&self, _node_manager: Box<dyn NodeMembership>) -> usize {
+    fn get_node_index(&self, _node_manager: Box<dyn NodeMembership>) -> Result<usize> {
         info!("🔍 [DKG] === NODE INDEX LOOKUP (DB-only) ===");
         info!("🔍 [DKG] Current node ID: {}", self.id);
 
@@ -199,22 +199,17 @@ impl DKGNode {
                     "🔢 [DKG] Using stored peer index {} for node {}",
                     idx, self.id
                 );
-                idx
+                Ok(idx)
             }
-            Ok(None) => {
-                warn!(
-                    "❌ [DKG] No stored peer index found for {}. Using default index 1.",
-                    self.id
-                );
-                1
-            }
-            Err(e) => {
-                warn!(
-                    "❌ [DKG] Failed to read peer index from DB for {}: {:?}. Using default index 1.",
-                    self.id, e
-                );
-                1
-            }
+            Ok(None) => Err(anyhow!(
+                "No stored peer index found for {}; cannot determine node index",
+                self.id
+            )),
+            Err(e) => Err(anyhow!(
+                "Failed to read peer index from DB for {}: {:?}",
+                self.id,
+                e
+            )),
         }
     }
 
@@ -297,7 +292,7 @@ impl DKGNode {
         is_valid: bool,
         node_manager: Box<dyn NodeMembership>,
     ) -> Result<()> {
-        self.storage.add_validation(&to, is_valid).await?;
+        self.storage.add_validation(&to, &from, is_valid).await?;
         info!("📊 Validation from {} to {}: {}", from, to, is_valid);
         self.check_completion(node_manager).await?;
         Ok(())
@@ -319,7 +314,7 @@ impl DKGNode {
             info!("🎉 [DKG] Validations: {:?}", validations);
             let valid_validations: usize = validations
                 .values()
-                .map(|v| v.iter().filter(|&&valid| valid).count())
+                .map(|v| v.values().filter(|&&valid| valid).count())
                 .sum();
             (shares.len(), validations.len(), valid_validations)
         };
@@ -354,7 +349,7 @@ impl DKGNode {
     async fn generate_group_key(&mut self, node_manager: Box<dyn NodeMembership>) -> Result<()> {
         let shares = self.storage.get_all_shares().await?;
         let commitments = self.storage.get_all_commitments().await?;
-        let node_index = self.get_node_index(node_manager);
+        let node_index = self.get_node_index(node_manager)?;
         info!(
             "🔍 [DKG] Node {} calculating final secret share using shares for index {}",
             self.id, node_index
@@ -432,14 +427,17 @@ impl DKGNode {
         info!("📬 Ethereum Address from Group Key: {}", eth_address);
         info!("📬 Bitcoin Address from Group Key: {}", btc_address);
 
-        let vault_hmac = hmac256_from_addr(&eth_address, &self.chain_code)
+        // Use hmac_scalar_mod_n to safely reduce HMAC modulo curve order
+        let vault_hmac_reduced = hmac_scalar_mod_n(&eth_address, &self.chain_code)
             .map_err(|e| anyhow!("Failed to generate vault HMAC: {}", e))?;
 
         info!("🏦 [DKG] === VAULT GENERATION STARTED ===");
         info!("🏦 [DKG] Main ETH address: {}", eth_address);
-        info!("🏦 [DKG] Vault HMAC derived (value redacted)");
+        info!("🏦 [DKG] Vault HMAC derived and reduced mod curve order (value redacted)");
 
-        let tweak_scalar = Scalar::from_repr(vault_hmac.into()).unwrap();
+        // from_repr will always succeed since vault_hmac_reduced is already reduced mod curve order
+        let tweak_scalar = Option::from(Scalar::from_repr(vault_hmac_reduced.into()))
+            .ok_or_else(|| anyhow!("Failed to create scalar from reduced vault HMAC"))?;
         info!("🏦 [DKG] Vault tweak scalar derived from HMAC (value redacted)");
 
         match self

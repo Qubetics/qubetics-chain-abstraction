@@ -25,7 +25,6 @@ impl MpcNetworkLayer {
         }
     }
 
-
     /// Store transaction ID based on transaction type
     pub(crate) async fn store_transaction_id_by_type(
         &self,
