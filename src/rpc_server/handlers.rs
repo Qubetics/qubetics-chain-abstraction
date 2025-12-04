@@ -496,7 +496,11 @@ pub(crate) async fn handle_user_mpc_deposit(
         }
     }
 
-    let transaction_type = if transaction_ids.len() == 1 {
+    let transaction_type = if transaction_ids.len() == 2 {
+        // Both user->network and network->target transactions exist:
+        // this is a vault-to-network case (funds are being sent back to the network).
+        TransactionType::VaultToNetwork
+    } else if transaction_ids.len() == 1 {
         TransactionType::NetworkToTarget
     } else if transaction_ids.is_empty() {
         TransactionType::UserToVault
