@@ -365,43 +365,19 @@ async fn main() -> Result<()> {
             info!("ℹ️ [MAIN] ./data directory not found, nothing to clean");
         }
         Err(e) => {
-            warn!(
-                "⚠️ [MAIN] Failed to remove ./data directory on startup: {:?}",
-                e
-            );
+            warn!("⚠️ [MAIN] Failed to remove ./data directory on startup: {:?}", e);
         }
     }
 
-    // Clean up log files inside ./logs directory but keep the directory itself
-    match fs::read_dir("./logs") {
-        Ok(entries) => {
-            let mut deleted_count = 0;
-            for entry in entries.flatten() {
-                if let Err(e) = fs::remove_file(entry.path()) {
-                    warn!(
-                        "⚠️ [MAIN] Failed to remove log file {:?}: {:?}",
-                        entry.path(),
-                        e
-                    );
-                } else {
-                    deleted_count += 1;
-                }
-            }
-            info!(
-                "🧹 [MAIN] Removed {} log files from ./logs directory on startup",
-                deleted_count
-            );
-        }
-        Err(e) if e.kind() == ErrorKind::NotFound => {
-            info!("ℹ️ [MAIN] ./logs directory not found, nothing to clean");
-        }
-        Err(e) => {
-            warn!(
-                "⚠️ [MAIN] Failed to read ./logs directory on startup: {:?}",
-                e
-            );
-        }
-    }
+    // match fs::remove_dir_all("./logs") {
+    //     Ok(_) => info!("🧹 [MAIN] Removed ./logs directory on startup"),
+    //     Err(e) if e.kind() == ErrorKind::NotFound => {
+    //         info!("ℹ️ [MAIN] ./logs directory not found, nothing to clean");
+    //     }
+    //     Err(e) => {
+    //         warn!("⚠️ [MAIN] Failed to remove ./logs directory on startup: {:?}", e);
+    //     }
+    // }
     context.init_database()?;
     context.init_network().await?;
     context.spawn_rpc().await?;
@@ -409,4 +385,3 @@ async fn main() -> Result<()> {
 
     Ok(())
 }
-
