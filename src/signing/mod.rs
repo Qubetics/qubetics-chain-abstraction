@@ -1769,7 +1769,7 @@ impl SigningNode {
 
             // Decide spend kind per input via prev script shape if available.
             let maybe_prev = unsigned_tx.inputs[idx].witness_utxo.as_ref();
-            
+
             // Log transaction details for debugging digest mismatches
             info!(
                 "🔍 [BTC-TX-DEBUG] Final node {} transaction details for round {} input {}: version={}, inputs={}, outputs={}, locktime={}",
@@ -1781,81 +1781,114 @@ impl SigningNode {
                 maybe_prev.as_ref().map(|w| format!("value={}, script_pubkey_len={}, script_pubkey=0x{}", 
                     w.value, w.script_pubkey.len(), hex::encode(&w.script_pubkey)))
             );
-            
-            let is_p2wpkh = maybe_prev
-                .map(|p| {
-                    p.script_pubkey.len() == 22
-                        && p.script_pubkey[0] == 0x00
-                        && p.script_pubkey[1] == 0x14
-                })
-                .unwrap_or(false);
+
+            // Ensure we have consistent prevout data; mixing missing witness info across peers
+            // causes different sighashes and invalid aggregated signatures.
+            let maybe_prev = maybe_prev.ok_or_else(|| {
+                error!(
+                    "[handle_btc_signature_for_round] round {} input {} missing witness_utxo data",
+                    round, idx
+                );
+                anyhow!("round {} input {} missing witness_utxo data", round, idx)
+            })?;
+
+            let is_p2wpkh = maybe_prev.script_pubkey.len() == 22
+                && maybe_prev.script_pubkey[0] == 0x00
+                && maybe_prev.script_pubkey[1] == 0x14;
+
+            if is_p2wpkh {
+                error!(
+                    "[handle_btc_signature_for_round] round {} input {} carries witness program but only P2PKH is supported",
+                    round, idx
+                );
+                bail!(
+                    "round {} input {} uses P2WPKH; only P2PKH supported",
+                    round,
+                    idx
+                );
+            }
+
+            // Validate script type against what was stored with the transaction.
+            match from_kind_hint {
+                SpendKind::P2WPKH => {
+                    if !is_p2wpkh {
+                        error!(
+                            "[handle_btc_signature_for_round] round {} input {} expected P2WPKH but got script_pubkey len={} prefix={:02x?}",
+                            round,
+                            idx,
+                            maybe_prev.script_pubkey.len(),
+                            maybe_prev.script_pubkey.get(0..2)
+                        );
+                        bail!("round {} input {} script is not P2WPKH", round, idx);
+                    }
+                }
+                SpendKind::P2PKH => {
+                    let spk = &maybe_prev.script_pubkey;
+                    let is_p2pkh = spk.len() == 25
+                        && spk[0] == 0x76
+                        && spk[1] == 0xA9
+                        && spk[2] == 0x14
+                        && spk[23] == 0x88
+                        && spk[24] == 0xAC;
+                    if !is_p2pkh {
+                        error!(
+                            "[handle_btc_signature_for_round] round {} input {} expected P2PKH but got len={} prefix={:02x?}",
+                            round,
+                            idx,
+                            spk.len(),
+                            spk.get(0..3)
+                        );
+                        bail!(
+                            "round {} input {} script is not canonical P2PKH",
+                            round,
+                            idx
+                        );
+                    }
+                }
+            }
 
             info!(
                 "🔍 [BTC-TX-DEBUG] Final node {} input {}: is_p2wpkh={}, group_h160=0x{}",
-                self.id, idx, is_p2wpkh, hex::encode(group_h160)
+                self.id,
+                idx,
+                is_p2wpkh,
+                hex::encode(group_h160)
             );
 
             // Build the per-input sighash digest (using stashed prev data; reconstruct P2PKH if absent).
-            let digest = if is_p2wpkh {
-                let prev = maybe_prev.expect("Some");
-                let program20 = &prev.script_pubkey[2..22];
-
+            // LEGACY P2PKH only: Use the provided prev script (we bail earlier if missing).
+            let prev_spk_owned: Vec<u8> = {
                 info!(
-                    "🔍 [BTC-TX-DEBUG] Final node {} input {}: P2WPKH detected, prev_value={}, program20=0x{}",
-                    self.id, idx, prev.value, hex::encode(program20)
+                    "🔍 [BTC-TX-DEBUG] Final node {} input {}: P2PKH detected, using witness_utxo script_pubkey (len={})",
+                    self.id, idx, maybe_prev.script_pubkey.len()
                 );
-
-                // optional safety: validate stashed pubkey matches program
-                if group_h160 != program20 {
-                    warn!(
-                    "[handle_btc_signature_for_round] round {} input {}: group HASH160 != witness program ({} != {})",
-                    round, idx, hex::encode(group_h160), hex::encode(program20)
-                );
-                }
-
-                self.compute_bip143_sighash_p2wpkh(&unsigned_tx, idx, prev.value, program20)?
-            } else {
-                // LEGACY P2PKH: Need 25-byte prev script. If missing, RECONSTRUCT from group_h160.
-                let prev_spk_owned: Vec<u8> = if let Some(prev) = maybe_prev {
-                    info!(
-                        "🔍 [BTC-TX-DEBUG] Final node {} input {}: P2PKH detected, using witness_utxo script_pubkey (len={})",
-                        self.id, idx, prev.script_pubkey.len()
-                    );
-                    prev.script_pubkey.clone()
-                } else {
-                    info!(
-                        "🔍 [BTC-TX-DEBUG] Final node {} input {}: P2PKH detected, reconstructing script_pubkey from group_h160",
-                        self.id, idx
-                    );
-                    let mut v = Vec::with_capacity(25);
-                    v.extend_from_slice(&[0x76, 0xa9, 0x14]); // OP_DUP OP_HASH160 PUSH20
-                    v.extend_from_slice(&group_h160);
-                    v.extend_from_slice(&[0x88, 0xac]); // OP_EQUALVERIFY OP_CHECKSIG
-                    v
-                };
-
-                if prev_spk_owned.len() != 25
-                    || !(prev_spk_owned[0] == 0x76
-                        && prev_spk_owned[1] == 0xA9
-                        && prev_spk_owned[2] == 0x14
-                        && prev_spk_owned[23] == 0x88
-                        && prev_spk_owned[24] == 0xAC)
-                {
-                    error!("[handle_btc_signature_for_round] round {} input {} prev script not canonical P2PKH", round, idx);
-                    bail!(
-                        "round {} input {} prev script not canonical P2PKH",
-                        round,
-                        idx
-                    );
-                }
-
-                info!(
-                    "🔍 [BTC-TX-DEBUG] Final node {} input {}: P2PKH prev_spk=0x{}",
-                    self.id, idx, hex::encode(&prev_spk_owned)
-                );
-
-                self.compute_legacy_sighash_all_p2pkh(&unsigned_tx, idx, &prev_spk_owned)?
+                maybe_prev.script_pubkey.clone()
             };
+
+            if prev_spk_owned.len() != 25
+                || !(prev_spk_owned[0] == 0x76
+                    && prev_spk_owned[1] == 0xA9
+                    && prev_spk_owned[2] == 0x14
+                    && prev_spk_owned[23] == 0x88
+                    && prev_spk_owned[24] == 0xAC)
+            {
+                error!("[handle_btc_signature_for_round] round {} input {} prev script not canonical P2PKH", round, idx);
+                bail!(
+                    "round {} input {} prev script not canonical P2PKH",
+                    round,
+                    idx
+                );
+            }
+
+            info!(
+                "🔍 [BTC-TX-DEBUG] Final node {} input {}: P2PKH prev_spk=0x{}",
+                self.id,
+                idx,
+                hex::encode(&prev_spk_owned)
+            );
+
+            let digest =
+                self.compute_legacy_sighash_all_p2pkh(&unsigned_tx, idx, &prev_spk_owned)?;
 
             // Log the digest used for verification/aggregation (should match what each node signed)
             info!(
