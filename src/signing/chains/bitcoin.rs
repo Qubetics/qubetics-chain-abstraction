@@ -154,8 +154,23 @@ impl SigningNode {
         // Build per-input digests (either BIP143 or legacy SIGHASH_ALL).
         let mut digests: Vec<[u8; 32]> = Vec::with_capacity(tx.inputs.len());
 
+        // Log transaction details for debugging digest mismatches
+        info!(
+            "🔍 [BTC-TX-DEBUG] Node {} transaction details: version={}, inputs={}, outputs={}, locktime={}",
+            self.id, tx.version, tx.inputs.len(), tx.outputs.len(), tx.lock_time
+        );
+
         for (i, inp) in tx.inputs.iter().enumerate() {
             let maybe_prev = inp.witness_utxo.as_ref();
+            
+            // Log input details for debugging
+            info!(
+                "🔍 [BTC-TX-DEBUG] Node {} input {}: txid={}, vout={}, sequence={}, witness_utxo={:?}",
+                self.id, i, inp.txid, inp.vout, inp.sequence,
+                maybe_prev.as_ref().map(|w| format!("value={}, script_pubkey_len={}, script_pubkey=0x{}", 
+                    w.value, w.script_pubkey.len(), hex::encode(&w.script_pubkey)))
+            );
+            
             let is_p2wpkh = maybe_prev
                 .map(|p| {
                     p.script_pubkey.len() == 22
@@ -164,10 +179,20 @@ impl SigningNode {
                 })
                 .unwrap_or(false);
 
+            info!(
+                "🔍 [BTC-TX-DEBUG] Node {} input {}: is_p2wpkh={}, signer_h160=0x{}",
+                self.id, i, is_p2wpkh, hex::encode(signer_h160)
+            );
+
             if is_p2wpkh {
                 // --- P2WPKH (v0) ---
                 let prev = maybe_prev.expect("Some above");
                 let program20 = &prev.script_pubkey[2..22];
+
+                info!(
+                    "🔍 [BTC-TX-DEBUG] Node {} input {}: P2WPKH detected, prev_value={}, program20=0x{}",
+                    self.id, i, prev.value, hex::encode(program20)
+                );
 
                 // Safety: signer pubkey must match the witness program
                 if signer_h160 != program20 {
@@ -185,8 +210,16 @@ impl SigningNode {
                 // --- Legacy P2PKH ---
                 // Prefer using the carried prev script if present; otherwise reconstruct from signer_h160.
                 let prev_spk: Vec<u8> = if let Some(prev) = maybe_prev {
+                    info!(
+                        "🔍 [BTC-TX-DEBUG] Node {} input {}: P2PKH detected, using witness_utxo script_pubkey (len={})",
+                        self.id, i, prev.script_pubkey.len()
+                    );
                     prev.script_pubkey.clone()
                 } else {
+                    info!(
+                        "🔍 [BTC-TX-DEBUG] Node {} input {}: P2PKH detected, reconstructing script_pubkey from signer_h160",
+                        self.id, i
+                    );
                     let mut v = Vec::with_capacity(25);
                     v.extend_from_slice(&[0x76, 0xa9, 0x14]); // OP_DUP OP_HASH160 PUSH20
                     v.extend_from_slice(&signer_h160);
@@ -203,6 +236,11 @@ impl SigningNode {
                 {
                     anyhow::bail!("Input {}: prevout script is not canonical P2PKH", i);
                 }
+
+                info!(
+                    "🔍 [BTC-TX-DEBUG] Node {} input {}: P2PKH prev_spk=0x{}",
+                    self.id, i, hex::encode(&prev_spk)
+                );
 
                 let digest = self.compute_legacy_sighash_all_p2pkh(tx, i, &prev_spk)?;
                 digests.push(digest);
@@ -256,6 +294,16 @@ impl SigningNode {
             let msg = Message::from_digest_slice(digest)?;
             let sig = self.create_ecdsa_signature_with_signing_key(&msg, &signing_key)?;
             per_input_sigs.push((i, sig));
+            
+            // Log the digest that this node signs with its share for debugging transaction failures
+            info!(
+                "🔐 [BTC-TX-DIGEST] Node {} signing digest for round {} input {}: 0x{} (DKG index: {})",
+                self.id,
+                current_round,
+                i,
+                hex::encode(digest),
+                dkg_index
+            );
             info!(
                 "✅ [SIGNING] Made signature for input {} (digest {})",
                 i,
