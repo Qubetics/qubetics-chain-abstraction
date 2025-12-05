@@ -1796,6 +1796,18 @@ impl SigningNode {
                 && maybe_prev.script_pubkey[0] == 0x00
                 && maybe_prev.script_pubkey[1] == 0x14;
 
+            if is_p2wpkh {
+                error!(
+                    "[handle_btc_signature_for_round] round {} input {} carries witness program but only P2PKH is supported",
+                    round, idx
+                );
+                bail!(
+                    "round {} input {} uses P2WPKH; only P2PKH supported",
+                    round,
+                    idx
+                );
+            }
+
             // Validate script type against what was stored with the transaction.
             match from_kind_hint {
                 SpendKind::P2WPKH => {
@@ -1844,57 +1856,39 @@ impl SigningNode {
             );
 
             // Build the per-input sighash digest (using stashed prev data; reconstruct P2PKH if absent).
-            let digest = if is_p2wpkh {
-                let program20 = &maybe_prev.script_pubkey[2..22];
-
+            // LEGACY P2PKH only: Use the provided prev script (we bail earlier if missing).
+            let prev_spk_owned: Vec<u8> = {
                 info!(
-                    "🔍 [BTC-TX-DEBUG] Final node {} input {}: P2WPKH detected, prev_value={}, program20=0x{}",
-                    self.id, idx, maybe_prev.value, hex::encode(program20)
+                    "🔍 [BTC-TX-DEBUG] Final node {} input {}: P2PKH detected, using witness_utxo script_pubkey (len={})",
+                    self.id, idx, maybe_prev.script_pubkey.len()
                 );
-
-                // optional safety: validate stashed pubkey matches program
-                if group_h160 != program20 {
-                    warn!(
-                    "[handle_btc_signature_for_round] round {} input {}: group HASH160 != witness program ({} != {})",
-                    round, idx, hex::encode(group_h160), hex::encode(program20)
-                );
-                }
-
-                self.compute_bip143_sighash_p2wpkh(&unsigned_tx, idx, maybe_prev.value, program20)?
-            } else {
-                // LEGACY P2PKH: Use the provided prev script (we bail earlier if missing).
-                let prev_spk_owned: Vec<u8> = {
-                    info!(
-                        "🔍 [BTC-TX-DEBUG] Final node {} input {}: P2PKH detected, using witness_utxo script_pubkey (len={})",
-                        self.id, idx, maybe_prev.script_pubkey.len()
-                    );
-                    maybe_prev.script_pubkey.clone()
-                };
-
-                if prev_spk_owned.len() != 25
-                    || !(prev_spk_owned[0] == 0x76
-                        && prev_spk_owned[1] == 0xA9
-                        && prev_spk_owned[2] == 0x14
-                        && prev_spk_owned[23] == 0x88
-                        && prev_spk_owned[24] == 0xAC)
-                {
-                    error!("[handle_btc_signature_for_round] round {} input {} prev script not canonical P2PKH", round, idx);
-                    bail!(
-                        "round {} input {} prev script not canonical P2PKH",
-                        round,
-                        idx
-                    );
-                }
-
-                info!(
-                    "🔍 [BTC-TX-DEBUG] Final node {} input {}: P2PKH prev_spk=0x{}",
-                    self.id,
-                    idx,
-                    hex::encode(&prev_spk_owned)
-                );
-
-                self.compute_legacy_sighash_all_p2pkh(&unsigned_tx, idx, &prev_spk_owned)?
+                maybe_prev.script_pubkey.clone()
             };
+
+            if prev_spk_owned.len() != 25
+                || !(prev_spk_owned[0] == 0x76
+                    && prev_spk_owned[1] == 0xA9
+                    && prev_spk_owned[2] == 0x14
+                    && prev_spk_owned[23] == 0x88
+                    && prev_spk_owned[24] == 0xAC)
+            {
+                error!("[handle_btc_signature_for_round] round {} input {} prev script not canonical P2PKH", round, idx);
+                bail!(
+                    "round {} input {} prev script not canonical P2PKH",
+                    round,
+                    idx
+                );
+            }
+
+            info!(
+                "🔍 [BTC-TX-DEBUG] Final node {} input {}: P2PKH prev_spk=0x{}",
+                self.id,
+                idx,
+                hex::encode(&prev_spk_owned)
+            );
+
+            let digest =
+                self.compute_legacy_sighash_all_p2pkh(&unsigned_tx, idx, &prev_spk_owned)?;
 
             // Log the digest used for verification/aggregation (should match what each node signed)
             info!(
