@@ -1143,8 +1143,7 @@ pub async fn create_chain_transaction_from_contract_call(
         &calldata_hex,
         chain_id,
     )
-    .await
-    .unwrap_or(300000);
+    .await?; // Abort if gas estimation fails - indicates transaction would revert
     let gas_limit = estimated_gas + (estimated_gas / 10); // Add 10% buffer
 
     info!(
@@ -1229,8 +1228,7 @@ pub async fn create_solver_rewards_update_transaction(
         &calldata_hex,
         chain_id,
     )
-    .await
-    .unwrap_or(300000);
+    .await?; // Abort if gas estimation fails - indicates transaction would revert
     let gas_limit = estimated_gas + (estimated_gas / 10);
 
     let gas_price = get_gas_price_for_chain("qubetics", chain_id)
@@ -1301,8 +1299,7 @@ pub async fn create_solver_remove_liquidity_transaction(
         &calldata_hex,
         chain_id,
     )
-    .await
-    .unwrap_or(200000);
+    .await?; // Abort if gas estimation fails - indicates transaction would revert
     let gas_limit = estimated_gas + (estimated_gas / 5).max(25_000);
     info!(
         "🔧 [CONTRACT][LIQ] Estimated gas={} -> gas_limit={}",
@@ -1373,8 +1370,7 @@ pub async fn create_solver_add_liquidity_transaction(
         &calldata_hex,
         chain_id,
     )
-    .await
-    .unwrap_or(200000);
+    .await?; // Abort if gas estimation fails - indicates transaction would revert
     let gas_limit = estimated_gas + (estimated_gas / 5).max(25_000);
     info!(
         "🔧 [CONTRACT][LIQ] Estimated gas={} -> gas_limit={}",
