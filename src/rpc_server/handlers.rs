@@ -122,8 +122,7 @@ pub(crate) async fn handle_deposit_intent(
 }
 
 fn parse_withdraw_amount(value: &str, asset_label: &str) -> Result<U256, String> {
-    U256::from_dec_str(value)
-        .map_err(|_| format!("Invalid {asset_label} withdraw amount: {value}"))
+    U256::from_dec_str(value).map_err(|_| format!("Invalid {asset_label} withdraw amount: {value}"))
 }
 
 fn ensure_withdraw_amount_bounds(value: &U256, asset_label: &str) -> Result<(), String> {
@@ -197,6 +196,26 @@ pub(crate) async fn handle_register_user(
         "👤 HTTP: Received user registration request for address: {}",
         request.ethereum_address
     );
+
+    // Block user registration while DKG shares are being refreshed
+    if dkg_storage
+        .is_refresh_in_progress()
+        .await
+        .unwrap_or(false)
+    {
+        warn!("⚠️ HTTP: Blocking register_user - shares are getting refreshed");
+        let error_response = EnhancedUserRegistrationResponse {
+            status: "error".to_string(),
+            message: "shares are getting refreshed".to_string(),
+            derived_eth_address: None,
+            derived_btc_address: None,
+            error: Some(
+                RpcError::DkgNotReady("shares are getting refreshed".to_string())
+                    .to_error_response(),
+            ),
+        };
+        return Ok(warp::reply::json(&error_response));
+    }
 
     // Input validation
     let addr_cs = match super::errors::validate_ethereum_address(&request.ethereum_address) {
@@ -309,8 +328,9 @@ pub(crate) async fn handle_register_user(
                         }
                     }
                     None => {
-                        error!("❌ User disappeared from registry during address derivation");
-                        break;
+                        warn!(
+                            "⚠️ User temporarily missing from registry during address derivation, retrying..."
+                        );
                     }
                 }
 
@@ -324,11 +344,31 @@ pub(crate) async fn handle_register_user(
                 }
             }
 
-            if attempts >= MAX_ATTEMPTS {
-                warn!(
-                    "⚠️ Derived addresses not available after {} attempts",
-                    MAX_ATTEMPTS
+            // Check if addresses were generated within the timeout
+            if final_registration.derived_eth_address.is_none()
+                || final_registration.derived_btc_address.is_none()
+            {
+                error!(
+                    "❌ HTTP: Derived addresses not available after {} attempts ({} seconds)",
+                    MAX_ATTEMPTS, MAX_ATTEMPTS
                 );
+                let error_response = EnhancedUserRegistrationResponse {
+                    status: "error".to_string(),
+                    message: format!(
+                        "Derived addresses (ETH/BTC) were not generated within {} seconds. Please try again later.",
+                        MAX_ATTEMPTS
+                    ),
+                    derived_eth_address: final_registration.derived_eth_address,
+                    derived_btc_address: final_registration.derived_btc_address,
+                    error: Some(
+                        RpcError::Timeout(format!(
+                            "Derived addresses not generated within {} seconds",
+                            MAX_ATTEMPTS
+                        ))
+                        .to_error_response(),
+                    ),
+                };
+                return Ok(warp::reply::json(&error_response));
             }
 
             if let Some(eth_addr) = &final_registration.derived_eth_address {
@@ -380,6 +420,29 @@ pub(crate) async fn handle_user_mpc_deposit(
     dkg_storage: Arc<DkgStorage>,
     request_context: RequestContext,
 ) -> Result<impl warp::Reply, warp::Rejection> {
+    // Block deposits while DKG shares are being refreshed
+    if dkg_storage
+        .is_refresh_in_progress()
+        .await
+        .unwrap_or(false)
+    {
+        warn!(
+            request_id = %request_context.request_id,
+            "⚠️ HTTP: Blocking user_mpc_deposit - shares are getting refreshed"
+        );
+        return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+            status: "error".to_string(),
+            signer_address: "".to_string(),
+            is_registered: false,
+            amount: req.msg.amount,
+            user_to_network_tx_id: None,
+            network_to_target_tx_id: None,
+            vault_to_network_tx_id: None,
+            final_solver_id: None,
+            error_message: Some("shares are getting refreshed".to_string()),
+        }));
+    }
+
     let intent_json = match serde_json::to_string(&req.msg) {
         Ok(json) => json,
         Err(e) => {
@@ -413,51 +476,7 @@ pub(crate) async fn handle_user_mpc_deposit(
 
     info!("🧾 HTTP: user_mpc_deposit received");
 
-    if let Some(ref idempotency_key) = request_context.idempotency_key {
-        match user_intent_manager
-            .register_idempotency_key(idempotency_key, &intent_hash_hex)
-            .await
-        {
-            Ok(already_seen) => {
-                if already_seen {
-                    info!(
-                        request_id = %request_context.request_id,
-                        "♻️ Idempotent replay detected for deposit intent"
-                    );
-                } else {
-                    info!(
-                        request_id = %request_context.request_id,
-                        "🆔 Recorded new idempotency key for deposit intent"
-                    );
-                }
-            }
-            Err(e) => {
-                error!(
-                    request_id = %request_context.request_id,
-                    error = %e,
-                    "❌ Idempotency key reuse with different intent"
-                );
-                return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
-                    status: "error".to_string(),
-                    signer_address: "".to_string(),
-                    is_registered: false,
-                    amount: req.msg.amount,
-                    user_to_network_tx_id: None,
-                    network_to_target_tx_id: None,
-                    vault_to_network_tx_id: None,
-                    final_solver_id: None,
-                    error_message: Some(
-                        "Idempotency key already used for another intent".to_string(),
-                    ),
-                }));
-            }
-        }
-    } else {
-        warn!(
-            request_id = %request_context.request_id,
-            "⚠️ No Idempotency-Key header provided for deposit request"
-        );
-    }
+    info!("🧾 HTTP: user_mpc_deposit received");
 
     let mut transaction_ids = Vec::new();
     let tx_mapping = user_intent_manager
@@ -477,7 +496,11 @@ pub(crate) async fn handle_user_mpc_deposit(
         }
     }
 
-    let transaction_type = if transaction_ids.len() == 1 {
+    let transaction_type = if transaction_ids.len() == 2 {
+        // Both user->network and network->target transactions exist:
+        // this is a vault-to-network case (funds are being sent back to the network).
+        TransactionType::VaultToNetwork
+    } else if transaction_ids.len() == 1 {
         TransactionType::NetworkToTarget
     } else if transaction_ids.is_empty() {
         TransactionType::UserToVault
@@ -816,7 +839,6 @@ pub(crate) async fn handle_get_user_info(
                 status: "error".to_string(),
                 user_id: None,
                 ethereum_address: None,
-                hmac_constant: None,
                 has_tweaked_share: None,
                 has_user_group_key: None,
                 derived_eth_address: None,
@@ -841,7 +863,6 @@ pub(crate) async fn handle_get_user_info(
                 status: "success".to_string(),
                 user_id: Some(registration.user_id),
                 ethereum_address: Some(registration.ethereum_address),
-                hmac_constant: Some(hex::encode(registration.hmac_constant)),
                 has_tweaked_share: Some(registration.tweaked_secret_share.is_some()),
                 has_user_group_key: Some(registration.user_group_key.is_some()),
                 derived_eth_address: registration.derived_eth_address,
@@ -859,7 +880,6 @@ pub(crate) async fn handle_get_user_info(
                 status: "error".to_string(),
                 user_id: None,
                 ethereum_address: None,
-                hmac_constant: None,
                 has_tweaked_share: None,
                 has_user_group_key: None,
                 derived_eth_address: None,
@@ -947,7 +967,22 @@ pub(crate) async fn handle_get_dkg_status(
 
 pub(crate) async fn handle_start_dkg(
     message_tx: Arc<Mutex<mpsc::Sender<ChannelMessage>>>,
+    dkg_storage: Arc<DkgStorage>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
+    // Block manual DKG start while a refresh is in progress
+    if dkg_storage
+        .is_refresh_in_progress()
+        .await
+        .unwrap_or(false)
+    {
+        warn!("⚠️ HTTP: Blocking start_dkg - shares are getting refreshed");
+        return Ok(warp::reply::json(&TransactionResponse {
+            tx_hash: "".to_string(),
+            status: "error".to_string(),
+            message: "shares are getting refreshed".to_string(),
+        }));
+    }
+
     info!("🚀 HTTP: RPC request to start DKG");
 
     let dkg_request = RPCRequest::StartADKG;
@@ -1049,7 +1084,28 @@ pub(crate) async fn handle_claim_reward(
     user_intent_manager: Arc<UserIntentManager>,
     _reward_storage: Arc<RewardStorage>,
     message_tx: Arc<Mutex<mpsc::Sender<ChannelMessage>>>,
+    dkg_storage: Arc<DkgStorage>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
+    // Block reward claims while DKG shares are being refreshed
+    if dkg_storage
+        .is_refresh_in_progress()
+        .await
+        .unwrap_or(false)
+    {
+        warn!("⚠️ HTTP: Blocking claim_reward - shares are getting refreshed");
+        return Ok(warp::reply::json(&ClaimRewardResponse {
+            status: "error".to_string(),
+            ethereum_address: req.ethereum_address,
+            btc_address: req.btc_address,
+            reward_btc: None,
+            reward_tics: None,
+            message: "shares are getting refreshed".to_string(),
+            error_message: Some("shares are getting refreshed".to_string()),
+            tics_reward_tx_id: None,
+            btc_reward_tx_id: None,
+        }));
+    }
+
     info!(
         "🎁 HTTP: claim_reward request for ETH: {:?}, BTC: {:?}",
         req.ethereum_address, req.btc_address
@@ -1345,7 +1401,29 @@ pub(crate) async fn handle_withdraw_liquidity(
     req: WithdrawLiquidityRequest,
     user_intent_manager: Arc<UserIntentManager>,
     message_tx: Arc<Mutex<mpsc::Sender<ChannelMessage>>>,
+    dkg_storage: Arc<DkgStorage>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
+    // Block liquidity withdrawals while DKG shares are being refreshed
+    if dkg_storage
+        .is_refresh_in_progress()
+        .await
+        .unwrap_or(false)
+    {
+        warn!("⚠️ HTTP: Blocking withdraw_liquidity - shares are getting refreshed");
+        return Ok(warp::reply::json(&WithdrawLiquidityResponse {
+            status: "error".to_string(),
+            solver_address: "".to_string(),
+            liquidity_btc: None,
+            liquidity_tics: None,
+            ethereum_address: req.ethereum_address.clone(),
+            btc_address: req.btc_address.clone(),
+            tics_withdraw_tx_id: None,
+            btc_withdraw_tx_id: None,
+            message: "shares are getting refreshed".to_string(),
+            error_message: Some("shares are getting refreshed".to_string()),
+        }));
+    }
+
     info!(
         "💧 HTTP: withdraw_liquidity request with message: {}",
         req.message
@@ -1428,25 +1506,26 @@ pub(crate) async fn handle_withdraw_liquidity(
     // Check if address is a valid solver by checking liquidity in database
     let database = user_intent_manager.get_database();
     let solver_liquidity_key = format!("solver_liquidity:{}", normalized_address.to_lowercase());
-    
-    let liquidity_amounts: Option<Vec<String>> = match database.get_string::<Vec<String>>(&solver_liquidity_key) {
-        Ok(amounts) => amounts,
-        Err(e) => {
-            warn!("❌ Failed to get solver liquidity from database: {}", e);
-            return Ok(warp::reply::json(&WithdrawLiquidityResponse {
-                status: "error".to_string(),
-                solver_address: normalized_address,
-                liquidity_btc: None,
-                liquidity_tics: None,
-                ethereum_address: req.ethereum_address.clone(),
-                btc_address: req.btc_address.clone(),
-                tics_withdraw_tx_id: None,
-                btc_withdraw_tx_id: None,
-                message: "Failed to check solver liquidity".to_string(),
-                error_message: Some(format!("Database error: {e}")),
-            }));
-        }
-    };
+
+    let liquidity_amounts: Option<Vec<String>> =
+        match database.get_string::<Vec<String>>(&solver_liquidity_key) {
+            Ok(amounts) => amounts,
+            Err(e) => {
+                warn!("❌ Failed to get solver liquidity from database: {}", e);
+                return Ok(warp::reply::json(&WithdrawLiquidityResponse {
+                    status: "error".to_string(),
+                    solver_address: normalized_address,
+                    liquidity_btc: None,
+                    liquidity_tics: None,
+                    ethereum_address: req.ethereum_address.clone(),
+                    btc_address: req.btc_address.clone(),
+                    tics_withdraw_tx_id: None,
+                    btc_withdraw_tx_id: None,
+                    message: "Failed to check solver liquidity".to_string(),
+                    error_message: Some(format!("Database error: {e}")),
+                }));
+            }
+        };
 
     // Check if solver exists (has liquidity entry)
     if liquidity_amounts.is_none() {
@@ -1564,11 +1643,7 @@ pub(crate) async fn handle_withdraw_liquidity(
     };
 
     let withdraw_btc_amount: Option<String> = if req.amount_btc.is_some() {
-        match select_withdraw_amount(
-            req.amount_btc.as_ref(),
-            liquidity_btc_str.as_ref(),
-            "BTC",
-        ) {
+        match select_withdraw_amount(req.amount_btc.as_ref(), liquidity_btc_str.as_ref(), "BTC") {
             Ok(value) => value,
             Err(msg) => {
                 return Ok(warp::reply::json(&WithdrawLiquidityResponse {
@@ -1607,7 +1682,6 @@ pub(crate) async fn handle_withdraw_liquidity(
             error_message: Some(msg),
         }));
     }
-
 
     if withdraw_tics_amount.is_some() && req.ethereum_address.is_none() {
         let msg = "Ethereum address is required to withdraw TICS liquidity".to_string();
@@ -1860,7 +1934,26 @@ pub(crate) async fn handle_add_liquidity(
     req: AddLiquidityRequest,
     _user_intent_manager: Arc<UserIntentManager>,
     message_tx: Arc<Mutex<mpsc::Sender<ChannelMessage>>>,
+    dkg_storage: Arc<DkgStorage>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
+    // Block add_liquidity while DKG shares are being refreshed
+    if dkg_storage
+        .is_refresh_in_progress()
+        .await
+        .unwrap_or(false)
+    {
+        warn!("⚠️ HTTP: Blocking add_liquidity - shares are getting refreshed");
+        return Ok(warp::reply::json(&AddLiquidityResponse {
+            status: "error".to_string(),
+            solver_address: "".to_string(),
+            solver_id: req.solver_id.clone(),
+            amount_tics: req.amount_tics.clone(),
+            amount_btc: req.amount_btc.clone(),
+            message: "shares are getting refreshed".to_string(),
+            error_message: Some("shares are getting refreshed".to_string()),
+        }));
+    }
+
     info!(
         "💧 HTTP: add_liquidity request with message: {}, solver_id: {}",
         req.message, req.solver_id
@@ -1959,9 +2052,7 @@ pub(crate) async fn handle_add_liquidity(
         Err(e1) => match recover_eth_address_secp(msg_bytes, &compact, v, false) {
             Ok(addr) => addr,
             Err(e2) => {
-                let err_msg = format!(
-                    "Failed to recover signature: personal_sign={e1}, raw={e2}"
-                );
+                let err_msg = format!("Failed to recover signature: personal_sign={e1}, raw={e2}");
                 return Ok(warp::reply::json(&AddLiquidityResponse {
                     status: "error".to_string(),
                     solver_address: "".to_string(),
@@ -2072,9 +2163,7 @@ pub(crate) async fn handle_add_liquidity(
     {
         Ok(addr) => addr,
         Err(e) => {
-            let msg = format!(
-                "Solver not found for solver_id {normalized_solver_id}: {e}"
-            );
+            let msg = format!("Solver not found for solver_id {normalized_solver_id}: {e}");
             return Ok(warp::reply::json(&AddLiquidityResponse {
                 status: "error".to_string(),
                 solver_address: normalized_address.clone(),
@@ -2088,9 +2177,7 @@ pub(crate) async fn handle_add_liquidity(
     };
 
     if solver_address_onchain == Address::zero() {
-        let msg = format!(
-            "Solver {normalized_solver_id} is not registered on contract"
-        );
+        let msg = format!("Solver {normalized_solver_id} is not registered on contract");
         return Ok(warp::reply::json(&AddLiquidityResponse {
             status: "error".to_string(),
             solver_address: normalized_address.clone(),

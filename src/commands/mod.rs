@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::{collections::HashMap, future::Future, pin::Pin};
+use tracing::warn;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Command {
@@ -9,8 +10,29 @@ pub enum Command {
     ConsensusProposal { round: u64, value: Vec<u8> },
 }
 
+type CommandFuture = Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>>;
+
 pub struct CommandProcessor {
-    handlers: HashMap<String, Box<dyn Fn(Command) -> anyhow::Result<()> + Send + Sync>>,
+    handlers: HashMap<CommandKind, Box<dyn Fn(Command) -> CommandFuture + Send + Sync>>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub enum CommandKind {
+    ShareGeneration,
+    SignMessage,
+    UpdateState,
+    ConsensusProposal,
+}
+
+impl Command {
+    pub fn kind(&self) -> CommandKind {
+        match self {
+            Command::ShareGeneration { .. } => CommandKind::ShareGeneration,
+            Command::SignMessage { .. } => CommandKind::SignMessage,
+            Command::UpdateState { .. } => CommandKind::UpdateState,
+            Command::ConsensusProposal { .. } => CommandKind::ConsensusProposal,
+        }
+    }
 }
 
 impl Default for CommandProcessor {
@@ -26,34 +48,25 @@ impl CommandProcessor {
         }
     }
 
-    pub fn register_handler<F>(&mut self, command_type: String, handler: F)
+    pub fn register_handler<F, Fut>(&mut self, command_kind: CommandKind, handler: F)
     where
-        F: Fn(Command) -> anyhow::Result<()> + Send + Sync + 'static,
+        F: Fn(Command) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = anyhow::Result<()>> + Send + 'static,
     {
-        self.handlers.insert(command_type, Box::new(handler));
+        self.handlers
+            .insert(command_kind, Box::new(move |cmd| Box::pin(handler(cmd))));
     }
 
-    pub async fn handle_message(&mut self, msg: Command) -> anyhow::Result<()> {
-        match msg {
-            Command::ShareGeneration { threshold } => {
-                if let Some(handler) = self.handlers.get("share_generation") {
-                    handler(Command::ShareGeneration { threshold })?;
-                }
+    pub async fn handle_message(&self, msg: Command) -> anyhow::Result<()> {
+        let kind = msg.kind();
+
+        match (kind, self.handlers.get(&kind)) {
+            (_, Some(handler)) => {
+                (handler)(msg).await?;
             }
-            Command::SignMessage { message } => {
-                if let Some(handler) = self.handlers.get("sign_message") {
-                    handler(Command::SignMessage { message })?;
-                }
-            }
-            Command::UpdateState { key, value } => {
-                if let Some(handler) = self.handlers.get("update_state") {
-                    handler(Command::UpdateState { key, value })?;
-                }
-            }
-            Command::ConsensusProposal { round, value } => {
-                if let Some(handler) = self.handlers.get("consensus_proposal") {
-                    handler(Command::ConsensusProposal { round, value })?;
-                }
+            (missing_kind, None) => {
+                warn!("No handler registered for command kind: {:?}", missing_kind);
+                anyhow::bail!("No handler registered for command kind: {:?}", missing_kind);
             }
         }
         Ok(())

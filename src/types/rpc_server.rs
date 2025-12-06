@@ -6,15 +6,13 @@ use uuid::Uuid;
 #[derive(Debug, Clone)]
 pub struct RequestContext {
     pub request_id: String,
-    pub idempotency_key: Option<String>,
     pub started_at: Instant,
 }
 
 impl RequestContext {
-    pub fn new(idempotency_key: Option<String>) -> Self {
+    pub fn new() -> Self {
         Self {
             request_id: Uuid::new_v4().to_string(),
-            idempotency_key,
             started_at: Instant::now(),
         }
     }
@@ -149,7 +147,6 @@ pub struct UserInfoResponse {
     pub status: String,
     pub user_id: Option<String>,
     pub ethereum_address: Option<String>,
-    pub hmac_constant: Option<String>,
     pub has_tweaked_share: Option<bool>,
     pub has_user_group_key: Option<bool>,
     pub derived_eth_address: Option<String>,

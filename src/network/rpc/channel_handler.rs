@@ -325,7 +325,9 @@ impl MpcNetworkLayer {
         signing_node.set_available_nodes(available_nodes);
         signing_node.set_chain_handler(
             crate::chain_abstraction::ChainHandlerFactory::create_bitcoin_handler(
-                "testnet".to_string(),
+                crate::types::network::network_type()
+                    .bitcoin_network_label()
+                    .to_string(),
             )
             .into(),
         );
@@ -916,10 +918,9 @@ impl MpcNetworkLayer {
                         .unwrap_or_else(|| "0x".to_string()),
                 };
 
-                let tx_bytes =
-                    crate::utils::transaction::create_transaction_for_signing_contract(
-                        &contract_tx,
-                    );
+                let tx_bytes = crate::utils::transaction::create_transaction_for_signing_contract(
+                    &contract_tx,
+                );
                 info!(
                     "🔐 [SOLVER] Starting contract add-liquidity signing for {} on {} (amount: {})",
                     solver_address, asset_chain_name, amount
@@ -1218,7 +1219,8 @@ impl MpcNetworkLayer {
                 info!("📡 [NETWORK] Broadcasted deposit intent to P2P network");
 
                 // Calculate intent hash for transaction ID storage
-                let intent_hash = crate::utils::calculate_intent_hash(&intent);
+                let intent_hash = crate::utils::calculate_intent_hash(&intent)
+                    .map_err(|e| anyhow::anyhow!("Failed to calculate intent hash: {}", e))?;
                 info!("🔐 [LOCAL] Calculated intent hash: {}", intent_hash);
 
                 // Prepare unsigned transaction for on-chain deposit intent recording
@@ -1320,7 +1322,9 @@ impl MpcNetworkLayer {
                     } else if chain_to_use == "bitcoin" || chain_to_use == "btc" {
                         let mut chain_handler =
                             crate::chain_abstraction::ChainHandlerFactory::create_bitcoin_handler(
-                                "testnet".to_string(),
+                                crate::types::network::network_type()
+                                    .bitcoin_network_label()
+                                    .to_string(),
                             );
 
                         // Set appropriate group public key in Bitcoin chain handler based on transaction type
@@ -2149,9 +2153,9 @@ impl MpcNetworkLayer {
                         return Ok(());
                     }
                     if let Some(signing_node) = &mut self.signing_node {
-                        signing_node.set_threshold(total / 2 + 1);
+                        // Align signing threshold with the node manager's configured threshold
+                        signing_node.set_threshold(threshold);
                     }
-                    self.node_manager.set_threshold(total / 2 + 1);
                     info!(
                         "🔄 DKG parameters updated: total_nodes={}, threshold={}",
                         total, threshold
@@ -2239,6 +2243,7 @@ impl MpcNetworkLayer {
                     "📡 [NETWORK] Broadcasted add liquidity request for solver {}",
                     solver_address
                 );
+                // 1) Dispatch contract calls from this local node (if applicable)
                 self.handle_add_liquidity_contract_calls(
                     &solver_address,
                     &solver_id,
@@ -2246,6 +2251,30 @@ impl MpcNetworkLayer {
                     &amount_tics,
                 )
                 .await?;
+
+                // 2) Refresh solver liquidity from the on-chain contract on this node
+                //    so local DB and global totals reflect the new state.
+                if let Some(signing_node) = &self.signing_node {
+                    match signing_node.update_solver_liquidity(&solver_address).await {
+                        Ok(()) => {
+                            info!(
+                                "✅ [NETWORK] Refreshed solver liquidity from contract after local add-liquidity for {}",
+                                solver_address
+                            );
+                        }
+                        Err(e) => {
+                            warn!(
+                                "⚠️ [NETWORK] Failed to refresh solver liquidity after local add-liquidity for {}: {}",
+                                solver_address, e
+                            );
+                        }
+                    }
+                } else {
+                    warn!(
+                        "⚠️ [NETWORK] Signing node unavailable; cannot refresh solver liquidity after local add-liquidity for {}",
+                        solver_address
+                    );
+                }
             }
             ChannelMessage::WithdrawLiquidity {
                 solver_address,
@@ -2286,6 +2315,30 @@ impl MpcNetworkLayer {
                     &amount_tics,
                 )
                 .await?;
+
+                // After processing the withdraw payout on this node, refresh on-chain solver
+                // liquidity so local DB and totals reflect the decreased liquidity.
+                if let Some(signing_node) = &self.signing_node {
+                    match signing_node.update_solver_liquidity(&solver_address).await {
+                        Ok(()) => {
+                            info!(
+                                "✅ [NETWORK] Refreshed solver liquidity from contract after local withdraw-liquidity for {}",
+                                solver_address
+                            );
+                        }
+                        Err(e) => {
+                            warn!(
+                                "⚠️ [NETWORK] Failed to refresh solver liquidity after local withdraw-liquidity for {}: {}",
+                                solver_address, e
+                            );
+                        }
+                    }
+                } else {
+                    warn!(
+                        "⚠️ [NETWORK] Signing node unavailable; cannot refresh solver liquidity after local withdraw-liquidity for {}",
+                        solver_address
+                    );
+                }
             }
         }
         Ok(())

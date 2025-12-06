@@ -17,9 +17,6 @@ impl DKGNode {
         let vault_tweaked_secret = final_secret_share + tweak_scalar;
 
         info!("🔐 [DKG] Calculated vault tweaked secret share");
-        info!("  📊 Final secret share: {:?}", final_secret_share);
-        info!("  🔧 Tweak scalar: {:?}", tweak_scalar);
-        info!("  🏦 Vault tweaked secret: {:?}", vault_tweaked_secret);
 
         Ok(vault_tweaked_secret)
     }

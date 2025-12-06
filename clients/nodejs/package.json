@@ -29,6 +29,7 @@
     "ethereum-cryptography": "^3.2.0",
     "ethers": "^6.15.0",
     "it-pipe": "^3.0.1",
+    "keccak": "^3.0.4",
     "libp2p": "^2.8.5",
     "node-fetch": "^3.3.2",
     "secp256k1": "^5.0.1",

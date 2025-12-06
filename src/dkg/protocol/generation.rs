@@ -87,7 +87,7 @@ impl DKGNode {
             let x = Scalar::from(i as u64);
             let mut y = Scalar::ZERO;
 
-            info!("🔍 [DKG] Calculating share for index {} (x = {:?})", i, x);
+            info!("🔍 [DKG] Calculating share for index {}", i);
 
             for (j, coeff) in polynomial.iter().enumerate() {
                 let mut x_pow = Scalar::ONE;
@@ -96,13 +96,9 @@ impl DKGNode {
                 }
                 let term = *coeff * x_pow;
                 y += term;
-                info!(
-                    "🔍 [DKG]   Term {}: coeff[{}] * x^{} = {:?} * {:?}^{} = {:?}",
-                    j, j, j, coeff, x, j, term
-                );
             }
 
-            info!("🔍 [DKG] Final share for index {}: y = {:?}", i, y);
+            info!("🔍 [DKG] Final share computed for index {}", i);
 
             shares.push(KeyShare {
                 index: i,
@@ -110,16 +106,7 @@ impl DKGNode {
             });
         }
 
-        info!("🔍 [DKG] === GENERATED SHARES SUMMARY ===");
-        for (i, share) in shares.iter().enumerate() {
-            info!(
-                "🔍 [DKG] Share {}: index={}, value={:?}",
-                i + 1,
-                share.index,
-                share.value.0
-            );
-        }
-        info!("🔍 [DKG] === END GENERATED SHARES SUMMARY ===");
+        info!("🔍 [DKG] Generated {} shares", shares.len());
 
         info!(
             "✅ [DKG] Node {} generated {} shares",
@@ -140,7 +127,6 @@ impl DKGNode {
             "📊 [REFRESH] Node {} generating shares for indices: {:?}",
             self.id, indices
         );
-        info!("🔢 [REFRESH] Polynomial coefficients: {:?}", polynomial);
 
         let mut shares = Vec::with_capacity(indices.len());
 
@@ -148,10 +134,7 @@ impl DKGNode {
             let x = Scalar::from(index as u64);
             let mut y = Scalar::ZERO;
 
-            info!(
-                "🔍 [REFRESH] Calculating share for index {} (x = {:?})",
-                index, x
-            );
+            info!("🔍 [REFRESH] Calculating share for index {}", index);
 
             for (j, coeff) in polynomial.iter().enumerate() {
                 let mut x_pow = Scalar::ONE;
@@ -162,7 +145,7 @@ impl DKGNode {
                 y += term;
             }
 
-            info!("🔍 [REFRESH] Final share for index {}: y = {:?}", index, y);
+            info!("🔍 [REFRESH] Final share computed for index {}", index);
 
             shares.push(KeyShare {
                 index,
@@ -172,10 +155,7 @@ impl DKGNode {
 
         info!("🔍 [REFRESH] === GENERATED REFRESH SHARES SUMMARY ===");
         for share in shares.iter() {
-            info!(
-                "🔍 [REFRESH] Share: index={}, value={:?}",
-                share.index, share.value.0
-            );
+            info!("🔍 [REFRESH] Share generated for index {}", share.index);
         }
 
         Ok(shares)

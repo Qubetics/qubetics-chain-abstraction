@@ -3,6 +3,7 @@ pub mod consensus;
 pub mod dkg;
 pub mod intent;
 pub mod messaging;
+pub mod network;
 pub mod p2p;
 pub mod rpc;
 pub mod rpc_server;
@@ -32,3 +33,8 @@ pub use user_intent::{
     IntentRegistry, IntentStatus, IntentTransactionIds, TransactionStatus, UserRegistration,
 };
 pub use vrf::{NodeSelectionResult, VrfOutput, VrfSelectedNodesBroadcast, VrfSelectionMessage};
+
+pub use network::{
+    init_network_type_from_env, is_testnet, network_type, qubetics_rpc_url_from_env, NetworkType,
+    ETH_RPC_ENV_KEY, NETWORK_ENV_KEY,
+};

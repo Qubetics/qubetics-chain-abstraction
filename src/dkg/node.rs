@@ -2,8 +2,7 @@ use anyhow::{anyhow, ensure, Result};
 use k256::{ProjectivePoint, Scalar};
 use std::sync::{Arc, RwLock};
 use tokio::sync::mpsc;
-use tracing::info;
-use tracing::warn;
+use tracing::{debug, info, warn};
 
 use super::artifacts::{DKGCompletionCallback, DKGStatus};
 use crate::database::DkgStorage;
@@ -152,6 +151,12 @@ impl DKGNode {
         if let Err(e) = self.storage.delete_final_public().await {
             failures.push(format!("delete final public key: {e}"));
         }
+        if let Err(e) = self.storage.delete_vault_tweaked_secret().await {
+            failures.push(format!("delete vault tweaked secret: {e}"));
+        }
+        if let Err(e) = self.storage.delete_vault_group_key().await {
+            failures.push(format!("delete vault group key: {e}"));
+        }
         if let Err(e) = self.storage.delete_polynomial().await {
             failures.push(format!("delete polynomial: {e}"));
         }
@@ -223,10 +228,7 @@ impl DKGNode {
     }
 
     pub async fn get_vault_group_key(&self) -> Option<ProjectivePoint> {
-        self.storage
-            .get_vault_group_key()
-            .await
-            .unwrap_or_default()
+        self.storage.get_vault_group_key().await.unwrap_or_default()
     }
 
     pub async fn is_completed(&self) -> bool {
@@ -242,45 +244,57 @@ impl DKGNode {
 
     // Test function to verify share generation
     pub fn test_share_generation(&self) -> Result<()> {
-        info!("🧪 Testing share generation for node {}", self.id);
+        debug!("🧪 Testing share generation for node {}", self.id);
 
         let polynomial = self.generate_polynomial()?;
         let shares = self.generate_shares(&polynomial)?;
 
-        info!("🔬 Node {} generated {} shares", self.id, shares.len());
-        info!(
-            "🔬 First share value: {:?}",
-            shares.first().map(|s| s.value.0)
-        );
-        info!(
-            "🔬 Last share value: {:?}",
-            shares.last().map(|s| s.value.0)
-        );
+        debug!("🔬 Node {} generated {} shares", self.id, shares.len());
+        #[cfg(debug_assertions)]
+        {
+            debug!(
+                "🔬 First share value: {:?}",
+                shares.first().map(|s| s.value.0)
+            );
+            debug!(
+                "🔬 Last share value: {:?}",
+                shares.last().map(|s| s.value.0)
+            );
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            debug!("🔬 Share value logging skipped in release builds");
+        }
 
         Ok(())
     }
 
     // Debug function to log all current shares
     pub async fn log_all_shares(&self) {
+        if !cfg!(debug_assertions) {
+            debug!("📊 [DKG] log_all_shares is disabled in release builds");
+            return;
+        }
+
         match self.storage.get_all_shares().await {
             Ok(shares) => {
-                info!("📊 [DKG] === CURRENT SHARES DEBUG ===");
-                info!(
+                debug!("📊 [DKG] === CURRENT SHARES DEBUG ===");
+                debug!(
                     "📊 [DKG] Node {} has {} shares stored",
                     self.id,
                     shares.len()
                 );
                 if shares.is_empty() {
-                    info!("📊 [DKG] No shares currently stored");
+                    debug!("📊 [DKG] No shares currently stored");
                 } else {
                     for (sender, share) in shares.iter() {
-                        info!(
+                        debug!(
                             "📊 [DKG] Share from {}: index={}, value={:?}",
                             sender, share.index, share.value.0
                         );
                     }
                 }
-                info!("📊 [DKG] === END CURRENT SHARES DEBUG ===");
+                debug!("📊 [DKG] === END CURRENT SHARES DEBUG ===");
             }
             Err(e) => {
                 warn!("Failed to load shares for logging: {}", e);
@@ -292,8 +306,9 @@ impl DKGNode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use k256::AffinePoint;
     use crate::database::{Database, DatabaseConfig};
+    use crate::utils;
+    use k256::AffinePoint;
     use tempfile::TempDir;
 
     /// Helper to create a test database

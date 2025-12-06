@@ -243,8 +243,8 @@ impl MpcNetworkLayer {
 
             if let DKGStatus::Completed = status {
                 // DKG is completed, log final results
-                if let Some(secret_share) = dkg_node.get_final_secret_share().await {
-                    info!("🎯 DKG COMPLETED - Final secret share: {:?}", secret_share);
+                if dkg_node.get_final_secret_share().await.is_some() {
+                    info!("🎯 DKG COMPLETED - Final secret share stored");
                 }
                 if let Some(public_key) = dkg_node.get_final_public_key().await {
                     info!("🔑 DKG COMPLETED - Final public key: {:?}", public_key);

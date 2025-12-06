@@ -25,7 +25,6 @@ impl MpcNetworkLayer {
         }
     }
 
-
     /// Store transaction ID based on transaction type
     pub(crate) async fn store_transaction_id_by_type(
         &self,
@@ -37,18 +36,11 @@ impl MpcNetworkLayer {
     ) -> Result<()> {
         match transaction_type {
             "user_to_vault" => {
-                // Update solver amounts and calculate rewards for UserToVault
+                // Calculate rewards for UserToVault
                 if let Some(signing_node) = &self.signing_node {
                     if let Err(e) = signing_node
-                        .update_solver_amounts_for_user_to_vault(intent_hash)
+                        .calculate_reward_per_solver(intent_hash)
                         .await
-                    {
-                        warn!(
-                            "⚠️ [SIGNING] Failed to update solver amounts for UserToVault transaction: {}",
-                            e
-                        );
-                    } else if let Err(e) =
-                        signing_node.calculate_reward_per_solver(intent_hash).await
                     {
                         warn!(
                             "⚠️ [SIGNING] Failed to calculate rewards for UserToVault transaction: {}",
