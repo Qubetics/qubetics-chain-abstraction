@@ -486,6 +486,9 @@ pub(crate) async fn handle_user_mpc_deposit(
             if let Some(ref network_to_target_tx) = tx_ids.network_to_target_tx_id {
                 transaction_ids.push(network_to_target_tx.clone());
             }
+            if let Some(ref vault_to_network_tx) = tx_ids.vault_to_network_tx_id {
+                transaction_ids.push(vault_to_network_tx.clone());
+            }
         }
     }
 
@@ -509,7 +512,9 @@ pub(crate) async fn handle_user_mpc_deposit(
             network_to_target_tx_id: tx_mapping
                 .as_ref()
                 .and_then(|tx| tx.network_to_target_tx_id.clone()),
-            vault_to_network_tx_id: None,
+            vault_to_network_tx_id: tx_mapping
+                .as_ref()
+                .and_then(|tx| tx.vault_to_network_tx_id.clone()),
             final_solver_id: None,
             error_message: Some(
                 "Duplicate intent detected - this intent has already been processed".to_string(),
