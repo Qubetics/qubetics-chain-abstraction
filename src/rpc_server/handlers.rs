@@ -198,11 +198,7 @@ pub(crate) async fn handle_register_user(
     );
 
     // Block user registration while DKG shares are being refreshed
-    if dkg_storage
-        .is_refresh_in_progress()
-        .await
-        .unwrap_or(false)
-    {
+    if dkg_storage.is_refresh_in_progress().await.unwrap_or(false) {
         warn!("⚠️ HTTP: Blocking register_user - shares are getting refreshed");
         let error_response = EnhancedUserRegistrationResponse {
             status: "error".to_string(),
@@ -421,11 +417,7 @@ pub(crate) async fn handle_user_mpc_deposit(
     request_context: RequestContext,
 ) -> Result<impl warp::Reply, warp::Rejection> {
     // Block deposits while DKG shares are being refreshed
-    if dkg_storage
-        .is_refresh_in_progress()
-        .await
-        .unwrap_or(false)
-    {
+    if dkg_storage.is_refresh_in_progress().await.unwrap_or(false) {
         warn!(
             request_id = %request_context.request_id,
             "⚠️ HTTP: Blocking user_mpc_deposit - shares are getting refreshed"
@@ -903,15 +895,39 @@ pub(crate) async fn handle_get_node_id(
 }
 
 pub(crate) async fn handle_get_status(
-    _message_tx: Arc<Mutex<mpsc::Sender<ChannelMessage>>>,
+    message_tx: Arc<Mutex<mpsc::Sender<ChannelMessage>>>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
     info!("here at handle status!! ");
-    Ok(warp::reply::json(&NodeStatus {
-        peer_id: "dummy-peer-id".to_string(),
-        connected_peers: 0,
-        dkg_status: "unknown".to_string(),
-        is_ready: true,
-    }))
+
+    let (responder, receiver) = tokio::sync::oneshot::channel();
+    {
+        let tx_sender = message_tx.lock().await;
+        tx_sender
+            .send(ChannelMessage::StatusRequest { responder })
+            .await
+            .map_err(|e| {
+                warp::reject::custom(super::errors::RpcError::InternalError(format!(
+                    "Failed to request node status: {e}"
+                )))
+            })?;
+    }
+
+    let status = tokio::time::timeout(std::time::Duration::from_secs(5), receiver)
+        .await
+        .map_err(|_| {
+            warp::reject::custom(super::errors::RpcError::Timeout(
+                "Timed out waiting for node status".to_string(),
+            ))
+        })
+        .and_then(|res| {
+            res.map_err(|e| {
+                warp::reject::custom(super::errors::RpcError::InternalError(format!(
+                    "Failed to receive node status: {e}"
+                )))
+            })
+        })?;
+
+    Ok(warp::reply::json(&status))
 }
 
 pub(crate) async fn handle_heartbeat() -> Result<impl warp::Reply, warp::Rejection> {
@@ -970,11 +986,7 @@ pub(crate) async fn handle_start_dkg(
     dkg_storage: Arc<DkgStorage>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
     // Block manual DKG start while a refresh is in progress
-    if dkg_storage
-        .is_refresh_in_progress()
-        .await
-        .unwrap_or(false)
-    {
+    if dkg_storage.is_refresh_in_progress().await.unwrap_or(false) {
         warn!("⚠️ HTTP: Blocking start_dkg - shares are getting refreshed");
         return Ok(warp::reply::json(&TransactionResponse {
             tx_hash: "".to_string(),
@@ -1087,11 +1099,7 @@ pub(crate) async fn handle_claim_reward(
     dkg_storage: Arc<DkgStorage>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
     // Block reward claims while DKG shares are being refreshed
-    if dkg_storage
-        .is_refresh_in_progress()
-        .await
-        .unwrap_or(false)
-    {
+    if dkg_storage.is_refresh_in_progress().await.unwrap_or(false) {
         warn!("⚠️ HTTP: Blocking claim_reward - shares are getting refreshed");
         return Ok(warp::reply::json(&ClaimRewardResponse {
             status: "error".to_string(),
@@ -1404,11 +1412,7 @@ pub(crate) async fn handle_withdraw_liquidity(
     dkg_storage: Arc<DkgStorage>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
     // Block liquidity withdrawals while DKG shares are being refreshed
-    if dkg_storage
-        .is_refresh_in_progress()
-        .await
-        .unwrap_or(false)
-    {
+    if dkg_storage.is_refresh_in_progress().await.unwrap_or(false) {
         warn!("⚠️ HTTP: Blocking withdraw_liquidity - shares are getting refreshed");
         return Ok(warp::reply::json(&WithdrawLiquidityResponse {
             status: "error".to_string(),
@@ -1937,11 +1941,7 @@ pub(crate) async fn handle_add_liquidity(
     dkg_storage: Arc<DkgStorage>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
     // Block add_liquidity while DKG shares are being refreshed
-    if dkg_storage
-        .is_refresh_in_progress()
-        .await
-        .unwrap_or(false)
-    {
+    if dkg_storage.is_refresh_in_progress().await.unwrap_or(false) {
         warn!("⚠️ HTTP: Blocking add_liquidity - shares are getting refreshed");
         return Ok(warp::reply::json(&AddLiquidityResponse {
             status: "error".to_string(),
