@@ -345,8 +345,15 @@ pub fn select_utxos_for_amount(
         ));
     }
 
-    // Sort descending (largest first) to minimize the number of inputs needed
-    confirmed_utxos.sort_by_key(|utxo| std::cmp::Reverse(utxo.value));
+    // Sort descending (largest first) to minimize the number of inputs needed.
+    // Break ties deterministically on (txid, vout) so every node selects the
+    // same UTXOs even if the upstream API returns them in different orders.
+    confirmed_utxos.sort_by(|a, b| {
+        b.value
+            .cmp(&a.value)
+            .then_with(|| a.txid.cmp(&b.txid))
+            .then_with(|| a.vout.cmp(&b.vout))
+    });
 
     tracing::info!(
         "🔍 [UTXO_SELECTION] {} confirmed UTXOs remain after filtering ({} fetched)",
