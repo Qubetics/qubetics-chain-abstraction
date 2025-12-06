@@ -1046,10 +1046,14 @@ use crate::{
     chain_abstraction::transactions::ChainTransaction,
     contract::{ContractClient, ContractConfig, SolverManagerContract},
     signing::{BitcoinSigner, EthereumSigner},
-    types::{intent::TransactionNetwork, rpc::RPCRequest, ChannelMessage, GossipsubMessage},
+    types::{
+        intent::TransactionNetwork, rpc::RPCRequest, rpc_server::NodeStatus, ChannelMessage,
+        GossipsubMessage,
+    },
 };
 
 use crate::network::transport::types::{MpcNetworkBehaviour, MpcNetworkLayer};
+use crate::protocols::DKGStatus;
 
 impl MpcNetworkLayer {
     // ChannelMessage is related to the MPSC channel only
@@ -1093,6 +1097,30 @@ impl MpcNetworkLayer {
                         attempt
                     );
                     self.schedule_peer_discovery_retry(attempt + 1);
+                }
+            }
+            ChannelMessage::StatusRequest { responder } => {
+                let peer_id = self.local_peer_id.to_string();
+                let connected_peers = swarm.connected_peers().count();
+
+                let (dkg_status, has_final_share) = if let Some(dkg_node) = &self.dkg_node {
+                    let status = dkg_node.get_status();
+                    let has_share = dkg_node.get_final_secret_share().await.is_some();
+                    (status, has_share)
+                } else {
+                    (DKGStatus::New, false)
+                };
+
+                let is_ready = has_final_share && matches!(dkg_status, DKGStatus::Completed);
+                let status = NodeStatus {
+                    peer_id,
+                    connected_peers,
+                    dkg_status: format!("{:?}", dkg_status),
+                    is_ready,
+                };
+
+                if responder.send(status).is_err() {
+                    warn!("Failed to send node status response to requester");
                 }
             }
             // this is used in the dkg code

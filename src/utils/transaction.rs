@@ -294,6 +294,16 @@ pub fn select_utxos_for_amount(
         return Err(anyhow::anyhow!("Required amount must be greater than zero"));
     }
 
+    // Enforce Bitcoin dust limit on recipient output (BIP-125)
+    // Transactions with outputs below 546 satoshis are non-standard and will be rejected
+    if required_amount < DUST_LIMIT_SATS {
+        return Err(anyhow::anyhow!(
+            "Recipient amount {} sats is below Bitcoin dust limit (minimum: {} sats). Transaction would be rejected by Bitcoin nodes.",
+            required_amount,
+            DUST_LIMIT_SATS
+        ));
+    }
+
     let mut confirmed_utxos: Vec<_> = utxos
         .iter()
         .filter(|utxo| {
@@ -1150,8 +1160,7 @@ pub async fn create_chain_transaction_from_contract_call(
         &calldata_hex,
         chain_id,
     )
-    .await
-    .unwrap_or(300000);
+    .await?; // Abort if gas estimation fails - indicates transaction would revert
     let gas_limit = estimated_gas + (estimated_gas / 10); // Add 10% buffer
 
     info!(
@@ -1236,8 +1245,7 @@ pub async fn create_solver_rewards_update_transaction(
         &calldata_hex,
         chain_id,
     )
-    .await
-    .unwrap_or(300000);
+    .await?; // Abort if gas estimation fails - indicates transaction would revert
     let gas_limit = estimated_gas + (estimated_gas / 10);
 
     let gas_price = get_gas_price_for_chain("qubetics", chain_id)
@@ -1308,8 +1316,7 @@ pub async fn create_solver_remove_liquidity_transaction(
         &calldata_hex,
         chain_id,
     )
-    .await
-    .unwrap_or(200000);
+    .await?; // Abort if gas estimation fails - indicates transaction would revert
     let gas_limit = estimated_gas + (estimated_gas / 5).max(25_000);
     info!(
         "🔧 [CONTRACT][LIQ] Estimated gas={} -> gas_limit={}",
@@ -1380,8 +1387,7 @@ pub async fn create_solver_add_liquidity_transaction(
         &calldata_hex,
         chain_id,
     )
-    .await
-    .unwrap_or(200000);
+    .await?; // Abort if gas estimation fails - indicates transaction would revert
     let gas_limit = estimated_gas + (estimated_gas / 5).max(25_000);
     info!(
         "🔧 [CONTRACT][LIQ] Estimated gas={} -> gas_limit={}",
@@ -2045,7 +2051,58 @@ fn create_bitcoin_script_pubkey(address: &str) -> Result<Vec<u8>> {
     Ok(script_bytes)
 }
 
+/// Validate that an address is a valid, non-empty 20-byte Ethereum address.
+/// This prevents contract creation transactions from being created when a transfer is intended.
+fn validate_ethereum_address(address: &str) -> Result<()> {
+    // Check that address is not empty
+    if address.is_empty() {
+        return Err(anyhow::anyhow!("Address cannot be empty"));
+    }
+
+    // Check that address starts with 0x
+    if !address.starts_with("0x") {
+        return Err(anyhow::anyhow!("Address must start with '0x' prefix"));
+    }
+
+    // Extract hex part after 0x
+    let hex_part = &address[2..];
+    
+    // Check that hex part is not empty (prevents "0x" from being valid)
+    if hex_part.is_empty() {
+        return Err(anyhow::anyhow!(
+            "Address cannot be '0x' - this would create a contract creation transaction"
+        ));
+    }
+
+    // Decode hex to bytes
+    let bytes = hex::decode(hex_part)
+        .map_err(|e| anyhow::anyhow!("Invalid hex characters in address: {}", e))?;
+
+    // Check that address is exactly 20 bytes (standard Ethereum address length)
+    if bytes.len() != 20 {
+        return Err(anyhow::anyhow!(
+            "Address must be exactly 20 bytes (40 hex characters), got {} bytes",
+            bytes.len()
+        ));
+    }
+
+    Ok(())
+}
+
 pub fn create_transaction_for_signing(tx: &EthereumTransaction) -> Vec<u8> {
+    // Validate the 'to' address before encoding to prevent contract creation transactions
+    // when a transfer is intended. An empty or malformed address would RLP-encode as 0x80,
+    // which Ethereum interprets as contract creation, potentially locking funds irreversibly.
+    validate_ethereum_address(&tx.to)
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "Invalid 'to' address '{}' for transfer transaction: {}. \
+                 This function is intended for standard Ethereum transfers, not contract creation.",
+                tx.to, e
+            )
+        })
+        .expect("Address validation failed");
+
     // Log transaction details before creating raw transaction
     info!(
         "🔧 [ETH_RAW_TXN] Creating raw Ethereum transaction - To: {}, Value: {}, Nonce: {}, GasLimit: {}, GasPrice: {}, ChainId: {}",
@@ -2347,7 +2404,62 @@ fn test_utxo_selection_single_utxo() {
     assert!(result.change > 500, "Should have substantial change");
 }
 
+#[test]
+fn test_validate_ethereum_address_valid() {
+    // Test valid 20-byte address
+    let valid_addr = "0x1234567890123456789012345678901234567890";
+    assert!(validate_ethereum_address(valid_addr).is_ok());
+}
+
+#[test]
+fn test_validate_ethereum_address_empty() {
+    // Test empty address
+    assert!(validate_ethereum_address("").is_err());
+}
+
+#[test]
+fn test_validate_ethereum_address_just_0x() {
+    // Test "0x" which would create contract creation transaction
+    let result = validate_ethereum_address("0x");
+    assert!(result.is_err());
+    assert!(result.unwrap_err().to_string().contains("cannot be '0x'"));
+}
+
+#[test]
+fn test_validate_ethereum_address_no_prefix() {
+    // Test address without 0x prefix
+    assert!(validate_ethereum_address("1234567890123456789012345678901234567890").is_err());
+}
+
+#[test]
+fn test_validate_ethereum_address_wrong_length() {
+    // Test address with wrong length (not 20 bytes)
+    // 19 bytes (38 hex chars)
+    assert!(validate_ethereum_address("0x12345678901234567890123456789012345678").is_err());
+    // 21 bytes (42 hex chars)
+    assert!(validate_ethereum_address("0x12345678901234567890123456789012345678901").is_err());
+}
+
+#[test]
+fn test_validate_ethereum_address_invalid_hex() {
+    // Test address with invalid hex characters
+    assert!(validate_ethereum_address("0x123456789012345678901234567890123456789g").is_err());
+}
+
 pub fn create_transaction_for_signing_contract(tx: &ContractTransaction) -> Vec<u8> {
+    // Validate the 'to' address before encoding to prevent contract creation transactions
+    // when a contract call is intended. An empty or malformed address would RLP-encode as 0x80,
+    // which Ethereum interprets as contract creation, potentially locking funds irreversibly.
+    validate_ethereum_address(&tx.to)
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "Invalid 'to' address '{}' for contract transaction: {}. \
+                 Contract address must be a valid 20-byte Ethereum address.",
+                tx.to, e
+            )
+        })
+        .expect("Address validation failed");
+
     // Log contract transaction details before creating raw transaction
     info!(
         "🔧 [ETH_RAW_CONTRACT_TXN] Creating raw Ethereum contract transaction - To: {}, Value: {}, Nonce: {}, GasLimit: {}, GasPrice: {}, ChainId: {}, DataLength: {}",
@@ -2417,6 +2529,19 @@ pub fn create_signed_transaction(
     s: &[u8],
     v: u64,
 ) -> Vec<u8> {
+    // Validate the 'to' address before encoding to prevent contract creation transactions
+    // when a transfer is intended. An empty or malformed address would RLP-encode as 0x80,
+    // which Ethereum interprets as contract creation, potentially locking funds irreversibly.
+    validate_ethereum_address(&tx.to)
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "Invalid 'to' address '{}' for transfer transaction: {}. \
+                 This function is intended for standard Ethereum transfers, not contract creation.",
+                tx.to, e
+            )
+        })
+        .expect("Address validation failed");
+
     // Log signed transaction details before creating final raw transaction
     info!(
         "🔧 [ETH_SIGNED_TXN] Creating final signed Ethereum transaction - To: {}, Value: {}, Nonce: {}, GasLimit: {}, GasPrice: {}, ChainId: {}, v: {}, HasData: {}",

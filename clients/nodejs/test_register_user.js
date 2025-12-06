@@ -156,12 +156,12 @@ async function testUserMpcDeposit({ wallet, amount, idempotencyKey }) {
     // Construct DepositIntent
     const depositIntent = {
       source_address: userInfo.data.derived_eth_address, // Use canonical address
-      target_address: 'mkKvSZTUN5vFYWzDHmLjrUuvcnFCX2ukGs',
+      target_address: '0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46',
       source_chain: 'qubetics',
-      target_chain: 'bitcoin',
+      target_chain: 'qubetics',
       amount: amount, // Use the passed amount parameter
       source_token: 'TICS',
-      target_token: 'BTC',
+      target_token: 'TICS',
       timestamp: oooo,
     };
     console.log(`📊 Deposit Intent: ${JSON.stringify(depositIntent)}`, 'cyan');
