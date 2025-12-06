@@ -97,7 +97,21 @@ impl MpcNetworkLayer {
         node_id: &str,
     ) -> Result<()> {
         if let Some(user_intent_manager) = &self.user_intent_manager {
-            // Store transaction ID
+            // Check if this transaction ID was already processed before storing
+            let was_already_processed = {
+                if let Some(existing_tx_ids) = user_intent_manager.get_intent_transaction_ids(intent_hash).await {
+                    match transaction_type {
+                        "user_to_vault" => existing_tx_ids.user_to_network_tx_id.as_ref() == Some(&transaction_id.to_string()),
+                        "network_to_target" => existing_tx_ids.network_to_target_tx_id.as_ref() == Some(&transaction_id.to_string()),
+                        "vault_to_network" => existing_tx_ids.vault_to_network_tx_id.as_ref() == Some(&transaction_id.to_string()),
+                        _ => false,
+                    }
+                } else {
+                    false
+                }
+            };
+
+            // Store transaction ID (this will update if it already exists, which is fine for synchronization)
             match self
                 .store_transaction_id_by_type(
                     user_intent_manager,
@@ -124,48 +138,56 @@ impl MpcNetworkLayer {
                         transaction_id, intent_hash, transaction_type
                     );
 
-                    // Execute contract call if needed
-                    if let Some(intent) = user_intent_manager.get_intent(intent_hash).await {
-                        let tx_type_enum = Self::parse_transaction_type(transaction_type)?;
+                    // Only execute contract call if this is a new transaction ID (not already processed)
+                    if was_already_processed {
+                        info!(
+                            "⏭️ [NETWORK] Transaction ID {} for intent {} (type: {}) was already processed, skipping contract call to prevent duplicate execution",
+                            transaction_id, intent_hash, transaction_type
+                        );
+                    } else {
+                        // Execute contract call if needed
+                        if let Some(intent) = user_intent_manager.get_intent(intent_hash).await {
+                            let tx_type_enum = Self::parse_transaction_type(transaction_type)?;
 
-                        let vault_group_key = if let Some(dkg_node) = &self.dkg_node {
-                            dkg_node.get_vault_group_key().await
-                        } else {
-                            None
-                        };
-
-                        if let Some(vault_group_key) = vault_group_key {
-                            if let Err(e) = self
-                                .execute_contract_call_for_transaction(
-                                    &intent,
-                                    intent_hash,
-                                    tx_type_enum,
-                                    transaction_id,
-                                    Some(vault_group_key),
-                                    intent.amount,
-                                )
-                                .await
-                            {
-                                warn!(
-                                    "❌ [CONTRACT] Failed to execute contract call for transaction ID {}: {}",
-                                    transaction_id, e
-                                );
+                            let vault_group_key = if let Some(dkg_node) = &self.dkg_node {
+                                dkg_node.get_vault_group_key().await
                             } else {
-                                info!(
-                                    "✅ [CONTRACT] Successfully executed contract call for transaction ID {}",
-                                    transaction_id
+                                None
+                            };
+
+                            if let Some(vault_group_key) = vault_group_key {
+                                if let Err(e) = self
+                                    .execute_contract_call_for_transaction(
+                                        &intent,
+                                        intent_hash,
+                                        tx_type_enum,
+                                        transaction_id,
+                                        Some(vault_group_key),
+                                        intent.amount,
+                                    )
+                                    .await
+                                {
+                                    warn!(
+                                        "❌ [CONTRACT] Failed to execute contract call for transaction ID {}: {}",
+                                        transaction_id, e
+                                    );
+                                } else {
+                                    info!(
+                                        "✅ [CONTRACT] Successfully executed contract call for transaction ID {}",
+                                        transaction_id
+                                    );
+                                }
+                            } else {
+                                warn!(
+                                    "❌ [CONTRACT] No vault group key available for contract call execution"
                                 );
                             }
                         } else {
                             warn!(
-                                "❌ [CONTRACT] No vault group key available for contract call execution"
+                                "❌ [CONTRACT] Could not retrieve intent {} for contract call execution",
+                                intent_hash
                             );
                         }
-                    } else {
-                        warn!(
-                            "❌ [CONTRACT] Could not retrieve intent {} for contract call execution",
-                            intent_hash
-                        );
                     }
                 }
                 Err(e) => {
