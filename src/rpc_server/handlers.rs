@@ -14,6 +14,7 @@ use crate::{
     database::{DkgStorage, RewardStorage},
     types::{
         intent::{DepositIntent, DepositIntentResponse, TransactionResponse, TransactionType},
+        TransactionNetwork,
         messaging::ChannelMessage,
         rpc::RPCRequest,
         rpc_server::{
@@ -1832,12 +1833,17 @@ pub(crate) async fn handle_withdraw_liquidity(
     }
 
     // Get previous transaction IDs to detect new ones
+    // Use remove_liquidity storage (not the shared tics/btc txn hash to avoid overlap with reward transactions)
     let previous_tics_tx_id = user_intent_manager
-        .get_solver_tics_txn_hash(normalized_address.as_str())
-        .await;
+        .get_solver_remove_liquidity_txn_hash(normalized_address.as_str(), TransactionNetwork::TICS)
+        .await
+        .ok()
+        .flatten();
     let previous_btc_tx_id = user_intent_manager
-        .get_solver_btc_txn_hash(normalized_address.as_str())
-        .await;
+        .get_solver_remove_liquidity_txn_hash(normalized_address.as_str(), TransactionNetwork::BTC)
+        .await
+        .ok()
+        .flatten();
 
     let wait_timeout_secs = 40;
     let (tics_withdraw_tx_id, btc_withdraw_tx_id) = if initiated_tics || initiated_btc {
