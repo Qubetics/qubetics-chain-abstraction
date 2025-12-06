@@ -294,6 +294,16 @@ pub fn select_utxos_for_amount(
         return Err(anyhow::anyhow!("Required amount must be greater than zero"));
     }
 
+    // Enforce Bitcoin dust limit on recipient output (BIP-125)
+    // Transactions with outputs below 546 satoshis are non-standard and will be rejected
+    if required_amount < DUST_LIMIT_SATS {
+        return Err(anyhow::anyhow!(
+            "Recipient amount {} sats is below Bitcoin dust limit (minimum: {} sats). Transaction would be rejected by Bitcoin nodes.",
+            required_amount,
+            DUST_LIMIT_SATS
+        ));
+    }
+
     let mut confirmed_utxos: Vec<_> = utxos
         .iter()
         .filter(|utxo| {
