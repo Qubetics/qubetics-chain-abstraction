@@ -104,9 +104,14 @@ async fn derive_fees(
         Ok((max, prio))
     } else {
         // fallback for weird RPCs
-        let gp = provider.get_gas_price().await?;
         let prio = manual_max_priority.unwrap_or(default_prio);
-        Ok((gp + prio, prio))
+        let max = if let Some(mf) = manual_max_fee {
+            mf
+        } else {
+            let gp = provider.get_gas_price().await?;
+            gp + prio
+        };
+        Ok((max, prio))
     }
 }
 
