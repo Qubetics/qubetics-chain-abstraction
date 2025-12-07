@@ -325,14 +325,7 @@ impl SigningNode {
                 from: _from,
                 message: _message,
                 message_hash: _message_hash,
-            } => {
-                // info!(
-                //     "📥 [SIGNING] Node {} received message to sign from {}",
-                //     self.id, from
-                // );
-                // self.handle_message_to_sign(from, message, message_hash)
-                //     .await?;
-            }
+            } => {}
             SigningMessage::ECDSASignature {
                 from: _from,
                 signature: _signature,
@@ -341,20 +334,12 @@ impl SigningNode {
                 user_eth_address: _user_eth_address,
             } => {}
             SigningMessage::BtcSignaturesMessage {
-                from,
-                signatures,
-                round,
+                from: _from,
+                signatures: _signatures,
+                round: _round,
                 timestamp: _timestamp,
-                user_eth_address,
-            } => {
-                info!(
-                    "📥 [SIGNING] Node {} received BTC per-input signatures from {} for round {} (count: {}, user_eth_address: {:?})",
-                    self.id, from, round, signatures.len(), user_eth_address
-                );
-                // Process each per-input signature via BTC per-input handler
-                self.handle_btc_signature_for_round(from.clone(), signatures, round)
-                    .await?;
-            }
+                user_eth_address: _user_eth_address,
+            } => {}
             SigningMessage::SignedMessage {
                 from,
                 signed_message,
