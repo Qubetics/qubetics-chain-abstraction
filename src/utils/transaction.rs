@@ -1091,6 +1091,13 @@ pub async fn create_chain_transaction_from_contract_call(
     tx_hash: &str,
     transaction_type: crate::types::TransactionType,
 ) -> Result<ChainTransaction> {
+    // VaultToNetwork transaction type should not create contract transactions
+    if matches!(transaction_type, crate::types::TransactionType::VaultToNetwork) {
+        return Err(anyhow::anyhow!(
+            "Contract transactions are not supported for VaultToNetwork transaction type"
+        ));
+    }
+
     // Group public key is required for contract call transactions
     // NOTE: group_public_key will always be available once the solver ecosystem is live,
     // but we handle the None case gracefully to prevent panics

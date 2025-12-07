@@ -137,48 +137,56 @@ impl MpcNetworkLayer {
                             transaction_id, intent_hash, transaction_type
                         );
                     } else {
-                        // Execute contract call if needed
-                        if let Some(intent) = user_intent_manager.get_intent(intent_hash).await {
-                            let tx_type_enum = Self::parse_transaction_type(transaction_type)?;
+                        // Skip contract call execution for VaultToNetwork transaction type
+                        if transaction_type == "vault_to_network" {
+                            info!(
+                                "⏭️ [CONTRACT] Skipping contract call execution for VaultToNetwork transaction type (transaction ID: {})",
+                                transaction_id
+                            );
+                        } else {
+                            // Execute contract call if needed
+                            if let Some(intent) = user_intent_manager.get_intent(intent_hash).await {
+                                let tx_type_enum = Self::parse_transaction_type(transaction_type)?;
 
-                            let vault_group_key = if let Some(dkg_node) = &self.dkg_node {
-                                dkg_node.get_vault_group_key().await
-                            } else {
-                                None
-                            };
-
-                            if let Some(vault_group_key) = vault_group_key {
-                                if let Err(e) = self
-                                    .execute_contract_call_for_transaction(
-                                        &intent,
-                                        intent_hash,
-                                        tx_type_enum,
-                                        transaction_id,
-                                        Some(vault_group_key),
-                                        intent.amount,
-                                    )
-                                    .await
-                                {
-                                    warn!(
-                                        "❌ [CONTRACT] Failed to execute contract call for transaction ID {}: {}",
-                                        transaction_id, e
-                                    );
+                                let vault_group_key = if let Some(dkg_node) = &self.dkg_node {
+                                    dkg_node.get_vault_group_key().await
                                 } else {
-                                    info!(
-                                        "✅ [CONTRACT] Successfully executed contract call for transaction ID {}",
-                                        transaction_id
+                                    None
+                                };
+
+                                if let Some(vault_group_key) = vault_group_key {
+                                    if let Err(e) = self
+                                        .execute_contract_call_for_transaction(
+                                            &intent,
+                                            intent_hash,
+                                            tx_type_enum,
+                                            transaction_id,
+                                            Some(vault_group_key),
+                                            intent.amount,
+                                        )
+                                        .await
+                                    {
+                                        warn!(
+                                            "❌ [CONTRACT] Failed to execute contract call for transaction ID {}: {}",
+                                            transaction_id, e
+                                        );
+                                    } else {
+                                        info!(
+                                            "✅ [CONTRACT] Successfully executed contract call for transaction ID {}",
+                                            transaction_id
+                                        );
+                                    }
+                                } else {
+                                    warn!(
+                                        "❌ [CONTRACT] No vault group key available for contract call execution"
                                     );
                                 }
                             } else {
                                 warn!(
-                                    "❌ [CONTRACT] No vault group key available for contract call execution"
+                                    "❌ [CONTRACT] Could not retrieve intent {} for contract call execution",
+                                    intent_hash
                                 );
                             }
-                        } else {
-                            warn!(
-                                "❌ [CONTRACT] Could not retrieve intent {} for contract call execution",
-                                intent_hash
-                            );
                         }
                     }
                 }
