@@ -373,40 +373,36 @@ impl MpcNetworkLayer {
                         }
                     }
                     (None, Some(solver_addr)) => {
-                        if transaction_type == "reward_txn" {
-                            if let Err(e) = self
-                                .handle_reward_transaction_id_storage(
+                        let storage_result = match transaction_type.as_str() {
+                            "reward_txn" => {
+                                self.handle_reward_transaction_id_storage(
                                     solver_addr,
                                     &transaction_id,
                                     &transaction_type,
                                 )
                                 .await
-                            {
-                                error!(
-                                    "❌ [NETWORK] Failed to handle reward transaction ID storage: {}",
-                                    e
-                                );
                             }
-                        } else if transaction_type == "withdraw_liquidity"
-                            || transaction_type == "withdrawLiquidity"
-                        {
-                            if let Err(e) = self
-                                .handle_withdraw_liquidity_transaction_id_storage(
+                            "withdraw_liquidity" | "withdrawLiquidity" => {
+                                self.handle_withdraw_liquidity_transaction_id_storage(
                                     solver_addr,
                                     &transaction_id,
                                     &transaction_type,
                                 )
                                 .await
-                            {
-                                error!(
-                                    "❌ [NETWORK] Failed to handle withdraw liquidity transaction ID storage: {}",
-                                    e
-                                );
                             }
-                        } else {
-                            warn!(
-                                "⚠️ [NETWORK] Unknown solver-based transaction type '{}' in gossipsub handler",
-                                transaction_type
+                            _ => {
+                                warn!(
+                                    "❌ [NETWORK] Unknown transaction type: {}",
+                                    transaction_type
+                                );
+                                return Err(anyhow!("Unknown transaction type: {}", transaction_type));
+                            }
+                        };
+
+                        if let Err(e) = storage_result {
+                            error!(
+                                "❌ [NETWORK] Failed to handle transaction ID storage: {}",
+                                e
                             );
                         }
                     }
