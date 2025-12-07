@@ -2,7 +2,7 @@
 
 import axios from 'axios';
 
-const RPC_BASE_URL = process.env.RPC_BASE_URL || 'http://127.0.0.1:8082';
+const RPC_BASE_URL = process.env.RPC_BASE_URL || 'http://127.0.0.1:8083';
 const API_KEY = process.env.RPC_API_KEY || process.env.API_KEY;
 
 function log(message) {

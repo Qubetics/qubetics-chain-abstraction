@@ -16,7 +16,7 @@ import { Wallet, JsonRpcProvider, parseUnits, formatUnits } from 'ethers';
 // Configuration
 const QUBETICS_RPC_URL = 'http://114.119.184.52:8545';
 const QUBETICS_CHAIN_ID = 9029;
-const TICS_AMOUNT = 1000; // Amount in TICS (whole units)
+const TICS_AMOUNT = 10000; // Amount in TICS (whole units)
 // Note: Standard native EVM tokens use 18 decimals. If TICS uses different decimals, adjust below.
 // Based on codebase, TICS may use 10 decimals (10^10 conversion factor), but native tokens typically use 18.
 const TICS_DECIMALS = 18; // Standard for native EVM tokens (adjust to 10 if TICS uses 10 decimals)

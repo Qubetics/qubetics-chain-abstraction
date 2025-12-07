@@ -1100,27 +1100,37 @@ impl MpcNetworkLayer {
                 }
             }
             ChannelMessage::StatusRequest { responder } => {
+                info!("📊 [STATUS] Processing status request");
                 let peer_id = self.local_peer_id.to_string();
                 let connected_peers = swarm.connected_peers().count();
+                info!("📊 [STATUS] Peer ID: {}, Connected peers: {}", peer_id, connected_peers);
 
                 let (dkg_status, has_final_share) = if let Some(dkg_node) = &self.dkg_node {
                     let status = dkg_node.get_status();
                     let has_share = dkg_node.get_final_secret_share().await.is_some();
+                    info!("📊 [STATUS] DKG node available - status: {:?}, has_share: {}", status, has_share);
                     (status, has_share)
                 } else {
+                    info!("📊 [STATUS] DKG node not available - using default status");
                     (DKGStatus::New, false)
                 };
 
                 let is_ready = has_final_share && matches!(dkg_status, DKGStatus::Completed);
+                let dkg_status_str = format!("{:?}", dkg_status);
+                info!("📊 [STATUS] Final status - DKG: {}, Ready: {}", dkg_status_str, is_ready);
+                
                 let status = NodeStatus {
                     peer_id,
                     connected_peers,
-                    dkg_status: format!("{:?}", dkg_status),
+                    dkg_status: dkg_status_str,
                     is_ready,
                 };
 
-                if responder.send(status).is_err() {
-                    warn!("Failed to send node status response to requester");
+                if responder.send(status.clone()).is_err() {
+                    warn!("❌ [STATUS] Failed to send node status response to requester");
+                } else {
+                    info!("✅ [STATUS] Successfully sent status response: peer_id={}, connected_peers={}, dkg_status={}, is_ready={}", 
+                          status.peer_id, status.connected_peers, status.dkg_status, status.is_ready);
                 }
             }
             // this is used in the dkg code
