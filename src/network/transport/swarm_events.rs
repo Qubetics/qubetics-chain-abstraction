@@ -9,7 +9,7 @@ use libp2p::{
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{error, info, warn};
 
-use crate::database::keys;
+use crate::database::{key_utils::peer_addr_key, keys};
 use crate::protocols::DKGMessage;
 use crate::types::dkg::MSG_TOPIC_PEER_DISCOVERY;
 use crate::types::rpc::{MPCProtocol, RPCRequest};
@@ -97,6 +97,15 @@ impl MpcNetworkLayer {
         info!("🔗 Connection established with peer: {:?}", peer_id);
         let remote_addr = endpoint.get_remote_address();
         info!("📍 Remote address: {:?}", remote_addr);
+
+        // Store remote address in peer discovery state and persist
+        self.peer_discovery
+            .peer_multiaddresses
+            .insert(peer_id, remote_addr.clone());
+        let addr_key = peer_addr_key(&peer_id.to_string());
+        if let Err(e) = self.db.put_string(&addr_key, &remote_addr.to_string()) {
+            warn!("⚠️ Failed to persist peer address {} => {}: {}", peer_id, remote_addr, e);
+        }
 
         // Determine whether they dialed us or we dialed them
         let is_listener = matches!(endpoint, ConnectedPoint::Listener { .. });

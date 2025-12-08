@@ -101,7 +101,8 @@ pub enum RPCRequest {
 pub enum RPCResponse {
     PeerList {
         peers: Vec<SerializablePeerId>,
-        indices: Vec<Option<usize>>, // index per peer, None if unknown
+        indices: Vec<Option<usize>>,        // index per peer, None if unknown
+        addresses: Vec<Option<String>>,     // multiaddr per peer, None if unknown
     },
     Custom {
         id: String,

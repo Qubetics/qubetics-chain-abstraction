@@ -161,3 +161,7 @@ pub fn solver_remove_liquidity_btc_txn_key(solver_address: &str) -> String {
 pub fn peer_index_key(peer_id: &str) -> String {
     format!("{}{}", keys::PEER_INDEX, peer_id)
 }
+
+pub fn peer_addr_key(peer_id: &str) -> String {
+    format!("{}{}", keys::PEER_ADDR, peer_id)
+}

@@ -69,6 +69,27 @@ impl MpcNetworkLayer {
             }
         }
 
+        // Preload any persisted peer addresses into memory
+        if let Ok(keys) = this
+            .db
+            .get_keys_with_prefix_async(crate::database::keys::PEER_ADDR)
+            .await
+        {
+            info!("🔐 [PEER_LIST] Loading peer addresses from database");
+            for k in keys {
+                if let Some(peer_str) = k.strip_prefix(crate::database::keys::PEER_ADDR) {
+                    if let (Ok(Some(addr_str)), Ok(pid)) = (
+                        this.db.get_string_async::<String>(&k).await,
+                        peer_str.parse(),
+                    ) {
+                        if let Ok(addr) = addr_str.parse::<Multiaddr>() {
+                            this.peer_discovery.peer_multiaddresses.insert(pid, addr);
+                        }
+                    }
+                }
+            }
+        }
+
         // Ensure we have our own index persisted
         this.ensure_local_index();
 

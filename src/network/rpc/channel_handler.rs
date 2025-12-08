@@ -1,3 +1,6 @@
+
+use libp2p::Multiaddr;
+
 impl MpcNetworkLayer {
     pub(crate) async fn record_pending_liquidity_contract_update(
         &self,
@@ -1185,14 +1188,48 @@ impl MpcNetworkLayer {
                     }
                 };
                 
-                // Check if we're connected to the peer
-                let is_connected = swarm.is_connected(&peer_id);
+                // Attempt to dial if not connected and we have an address
+                let mut is_connected = swarm.is_connected(&peer_id);
+                info!("🔐 [DKG-SECURE]  Target Peer {} connected: {}", target_peer_id, is_connected);
+                let connected_peers = swarm.connected_peers().collect::<Vec<_>>();
+                info!("🔐 [DKG-SECURE]  Connected peers: {:?}", connected_peers);
+
+                info!("🔐 [DKG-SECURE]  Peer discovery {} address: {:?}", target_peer_id, self.peer_discovery.peer_multiaddresses.get(&peer_id));
+
+                if !is_connected {
+                    if let Some(addr) = self
+                        .peer_discovery
+                        .peer_multiaddresses
+                        .get(&peer_id)
+                        .cloned()
+                    {
+                        info!(
+                            "📞 [DKG-SECURE] Not connected to {}, dialing before send: {}",
+                            target_peer_id, addr
+                        );
+                        let to_dial = format!("{}/p2p/{}",addr.clone(), target_peer_id);
+                        let address: Multiaddr = to_dial.parse().expect("User to provide valid address.");
+                        if let Err(e) = swarm.dial(address) {
+                            warn!("⚠️ [DKG-SECURE] Dial to {} failed: {}", target_peer_id, e);
+                        } else {
+                            // allow a brief window for connection to establish
+                            tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+                            is_connected = swarm.is_connected(&peer_id);
+                            info!("🔐 [DKG-SECURE] Dial to connect to {} successful", target_peer_id);
+                        }
+                    } else {
+                        warn!(
+                            "⚠️ [DKG-SECURE] No known address to dial peer {}; will rely on retries",
+                            target_peer_id
+                        );
+                    }
+                }
                 
                 if !is_connected && retry_count < MAX_RETRIES {
                     // Not connected - schedule retry with exponential backoff
                     let delay_ms = 1000 * (1 << retry_count.min(5)); // 1s, 2s, 4s, 8s, 16s, 32s max
                     info!(
-                        "🔄 [DKG-SECURE] Peer {} not connected - scheduling retry {} in {}ms",
+                        "🔄 [DKG-SECURE] Peer send {} not connected - scheduling retry {} in {}ms",
                         target_peer_id, retry_count + 1, delay_ms
                     );
                     
