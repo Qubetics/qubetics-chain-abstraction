@@ -153,7 +153,9 @@ pub async fn run_nodes(
         let log_file = std::fs::File::create(format!("{}/logs/node.log", dir))?;
 
         let mut child = Command::new("./mpc-node") // Relative to current_dir
-            .current_dir(dir) // Run inside node directory
+            .current_dir(dir)
+            .env("RPC_PORT", (rpc_port + node_id as u16).to_string())
+            // Run inside node directory
             .arg(&node1_addr)
             .env("RUST_LOG", "info")
             .stdout(Stdio::piped()) // Capture stdout to print
