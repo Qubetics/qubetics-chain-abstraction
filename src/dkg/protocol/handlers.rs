@@ -93,7 +93,45 @@ impl DKGNode {
                 self.handle_refresh_share(from, shares, commitments, node_manager.clone())
                     .await?;
             }
+            // SECURE: Handle commitment broadcast (shares are sent via unicast RPC)
+            DKGMessage::CommitmentBroadcast {
+                from,
+                commitments,
+                round,
+            } => {
+                info!(
+                    "🔐 [DKG-SECURE] Received commitment broadcast from {} (round {})",
+                    from, round
+                );
+                self.handle_commitment_broadcast(from, commitments).await?;
+            }
         }
+        Ok(())
+    }
+
+    /// Handle commitment broadcast (public, safe to broadcast)
+    /// Individual shares are received via P2P RPC (SendDKGShare)
+    async fn handle_commitment_broadcast(
+        &mut self,
+        from: String,
+        commitments: Vec<SerializablePoint>,
+    ) -> Result<()> {
+        info!(
+            "🔐 [DKG-SECURE] Processing {} commitments from {}",
+            commitments.len(),
+            from
+        );
+        
+        // Store commitments for verification when we receive the share via RPC
+        let raw_commitments: Vec<k256::AffinePoint> = commitments.iter().map(|c| c.0).collect();
+        self.storage.store_commitments(&from, &raw_commitments).await?;
+        
+        info!(
+            "✅ [DKG-SECURE] Stored {} commitments from {} (waiting for unicast share)",
+            raw_commitments.len(),
+            from
+        );
+        
         Ok(())
     }
 
@@ -298,7 +336,7 @@ impl DKGNode {
         Ok(())
     }
 
-    async fn check_completion(&mut self, node_manager: Box<dyn NodeMembership>) -> Result<()> {
+    pub(crate) async fn check_completion(&mut self, node_manager: Box<dyn NodeMembership>) -> Result<()> {
         let (shares_len, validations_len, valid_validations) = {
             let validations = self.storage.get_all_validations().await?;
             let shares = self.storage.get_all_shares().await?;

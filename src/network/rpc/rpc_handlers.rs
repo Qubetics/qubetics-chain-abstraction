@@ -18,6 +18,7 @@ impl MpcNetworkLayer {
         &mut self,
         peer: PeerId,
         request: RPCRequest,
+        swarm: &mut libp2p::Swarm<MpcNetworkBehaviour>,
     ) -> RPCResponse {
         match request {
             RPCRequest::GetPeerList => self.handle_get_peer_list_request(peer).await,
@@ -53,6 +54,28 @@ impl MpcNetworkLayer {
             } => {
                 self.handle_request_database_batch(peer, batch_index, batch_size)
                     .await
+            }
+            // SECURE DKG SHARE - receive unicast share via P2P RPC
+            RPCRequest::SendDKGShare {
+                from_node_id,
+                share_index,
+                share_value,
+                commitments,
+                round,
+            } => {
+                info!(
+                    "🔐 [DKG-SECURE] Received UNICAST share index {} from {} (round {})",
+                    share_index, from_node_id, round
+                );
+                self.handle_incoming_dkg_share(
+                    peer,
+                    from_node_id,
+                    share_index,
+                    share_value,
+                    commitments,
+                    round,
+                )
+                .await
             }
             _ => RPCResponse::Ack,
         }
@@ -221,6 +244,73 @@ impl MpcNetworkLayer {
             RPCResponse::ShareAccepted
         } else {
             RPCResponse::Error("Invalid share".into())
+        }
+    }
+
+    /// Handle incoming DKG share from unicast P2P RPC
+    async fn handle_incoming_dkg_share(
+        &mut self,
+        _peer: PeerId,
+        from_node_id: String,
+        share_index: usize,
+        share_value: crate::types::secp::SerializableScalar,
+        commitments: Vec<crate::types::secp::SerializablePoint>,
+        _round: u64,
+    ) -> RPCResponse {
+        info!(
+            "🔐 [DKG-SECURE] Processing unicast share index {} from {}",
+            share_index, from_node_id
+        );
+
+        let dkg_node = match &mut self.dkg_node {
+            Some(node) => node,
+            None => {
+                warn!("❌ [DKG-SECURE] DKG node not initialized");
+                return RPCResponse::Error("DKG not initialized".to_string());
+            }
+        };
+
+        let receiver_node_id = dkg_node.get_id().to_string();
+        
+        // Use the public method to process the share
+        match dkg_node.process_incoming_share(
+            from_node_id.clone(),
+            share_index,
+            share_value,
+            commitments,
+            self.node_manager.clone(),
+        ).await {
+            Ok(true) => {
+                info!(
+                    "✅ [DKG-SECURE] Share index {} from {} processed successfully",
+                    share_index, from_node_id
+                );
+                RPCResponse::DKGShareReceived {
+                    from_node_id,
+                    receiver_node_id,
+                    share_index,
+                    success: true,
+                }
+            }
+            Ok(false) => {
+                warn!(
+                    "❌ [DKG-SECURE] Share index {} from {} was rejected",
+                    share_index, from_node_id
+                );
+                RPCResponse::DKGShareReceived {
+                    from_node_id,
+                    receiver_node_id,
+                    share_index,
+                    success: false,
+                }
+            }
+            Err(e) => {
+                warn!(
+                    "❌ [DKG-SECURE] Error processing share index {} from {}: {}",
+                    share_index, from_node_id, e
+                );
+                RPCResponse::Error(format!("Failed to process share: {}", e))
+            }
         }
     }
 

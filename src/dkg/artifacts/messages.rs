@@ -40,4 +40,10 @@ pub enum DKGMessage {
         shares: Vec<KeyShare>,
         commitments: Vec<SerializablePoint>,
     },
+    /// Individual shares are sent via P2P RPC (SendDKGShare).
+    CommitmentBroadcast {
+        from: String,
+        commitments: Vec<SerializablePoint>,
+        round: u64,
+    },
 }

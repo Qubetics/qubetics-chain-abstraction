@@ -1156,6 +1156,97 @@ impl MpcNetworkLayer {
                     .request_response
                     .send_request(&peer_id, request);
             }
+            // SECURE DKG SHARE DISTRIBUTION - sends share to specific peer via P2P RPC
+            ChannelMessage::SendDKGShareRPC {
+                target_peer_id,
+                from_node_id,
+                share_index,
+                share_value,
+                commitments,
+                round,
+                retry_count,
+            } => {
+                const MAX_RETRIES: u8 = 10;
+                
+                info!(
+                    "🔐 [DKG-SECURE] Sending share index {} via UNICAST to peer {} (attempt {})",
+                    share_index, target_peer_id, retry_count + 1
+                );
+                
+                // Parse the target peer ID
+                let peer_id = match target_peer_id.parse::<PeerId>() {
+                    Ok(pid) => pid,
+                    Err(e) => {
+                        warn!(
+                            "❌ [DKG-SECURE] Invalid peer ID '{}': {}",
+                            target_peer_id, e
+                        );
+                        return Err(anyhow!("Invalid peer ID: {}", e));
+                    }
+                };
+                
+                // Check if we're connected to the peer
+                let is_connected = swarm.is_connected(&peer_id);
+                
+                if !is_connected && retry_count < MAX_RETRIES {
+                    // Not connected - schedule retry with exponential backoff
+                    let delay_ms = 1000 * (1 << retry_count.min(5)); // 1s, 2s, 4s, 8s, 16s, 32s max
+                    info!(
+                        "🔄 [DKG-SECURE] Peer {} not connected - scheduling retry {} in {}ms",
+                        target_peer_id, retry_count + 1, delay_ms
+                    );
+                    
+                    let tx = self.message_tx.clone();
+                    let retry_msg = ChannelMessage::SendDKGShareRPC {
+                        target_peer_id: target_peer_id.clone(),
+                        from_node_id,
+                        share_index,
+                        share_value,
+                        commitments,
+                        round,
+                        retry_count: retry_count + 1,
+                    };
+                    
+                    tokio::spawn(async move {
+                        tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
+                        if let Err(e) = tx.send(retry_msg).await {
+                            tracing::warn!(
+                                "❌ [DKG-SECURE] Failed to schedule retry for share {}: {}",
+                                share_index, e
+                            );
+                        }
+                    });
+                    
+                    return Ok(());
+                }
+                
+                if !is_connected {
+                    warn!(
+                        "❌ [DKG-SECURE] Peer {} still not connected after {} retries - giving up",
+                        target_peer_id, MAX_RETRIES
+                    );
+                }
+                
+                // Create the RPC request
+                let request = RPCRequest::SendDKGShare {
+                    from_node_id,
+                    share_index,
+                    share_value,
+                    commitments,
+                    round,
+                };
+                
+                // Send via request-response protocol (unicast, not broadcast)
+                let request_id = swarm
+                    .behaviour_mut()
+                    .request_response
+                    .send_request(&peer_id, request);
+                
+                info!(
+                    "✅ [DKG-SECURE] Share index {} sent via P2P RPC to {} (request_id: {:?}, connected: {})",
+                    share_index, target_peer_id, request_id, is_connected
+                );
+            }
             ChannelMessage::IntentHash {
                 intent_hash,
                 signer,

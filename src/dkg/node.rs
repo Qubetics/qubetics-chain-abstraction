@@ -242,6 +242,90 @@ impl DKGNode {
             .unwrap_or(false)
     }
 
+    /// Get the node's ID
+    pub fn get_id(&self) -> &str {
+        &self.id
+    }
+
+    /// Get peer index for a given peer ID (for secure share distribution)
+    pub fn get_peer_index_for(&self, peer_id: &str) -> Result<Option<usize>> {
+        self.storage.get_peer_index_for(peer_id)
+    }
+
+    pub async fn process_incoming_share(
+        &mut self,
+        from_node_id: String,
+        share_index: usize,
+        share_value: crate::types::SerializableScalar,
+        commitments: Vec<crate::types::SerializablePoint>,
+        node_manager: Box<dyn crate::NodeMembership>,
+    ) -> Result<bool> {
+        use k256::AffinePoint;
+        
+        info!(
+            "🔐 [DKG-SECURE] Processing unicast share index {} from {}",
+            share_index, from_node_id
+        );
+
+        // Get our own index to verify this share is for us
+        let my_index = match self.storage.get_peer_index_for(&self.id) {
+            Ok(Some(idx)) => idx,
+            _ => {
+                warn!("❌ [DKG-SECURE] Cannot determine own peer index");
+                return Err(anyhow!("Cannot determine own peer index"));
+            }
+        };
+
+        // Verify the share is intended for us
+        if share_index != my_index {
+            warn!(
+                "❌ [DKG-SECURE] Received share for wrong index: {} (expected {})",
+                share_index, my_index
+            );
+            return Ok(false);
+        }
+
+        // Verify the share against commitments
+        if self.verify_share(&share_value, share_index, &commitments) {
+            // Store the share
+            let key_share = crate::types::KeyShare {
+                index: share_index,
+                value: share_value,
+            };
+
+            self.storage.store_share(&from_node_id, &key_share).await?;
+
+            // Store commitments
+            let raw_commitments: Vec<AffinePoint> =
+                commitments.iter().map(|c| c.0).collect();
+            self.storage
+                .store_commitments(&from_node_id, &raw_commitments)
+                .await?;
+
+            // Add validation
+            self.storage
+                .add_validation(&from_node_id, &self.id, true)
+                .await?;
+
+            info!(
+                "✅ [DKG-SECURE] Share index {} from {} verified and stored successfully",
+                share_index, from_node_id
+            );
+
+            // Check if DKG is complete
+            self.check_completion(node_manager).await?;
+
+            Ok(true)
+        } else {
+            warn!(
+                "❌ [DKG-SECURE] Share verification failed for index {} from {}",
+                share_index, from_node_id
+            );
+            Ok(false)
+        }
+    }
+
+
     // Test function to verify share generation
     pub fn test_share_generation(&self) -> Result<()> {
         debug!("🧪 Testing share generation for node {}", self.id);

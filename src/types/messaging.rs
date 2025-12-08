@@ -4,7 +4,7 @@ use crate::{
     types::{
         intent::{DepositIntent, TransactionType},
         rpc::RPCRequest,
-        secp::SerializableScalar,
+        secp::{SerializablePoint, SerializableScalar},
         signing::SigningMessage,
         ConsensusMessage,
     },
@@ -87,6 +87,16 @@ pub enum ChannelMessage {
     ScheduledDKGStart,
     PeerDiscoveryRetry {
         attempt: u8,
+    },
+    /// Send a DKG share to a specific peer via RPC (unicast, not broadcast)
+    SendDKGShareRPC {
+        target_peer_id: String,
+        from_node_id: String,
+        share_index: usize,
+        share_value: SerializableScalar,
+        commitments: Vec<SerializablePoint>,
+        round: u64,
+        retry_count: u8,
     },
 }
 

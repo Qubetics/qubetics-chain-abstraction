@@ -242,7 +242,7 @@ impl MpcNetworkLayer {
                     ReqRespMessage::Request {
                         request, channel, ..
                     } => {
-                        let response = self.handle_rpc_request(peer, request).await;
+                        let response = self.handle_rpc_request(peer, request, swarm).await;
                         let res = swarm
                             .behaviour_mut()
                             .request_response
