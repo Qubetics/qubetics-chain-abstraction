@@ -20,7 +20,7 @@ use crate::{
         rpc_server::{
             AddLiquidityRequest, AddLiquidityResponse, ClaimRewardRequest, ClaimRewardResponse,
             DKGStatusResponse, EnhancedUserRegistrationResponse, GetRewardSolverRequest,
-            GetRewardSolverResponse, HeartbeatResponse, NodeIdResponse, NodeStatus, RequestContext,
+            GetRewardSolverResponse, HeartbeatResponse, NodeIdResponse, RequestContext,
             UptimeResponse, UserInfoResponse, UserMpcDepositRequest, UserMpcDepositVerifyResponse,
             UserRegistrationRequest, WithdrawLiquidityRequest, WithdrawLiquidityResponse,
         },
@@ -140,10 +140,33 @@ fn ensure_withdraw_amount_bounds(value: &U256, asset_label: &str) -> Result<(), 
     Ok(())
 }
 
+fn enforce_minimum_remaining(
+    available: &U256,
+    withdraw: &U256,
+    min_required: Option<&U256>,
+    asset_label: &str,
+) -> Result<(), String> {
+    let remaining = available.saturating_sub(*withdraw);
+    if remaining.is_zero() {
+        return Ok(());
+    }
+
+    if let Some(min) = min_required {
+        if remaining < *min {
+            return Err(format!(
+                "{asset_label} withdrawal would leave less than minimum required liquidity ({min})"
+            ));
+        }
+    }
+
+    Ok(())
+}
+
 fn select_withdraw_amount(
     requested: Option<&String>,
     available: Option<&String>,
     asset_label: &str,
+    min_required: Option<&U256>,
 ) -> Result<Option<String>, String> {
     match (requested, available) {
         (Some(req), Some(avail)) => {
@@ -155,6 +178,7 @@ fn select_withdraw_amount(
                     "{asset_label} withdraw amount exceeds available liquidity"
                 ));
             }
+            enforce_minimum_remaining(&avail_val, &req_val, min_required, asset_label)?;
             Ok(Some(req.clone()))
         }
         (Some(_), None) => Err(format!(
@@ -166,6 +190,7 @@ fn select_withdraw_amount(
                 return Ok(None);
             }
             ensure_withdraw_amount_bounds(&avail_val, asset_label)?;
+            enforce_minimum_remaining(&avail_val, &avail_val, min_required, asset_label)?;
             Ok(Some(avail.clone()))
         }
         (None, None) => Ok(None),
@@ -184,6 +209,102 @@ fn validate_liquidity_amount(
         }
         None => Ok(None),
     }
+}
+
+fn withdraw_error_response(
+    solver_address: String,
+    liquidity_btc: &Option<String>,
+    liquidity_tics: &Option<String>,
+    req: &WithdrawLiquidityRequest,
+    message: String,
+    error_message: Option<String>,
+) -> WithdrawLiquidityResponse {
+    WithdrawLiquidityResponse {
+        status: "error".to_string(),
+        solver_address,
+        liquidity_btc: liquidity_btc.clone(),
+        liquidity_tics: liquidity_tics.clone(),
+        ethereum_address: req.ethereum_address.clone(),
+        btc_address: req.btc_address.clone(),
+        tics_withdraw_tx_id: None,
+        btc_withdraw_tx_id: None,
+        message,
+        error_message,
+    }
+}
+
+async fn maybe_initiate_withdrawal(
+    asset_label: &str,
+    requested_amount: Option<&String>,
+    available_liquidity: Option<&String>,
+    destination: Option<&String>,
+    min_required: Option<&U256>,
+    solver_address: &str,
+    liquidity_btc: &Option<String>,
+    liquidity_tics: &Option<String>,
+    req: &WithdrawLiquidityRequest,
+    message_tx: &Arc<Mutex<mpsc::Sender<ChannelMessage>>>,
+    build_channel_msg: impl Fn(String, String, String) -> ChannelMessage,
+    missing_address_msg: &str,
+) -> Result<bool, WithdrawLiquidityResponse> {
+    let withdraw_amount =
+        select_withdraw_amount(requested_amount, available_liquidity, asset_label, min_required)
+            .map_err(|msg| {
+                withdraw_error_response(
+                    solver_address.to_string(),
+                    liquidity_btc,
+                    liquidity_tics,
+                    req,
+                    msg.clone(),
+                    Some(msg),
+                )
+            })?;
+
+    let Some(amount_str) = withdraw_amount else {
+        return Ok(false);
+    };
+
+    let destination_addr = match destination {
+        Some(addr) => addr,
+        None => {
+            return Err(withdraw_error_response(
+                solver_address.to_string(),
+                liquidity_btc,
+                liquidity_tics,
+                req,
+                missing_address_msg.to_string(),
+                Some(missing_address_msg.to_string()),
+            ))
+        }
+    };
+
+    info!(
+        "🚰 [WITHDRAW] Initiating {asset_label} withdrawal for solver {} -> {} (amount: {})",
+        solver_address, destination_addr, amount_str
+    );
+
+    let msg = build_channel_msg(
+        solver_address.to_string(),
+        destination_addr.clone(),
+        amount_str.clone(),
+    );
+    let tx_sender = message_tx.lock().await;
+    if let Err(e) = tx_sender.send(msg).await {
+        error!(
+            "❌ Failed to dispatch {asset_label} withdraw message for solver {}: {}",
+            solver_address, e
+        );
+        return Err(withdraw_error_response(
+            solver_address.to_string(),
+            liquidity_btc,
+            liquidity_tics,
+            req,
+            format!("Failed to initiate {asset_label} withdrawal"),
+            Some(format!("Network error: {e}")),
+        ));
+    }
+
+    Ok(true)
 }
 
 pub(crate) async fn handle_register_user(
@@ -1625,11 +1746,131 @@ pub(crate) async fn handle_withdraw_liquidity(
         liquidity_btc_str, liquidity_tics_str
     );
 
-    let withdraw_tics_amount: Option<String> = if req.amount_tics.is_some() {
+    // Fetch minimum liquidity thresholds only for the requested asset
+    let wants_tics = req.amount_tics.is_some();
+    let wants_btc = req.amount_btc.is_some();
+
+    let (minimum_liquidity_tics, minimum_liquidity_btc) = if wants_tics || wants_btc {
+        let solver_contract_address = std::env::var("SOLVER_CONTRACT_ADDRESS").unwrap_or_default();
+        let solver_contract_rpc = std::env::var("SOLVER_CONTRACT_RPC_URL").unwrap_or_default();
+        let solver_contract_chain_id = std::env::var("SOLVER_CONTRACT_CHAIN_ID")
+            .unwrap_or_else(|_| "9029".to_string())
+            .parse::<u64>()
+            .unwrap_or(9029);
+
+        if solver_contract_address.trim().is_empty() || solver_contract_rpc.trim().is_empty() {
+            let msg = "Solver contract configuration missing".to_string();
+            return Ok(warp::reply::json(&withdraw_error_response(
+                normalized_address.clone(),
+                &liquidity_btc_str,
+                &liquidity_tics_str,
+                &req,
+                msg.clone(),
+                Some(msg),
+            )));
+        }
+
+        let parsed_contract_address = match solver_contract_address.parse::<Address>() {
+            Ok(addr) => addr,
+            Err(e) => {
+                let msg = format!("Invalid solver contract address: {e}");
+                return Ok(warp::reply::json(&withdraw_error_response(
+                    normalized_address.clone(),
+                    &liquidity_btc_str,
+                    &liquidity_tics_str,
+                    &req,
+                    msg.clone(),
+                    Some(msg),
+                )));
+            }
+        };
+
+        let contract_config = ContractConfig {
+            rpc_url: solver_contract_rpc,
+            contract_address: parsed_contract_address,
+            chain_id: solver_contract_chain_id,
+        };
+
+        let contract_client = match ContractClient::new(contract_config.clone()) {
+            Ok(client) => client,
+            Err(e) => {
+                let msg = format!("Failed to create solver contract client: {e}");
+                return Ok(warp::reply::json(&withdraw_error_response(
+                    normalized_address.clone(),
+                    &liquidity_btc_str,
+                    &liquidity_tics_str,
+                    &req,
+                    msg.clone(),
+                    Some(msg),
+                )));
+            }
+        };
+
+        let solver_contract =
+            match SolverManagerContract::new(&contract_config, contract_client.provider()) {
+                Ok(contract) => contract,
+                Err(e) => {
+                    let msg = format!("Failed to initialize solver contract: {e}");
+                    return Ok(warp::reply::json(&withdraw_error_response(
+                        normalized_address.clone(),
+                        &liquidity_btc_str,
+                        &liquidity_tics_str,
+                        &req,
+                        msg.clone(),
+                        Some(msg),
+                    )));
+                }
+            };
+
+        let min_tics = if wants_tics {
+            Some(match solver_contract.get_minimum_liquidity_tics().await {
+                Ok(v) => v,
+                Err(e) => {
+                    let msg = format!("Failed to fetch minimum TICS liquidity: {e}");
+                    return Ok(warp::reply::json(&withdraw_error_response(
+                        normalized_address.clone(),
+                        &liquidity_btc_str,
+                        &liquidity_tics_str,
+                        &req,
+                        msg.clone(),
+                        Some(msg),
+                    )));
+                }
+            })
+        } else {
+            None
+        };
+
+        let min_btc = if wants_btc {
+            Some(match solver_contract.get_minimum_liquidity_btc().await {
+                Ok(v) => v,
+                Err(e) => {
+                    let msg = format!("Failed to fetch minimum BTC liquidity: {e}");
+                    return Ok(warp::reply::json(&withdraw_error_response(
+                        normalized_address.clone(),
+                        &liquidity_btc_str,
+                        &liquidity_tics_str,
+                        &req,
+                        msg.clone(),
+                        Some(msg),
+                    )));
+                }
+            })
+        } else {
+            None
+        };
+
+        (min_tics, min_btc)
+    } else {
+        (None, None)
+    };
+
+    let withdraw_tics_amount: Option<String> = if wants_tics {
         match select_withdraw_amount(
             req.amount_tics.as_ref(),
             liquidity_tics_str.as_ref(),
             "TICS",
+            minimum_liquidity_tics.as_ref(),
         ) {
             Ok(value) => value,
             Err(msg) => {
@@ -1652,8 +1893,13 @@ pub(crate) async fn handle_withdraw_liquidity(
         None
     };
 
-    let withdraw_btc_amount: Option<String> = if req.amount_btc.is_some() {
-        match select_withdraw_amount(req.amount_btc.as_ref(), liquidity_btc_str.as_ref(), "BTC") {
+    let withdraw_btc_amount: Option<String> = if wants_btc {
+        match select_withdraw_amount(
+            req.amount_btc.as_ref(),
+            liquidity_btc_str.as_ref(),
+            "BTC",
+            minimum_liquidity_btc.as_ref(),
+        ) {
             Ok(value) => value,
             Err(msg) => {
                 return Ok(warp::reply::json(&WithdrawLiquidityResponse {
@@ -1729,111 +1975,63 @@ pub(crate) async fn handle_withdraw_liquidity(
     let mut initiated_tics = false;
     let mut initiated_btc = false;
 
-    if let Some(amount_str) = withdraw_tics_amount.as_ref() {
-        if let Some(address) = req.ethereum_address.as_ref() {
-            info!(
-                "🚰 [WITHDRAW] Initiating TICS withdrawal for solver {} -> {} (amount: {})",
-                normalized_address, address, amount_str
-            );
-            let msg = ChannelMessage::WithdrawLiquidity {
-                solver_address: normalized_address.clone(),
+    if withdraw_tics_amount.is_some() {
+        let maybe_initiated = maybe_initiate_withdrawal(
+            "TICS",
+            withdraw_tics_amount.as_ref(),
+            liquidity_tics_str.as_ref(),
+            req.ethereum_address.as_ref(),
+            minimum_liquidity_tics.as_ref(),
+            &normalized_address,
+            &liquidity_btc_str,
+            &liquidity_tics_str,
+            &req,
+            &message_tx,
+            |solver, dest, amount| ChannelMessage::WithdrawLiquidity {
+                solver_address: solver,
                 btc_address: None,
-                eth_address: Some(address.clone()),
+                eth_address: Some(dest),
                 amount_btc: None,
-                amount_tics: Some(amount_str.clone()),
+                amount_tics: Some(amount),
                 transaction_type: "withdraw_liquidity".to_string(),
-            };
-            let tx_sender = message_tx.lock().await;
-            if let Err(e) = tx_sender.send(msg).await {
-                error!(
-                    "❌ Failed to dispatch TICS withdraw message for solver {}: {}",
-                    normalized_address, e
-                );
-                return Ok(warp::reply::json(&WithdrawLiquidityResponse {
-                    status: "error".to_string(),
-                    solver_address: normalized_address,
-                    liquidity_btc: liquidity_btc_str,
-                    liquidity_tics: liquidity_tics_str,
-                    ethereum_address: req.ethereum_address.clone(),
-                    btc_address: req.btc_address.clone(),
-                    tics_withdraw_tx_id: None,
-                    btc_withdraw_tx_id: None,
-                    message: "Failed to initiate TICS withdrawal".to_string(),
-                    error_message: Some(format!("Network error: {e}")),
-                }));
-            }
-            initiated_tics = true;
-        } else {
-            warn!(
-                "⚠️ [WITHDRAW] TICS withdraw amount {} requested but no ethereum_address provided",
-                amount_str
-            );
-            return Ok(warp::reply::json(&WithdrawLiquidityResponse {
-                status: "error".to_string(),
-                solver_address: normalized_address,
-                liquidity_btc: liquidity_btc_str,
-                liquidity_tics: liquidity_tics_str,
-                ethereum_address: req.ethereum_address.clone(),
-                btc_address: req.btc_address.clone(),
-                tics_withdraw_tx_id: None,
-                btc_withdraw_tx_id: None,
-                message: "Ethereum address is required for TICS withdrawal".to_string(),
-                error_message: Some("Missing ethereum_address".to_string()),
-            }));
+            },
+            "Ethereum address is required for TICS withdrawal",
+        )
+        .await;
+
+        match maybe_initiated {
+            Ok(flag) => initiated_tics = flag,
+            Err(resp) => return Ok(warp::reply::json(&resp)),
         }
     }
 
-    if let Some(amount_str) = withdraw_btc_amount.as_ref() {
-        if let Some(address) = req.btc_address.as_ref() {
-            info!(
-                "🚰 [WITHDRAW] Initiating BTC withdrawal for solver {} -> {} (amount: {})",
-                normalized_address, address, amount_str
-            );
-            let msg = ChannelMessage::WithdrawLiquidity {
-                solver_address: normalized_address.clone(),
-                btc_address: Some(address.clone()),
+    if withdraw_btc_amount.is_some() {
+        let maybe_initiated = maybe_initiate_withdrawal(
+            "BTC",
+            withdraw_btc_amount.as_ref(),
+            liquidity_btc_str.as_ref(),
+            req.btc_address.as_ref(),
+            minimum_liquidity_btc.as_ref(),
+            &normalized_address,
+            &liquidity_btc_str,
+            &liquidity_tics_str,
+            &req,
+            &message_tx,
+            |solver, dest, amount| ChannelMessage::WithdrawLiquidity {
+                solver_address: solver,
+                btc_address: Some(dest),
                 eth_address: None,
-                amount_btc: Some(amount_str.clone()),
+                amount_btc: Some(amount),
                 amount_tics: None,
                 transaction_type: "withdraw_liquidity".to_string(),
-            };
-            let tx_sender = message_tx.lock().await;
-            if let Err(e) = tx_sender.send(msg).await {
-                error!(
-                    "❌ Failed to dispatch BTC withdraw message for solver {}: {}",
-                    normalized_address, e
-                );
-                return Ok(warp::reply::json(&WithdrawLiquidityResponse {
-                    status: "error".to_string(),
-                    solver_address: normalized_address,
-                    liquidity_btc: liquidity_btc_str,
-                    liquidity_tics: liquidity_tics_str,
-                    ethereum_address: req.ethereum_address.clone(),
-                    btc_address: req.btc_address.clone(),
-                    tics_withdraw_tx_id: None,
-                    btc_withdraw_tx_id: None,
-                    message: "Failed to initiate BTC withdrawal".to_string(),
-                    error_message: Some(format!("Network error: {e}")),
-                }));
-            }
-            initiated_btc = true;
-        } else {
-            warn!(
-                "⚠️ [WITHDRAW] BTC withdraw amount {} requested but no btc_address provided",
-                amount_str
-            );
-            return Ok(warp::reply::json(&WithdrawLiquidityResponse {
-                status: "error".to_string(),
-                solver_address: normalized_address,
-                liquidity_btc: liquidity_btc_str,
-                liquidity_tics: liquidity_tics_str,
-                ethereum_address: req.ethereum_address.clone(),
-                btc_address: req.btc_address.clone(),
-                tics_withdraw_tx_id: None,
-                btc_withdraw_tx_id: None,
-                message: "BTC address is required for BTC withdrawal".to_string(),
-                error_message: Some("Missing btc_address".to_string()),
-            }));
+            },
+            "BTC address is required for BTC withdrawal",
+        )
+        .await;
+
+        match maybe_initiated {
+            Ok(flag) => initiated_btc = flag,
+            Err(resp) => return Ok(warp::reply::json(&resp)),
         }
     }
 
