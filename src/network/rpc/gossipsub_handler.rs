@@ -181,9 +181,9 @@ impl MpcNetworkLayer {
                 }
 
                 // Also handle in standalone consensus node if available
-                if let Some(consensus_node) = &mut self.consensus_node {
-                    consensus_node.handle_message(consensus_msg).await?;
-                }
+                // if let Some(consensus_node) = &mut self.consensus_node {
+                //     consensus_node.handle_message(consensus_msg).await?;
+                // }
             }
             GossipsubMessage::VrfSelection(vrf_msg) => {
                 // Handle VRF selection messages
@@ -1194,6 +1194,11 @@ impl MpcNetworkLayer {
                         let threshold = self.node_manager.get_threshold();
                         info!("📊 Updated node count: {}, threshold: {}", total, threshold);
 
+                        // Update sequencer with new total nodes
+                        if let Some(sequencer) = &self.contract_sequencer {
+                            sequencer.update_total_nodes(total).await;
+                        }
+
                         // Update signing node threshold to match current network state
                         if let Some(signing_node) = &mut self.signing_node {
                             let new_threshold = self.node_manager.get_threshold();
@@ -1218,6 +1223,23 @@ impl MpcNetworkLayer {
                     Err(e) => {
                         warn!("❌ Failed to add peer {} to node manager: {:?}", peer, e);
                     }
+                }
+            }
+            GossipsubMessage::SequencerSync {
+                transaction_id,
+                sequence,
+                node_id,
+                state,
+            } => {
+                info!(
+                    "🔄 [SEQUENCER] Received sequencer sync: tx_id={}, sequence={}, node={}, state={}",
+                    transaction_id, sequence, node_id, state
+                );
+                
+                if let Some(sequencer) = &self.contract_sequencer {
+                    sequencer.handle_sync_message(transaction_id, sequence, node_id, state).await;
+                } else {
+                    warn!("⚠️ [SEQUENCER] Received sync message but sequencer not initialized");
                 }
             }
         }

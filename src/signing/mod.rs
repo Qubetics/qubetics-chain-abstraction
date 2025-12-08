@@ -42,7 +42,9 @@ use rand::thread_rng;
 
 use crate::chain_abstraction::{ChainHandler, ChainTransaction};
 use crate::protocols::{VrfSelectedNodesBroadcast, VrfService};
-use crate::types::{p2p::SerializablePeerId, ChannelMessage, ConsensusMessage, ConsensusResult};
+use crate::types::{
+    p2p::SerializablePeerId, ChannelMessage, ConsensusMessage, ConsensusResult, GossipsubMessage,
+};
 use crate::user_intent_manager::UserIntentManager;
 use anyhow::bail;
 
@@ -1022,7 +1024,9 @@ impl SigningNode {
                     round,
                 };
 
-                let broadcast_data = serde_json::to_vec(&consensus_msg)?;
+                // Wrap in GossipsubMessage::Consensus for proper deserialization
+                let gossipsub_msg = GossipsubMessage::Consensus(consensus_msg);
+                let broadcast_data = serde_json::to_vec(&gossipsub_msg)?;
 
                 // Store the result for later use
                 let is_final_node = consensus_node.is_final_node(round, &own_node_id);

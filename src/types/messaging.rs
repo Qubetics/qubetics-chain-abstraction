@@ -166,4 +166,14 @@ pub enum GossipsubMessage {
         intent_hash: String,
         node_id: String,
     },
+    SequencerSync {
+        /// The transaction_id of the request being processed
+        transaction_id: String,
+        /// The sequence number for ordering
+        sequence: u64,
+        /// Node that is proposing/processing this request
+        node_id: String,
+        /// State: "proposed", "processing", "completed"
+        state: String,
+    },
 }

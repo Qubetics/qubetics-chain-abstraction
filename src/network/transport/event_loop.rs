@@ -40,8 +40,8 @@ impl MpcNetworkLayer {
         let mut dkg_status_timer = tokio::time::interval(Duration::from_secs(300));
         let mut peerlist_logger = tokio::time::interval(Duration::from_secs(300));
 
-        swarm.listen_on("/ip4/0.0.0.0/tcp/4001".parse()?)?;
-        swarm.listen_on("/ip4/0.0.0.0/udp/4002/quic-v1".parse()?)?;
+        swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
+        swarm.listen_on("/ip4/0.0.0.0/udp/0/quic-v1".parse()?)?;
 
         self.dial_seed_addresses(&mut swarm);
         // Dial command-line provided addresses
@@ -93,6 +93,167 @@ impl MpcNetworkLayer {
 
                 _ = dkg_status_timer.tick() => {
                     self.log_periodic_dkg_status().await;
+                }
+
+                // Process contract transactions with synchronization
+                // CRITICAL FIX: All nodes must process the same request at the same time to prevent VRF round overlaps
+                // How it works:
+                // 1. All nodes receive the same requests (via gossip) and add to their queues
+                // 2. All nodes check their queue and propose the first request
+                // 3. All nodes wait for consensus (majority agreement) before processing
+                // 4. All nodes process the same transaction simultaneously
+                // 5. All nodes wait for ALL confirmations before moving to next transaction
+                contract_request = async {
+                    if let Some(sequencer) = &self.contract_sequencer {
+                        // First, check if we're already processing a transaction and waiting for consensus
+                        if let Some((tx_id, _sequence, is_confirmed)) = sequencer.get_current_processing().await {
+                            // If we're processing but not confirmed, check if we need to wait for consensus
+                            if !is_confirmed {
+                                // CRITICAL: Check consensus once and return - let tokio::select! process other events!
+                                // This allows incoming "proposed" messages to be processed between checks
+                                let has_consensus = sequencer.has_consensus().await;
+                                
+                                if has_consensus {
+                                    info!("✅ [SEQUENCER] Consensus reached for tx_id={}, proceeding to process", tx_id);
+                                    
+                                    // Get the request from cache or queue
+                                    if let Some(request) = sequencer.get_current_request().await {
+                                        sequencer.mark_processing(&tx_id).await.ok();
+                                        return Some(request);
+                                    } else {
+                                        info!("⚠️ [SEQUENCER] Consensus reached but request not found for tx_id={}, will retry", tx_id);
+                                        // Sleep briefly and let tokio::select! process other events
+                                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                                        return None;
+                                    }
+                                } else {
+                                    // No consensus yet - return None to let tokio::select! process incoming messages
+                                    // The async block will be recreated and check again
+                                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                                    return None;
+                                }
+                            } else {
+                                // Waiting for confirmation - sleep and retry
+                                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                                return None;
+                            }
+                        }
+                        
+                        // Get next request from queue (only if previous is confirmed by all nodes)
+                        if let Some(request) = sequencer.get_next_request().await {
+                            let tx_id = request.transaction_id.clone();
+                            let sequence = request.sequence;
+                            
+                            info!(
+                                "🎯 [SEQUENCER] Got next request: tx_id={}, sequence={}",
+                                tx_id, sequence
+                            );
+                            
+                            // Cache the request before proposing (so we can retrieve it after consensus)
+                            sequencer.cache_current_request(request.clone()).await;
+                            
+                            // Propose this transaction for processing
+                            if sequencer.propose_transaction(&tx_id, sequence).await.unwrap_or(false) {
+                                info!(
+                                    "📤 [SEQUENCER] Proposed tx_id={}, waiting for consensus...",
+                                    tx_id
+                                );
+                                
+                                // Wait for consensus from other nodes (majority must agree)
+                                // Give a small delay first to allow sync messages to propagate
+                                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                                
+                                let mut consensus_wait_count = 0;
+                                loop {
+                                    // Check consensus
+                                    let has_consensus = sequencer.has_consensus().await;
+                                    
+                                    if has_consensus {
+                                        info!("✅ [SEQUENCER] Consensus reached for tx_id={}, proceeding to process", tx_id);
+                                        break;
+                                    }
+                                    
+                                    // Wait before next check
+                                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                                    consensus_wait_count += 1;
+                                    
+                                    // Log progress every 10 iterations (1 second)
+                                    if consensus_wait_count % 10 == 0 {
+                                        info!(
+                                            "⏳ [SEQUENCER] Still waiting for consensus: tx_id={}, wait_count={}",
+                                            tx_id, consensus_wait_count
+                                        );
+                                    }
+                                    
+                                    if consensus_wait_count > 100 {
+                                        warn!("⚠️ [SEQUENCER] Consensus timeout for tx_id={}, proceeding anyway", tx_id);
+                                        break;
+                                    }
+                                }
+                                
+                                sequencer.mark_processing(&tx_id).await.ok();
+                                Some(request)
+                            } else {
+                                // Previous transaction not confirmed yet, will retry
+                                info!("⏸️ [SEQUENCER] Previous transaction not confirmed, will retry");
+                                None
+                            }
+                        } else {
+                            // No requests or waiting for confirmation - sleep and retry
+                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                            None
+                        }
+                    } else {
+                        std::future::pending().await
+                    }
+                } => {
+                    if let Some(request) = contract_request {
+                        // Clone values for logging before moving request
+                        let intent_hash = request.intent_hash.clone();
+                        let tx_id = request.transaction_id.clone();
+                        let sequence = request.sequence;
+                        
+                        // Clone the Arc to avoid borrowing self while holding the lock
+                        let lock = self.contract_processing_lock.clone();
+                        
+                        // Acquire lock BEFORE processing to ensure only one transaction at a time
+                        let _lock = lock.lock().await;
+                        
+                        info!(
+                            "🚀 [SEQUENCER] [FCFS] Starting synchronized processing (locked): intent_hash={}, tx_id={}, sequence={}",
+                            intent_hash, tx_id, sequence
+                        );
+                        
+                        // Process contract transaction - lock is held until this completes
+                        let start_time = std::time::Instant::now();
+                        if let Err(e) = self.process_contract_transaction(request).await {
+                            error!(
+                                "❌ [SEQUENCER] [FCFS] Failed to process contract transaction tx_id={} (sequence={}): {}",
+                                tx_id, sequence, e
+                            );
+                        } else {
+                            let duration = start_time.elapsed();
+                            info!(
+                                "⏱️ [SEQUENCER] [FCFS] Transaction tx_id={} (sequence={}) processed in {:?}",
+                                tx_id, sequence, duration
+                            );
+                        }
+                        
+                        // Mark as completed (this will wait for all nodes to confirm)
+                        if let Some(sequencer) = &self.contract_sequencer {
+                            info!(
+                                "✅ [SEQUENCER] [FCFS] Marking tx_id={} (sequence={}) as completed, waiting for all nodes to confirm...",
+                                tx_id, sequence
+                            );
+                            sequencer.mark_completed(&tx_id).await.ok();
+                        }
+                        
+                        info!(
+                            "🏁 [SEQUENCER] [FCFS] Completed synchronized processing (lock released): intent_hash={}, tx_id={}, sequence={}",
+                            intent_hash, tx_id, sequence
+                        );
+                        // Lock is automatically released here when _lock goes out of scope
+                    }
                 }
             };
         }

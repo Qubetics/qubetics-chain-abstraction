@@ -7,7 +7,7 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex};
 use tracing::info;
 
 use crate::database::{keys, Database, KeyStore};
@@ -37,6 +37,7 @@ impl MpcNetworkLayer {
             db_signing_node: None,
             consensus_node: None,
             command_processor: None,
+            contract_processing_lock: Arc::new(Mutex::new(())),
             user_intent_manager: None,
             node_manager,
             scheduled_dkg_task: None,
@@ -48,6 +49,7 @@ impl MpcNetworkLayer {
             bootstrap_addresses: Self::load_multiaddrs_from_env("BOOTSTRAP_PEERS"),
             bootstrap_peer_ids: Vec::new(),
             discovery_seeds: Self::load_multiaddrs_from_env("DISCOVERY_SEEDS"),
+            contract_sequencer: None,
         };
 
         this.bootstrap_peer_ids = this
