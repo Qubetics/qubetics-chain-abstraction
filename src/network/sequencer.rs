@@ -7,7 +7,7 @@
 /// All nodes must process the same request at the same time using deterministic ordering.
 use anyhow::Result;
 use k256::ProjectivePoint;
-use std::collections::{HashSet, VecDeque};
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 use tracing::{info, warn};
@@ -50,16 +50,17 @@ struct SequencerSyncState {
 /// 
 /// Production-ready implementation that ensures sequential processing to prevent nonce collisions.
 /// Synchronizes across all nodes to prevent VRF round overlaps.
-/// Uses FCFS (First Come First Served) ordering - processes requests in the order they arrive.
+/// Uses deterministic ordering (sorted by transaction_id) to ensure all nodes process the same transaction.
 /// 
 /// CRITICAL: All nodes must have the same requests and process them in the same order.
 /// This is ensured by:
 /// 1. All nodes receive the same transaction requests (via gossip)
-/// 2. All nodes use consensus to agree on which transaction to process next
-/// 3. All nodes wait for all confirmations before moving to the next transaction
+/// 2. All nodes use deterministic ordering (lowest transaction_id) to select the next transaction
+/// 3. All nodes use consensus to agree on which transaction to process next
+/// 4. All nodes wait for all confirmations before moving to the next transaction
 pub struct ContractTransactionSequencer {
-    /// Pending requests in FCFS order (VecDeque maintains insertion order)
-    pending_requests: Arc<RwLock<VecDeque<ContractTransactionRequest>>>,
+    /// Pending requests sorted by transaction_id (BTreeMap maintains sorted order)
+    pending_requests: Arc<RwLock<BTreeMap<String, ContractTransactionRequest>>>,
     /// Synchronization state
     sync_state: Arc<RwLock<SequencerSyncState>>,
     /// Message channel for broadcasting sequencer sync messages
@@ -77,7 +78,7 @@ impl ContractTransactionSequencer {
     /// Processing is done by the MpcNetworkLayer which has direct access to all required components.
     pub fn new() -> Self {
         Self {
-            pending_requests: Arc::new(RwLock::new(VecDeque::new())),
+            pending_requests: Arc::new(RwLock::new(BTreeMap::new())),
             sync_state: Arc::new(RwLock::new(SequencerSyncState {
                 current_processing: None,
                 current_sequence: 0,
@@ -113,28 +114,36 @@ impl ContractTransactionSequencer {
         let intent_hash = request.intent_hash.clone();
         let transaction_id = request.transaction_id.clone();
         
-        // Assign sequence number for FCFS ordering (per-node, but order is maintained by consensus)
-        let sequence = {
+        // CRITICAL: Hold both locks together to ensure atomic sequence assignment and queue insertion
+        // This prevents race conditions where:
+        // 1. Multiple requests could get the same sequence (prevented by sync_state lock)
+        // 2. Requests could be added to queue out of sequence order (prevented by holding both locks)
+        let (sequence, queue_size) = {
+            // First, acquire both locks to ensure atomicity
             let mut sync_state = self.sync_state.write().await;
+            let mut pending = self.pending_requests.write().await;
+            
+            // Assign sequence number (atomic operation)
             sync_state.global_sequence += 1;
             request.sequence = sync_state.global_sequence;
-            sync_state.global_sequence
-        };
-        
-        // Add to pending requests queue (FCFS - maintains insertion order)
-        {
-            let mut pending = self.pending_requests.write().await;
-            pending.push_back(request);
+            let sequence = sync_state.global_sequence;
+            
+            // Add to pending requests (BTreeMap maintains sorted order by transaction_id)
+            // This happens atomically with sequence assignment
+            pending.insert(transaction_id.clone(), request);
             let queue_size = pending.len();
+            
             info!(
-                "📥 [SEQUENCER] [FCFS] Queued transaction: tx_id={}, intent_hash={}, sequence={}, queue_size={}",
+                "📥 [SEQUENCER] [DETERMINISTIC] Queued transaction: tx_id={}, intent_hash={}, sequence={}, queue_size={}",
                 transaction_id, intent_hash, sequence, queue_size
             );
             info!(
-                "📋 [SEQUENCER] [FCFS] Queue state: {:?}",
-                pending.iter().map(|r| (r.transaction_id.clone(), r.sequence)).collect::<Vec<_>>()
+                "📋 [SEQUENCER] [DETERMINISTIC] Queue state (sorted by tx_id): {:?}",
+                pending.iter().map(|(tx_id, r)| (tx_id.clone(), r.sequence)).collect::<Vec<_>>()
             );
-        }
+            
+            (sequence, queue_size)
+        }; // Both locks released here
         
         Ok(())
     }
@@ -171,13 +180,11 @@ impl ContractTransactionSequencer {
         drop(sync_state);
         
         if let Some(tx_id) = current_tx {
-            // Find the request in the queue that matches current_processing
+            // Get the request from the queue (BTreeMap lookup by transaction_id)
             let mut pending = self.pending_requests.write().await;
-            if let Some(pos) = pending.iter().position(|r| r.transaction_id == tx_id) {
-                // Remove it from the queue
-                let request = pending.remove(pos).unwrap();
+            if let Some(request) = pending.remove(&tx_id) {
                 info!(
-                    "🎯 [SEQUENCER] [FCFS] Retrieved current request from queue: tx_id={}, sequence={}",
+                    "🎯 [SEQUENCER] [DETERMINISTIC] Retrieved current request from queue: tx_id={}, sequence={}",
                     request.transaction_id, request.sequence
                 );
                 Some(request)
@@ -214,19 +221,19 @@ impl ContractTransactionSequencer {
         
         drop(sync_state);
         
-        // Get the first request in FCFS order (oldest first)
+        // Get the request with the lowest transaction_id (deterministic ordering)
+        // BTreeMap maintains sorted order, so first entry is the lowest transaction_id
         let mut pending = self.pending_requests.write().await;
-        if let Some(request) = pending.pop_front() {
-            let tx_id = request.transaction_id.clone();
+        if let Some((tx_id, request)) = pending.pop_first() {
             let sequence = request.sequence;
             let queue_size = pending.len();
             info!(
-                "🎯 [SEQUENCER] [FCFS] Selected next request: tx_id={}, sequence={}, remaining_in_queue={}",
+                "🎯 [SEQUENCER] [DETERMINISTIC] Selected next request: tx_id={}, sequence={}, remaining_in_queue={} (lowest tx_id)",
                 tx_id, sequence, queue_size
             );
             Some(request)
         } else {
-            info!("📭 [SEQUENCER] [FCFS] No pending requests in queue");
+            // info!("📭 [SEQUENCER] [DETERMINISTIC] No pending requests in queue");
             None
         }
     }
@@ -249,7 +256,7 @@ impl ContractTransactionSequencer {
             } else if sync_state.current_processing.is_none() {
                 // We haven't proposed anything yet - check if we have this transaction in our queue
                 let pending = self.pending_requests.read().await;
-                let has_transaction = pending.iter().any(|r| r.transaction_id == transaction_id);
+                let has_transaction = pending.contains_key(&transaction_id);
                 drop(pending);
                 
                 if has_transaction {
