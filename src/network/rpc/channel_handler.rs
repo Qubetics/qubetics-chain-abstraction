@@ -2286,26 +2286,41 @@ impl MpcNetworkLayer {
                 )
                 .await?;
 
-                // 2) Refresh solver liquidity from the on-chain contract on this node
-                //    so local DB and global totals reflect the new state.
+                // 2) Apply the liquidity delta locally based on the requested amount (avoid waiting
+                //    for on-chain confirmation to keep DB in sync).
                 if let Some(signing_node) = &self.signing_node {
-                    match signing_node.update_solver_liquidity(&solver_address).await {
+                    let delta_btc = amount_btc
+                        .as_ref()
+                        .and_then(|v| U256::from_dec_str(v).ok());
+                    let delta_tics = amount_tics
+                        .as_ref()
+                        .and_then(|v| U256::from_dec_str(v).ok());
+                    match signing_node
+                        .apply_liquidity_delta(
+                            &solver_address,
+                            Some(&solver_id),
+                            delta_btc,
+                            delta_tics,
+                            true,
+                        )
+                        .await
+                    {
                         Ok(()) => {
                             info!(
-                                "✅ [NETWORK] Refreshed solver liquidity from contract after local add-liquidity for {}",
+                                "✅ [NETWORK] Applied local liquidity add for {}",
                                 solver_address
                             );
                         }
                         Err(e) => {
                             warn!(
-                                "⚠️ [NETWORK] Failed to refresh solver liquidity after local add-liquidity for {}: {}",
+                                "⚠️ [NETWORK] Failed to apply local liquidity add for {}: {}",
                                 solver_address, e
                             );
                         }
                     }
                 } else {
                     warn!(
-                        "⚠️ [NETWORK] Signing node unavailable; cannot refresh solver liquidity after local add-liquidity for {}",
+                        "⚠️ [NETWORK] Signing node unavailable; cannot apply local liquidity add for {}",
                         solver_address
                     );
                 }
@@ -2350,26 +2365,40 @@ impl MpcNetworkLayer {
                 )
                 .await?;
 
-                // After processing the withdraw payout on this node, refresh on-chain solver
-                // liquidity so local DB and totals reflect the decreased liquidity.
+                // Apply the liquidity decrease locally based on requested amount (avoid waiting for chain).
                 if let Some(signing_node) = &self.signing_node {
-                    match signing_node.update_solver_liquidity(&solver_address).await {
+                    let delta_btc = amount_btc
+                        .as_ref()
+                        .and_then(|v| U256::from_dec_str(v).ok());
+                    let delta_tics = amount_tics
+                        .as_ref()
+                        .and_then(|v| U256::from_dec_str(v).ok());
+                    match signing_node
+                        .apply_liquidity_delta(
+                            &solver_address,
+                            None,
+                            delta_btc,
+                            delta_tics,
+                            false,
+                        )
+                        .await
+                    {
                         Ok(()) => {
                             info!(
-                                "✅ [NETWORK] Refreshed solver liquidity from contract after local withdraw-liquidity for {}",
+                                "✅ [NETWORK] Applied local liquidity withdraw for {}",
                                 solver_address
                             );
                         }
                         Err(e) => {
                             warn!(
-                                "⚠️ [NETWORK] Failed to refresh solver liquidity after local withdraw-liquidity for {}: {}",
+                                "⚠️ [NETWORK] Failed to apply local liquidity withdraw for {}: {}",
                                 solver_address, e
                             );
                         }
                     }
                 } else {
                     warn!(
-                        "⚠️ [NETWORK] Signing node unavailable; cannot refresh solver liquidity after local withdraw-liquidity for {}",
+                        "⚠️ [NETWORK] Signing node unavailable; cannot apply local liquidity withdraw for {}",
                         solver_address
                     );
                 }
