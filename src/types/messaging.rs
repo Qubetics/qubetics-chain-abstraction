@@ -25,10 +25,6 @@ pub enum ChannelMessage {
         topic: String,
         data: Vec<u8>,
     },
-    Unicast {
-        peer_id: String,
-        data: Vec<u8>,
-    },
     DepositIntent {
         intent: DepositIntent,
         intent_id: String,
@@ -88,8 +84,8 @@ pub enum ChannelMessage {
     PeerDiscoveryRetry {
         attempt: u8,
     },
-    /// Send a DKG share to a specific peer via RPC (unicast, not broadcast)
-    SendDKGShareRPC {
+    /// Send a DKG share to a specific peer via P2P RPC unicast
+    UnicastShareDKG {
         target_peer_id: String,
         from_node_id: String,
         share_index: usize,

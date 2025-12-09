@@ -8,7 +8,7 @@ use crate::database::key_utils::{self, peer_addr_key};
 use crate::protocols::DKGStatus;
 use crate::types::p2p::SerializablePeerId;
 use crate::types::rpc::{RPCRequest, RPCResponse};
-use crate::types::PeerInfo;
+use crate::types::{PeerInfo, SerializablePoint, SerializableScalar};
 
 use crate::network::transport::types::{MpcNetworkBehaviour, MpcNetworkLayer};
 
@@ -307,8 +307,8 @@ impl MpcNetworkLayer {
         _peer: PeerId,
         from_node_id: String,
         share_index: usize,
-        share_value: crate::types::secp::SerializableScalar,
-        commitments: Vec<crate::types::secp::SerializablePoint>,
+        share_value: SerializableScalar,
+        commitments: Vec<SerializablePoint>,
         _round: u64,
     ) -> RPCResponse {
         info!(

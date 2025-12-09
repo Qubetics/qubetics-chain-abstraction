@@ -1142,25 +1142,8 @@ impl MpcNetworkLayer {
                     );
                 }
             }
-            // this is not used anywhere yet
-            ChannelMessage::Unicast { peer_id, data } => {
-                // Implement direct message sending using request-response protocol
-                let peer_id = PeerId::from_bytes(&hex::decode(peer_id)?)
-                    .map_err(|e| anyhow::anyhow!("Invalid peer ID: {}", e))?;
-                let request = RPCRequest::Custom {
-                    id: "custom".to_string(),
-                    data,
-                };
-                // this will send the channel msg as
-                // NetworkEvent::RequestResponse under ReqRespMessage::Request type
-                // to just single peer
-                swarm
-                    .behaviour_mut()
-                    .request_response
-                    .send_request(&peer_id, request);
-            }
             // SECURE DKG SHARE DISTRIBUTION - sends share to specific peer via P2P RPC
-            ChannelMessage::SendDKGShareRPC {
+            ChannelMessage::UnicastShareDKG {
                 target_peer_id,
                 from_node_id,
                 share_index,
@@ -1239,7 +1222,7 @@ impl MpcNetworkLayer {
                     );
                     
                     let tx = self.message_tx.clone();
-                    let retry_msg = ChannelMessage::SendDKGShareRPC {
+                    let retry_msg = ChannelMessage::UnicastShareDKG {
                         target_peer_id: target_peer_id.clone(),
                         from_node_id,
                         share_index,

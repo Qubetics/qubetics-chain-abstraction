@@ -97,8 +97,8 @@ impl DKGNode {
                     share.index, target_peer_id
                 );
                 
-                // Send via channel message to trigger RPC
-                let send_msg = ChannelMessage::SendDKGShareRPC {
+                // Send via channel message to unicast 
+                let send_msg = ChannelMessage::UnicastShareDKG {
                     target_peer_id: target_peer_id.clone(),
                     from_node_id: self.id.clone(),
                     share_index: share.index,

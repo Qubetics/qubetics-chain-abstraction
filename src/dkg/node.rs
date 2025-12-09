@@ -5,8 +5,10 @@ use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 use super::artifacts::{DKGCompletionCallback, DKGStatus};
+use crate::NodeMembership;
 use crate::database::DkgStorage;
-use crate::types::ChannelMessage;
+use crate::types::{ChannelMessage, KeyShare, SerializablePoint, SerializableScalar};
+use k256::AffinePoint;
 
 #[derive(Clone)]
 struct DKGState {
@@ -256,12 +258,11 @@ impl DKGNode {
         &mut self,
         from_node_id: String,
         share_index: usize,
-        share_value: crate::types::SerializableScalar,
-        commitments: Vec<crate::types::SerializablePoint>,
-        node_manager: Box<dyn crate::NodeMembership>,
+        share_value: SerializableScalar,
+        commitments: Vec<SerializablePoint>,
+        node_manager: Box<dyn NodeMembership>,
     ) -> Result<bool> {
-        use k256::AffinePoint;
-        
+   
         info!(
             "🔐 [DKG-SECURE] Processing unicast share index {} from {}",
             share_index, from_node_id
@@ -288,7 +289,7 @@ impl DKGNode {
         // Verify the share against commitments
         if self.verify_share(&share_value, share_index, &commitments) {
             // Store the share
-            let key_share = crate::types::KeyShare {
+            let key_share = KeyShare {
                 index: share_index,
                 value: share_value,
             };
