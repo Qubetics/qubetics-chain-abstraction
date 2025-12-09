@@ -6,7 +6,9 @@
 /// CRITICAL: This sequencer synchronizes processing across all nodes to prevent VRF round overlaps.
 /// All nodes must process the same request at the same time using deterministic ordering.
 use anyhow::Result;
+use hex;
 use k256::ProjectivePoint;
+use sha3::{Digest, Keccak256};
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
@@ -14,15 +16,33 @@ use tracing::{info, warn};
 
 use crate::types::{DepositIntent, TransactionType};
 
+/// Enum to distinguish between different contract transaction flows
+#[derive(Clone, Debug)]
+pub enum ContractTransactionFlow {
+    /// Deposit intent transactions (UserToVault, NetworkToTarget, VaultToNetwork)
+    DepositIntent {
+        intent: DepositIntent,
+        intent_hash: String,
+        transaction_type: TransactionType,
+        vault_group_key: Option<ProjectivePoint>,
+        amount: u128,
+    },
+    /// Solver operation: Add liquidity
+    SolverAddLiquidity {
+        solver_address: String,
+        solver_id: String,
+        asset_chain_name: String,
+        amount: u128,
+    },
+}
+
 /// Request to execute a contract transaction
 #[derive(Clone, Debug)]
 pub struct ContractTransactionRequest {
-    pub intent: DepositIntent,
-    pub intent_hash: String,
-    pub transaction_type: TransactionType,
+    /// The type of transaction flow
+    pub flow: ContractTransactionFlow,
+    /// Transaction ID (unique identifier for this transaction)
     pub transaction_id: String,
-    pub vault_group_key: Option<ProjectivePoint>,
-    pub amount: u128,
     /// Sequence number for FCFS ordering (set when request is received)
     pub sequence: u64,
 }
@@ -94,6 +114,40 @@ impl ContractTransactionSequencer {
         }
     }
 
+    /// Generate a deterministic transaction ID for add_liquidity operations
+    /// 
+    /// Uses Keccak256 hash of operation parameters to ensure all nodes generate the same ID.
+    /// For deposit intents, the transaction_id should be the actual tx_hash from the blockchain.
+    /// 
+    /// **IMPORTANT**: This function generates a base transaction_id from operation parameters.
+    /// To ensure uniqueness in the sequencer queue, the sequencer will append the sequence number
+    /// to the transaction_id when inserting into the queue (if a duplicate is detected).
+    /// 
+    /// # Parameters
+    /// - `solver_address`: Solver's address
+    /// - `solver_id`: Solver ID
+    /// - `asset_chain_name`: Asset chain name
+    /// - `amount`: Amount
+    /// - `request_id`: Unique request ID (timestamp + solver_id) for uniqueness
+    pub fn generate_transaction_id_for_add_liquidity(
+        solver_address: &str,
+        solver_id: &str,
+        asset_chain_name: &str,
+        amount: u128,
+        request_id: &str,
+    ) -> String {
+        // Create a deterministic string representation for add_liquidity
+        // request_id ensures uniqueness for each request
+        let data = format!(
+            "add_liquidity:{}:{}:{}:{}:{}",
+            solver_address, solver_id, asset_chain_name, amount, request_id
+        );
+        
+        // Hash using Keccak256 (same as Ethereum)
+        let hash = Keccak256::digest(data.as_bytes());
+        format!("0x{}", hex::encode(hash))
+    }
+
     /// Initialize the sequencer with network components
     pub async fn initialize(&mut self, message_tx: mpsc::Sender<crate::types::ChannelMessage>, node_id: String, total_nodes: usize) {
         self.message_tx = Some(message_tx);
@@ -111,14 +165,23 @@ impl ContractTransactionSequencer {
     /// CRITICAL: All nodes must receive the same requests in the same order.
     /// This is ensured by the network layer broadcasting requests to all nodes.
     pub async fn submit(&self, mut request: ContractTransactionRequest) -> Result<()> {
-        let intent_hash = request.intent_hash.clone();
         let transaction_id = request.transaction_id.clone();
+        
+        // Generate a description for logging based on flow type
+        let flow_description = match &request.flow {
+            ContractTransactionFlow::DepositIntent { intent_hash, .. } => {
+                format!("deposit_intent:{}", intent_hash)
+            }
+            ContractTransactionFlow::SolverAddLiquidity { solver_address, asset_chain_name, amount, .. } => {
+                format!("solver_add_liquidity:{}:{}:{}", solver_address, asset_chain_name, amount)
+            }
+        };
         
         // CRITICAL: Hold both locks together to ensure atomic sequence assignment and queue insertion
         // This prevents race conditions where:
         // 1. Multiple requests could get the same sequence (prevented by sync_state lock)
         // 2. Requests could be added to queue out of sequence order (prevented by holding both locks)
-        let (sequence, queue_size) = {
+        let (sequence, _queue_size) = {
             // First, acquire both locks to ensure atomicity
             let mut sync_state = self.sync_state.write().await;
             let mut pending = self.pending_requests.write().await;
@@ -128,14 +191,31 @@ impl ContractTransactionSequencer {
             request.sequence = sync_state.global_sequence;
             let sequence = sync_state.global_sequence;
             
+            // Ensure transaction_id uniqueness: if a duplicate exists, append sequence number
+            let final_transaction_id = if pending.contains_key(&transaction_id) {
+                // Duplicate detected: append sequence to make it unique
+                let unique_id = format!("{}:seq{}", transaction_id, sequence);
+                warn!(
+                    "⚠️ [SEQUENCER] Duplicate transaction_id detected: {}. Using unique ID: {}",
+                    transaction_id, unique_id
+                );
+                unique_id
+            } else {
+                transaction_id.clone()
+            };
+            
+            // Update the request's transaction_id to the final (potentially unique) ID
+            request.transaction_id = final_transaction_id.clone();
+            
             // Add to pending requests (BTreeMap maintains sorted order by transaction_id)
             // This happens atomically with sequence assignment
-            pending.insert(transaction_id.clone(), request);
+            let final_tx_id_for_log = final_transaction_id.clone();
+            pending.insert(final_transaction_id, request);
             let queue_size = pending.len();
             
             info!(
-                "📥 [SEQUENCER] [DETERMINISTIC] Queued transaction: tx_id={}, intent_hash={}, sequence={}, queue_size={}",
-                transaction_id, intent_hash, sequence, queue_size
+                "📥 [SEQUENCER] [DETERMINISTIC] Queued transaction: tx_id={}, flow={}, sequence={}, queue_size={}",
+                final_tx_id_for_log, flow_description, sequence, queue_size
             );
             info!(
                 "📋 [SEQUENCER] [DETERMINISTIC] Queue state (sorted by tx_id): {:?}",

@@ -1116,6 +1116,7 @@ impl MpcNetworkLayer {
                 solver_id,
                 amount_btc,
                 amount_tics,
+                request_id,
             } => {
                 info!(
                     "💧 [GOSSIPSUB] Received add-liquidity broadcast for solver {} (solver_id: {})",
@@ -1131,6 +1132,7 @@ impl MpcNetworkLayer {
                     &solver_id,
                     &amount_btc,
                     &amount_tics,
+                    &request_id,
                 )
                 .await?;
 

@@ -984,6 +984,7 @@ impl MpcNetworkLayer {
         solver_id: &str,
         amount_btc: &Option<String>,
         amount_tics: &Option<String>,
+        request_id: &str,
     ) -> Result<()> {
         let mut dispatched = false;
 
@@ -993,11 +994,13 @@ impl MpcNetworkLayer {
                     "💧 [ADD-LIQ] Dispatching contract update for solver {} on qubetics (amount: {})",
                     solver_address, amount_str
                 );
-                self.submit_solver_add_liquidity_contract_update(
+                // Submit to sequencer for synchronized execution
+                self.submit_solver_add_liquidity_to_sequencer(
                     solver_address,
                     solver_id,
                     "qubetics",
                     amount,
+                    request_id,
                 )
                 .await?;
                 dispatched = true;
@@ -1010,11 +1013,13 @@ impl MpcNetworkLayer {
                     "💧 [ADD-LIQ] Dispatching contract update for solver {} on btc (amount: {})",
                     solver_address, amount_str
                 );
-                self.submit_solver_add_liquidity_contract_update(
+                // Submit to sequencer for synchronized execution
+                self.submit_solver_add_liquidity_to_sequencer(
                     solver_address,
                     solver_id,
                     "btc",
                     amount,
+                    request_id,
                 )
                 .await?;
                 dispatched = true;
@@ -2223,6 +2228,7 @@ impl MpcNetworkLayer {
                 solver_id,
                 amount_btc,
                 amount_tics,
+                request_id,
             } => {
                 info!(
                     "💧 [NETWORK] Processing add liquidity for solver {} (solver_id: {})",
@@ -2234,6 +2240,7 @@ impl MpcNetworkLayer {
                     solver_id: solver_id.clone(),
                     amount_btc: amount_btc.clone(),
                     amount_tics: amount_tics.clone(),
+                    request_id: request_id.clone(),
                 };
                 let msg_bytes = serde_json::to_vec(&add_msg)
                     .map_err(|e| anyhow::anyhow!("Failed to serialize add-liquidity msg: {}", e))?;
@@ -2249,6 +2256,7 @@ impl MpcNetworkLayer {
                     &solver_id,
                     &amount_btc,
                     &amount_tics,
+                    &request_id,
                 )
                 .await?;
 

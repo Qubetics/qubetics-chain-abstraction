@@ -55,6 +55,7 @@ pub enum ChannelMessage {
         solver_id: String,
         amount_btc: Option<String>,
         amount_tics: Option<String>,
+        request_id: String,
     },
     WithdrawLiquidity {
         solver_address: String,
@@ -129,6 +130,7 @@ pub enum GossipsubMessage {
         solver_id: String,
         amount_btc: Option<String>,
         amount_tics: Option<String>,
+        request_id: String,
     },
     WithdrawLiquidity {
         solver_address: String,

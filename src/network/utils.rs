@@ -189,6 +189,62 @@ impl MpcNetworkLayer {
         .await
     }
 
+    /// Submit a solver add-liquidity operation to the sequencer
+    pub(crate) async fn submit_solver_add_liquidity_to_sequencer(
+        &mut self,
+        solver_address: &str,
+        solver_id: &str,
+        asset_chain_name: &str,
+        amount: u128,
+        request_id: &str,
+    ) -> Result<()> {
+        use crate::network::sequencer::{ContractTransactionFlow, ContractTransactionRequest};
+        
+        // Initialize sequencer if not already initialized
+        if self.contract_sequencer.is_none() {
+            self.initialize_contract_sequencer().await;
+        }
+
+        if let Some(sequencer) = &self.contract_sequencer {
+            // Generate a deterministic transaction ID using hash (includes request_id for uniqueness)
+            let transaction_id = crate::network::sequencer::ContractTransactionSequencer::generate_transaction_id_for_add_liquidity(
+                solver_address,
+                solver_id,
+                asset_chain_name,
+                amount,
+                request_id,
+            );
+            
+            let request = ContractTransactionRequest {
+                flow: ContractTransactionFlow::SolverAddLiquidity {
+                    solver_address: solver_address.to_string(),
+                    solver_id: solver_id.to_string(),
+                    asset_chain_name: asset_chain_name.to_string(),
+                    amount,
+                },
+                transaction_id: transaction_id.clone(),
+                sequence: 0, // Will be set by sequencer.submit()
+            };
+
+            sequencer.submit(request).await?;
+            info!(
+                "📋 [NETWORK] Submitted solver add-liquidity to sequencer: solver={}, solver_id={}, chain={}, amount={}, tx_id={}",
+                solver_address, solver_id, asset_chain_name, amount, transaction_id
+            );
+            Ok(())
+        } else {
+            warn!("❌ [NETWORK] Contract sequencer not available, falling back to direct execution");
+            // Fallback to direct execution if sequencer initialization failed
+            self.submit_solver_add_liquidity_contract_update(
+                solver_address,
+                solver_id,
+                asset_chain_name,
+                amount,
+            )
+            .await
+        }
+    }
+
     /// Submit a contract transaction to the sequencer for sequential processing
     async fn submit_contract_transaction_to_sequencer(
         &mut self,
@@ -207,13 +263,16 @@ impl MpcNetworkLayer {
         }
 
         if let Some(sequencer) = &self.contract_sequencer {
+            use crate::network::sequencer::ContractTransactionFlow;
             let request = ContractTransactionRequest {
-                intent: intent.clone(),
-                intent_hash: intent_hash.to_string(),
-                transaction_type: transaction_type.clone(),
+                flow: ContractTransactionFlow::DepositIntent {
+                    intent: intent.clone(),
+                    intent_hash: intent_hash.to_string(),
+                    transaction_type: transaction_type.clone(),
+                    vault_group_key,
+                    amount,
+                },
                 transaction_id: tx_hash.to_string(),
-                vault_group_key,
-                amount,
                 sequence: 0, // Will be set by sequencer.submit()
             };
 
@@ -267,45 +326,89 @@ impl MpcNetworkLayer {
         &mut self,
         request: crate::network::sequencer::ContractTransactionRequest,
     ) -> Result<()> {
-        info!(
-            "📋 [SEQUENCER] Processing contract transaction: intent_hash={}, tx_id={}, type={:?}",
-            request.intent_hash, request.transaction_id, request.transaction_type
-        );
+        use crate::network::sequencer::ContractTransactionFlow;
+        
+        match &request.flow {
+            ContractTransactionFlow::DepositIntent {
+                intent,
+                intent_hash,
+                transaction_type,
+                vault_group_key,
+                amount,
+            } => {
+                info!(
+                    "📋 [SEQUENCER] Processing deposit intent transaction: intent_hash={}, tx_id={}, type={:?}",
+                    intent_hash, request.transaction_id, transaction_type
+                );
 
-        // Execute with direct access to all components
-        if let Some(signing_node) = &mut self.signing_node {
-            let result = crate::chain_abstraction::MpcChainExecutor::execute_contract_call(
-                signing_node,
-                self.node_manager.as_ref(),
-                self.dkg_node.as_ref(),
-                &request.intent,
-                &request.intent_hash,
-                request.transaction_type,
-                request.vault_group_key,
-                request.amount,
-                &request.transaction_id,
-            )
-            .await;
+                // Execute deposit intent contract call
+                if let Some(signing_node) = &mut self.signing_node {
+                    let result = crate::chain_abstraction::MpcChainExecutor::execute_contract_call(
+                        signing_node,
+                        self.node_manager.as_ref(),
+                        self.dkg_node.as_ref(),
+                        intent,
+                        intent_hash,
+                        transaction_type.clone(),
+                        *vault_group_key,
+                        *amount,
+                        &request.transaction_id,
+                    )
+                    .await;
 
-            match result {
-                Ok(()) => {
-                    info!(
-                        "✅ [SEQUENCER] Successfully executed contract call for transaction ID {}",
+                    match result {
+                        Ok(()) => {
+                            info!(
+                                "✅ [SEQUENCER] Successfully executed deposit intent contract call for transaction ID {}",
+                                request.transaction_id
+                            );
+                        }
+                        Err(e) => {
+                            error!(
+                                "❌ [SEQUENCER] Failed to execute deposit intent contract call for transaction ID {}: {}",
+                                request.transaction_id, e
+                            );
+                        }
+                    }
+                } else {
+                    warn!(
+                        "⚠️ [SEQUENCER] Signing node not available, skipping deposit intent transaction for tx_id={}",
                         request.transaction_id
                     );
                 }
-                Err(e) => {
+            }
+            ContractTransactionFlow::SolverAddLiquidity {
+                solver_address,
+                solver_id,
+                asset_chain_name,
+                amount,
+            } => {
+                info!(
+                    "📋 [SEQUENCER] Processing solver add-liquidity transaction: solver={}, solver_id={}, chain={}, amount={}, tx_id={}",
+                    solver_address, solver_id, asset_chain_name, amount, request.transaction_id
+                );
+
+                // Execute solver add-liquidity contract call
+                if let Err(e) = self
+                    .submit_solver_add_liquidity_contract_update(
+                        solver_address,
+                        solver_id,
+                        asset_chain_name,
+                        *amount,
+                    )
+                    .await
+                {
                     error!(
-                        "❌ [SEQUENCER] Failed to execute contract call for transaction ID {}: {}",
+                        "❌ [SEQUENCER] Failed to execute solver add-liquidity contract call for transaction ID {}: {}",
                         request.transaction_id, e
+                    );
+                } else {
+                    info!(
+                        "✅ [SEQUENCER] Successfully executed solver add-liquidity contract call for transaction ID {}",
+                        request.transaction_id
                     );
                 }
             }
-        } else {
-            warn!(
-                "⚠️ [SEQUENCER] Signing node not available, skipping contract transaction for tx_id={}",
-                request.transaction_id
-            );
         }
         
         Ok(())

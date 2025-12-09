@@ -2205,11 +2205,21 @@ pub(crate) async fn handle_add_liquidity(
         }));
     }
 
+    // Generate a unique request ID using timestamp + solver_id
+    let request_id = {
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        format!("{}_{}", timestamp, normalized_solver_id)
+    };
+    
     let channel_msg = ChannelMessage::AddLiquidity {
         solver_address: normalized_address.clone(),
         solver_id: normalized_solver_id.clone(),
         amount_btc: requested_btc.clone(),
         amount_tics: requested_tics.clone(),
+        request_id,
     };
 
     let tx_sender = message_tx.lock().await;

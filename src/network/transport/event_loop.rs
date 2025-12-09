@@ -209,9 +209,18 @@ impl MpcNetworkLayer {
                 } => {
                     if let Some(request) = contract_request {
                         // Clone values for logging before moving request
-                        let intent_hash = request.intent_hash.clone();
                         let tx_id = request.transaction_id.clone();
                         let sequence = request.sequence;
+                        
+                        // Get flow description for logging
+                        let flow_desc = match &request.flow {
+                            crate::network::sequencer::ContractTransactionFlow::DepositIntent { intent_hash, .. } => {
+                                format!("deposit_intent:{}", intent_hash)
+                            }
+                            crate::network::sequencer::ContractTransactionFlow::SolverAddLiquidity { solver_address, asset_chain_name, amount, .. } => {
+                                format!("solver_add_liquidity:{}:{}:{}", solver_address, asset_chain_name, amount)
+                            }
+                        };
                         
                         // Clone the Arc to avoid borrowing self while holding the lock
                         let lock = self.contract_processing_lock.clone();
@@ -220,8 +229,8 @@ impl MpcNetworkLayer {
                         let _lock = lock.lock().await;
                         
                         info!(
-                            "🚀 [SEQUENCER] [FCFS] Starting synchronized processing (locked): intent_hash={}, tx_id={}, sequence={}",
-                            intent_hash, tx_id, sequence
+                            "🚀 [SEQUENCER] [DETERMINISTIC] Starting synchronized processing (locked): flow={}, tx_id={}, sequence={}",
+                            flow_desc, tx_id, sequence
                         );
                         
                         // Process contract transaction - lock is held until this completes
@@ -249,8 +258,8 @@ impl MpcNetworkLayer {
                         }
                         
                         info!(
-                            "🏁 [SEQUENCER] [FCFS] Completed synchronized processing (lock released): intent_hash={}, tx_id={}, sequence={}",
-                            intent_hash, tx_id, sequence
+                            "🏁 [SEQUENCER] [DETERMINISTIC] Completed synchronized processing (lock released): flow={}, tx_id={}, sequence={}",
+                            flow_desc, tx_id, sequence
                         );
                         // Lock is automatically released here when _lock goes out of scope
                     }
