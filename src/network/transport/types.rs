@@ -126,7 +126,7 @@ impl GossipTopic {
         GossipTopic::ConsensusResult,
         GossipTopic::TransactionErrorSync,
         GossipTopic::LegacyDkg,
-            GossipTopic::SequencerSync,
+        GossipTopic::SequencerSync,
     ];
 
     pub const fn as_str(self) -> &'static str {

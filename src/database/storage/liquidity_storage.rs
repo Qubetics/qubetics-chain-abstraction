@@ -127,8 +127,8 @@ impl LiquidityStorage {
     ) -> Result<Option<String>> {
         let key = self.key_for_remove(solver_address, network);
         let mut record = self.load_record(&key)?;
-        let pending = record.pending_amount.take();
+        let pending_amount = record.pending_amount.take();
         self.store_record(&key, &record)?;
-        Ok(pending)
+        Ok(pending_amount)
     }
 }

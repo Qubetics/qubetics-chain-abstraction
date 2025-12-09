@@ -34,6 +34,13 @@ pub enum ContractTransactionFlow {
         asset_chain_name: String,
         amount: u128,
     },
+    /// Solver operation: Withdraw liquidity contract update
+    SolverWithdrawLiquidity {
+        solver_address: String,
+        asset_chain_name: String,
+        amount: u128,
+        payout_transaction_hash: String,
+    },
 }
 
 /// Request to execute a contract transaction
@@ -148,6 +155,26 @@ impl ContractTransactionSequencer {
         format!("0x{}", hex::encode(hash))
     }
 
+    /// Generate a deterministic transaction ID for withdraw_liquidity contract updates
+    ///
+    /// Uses Keccak256 hash of solver, chain, amount, payout tx hash, and request_id to ensure
+    /// all nodes derive the same ID. `request_id` can be any stable identifier (e.g., payout
+    /// tx hash or timestamp+solver) that is shared across nodes.
+    pub fn generate_transaction_id_for_withdraw_liquidity(
+        solver_address: &str,
+        asset_chain_name: &str,
+        amount: u128,
+        payout_tx_hash: &str,
+    ) -> String {
+        let data = format!(
+            "withdraw_liquidity:{}:{}:{}:{}",
+            solver_address, asset_chain_name, amount, payout_tx_hash
+        );
+
+        let hash = Keccak256::digest(data.as_bytes());
+        format!("0x{}", hex::encode(hash))
+    }
+
     /// Initialize the sequencer with network components
     pub async fn initialize(&mut self, message_tx: mpsc::Sender<crate::types::ChannelMessage>, node_id: String, total_nodes: usize) {
         self.message_tx = Some(message_tx);
@@ -175,13 +202,16 @@ impl ContractTransactionSequencer {
             ContractTransactionFlow::SolverAddLiquidity { solver_address, asset_chain_name, amount, .. } => {
                 format!("solver_add_liquidity:{}:{}:{}", solver_address, asset_chain_name, amount)
             }
+            ContractTransactionFlow::SolverWithdrawLiquidity { solver_address, asset_chain_name, amount, payout_transaction_hash } => {
+                format!("solver_withdraw_liquidity:{}:{}:{}:{}", solver_address, asset_chain_name, amount, payout_transaction_hash)
+            }
         };
         
         // CRITICAL: Hold both locks together to ensure atomic sequence assignment and queue insertion
         // This prevents race conditions where:
         // 1. Multiple requests could get the same sequence (prevented by sync_state lock)
         // 2. Requests could be added to queue out of sequence order (prevented by holding both locks)
-        let (sequence, _queue_size) = {
+        let (_sequence, _queue_size) = {
             // First, acquire both locks to ensure atomicity
             let mut sync_state = self.sync_state.write().await;
             let mut pending = self.pending_requests.write().await;

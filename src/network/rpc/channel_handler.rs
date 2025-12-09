@@ -235,6 +235,7 @@ impl MpcNetworkLayer {
         );
 
         let mut eth_signer = EthereumSigner::new(signing_node);
+        //network sequencer for withdrawal 
         eth_signer
             .sign_transaction(
                 tx_bytes,

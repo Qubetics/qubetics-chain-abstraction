@@ -450,12 +450,13 @@ impl MpcNetworkLayer {
                             TransactionNetwork::TICS => "qubetics",
                             TransactionNetwork::BTC => "btc",
                         };
+                        // Keep it simple: use payout transaction_id as the sequencer request_id
                         info!(
-                            "💧 [NETWORK] Initiating contract liquidity update for solver {} on {} amount {} after tx {}",
+                            "💧 [NETWORK] Enqueuing contract liquidity update via sequencer for solver {} on {} amount {} after payout tx {}",
                             solver_address, chain_name, amount, transaction_id
                         );
                         if let Err(e) = self
-                            .submit_solver_liquidity_contract_update(
+                            .submit_solver_withdraw_liquidity_to_sequencer(
                                 solver_address,
                                 chain_name,
                                 amount,
@@ -464,13 +465,8 @@ impl MpcNetworkLayer {
                             .await
                         {
                             error!(
-                                "❌ [NETWORK] Failed to submit contract liquidity update for solver {} after tx {}: {}",
+                                "❌ [NETWORK] Failed to enqueue withdraw-liquidity contract update for solver {} after tx {}: {}",
                                 solver_address, transaction_id, e
-                            );
-                        } else {
-                            info!(
-                                "✅ [NETWORK] Submitted contract liquidity update for solver {} (chain: {}, amount: {})",
-                                solver_address, chain_name, amount
                             );
                         }
                     } else {

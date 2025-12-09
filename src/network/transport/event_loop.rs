@@ -220,6 +220,9 @@ impl MpcNetworkLayer {
                             crate::network::sequencer::ContractTransactionFlow::SolverAddLiquidity { solver_address, asset_chain_name, amount, .. } => {
                                 format!("solver_add_liquidity:{}:{}:{}", solver_address, asset_chain_name, amount)
                             }
+                            crate::network::sequencer::ContractTransactionFlow::SolverWithdrawLiquidity { solver_address, asset_chain_name, amount, payout_transaction_hash, .. } => {
+                                format!("solver_withdraw_liquidity:{}:{}:{}:{}", solver_address, asset_chain_name, amount, payout_transaction_hash)
+                            }
                         };
                         
                         // Clone the Arc to avoid borrowing self while holding the lock
