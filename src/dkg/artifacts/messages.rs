@@ -3,11 +3,6 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DKGMessage {
-    ShareDistribution {
-        from: String,
-        shares: Vec<KeyShare>,
-        commitments: Vec<SerializablePoint>,
-    },
     ShareValidation {
         from: String,
         to: String,

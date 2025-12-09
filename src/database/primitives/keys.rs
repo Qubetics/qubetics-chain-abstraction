@@ -25,6 +25,12 @@ pub const DKG_VAULT_GROUP_KEY: &str = "dkg_vault_group_key";
 pub const DKG_POLYNOMIAL: &str = "dkg_polynomial";
 pub const DKG_INITIAL_COMPLETE: &str = "dkg_initial_complete";
 pub const DKG_MY_PERMANENT_INDEX: &str = "dkg_my_permanent_index";
+/// Prefix for tracking received shares from peers in current round
+pub const DKG_RECEIVED_SHARE: &str = "dkg_received_share:";
+/// Key for storing expected shares list (peer IDs we expect shares from)
+pub const DKG_EXPECTED_SHARES: &str = "dkg_expected_shares";
+/// Key for storing DKG round start timestamp (for timeout detection)
+pub const DKG_ROUND_START_TIME: &str = "dkg_round_start_time";
 pub const PEER_INDEX: &str = "peer_index:";
 pub const SOLVER_AMOUNTS: &str = "solver_amounts:";
 pub const TOTAL_LIQUIDITY_TICS: &str = "total_liquidity_tics";

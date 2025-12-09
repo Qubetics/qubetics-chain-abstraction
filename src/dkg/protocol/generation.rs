@@ -31,6 +31,26 @@ impl DKGNode {
 
         self.transition_status(crate::dkg::artifacts::DKGStatus::Started)?;
         info!("📤 Distributing DKG shares securely via P2P...");
+
+        // Get peer indices for secure distribution
+        let peer_indices = self.storage.get_peer_indices().await?;
+
+        // Set expected shares from ALL nodes (including ourselves for accurate tracking)
+        let all_peers: Vec<String> = peer_indices.keys().cloned().collect();
+        self.storage.set_expected_shares(&all_peers).await?;
+        info!(
+            "📋 [DKG] Expecting shares from {} nodes (including self): {:?}",
+            all_peers.len(),
+            all_peers
+        );
+
+        // Set round start time for timeout detection
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        self.storage.set_round_start_time(now).await?;
+
         tokio::time::sleep(Duration::from_secs(1)).await;
 
         // Handle our own share locally first
@@ -43,14 +63,16 @@ impl DKGNode {
                     let raw_commitments: Vec<AffinePoint> = commitments.iter().map(|c| c.0).collect();
                     self.storage.store_commitments(&self.id, &raw_commitments).await?;
                     
+                    // Mark own share as received in tracking database
+                    self.storage.mark_share_received(&self.id).await?;
+                    
                     // Self-validation
                     self.storage.add_validation(&self.id, &self.id, true).await?;
+                    info!("Validation before distribution :{:?}", self.storage.get_all_validations().await?);
+                    info!("✅ [DKG] Own share processed and marked as received");
                 }
             }
         }
-
-        // Get peer indices for secure distribution
-        let peer_indices = self.storage.get_peer_indices().await?;
         
         self.distribute_shares_to_peers(shares, commitments.clone(), peer_indices).await?;
         
@@ -131,8 +153,7 @@ impl DKGNode {
         Ok(())
     }
 
-    /// SAFE: Broadcast only the commitments (public, for verification)
-    /// Individual shares are sent privately via distribute_shares_to_peers
+
     async fn broadcast_commitments_only(&self, commitments: Vec<SerializablePoint>) -> Result<()> {
         let round = self.current_round();
         

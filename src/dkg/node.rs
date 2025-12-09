@@ -7,8 +7,10 @@ use tracing::{debug, info, warn};
 use super::artifacts::{DKGCompletionCallback, DKGStatus};
 use crate::NodeMembership;
 use crate::database::DkgStorage;
-use crate::types::{ChannelMessage, KeyShare, SerializablePoint, SerializableScalar};
+use crate::types::{ChannelMessage, KeyShare, SerializablePoint, SerializableScalar, GossipsubMessage};
 use k256::AffinePoint;
+use crate::DKGMessage::*;
+use crate::types::dkg::MSG_TOPIC_DKG;
 
 #[derive(Clone)]
 struct DKGState {
@@ -162,6 +164,9 @@ impl DKGNode {
         if let Err(e) = self.storage.delete_polynomial().await {
             failures.push(format!("delete polynomial: {e}"));
         }
+        if let Err(e) = self.storage.clear_share_tracking().await {
+            failures.push(format!("clear share tracking: {e}"));
+        }
 
         if failures.is_empty() {
             self.transition_status(DKGStatus::New)?;
@@ -262,11 +267,19 @@ impl DKGNode {
         commitments: Vec<SerializablePoint>,
         node_manager: Box<dyn NodeMembership>,
     ) -> Result<bool> {
-   
         info!(
             "🔐 [DKG-SECURE] Processing unicast share index {} from {}",
             share_index, from_node_id
         );
+
+        // Check for duplicate share (prevents replay attacks)
+        if self.storage.is_share_received(&from_node_id).await? {
+            warn!(
+                "⚠️ [DKG-SECURE] Duplicate share from {} (already received), ignoring",
+                from_node_id
+            );
+            return Ok(false);
+        }
 
         // Get our own index to verify this share is for us
         let my_index = match self.storage.get_peer_index_for(&self.id) {
@@ -276,6 +289,8 @@ impl DKGNode {
                 return Err(anyhow!("Cannot determine own peer index"));
             }
         };
+        info!("My index :{:?}", my_index);
+        info!("Share index :{:?}", share_index);
 
         // Verify the share is intended for us
         if share_index != my_index {
@@ -286,8 +301,25 @@ impl DKGNode {
             return Ok(false);
         }
 
+        // Use provided commitments or fallback to stored commitments from CommitmentBroadcast
+        let verification_commitments: Vec<SerializablePoint> = if !commitments.is_empty() {
+            commitments.clone()
+        } else {
+            // Try to get from storage (received via CommitmentBroadcast)
+            match self.storage.get_commitments_for(&from_node_id).await {
+                Ok(Some(stored)) => stored.into_iter().map(SerializablePoint).collect(),
+                _ => {
+                    warn!(
+                        "❌ [DKG-SECURE] No commitments available for verification from {}",
+                        from_node_id
+                    );
+                    return Ok(false);
+                }
+            }
+        };
+
         // Verify the share against commitments
-        if self.verify_share(&share_value, share_index, &commitments) {
+        if self.verify_share(&share_value, share_index, &verification_commitments) {
             // Store the share
             let key_share = KeyShare {
                 index: share_index,
@@ -298,23 +330,51 @@ impl DKGNode {
 
             // Store commitments
             let raw_commitments: Vec<AffinePoint> =
-                commitments.iter().map(|c| c.0).collect();
+                verification_commitments.iter().map(|c| c.0).collect();
             self.storage
                 .store_commitments(&from_node_id, &raw_commitments)
                 .await?;
 
+            // Mark share as received in tracking database
+            self.storage.mark_share_received(&from_node_id).await?;
+
             // Add validation
             self.storage
-                .add_validation(&from_node_id, &self.id, true)
+                .add_validation(&self.id, &from_node_id, true)
                 .await?;
+            info!("Validation after adding :{:?}", self.storage.get_all_validations().await?);
+            // Get progress for logging
+            let received = self.storage.get_received_shares().await.unwrap_or_default();
+            let expected = self.storage.get_expected_shares().await.unwrap_or_default();
 
             info!(
-                "✅ [DKG-SECURE] Share index {} from {} verified and stored successfully",
-                share_index, from_node_id
+                "✅ [DKG-SECURE] Share index {} from {} verified and stored (received {}/{})",
+                share_index,
+                from_node_id,
+                received.len(),
+                expected.len()
             );
 
-            // Check if DKG is complete
-            self.check_completion(node_manager).await?;
+
+            self.handle_share_validation(self.id.clone(), from_node_id.clone(), true, node_manager).await?;
+
+            // Broadcast validation message to network
+            let round = self.current_round();
+            let validation_msg = ShareValidation {
+                from: self.id.clone(),
+                to: from_node_id.clone(),
+                is_valid: true,
+                round,
+            };
+            let gossip_wrapped = GossipsubMessage::DKG(validation_msg);
+            let msg_bytes = serde_json::to_vec(&gossip_wrapped)?;
+            self.broadcast(MSG_TOPIC_DKG, &msg_bytes).await?;
+
+            info!(
+                "📡 [DKG-SECURE] Broadcasted ShareValidation (valid) for {} to network",
+                from_node_id
+            );
+
 
             Ok(true)
         } else {
@@ -322,37 +382,53 @@ impl DKGNode {
                 "❌ [DKG-SECURE] Share verification failed for index {} from {}",
                 share_index, from_node_id
             );
+
+            // Broadcast failed validation
+            let round = self.current_round();
+            let validation_msg = ShareValidation {
+                from: self.id.clone(),
+                to: from_node_id.clone(),
+                is_valid: false,
+                round,
+            };
+            let gossip_wrapped = GossipsubMessage::DKG(validation_msg);
+            let msg_bytes = serde_json::to_vec(&gossip_wrapped)?;
+            self.broadcast(MSG_TOPIC_DKG, &msg_bytes).await?;
+
+            info!(
+                "📡 [DKG-SECURE] Broadcasted ShareValidation (invalid) for {} to network",
+                from_node_id
+            );
+
             Ok(false)
         }
     }
 
+    /// Check for share timeout and log warning about missing shares
+    async fn check_share_timeout_warning(&self) {
+        const SHARE_TIMEOUT_MS: u64 = 30_000; // 30 seconds
 
-    // Test function to verify share generation
-    pub fn test_share_generation(&self) -> Result<()> {
-        debug!("🧪 Testing share generation for node {}", self.id);
+        if let Ok(Some(start_time)) = self.storage.get_round_start_time().await {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
 
-        let polynomial = self.generate_polynomial()?;
-        let shares = self.generate_shares(&polynomial)?;
-
-        debug!("🔬 Node {} generated {} shares", self.id, shares.len());
-        #[cfg(debug_assertions)]
-        {
-            debug!(
-                "🔬 First share value: {:?}",
-                shares.first().map(|s| s.value.0)
-            );
-            debug!(
-                "🔬 Last share value: {:?}",
-                shares.last().map(|s| s.value.0)
-            );
+            if now - start_time > SHARE_TIMEOUT_MS {
+                if let Ok(pending) = self.storage.get_pending_shares().await {
+                    if !pending.is_empty() {
+                        warn!(
+                            "⏰ [DKG-TIMEOUT] Still waiting for shares from {} nodes after {}ms: {:?}",
+                            pending.len(),
+                            now - start_time,
+                            pending
+                        );
+                    }
+                }
+            }
         }
-        #[cfg(not(debug_assertions))]
-        {
-            debug!("🔬 Share value logging skipped in release builds");
-        }
-
-        Ok(())
     }
+
 
     // Debug function to log all current shares
     pub async fn log_all_shares(&self) {

@@ -74,11 +74,10 @@ impl MpcNetworkLayer {
                 round,
             } => {
                 info!(
-                    "🔐 [DKG-SECURE] Received UNICAST share index {} from {} (round {})",
-                    share_index, from_node_id, round
+                    "🔐 [DKG-SECURE] Received UNICAST share index: {}, share value: {:?}, commitments: {:?}, from: {}, round: {}",
+                    share_index, share_value, commitments, from_node_id, round
                 );
                 self.handle_incoming_dkg_share(
-                    peer,
                     from_node_id,
                     share_index,
                     share_value,
@@ -304,7 +303,6 @@ impl MpcNetworkLayer {
     /// Handle incoming DKG share from unicast P2P RPC
     async fn handle_incoming_dkg_share(
         &mut self,
-        _peer: PeerId,
         from_node_id: String,
         share_index: usize,
         share_value: SerializableScalar,
@@ -312,8 +310,8 @@ impl MpcNetworkLayer {
         _round: u64,
     ) -> RPCResponse {
         info!(
-            "🔐 [DKG-SECURE] Processing unicast share index {} from {}",
-            share_index, from_node_id
+            "🔐 [DKG-SECURE] Processing unicast share index: {}, share value: {:?}, commitments: {:?}, from: {}",
+            share_index, share_value, commitments, from_node_id
         );
 
         let dkg_node = match &mut self.dkg_node {
@@ -325,6 +323,7 @@ impl MpcNetworkLayer {
         };
 
         let receiver_node_id = dkg_node.get_id().to_string();
+
         
         // Use the public method to process the share
         match dkg_node.process_incoming_share(

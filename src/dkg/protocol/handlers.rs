@@ -2,14 +2,12 @@ use crate::dkg::{
     artifacts::{DKGMessage, DKGStatus},
     DKGNode,
 };
-use crate::types::dkg::MSG_TOPIC_DKG;
-use crate::types::{GossipsubMessage, KeyShare, SerializablePoint, SerializableScalar};
+use crate::types::{KeyShare, SerializablePoint, SerializableScalar};
 use crate::utils::hmac_helper::hmac_scalar_mod_n;
 use crate::{utils, NodeMembership};
 use anyhow::{anyhow, Result};
 use ff::PrimeField;
 use k256::{AffinePoint, ProjectivePoint, Scalar};
-use serde_json;
 use tracing::{info, warn};
 
 impl DKGNode {
@@ -19,15 +17,7 @@ impl DKGNode {
         node_manager: Box<dyn NodeMembership>,
     ) -> Result<()> {
         match msg {
-            DKGMessage::ShareDistribution {
-                from,
-                shares,
-                commitments,
-            } => {
-                info!("📥 Received share distribution from {}", from);
-                self.handle_share_distribution(from, shares, commitments, node_manager.clone())
-                    .await?;
-            }
+
             DKGMessage::ShareValidation {
                 from,
                 to,
@@ -135,97 +125,6 @@ impl DKGNode {
         Ok(())
     }
 
-    pub(super) async fn handle_share_distribution(
-        &mut self,
-        from: String,
-        shares: Vec<KeyShare>,
-        commitments: Vec<SerializablePoint>,
-        node_manager: Box<dyn NodeMembership>,
-    ) -> Result<()> {
-        let raw_commitments: Vec<AffinePoint> = commitments.into_iter().map(|c| c.0).collect();
-
-        let node_index = self.get_node_index(node_manager.clone())?;
-
-        info!("🔍 [DKG] === SHARE DISTRIBUTION RECEIVED ===");
-        info!(
-            "📥 [DKG] Node {} received {} shares from node {}",
-            self.id,
-            shares.len(),
-            from
-        );
-
-        info!("🔍 [DKG] All shares received from {}:", from);
-        for (i, share) in shares.iter().enumerate() {
-            info!("🔍 [DKG] Share {}: index={}", i + 1, share.index);
-        }
-
-        info!(
-            "🔍 [DKG] Looking for share with index {} in {} shares from node {}",
-            node_index,
-            shares.len(),
-            from
-        );
-
-        if self.verify_shares(&shares, &raw_commitments) {
-            let my_share = shares.into_iter().find(|s| s.index == node_index);
-            if let Some(share) = my_share {
-                info!(
-                    "✅ [DKG] Found valid share for node {} from {}",
-                    self.id, from
-                );
-
-                self.storage.store_share(&from, &share).await?;
-                self.storage
-                    .store_commitments(&from, &raw_commitments)
-                    .await?;
-
-                self.handle_share_validation(self.id.clone(), from.clone(), true, node_manager)
-                    .await?;
-
-                let round = self.current_round();
-                let validation_msg = DKGMessage::ShareValidation {
-                    from: self.id.clone(),
-                    to: from,
-                    is_valid: true,
-                    round,
-                };
-                let gossip_wrapped = GossipsubMessage::DKG(validation_msg);
-                let msg_bytes = serde_json::to_vec(&gossip_wrapped)?;
-                self.broadcast(MSG_TOPIC_DKG, &msg_bytes).await?;
-            } else {
-                info!(
-                    "❌ [DKG] Share for index {} not found in shares from {}",
-                    node_index, from
-                );
-                let round = self.current_round();
-                let validation_msg = DKGMessage::ShareValidation {
-                    from: self.id.clone(),
-                    to: from,
-                    is_valid: false,
-                    round,
-                };
-                let gossip_wrapped = GossipsubMessage::DKG(validation_msg);
-                let msg_bytes = serde_json::to_vec(&gossip_wrapped)?;
-                self.broadcast(MSG_TOPIC_DKG, &msg_bytes).await?;
-            }
-        } else {
-            info!(
-                "❌ [DKG] Share verification failed for shares from {}",
-                from
-            );
-            let round = self.current_round();
-            let validation_msg = DKGMessage::ShareValidation {
-                from: self.id.clone(),
-                to: from,
-                is_valid: false,
-                round,
-            };
-            let gossip_wrapped = GossipsubMessage::DKG(validation_msg);
-            let msg_bytes = serde_json::to_vec(&gossip_wrapped)?;
-            self.broadcast(MSG_TOPIC_DKG, &msg_bytes).await?;
-        }
-        Ok(())
-    }
 
     fn get_node_index(&self, _node_manager: Box<dyn NodeMembership>) -> Result<usize> {
         info!("🔍 [DKG] === NODE INDEX LOOKUP (DB-only) ===");
@@ -323,7 +222,7 @@ impl DKGNode {
         true
     }
 
-    async fn handle_share_validation(
+    pub async fn handle_share_validation(
         &mut self,
         from: String,
         to: String,
@@ -357,9 +256,12 @@ impl DKGNode {
             (shares.len(), validations.len(), valid_validations)
         };
 
+        info!("Validations :{:?}", self.storage.get_all_validations().await?);
+        
+
         info!(
-            "🔍 [DKG] Checking DKG completion - shares: {}, validations: {}",
-            shares_len, validations_len
+            "🔍 [DKG] Checking DKG completion - shares: {}, validations: {}, valid validations: {}",
+            shares_len, validations_len, valid_validations
         );
 
         if valid_validations >= (node_manager.get_total_nodes()) * (node_manager.get_total_nodes())
