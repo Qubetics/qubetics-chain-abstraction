@@ -48,6 +48,7 @@ impl MpcNetworkLayer {
             bootstrap_addresses: Self::load_multiaddrs_from_env("BOOTSTRAP_PEERS"),
             bootstrap_peer_ids: Vec::new(),
             discovery_seeds: Self::load_multiaddrs_from_env("DISCOVERY_SEEDS"),
+            connected_peers_cache: std::collections::HashSet::new(),
         };
 
         this.bootstrap_peer_ids = this

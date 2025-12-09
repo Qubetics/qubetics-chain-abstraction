@@ -23,10 +23,20 @@ impl MpcNetworkLayer {
         match request {
             RPCRequest::GetPeerList => self.handle_get_peer_list_request(peer, swarm).await,
             RPCRequest::Ping => RPCResponse::Pong,
-            RPCRequest::GetPeerInfo => RPCResponse::PeerInfo(PeerInfo {
-                addresses: vec![],
-                connected: true,
-            }),
+            RPCRequest::GetPeerInfo => {
+                let self_peer = self.get_local_peer_id();
+                let listen_addrs: Vec<_> = swarm
+                    .listeners()
+                    .cloned()
+                    .map(|a| format!("{}/p2p/{}", a, self_peer))
+                    .filter_map(|s| s.parse().ok())
+                    .collect();
+
+                RPCResponse::PeerInfo(PeerInfo {
+                    addresses: listen_addrs,
+                    connected: true,
+                })
+            }
             RPCRequest::Custom { id, data } => RPCResponse::Custom { id, data },
             RPCRequest::StartADKG => self.handle_start_adkg_request(peer).await,
             RPCRequest::GetDKGStatus => self.handle_get_dkg_status_request().await,
@@ -141,37 +151,48 @@ impl MpcNetworkLayer {
             }
         }
 
-        // Build addresses (string) aligned with peers
+        // Build listen addresses (string) aligned with peers.
         let mut addresses: Vec<Option<String>> = Vec::with_capacity(peers.len());
+        let self_peer = self.get_local_peer_id();
+        let self_listen: Vec<String> = swarm
+            .listeners()
+            .cloned()
+            .map(|a| format!("{}/p2p/{}", a, self_peer))
+            .collect();
+
         for SerializablePeerId(pid) in &peers {
-            // Prefer in-memory discovery map
+            // If we have a stored listen addr for this peer, use it (DB or in-memory)
             if let Some(addr) = self.peer_discovery.peer_multiaddresses.get(pid) {
-                addresses.push(Some(addr.to_string()));
+                addresses.push(Some(format!("{}/p2p/{}", addr, pid)));
                 continue;
             }
-            // Fallback to DB
             let key = peer_addr_key(&pid.to_string());
             if let Ok(Some(addr_str)) = self.db.get_string::<String>(&key) {
-                addresses.push(Some(addr_str));
+                // Ensure /p2p/<peer> suffix
+                let normalized = if addr_str.contains(&format!("/p2p/{}", pid)) {
+                    addr_str
+                } else {
+                    format!("{}/p2p/{}", addr_str, pid)
+                };
+                addresses.push(Some(normalized));
                 continue;
             }
-            // Fallback: if this is us, include a listen addr if available
-            if *pid == *self.get_local_peer_id() {
-                if let Some(addr) = swarm.listeners().next() {
-                    addresses.push(Some(addr.to_string()));
-                    continue;
-                }
+
+            // If this is us, include our listen addr(s)
+            if *pid == *self_peer && !self_listen.is_empty() {
+                addresses.push(Some(self_listen[0].clone()));
+                continue;
             }
+
+            // Otherwise unknown
             addresses.push(None);
         }
 
         // Log how many peers we're returning
         info!(
-            "📋 Sending PeerList response to {}: {} entries: {:?} {:?} (addresses count: {})",
+            "📋 Sending PeerList response to {}: {} entries (addresses count: {})",
             peer,
             peers.len(),
-            peers,
-            indices,
             addresses.iter().filter(|a| a.is_some()).count()
         );
 
@@ -474,6 +495,30 @@ impl MpcNetworkLayer {
                 self.handle_peer_list_response(swarm, peers, indices, addresses)
                     .await?;
             }
+            RPCResponse::PeerInfo(peer_info) => {
+                let addr_count = peer_info.addresses.len();
+                for addr in peer_info.addresses {
+                    // Extract PeerId from the /p2p/ component of the multiaddr string
+                    let maybe_peer = addr
+                        .to_string()
+                        .rsplit_once("/p2p/")
+                        .and_then(|(_, pid_str)| pid_str.parse::<PeerId>().ok());
+
+                    if let Some(peer_id) = maybe_peer {
+                        self.peer_discovery
+                            .peer_multiaddresses
+                            .insert(peer_id, addr.clone());
+                        let key = peer_addr_key(&peer_id.to_string());
+                        if let Err(e) = self.db.put_string(&key, &addr.to_string()) {
+                            warn!("⚠️ [PEER_INFO] Failed to persist addr for {}: {}", peer_id, e);
+                        }
+                    }
+                }
+                info!(
+                    "🌐 [PEER_INFO] Stored {} addresses from peer {}",
+                    addr_count, peer
+                );
+            }
             RPCResponse::GotAVSSShare { .. } => {}
             RPCResponse::DKGStarted { peer_id } => {
                 info!("DKG has started by: {:?}", peer_id);
@@ -615,7 +660,15 @@ impl MpcNetworkLayer {
 
             // Insert advertised address into map/db and dial if needed
             if let Some(addr_str) = addresses.get(i).cloned().flatten() {
-                if let Ok(addr) = addr_str.parse::<libp2p::Multiaddr>() {
+                // Ensure /p2p/<peer> suffix
+                let suffix = format!("/p2p/{}", p);
+                let addr_with_p2p = if addr_str.contains(&suffix) {
+                    addr_str.clone()
+                } else {
+                    format!("{}/p2p/{}", addr_str, p)
+                };
+
+                if let Ok(addr) = addr_with_p2p.parse::<libp2p::Multiaddr>() {
                     info!("🔐 [PEER_LIST] Inserting advertised address into map/db for peer {}: {}", p, addr);
                     self.peer_discovery.peer_multiaddresses.insert(p, addr.clone());
                     let key = peer_addr_key(&p.to_string());

@@ -176,6 +176,8 @@ pub struct MpcNetworkLayer {
     pub(crate) bootstrap_addresses: Vec<Multiaddr>,
     pub(crate) bootstrap_peer_ids: Vec<PeerId>,
     pub(crate) discovery_seeds: Vec<Multiaddr>,
+    /// Cache of currently connected peers (for fast address responses)
+    pub(crate) connected_peers_cache: HashSet<PeerId>,
 }
 
 impl MpcNetworkLayer {

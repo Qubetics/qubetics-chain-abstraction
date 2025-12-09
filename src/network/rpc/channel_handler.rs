@@ -1188,7 +1188,7 @@ impl MpcNetworkLayer {
                     }
                 };
                 
-                // Attempt to dial if not connected and we have an address
+                // Attempt to dial if not connected and we have a listen address
                 let mut is_connected = swarm.is_connected(&peer_id);
                 info!("🔐 [DKG-SECURE]  Target Peer {} connected: {}", target_peer_id, is_connected);
                 let connected_peers = swarm.connected_peers().collect::<Vec<_>>();
@@ -1207,15 +1207,20 @@ impl MpcNetworkLayer {
                             "📞 [DKG-SECURE] Not connected to {}, dialing before send: {}",
                             target_peer_id, addr
                         );
-                        let to_dial = format!("{}/p2p/{}",addr.clone(), target_peer_id);
-                        let address: Multiaddr = to_dial.parse().expect("User to provide valid address.");
-                        if let Err(e) = swarm.dial(address) {
+                        let address: Multiaddr = if addr.to_string().contains(&format!("/p2p/{}", target_peer_id)) {
+                            addr.clone()
+                        } else {
+                            format!("{}/p2p/{}", addr, target_peer_id)
+                                .parse()
+                                .expect("valid multiaddr")
+                        };
+                        if let Err(e) = swarm.dial(address.clone()) {
                             warn!("⚠️ [DKG-SECURE] Dial to {} failed: {}", target_peer_id, e);
                         } else {
                             // allow a brief window for connection to establish
                             tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
                             is_connected = swarm.is_connected(&peer_id);
-                            info!("🔐 [DKG-SECURE] Dial to connect to {} successful", target_peer_id);
+                            info!("🔐 [DKG-SECURE] Dial to connect to {} successful {}", target_peer_id, is_connected);
                         }
                     } else {
                         warn!(
