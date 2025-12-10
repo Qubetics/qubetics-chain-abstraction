@@ -1083,26 +1083,40 @@ impl MpcNetworkLayer {
                 )
                 .await?;
 
-                // After processing the withdraw payout, refresh on-chain solver liquidity
-                // so this node's DB (and global totals) reflect the decreased amounts.
+                // Apply the liquidity decrease locally based on the requested amount.
                 if let Some(signing_node) = &self.signing_node {
-                    match signing_node.update_solver_liquidity(&solver_address).await {
+                    let delta_btc = amount_btc
+                        .as_ref()
+                        .and_then(|v| ethers::types::U256::from_dec_str(v).ok());
+                    let delta_tics = amount_tics
+                        .as_ref()
+                        .and_then(|v| ethers::types::U256::from_dec_str(v).ok());
+                    match signing_node
+                        .apply_liquidity_delta(
+                            &solver_address,
+                            None,
+                            delta_btc,
+                            delta_tics,
+                            false,
+                        )
+                        .await
+                    {
                         Ok(()) => {
                             info!(
-                                "✅ [GOSSIPSUB] Refreshed solver liquidity from contract after withdraw-liquidity for {}",
+                                "✅ [GOSSIPSUB] Applied local liquidity withdraw for {}",
                                 solver_address
                             );
                         }
                         Err(e) => {
                             warn!(
-                                "⚠️ [GOSSIPSUB] Failed to refresh solver liquidity after withdraw-liquidity for {}: {}",
+                                "⚠️ [GOSSIPSUB] Failed to apply local liquidity withdraw for {}: {}",
                                 solver_address, e
                             );
                         }
                     }
                 } else {
                     warn!(
-                        "⚠️ [GOSSIPSUB] Signing node unavailable; cannot refresh solver liquidity after withdraw-liquidity for {}",
+                        "⚠️ [GOSSIPSUB] Signing node unavailable; cannot apply local liquidity withdraw for {}",
                         solver_address
                     );
                 }
@@ -1130,27 +1144,40 @@ impl MpcNetworkLayer {
                 )
                 .await?;
 
-                // 2) After contract submission, refresh solver liquidity from the on-chain contract
-                //    so local DB (and global totals) stay in sync. This uses the per-solver updater
-                //    which also recomputes total liquidity across all solvers.
+                // 2) Apply the liquidity increase locally based on the requested amount.
                 if let Some(signing_node) = &self.signing_node {
-                    match signing_node.update_solver_liquidity(&solver_address).await {
+                    let delta_btc = amount_btc
+                        .as_ref()
+                        .and_then(|v| ethers::types::U256::from_dec_str(v).ok());
+                    let delta_tics = amount_tics
+                        .as_ref()
+                        .and_then(|v| ethers::types::U256::from_dec_str(v).ok());
+                    match signing_node
+                        .apply_liquidity_delta(
+                            &solver_address,
+                            Some(&solver_id),
+                            delta_btc,
+                            delta_tics,
+                            true,
+                        )
+                        .await
+                    {
                         Ok(()) => {
                             info!(
-                                "✅ [GOSSIPSUB] Refreshed solver liquidity from contract after add-liquidity for {}",
+                                "✅ [GOSSIPSUB] Applied local liquidity add for {}",
                                 solver_address
                             );
                         }
                         Err(e) => {
                             warn!(
-                                "⚠️ [GOSSIPSUB] Failed to refresh solver liquidity after add-liquidity for {}: {}",
+                                "⚠️ [GOSSIPSUB] Failed to apply local liquidity add for {}: {}",
                                 solver_address, e
                             );
                         }
                     }
                 } else {
                     warn!(
-                        "⚠️ [GOSSIPSUB] Signing node unavailable; cannot refresh solver liquidity after add-liquidity for {}",
+                        "⚠️ [GOSSIPSUB] Signing node unavailable; cannot apply local liquidity add for {}",
                         solver_address
                     );
                 }

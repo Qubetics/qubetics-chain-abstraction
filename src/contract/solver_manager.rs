@@ -15,6 +15,8 @@ abigen!(
         function getActiveSolvers() view returns (string[] solverIds)
         function get_solver_evm_address(string solverId) view returns (address)
         function getSolverId(address solver) view returns (string)
+         function getMinimumLiquidityBTC() view returns (uint256)
+        function getMinimumLiquidityTICS() view returns (uint256)
     ]"#
 );
 
@@ -68,5 +70,21 @@ impl SolverManagerContract {
             .await
             .map_err(|e| anyhow!("contract call failed: {}", e))?;
         Ok(solver_id)
+    }
+
+    pub async fn get_minimum_liquidity_btc(&self) -> Result<ethers::types::U256> {
+        self.inner
+            .get_minimum_liquidity_btc()
+            .call()
+            .await
+            .map_err(|e| anyhow!("contract call failed: {}", e))
+    }
+
+    pub async fn get_minimum_liquidity_tics(&self) -> Result<ethers::types::U256> {
+        self.inner
+            .get_minimum_liquidity_tics()
+            .call()
+            .await
+            .map_err(|e| anyhow!("contract call failed: {}", e))
     }
 }
