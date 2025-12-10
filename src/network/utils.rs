@@ -245,6 +245,122 @@ impl MpcNetworkLayer {
         }
     }
 
+    // ----------------------------------------------------------------------------
+    // Network transaction sequencer (NetworkToTarget and future flows)
+    // ----------------------------------------------------------------------------
+
+    /// Initialize the network transaction sequencer if not already present
+    async fn initialize_network_transaction_sequencer(&mut self) {
+        if self.network_transaction_sequencer.is_none() {
+            let mut sequencer = crate::network::sequencer::NetworkTransactionSequencer::new();
+            let total_nodes = self.node_manager.get_total_nodes();
+            let node_id = self.local_peer_id.to_string();
+            let message_tx = self.message_tx.clone();
+            sequencer.initialize(message_tx, node_id, total_nodes).await;
+            self.network_transaction_sequencer = Some(sequencer);
+            info!(
+                "✅ [NETWORK] Network transaction sequencer initialized with {} total nodes",
+                total_nodes
+            );
+        }
+    }
+
+    /// Submit a NetworkToTarget transaction to the network transaction sequencer
+    pub(crate) async fn submit_network_to_target_to_sequencer(
+        &mut self,
+        intent: &crate::types::DepositIntent,
+        intent_hash: &str,
+        amount: u128,
+        tx_bytes: Vec<u8>,
+        eth_tx: crate::chain_abstraction::EthereumTransaction,
+        user_tweaked_share: Option<k256::Scalar>,
+        user_eth_address: Option<String>,
+    ) -> Result<()> {
+        use crate::network::sequencer::{NetworkTransactionFlow, NetworkTransactionRequest};
+
+        if self.network_transaction_sequencer.is_none() {
+            self.initialize_network_transaction_sequencer().await;
+        }
+
+        if let Some(sequencer) = &self.network_transaction_sequencer {
+            let transaction_id = crate::network::sequencer::NetworkTransactionSequencer::generate_transaction_id_for_network_to_target(intent_hash);
+
+            let request = NetworkTransactionRequest {
+                flow: NetworkTransactionFlow::NetworkToTarget {
+                    intent: intent.clone(),
+                    intent_hash: intent_hash.to_string(),
+                    transaction_type: crate::types::TransactionType::NetworkToTarget,
+                    amount,
+                    tx_bytes,
+                    eth_tx,
+                    user_tweaked_share,
+                    user_eth_address,
+                },
+                transaction_id: transaction_id.clone(),
+                sequence: 0, // set by sequencer.submit
+            };
+
+            sequencer.submit(request).await?;
+            info!(
+                "📋 [NETWORK] Submitted NetworkToTarget to network transaction sequencer: intent_hash={}, amount={}, tx_id={}",
+                intent_hash, amount, transaction_id
+            );
+            Ok(())
+        } else {
+            warn!("❌ [NETWORK] Network transaction sequencer not available for NetworkToTarget transaction");
+            Ok(())
+        }
+    }
+
+    /// Process a network transaction from the sequencer (currently only NetworkToTarget)
+    pub(crate) async fn process_network_transaction(
+        &mut self,
+        request: crate::network::sequencer::NetworkTransactionRequest,
+    ) -> Result<()> {
+        use crate::network::sequencer::NetworkTransactionFlow;
+        use crate::signing::EthereumSigner;
+
+        match &request.flow {
+            NetworkTransactionFlow::NetworkToTarget {
+                intent_hash,
+                tx_bytes,
+                eth_tx,
+                user_tweaked_share,
+                user_eth_address,
+                transaction_type,
+                ..
+            } => {
+                info!(
+                    "📋 [NETWORK_SEQUENCER] Processing NetworkToTarget transaction: intent_hash={}, tx_id={}",
+                    intent_hash, request.transaction_id
+                );
+
+                if let Some(signing_node) = &mut self.signing_node {
+                    let mut eth_signer = EthereumSigner::new(signing_node);
+                    eth_signer
+                        .sign_transaction(
+                            tx_bytes.clone(),
+                            eth_tx,
+                            *user_tweaked_share,
+                            user_eth_address.clone(),
+                            Some(intent_hash.clone()),
+                            Some(transaction_type.clone()),
+                            None,
+                        )
+                        .await?;
+
+                    info!(
+                        "✅ [NETWORK_SEQUENCER] Successfully signed NetworkToTarget transaction: intent_hash={}, tx_id={}",
+                        intent_hash, request.transaction_id
+                    );
+                    Ok(())
+                } else {
+                    Err(anyhow::anyhow!("Signing node not available"))
+                }
+            }
+        }
+    }
+
     /// Submit a solver withdraw-liquidity contract update to the sequencer
     pub(crate) async fn submit_solver_withdraw_liquidity_to_sequencer(
         &mut self,

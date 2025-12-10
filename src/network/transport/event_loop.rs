@@ -270,6 +270,111 @@ impl MpcNetworkLayer {
                         // Lock is automatically released here when _lock goes out of scope
                     }
                 }
+
+                // Network transaction sequencer handler
+                network_request = async {
+                    if let Some(sequencer) = &self.network_transaction_sequencer {
+                        // Check if currently processing and waiting for consensus
+                        if let Some((tx_id, _sequence, is_confirmed)) = sequencer.get_current_processing().await {
+                            if !is_confirmed {
+                                let has_consensus = sequencer.has_consensus().await;
+                                if has_consensus {
+                                    info!("✅ [NETWORK_SEQUENCER] Consensus reached for tx_id={}, proceeding to process", tx_id);
+                                    if let Some(request) = sequencer.get_current_request().await {
+                                        sequencer.mark_processing(&tx_id).await.ok();
+                                        return Some(request);
+                                    } else {
+                                        info!("⚠️ [NETWORK_SEQUENCER] Consensus reached but request not found for tx_id={}, will retry", tx_id);
+                                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                                        return None;
+                                    }
+                                } else {
+                                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                                    return None;
+                                }
+                            } else {
+                                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                                return None;
+                            }
+                        }
+
+                        // Get next request (only if previous confirmed)
+                        if let Some(request) = sequencer.get_next_request().await {
+                            let tx_id = request.transaction_id.clone();
+                            let sequence = request.sequence;
+
+                            info!("🎯 [NETWORK_SEQUENCER] Got next request: tx_id={}, sequence={}", tx_id, sequence);
+
+                            sequencer.cache_current_request(request.clone()).await;
+
+                            if sequencer.propose_transaction(&tx_id, sequence).await.unwrap_or(false) {
+                                info!("📤 [NETWORK_SEQUENCER] Proposed tx_id={}, waiting for consensus...", tx_id);
+
+                                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+                                let mut consensus_wait_count = 0;
+                                loop {
+                                    let has_consensus = sequencer.has_consensus().await;
+                                    if has_consensus {
+                                        info!("✅ [NETWORK_SEQUENCER] Consensus reached for tx_id={}, proceeding to process", tx_id);
+                                        break;
+                                    }
+                                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                                    consensus_wait_count += 1;
+                                    if consensus_wait_count % 10 == 0 {
+                                        info!("⏳ [NETWORK_SEQUENCER] Still waiting for consensus: tx_id={}, wait_count={}", tx_id, consensus_wait_count);
+                                    }
+                                    if consensus_wait_count > 100 {
+                                        warn!("⚠️ [NETWORK_SEQUENCER] Consensus timeout for tx_id={}, proceeding anyway", tx_id);
+                                        break;
+                                    }
+                                }
+
+                                sequencer.mark_processing(&tx_id).await.ok();
+                                Some(request)
+                            } else {
+                                info!("⏸️ [NETWORK_SEQUENCER] Previous transaction not confirmed, will retry");
+                                None
+                            }
+                        } else {
+                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                            None
+                        }
+                    } else {
+                        std::future::pending().await
+                    }
+                } => {
+                    if let Some(request) = network_request {
+                        let tx_id = request.transaction_id.clone();
+                        let sequence = request.sequence;
+
+                        let flow_desc = match &request.flow {
+                            crate::network::sequencer::NetworkTransactionFlow::NetworkToTarget { intent_hash, .. } => {
+                                format!("network_to_target:{}", intent_hash)
+                            }
+                        };
+
+                        let lock = self.network_transaction_processing_lock.clone();
+                        let _lock = lock.lock().await;
+
+                        info!("🚀 [NETWORK_SEQUENCER] Starting synchronized processing (locked): flow={}, tx_id={}, sequence={}", flow_desc, tx_id, sequence);
+
+                        let start_time = std::time::Instant::now();
+                        if let Err(e) = self.process_network_transaction(request).await {
+                            error!("❌ [NETWORK_SEQUENCER] Failed to process network transaction tx_id={} (sequence={}): {}", tx_id, sequence, e);
+                        } else {
+                            let duration = start_time.elapsed();
+                            info!("⏱️ [NETWORK_SEQUENCER] Transaction tx_id={} (sequence={}) processed in {:?}", tx_id, sequence, duration);
+                        }
+
+                        if let Some(sequencer) = &self.network_transaction_sequencer {
+                            info!("✅ [NETWORK_SEQUENCER] Marking tx_id={} (sequence={}) as completed, waiting for all nodes to confirm...", tx_id, sequence);
+                            sequencer.mark_completed(&tx_id).await.ok();
+                        }
+
+                        info!("🏁 [NETWORK_SEQUENCER] Completed synchronized processing (lock released): flow={}, tx_id={}, sequence={}", flow_desc, tx_id, sequence);
+                    }
+                }
             };
         }
     }

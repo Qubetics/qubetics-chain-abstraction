@@ -50,6 +50,8 @@ impl MpcNetworkLayer {
             bootstrap_peer_ids: Vec::new(),
             discovery_seeds: Self::load_multiaddrs_from_env("DISCOVERY_SEEDS"),
             contract_sequencer: None,
+            network_transaction_sequencer: None,
+            network_transaction_processing_lock: Arc::new(Mutex::new(())),
         };
 
         this.bootstrap_peer_ids = this

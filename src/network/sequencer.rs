@@ -737,3 +737,552 @@ impl ContractTransactionSequencer {
     }
 }
 
+// ============================================================================
+// Network Transaction Sequencer
+// ============================================================================
+// This sequencer handles transactions that use the network DKG group key
+// (e.g., NetworkToTarget, and potentially other network-level transactions)
+// to prevent nonce collisions when multiple transactions are processed in parallel.
+
+/// Enum to distinguish between different network transaction flows
+#[derive(Clone, Debug)]
+pub enum NetworkTransactionFlow {
+    /// Network withdrawal transaction (NetworkToTarget)
+    NetworkToTarget {
+        intent: DepositIntent,
+        intent_hash: String,
+        transaction_type: TransactionType,
+        amount: u128,
+        tx_bytes: Vec<u8>,
+        eth_tx: crate::chain_abstraction::EthereumTransaction,
+        user_tweaked_share: Option<k256::Scalar>,
+        user_eth_address: Option<String>,
+    },
+    // Future flows can be added here, e.g.:
+    // NetworkPayout { ... },
+    // NetworkRefund { ... },
+}
+
+/// Request to execute a network transaction
+#[derive(Clone, Debug)]
+pub struct NetworkTransactionRequest {
+    /// The type of transaction flow
+    pub flow: NetworkTransactionFlow,
+    /// Transaction ID (unique identifier for this transaction)
+    pub transaction_id: String,
+    /// Sequence number for deterministic ordering (set when request is received)
+    pub sequence: u64,
+}
+
+/// Sequencer synchronization state for network transactions
+#[derive(Clone, Debug)]
+struct NetworkTransactionSyncState {
+    /// Transaction ID currently being processed
+    current_processing: Option<String>,
+    /// Sequence number for the current processing transaction
+    current_sequence: u64,
+    /// Global sequence counter for deterministic ordering
+    global_sequence: u64,
+    /// Nodes that have agreed to process the current request
+    agreed_nodes: HashSet<String>,
+    /// Nodes that have confirmed completion of the current request
+    confirmed_nodes: HashSet<String>,
+    /// Total number of active nodes (for consensus threshold)
+    total_nodes: usize,
+    /// Whether current transaction is confirmed (all nodes confirmed)
+    is_confirmed: bool,
+}
+
+/// Sequencer for network transactions (using network DKG group key)
+/// 
+/// This sequencer ensures sequential processing of network transactions
+/// to prevent nonce collisions when using the network DKG group key.
+/// 
+/// CRITICAL: All nodes must have the same requests and process them in the same order.
+pub struct NetworkTransactionSequencer {
+    /// Pending requests sorted by transaction_id (BTreeMap maintains sorted order)
+    pending_requests: Arc<RwLock<BTreeMap<String, NetworkTransactionRequest>>>,
+    /// Synchronization state
+    sync_state: Arc<RwLock<NetworkTransactionSyncState>>,
+    /// Message channel for broadcasting sequencer sync messages
+    message_tx: Option<mpsc::Sender<crate::types::ChannelMessage>>,
+    /// Local node ID
+    node_id: String,
+    /// Cached request for the current processing transaction (set when we propose it)
+    current_request_cache: Arc<RwLock<Option<NetworkTransactionRequest>>>,
+}
+
+impl NetworkTransactionSequencer {
+    /// Create a new network transaction sequencer
+    pub fn new() -> Self {
+        Self {
+            pending_requests: Arc::new(RwLock::new(BTreeMap::new())),
+            sync_state: Arc::new(RwLock::new(NetworkTransactionSyncState {
+                current_processing: None,
+                current_sequence: 0,
+                global_sequence: 0,
+                agreed_nodes: HashSet::new(),
+                confirmed_nodes: HashSet::new(),
+                total_nodes: 0,
+                is_confirmed: false,
+            })),
+            message_tx: None,
+            node_id: String::new(),
+            current_request_cache: Arc::new(RwLock::new(None)),
+        }
+    }
+
+    /// Generate a unique transaction ID for NetworkToTarget transactions
+    /// Uses intent_hash directly as it's already unique
+    pub fn generate_transaction_id_for_network_to_target(intent_hash: &str) -> String {
+        format!("network_to_target:{}", intent_hash)
+    }
+
+    /// Initialize the sequencer with message channel and node ID
+    pub async fn initialize(
+        &mut self,
+        message_tx: mpsc::Sender<crate::types::ChannelMessage>,
+        node_id: String,
+        total_nodes: usize,
+    ) {
+        self.message_tx = Some(message_tx);
+        self.node_id = node_id.clone();
+        let mut sync_state = self.sync_state.write().await;
+        sync_state.total_nodes = total_nodes;
+        info!(
+            "✅ [NETWORK_SEQUENCER] Initialized node {} with {} total nodes",
+            node_id, total_nodes
+        );
+    }
+
+    /// Submit a network transaction request to the sequencer
+    pub async fn submit(&self, mut request: NetworkTransactionRequest) -> Result<()> {
+        let transaction_id = request.transaction_id.clone();
+        
+        // CRITICAL: Hold both locks together to ensure atomic sequence assignment and queue insertion
+        let (_sequence, _queue_size) = {
+            let mut sync_state = self.sync_state.write().await;
+            let mut pending = self.pending_requests.write().await;
+            
+            // Assign sequence number (atomic operation)
+            sync_state.global_sequence += 1;
+            request.sequence = sync_state.global_sequence;
+            let sequence = sync_state.global_sequence;
+            
+            // Ensure transaction_id uniqueness: if a duplicate exists, append sequence number
+            let final_transaction_id = if pending.contains_key(&transaction_id) {
+                let unique_id = format!("{}:seq{}", transaction_id, sequence);
+                warn!(
+                    "⚠️ [NETWORK_SEQUENCER] Duplicate transaction_id detected: {}. Using unique ID: {}",
+                    transaction_id, unique_id
+                );
+                unique_id
+            } else {
+                transaction_id.clone()
+            };
+            
+            // Update the request's transaction_id to the final (potentially unique) ID
+            request.transaction_id = final_transaction_id.clone();
+            
+            // Add to pending requests (BTreeMap maintains sorted order by transaction_id)
+            let final_tx_id_for_log = final_transaction_id.clone();
+            pending.insert(final_transaction_id, request);
+            let queue_size = pending.len();
+            
+            info!(
+                "📥 [NETWORK_SEQUENCER] Queued transaction: tx_id={}, sequence={}, queue_size={}",
+                final_tx_id_for_log, sequence, queue_size
+            );
+            
+            (sequence, queue_size)
+        };
+        
+        Ok(())
+    }
+
+    /// Get the current processing transaction info (if any)
+    pub async fn get_current_processing(&self) -> Option<(String, u64, bool)> {
+        let sync_state = self.sync_state.read().await;
+        if let Some(tx_id) = &sync_state.current_processing {
+            Some((tx_id.clone(), sync_state.current_sequence, sync_state.is_confirmed))
+        } else {
+            None
+        }
+    }
+
+    /// Get the request for the current processing transaction
+    pub async fn get_current_request(&self) -> Option<NetworkTransactionRequest> {
+        // First, check if we have it cached (we proposed it)
+        {
+            let mut cache = self.current_request_cache.write().await;
+            if let Some(request) = cache.take() {
+                info!(
+                    "🎯 [NETWORK_SEQUENCER] Retrieved current request from cache: tx_id={}, sequence={}",
+                    request.transaction_id, request.sequence
+                );
+                return Some(request);
+            }
+        }
+        
+        // If not in cache, try to get it from the queue (we received a "proposed" message)
+        let sync_state = self.sync_state.read().await;
+        let current_tx = sync_state.current_processing.clone();
+        drop(sync_state);
+        
+        if let Some(tx_id) = current_tx {
+            let mut pending = self.pending_requests.write().await;
+            if let Some(request) = pending.remove(&tx_id) {
+                info!(
+                    "🎯 [NETWORK_SEQUENCER] Retrieved current request from queue: tx_id={}, sequence={}",
+                    request.transaction_id, request.sequence
+                );
+                Some(request)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+
+    /// Get the next request to process based on deterministic ordering (lowest transaction_id)
+    pub async fn get_next_request(&self) -> Option<NetworkTransactionRequest> {
+        let sync_state = self.sync_state.read().await;
+        
+        // CRITICAL: Don't move to next until previous is confirmed by all nodes
+        if let Some(current_tx) = &sync_state.current_processing {
+            if !sync_state.is_confirmed {
+                info!(
+                    "⏳ [NETWORK_SEQUENCER] Waiting for confirmation: current_tx={}, confirmed_nodes={}/{}, is_confirmed={}",
+                    current_tx,
+                    sync_state.confirmed_nodes.len(),
+                    sync_state.total_nodes,
+                    sync_state.is_confirmed
+                );
+                return None;
+            }
+            info!(
+                "✅ [NETWORK_SEQUENCER] Previous transaction {} confirmed, ready for next",
+                current_tx
+            );
+        }
+
+        drop(sync_state);
+
+        // Get the request with the lowest transaction_id (deterministic ordering)
+        let mut pending = self.pending_requests.write().await;
+        if let Some((tx_id, request)) = pending.pop_first() {
+            let sequence = request.sequence;
+            let queue_size = pending.len();
+            info!(
+                "🎯 [NETWORK_SEQUENCER] Selected next request: tx_id={}, sequence={}, remaining_in_queue={}",
+                tx_id, sequence, queue_size
+            );
+            Some(request)
+        } else {
+            None
+        }
+    }
+
+    /// Check if consensus has been reached for the current transaction
+    pub async fn has_consensus(&self) -> bool {
+        let sync_state = self.sync_state.read().await;
+
+        if sync_state.current_processing.is_none() {
+            return false;
+        }
+
+        let threshold = (sync_state.total_nodes / 2) + 1;
+        let agreed_count = sync_state.agreed_nodes.len();
+        let has_consensus = agreed_count >= threshold;
+
+        if has_consensus {
+            info!(
+                "✅ [NETWORK_SEQUENCER] [CONSENSUS] Consensus reached for tx_id={}: {}/{} nodes agreed (threshold: {})",
+                sync_state.current_processing.as_ref().unwrap(),
+                agreed_count,
+                sync_state.total_nodes,
+                threshold
+            );
+        }
+
+        has_consensus
+    }
+
+    /// Propose a transaction for processing and wait for consensus
+    pub async fn propose_transaction(&self, transaction_id: &str, sequence: u64) -> Result<bool> {
+        let mut sync_state = self.sync_state.write().await;
+
+        // Check if we can propose (nothing currently processing or previous is confirmed)
+        if let Some(current_tx) = &sync_state.current_processing {
+            if !sync_state.is_confirmed {
+                info!(
+                    "⏳ [NETWORK_SEQUENCER] Cannot propose tx_id={}: previous transaction {} not confirmed yet",
+                    transaction_id, current_tx
+                );
+                return Ok(false);
+            }
+        }
+
+        // Set as current processing
+        sync_state.current_processing = Some(transaction_id.to_string());
+        sync_state.current_sequence = sequence;
+        sync_state.agreed_nodes.clear();
+        sync_state.confirmed_nodes.clear();
+        sync_state.is_confirmed = false;
+
+        // Add ourselves to agreed nodes
+        sync_state.agreed_nodes.insert(self.node_id.clone());
+
+        drop(sync_state);
+
+        // Broadcast proposal
+        if let Some(message_tx) = &self.message_tx {
+            let broadcast_data = serde_json::to_vec(&crate::types::GossipsubMessage::NetworkTransactionSequencerSync {
+                transaction_id: transaction_id.to_string(),
+                sequence,
+                node_id: self.node_id.clone(),
+                state: "proposed".to_string(),
+            })?;
+
+            message_tx
+                .send(crate::types::ChannelMessage::Broadcast {
+                    topic: crate::network::transport::types::TOPIC_NETWORK_TRANSACTION_SEQUENCER_SYNC.to_string(),
+                    data: broadcast_data,
+                })
+                .await?;
+
+            info!(
+                "📤 [NETWORK_SEQUENCER] Broadcasted proposal for tx_id={}, sequence={}",
+                transaction_id, sequence
+            );
+        }
+
+        Ok(true)
+    }
+
+    /// Mark that we're processing the transaction
+    pub async fn mark_processing(&self, transaction_id: &str) -> Result<()> {
+        if let Some(message_tx) = &self.message_tx {
+            let sync_state = self.sync_state.read().await;
+            let sequence = sync_state.current_sequence;
+            drop(sync_state);
+
+            let broadcast_data = serde_json::to_vec(&crate::types::GossipsubMessage::NetworkTransactionSequencerSync {
+                transaction_id: transaction_id.to_string(),
+                sequence,
+                node_id: self.node_id.clone(),
+                state: "processing".to_string(),
+            })?;
+
+            message_tx
+                .send(crate::types::ChannelMessage::Broadcast {
+                    topic: crate::network::transport::types::TOPIC_NETWORK_TRANSACTION_SEQUENCER_SYNC.to_string(),
+                    data: broadcast_data,
+                })
+                .await?;
+        }
+
+        Ok(())
+    }
+
+    /// Mark that we've completed processing the transaction
+    pub async fn mark_completed(&self, transaction_id: &str) -> Result<()> {
+        let mut sync_state = self.sync_state.write().await;
+
+        if sync_state.current_processing.as_ref() == Some(&transaction_id.to_string()) {
+            let sequence = sync_state.current_sequence;
+
+            // Add ourselves to confirmed nodes
+            sync_state.confirmed_nodes.insert(self.node_id.clone());
+            let confirmed_count = sync_state.confirmed_nodes.len();
+
+            info!(
+                "✅ [NETWORK_SEQUENCER] [COMPLETE] Marked tx_id={} as completed locally (sequence={}, confirmed: {}/{})",
+                transaction_id, sequence, confirmed_count, sync_state.total_nodes
+            );
+
+            drop(sync_state);
+
+            // Broadcast completion confirmation
+            if let Some(message_tx) = &self.message_tx {
+                let broadcast_data = serde_json::to_vec(&crate::types::GossipsubMessage::NetworkTransactionSequencerSync {
+                    transaction_id: transaction_id.to_string(),
+                    sequence,
+                    node_id: self.node_id.clone(),
+                    state: "completed".to_string(),
+                })?;
+
+                message_tx
+                    .send(crate::types::ChannelMessage::Broadcast {
+                        topic: crate::network::transport::types::TOPIC_NETWORK_TRANSACTION_SEQUENCER_SYNC.to_string(),
+                        data: broadcast_data,
+                    })
+                    .await?;
+
+                info!(
+                    "📤 [NETWORK_SEQUENCER] [COMPLETE] Broadcasted completion confirmation for tx_id={}",
+                    transaction_id
+                );
+            }
+
+            // Check if we should clear state (all nodes confirmed)
+            let mut sync_state = self.sync_state.write().await;
+            if sync_state.confirmed_nodes.len() >= sync_state.total_nodes {
+                let completed_tx = sync_state.current_processing.clone();
+                sync_state.current_processing = None;
+                sync_state.agreed_nodes.clear();
+                sync_state.confirmed_nodes.clear();
+                sync_state.is_confirmed = false;
+
+                // Clear the cached request
+                drop(sync_state);
+                let mut cache = self.current_request_cache.write().await;
+                if let Some(cached_request) = cache.as_ref() {
+                    if let Some(ref completed_tx_id) = completed_tx {
+                        if cached_request.transaction_id == *completed_tx_id {
+                            *cache = None;
+                            info!(
+                                "🎉 [NETWORK_SEQUENCER] [COMPLETE] ALL nodes confirmed tx_id={}! State and cache cleared, ready for next transaction.",
+                                completed_tx_id
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Cache the request for the current processing transaction
+    pub async fn cache_current_request(&self, request: NetworkTransactionRequest) {
+        let mut cache = self.current_request_cache.write().await;
+        *cache = Some(request);
+        info!("💾 [NETWORK_SEQUENCER] Cached request for current processing transaction");
+    }
+
+    /// Handle sequencer sync message from another node
+    pub async fn handle_sync_message(&self, transaction_id: String, sequence: u64, node_id: String, state: String) {
+        let mut sync_state = self.sync_state.write().await;
+
+        info!(
+            "📨 [NETWORK_SEQUENCER] [SYNC] Received sync message: node={}, tx_id={}, sequence={}, state={}, current_tx={:?}",
+            node_id, transaction_id, sequence, state, sync_state.current_processing
+        );
+
+        // If this is a "proposed" message, add the node to agreed nodes
+        if state == "proposed" || state == "processing" {
+            let should_agree = if sync_state.current_processing.as_ref() == Some(&transaction_id) {
+                true
+            } else if sync_state.current_processing.is_none() {
+                // We haven't proposed anything yet - check if we have this transaction in our queue
+                drop(sync_state);
+                let mut pending = self.pending_requests.write().await;
+                if let Some(request) = pending.remove(&transaction_id) {
+                    drop(pending);
+
+                    // Cache the request immediately
+                    let mut cache = self.current_request_cache.write().await;
+                    *cache = Some(request.clone());
+                    let cached_tx_id = request.transaction_id.clone();
+                    drop(cache);
+
+                    info!(
+                        "🔄 [NETWORK_SEQUENCER] [SYNC] We have tx_id={} in queue but haven't proposed yet. Setting as current_processing and agreeing.",
+                        transaction_id
+                    );
+
+                    sync_state = self.sync_state.write().await;
+                    sync_state.current_processing = Some(transaction_id.clone());
+                    sync_state.current_sequence = sequence;
+                    sync_state.confirmed_nodes.clear();
+                    sync_state.is_confirmed = false;
+                    sync_state.agreed_nodes.insert(self.node_id.clone());
+
+                    info!(
+                        "💾 [NETWORK_SEQUENCER] [SYNC] Cached request for tx_id={} (cached_tx_id={}) after agreeing to proposal",
+                        transaction_id, cached_tx_id
+                    );
+
+                    true
+                } else {
+                    drop(pending);
+                    sync_state = self.sync_state.write().await;
+                    warn!(
+                        "⚠️ [NETWORK_SEQUENCER] [SYNC] Received 'proposed' message for tx_id={} but don't have it in queue. This node will not agree.",
+                        transaction_id
+                    );
+                    false
+                }
+            } else {
+                false
+            };
+
+            if should_agree {
+                let node_id_clone = node_id.clone();
+                let was_new = sync_state.agreed_nodes.insert(node_id);
+                if was_new {
+                    info!(
+                        "✅ [NETWORK_SEQUENCER] [SYNC] Node {} agreed to process tx_id={} (agreed: {}/{}, threshold: {})",
+                        node_id_clone,
+                        transaction_id,
+                        sync_state.agreed_nodes.len(),
+                        sync_state.total_nodes,
+                        (sync_state.total_nodes / 2) + 1
+                    );
+                }
+            }
+        } else if state == "completed" {
+            // Track which nodes have confirmed completion
+            if sync_state.current_processing.as_ref() == Some(&transaction_id) {
+                let node_id_clone = node_id.clone();
+                let was_new = sync_state.confirmed_nodes.insert(node_id);
+                let confirmed_count = sync_state.confirmed_nodes.len();
+
+                if was_new {
+                    info!(
+                        "✅ [NETWORK_SEQUENCER] [SYNC] Node {} confirmed completion of tx_id={} (confirmed: {}/{})",
+                        node_id_clone, transaction_id, confirmed_count, sync_state.total_nodes
+                    );
+
+                    // Check if all nodes have confirmed
+                    if confirmed_count >= sync_state.total_nodes {
+                        sync_state.is_confirmed = true;
+                        sync_state.current_processing = None;
+                        sync_state.agreed_nodes.clear();
+                        sync_state.confirmed_nodes.clear();
+                        sync_state.is_confirmed = false;
+
+                        // Clear the cached request
+                        drop(sync_state);
+                        let mut cache = self.current_request_cache.write().await;
+                        if let Some(cached_request) = cache.as_ref() {
+                            if cached_request.transaction_id == transaction_id {
+                                *cache = None;
+                                info!(
+                                    "🎉 [NETWORK_SEQUENCER] [SYNC] ALL nodes confirmed completion of tx_id={}! State and cache cleared, ready for next transaction.",
+                                    transaction_id
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Update total nodes count (for consensus threshold)
+    pub async fn update_total_nodes(&self, total_nodes: usize) {
+        let mut sync_state = self.sync_state.write().await;
+        let old_total = sync_state.total_nodes;
+        sync_state.total_nodes = total_nodes;
+        info!(
+            "🔄 [NETWORK_SEQUENCER] [CONFIG] Updated total nodes: {} -> {} (consensus threshold: {})",
+            old_total,
+            total_nodes,
+            (total_nodes / 2) + 1
+        );
+    }
+}
+

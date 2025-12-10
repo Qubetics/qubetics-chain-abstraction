@@ -1702,6 +1702,26 @@ impl MpcNetworkLayer {
                                             None
                                         }
                                     };
+
+                                    // For NetworkToTarget, queue to sequencer for coordinated signing
+                                    if matches!(transaction_type, crate::types::TransactionType::NetworkToTarget) {
+                                        info!(
+                                            "📝 [LOCAL] NetworkToTarget (EVM) detected - queuing via network transaction sequencer (intent_hash={})",
+                                            intent_hash
+                                        );
+                                        self.submit_network_to_target_to_sequencer(
+                                            &intent,
+                                            &intent_hash,
+                                            amount,
+                                            tx_bytes.clone(),
+                                            eth_tx.clone(),
+                                            user_tweaked_share,
+                                            user_eth_address.clone(),
+                                        )
+                                        .await?;
+                                        return Ok(());
+                                    }
+
                                     {
                                         let mut eth_signer = EthereumSigner::new(signing_node);
                                         eth_signer

@@ -14,7 +14,7 @@ use crate::commands::CommandProcessor;
 use crate::consensus::ConsensusNode;
 use crate::database::Database;
 use crate::network::discovery::types::{DatabaseSyncState, PeerDiscoveryState};
-use crate::network::sequencer::ContractTransactionSequencer;
+use crate::network::sequencer::{ContractTransactionSequencer, NetworkTransactionSequencer};
 use crate::node_selection::NodeMembership;
 use crate::protocols::DKGNode;
 use crate::signing::{DatabaseSigningNode, SigningNode};
@@ -77,6 +77,7 @@ pub const TOPIC_CONSENSUS_RESULT: &str = "consensus-result";
 pub const TOPIC_TRANSACTION_ERROR_SYNC: &str = "transaction-error-sync";
 pub const TOPIC_LEGACY_DKG: &str = "dkg";
 pub const TOPIC_SEQUENCER_SYNC: &str = "sequencer-sync";
+pub const TOPIC_NETWORK_TRANSACTION_SEQUENCER_SYNC: &str = "network-transaction-sequencer-sync";
 
 /// Typed view of the gossipsub topics this MPC node participates in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -102,6 +103,7 @@ pub enum GossipTopic {
     TransactionErrorSync,
     LegacyDkg,
     SequencerSync,
+    NetworkTransactionSequencerSync,
 }
 
 impl GossipTopic {
@@ -127,6 +129,7 @@ impl GossipTopic {
         GossipTopic::TransactionErrorSync,
         GossipTopic::LegacyDkg,
         GossipTopic::SequencerSync,
+        GossipTopic::NetworkTransactionSequencerSync,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -152,6 +155,7 @@ impl GossipTopic {
             GossipTopic::TransactionErrorSync => TOPIC_TRANSACTION_ERROR_SYNC,
             GossipTopic::LegacyDkg => TOPIC_LEGACY_DKG,
             GossipTopic::SequencerSync => TOPIC_SEQUENCER_SYNC,
+            GossipTopic::NetworkTransactionSequencerSync => TOPIC_NETWORK_TRANSACTION_SEQUENCER_SYNC,
         }
     }
 }
@@ -185,6 +189,9 @@ pub struct MpcNetworkLayer {
     /// Mutex to ensure only one contract transaction is processed at a time
     /// This prevents parallel processing even if multiple requests are queued
     pub(crate) contract_processing_lock: Arc<Mutex<()>>,
+    pub(crate) network_transaction_sequencer: Option<NetworkTransactionSequencer>,
+    /// Mutex to ensure only one network transaction is processed at a time
+    pub(crate) network_transaction_processing_lock: Arc<Mutex<()>>,
 }
 
 impl MpcNetworkLayer {

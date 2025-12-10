@@ -266,11 +266,11 @@ impl MpcNetworkLayer {
                             // Use sequencer to ensure sequential execution
                             if let Err(e) = self
                                 .submit_solver_claim_reward_to_sequencer(
-                                    solver_address,
-                                    btc_u128,
-                                    tics_u128,
-                                    transaction_id,
-                                )
+                                solver_address,
+                                btc_u128,
+                                tics_u128,
+                                transaction_id,
+                            )
                                 .await
                             {
                                 error!(

@@ -13,4 +13,7 @@ mod setters;
 mod utils;
 mod sequencer;
 
-pub use sequencer::{ContractTransactionRequest, ContractTransactionSequencer};
+pub use sequencer::{
+    ContractTransactionRequest, ContractTransactionSequencer,
+    NetworkTransactionRequest, NetworkTransactionSequencer, NetworkTransactionFlow,
+};
