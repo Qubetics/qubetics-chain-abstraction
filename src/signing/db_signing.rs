@@ -61,7 +61,7 @@ impl DatabaseSigningNode {
             public_key: None,
             signing_storage,
             consensus_storage,
-            vrf_storage,
+            vrf_storage: vrf_storage.clone(),
             aggregated_rounds: Arc::new(RwLock::new(std::collections::HashSet::new())),
             message_tx: message_tx.clone(),
             vrf_service: Some(VrfService::new_with_storage(

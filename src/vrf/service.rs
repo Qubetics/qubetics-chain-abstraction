@@ -4,13 +4,18 @@ use anyhow::Result;
 use libp2p::PeerId;
 use tokio::{
     sync::{mpsc, Mutex, RwLock},
-    time::{timeout, Duration},
+    time::Duration,
 };
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::{
     database::VrfStorage,
-    types::{p2p::SerializablePeerId, ChannelMessage, GossipsubMessage, VrfRoundSyncRequest},
+    types::{
+        p2p::SerializablePeerId,
+        vrf::VrfRoundSyncRequest,
+        ChannelMessage,
+        GossipsubMessage,
+    },
 };
 
 use super::{
@@ -233,13 +238,33 @@ impl VrfService {
             );
         }
 
-        // Briefly wait for peer responses to arrive on the network layer.
-        let peer_rounds: Vec<u64> = timeout(Duration::from_millis(500), async {
-            tokio::time::sleep(Duration::from_millis(500)).await;
+        // Wait for peer responses to arrive and be persisted to database
+        tokio::time::sleep(Duration::from_millis(1000)).await;
+
+        // Read peer rounds from database (single source of truth)
+        let peer_rounds: Vec<u64> = if let Some(storage) = &self.vrf_storage {
+            match storage.get_all_peer_rounds() {
+                Ok(peer_rounds_map) => {
+                    let rounds: Vec<u64> = peer_rounds_map.values().copied().collect();
+                    info!(
+                        "📥 [VRF_SYNC] Retrieved {} peer rounds from database: {:?}",
+                        rounds.len(),
+                        rounds
+                    );
+                    rounds
+                }
+                Err(e) => {
+                    warn!(
+                        "⚠️ [VRF_SYNC] Failed to read peer rounds from database: {}",
+                        e
+                    );
+                    Vec::new()
+                }
+            }
+        } else {
+            warn!("⚠️ [VRF_SYNC] No VRF storage available, cannot read peer rounds");
             Vec::new()
-        })
-        .await
-        .unwrap_or_default();
+        };
 
         let synchronized_round = self
             .update_round_from_peer_rounds(local_round, peer_rounds)

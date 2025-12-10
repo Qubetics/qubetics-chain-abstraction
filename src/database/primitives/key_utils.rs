@@ -165,3 +165,7 @@ pub fn peer_index_key(peer_id: &str) -> String {
 pub fn vrf_current_round_key() -> String {
     keys::VRF_CURRENT_ROUND.to_string()
 }
+
+pub fn vrf_peer_round_key(peer_id: &str) -> String {
+    format!("{}{}", keys::VRF_PEER_ROUND, peer_id)
+}

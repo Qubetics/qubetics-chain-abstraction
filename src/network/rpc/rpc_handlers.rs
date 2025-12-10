@@ -5,6 +5,7 @@ use libp2p::PeerId;
 use tracing::{error, info, warn};
 
 use crate::database::key_utils;
+use crate::database::VrfStorage;
 use crate::protocols::DKGStatus;
 use crate::types::p2p::SerializablePeerId;
 use crate::types::rpc::{RPCRequest, RPCResponse};
@@ -64,7 +65,7 @@ impl MpcNetworkLayer {
         }
     }
 
-    async fn get_local_vrf_round(&self) -> Option<u64> {
+    pub(crate) async fn get_local_vrf_round(&self) -> Option<u64> {
         // Check signing_node first
         if let Some(signing_node) = &self.signing_node {
             if let Some(vrf_service) = signing_node.vrf_service() {
@@ -107,8 +108,19 @@ impl MpcNetworkLayer {
         };
 
         if Self::is_vrf_round_within_range(reference_round, round) {
+            // Store in memory (for backward compatibility)
             self.peer_rounds.insert(peer, round);
-            info!("💾 [VRF_SYNC] Stored VRF round {} for peer {}", round, peer);
+            
+            // Persist to database as single source of truth
+            let vrf_storage = VrfStorage::new(self.db.clone());
+            if let Err(e) = vrf_storage.set_peer_round(&peer.to_string(), round) {
+                warn!(
+                    "⚠️ [VRF_SYNC] Failed to persist peer round {} for {} to DB: {}",
+                    round, peer, e
+                );
+            } else {
+                info!("💾 [VRF_SYNC] Stored VRF round {} for peer {} (DB)", round, peer);
+            }
             true
         } else {
             warn!(

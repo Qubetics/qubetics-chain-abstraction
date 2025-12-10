@@ -38,7 +38,7 @@ use secp256k1::{constants::CURVE_ORDER, ecdsa::RecoveryId};
 
 use crate::chain_abstraction::{ChainHandler, ChainTransaction};
 use crate::protocols::{VrfSelectedNodesBroadcast, VrfService};
-use crate::types::{p2p::SerializablePeerId, ChannelMessage, ConsensusMessage, ConsensusResult};
+use crate::types::{p2p::SerializablePeerId, ChannelMessage, ConsensusMessage, ConsensusResult, SpendKind};
 use crate::user_intent_manager::UserIntentManager;
 use anyhow::bail;
 use num_traits::Zero;

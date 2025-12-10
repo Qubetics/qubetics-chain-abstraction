@@ -299,7 +299,7 @@ async function runTests() {
   log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
   const amount = 26000000000000000000
   await testUserMpcDeposit({ wallet, amount });
-  log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
+  // log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
   // const amount = 13000000000000000000
   // await testUserMpcDeposit({ wallet, amount });
 
