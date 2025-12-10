@@ -496,9 +496,6 @@ impl DkgStorage {
         // Clear expected shares
         self.db.delete_string(keys::DKG_EXPECTED_SHARES)?;
         
-        // Clear round start time
-        self.db.delete_string(keys::DKG_ROUND_START_TIME)?;
-
         info!("🗑️ [DKG_STORAGE] Cleared share tracking data");
         Ok(())
     }
@@ -511,20 +508,5 @@ impl DkgStorage {
             .get_string::<Vec<SerializablePoint>>(&key)?
             .map(|ser_vec| ser_vec.into_iter().map(|p| p.0).collect());
         Ok(result)
-    }
-
-    /// Set the round start timestamp (for timeout detection)
-    pub async fn set_round_start_time(&self, timestamp_ms: u64) -> Result<()> {
-        self.db.put_string(keys::DKG_ROUND_START_TIME, &timestamp_ms)?;
-        info!(
-            "⏱️ [DKG_STORAGE] Set round start time: {}",
-            timestamp_ms
-        );
-        Ok(())
-    }
-
-    /// Get the round start timestamp
-    pub async fn get_round_start_time(&self) -> Result<Option<u64>> {
-        Ok(self.db.get_string::<u64>(keys::DKG_ROUND_START_TIME)?)
     }
 }

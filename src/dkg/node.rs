@@ -289,9 +289,6 @@ impl DKGNode {
                 return Err(anyhow!("Cannot determine own peer index"));
             }
         };
-        info!("My index :{:?}", my_index);
-        info!("Share index :{:?}", share_index);
-
         // Verify the share is intended for us
         if share_index != my_index {
             warn!(
@@ -342,18 +339,6 @@ impl DKGNode {
             self.storage
                 .add_validation(&self.id, &from_node_id, true)
                 .await?;
-            info!("Validation after adding :{:?}", self.storage.get_all_validations().await?);
-            // Get progress for logging
-            let received = self.storage.get_received_shares().await.unwrap_or_default();
-            let expected = self.storage.get_expected_shares().await.unwrap_or_default();
-
-            info!(
-                "✅ [DKG-SECURE] Share index {} from {} verified and stored (received {}/{})",
-                share_index,
-                from_node_id,
-                received.len(),
-                expected.len()
-            );
 
 
             self.handle_share_validation(self.id.clone(), from_node_id.clone(), true, node_manager).await?;
@@ -403,32 +388,6 @@ impl DKGNode {
             Ok(false)
         }
     }
-
-    /// Check for share timeout and log warning about missing shares
-    async fn check_share_timeout_warning(&self) {
-        const SHARE_TIMEOUT_MS: u64 = 30_000; // 30 seconds
-
-        if let Ok(Some(start_time)) = self.storage.get_round_start_time().await {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis() as u64)
-                .unwrap_or(0);
-
-            if now - start_time > SHARE_TIMEOUT_MS {
-                if let Ok(pending) = self.storage.get_pending_shares().await {
-                    if !pending.is_empty() {
-                        warn!(
-                            "⏰ [DKG-TIMEOUT] Still waiting for shares from {} nodes after {}ms: {:?}",
-                            pending.len(),
-                            now - start_time,
-                            pending
-                        );
-                    }
-                }
-            }
-        }
-    }
-
 
     // Debug function to log all current shares
     pub async fn log_all_shares(&self) {

@@ -272,6 +272,22 @@ impl DKGNode {
                 (node_manager.get_total_nodes()) * (node_manager.get_total_nodes()),
                 valid_validations
             );
+
+            let received = self.storage.get_received_shares().await.unwrap_or_default();
+            let expected = self.storage.get_expected_shares().await.unwrap_or_default();
+            
+            let received_set: std::collections::HashSet<_> = received.iter().collect();
+            let expected_set: std::collections::HashSet<_> = expected.iter().collect();
+            
+            if !expected.is_empty() && received_set != expected_set {
+                let pending = self.storage.get_pending_shares().await.unwrap_or_default();
+                warn!(
+                    "⚠️ [DKG] Received shares ({:?}) do not match expected shares ({:?}). Pending: {:?}",
+                    received, expected, pending
+                );
+                return Err(anyhow!("DKG failed: received shares do not match expected shares"));
+            }
+
             info!("🎉 [DKG] DKG completion criteria met! Generating final keys...");
             self.generate_group_key(node_manager).await?;
         } else {

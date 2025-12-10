@@ -45,14 +45,6 @@ impl DKGNode {
             all_peers.len(),
             all_peers
         );
-
-        // Set round start time for timeout detection
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
-        self.storage.set_round_start_time(now).await?;
-
         tokio::time::sleep(Duration::from_secs(1)).await;
 
         // Handle our own share locally first
@@ -70,7 +62,6 @@ impl DKGNode {
                     
                     // Self-validation
                     self.storage.add_validation(&self.id, &self.id, true).await?;
-                    info!("Validation before distribution :{:?}", self.storage.get_all_validations().await?);
 
                     // Broadcast validation
                     let validation_msg = ShareValidation {
@@ -82,14 +73,13 @@ impl DKGNode {
                     let gossip_wrapped = GossipsubMessage::DKG(validation_msg);
                     let msg_bytes = serde_json::to_vec(&gossip_wrapped)?;
                     self.broadcast(MSG_TOPIC_DKG, &msg_bytes).await?;
-                    info!("✅ [DKG] Own share processed and marked as received");
                 }
             }
         }
         
         self.distribute_shares_to_peers(shares, commitments.clone(), peer_indices).await?;
         
-        self.broadcast_commitments_only(commitments).await?;
+        self.broadcast_commitments(commitments).await?;
         
         Ok(())
     }
@@ -167,7 +157,7 @@ impl DKGNode {
     }
 
 
-    async fn broadcast_commitments_only(&self, commitments: Vec<SerializablePoint>) -> Result<()> {
+    async fn broadcast_commitments(&self, commitments: Vec<SerializablePoint>) -> Result<()> {
         let round = self.current_round();
         
         let dkg_msg = DKGMessage::CommitmentBroadcast {
