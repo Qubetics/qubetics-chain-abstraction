@@ -14,7 +14,7 @@ import crypto from 'crypto';
 import secp256k1 from 'secp256k1';
 import keccak from 'keccak';
 
-const RPC_BASE_URL = process.env.QUBETICS_RPC_URL ?? 'http://127.0.0.1:8082';
+const RPC_BASE_URL = process.env.QUBETICS_RPC_URL ?? 'http://127.0.0.1:8083';
 const ADD_ENDPOINT = `${RPC_BASE_URL}/add_liquidity`;
 
 const SOLVER_ID = process.env.SOLVER_ID ?? 'arpit1';

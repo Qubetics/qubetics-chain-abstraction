@@ -41,6 +41,13 @@ pub enum ContractTransactionFlow {
         amount: u128,
         payout_transaction_hash: String,
     },
+    /// Solver operation: Claim reward contract update
+    SolverClaimReward {
+        solver_address: String,
+        reward_btc: Option<u128>,
+        reward_tics: Option<u128>,
+        payout_transaction_hash: String,
+    },
 }
 
 /// Request to execute a contract transaction
@@ -175,6 +182,28 @@ impl ContractTransactionSequencer {
         format!("0x{}", hex::encode(hash))
     }
 
+    /// Generate a deterministic transaction ID for claim_reward contract updates
+    ///
+    /// Uses Keccak256 hash of solver, reward amounts, and payout tx hash to ensure
+    /// all nodes derive the same ID.
+    pub fn generate_transaction_id_for_claim_reward(
+        solver_address: &str,
+        reward_btc: Option<u128>,
+        reward_tics: Option<u128>,
+        payout_tx_hash: &str,
+    ) -> String {
+        let data = format!(
+            "claim_reward:{}:{}:{}:{}",
+            solver_address,
+            reward_btc.unwrap_or(0),
+            reward_tics.unwrap_or(0),
+            payout_tx_hash
+        );
+
+        let hash = Keccak256::digest(data.as_bytes());
+        format!("0x{}", hex::encode(hash))
+    }
+
     /// Initialize the sequencer with network components
     pub async fn initialize(&mut self, message_tx: mpsc::Sender<crate::types::ChannelMessage>, node_id: String, total_nodes: usize) {
         self.message_tx = Some(message_tx);
@@ -202,8 +231,11 @@ impl ContractTransactionSequencer {
             ContractTransactionFlow::SolverAddLiquidity { solver_address, asset_chain_name, amount, .. } => {
                 format!("solver_add_liquidity:{}:{}:{}", solver_address, asset_chain_name, amount)
             }
-            ContractTransactionFlow::SolverWithdrawLiquidity { solver_address, asset_chain_name, amount, payout_transaction_hash } => {
+            ContractTransactionFlow::SolverWithdrawLiquidity { solver_address, asset_chain_name, amount, payout_transaction_hash, .. } => {
                 format!("solver_withdraw_liquidity:{}:{}:{}:{}", solver_address, asset_chain_name, amount, payout_transaction_hash)
+            }
+            ContractTransactionFlow::SolverClaimReward { solver_address, reward_btc, reward_tics, payout_transaction_hash, .. } => {
+                format!("solver_claim_reward:{}:{}:{}:{}", solver_address, reward_btc.unwrap_or(0), reward_tics.unwrap_or(0), payout_transaction_hash)
             }
         };
         
@@ -365,16 +397,26 @@ impl ContractTransactionSequencer {
                 true
             } else if sync_state.current_processing.is_none() {
                 // We haven't proposed anything yet - check if we have this transaction in our queue
-                let pending = self.pending_requests.read().await;
-                let has_transaction = pending.contains_key(&transaction_id);
-                drop(pending);
-                
-                if has_transaction {
-                    // We have this transaction in our queue - set it as current_processing and agree
+                // CRITICAL: Get and remove the request atomically to prevent race conditions
+                // Drop sync_state lock first to avoid deadlock
+                drop(sync_state);
+                let mut pending = self.pending_requests.write().await;
+                if let Some(request) = pending.remove(&transaction_id) {
+                    // We found and removed the request - now set it as current_processing and agree
+                    drop(pending);
+                    
+                    // Cache the request immediately so we can retrieve it later
+                    let mut cache = self.current_request_cache.write().await;
+                    *cache = Some(request.clone());
+                    drop(cache);
+                    
                     info!(
                         "🔄 [SEQUENCER] [SYNC] We have tx_id={} in queue but haven't proposed yet. Setting as current_processing and agreeing.",
                         transaction_id
                     );
+                    
+                    // Re-acquire sync_state lock and update state
+                    sync_state = self.sync_state.write().await;
                     sync_state.current_processing = Some(transaction_id.clone());
                     sync_state.current_sequence = sequence;
                     // DON'T clear agreed_nodes here - other nodes may have already agreed!
@@ -383,8 +425,17 @@ impl ContractTransactionSequencer {
                     sync_state.is_confirmed = false;
                     // Add ourselves to agreed_nodes (don't clear it)
                     sync_state.agreed_nodes.insert(self.node_id.clone());
+                    
+                    info!(
+                        "💾 [SEQUENCER] [SYNC] Cached request for tx_id={} after agreeing to proposal",
+                        transaction_id
+                    );
+                    
                     true
                 } else {
+                    drop(pending);
+                    // Re-acquire sync_state lock
+                    sync_state = self.sync_state.write().await;
                     false
                 }
             } else {

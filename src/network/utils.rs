@@ -306,6 +306,71 @@ impl MpcNetworkLayer {
         }
     }
 
+    /// Submit a solver claim-reward contract update to the sequencer
+    pub(crate) async fn submit_solver_claim_reward_to_sequencer(
+        &mut self,
+        solver_address: &str,
+        reward_btc: Option<u128>,
+        reward_tics: Option<u128>,
+        payout_tx_hash: &str,
+    ) -> Result<()> {
+        use crate::network::sequencer::{ContractTransactionFlow, ContractTransactionRequest};
+
+        if reward_btc.is_none() && reward_tics.is_none() {
+            info!(
+                "⏭️ [NETWORK] Skipping claim-reward sequencing for solver {} (both rewards are None)",
+                solver_address
+            );
+            return Ok(());
+        }
+
+        if reward_btc.unwrap_or(0) == 0 && reward_tics.unwrap_or(0) == 0 {
+            info!(
+                "⏭️ [NETWORK] Skipping claim-reward sequencing for solver {} (both rewards are zero)",
+                solver_address
+            );
+            return Ok(());
+        }
+
+        // Initialize sequencer if not already initialized
+        if self.contract_sequencer.is_none() {
+            self.initialize_contract_sequencer().await;
+        }
+
+        if let Some(sequencer) = &self.contract_sequencer {
+            // Use payout_tx_hash directly as transaction_id for simplicity
+            let transaction_id = payout_tx_hash.to_string();
+
+            let request = ContractTransactionRequest {
+                flow: ContractTransactionFlow::SolverClaimReward {
+                    solver_address: solver_address.to_string(),
+                    reward_btc,
+                    reward_tics,
+                    payout_transaction_hash: payout_tx_hash.to_string(),
+                },
+                transaction_id: transaction_id.clone(),
+                sequence: 0, // will be set by sequencer.submit()
+            };
+
+            sequencer.submit(request).await?;
+            info!(
+                "📋 [NETWORK] Submitted solver claim-reward to sequencer: solver={}, btc={:?}, tics={:?}, payout_tx={}, tx_id={}",
+                solver_address, reward_btc, reward_tics, payout_tx_hash, transaction_id
+            );
+            Ok(())
+        } else {
+            warn!("❌ [NETWORK] Contract sequencer not available, falling back to direct execution");
+            self
+                .submit_solver_reward_contract_update(
+                    solver_address,
+                    reward_btc,
+                    reward_tics,
+                    payout_tx_hash,
+                )
+                .await
+        }
+    }
+
     /// Submit a contract transaction to the sequencer for sequential processing
     async fn submit_contract_transaction_to_sequencer(
         &mut self,
@@ -497,6 +562,37 @@ impl MpcNetworkLayer {
                 } else {
                     info!(
                         "✅ [SEQUENCER] Successfully executed solver withdraw-liquidity contract call for transaction ID {}",
+                        request.transaction_id
+                    );
+                }
+            }
+            ContractTransactionFlow::SolverClaimReward {
+                solver_address,
+                reward_btc,
+                reward_tics,
+                payout_transaction_hash,
+            } => {
+                info!(
+                    "📋 [SEQUENCER] Processing solver claim-reward contract update: solver={}, btc={:?}, tics={:?}, payout_tx={}, tx_id={}",
+                    solver_address, reward_btc, reward_tics, payout_transaction_hash, request.transaction_id
+                );
+
+                if let Err(e) = self
+                    .submit_solver_reward_contract_update(
+                        solver_address,
+                        *reward_btc,
+                        *reward_tics,
+                        payout_transaction_hash,
+                    )
+                    .await
+                {
+                    error!(
+                        "❌ [SEQUENCER] Failed to execute solver claim-reward contract call for transaction ID {}: {}",
+                        request.transaction_id, e
+                    );
+                } else {
+                    info!(
+                        "✅ [SEQUENCER] Successfully executed solver claim-reward contract call for transaction ID {}",
                         request.transaction_id
                     );
                 }

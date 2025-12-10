@@ -263,13 +263,21 @@ impl MpcNetworkLayer {
                         let tics_u128 = convert_amount(tics_amount);
 
                         if btc_u128.is_some() || tics_u128.is_some() {
-                            self.submit_solver_reward_contract_update(
-                                solver_address,
-                                btc_u128,
-                                tics_u128,
-                                transaction_id,
-                            )
-                            .await?;
+                            // Use sequencer to ensure sequential execution
+                            if let Err(e) = self
+                                .submit_solver_claim_reward_to_sequencer(
+                                    solver_address,
+                                    btc_u128,
+                                    tics_u128,
+                                    transaction_id,
+                                )
+                                .await
+                            {
+                                error!(
+                                    "❌ [NETWORK] Failed to enqueue claim-reward contract update for solver {} after tx {}: {}",
+                                    solver_address, transaction_id, e
+                                );
+                            }
                         }
                     }
                 }
