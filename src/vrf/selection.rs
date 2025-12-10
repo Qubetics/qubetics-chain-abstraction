@@ -1,7 +1,7 @@
 use libp2p::PeerId;
 use tokio::sync::mpsc;
 
-use crate::types::ChannelMessage;
+use crate::{database::VrfStorage, types::ChannelMessage};
 
 use super::{
     selector::VrfNodeSelector,
@@ -14,6 +14,14 @@ pub struct VrfSelectionFacade;
 impl VrfSelectionFacade {
     pub fn new_service(node_id: PeerId, message_tx: mpsc::Sender<ChannelMessage>) -> VrfService {
         VrfService::new(node_id, message_tx)
+    }
+
+    pub fn new_service_with_storage(
+        node_id: PeerId,
+        message_tx: mpsc::Sender<ChannelMessage>,
+        storage: VrfStorage,
+    ) -> VrfService {
+        VrfService::new_with_storage(node_id, message_tx, storage)
     }
 
     pub fn new_service_with_config(

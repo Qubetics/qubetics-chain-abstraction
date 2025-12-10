@@ -10,6 +10,7 @@ use super::{
     reward_storage::RewardStorage,
     signing_storage::SigningStorage,
     user_storage::{IntentStorage, TransactionStatusStorage, UserStorage},
+    vrf_storage::VrfStorage,
     Database, DatabaseConfig,
 };
 
@@ -31,6 +32,7 @@ struct DatabaseModuleInner {
     consensus_storage: ConsensusStorage,
     dkg_storage: DkgStorage,
     signing_storage: SigningStorage,
+    vrf_storage: VrfStorage,
 }
 
 impl DatabaseModule {
@@ -59,6 +61,7 @@ impl DatabaseModule {
         let consensus_storage = ConsensusStorage::new(database.clone());
         let dkg_storage = DkgStorage::new(database.clone());
         let signing_storage = SigningStorage::new(database.clone());
+        let vrf_storage = VrfStorage::new(database.clone());
 
         let inner = DatabaseModuleInner {
             config,
@@ -71,6 +74,7 @@ impl DatabaseModule {
             consensus_storage,
             dkg_storage,
             signing_storage,
+            vrf_storage,
         };
 
         debug!("🧩 [DATABASE_MODULE] Storages wired successfully");
@@ -119,5 +123,9 @@ impl DatabaseModule {
 
     pub fn signing_storage(&self) -> SigningStorage {
         self.inner.signing_storage.clone()
+    }
+
+    pub fn vrf_storage(&self) -> VrfStorage {
+        self.inner.vrf_storage.clone()
     }
 }
