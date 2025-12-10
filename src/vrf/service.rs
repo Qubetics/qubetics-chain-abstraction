@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use libp2p::PeerId;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{mpsc, Mutex, RwLock};
 use tracing::info;
 
 use crate::{
@@ -35,6 +35,7 @@ pub struct VrfService {
     message_tx: mpsc::Sender<ChannelMessage>,
     node_id: PeerId,
     current_round: Arc<RwLock<u64>>,
+    round_update_lock: Arc<Mutex<()>>,
     vrf_storage: Option<VrfStorage>,
     config: VrfServiceConfig,
 }
@@ -83,6 +84,7 @@ impl VrfService {
             message_tx,
             node_id,
             current_round: Arc::new(RwLock::new(initial_round)),
+            round_update_lock: Arc::new(Mutex::new(())),
             vrf_storage,
             config,
         }
@@ -175,16 +177,24 @@ impl VrfService {
     }
 
     pub async fn get_next_round(&self) -> u64 {
+        let _guard = self.round_update_lock.lock().await;
+
         let mut current = self.current_round.write().await;
         let round = *current;
         *current += 1;
+
         self.persist_current_round(*current).await;
+
         round
     }
 
     pub async fn get_current_round(&self) -> u64 {
         let current = self.current_round.read().await;
         *current
+    }
+
+    pub(crate) fn round_update_lock(&self) -> Arc<Mutex<()>> {
+        self.round_update_lock.clone()
     }
 
     pub async fn set_current_round(&mut self, round: u64) {
