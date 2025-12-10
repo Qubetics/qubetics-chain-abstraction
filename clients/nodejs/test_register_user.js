@@ -2,7 +2,22 @@
 
 import axios from 'axios';
 import { Wallet } from 'ethers';
-import { randomUUID } from 'crypto';
+import { randomBytes } from 'crypto';
+
+// Polyfill for randomUUID (Node.js v12 compatible)
+function randomUUID() {
+  const bytes = randomBytes(16);
+  bytes[6] = (bytes[6] & 0x0f) | 0x40; // Version 4
+  bytes[8] = (bytes[8] & 0x3f) | 0x80; // Variant 10
+  const hex = bytes.toString('hex');
+  return [
+    hex.slice(0, 8),
+    hex.slice(8, 12),
+    hex.slice(12, 16),
+    hex.slice(16, 20),
+    hex.slice(20, 32)
+  ].join('-');
+}
 
 // =========================
 // Configuration
@@ -58,7 +73,7 @@ async function testRegisterUser(ethereumAddress) {
   } catch (error) {
     if (error.response) {
       log(`❌ Registration failed with status ${error.response.status}:`, 'red');
-      log(`   Error: ${error.response.data?.message || error.response.statusText}`, 'red');
+      log(`   Error: ${(error.response.data && error.response.data.message) || error.response.statusText}`, 'red');
       if (error.response.data) {
         log(`   Full Error Response:`, 'red');
         console.log(JSON.stringify(error.response.data, null, 2));
@@ -98,10 +113,10 @@ async function testGetUserInfo(ethereumAddress) {
 
     return { success: true, data: response.data };
   } catch (error) {
-    if (error.response?.status === 404) {
+    if (error.response && error.response.status === 404) {
       log(`❌ User not found: ${ethereumAddress}`, 'yellow');
     } else if (error.response) {
-      log(`❌ Failed to get user info: ${error.response.data?.message || error.response.statusText}`, 'red');
+      log(`❌ Failed to get user info: ${(error.response.data && error.response.data.message) || error.response.statusText}`, 'red');
     } else {
       log(`❌ Error getting user info: ${error.message}`, 'red');
     }
@@ -249,7 +264,7 @@ async function testUserMpcDeposit({ wallet, amount, idempotencyKey }) {
         }
       } else {
         // Fallback for generic HTTP errors
-        log(`   Error: ${error.response.data?.message || error.response.statusText}`, 'red');
+        log(`   Error: ${(error.response.data && error.response.data.message) || error.response.statusText}`, 'red');
       }
 
       // Always show full response for debugging

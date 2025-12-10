@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -165,9 +166,76 @@ impl VrfService {
         broadcast: VrfSelectedNodesBroadcast,
         total_nodes: usize,
     ) {
-        let mut selector = self.selector.write().await;
         let round = broadcast.round;
 
+        // Check if we have our own selection for this round
+        let has_own_selection = {
+            let selector = self.selector.read().await;
+            selector.get_selection_result(round).is_some()
+        };
+
+        // If we don't have our own selection, trigger one for this specific round
+        if !has_own_selection {
+            warn!(
+                "⚠️ [VRF] Node {} doesn't have selection for round {}, triggering selection...",
+                self.node_id, round
+            );
+
+            // Infer available nodes from the broadcast and received selections
+            let available_nodes = {
+                let selector = self.selector.read().await;
+                let mut nodes: HashSet<PeerId> = HashSet::new();
+
+                // Add ourselves
+                nodes.insert(self.node_id);
+
+                // Add the broadcaster
+                nodes.insert(broadcast.selector_node_id.0);
+
+                // Add all nodes from received selections for this round
+                let received_broadcasts = selector.get_received_selections_for_round(round);
+                for broadcast_msg in received_broadcasts {
+                    nodes.insert(broadcast_msg.selector_node_id.0);
+                }
+
+                // Add selected nodes from the broadcast as potential candidates
+                for selected_node in &broadcast.selected_nodes {
+                    nodes.insert(selected_node.0);
+                }
+
+                let mut node_vec: Vec<PeerId> = nodes.into_iter().collect();
+                node_vec.sort(); // Sort for determinism
+                node_vec
+            };
+
+            if !available_nodes.is_empty() && available_nodes.len() >= 2 {
+                // Use a reasonable threshold (typically 3 for 4 nodes, or 2/3 of available)
+                let threshold = std::cmp::min(
+                    std::cmp::max(3, (available_nodes.len() * 2) / 3),
+                    available_nodes.len()
+                );
+
+                info!(
+                    "🔄 [VRF] Auto-triggering selection for round {} with {} available nodes (threshold: {})",
+                    round, available_nodes.len(), threshold
+                );
+
+                // Trigger selection for this specific round
+                if let Err(e) = self.trigger_selection_for_round(&available_nodes, threshold, round).await {
+                    warn!(
+                        "⚠️ [VRF] Failed to trigger selection for round {}: {}",
+                        round, e
+                    );
+                }
+            } else {
+                warn!(
+                    "⚠️ [VRF] Cannot trigger selection for round {}: insufficient nodes (have {}, need at least 2)",
+                    round, available_nodes.len()
+                );
+            }
+        }
+
+        let mut selector = self.selector.write().await;
         selector.handle_selected_nodes_broadcast(broadcast, total_nodes);
 
         let min_selections = total_nodes;
@@ -177,6 +245,53 @@ impl VrfService {
                 round
             );
         }
+    }
+
+    /// Trigger VRF selection for a specific round
+    async fn trigger_selection_for_round(
+        &self,
+        available_nodes: &[PeerId],
+        threshold: usize,
+        round: u64,
+    ) -> Result<()> {
+        let mut selector = self.selector.write().await;
+        
+        // Ensure local submission for this round
+        selector.ensure_local_submission(round);
+        
+        // Perform selection for this specific round
+        let selection_result = selector.select_mpc_nodes(
+            available_nodes,
+            threshold,
+            round,
+            self.config.allow_synthetic_submissions,
+        )?;
+
+        info!(
+            "✅ [VRF] Successfully created selection for round {}: {} nodes selected",
+            round,
+            selection_result.selected_nodes.len()
+        );
+
+        // Create and broadcast the selection
+        if let Some(broadcast_msg) = selector.create_selected_nodes_broadcast(round) {
+            let broadcast_data =
+                serde_json::to_vec(&GossipsubMessage::VrfSelectedNodes(broadcast_msg))?;
+
+            self.message_tx
+                .send(ChannelMessage::Broadcast {
+                    topic: "vrf-selection".to_string(),
+                    data: broadcast_data,
+                })
+                .await?;
+
+            info!(
+                "📤 [VRF] Broadcasted selection for round {} after auto-trigger",
+                round
+            );
+        }
+
+        Ok(())
     }
 
     pub async fn can_start_consensus(&self, round: u64, min_selections: usize) -> bool {
