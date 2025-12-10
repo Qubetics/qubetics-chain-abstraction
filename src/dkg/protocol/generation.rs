@@ -9,6 +9,8 @@ use rand::rngs::OsRng;
 use std::collections::HashMap;
 use tokio::time::Duration;
 use tracing::{info, warn};
+use crate::DKGMessage::ShareValidation;
+
 
 impl DKGNode {
     pub async fn start_dkg(&mut self, _node_manager: Box<dyn NodeMembership>) -> Result<()> {
@@ -69,6 +71,17 @@ impl DKGNode {
                     // Self-validation
                     self.storage.add_validation(&self.id, &self.id, true).await?;
                     info!("Validation before distribution :{:?}", self.storage.get_all_validations().await?);
+
+                    // Broadcast validation
+                    let validation_msg = ShareValidation {
+                        from: self.id.clone(),
+                        to: self.id.clone(),
+                        is_valid: true,
+                        round: self.current_round(),
+                    };
+                    let gossip_wrapped = GossipsubMessage::DKG(validation_msg);
+                    let msg_bytes = serde_json::to_vec(&gossip_wrapped)?;
+                    self.broadcast(MSG_TOPIC_DKG, &msg_bytes).await?;
                     info!("✅ [DKG] Own share processed and marked as received");
                 }
             }
