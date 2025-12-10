@@ -2,12 +2,15 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use libp2p::PeerId;
-use tokio::sync::{mpsc, Mutex, RwLock};
+use tokio::{
+    sync::{mpsc, Mutex, RwLock},
+    time::{timeout, Duration},
+};
 use tracing::info;
 
 use crate::{
     database::VrfStorage,
-    types::{p2p::SerializablePeerId, ChannelMessage, GossipsubMessage},
+    types::{p2p::SerializablePeerId, ChannelMessage, GossipsubMessage, VrfRoundSyncRequest},
 };
 
 use super::{
@@ -191,6 +194,65 @@ impl VrfService {
     pub async fn get_current_round(&self) -> u64 {
         let current = self.current_round.read().await;
         *current
+    }
+
+    /// Synchronize the VRF round with peers before producing a signing round.
+    pub async fn sync_rounds_before_signing(&self) -> Result<u64> {
+        let _guard = self.round_update_lock.lock().await;
+
+        let local_round = {
+            let current = self.current_round.read().await;
+            *current
+        };
+
+        // Gather candidate peers to query for their VRF round.
+        let peer_candidates = {
+            let selector = self.selector.read().await;
+            selector.get_all_selected_nodes_for_round(local_round)
+        };
+
+        // Send round sync requests to peers through the VRF/consensus channel.
+        let sync_request = VrfRoundSyncRequest {
+            from: SerializablePeerId(self.node_id),
+            current_round: Some(local_round),
+        };
+        let request_bytes = serde_json::to_vec(&sync_request)?;
+
+        if !peer_candidates.is_empty() {
+            self.message_tx
+                .send(ChannelMessage::Broadcast {
+                    topic: "vrf-round-sync".to_string(),
+                    data: request_bytes,
+                })
+                .await?;
+
+            info!(
+                "📡 [VRF_SYNC] Sent round sync request for round {} to {} peers",
+                local_round,
+                peer_candidates.len()
+            );
+        }
+
+        // Briefly wait for peer responses to arrive on the network layer.
+        let mut peer_rounds: Vec<u64> = Vec::new();
+        let _ = timeout(Duration::from_millis(500), async {}).await;
+
+        let max_peer_round = peer_rounds.into_iter().max();
+        let synchronized_round = max_peer_round
+            .map(|peer_round| peer_round.max(local_round))
+            .unwrap_or(local_round);
+
+        if synchronized_round > local_round {
+            let mut current = self.current_round.write().await;
+            *current = synchronized_round;
+            self.persist_current_round(synchronized_round).await;
+            info!(
+                "🔄 [VRF_SYNC] Updated local round to synchronized round {}",
+                synchronized_round
+            );
+        }
+
+        Ok(synchronized_round)
     }
 
     pub(crate) fn round_update_lock(&self) -> Arc<Mutex<()>> {
