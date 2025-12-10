@@ -241,6 +241,27 @@ impl VrfService {
         .await
         .unwrap_or_default();
 
+        let synchronized_round = self
+            .update_round_from_peer_rounds(local_round, peer_rounds)
+            .await;
+
+        Ok(synchronized_round)
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn sync_rounds_with_mocked_peers(&self, peer_rounds: Vec<u64>) -> u64 {
+        let _guard = self.round_update_lock.lock().await;
+
+        let local_round = {
+            let current = self.current_round.read().await;
+            *current
+        };
+
+        self.update_round_from_peer_rounds(local_round, peer_rounds)
+            .await
+    }
+
+    async fn update_round_from_peer_rounds(&self, local_round: u64, peer_rounds: Vec<u64>) -> u64 {
         let synchronized_round = peer_rounds
             .into_iter()
             .chain(std::iter::once(local_round))
@@ -257,7 +278,7 @@ impl VrfService {
             );
         }
 
-        Ok(synchronized_round)
+        synchronized_round
     }
 
     pub(crate) fn round_update_lock(&self) -> Arc<Mutex<()>> {
@@ -321,6 +342,9 @@ mod tests {
     use crate::database::{Database, DatabaseConfig, VrfStorage};
     use libp2p::{identity::Keypair, PeerId};
     use tempfile::TempDir;
+    use tokio::sync::Barrier;
+
+    use futures::future::join_all;
 
     fn create_database() -> (Database, TempDir) {
         let temp_dir = tempfile::tempdir().unwrap();
@@ -376,5 +400,99 @@ mod tests {
 
         let _ = service.get_next_round().await;
         assert_eq!(storage.get_current_round().unwrap(), 4);
+    }
+
+    #[tokio::test]
+    async fn concurrent_sync_rounds_do_not_advance() {
+        let (db, _temp_dir) = create_database();
+        let storage = VrfStorage::new(db);
+        storage.set_current_round(2).unwrap();
+
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+        let peer_id = random_peer_id();
+        let service = VrfService::new_with_storage(peer_id, tx, storage.clone());
+
+        let task_count = 8;
+        let barrier = Arc::new(Barrier::new(task_count));
+
+        let handles: Vec<_> = (0..task_count)
+            .map(|_| {
+                let svc = service.clone();
+                let barrier = barrier.clone();
+                tokio::spawn(async move {
+                    barrier.wait().await;
+                    svc.sync_rounds_before_signing().await.unwrap();
+                    svc.get_current_round().await
+                })
+            })
+            .collect();
+
+        let rounds = join_all(handles)
+            .await
+            .into_iter()
+            .map(|res| res.unwrap())
+            .collect::<Vec<_>>();
+
+        assert!(rounds.iter().all(|round| *round == 2));
+        assert_eq!(service.get_current_round().await, 2);
+        assert_eq!(storage.get_current_round().unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn concurrent_round_advancement_is_serialized() {
+        let (db, _temp_dir) = create_database();
+        let storage = VrfStorage::new(db);
+        let (tx, _rx) = tokio::sync::mpsc::channel(16);
+        let peer_id = random_peer_id();
+        let service = VrfService::new_with_storage(peer_id, tx, storage.clone());
+
+        let task_count = 6;
+        let barrier = Arc::new(Barrier::new(task_count));
+
+        let handles: Vec<_> = (0..task_count)
+            .map(|_| {
+                let svc = service.clone();
+                let barrier = barrier.clone();
+                tokio::spawn(async move {
+                    barrier.wait().await;
+                    svc.sync_rounds_before_signing().await.unwrap();
+                    svc.get_next_round().await
+                })
+            })
+            .collect();
+
+        let mut next_rounds = join_all(handles)
+            .await
+            .into_iter()
+            .map(|res| res.unwrap())
+            .collect::<Vec<_>>();
+
+        next_rounds.sort_unstable();
+
+        let expected: Vec<u64> = (0..task_count as u64).collect();
+        assert_eq!(next_rounds, expected);
+        assert_eq!(service.get_current_round().await, task_count as u64);
+        assert_eq!(storage.get_current_round().unwrap(), task_count as u64);
+    }
+
+    #[tokio::test]
+    async fn syncing_with_peer_rounds_only_moves_forward() {
+        let (db, _temp_dir) = create_database();
+        let storage = VrfStorage::new(db);
+        storage.set_current_round(3).unwrap();
+
+        let (tx, _rx) = tokio::sync::mpsc::channel(4);
+        let peer_id = random_peer_id();
+        let service = VrfService::new_with_storage(peer_id, tx, storage.clone());
+
+        let synchronized = service.sync_rounds_with_mocked_peers(vec![5, 4]).await;
+        assert_eq!(synchronized, 5);
+        assert_eq!(service.get_current_round().await, 5);
+        assert_eq!(storage.get_current_round().unwrap(), 5);
+
+        let synchronized = service.sync_rounds_with_mocked_peers(vec![2, 1]).await;
+        assert_eq!(synchronized, 5);
+        assert_eq!(service.get_current_round().await, 5);
+        assert_eq!(storage.get_current_round().unwrap(), 5);
     }
 }
