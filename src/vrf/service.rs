@@ -221,7 +221,7 @@ impl VrfService {
         if !peer_candidates.is_empty() {
             self.message_tx
                 .send(ChannelMessage::Broadcast {
-                    topic: "vrf-round-sync".to_string(),
+                    topic: crate::network::transport::types::TOPIC_CONSENSUS.to_string(),
                     data: request_bytes,
                 })
                 .await?;
@@ -234,12 +234,17 @@ impl VrfService {
         }
 
         // Briefly wait for peer responses to arrive on the network layer.
-        let mut peer_rounds: Vec<u64> = Vec::new();
-        let _ = timeout(Duration::from_millis(500), async {}).await;
+        let peer_rounds: Vec<u64> = timeout(Duration::from_millis(500), async {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            Vec::new()
+        })
+        .await
+        .unwrap_or_default();
 
-        let max_peer_round = peer_rounds.into_iter().max();
-        let synchronized_round = max_peer_round
-            .map(|peer_round| peer_round.max(local_round))
+        let synchronized_round = peer_rounds
+            .into_iter()
+            .chain(std::iter::once(local_round))
+            .max()
             .unwrap_or(local_round);
 
         if synchronized_round > local_round {
