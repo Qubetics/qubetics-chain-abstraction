@@ -10,7 +10,7 @@ use tracing::info;
 use super::ECDSASignature;
 use crate::chain_abstraction::{ChainHandler, ChainHandlerFactory, ChainTransaction};
 use crate::consensus::ConsensusNode;
-use crate::database::{ConsensusStorage, Database, SigningStorage};
+use crate::database::{ConsensusStorage, Database, SigningStorage, VrfStorage};
 use crate::protocols::VrfService;
 use crate::types::ChannelMessage;
 
@@ -23,6 +23,7 @@ pub struct DatabaseSigningNode {
     public_key: Option<PublicKey>,
     signing_storage: SigningStorage,
     consensus_storage: ConsensusStorage,
+    vrf_storage: VrfStorage,
     aggregated_rounds: Arc<RwLock<std::collections::HashSet<u64>>>, // Keep in memory for performance
     message_tx: mpsc::Sender<ChannelMessage>,
     pub vrf_service: Option<VrfService>,
@@ -50,7 +51,8 @@ impl DatabaseSigningNode {
         let chain_handler: Arc<dyn ChainHandler> = chain_handler.into();
 
         let signing_storage = SigningStorage::new(database.clone());
-        let consensus_storage = ConsensusStorage::new(database);
+        let consensus_storage = ConsensusStorage::new(database.clone());
+        let vrf_storage = VrfStorage::new(database.clone());
 
         Self {
             id,
@@ -59,9 +61,14 @@ impl DatabaseSigningNode {
             public_key: None,
             signing_storage,
             consensus_storage,
+            vrf_storage,
             aggregated_rounds: Arc::new(RwLock::new(std::collections::HashSet::new())),
             message_tx: message_tx.clone(),
-            vrf_service: Some(VrfService::new(peer_id, message_tx)),
+            vrf_service: Some(VrfService::new_with_storage(
+                peer_id,
+                message_tx,
+                vrf_storage,
+            )),
             chain_handler,
             consensus_node: Some(ConsensusNode::new()),
             available_nodes: None,
@@ -271,7 +278,11 @@ impl DatabaseSigningNode {
         let peer_id = PeerId::from_str(&self.id).unwrap_or_else(|_| PeerId::random());
 
         // Create VrfService with proper initial round
-        let mut vrf_service = VrfService::new(peer_id, self.message_tx.clone());
+        let mut vrf_service = VrfService::new_with_storage(
+            peer_id,
+            self.message_tx.clone(),
+            self.vrf_storage.clone(),
+        );
 
         // Set the current round to match the network
         if let Some(network_round) = network_round {

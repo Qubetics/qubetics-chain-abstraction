@@ -42,3 +42,4 @@ pub const SOLVER_ADD_LIQ_BTC_TXN: &str = "solver_add_liq_btc_txn:";
 pub const SOLVER_REMOVE_LIQ_TICS_TXN: &str = "solver_remove_liq_tics_txn:";
 pub const SOLVER_REMOVE_LIQ_BTC_TXN: &str = "solver_remove_liq_btc_txn:";
 pub const PEER_KEYPAIR: &str = "peer_keypair";
+pub const VRF_CURRENT_ROUND: &str = "vrf_current_round";
