@@ -85,3 +85,54 @@ impl VrfSelectedNodesBroadcast {
         }
     }
 }
+
+/// VRF round synchronization request sent between peers.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VrfRoundSyncRequest {
+    pub from: SerializablePeerId,
+    pub current_round: Option<u64>,
+}
+
+/// VRF round synchronization response including the sender's current round.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VrfRoundSyncResponse {
+    pub from: SerializablePeerId,
+    pub current_round: Option<u64>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{VrfRoundSyncRequest, VrfRoundSyncResponse};
+    use crate::types::p2p::SerializablePeerId;
+    use libp2p::PeerId;
+
+    #[test]
+    fn vrf_round_sync_request_serializes_and_deserializes() {
+        let request = VrfRoundSyncRequest {
+            from: SerializablePeerId(PeerId::random()),
+            current_round: Some(7),
+        };
+
+        let encoded = serde_cbor::to_vec(&request).expect("request should serialize");
+        let decoded: VrfRoundSyncRequest =
+            serde_cbor::from_slice(&encoded).expect("request should deserialize");
+
+        assert_eq!(decoded.from, request.from);
+        assert_eq!(decoded.current_round, Some(7));
+    }
+
+    #[test]
+    fn vrf_round_sync_response_serializes_and_deserializes() {
+        let response = VrfRoundSyncResponse {
+            from: SerializablePeerId(PeerId::random()),
+            current_round: None,
+        };
+
+        let encoded = serde_cbor::to_vec(&response).expect("response should serialize");
+        let decoded: VrfRoundSyncResponse =
+            serde_cbor::from_slice(&encoded).expect("response should deserialize");
+
+        assert_eq!(decoded.from, response.from);
+        assert_eq!(decoded.current_round, None);
+    }
+}
