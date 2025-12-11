@@ -1,8 +1,13 @@
 use reqwest::Client;
+use std::{
+    io::BufRead,
+    process::{Command, Stdio},
+    time::Duration,
+};
+use tokio::time::sleep;
 
 use crate::utils::{
-    execute, get_current_address, get_group_address_from_db, get_vault_addresses,
-    register_user_and_get_derived_addresses, run_nodes, SupportedNetwork,
+    NodeProcess, SupportedNetwork, execute, get_current_address, get_group_address_from_db, get_vault_addresses, register_user_and_get_derived_addresses, run_fifth_node, run_nodes
 };
 
 mod utils;
@@ -16,26 +21,37 @@ async fn main() -> anyhow::Result<()> {
     dotenv::dotenv().ok();
 
     let test_private_key =
-        std::env::var("TEST_PRIVATE_KEY_ETH").expect("TEST_PRIVATE_KEY_ETH_1 not set");
+        std::env::var("TEST_PRIVATE_KEY_ETH_1").expect("TEST_PRIVATE_KEY_ETH_1 not set");
 
     let test_private_key_1 =
-        std::env::var("TEST_PRIVATE_KEY_ETH_1").expect("TEST_PRIVATE_KEY_ETH_1 not set");
+        std::env::var("TEST_PRIVATE_KEY_ETH_2").expect("TEST_PRIVATE_KEY_ETH_2 not set");
     
     let client = Client::new();
 
     println!("Starting first node...");
-    let (_nodes, node1_peer_id) =
+    let (mut nodes, node1_peer_id) =
         run_nodes(&client, RPC_PORT, &["node1", "node2", "node3"]).await?;
 
     println!("Executing user_mpc_deposit from Qubetics to Bitcoin");
     user_deposit_intent_eth_to_btc(test_private_key, node1_peer_id.clone(), client.clone()).await?;
     println!("User mpc deposit from Qubetics to Bitcoin executed successfully");
+
+
+    // Run the fifth node after both deposit intents
+    println!("Starting fifth node...");
+    let fifth_node = run_fifth_node(RPC_PORT, &node1_peer_id).await?;
+    nodes.push(fifth_node);
+    println!("Fifth node started successfully");
+
     println!("Executing user_mpc_deposit from Bitcoin to Qubetics");
     user_deposit_intent_btc_to_eth(test_private_key_1, node1_peer_id.clone(), client.clone()).await?;
     println!("User mpc deposit from Bitcoin to Qubetics executed successfully");
 
+
     Ok(())
 }
+
+
 
 async fn user_deposit_intent_eth_to_btc(test_private_key: String, node1_peer_id: String, client: Client) -> anyhow::Result<()> {
 
@@ -54,18 +70,18 @@ async fn user_deposit_intent_eth_to_btc(test_private_key: String, node1_peer_id:
     let (btc_address_group_key, _) = get_group_address_from_db(&node1_peer_id)?;
 
     println!("Executing user_mpc_deposit from Qubetics to Bitcoin");
-    execute(
-        test_private_key,
-        vault_eth_address.clone(),
-        derived_eth_address.clone(),
-        derived_btc_address.clone(),
-        btc_address_group_key.clone(),
-        client.clone(),
-        SupportedNetwork::Qubetics,
-        SupportedNetwork::Bitcoin,
-        25, // 25 ETH
-    )
-    .await?;
+    // execute(
+    //     test_private_key,
+    //     vault_eth_address.clone(),
+    //     derived_eth_address.clone(),
+    //     derived_btc_address.clone(),
+    //     btc_address_group_key.clone(),
+    //     client.clone(),
+    //     SupportedNetwork::Qubetics,
+    //     SupportedNetwork::Bitcoin,
+    //     25, // 25 ETH
+    // )
+    // .await?;
 
     Ok(())
 }

@@ -1,45 +1,57 @@
 use std::{
-    io::BufRead, process::{Child, Command, Stdio}, time::Duration
+    io::BufRead,
+    process::{Child, Command, Stdio},
+    time::Duration,
 };
 
 use crate::utils::wait_for_dkg;
 use reqwest::Client;
-use tokio::time::sleep;
 use std::string::ToString;
-
+use tokio::time::sleep;
 
 const TARGET_ADDRESS_ETH: &str = "0x7bfF967268b7A551bc53fC68104bF22d36577C37";
 const TARGET_ADDRESS_BTC: &str = "myap9aRxhb9YVcAhhXdqruKLfyzoVCGGLJ";
 
 #[derive(PartialEq, Eq, Debug, Clone, Copy)]
 pub enum SupportedNetwork {
-	Qubetics,
-	Bitcoin
+    Qubetics,
+    Bitcoin,
 }
-
 
 impl ToString for SupportedNetwork {
-	fn to_string(&self) -> String {
-		match self {
-			SupportedNetwork::Qubetics => "qubetics".to_string(),
-			SupportedNetwork::Bitcoin => "bitcoin".to_string(),
-		}
-	}
+    fn to_string(&self) -> String {
+        match self {
+            SupportedNetwork::Qubetics => "qubetics".to_string(),
+            SupportedNetwork::Bitcoin => "bitcoin".to_string(),
+        }
+    }
 }
 
-pub fn get_pair_and_target_address(source_network: SupportedNetwork, target_network: SupportedNetwork) -> (String, String, String) {
-	
-	if source_network == SupportedNetwork::Qubetics && target_network == SupportedNetwork::Bitcoin {
-		return ("TICS".to_string(), "BTC".to_string(), TARGET_ADDRESS_BTC.to_string());
-	} else if source_network == SupportedNetwork::Bitcoin && target_network == SupportedNetwork::Qubetics {
-		return ("BTC".to_string(), "TICS".to_string(), TARGET_ADDRESS_ETH.to_string());
-	} else {
-		panic!("Invalid network pair: {:?} -> {:?}", source_network, target_network);
-	}
+pub fn get_pair_and_target_address(
+    source_network: SupportedNetwork,
+    target_network: SupportedNetwork,
+) -> (String, String, String) {
+    if source_network == SupportedNetwork::Qubetics && target_network == SupportedNetwork::Bitcoin {
+        return (
+            "TICS".to_string(),
+            "BTC".to_string(),
+            TARGET_ADDRESS_BTC.to_string(),
+        );
+    } else if source_network == SupportedNetwork::Bitcoin
+        && target_network == SupportedNetwork::Qubetics
+    {
+        return (
+            "BTC".to_string(),
+            "TICS".to_string(),
+            TARGET_ADDRESS_ETH.to_string(),
+        );
+    } else {
+        panic!(
+            "Invalid network pair: {:?} -> {:?}",
+            source_network, target_network
+        );
+    }
 }
-
-
-
 
 pub struct NodeProcess {
     pub child: Child,
@@ -194,3 +206,54 @@ pub async fn sleep_for_10_seconds() {
     sleep(Duration::from_secs(10)).await;
 }
 
+pub async fn run_fifth_node(rpc_port: u16, node1_addr: &str) -> anyhow::Result<NodeProcess> {
+    let node_dir = "node5";
+    let node_id = 5;
+    let source_bin = "./target/release/mpc-node";
+
+    // Prepare directory for node5
+    let _ = std::fs::create_dir_all(node_dir);
+    let _ = std::fs::remove_dir_all(format!("{}/data", node_dir));
+    let _ = std::fs::remove_dir_all(format!("{}/logs", node_dir));
+    std::fs::create_dir_all(format!("{}/logs", node_dir))?;
+
+    // Copy binary
+    let _ = std::fs::remove_file(format!("{}/mpc-node", node_dir));
+    std::fs::copy(source_bin, format!("{}/mpc-node", node_dir))
+        .expect(&format!("Failed to copy binary to {}", node_dir));
+
+    // Construct the bootstrap multiaddress using node1's peer ID
+    let node1_addr = format!("/ip4/127.0.0.1/tcp/{}/p2p/{}", rpc_port, node1_addr);
+
+    println!("Starting Node {} from ./{}", node_id, node_dir);
+
+    let log_file = std::fs::File::create(format!("{}/logs/node.log", node_dir))?;
+
+    let mut child = Command::new("./mpc-node")
+        .current_dir(node_dir)
+        .env("RPC_PORT", (rpc_port + node_id as u16).to_string())
+        .arg(&node1_addr)
+        .env("RUST_LOG", "info")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::from(log_file))
+        .spawn()
+        .expect(&format!("Failed to start Node {}", node_id));
+
+    if let Some(stdout) = child.stdout.take() {
+        let reader = std::io::BufReader::new(stdout);
+        std::thread::spawn(move || {
+            for line in reader.lines() {
+                if let Ok(l) = line {
+                    println!("[Node {}] {}", node_id, l);
+                }
+            }
+        });
+    }
+
+    // Give the node time to connect and sync
+    sleep(Duration::from_secs(5)).await;
+
+    println!("✅ Node {} started and connected to the network", node_id);
+
+    Ok(NodeProcess { child, id: node_id })
+}
