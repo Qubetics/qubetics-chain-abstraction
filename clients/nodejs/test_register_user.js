@@ -172,13 +172,13 @@ async function testUserMpcDeposit({ wallet, amount, idempotencyKey }) {
 
     // Construct DepositIntent
     const depositIntent = {
-      source_address: userInfo.data.derived_eth_address, // Use canonical address
-      target_address: userInfo.data.derived_btc_address,
-      source_chain: 'qubetics',
-      target_chain: 'bitcoin',
+      source_address: userInfo.data.derived_btc_address, // Use canonical address
+      target_address: userInfo.data.derived_eth_address,
+      source_chain: 'bitcoin',
+      target_chain: 'qubetics',
       amount: amount, // Use the passed amount parameter
-      source_token: 'TICS',
-      target_token: 'BTC',
+      source_token: 'BTC',
+      target_token: 'TICS',
       timestamp: oooo,
     };
     // const depositIntent = {
@@ -310,23 +310,23 @@ async function runTests() {
   log(`\n🔑 Derived signer address from TEST_PRIVKEY: ${signerAddr}`, 'blue');
 
   // 1) DKG status
-  await testDKGStatus();
+  // await testDKGStatus();
 
-  // 2) Register ONLY the derived address 
-  const reg = await testRegisterUser(signerAddr);
+  // // 2) Register ONLY the derived address 
+  // const reg = await testRegisterUser(signerAddr);
 
-  if (reg.success) {
-    log(`\n⏳ Waiting 2 seconds before checking user info...`, 'yellow');
-    await new Promise(r => setTimeout(r, 2000));
-    await testGetUserInfo(signerAddr);
-  } else {
-    log(`\n⚠️ Registration failed; continuing to deposit test (is_registered may be false).`, 'yellow');
-  }
+  // if (reg.success) {
+  //   log(`\n⏳ Waiting 2 seconds before checking user info...`, 'yellow');
+  //   await new Promise(r => setTimeout(r, 2000));
+  //   await testGetUserInfo(signerAddr);
+  // } else {
+  //   log(`\n⚠️ Registration failed; continuing to deposit test (is_registered may be false).`, 'yellow');
+  // }
 
   // 3) MPC deposit test WITHOUT tx_id (should pass Some(signer) to handle_deposit_intent)
-  // log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
-  // const amount = 79000000000000000000
-  // await testUserMpcDeposit({ wallet, amount });
+  log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
+  const amount = 2700
+  await testUserMpcDeposit({ wallet, amount });
   // log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
   // const amount = 13000000000000000000
   // await testUserMpcDeposit({ wallet, amount });

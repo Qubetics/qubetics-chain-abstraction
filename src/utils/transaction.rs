@@ -9,7 +9,7 @@ use anyhow::{bail, Result};
 use ethabi::ethereum_types::U256;
 use ethabi::{Function, Param, ParamType, StateMutability, Token};
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info, warn}; // for Token::Uint
+use tracing::{info, warn}; // for Token::Uint
 
 // use rlp::RlpStream;
 
@@ -399,13 +399,24 @@ pub fn select_utxos_for_amount(
                 });
             }
 
-            // Change would be dust; keep adding UTXOs to try to reach a spendable change output
-            debug!(
-                "🔄 [UTXO_SELECTION] Change {} sats would be below dust ({}). Skipping no-change path to search for spendable change",
+            // Change would be dust; fold it into the fee
+            // Use the change path fee calculation but don't create a change output
+            let actual_fee = fee_with_change + change;
+            tracing::info!(
+                "✅ [UTXO_SELECTION] Using change path with {} inputs, folding dust change {} sats into fee (fee {} sats, total fee {} sats)",
+                n_inputs,
                 change,
-                DUST_LIMIT_SATS
+                fee_with_change,
+                actual_fee
             );
-            skip_no_change_path = true;
+
+            return Ok(UtxoSelectionResult {
+                selected_utxos: selected,
+                total_value,
+                fee: actual_fee,
+                change: 0,
+                change_output: false,
+            });
         }
 
         // Try no-change path (1 output: recipient only)
