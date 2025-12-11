@@ -1,6 +1,5 @@
-use crate::consensus::ConsensusResult;
 use crate::database::{key_utils, Database};
-use crate::types::p2p::SerializablePeerId;
+use crate::types::{ConsensusResult, SerializablePeerId};
 use anyhow::Result;
 use std::collections::HashMap;
 use tracing::{debug, info};

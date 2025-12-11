@@ -1,8 +1,7 @@
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use ff::PrimeField;
 use k256::ProjectivePoint;
 use k256::Scalar;
-use serde::{Deserialize, Serialize};
 use sha2::Digest as _;
 use sha3::Keccak256;
 use std::collections::HashMap;
@@ -10,87 +9,15 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
-use crate::rpc_server::DepositIntent;
-use crate::types::{SerializablePoint, SerializableScalar};
-use crate::utils::hmac_helper::hmac256_from_addr;
+pub use crate::types::{
+    DepositIntent, IntentRegistry, IntentStatus, IntentTransactionIds, SerializablePoint,
+    SerializableScalar, TransactionStatus, UserRegistration,
+};
+use crate::utils::hmac_helper::{bytes_to_scalar_mod_n, hmac_scalar_mod_n};
 use tracing::info;
 
 pub mod manager;
 pub use manager::UserIntentManager;
-
-/// Intent status enumeration
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub enum IntentStatus {
-    Pending,
-    Processing,
-    Solved,
-    Rejected,
-}
-
-/// Status of a blockchain transaction
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub enum TransactionStatus {
-    Pending,
-    Rejected,
-    Confirmed,
-}
-
-/// Transaction IDs associated with an intent hash
-/// Each intent has two transactions:
-/// 1. user_aggregated_address -> network_aggregated_address
-/// 2. network_aggregated_address -> user_target_address
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IntentTransactionIds {
-    pub intent_hash: String,
-    /// Transaction ID for user_aggregated_address -> network_aggregated_address
-    pub user_to_network_tx_id: Option<String>,
-    /// Transaction ID for network_aggregated_address -> user_target_address  
-    pub network_to_target_tx_id: Option<String>,
-    /// Transaction ID for vault_address -> network_aggregated_address
-    pub vault_to_network_tx_id: Option<String>,
-    /// Final solver identifier responsible for the deposit
-    pub final_solver_id: Option<String>,
-    /// Error message from blockchain if transaction failed
-    pub error_message: Option<String>,
-    /// Timestamp when first transaction was recorded
-    pub created_at: chrono::DateTime<chrono::Utc>,
-    /// Timestamp when last transaction was updated
-    pub updated_at: chrono::DateTime<chrono::Utc>,
-}
-
-impl IntentTransactionIds {
-    /// Get the solver node ID that completed the final transaction
-    pub fn get_final_solver(&self) -> Option<String> {
-        self.final_solver_id.clone()
-    }
-
-    /// Set the solver node ID for the final transaction
-    pub fn set_final_solver(&mut self, solver: Option<String>) {
-        self.final_solver_id = solver;
-        self.updated_at = Utc::now();
-    }
-}
-
-/// User registration data structure
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UserRegistration {
-    pub user_id: String,
-    pub ethereum_address: String,
-    pub hmac_constant: [u8; 32],
-    pub tweaked_secret_share: Option<SerializableScalar>,
-    pub user_group_key: Option<SerializablePoint>,
-    pub derived_eth_address: Option<String>,
-    pub derived_btc_address: Option<String>,
-    pub created_at: DateTime<Utc>,
-    pub registered_by_node: String, // Track which node registered this user
-    pub intent_hashes: HashMap<String, IntentStatus>, // intent_hash -> IntentStatus mapping
-}
-
-/// Global intent registry
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IntentRegistry {
-    pub intents: HashMap<String, DepositIntent>, // intent_hash -> DepositIntent mapping
-}
 
 /// User registry for managing user registrations and intent tracking
 pub struct UserRegistry {
@@ -152,8 +79,7 @@ impl UserRegistry {
             Ok(a) => a,
             Err(e) => {
                 return Err(format!(
-                    "Invalid ethereum_address '{}': {}",
-                    ethereum_address, e
+                    "Invalid ethereum_address '{ethereum_address}': {e}"
                 ))
             }
         };
@@ -475,18 +401,24 @@ impl UserRegistry {
     }
 
     /// Generate HMAC constant for an address
+    /// Uses hmac_scalar_mod_n to safely reduce modulo curve order
     fn generate_hmac_constant(&self, address: &str) -> [u8; 32] {
-        hmac256_from_addr(address, &self.chain_code).unwrap_or_else(|_| [0u8; 32])
+        hmac_scalar_mod_n(address, &self.chain_code).unwrap_or([0u8; 32])
         // Fallback to zero array if HMAC fails
     }
 
     /// Compute tweaked share from DKG share and HMAC constant
+    /// Safely reduces hmac_constant modulo curve order before converting to scalar
     fn compute_tweaked_share(
         &self,
         share: &Scalar,
         hmac_constant: &[u8; 32],
     ) -> SerializableScalar {
-        let hmac_scalar = Scalar::from_repr((*hmac_constant).into()).unwrap();
+        // Reduce modulo curve order to ensure valid scalar (works with both old and new hmac_constants)
+        let hmac_reduced = bytes_to_scalar_mod_n(hmac_constant);
+        // from_repr will always succeed since hmac_reduced is already reduced mod curve order
+        let hmac_scalar = Scalar::from_repr(hmac_reduced.into())
+            .expect("Failed to create scalar from reduced HMAC (should never fail)");
         let tweaked_scalar = *share + hmac_scalar;
         SerializableScalar(tweaked_scalar)
     }

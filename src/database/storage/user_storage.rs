@@ -1,7 +1,6 @@
 use crate::database::{key_utils, Database};
-use crate::rpc_server::DepositIntent;
-use crate::user_intent_manager::{
-    IntentStatus, IntentTransactionIds, TransactionStatus, UserRegistration,
+use crate::types::{
+    DepositIntent, IntentStatus, IntentTransactionIds, TransactionStatus, UserRegistration,
 };
 use anyhow::Result;
 use chrono::Utc;

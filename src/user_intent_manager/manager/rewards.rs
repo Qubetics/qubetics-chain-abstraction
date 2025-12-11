@@ -1,4 +1,5 @@
 use super::*;
+use crate::types::intent::TransactionNetwork;
 use tracing::{error, info};
 
 impl UserIntentManager {
@@ -258,56 +259,49 @@ impl UserIntentManager {
         }
     }
 
-    /// Store TICS transaction hashes for a specific solver
-    pub async fn set_solver_tics_txn_hashes(
+    /// Store the latest TICS transaction hash for a specific solver
+    pub async fn set_solver_tics_txn_hash(
         &self,
         solver_address: &str,
-        txn_hashes: Vec<String>,
+        txn_hash: String,
     ) -> Result<()> {
         info!(
-            "🎯 [DB_USER_REGISTRY] Processing TICS txn hashes storage for solver: {}",
+            "🎯 [DB_USER_REGISTRY] Storing latest TICS txn hash for solver: {}",
             solver_address
         );
-        info!(
-            "📝 [DB_USER_REGISTRY] Storing {} TICS transaction hashes",
-            txn_hashes.len()
-        );
+        info!("📝 [DB_USER_REGISTRY] Txn hash: {}", txn_hash);
 
         self.reward_storage
-            .set_solver_tics_txn_hashes(solver_address, txn_hashes)
+            .set_solver_tics_txn_hash(solver_address, txn_hash)
             .await
             .map(|_| {
-                info!("✅ [DB_USER_REGISTRY] Successfully stored TICS txn hashes");
+                info!("✅ [DB_USER_REGISTRY] Successfully stored TICS txn hash");
             })
             .map_err(|e| {
-                error!(
-                    "❌ [DB_USER_REGISTRY] Failed to store TICS txn hashes: {}",
-                    e
-                );
+                error!("❌ [DB_USER_REGISTRY] Failed to store TICS txn hash: {}", e);
                 e
             })
     }
 
-    /// Get TICS transaction hashes for a specific solver
-    pub async fn get_solver_tics_txn_hashes(&self, solver_address: &str) -> Option<Vec<String>> {
+    /// Get the latest TICS transaction hash for a specific solver
+    pub async fn get_solver_tics_txn_hash(&self, solver_address: &str) -> Option<String> {
         match self
             .reward_storage
-            .get_solver_tics_txn_hashes(solver_address)
+            .get_solver_tics_txn_hash(solver_address)
             .await
         {
-            Ok(hashes) => {
-                if let Some(ref hashes) = hashes {
+            Ok(hash) => {
+                if let Some(ref hash) = hash {
                     info!(
-                        "🔍 [DB_USER_REGISTRY] Retrieved {} TICS txn hashes for solver: {}",
-                        hashes.len(),
-                        solver_address
+                        "🔍 [DB_USER_REGISTRY] Retrieved latest TICS txn hash for solver {}: {}",
+                        solver_address, hash
                     );
                 }
-                hashes
+                hash
             }
             Err(e) => {
                 tracing::error!(
-                    "Failed to get TICS txn hashes for solver {}: {}",
+                    "Failed to get TICS txn hash for solver {}: {}",
                     solver_address,
                     e
                 );
@@ -316,7 +310,7 @@ impl UserIntentManager {
         }
     }
 
-    /// Add a single TICS transaction hash to a solver's list
+    /// Add a single TICS transaction hash (overwrites with the latest)
     pub async fn add_solver_tics_txn_hash(
         &self,
         solver_address: &str,
@@ -332,7 +326,7 @@ impl UserIntentManager {
             .add_solver_tics_txn_hash(solver_address, txn_hash)
             .await
             .map(|_| {
-                info!("✅ [DB_USER_REGISTRY] Successfully added TICS txn hash");
+                info!("✅ [DB_USER_REGISTRY] Successfully stored latest TICS txn hash");
             })
             .map_err(|e| {
                 error!("❌ [DB_USER_REGISTRY] Failed to add TICS txn hash: {}", e);
@@ -340,56 +334,49 @@ impl UserIntentManager {
             })
     }
 
-    /// Store BTC transaction hashes for a specific solver
-    pub async fn set_solver_btc_txn_hashes(
+    /// Store the latest BTC transaction hash for a specific solver
+    pub async fn set_solver_btc_txn_hash(
         &self,
         solver_address: &str,
-        txn_hashes: Vec<String>,
+        txn_hash: String,
     ) -> Result<()> {
         info!(
-            "🎯 [DB_USER_REGISTRY] Processing BTC txn hashes storage for solver: {}",
+            "🎯 [DB_USER_REGISTRY] Storing latest BTC txn hash for solver: {}",
             solver_address
         );
-        info!(
-            "📝 [DB_USER_REGISTRY] Storing {} BTC transaction hashes",
-            txn_hashes.len()
-        );
+        info!("📝 [DB_USER_REGISTRY] Txn hash: {}", txn_hash);
 
         self.reward_storage
-            .set_solver_btc_txn_hashes(solver_address, txn_hashes)
+            .set_solver_btc_txn_hash(solver_address, txn_hash)
             .await
             .map(|_| {
-                info!("✅ [DB_USER_REGISTRY] Successfully stored BTC txn hashes");
+                info!("✅ [DB_USER_REGISTRY] Successfully stored BTC txn hash");
             })
             .map_err(|e| {
-                error!(
-                    "❌ [DB_USER_REGISTRY] Failed to store BTC txn hashes: {}",
-                    e
-                );
+                error!("❌ [DB_USER_REGISTRY] Failed to store BTC txn hash: {}", e);
                 e
             })
     }
 
-    /// Get BTC transaction hashes for a specific solver
-    pub async fn get_solver_btc_txn_hashes(&self, solver_address: &str) -> Option<Vec<String>> {
+    /// Get the latest BTC transaction hash for a specific solver
+    pub async fn get_solver_btc_txn_hash(&self, solver_address: &str) -> Option<String> {
         match self
             .reward_storage
-            .get_solver_btc_txn_hashes(solver_address)
+            .get_solver_btc_txn_hash(solver_address)
             .await
         {
-            Ok(hashes) => {
-                if let Some(ref hashes) = hashes {
+            Ok(hash) => {
+                if let Some(ref hash) = hash {
                     info!(
-                        "🔍 [DB_USER_REGISTRY] Retrieved {} BTC txn hashes for solver: {}",
-                        hashes.len(),
-                        solver_address
+                        "🔍 [DB_USER_REGISTRY] Retrieved latest BTC txn hash for solver {}: {}",
+                        solver_address, hash
                     );
                 }
-                hashes
+                hash
             }
             Err(e) => {
                 tracing::error!(
-                    "Failed to get BTC txn hashes for solver {}: {}",
+                    "Failed to get BTC txn hash for solver {}: {}",
                     solver_address,
                     e
                 );
@@ -398,7 +385,7 @@ impl UserIntentManager {
         }
     }
 
-    /// Add a single BTC transaction hash to a solver's list
+    /// Add a single BTC transaction hash (overwrites with the latest)
     pub async fn add_solver_btc_txn_hash(
         &self,
         solver_address: &str,
@@ -414,7 +401,7 @@ impl UserIntentManager {
             .add_solver_btc_txn_hash(solver_address, txn_hash)
             .await
             .map(|_| {
-                info!("✅ [DB_USER_REGISTRY] Successfully added BTC txn hash");
+                info!("✅ [DB_USER_REGISTRY] Successfully stored latest BTC txn hash");
             })
             .map_err(|e| {
                 error!("❌ [DB_USER_REGISTRY] Failed to add BTC txn hash: {}", e);
@@ -463,6 +450,77 @@ impl UserIntentManager {
                     e
                 );
                 e
+            })
+    }
+
+    pub async fn set_solver_add_liquidity_txn_hash(
+        &self,
+        solver_address: &str,
+        network: TransactionNetwork,
+        tx_id: String,
+    ) -> Result<(), String> {
+        self.liquidity_storage
+            .set_add_liquidity_tx_id(solver_address, network, tx_id)
+            .await
+            .map_err(|e| {
+                error!(
+                    "❌ [DB_USER_REGISTRY] Failed to store add-liquidity txn hash for solver {}: {}",
+                    solver_address, e
+                );
+                e.to_string()
+            })
+    }
+
+    pub async fn add_solver_remove_liquidity_txn_hash(
+        &self,
+        solver_address: &str,
+        network: TransactionNetwork,
+        tx_id: String,
+    ) -> Result<(), String> {
+        self.liquidity_storage
+            .set_remove_liquidity_tx_id(solver_address, network, tx_id)
+            .await
+            .map_err(|e| {
+                error!(
+                    "❌ [DB_USER_REGISTRY] Failed to store remove-liquidity txn hash for solver {}: {}",
+                    solver_address, e
+                );
+                e.to_string()
+            })
+    }
+
+    pub async fn set_pending_remove_liquidity_amount(
+        &self,
+        solver_address: &str,
+        network: TransactionNetwork,
+        amount: String,
+    ) -> Result<(), String> {
+        self.liquidity_storage
+            .set_pending_remove_liquidity_amount(solver_address, network, amount)
+            .await
+            .map_err(|e| {
+                error!(
+                    "❌ [DB_USER_REGISTRY] Failed to store pending remove-liquidity amount for solver {}: {}",
+                    solver_address, e
+                );
+                e.to_string()
+            })
+    }
+
+    pub async fn take_pending_remove_liquidity_amount(
+        &self,
+        solver_address: &str,
+        network: TransactionNetwork,
+    ) -> Result<Option<String>, String> {
+        self.liquidity_storage
+            .take_pending_remove_liquidity_amount(solver_address, network)
+            .await
+            .map_err(|e| {
+                error!(
+                    "❌ [DB_USER_REGISTRY] Failed to read pending remove-liquidity amount for solver {}: {}",
+                    solver_address, e
+                );
+                e.to_string()
             })
     }
 }

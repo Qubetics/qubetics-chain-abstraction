@@ -3,11 +3,18 @@ use std::sync::Arc;
 use anyhow::{anyhow, Result};
 use rocksdb::{Options, DB};
 use serde::{Deserialize, Serialize};
+use tokio::task;
 use tracing::{debug, error, info};
 
-use super::config::DatabaseConfig;
+use super::config::{ConfigError, DatabaseConfig};
+use crate::database::keystore::KeyStore;
 
-/// Main database wrapper around RocksDB
+/// Main database wrapper around RocksDB.
+///
+/// The core APIs are synchronous because RocksDB performs blocking disk I/O.
+/// When calling these methods from async contexts, prefer the `*_async`
+/// variants which delegate to a Tokio blocking task to keep the runtime
+/// responsive.
 #[derive(Clone)]
 pub struct Database {
     db: Arc<DB>,
@@ -16,6 +23,13 @@ pub struct Database {
 impl Database {
     /// Create a new database instance
     pub fn new(config: DatabaseConfig) -> Result<Self> {
+        let config = config
+            .validate()
+            .map_err(|e: ConfigError| anyhow!("Invalid database configuration: {e}"))?;
+
+        std::fs::create_dir_all(&config.path)
+            .map_err(|e| anyhow!("Failed to prepare database path {}: {e}", config.path))?;
+
         let mut opts = Options::default();
         opts.create_if_missing(config.create_if_missing);
         opts.set_max_open_files(config.max_open_files);
@@ -221,6 +235,15 @@ impl Database {
             prefix
         );
         Ok(keys)
+    }
+
+    /// Asynchronous wrapper for [`Database::get_keys_with_prefix`] to avoid blocking async runtimes.
+    pub async fn get_keys_with_prefix_async(&self, prefix: &str) -> Result<Vec<String>> {
+        let db = self.clone();
+        let prefix = prefix.to_owned();
+        task::spawn_blocking(move || db.get_keys_with_prefix(&prefix))
+            .await
+            .map_err(|e| anyhow!("Join error during get_keys_with_prefix_async: {}", e))?
     }
 
     /// Get all values with a specific key prefix
@@ -454,6 +477,91 @@ impl Database {
 
         info!("🗑️ [DATABASE] Cleared all entries");
         Ok(())
+    }
+
+    /// Asynchronous wrapper for [`Database::get_string`] safe to call from async contexts.
+    pub async fn get_string_async<V>(&self, key: &str) -> Result<Option<V>>
+    where
+        V: for<'de> Deserialize<'de> + Send + 'static,
+    {
+        let db = self.clone();
+        let key = key.to_owned();
+        task::spawn_blocking(move || db.get_string::<V>(&key))
+            .await
+            .map_err(|e| anyhow!("Join error during get_string_async: {}", e))?
+    }
+
+    /// Asynchronous wrapper for [`Database::put_string`] safe to call from async contexts.
+    pub async fn put_string_async<V>(&self, key: &str, value: &V) -> Result<()>
+    where
+        V: Serialize + Send + Sync + 'static,
+    {
+        let db = self.clone();
+        let key = key.to_owned();
+        let value =
+            bincode::serialize(value).map_err(|e| anyhow!("Failed to serialize value: {}", e))?;
+
+        task::spawn_blocking(move || db.db.put(key.as_bytes(), &value))
+            .await
+            .map_err(|e| anyhow!("Join error during put_string_async: {}", e))?
+            .map_err(|e| anyhow!("Failed to put data: {}", e))?;
+
+        Ok(())
+    }
+
+    /// Asynchronous wrapper for [`Database::count_entries_with_prefix`] safe for async contexts.
+    pub async fn count_entries_with_prefix_async(&self, prefix: &str) -> Result<usize> {
+        let db = self.clone();
+        let prefix = prefix.to_owned();
+        task::spawn_blocking(move || db.count_entries_with_prefix(&prefix))
+            .await
+            .map_err(|e| anyhow!("Join error during count_entries_with_prefix_async: {}", e))?
+    }
+
+    /// Asynchronous wrapper for [`Database::export_batch_with_prefix`].
+    pub async fn export_batch_with_prefix_async(
+        &self,
+        prefix: &str,
+        start_index: usize,
+        batch_size: usize,
+    ) -> Result<(Vec<(Vec<u8>, Vec<u8>)>, bool)> {
+        let db = self.clone();
+        let prefix = prefix.to_owned();
+        task::spawn_blocking(move || db.export_batch_with_prefix(&prefix, start_index, batch_size))
+            .await
+            .map_err(|e| anyhow!("Join error during export_batch_with_prefix_async: {}", e))?
+    }
+
+    /// Asynchronous wrapper for [`Database::batch_write`] to reduce lock contention in async handlers.
+    pub async fn batch_write_async<F>(&self, operations: F) -> Result<()>
+    where
+        F: FnOnce(&mut BatchWriter) -> Result<()> + Send + 'static,
+    {
+        let db = self.clone();
+        task::spawn_blocking(move || db.batch_write(operations))
+            .await
+            .map_err(|e| anyhow!("Join error during batch_write_async: {}", e))?
+    }
+
+    /// Asynchronous wrapper for [`Database::import_batch`].
+    pub async fn import_batch_async(&self, entries: Vec<(Vec<u8>, Vec<u8>)>) -> Result<()> {
+        let db = self.clone();
+        task::spawn_blocking(move || db.import_batch(entries))
+            .await
+            .map_err(|e| anyhow!("Join error during import_batch_async: {}", e))?
+    }
+}
+
+/// Implement KeyStore trait for Database
+/// This allows Database to be used as a keypair storage backend
+/// The trait methods delegate to the existing Database methods
+impl KeyStore for Database {
+    fn put_keypair(&self, key: &str, keypair_bytes: &[u8]) -> Result<()> {
+        Database::put_keypair(self, key, keypair_bytes)
+    }
+
+    fn get_keypair(&self, key: &str) -> Result<Option<Vec<u8>>> {
+        Database::get_keypair(self, key)
     }
 }
 

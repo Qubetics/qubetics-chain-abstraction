@@ -1,12 +1,11 @@
-use crate::chain::{
-    BitcoinInput, BitcoinOutput, BitcoinTransaction, BitcoinWitness, BitcoinWitnessUtxo,
-    ChainTransaction, EthereumTransaction,
+use crate::chain_abstraction::{ChainTransaction, EthereumTransaction};
+use crate::types::{
+    network as network_cfg, BitcoinInput, BitcoinOutput, BitcoinTransaction, BitcoinUtxo,
+    BitcoinWitness, BitcoinWitnessUtxo, ContractTransaction, DepositIntent, DummyTransaction,
+    RlpEncoder, SpendKind, UtxoStatus,
 };
-use crate::rpc_server::{ContractTransaction, DepositIntent, DummyTransaction};
 use crate::utils::get_eth_address_from_group_key;
 use anyhow::{bail, Result};
-use bitcoin::address::NetworkUnchecked;
-use bitcoin::{Address, WitnessVersion};
 use ethabi::ethereum_types::U256;
 use ethabi::{Function, Param, ParamType, StateMutability, Token};
 use serde::{Deserialize, Serialize};
@@ -14,30 +13,8 @@ use tracing::{info, warn}; // for Token::Uint
 
 // use rlp::RlpStream;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SpendKind {
-    P2PKH,
-    P2WPKH,
-}
-/// Bitcoin UTXO structure for fetching from external APIs
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BitcoinUtxo {
-    pub txid: String,
-    pub vout: u32,
-    pub value: u64,
-    pub status: UtxoStatus,
-}
-
 pub type WitnessItem = Vec<u8>;
 pub type WitnessStack = Vec<WitnessItem>;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UtxoStatus {
-    pub confirmed: bool,
-    pub block_height: Option<u64>,
-    pub block_hash: Option<String>,
-    pub block_time: Option<u64>,
-}
 
 const DEFAULT_FEE_RATE_SAT_PER_VBYTE: u64 = 2;
 const DUST_LIMIT_SATS: u64 = 546;
@@ -50,98 +27,6 @@ struct CustomApiUtxoResponse {
     status_code: u16,
     message: String,
     data: Vec<BitcoinUtxo>,
-}
-
-/// RLP encoder for Ethereum transaction signing (EIP-155)
-pub struct RlpEncoder {
-    pub data: Vec<u8>,
-}
-
-impl RlpEncoder {
-    fn new() -> Self {
-        RlpEncoder { data: Vec::new() }
-    }
-
-    fn encode_bytes(&mut self, bytes: &[u8]) {
-        if bytes.len() == 1 && bytes[0] < 0x80 {
-            self.data.push(bytes[0]);
-        } else if bytes.len() < 56 {
-            self.data.push(0x80 + bytes.len() as u8);
-            self.data.extend_from_slice(bytes);
-        } else {
-            let length_bytes = (bytes.len() as u64).to_be_bytes();
-            let length_start = length_bytes
-                .iter()
-                .position(|&x| x != 0)
-                .unwrap_or(length_bytes.len() - 1);
-            let length_slice = &length_bytes[length_start..];
-
-            self.data.push(0xb7 + length_slice.len() as u8);
-            self.data.extend_from_slice(length_slice);
-            self.data.extend_from_slice(bytes);
-        }
-    }
-
-    fn encode_u64(&mut self, value: u64) {
-        if value == 0 {
-            self.data.push(0x80);
-        } else {
-            let bytes = value.to_be_bytes();
-            let start = bytes
-                .iter()
-                .position(|&x| x != 0)
-                .unwrap_or(bytes.len() - 1);
-            self.encode_bytes(&bytes[start..]);
-        }
-    }
-
-    fn encode_hex_string(&mut self, hex_str: &str) {
-        let bytes = encode_hex_to_bytes(hex_str);
-        self.encode_bytes(&bytes);
-    }
-
-    fn encode_address(&mut self, address: &str) {
-        let bytes = hex::decode(&address[2..]).expect("Invalid address");
-        self.encode_bytes(&bytes);
-    }
-
-    fn encode_list_header(&mut self, content_length: usize) {
-        if content_length < 56 {
-            self.data.push(0xc0 + content_length as u8);
-        } else {
-            let length_bytes = (content_length as u64).to_be_bytes();
-            let length_start = length_bytes
-                .iter()
-                .position(|&x| x != 0)
-                .unwrap_or(length_bytes.len() - 1);
-            let length_slice = &length_bytes[length_start..];
-
-            self.data.push(0xf7 + length_slice.len() as u8);
-            self.data.extend_from_slice(length_slice);
-        }
-    }
-
-    fn finalize(self) -> Vec<u8> {
-        self.data
-    }
-}
-
-fn encode_hex_to_bytes(hex_str: &str) -> Vec<u8> {
-    let clean_hex = hex_str.strip_prefix("0x").unwrap_or(hex_str);
-    let trimmed = clean_hex.trim_start_matches('0');
-
-    // If the value is zero or only zeros were provided, return an empty
-    // Vec so that the caller encodes it as an empty byte slice (0x80 in RLP).
-    if trimmed.is_empty() {
-        return Vec::new();
-    }
-
-    let mut final_hex = trimmed.to_string();
-    if final_hex.len() % 2 == 1 {
-        final_hex = format!("0{}", final_hex);
-    }
-
-    hex::decode(&final_hex).expect("Invalid hex string")
 }
 
 /// Strip leading zeros from byte array for RLP compliance
@@ -166,8 +51,8 @@ pub fn amount_to_hex_string(amount: u128) -> String {
     }
 
     // Convert to hex and remove leading zeros
-    let hex_str = format!("{:x}", amount);
-    format!("0x{}", hex_str)
+    let hex_str = format!("{amount:x}");
+    format!("0x{hex_str}")
 }
 
 /// Validate and normalize hex string for amounts
@@ -187,11 +72,11 @@ pub fn validate_and_normalize_hex_amount(hex_str: &str) -> Result<String> {
     let trimmed = clean_hex.trim_start_matches('0');
     let normalized = if trimmed.is_empty() { "0" } else { trimmed };
 
-    Ok(format!("0x{}", normalized))
+    Ok(format!("0x{normalized}"))
 }
 
 /// Validate that a transaction has proper hex formatting for value and gas_price
-pub fn validate_transaction_hex_fields(tx: &crate::rpc_server::DummyTransaction) -> Result<()> {
+pub fn validate_transaction_hex_fields(tx: &DummyTransaction) -> Result<()> {
     // Validate value field
     validate_and_normalize_hex_amount(&tx.value)
         .map_err(|e| anyhow::anyhow!("Invalid value field: {}", e))?;
@@ -204,9 +89,7 @@ pub fn validate_transaction_hex_fields(tx: &crate::rpc_server::DummyTransaction)
 }
 
 /// Validate that a contract transaction has proper hex formatting
-pub fn validate_contract_transaction_hex_fields(
-    tx: &crate::rpc_server::ContractTransaction,
-) -> Result<()> {
+pub fn validate_contract_transaction_hex_fields(tx: &ContractTransaction) -> Result<()> {
     // Validate value field
     validate_and_normalize_hex_amount(&tx.value)
         .map_err(|e| anyhow::anyhow!("Invalid value field: {}", e))?;
@@ -233,20 +116,27 @@ pub fn validate_contract_transaction_hex_fields(
 pub fn get_chain_id_from_name(chain_name: &str) -> Option<u64> {
     match chain_name.to_lowercase().as_str() {
         "ethereum" | "eth" => Some(1),
+        // Qubetics EVM chain
         "qubetics" => Some(9029),
+        // Bitcoin uses a structural chain id of 0 (non-EVM, used for routing/metadata)
+        "btc" | "bitcoin" => Some(0),
         "polygon" | "matic" => Some(137),
         "bsc" | "binance" => Some(56),
         "avalanche" | "avax" => Some(43114),
         "arbitrum" => Some(42161),
         "optimism" => Some(10),
         "base" => Some(8453),
-        _ => None, // Bitcoin and other non-EVM chains return None
+        _ => None,
     }
 }
 
 /// Determine if a chain is EVM-compatible
 pub fn is_evm_chain(chain_name: &str) -> bool {
-    get_chain_id_from_name(chain_name).is_some()
+    match chain_name.to_lowercase().as_str() {
+        // Explicitly treat Bitcoin as non-EVM even though it has a structural ID (0)
+        "btc" | "bitcoin" => false,
+        _ => get_chain_id_from_name(chain_name).is_some(),
+    }
 }
 
 /// Fetch UTXOs for a Bitcoin address from Mempool.space Esplora API
@@ -260,7 +150,7 @@ pub async fn fetch_bitcoin_utxos(address: &str, is_testnet: bool) -> Result<Vec<
     // Prefer custom API if provided: BTC_UTXO_API_BASE=http://host:port
     if let Ok(custom_base) = std::env::var("BTC_UTXO_API_BASE") {
         let base = custom_base.trim_end_matches('/');
-        let url = format!("{}/api/v1/utxos?address={}", base, address);
+        let url = format!("{base}/api/v1/utxos?address={address}");
         tracing::info!("🌐 Using custom UTXO API: {}", url);
         let client = reqwest::Client::new();
         let response = client.get(&url).send().await?;
@@ -308,7 +198,7 @@ pub async fn fetch_bitcoin_utxos(address: &str, is_testnet: bool) -> Result<Vec<
         "https://mempool.space/api"
     };
 
-    let url = format!("{}/address/{}/utxo", base_url, address);
+    let url = format!("{base_url}/address/{address}/utxo");
     tracing::info!("🌐 Using mempool.space Esplora API: {}", url);
     let client = reqwest::Client::new();
     let response = client.get(&url).send().await?;
@@ -406,7 +296,6 @@ pub fn select_utxos_for_amount(
 
     let mut confirmed_utxos: Vec<_> = utxos
         .iter()
-        .cloned()
         .filter(|utxo| {
             if !utxo.status.confirmed {
                 tracing::debug!(
@@ -436,6 +325,7 @@ pub fn select_utxos_for_amount(
 
             true
         })
+        .cloned()
         .collect();
 
     if confirmed_utxos.is_empty() {
@@ -445,8 +335,15 @@ pub fn select_utxos_for_amount(
         ));
     }
 
-    // Sort descending (largest first) to minimize the number of inputs needed
-    confirmed_utxos.sort_by_key(|utxo| std::cmp::Reverse(utxo.value));
+    // Sort descending (largest first) to minimize the number of inputs needed.
+    // Break ties deterministically on (txid, vout) so every node selects the
+    // same UTXOs even if the upstream API returns them in different orders.
+    confirmed_utxos.sort_by(|a, b| {
+        b.value
+            .cmp(&a.value)
+            .then_with(|| a.txid.cmp(&b.txid))
+            .then_with(|| a.vout.cmp(&b.vout))
+    });
 
     tracing::info!(
         "🔍 [UTXO_SELECTION] {} confirmed UTXOs remain after filtering ({} fetched)",
@@ -539,8 +436,7 @@ pub fn extract_utxo_identifiers(utxos: &[BitcoinUtxo]) -> Vec<(String, u32)> {
 
 pub async fn fetch_ethereum_nonce(address: &str, chain_id: u64) -> Result<u64> {
     let rpc_url = match chain_id {
-        9029 => std::env::var("MPC_ETHEREUM_RPC_URL")
-            .unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string()),
+        9029 => network_cfg::qubetics_rpc_url_from_env()?,
         1 => "https://mainnet.infura.io/v3/YOUR_PROJECT_ID".to_string(), // Ethereum mainnet
         _ => {
             return Err(anyhow::anyhow!(
@@ -786,7 +682,7 @@ pub async fn create_bitcoin_transaction(
                 2,
                 Some(BitcoinWitness {
                     inputs: (0..inputs.len())
-                        .map(|_| crate::chain::BitcoinWitnessInput { stack: vec![] })
+                        .map(|_| crate::chain_abstraction::BitcoinWitnessInput { stack: vec![] })
                         .collect(),
                 }),
             )
@@ -813,8 +709,7 @@ async fn estimate_gas_for_deposit_intent(
     chain_id: u64,
 ) -> Result<u64> {
     let rpc_url = match chain_id {
-        9029 => std::env::var("MPC_ETHEREUM_RPC_URL")
-            .unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string()),
+        9029 => network_cfg::qubetics_rpc_url_from_env()?,
         1 => "https://mainnet.infura.io/v3/YOUR_PROJECT_ID".to_string(),
         _ => {
             return Err(anyhow::anyhow!(
@@ -875,7 +770,7 @@ async fn estimate_gas_for_deposit_intent(
 /// - UserToVault: User deposit - FROM derived address TO vault address (on source chain)
 /// - NetworkToTarget: Network withdrawal - FROM network address TO target address (on target chain)
 /// - VaultToNetwork: Vault to network - FROM vault address TO network address (on source chain)
-/// derived_eth_addr and derived_btc_addr are the actual addresses that hold user funds
+///   derived_eth_addr and derived_btc_addr are the actual addresses that hold user funds
 pub async fn create_chain_transaction_from_deposit_intent(
     intent: &DepositIntent,
     group_public_key: Option<k256::ProjectivePoint>,
@@ -1002,6 +897,22 @@ async fn create_chain_transaction_from_deposit_intent_internal(
         crate::types::TransactionType::UserToVault => &intent.source_chain.to_lowercase(),
         crate::types::TransactionType::NetworkToTarget => &intent.target_chain.to_lowercase(),
         crate::types::TransactionType::VaultToNetwork => &intent.source_chain.to_lowercase(),
+        crate::types::TransactionType::RewardTxn => {
+            // RewardTxn is not valid for intent flow
+            return Err(anyhow::anyhow!(
+                "RewardTxn is not valid for deposit intent flow"
+            ));
+        }
+        crate::types::TransactionType::WithdrawLiquidity => {
+            return Err(anyhow::anyhow!(
+                "WithdrawLiquidity is not valid for deposit intent flow"
+            ));
+        }
+        crate::types::TransactionType::AddLiquidity => {
+            return Err(anyhow::anyhow!(
+                "AddLiquidity is not valid for deposit intent flow"
+            ));
+        }
     };
 
     info!("amount::::: {}", amount);
@@ -1047,6 +958,22 @@ async fn create_chain_transaction_from_deposit_intent_internal(
                     network_address
                 );
                 (vault_address.clone(), &network_address)
+            }
+            crate::types::TransactionType::RewardTxn => {
+                // RewardTxn is not valid for intent flow
+                return Err(anyhow::anyhow!(
+                    "RewardTxn is not valid for deposit intent flow"
+                ));
+            }
+            crate::types::TransactionType::WithdrawLiquidity => {
+                return Err(anyhow::anyhow!(
+                    "WithdrawLiquidity is not valid for deposit intent flow"
+                ));
+            }
+            crate::types::TransactionType::AddLiquidity => {
+                return Err(anyhow::anyhow!(
+                    "AddLiquidity is not valid for deposit intent flow"
+                ));
             }
         };
 
@@ -1100,11 +1027,27 @@ async fn create_chain_transaction_from_deposit_intent_internal(
                 );
                 (btc_vault_address.clone(), &btc_network_address)
             }
+            crate::types::TransactionType::RewardTxn => {
+                // RewardTxn is not valid for intent flow
+                return Err(anyhow::anyhow!(
+                    "RewardTxn is not valid for deposit intent flow"
+                ));
+            }
+            crate::types::TransactionType::WithdrawLiquidity => {
+                return Err(anyhow::anyhow!(
+                    "WithdrawLiquidity is not valid for deposit intent flow"
+                ));
+            }
+            crate::types::TransactionType::AddLiquidity => {
+                return Err(anyhow::anyhow!(
+                    "AddLiquidity is not valid for deposit intent flow"
+                ));
+            }
         };
 
         tracing::info!("Using Bitcoin source address for UTXOs: {}", from_address);
 
-        let bitcoin_tx = create_bitcoin_transaction(&from_address, &to_address, amount).await?;
+        let bitcoin_tx = create_bitcoin_transaction(&from_address, to_address, amount).await?;
 
         Ok(ChainTransaction::Bitcoin(bitcoin_tx))
     } else {
@@ -1156,10 +1099,26 @@ pub async fn create_chain_transaction_from_contract_call(
                 amount,
                 &intent.source_token,
                 &intent.target_token,
-                &tx_hash,
+                tx_hash,
                 intent_hash,
                 &intent.timestamp.to_string(),
             )
+        }
+        crate::types::TransactionType::RewardTxn => {
+            // RewardTxn is not valid for intent flow
+            return Err(anyhow::anyhow!(
+                "RewardTxn is not valid for deposit intent flow"
+            ));
+        }
+        crate::types::TransactionType::WithdrawLiquidity => {
+            return Err(anyhow::anyhow!(
+                "WithdrawLiquidity is not valid for deposit intent flow"
+            ));
+        }
+        crate::types::TransactionType::AddLiquidity => {
+            return Err(anyhow::anyhow!(
+                "AddLiquidity is not valid for deposit intent flow"
+            ));
         }
         _ => {
             info!(
@@ -1219,7 +1178,7 @@ pub async fn create_chain_transaction_from_contract_call(
         "  - Calldata: 0x{}",
         calldata
             .as_ref()
-            .map(|d| hex::encode(d))
+            .map(hex::encode)
             .unwrap_or_else(|| "".to_string())
     );
 
@@ -1230,6 +1189,222 @@ pub async fn create_chain_transaction_from_contract_call(
         gas_price,
         nonce,
         data: calldata,
+        chain_id,
+    };
+
+    Ok(ChainTransaction::Ethereum(ethereum_tx))
+}
+
+pub async fn create_solver_rewards_update_transaction(
+    from_address: &str,
+    solver_address: &str,
+    rewards: &[U256],
+    transaction_hash: &str,
+    contract_address: &str,
+    chain_id: u64,
+    chain_name: &str,
+) -> Result<ChainTransaction> {
+    let normalized_contract_address = if contract_address.starts_with("0x") {
+        contract_address.to_string()
+    } else {
+        format!("0x{contract_address}")
+    };
+
+    info!("🔧 [CONTRACT] Solver address: {}", solver_address);
+    info!("🔧 [CONTRACT] Rewards: {:?}", rewards);
+    info!("🔧 [CONTRACT] Transaction hash: {}", transaction_hash);
+    info!(
+        "🔧 [CONTRACT] Contract address: {}",
+        normalized_contract_address
+    );
+    info!("🔧 [CONTRACT] Chain ID: {}", chain_id);
+    info!("🔧 [CONTRACT] Chain name: {}", chain_name);
+    info!("🔧 [CONTRACT] From address: {}", from_address);
+
+    let calldata = encode_update_solver_rewards_calldata(solver_address, rewards, transaction_hash);
+    info!("🔧 [CONTRACT] Calldata: {:?}", calldata);
+    let calldata_hex = calldata
+        .as_ref()
+        .map(|d| format!("0x{}", hex::encode(d)))
+        .unwrap_or_else(|| "0x".to_string());
+
+    info!("🔧 [CONTRACT] Calldata prepared: {}", calldata_hex);
+
+    let estimated_gas = estimate_gas_for_deposit_intent(
+        from_address,
+        &normalized_contract_address,
+        &calldata_hex,
+        chain_id,
+    )
+    .await
+    .unwrap_or(300000);
+    let gas_limit = estimated_gas + (estimated_gas / 10);
+
+    let gas_price = get_gas_price_for_chain("qubetics", chain_id)
+        .await
+        .unwrap_or_else(|e| {
+            warn!("⚠️ Failed to get dynamic gas price: {}, using fallback", e);
+            get_default_gas_price_for_chain("qubetics")
+        });
+
+    info!("🔧 [CONTRACT] Gas price: {}", gas_price);
+    info!("🔧 [CONTRACT] Gas limit: {}", gas_limit);
+    let nonce = fetch_ethereum_nonce(from_address, chain_id).await?;
+
+    let ethereum_tx = EthereumTransaction {
+        to: normalized_contract_address,
+        value: "0x0".to_string(),
+        gas_limit,
+        gas_price,
+        nonce,
+        data: calldata,
+        chain_id,
+    };
+
+    Ok(ChainTransaction::Ethereum(ethereum_tx))
+}
+
+pub async fn create_solver_remove_liquidity_transaction(
+    from_address: &str,
+    solver_id: &str,
+    asset_chain_id: U256,
+    amount: U256,
+    transaction_hash: &str,
+    contract_address: &str,
+    chain_id: u64,
+    chain_name: &str,
+) -> Result<EthereumTransaction> {
+    let normalized_contract_address = if contract_address.starts_with("0x") {
+        contract_address.to_string()
+    } else {
+        format!("0x{contract_address}")
+    };
+
+    info!(
+        "🔧 [CONTRACT][LIQ] Preparing removeLiquidity(solver_id={}, asset_chain_id={}, amount={}, tx_hash={}) call on {} (chain_id={}, chain_name={}, from={})",
+        solver_id,
+        asset_chain_id,
+        amount,
+        transaction_hash,
+        normalized_contract_address,
+        chain_id,
+        chain_name,
+        from_address
+    );
+
+    let calldata =
+        encode_remove_liquidity_calldata(solver_id, asset_chain_id, amount, transaction_hash)
+            .ok_or_else(|| anyhow::anyhow!("Failed to encode removeLiquidity calldata"))?;
+    let calldata_hex = format!("0x{}", hex::encode(&calldata));
+    info!(
+        "🔧 [CONTRACT][LIQ] removeLiquidity calldata: {} ({} bytes)",
+        calldata_hex,
+        calldata.len()
+    );
+
+    let estimated_gas = estimate_gas_for_deposit_intent(
+        from_address,
+        &normalized_contract_address,
+        &calldata_hex,
+        chain_id,
+    )
+    .await
+    .unwrap_or(200000);
+    let gas_limit = estimated_gas + (estimated_gas / 5).max(25_000);
+    info!(
+        "🔧 [CONTRACT][LIQ] Estimated gas={} -> gas_limit={}",
+        estimated_gas, gas_limit
+    );
+
+    let gas_price = get_gas_price_for_chain(chain_name, chain_id)
+        .await
+        .unwrap_or_else(|_| get_default_gas_price_for_chain(chain_name));
+    info!("🔧 [CONTRACT][LIQ] Gas price (wei): {}", gas_price);
+    let nonce = fetch_ethereum_nonce(from_address, chain_id).await?;
+    info!(
+        "🔧 [CONTRACT][LIQ] Nonce for {} on chain {}: {}",
+        from_address, chain_id, nonce
+    );
+
+    let ethereum_tx = EthereumTransaction {
+        to: normalized_contract_address,
+        value: "0x0".to_string(),
+        gas_limit,
+        gas_price,
+        nonce,
+        data: Some(calldata),
+        chain_id,
+    };
+
+    Ok(ethereum_tx)
+}
+
+pub async fn create_solver_add_liquidity_transaction(
+    from_address: &str,
+    solver_id: &str,
+    asset_chain_id: U256,
+    amount: U256,
+    contract_address: &str,
+    chain_id: u64,
+    chain_name: &str,
+) -> Result<ChainTransaction> {
+    let normalized_contract_address = if contract_address.starts_with("0x") {
+        contract_address.to_string()
+    } else {
+        format!("0x{contract_address}")
+    };
+
+    info!(
+        "🔧 [CONTRACT][LIQ] Preparing addLiquidity(solver_id={}, asset_chain_id={}, amount={}) call on {} (chain_id={}, chain_name={}, from={})",
+        solver_id,
+        asset_chain_id,
+        amount,
+        normalized_contract_address,
+        chain_id,
+        chain_name,
+        from_address
+    );
+
+    let calldata = encode_add_liquidity_calldata(solver_id, asset_chain_id, amount)
+        .ok_or_else(|| anyhow::anyhow!("Failed to encode addLiquidity calldata"))?;
+    let calldata_hex = format!("0x{}", hex::encode(&calldata));
+    info!(
+        "🔧 [CONTRACT][LIQ] addLiquidity calldata: {} ({} bytes)",
+        calldata_hex,
+        calldata.len()
+    );
+
+    let estimated_gas = estimate_gas_for_deposit_intent(
+        from_address,
+        &normalized_contract_address,
+        &calldata_hex,
+        chain_id,
+    )
+    .await
+    .unwrap_or(200000);
+    let gas_limit = estimated_gas + (estimated_gas / 5).max(25_000);
+    info!(
+        "🔧 [CONTRACT][LIQ] Estimated gas={} -> gas_limit={}",
+        estimated_gas, gas_limit
+    );
+
+    let gas_price = get_gas_price_for_chain(chain_name, chain_id)
+        .await
+        .unwrap_or_else(|_| get_default_gas_price_for_chain(chain_name));
+    info!("🔧 [CONTRACT][LIQ] Gas price (wei): {}", gas_price);
+    let nonce = fetch_ethereum_nonce(from_address, chain_id).await?;
+    info!(
+        "🔧 [CONTRACT][LIQ] Nonce for {} on chain {}: {}",
+        from_address, chain_id, nonce
+    );
+
+    let ethereum_tx = EthereumTransaction {
+        to: normalized_contract_address,
+        value: "0x0".to_string(),
+        gas_limit,
+        gas_price,
+        nonce,
+        data: Some(calldata),
         chain_id,
     };
 
@@ -1248,6 +1423,7 @@ pub fn encode_deposit_intent_calldata(
     intent_id: &str,
     timestamp: &str,
 ) -> Option<Vec<u8>> {
+    #[allow(deprecated)]
     let f = Function {
         name: "depositIntent".to_owned(),
         inputs: vec![
@@ -1335,6 +1511,7 @@ pub fn encode_fulfill_intent_calldata(
     intent_id: &str,
     timestamp: &str,
 ) -> Option<Vec<u8>> {
+    #[allow(deprecated)]
     let f = Function {
         name: "fulfillIntent".to_owned(),
         inputs: vec![
@@ -1410,11 +1587,141 @@ pub fn encode_fulfill_intent_calldata(
     f.encode_input(&tokens).ok()
 }
 
+pub fn encode_update_solver_rewards_calldata(
+    solver_address: &str,
+    rewards: &[U256],
+    transaction_hash: &str,
+) -> Option<Vec<u8>> {
+    #[allow(deprecated)]
+    let f = Function {
+        name: "updateSolverRewards".to_owned(),
+        inputs: vec![
+            Param {
+                name: "solverAddress".into(),
+                kind: ParamType::Address,
+                internal_type: None,
+            },
+            Param {
+                name: "rewards".into(),
+                kind: ParamType::Array(Box::new(ParamType::Uint(256))),
+                internal_type: None,
+            },
+            Param {
+                name: "transactionHash".into(),
+                kind: ParamType::String,
+                internal_type: None,
+            },
+        ],
+        outputs: vec![],
+        constant: None,
+        state_mutability: StateMutability::NonPayable,
+    };
+
+    let solver_addr = solver_address.parse::<ethers::types::Address>().ok()?;
+
+    let tokens = vec![
+        Token::Address(solver_addr),
+        Token::Array(
+            rewards
+                .iter()
+                .map(|value| Token::Uint(*value))
+                .collect::<Vec<_>>(),
+        ),
+        Token::String(transaction_hash.to_owned()),
+    ];
+
+    f.encode_input(&tokens).ok()
+}
+
+pub fn encode_remove_liquidity_calldata(
+    solver_id: &str,
+    chain_id: U256,
+    amount: U256,
+    transaction_hash: &str,
+) -> Option<Vec<u8>> {
+    #[allow(deprecated)]
+    let f = Function {
+        name: "removeLiquidity".to_owned(),
+        inputs: vec![
+            Param {
+                name: "solverId".into(),
+                kind: ParamType::String,
+                internal_type: None,
+            },
+            Param {
+                name: "chainId".into(),
+                kind: ParamType::Uint(256),
+                internal_type: None,
+            },
+            Param {
+                name: "amount".into(),
+                kind: ParamType::Uint(256),
+                internal_type: None,
+            },
+            Param {
+                name: "transactionHash".into(),
+                kind: ParamType::String,
+                internal_type: None,
+            },
+        ],
+        outputs: vec![],
+        constant: None,
+        state_mutability: StateMutability::NonPayable,
+    };
+
+    let tokens = vec![
+        Token::String(solver_id.to_owned()),
+        Token::Uint(chain_id),
+        Token::Uint(amount),
+        Token::String(transaction_hash.to_owned()),
+    ];
+
+    f.encode_input(&tokens).ok()
+}
+
+pub fn encode_add_liquidity_calldata(
+    solver_id: &str,
+    chain_id: U256,
+    amount: U256,
+) -> Option<Vec<u8>> {
+    #[allow(deprecated)]
+    let f = Function {
+        name: "addLiquidity".to_owned(),
+        inputs: vec![
+            Param {
+                name: "solverId".into(),
+                kind: ParamType::String,
+                internal_type: None,
+            },
+            Param {
+                name: "chainId".into(),
+                kind: ParamType::Uint(256),
+                internal_type: None,
+            },
+            Param {
+                name: "amount".into(),
+                kind: ParamType::Uint(256),
+                internal_type: None,
+            },
+        ],
+        outputs: vec![],
+        constant: None,
+        state_mutability: StateMutability::NonPayable,
+    };
+
+    let tokens = vec![
+        Token::String(solver_id.to_owned()),
+        Token::Uint(chain_id),
+        Token::Uint(amount),
+    ];
+
+    f.encode_input(&tokens).ok()
+}
+
 /// Fetch current gas price from RPC for Qubetics chain
 pub async fn fetch_qubetics_gas_price(chain_id: u64) -> Result<String> {
     let rpc_url = match chain_id {
-        9029 => std::env::var("MPC_ETHEREUM_RPC_URL")
-            .unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string()),
+        9029 => network_cfg::qubetics_rpc_url_from_env()?,
         _ => {
             return Err(anyhow::anyhow!(
                 "Unsupported chain ID for gas price fetching: {}",
@@ -1552,8 +1859,14 @@ pub enum DetectedAddressType {
 mod tests {
     use super::*;
 
+    fn ensure_testnet_network_type() {
+        std::env::set_var(crate::types::NETWORK_ENV_KEY, "testnet");
+        let _ = crate::types::init_network_type_from_env();
+    }
+
     #[test]
     fn test_qubetics_static_gas_price() {
+        ensure_testnet_network_type();
         // Test Qubetics static gas price (fallback value)
         let static_price = get_default_gas_price_for_chain("qubetics");
         println!("🔧 Qubetics static gas price: {}", static_price);
@@ -1570,6 +1883,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_qubetics_dynamic_gas_price_fallback() {
+        ensure_testnet_network_type();
         // Test that Qubetics falls back to static price when RPC fails
         // This test uses an invalid RPC URL to trigger the fallback
         let original_url = std::env::var("MPC_ETHEREUM_RPC_URL").unwrap_or_default();
@@ -1617,6 +1931,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_qubetics_unsupported_chain() {
+        ensure_testnet_network_type();
         // Test that unsupported chain IDs return an error
         let result = fetch_qubetics_gas_price(1).await; // Ethereum mainnet
         assert!(result.is_err());
@@ -1627,6 +1942,7 @@ mod tests {
 
     #[test]
     fn test_qubetics_gas_price_hex_conversion() {
+        ensure_testnet_network_type();
         // Test that Qubetics hex values are correct
         let qubetics_hex = "0x3B9ACA00";
         let price_decimal = u64::from_str_radix("3B9ACA00", 16).unwrap();
@@ -1643,6 +1959,7 @@ mod tests {
 
     #[test]
     fn test_qubetics_gas_price_consistency() {
+        ensure_testnet_network_type();
         // Test that Qubetics gas price function returns consistent results
         let price1 = get_default_gas_price_for_chain("qubetics");
         let price2 = get_default_gas_price_for_chain("qubetics");
@@ -1657,6 +1974,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_qubetics_gas_price_with_real_rpc() {
+        ensure_testnet_network_type();
         // Test with the actual Qubetics RPC URL (if available)
         // This test will show what happens with a real RPC call
         let original_url = std::env::var("MPC_ETHEREUM_RPC_URL").unwrap_or_default();
@@ -1702,49 +2020,20 @@ mod tests {
     }
 }
 
-/// Detect Bitcoin address type - only P2PKH is supported
-// fn detect_bitcoin_address_type(address: &str) -> DetectedAddressType {
-//     if is_p2pkh_address(address) {
-//         DetectedAddressType::P2PKH
-//     } else {
-//         DetectedAddressType::Unsupported
-//     }
-// }
-
-/// Check if address is P2PKH format
-// fn is_p2pkh_address(address: &str) -> bool {
-//     // Mainnet P2PKH: starts with '1'
-//     // Testnet P2PKH: starts with 'm' or 'n'
-//     (address.starts_with('1') && address.len() >= 26 && address.len() <= 35)
-//         || ((address.starts_with('m') || address.starts_with('n'))
-//             && address.len() >= 26
-//             && address.len() <= 35)
-// }
-
-/// Check if address is testnet P2PKH
-// fn is_testnet_p2pkh_address(address: &str) -> bool {
-//     address.starts_with('m') || address.starts_with('n')
-// }
-
 fn create_bitcoin_script_pubkey(address: &str) -> Result<Vec<u8>> {
-    use bitcoin::{Address, Network};
+    use bitcoin::Address;
     use std::str::FromStr;
 
     // Parse the address and determine network
     let parsed_address = Address::from_str(address)
         .map_err(|e| anyhow::anyhow!("Invalid Bitcoin address '{}': {}", address, e))?;
 
-    // Only support P2PKH addresses
-    // if !is_p2pkh_address(address) {
-    //     return Err(anyhow::anyhow!(
-    //         "Only P2PKH addresses (1.../m.../n...) are supported, got: {}",
-    //         address
-    //     ));
-    // }
-
-    // Require the network to get a checked address. This preserves the network encoded
-    // in the string (mainnet vs testnet/regtest) and prevents silent mismatches.
-    let network = bitcoin::Network::Testnet;
+    // Require the network to match the configured deployment (testnet/mainnet).
+    let network = if network_cfg::network_type().is_testnet() {
+        bitcoin::Network::Testnet
+    } else {
+        bitcoin::Network::Bitcoin
+    };
     let checked_address = parsed_address
         .require_network(network)
         .map_err(|e| anyhow::anyhow!("Address network mismatch for '{}': {}", address, e))?;
@@ -1752,23 +2041,6 @@ fn create_bitcoin_script_pubkey(address: &str) -> Result<Vec<u8>> {
     // Convert to script_pubkey
     let script_pubkey = checked_address.script_pubkey();
     let script_bytes = script_pubkey.to_bytes();
-
-    // Log address type for debugging
-    // let detected_type = detect_bitcoin_address_type(address);
-    // match detected_type {
-    //     DetectedAddressType::P2PKH => {
-    //         tracing::info!(
-    //             "✅ [TRANSACTION] Address {} is P2PKH (Legacy) - supported",
-    //             address
-    //         );
-    //     }
-    //     DetectedAddressType::Unsupported => {
-    //         return Err(anyhow::anyhow!(
-    //             "Unsupported Bitcoin address type: {}. Only P2PKH addresses (1.../m.../n...) are supported.",
-    //             address
-    //         ));
-    //     }
-    // }
 
     Ok(script_bytes)
 }
@@ -1905,7 +2177,7 @@ fn test_validate_and_normalize_hex_amount() {
 
 #[test]
 fn test_validate_transaction_hex_fields() {
-    use crate::rpc_server::DummyTransaction;
+    use crate::types::DummyTransaction;
 
     // Test valid transaction
     let valid_tx = DummyTransaction {
@@ -1943,7 +2215,7 @@ fn test_validate_transaction_hex_fields() {
 
 #[test]
 fn test_validate_contract_transaction_hex_fields() {
-    use crate::rpc_server::ContractTransaction;
+    use crate::types::ContractTransaction;
 
     // Test valid contract transaction
     let valid_contract_tx = ContractTransaction {

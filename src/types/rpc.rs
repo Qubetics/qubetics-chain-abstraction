@@ -1,6 +1,7 @@
 // src/mpc_request_response.rs
 
-use crate::adkg_secp256k1::DKGStatus;
+use crate::protocols::DKGStatus;
+use crate::types::vrf::{VrfRoundSyncRequest, VrfRoundSyncResponse};
 use futures::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use libp2p::{
     request_response::{
@@ -13,7 +14,10 @@ use serde::{Deserialize, Serialize};
 use std::{future::Future, io, pin::Pin};
 use tracing::info;
 
-use super::{p2p::SerializablePeerId, PeerInfo, SerializablePoint, SerializableScalar};
+use super::{
+    p2p::{PeerInfo, SerializablePeerId},
+    SerializablePoint, SerializableScalar,
+};
 
 pub type MPCCodecRequest = <MPCCodec as libp2p::request_response::Codec>::Request;
 pub type MPCCodecResponse = <MPCCodec as libp2p::request_response::Codec>::Response;
@@ -49,6 +53,7 @@ pub enum RPCRequest {
         first_node_start_time: u64,
     },
     RequestCurrentVrfRound,
+    VrfRoundSync(VrfRoundSyncRequest),
     SendAVSSShare {
         dealer_id: SerializablePeerId,
         receiver_id: SerializablePeerId,
@@ -111,6 +116,7 @@ pub enum RPCResponse {
     CurrentVrfRoundResponse {
         current_round: Option<u64>,
     },
+    VrfRoundSync(VrfRoundSyncResponse),
     ShareAccepted,
     ComplaintAccepted,
     FinishedADKG {
@@ -243,9 +249,7 @@ impl RequestResponseCodec for MPCCodec {
 }
 
 /// Build a libp2p request‑response behaviour using our MPCCodec + CBOR.
-///
 /// You can then add this to your Swarm.
-///
 pub fn build_mpc_behaviour() -> CborReqRespBehaviour<MPCCodecRequest, MPCCodecResponse> {
     let cfg = RequestResponseConfig::default();
     let proto = StreamProtocol::new(MPCProtocol.as_ref());

@@ -14,6 +14,7 @@ abigen!(
         function getSolverAllChainAmounts(string solverId) view returns (uint256[] amounts)
         function getActiveSolvers() view returns (string[] solverIds)
         function get_solver_evm_address(string solverId) view returns (address)
+        function getSolverId(address solver) view returns (string)
     ]"#
 );
 
@@ -57,5 +58,15 @@ impl SolverManagerContract {
             .await
             .map_err(|e| anyhow!("contract call failed: {}", e))?;
         Ok(addr)
+    }
+
+    pub async fn get_solver_id(&self, solver: Address) -> Result<String> {
+        let solver_id = self
+            .inner
+            .get_solver_id(solver)
+            .call()
+            .await
+            .map_err(|e| anyhow!("contract call failed: {}", e))?;
+        Ok(solver_id)
     }
 }

@@ -3,19 +3,19 @@ use ethereum_types::U256;
 use ethers::types::U256 as EthersU256;
 use ff::PrimeField;
 use k256::{ProjectivePoint, Scalar};
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
+use tokio::sync::Mutex;
 use uuid::Uuid;
 
-use super::{
-    checksum_from_any, IntentStatus, IntentTransactionIds, TransactionStatus, UserRegistration,
-};
-use crate::database::RewardStorage;
+use super::checksum_from_any;
 use crate::database::{
     Database, DatabaseModule, IntentStorage, TransactionStatusStorage, UserStorage,
 };
-use crate::rpc_server::DepositIntent;
-use crate::types::{SerializablePoint, SerializableScalar};
-use crate::utils::hmac_helper::hmac256_from_addr;
+use crate::database::{LiquidityStorage, RewardStorage};
+pub use crate::types::{
+    DepositIntent, IntentStatus, IntentTransactionIds, SerializablePoint, SerializableScalar,
+    TransactionStatus, UserRegistration,
+};
 use anyhow::Result;
 use tracing::info;
 
@@ -32,7 +32,9 @@ pub struct UserIntentManager {
     intent_storage: IntentStorage,
     tx_status_storage: TransactionStatusStorage,
     reward_storage: RewardStorage,
+    liquidity_storage: LiquidityStorage,
     chain_code: [u8; 32],
+    idempotency_index: Arc<Mutex<HashMap<String, String>>>,
 }
 
 impl UserIntentManager {
@@ -57,7 +59,29 @@ impl UserIntentManager {
             intent_storage: database_module.intent_storage(),
             tx_status_storage: database_module.transaction_status_storage(),
             reward_storage: database_module.reward_storage(),
+            liquidity_storage: database_module.liquidity_storage(),
             chain_code,
+            idempotency_index: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    pub async fn register_idempotency_key(
+        &self,
+        idempotency_key: &str,
+        intent_hash: &str,
+    ) -> Result<bool, String> {
+        let mut guard = self.idempotency_index.lock().await;
+        if let Some(existing_intent) = guard.get(idempotency_key) {
+            if existing_intent == intent_hash {
+                return Ok(true);
+            }
+
+            return Err(format!(
+                "Idempotency key {idempotency_key} already mapped to intent {existing_intent}"
+            ));
+        }
+
+        guard.insert(idempotency_key.to_string(), intent_hash.to_string());
+        Ok(false)
     }
 }

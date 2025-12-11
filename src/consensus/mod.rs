@@ -1,31 +1,22 @@
-use crate::types::p2p::SerializablePeerId;
+use crate::types::{ConsensusMessage, ConsensusResult, SerializablePeerId};
 use anyhow::Result;
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tracing::{debug, info};
 
 pub mod db_consensus;
 pub use db_consensus::DatabaseConsensusNode;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConsensusResult {
-    pub final_node: SerializablePeerId,
-    pub round: u64,
-    pub node_frequencies: HashMap<SerializablePeerId, usize>,
-    pub total_selections: usize,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum ConsensusMessage {
-    /// Broadcast the final consensus result
-    FinalNodeResult { result: ConsensusResult, round: u64 },
-}
-
 #[derive(Clone)]
 pub struct ConsensusNode {
     current_round: u64,
     selected_nodes_by_round: HashMap<u64, Vec<SerializablePeerId>>,
     consensus_results: HashMap<u64, ConsensusResult>,
+}
+
+impl Default for ConsensusNode {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ConsensusNode {
@@ -55,84 +46,7 @@ impl ConsensusNode {
             .get(&round)
             .ok_or_else(|| anyhow::anyhow!("No selected nodes found for round {}", round))?;
 
-        if selected_nodes.is_empty() {
-            return Err(anyhow::anyhow!("No selected nodes available for consensus"));
-        }
-
-        // Count frequency of each node
-        let mut node_frequencies: HashMap<SerializablePeerId, usize> = HashMap::new();
-
-        for node in selected_nodes {
-            *node_frequencies.entry(node.clone()).or_insert(0) += 1;
-        }
-
-        info!(
-            "📊 [CONSENSUS] Node frequencies for round {}: {:?}",
-            round, node_frequencies
-        );
-
-        // Find the most frequently selected node
-        let mut max_frequency = 0;
-        let mut most_frequent_node = None;
-        let mut all_same_frequency = true;
-        let mut first_frequency = None;
-
-        for (node, frequency) in &node_frequencies {
-            if first_frequency.is_none() {
-                first_frequency = Some(*frequency);
-            } else if first_frequency.unwrap() != *frequency {
-                all_same_frequency = false;
-            }
-
-            if *frequency > max_frequency {
-                max_frequency = *frequency;
-                most_frequent_node = Some(node.clone());
-            }
-        }
-
-        info!(
-            "🔍 [CONSENSUS] Most frequent node: {:?} with frequency {} and all same or not {}",
-            most_frequent_node, max_frequency, all_same_frequency
-        );
-        // Gather all candidates that have max_frequency
-        let mut candidates: Vec<SerializablePeerId> = if all_same_frequency {
-            // everyone tied → *all* selected_nodes are candidates
-            selected_nodes.clone()
-        } else {
-            // only those whose frequency == max_frequency
-            node_frequencies
-                .iter()
-                .filter(|(_, &freq)| freq == max_frequency)
-                .map(|(node, _)| node.clone())
-                .collect()
-        };
-
-        // Sort them by their inner PeerId bytes and pick the first
-        candidates.sort_by(|a, b| a.0.to_bytes().cmp(&b.0.to_bytes()));
-        info!(
-            "📋 [CONSENSUS] Candidates with max frequency {}: {:?}",
-            max_frequency, candidates
-        );
-        let final_node = candidates[0].clone();
-
-        if all_same_frequency {
-            info!(
-                "⚖️ [CONSENSUS] All nodes tied ({} each), picking lexicographically first: {:?}",
-                first_frequency.unwrap_or(0),
-                final_node
-            );
-        } else {
-            info!(
-                "🏆 [CONSENSUS] Picking from freq‐{} candidates, lexicographically first: {:?}",
-                max_frequency, final_node
-            );
-        }
-        let result = ConsensusResult {
-            final_node,
-            round,
-            node_frequencies,
-            total_selections: selected_nodes.len(),
-        };
+        let result = Self::calculate_consensus_result(selected_nodes, round)?;
 
         self.consensus_results.insert(round, result.clone());
         self.current_round = round;
@@ -169,10 +83,115 @@ impl ConsensusNode {
                     "📥 [CONSENSUS] Received final node result for round {}: {:?}",
                     round, result.final_node
                 );
+                if result.round != round {
+                    return Err(anyhow::anyhow!(
+                        "Consensus round mismatch: payload={} wrapper={}",
+                        result.round,
+                        round
+                    ));
+                }
+
+                let selected_nodes = self.selected_nodes_by_round.get(&round).ok_or_else(|| {
+                    anyhow::anyhow!("No selected nodes recorded for consensus round {}", round)
+                })?;
+
+                let expected_result = Self::calculate_consensus_result(selected_nodes, round)?;
+
+                if expected_result != result {
+                    return Err(anyhow::anyhow!(
+                        "Invalid consensus result received for round {}: expected {:?}, got {:?}",
+                        round,
+                        expected_result.final_node,
+                        result.final_node
+                    ));
+                }
+
                 self.consensus_results.insert(round, result);
+                self.current_round = self.current_round.max(round);
             }
         }
         Ok(())
+    }
+
+    fn calculate_consensus_result(
+        selected_nodes: &[SerializablePeerId],
+        round: u64,
+    ) -> Result<ConsensusResult> {
+        if selected_nodes.is_empty() {
+            return Err(anyhow::anyhow!("No selected nodes available for consensus"));
+        }
+
+        let mut node_frequencies: HashMap<SerializablePeerId, usize> = HashMap::new();
+
+        for node in selected_nodes {
+            *node_frequencies.entry(node.clone()).or_insert(0) += 1;
+        }
+
+        info!(
+            "📊 [CONSENSUS] Node frequencies for round {}: {:?}",
+            round, node_frequencies
+        );
+
+        let mut max_frequency = 0;
+        let mut most_frequent_node = None;
+        let mut all_same_frequency = true;
+        let mut first_frequency = None;
+
+        for (node, frequency) in &node_frequencies {
+            if first_frequency.is_none() {
+                first_frequency = Some(*frequency);
+            } else if first_frequency.unwrap() != *frequency {
+                all_same_frequency = false;
+            }
+
+            if *frequency > max_frequency {
+                max_frequency = *frequency;
+                most_frequent_node = Some(node.clone());
+            }
+        }
+
+        info!(
+            "🔍 [CONSENSUS] Most frequent node: {:?} with frequency {} and all same or not {}",
+            most_frequent_node, max_frequency, all_same_frequency
+        );
+
+        let mut candidates: Vec<SerializablePeerId> = if all_same_frequency {
+            selected_nodes.to_vec()
+        } else {
+            node_frequencies
+                .iter()
+                .filter(|(_, &freq)| freq == max_frequency)
+                .map(|(node, _)| node.clone())
+                .collect()
+        };
+
+        candidates.sort_by(|a, b| a.0.to_bytes().cmp(&b.0.to_bytes()));
+        info!(
+            "📋 [CONSENSUS] Candidates with max frequency {}: {:?}",
+            max_frequency, candidates
+        );
+
+        let final_node = candidates[0].clone();
+
+        if all_same_frequency {
+            info!(
+                "⚖️ [CONSENSUS] All nodes tied ({} each), picking lexicographically first: {:?}",
+                first_frequency.unwrap_or(0),
+                final_node
+            );
+        } else {
+            info!(
+                "🏆 [CONSENSUS] Picking from freq‐{} candidates, lexicographically first: {:?}",
+                max_frequency, final_node
+            );
+        }
+
+        Ok(ConsensusResult {
+            final_node,
+            round,
+            node_frequencies,
+            total_selections: selected_nodes.len(),
+        })
     }
 
     /// Check if this node is the final selected node for a round
@@ -200,6 +219,7 @@ impl ConsensusNode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::ConsensusMessage;
     use libp2p::identity::Keypair;
 
     #[test]
@@ -258,5 +278,61 @@ mod tests {
 
         let result = consensus.start_consensus(1);
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_handle_message_validates_consensus_result() {
+        let round = 1;
+
+        let nodes: Vec<SerializablePeerId> = (0..3)
+            .map(|_| SerializablePeerId(libp2p::PeerId::from(Keypair::generate_ed25519().public())))
+            .collect();
+
+        let mut sender = ConsensusNode::new();
+        sender.add_selected_nodes(round, nodes.clone());
+        let result = sender
+            .start_consensus(round)
+            .expect("consensus should succeed");
+
+        let mut receiver = ConsensusNode::new();
+        receiver.add_selected_nodes(round, nodes.clone());
+
+        receiver
+            .handle_message(ConsensusMessage::FinalNodeResult {
+                result: result.clone(),
+                round,
+            })
+            .await
+            .expect("valid consensus message should be accepted");
+
+        assert_eq!(receiver.get_consensus_result(round), Some(&result));
+    }
+
+    #[tokio::test]
+    async fn test_handle_message_rejects_tampered_result() {
+        let round = 2;
+        let nodes: Vec<SerializablePeerId> = (0..3)
+            .map(|_| SerializablePeerId(libp2p::PeerId::from(Keypair::generate_ed25519().public())))
+            .collect();
+
+        let mut sender = ConsensusNode::new();
+        sender.add_selected_nodes(round, nodes.clone());
+        let mut result = sender
+            .start_consensus(round)
+            .expect("consensus should succeed");
+
+        // Tamper with the final node to simulate spoofed data
+        result.final_node = nodes[1].clone();
+
+        let mut receiver = ConsensusNode::new();
+        receiver.add_selected_nodes(round, nodes.clone());
+
+        let err = receiver
+            .handle_message(ConsensusMessage::FinalNodeResult { result, round })
+            .await
+            .expect_err("tampered consensus result should be rejected");
+
+        assert!(err.to_string().contains("Invalid consensus result"));
+        assert!(receiver.get_consensus_result(round).is_none());
     }
 }

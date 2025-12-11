@@ -1,4 +1,5 @@
 use super::*;
+use crate::utils::hmac_helper::{bytes_to_scalar_mod_n, hmac_scalar_mod_n};
 use tracing::{error, info};
 
 impl UserIntentManager {
@@ -18,7 +19,7 @@ impl UserIntentManager {
         };
 
         // Fetch all users
-        let users = self.user_storage.get_all_users().await?;
+        let users: HashMap<String, UserRegistration> = self.user_storage.get_all_users().await?;
         info!(
             "👥 [DB_USER_REGISTRY] Users loaded for refresh: {}",
             users.len()
@@ -77,8 +78,7 @@ impl UserIntentManager {
             Ok(a) => a,
             Err(e) => {
                 return Err(format!(
-                    "Invalid ethereum_address '{}': {}",
-                    ethereum_address, e
+                    "Invalid ethereum_address '{ethereum_address}': {e}"
                 ))
             }
         };
@@ -190,7 +190,7 @@ impl UserIntentManager {
     /// Get all registered users
     pub async fn get_all_users(&self) -> Vec<UserRegistration> {
         match self.user_storage.get_all_users().await {
-            Ok(users) => users.into_iter().map(|(_, user)| user).collect(),
+            Ok(users) => users.into_values().collect(),
             Err(e) => {
                 tracing::error!("Failed to get all users: {}", e);
                 Vec::new()
@@ -250,18 +250,24 @@ impl UserIntentManager {
     }
 
     /// Generate HMAC constant for a user
+    /// Uses hmac_scalar_mod_n to safely reduce modulo curve order
     fn generate_hmac_constant(&self, ethereum_address: &str) -> [u8; 32] {
-        hmac256_from_addr(ethereum_address, &self.chain_code)
+        hmac_scalar_mod_n(ethereum_address, &self.chain_code)
             .expect("Failed to generate HMAC constant")
     }
 
     /// Compute tweaked share from DKG share and HMAC constant
+    /// Safely reduces hmac_constant modulo curve order before converting to scalar
     fn compute_tweaked_share(
         &self,
         share: &Scalar,
         hmac_constant: &[u8; 32],
     ) -> SerializableScalar {
-        let hmac_scalar = Scalar::from_repr((*hmac_constant).into()).unwrap();
+        // Reduce modulo curve order to ensure valid scalar (works with both old and new hmac_constants)
+        let hmac_reduced = bytes_to_scalar_mod_n(hmac_constant);
+        // from_repr will always succeed since hmac_reduced is already reduced mod curve order
+        let hmac_scalar = Scalar::from_repr(hmac_reduced.into())
+            .expect("Failed to create scalar from reduced HMAC (should never fail)");
         let tweaked_scalar = *share + hmac_scalar;
         SerializableScalar(tweaked_scalar)
     }

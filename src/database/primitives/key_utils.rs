@@ -126,6 +126,46 @@ pub fn solver_btc_txn_hashes_key(solver_address: &str) -> String {
     )
 }
 
+pub fn solver_add_liquidity_tics_txn_key(solver_address: &str) -> String {
+    format!(
+        "{}{}",
+        keys::SOLVER_ADD_LIQ_TICS_TXN,
+        solver_address.to_lowercase()
+    )
+}
+
+pub fn solver_add_liquidity_btc_txn_key(solver_address: &str) -> String {
+    format!(
+        "{}{}",
+        keys::SOLVER_ADD_LIQ_BTC_TXN,
+        solver_address.to_lowercase()
+    )
+}
+
+pub fn solver_remove_liquidity_tics_txn_key(solver_address: &str) -> String {
+    format!(
+        "{}{}",
+        keys::SOLVER_REMOVE_LIQ_TICS_TXN,
+        solver_address.to_lowercase()
+    )
+}
+
+pub fn solver_remove_liquidity_btc_txn_key(solver_address: &str) -> String {
+    format!(
+        "{}{}",
+        keys::SOLVER_REMOVE_LIQ_BTC_TXN,
+        solver_address.to_lowercase()
+    )
+}
+
 pub fn peer_index_key(peer_id: &str) -> String {
     format!("{}{}", keys::PEER_INDEX, peer_id)
+}
+
+pub fn vrf_current_round_key() -> String {
+    keys::VRF_CURRENT_ROUND.to_string()
+}
+
+pub fn vrf_peer_round_key(peer_id: &str) -> String {
+    format!("{}{}", keys::VRF_PEER_ROUND, peer_id)
 }

@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use libp2p::PeerId;
 use secp256k1::{self, PublicKey, Secp256k1, SecretKey};
 use std::collections::HashMap;
@@ -8,12 +8,11 @@ use tokio::sync::{mpsc, RwLock};
 use tracing::info;
 
 use super::ECDSASignature;
-use crate::chain::{ChainHandler, ChainHandlerFactory, ChainTransaction};
+use crate::chain_abstraction::{ChainHandler, ChainHandlerFactory, ChainTransaction};
 use crate::consensus::ConsensusNode;
-use crate::contract::{ContractClient, ContractConfig, SolverManagerContract};
-use crate::database::{key_utils, ConsensusStorage, Database, SigningStorage};
+use crate::database::{ConsensusStorage, Database, SigningStorage, VrfStorage};
+use crate::protocols::VrfService;
 use crate::types::ChannelMessage;
-use crate::vrf::VrfService;
 
 /// Database-backed signing node that stores state in RocksDB
 #[derive(Clone)]
@@ -24,6 +23,7 @@ pub struct DatabaseSigningNode {
     public_key: Option<PublicKey>,
     signing_storage: SigningStorage,
     consensus_storage: ConsensusStorage,
+    vrf_storage: VrfStorage,
     aggregated_rounds: Arc<RwLock<std::collections::HashSet<u64>>>, // Keep in memory for performance
     message_tx: mpsc::Sender<ChannelMessage>,
     pub vrf_service: Option<VrfService>,
@@ -51,7 +51,8 @@ impl DatabaseSigningNode {
         let chain_handler: Arc<dyn ChainHandler> = chain_handler.into();
 
         let signing_storage = SigningStorage::new(database.clone());
-        let consensus_storage = ConsensusStorage::new(database);
+        let consensus_storage = ConsensusStorage::new(database.clone());
+        let vrf_storage = VrfStorage::new(database.clone());
 
         Self {
             id,
@@ -60,9 +61,14 @@ impl DatabaseSigningNode {
             public_key: None,
             signing_storage,
             consensus_storage,
+            vrf_storage: vrf_storage.clone(),
             aggregated_rounds: Arc::new(RwLock::new(std::collections::HashSet::new())),
             message_tx: message_tx.clone(),
-            vrf_service: Some(VrfService::new(peer_id, message_tx)),
+            vrf_service: Some(VrfService::new_with_storage(
+                peer_id,
+                message_tx,
+                vrf_storage,
+            )),
             chain_handler,
             consensus_node: Some(ConsensusNode::new()),
             available_nodes: None,
@@ -72,15 +78,20 @@ impl DatabaseSigningNode {
 
     /// Derive a PeerId from a string (fallback method)
     fn derive_peer_id_from_string(id: &str) -> PeerId {
-        use libp2p::identity::Keypair;
+        use libp2p::identity::{ed25519, Keypair};
         use sha2::{Digest, Sha256};
 
         let mut hasher = Sha256::new();
         hasher.update(id.as_bytes());
-        let _hash = hasher.finalize();
-        // Use the hash as seed to generate a deterministic keypair
-        let keypair = Keypair::generate_ed25519();
-        PeerId::from(keypair.public())
+        let hash = hasher.finalize();
+
+        let mut key_bytes = [0u8; 32];
+        key_bytes.copy_from_slice(&hash[..32]);
+
+        let ed_kp = ed25519::Keypair::try_from_bytes(&mut key_bytes)
+            .unwrap_or_else(|_| ed25519::Keypair::generate());
+        let keypair = Keypair::from(ed_kp);
+        PeerId::from_public_key(&keypair.public())
     }
 
     pub fn set_threshold(&mut self, new_threshold: usize) {
@@ -267,7 +278,11 @@ impl DatabaseSigningNode {
         let peer_id = PeerId::from_str(&self.id).unwrap_or_else(|_| PeerId::random());
 
         // Create VrfService with proper initial round
-        let mut vrf_service = VrfService::new(peer_id, self.message_tx.clone());
+        let mut vrf_service = VrfService::new_with_storage(
+            peer_id,
+            self.message_tx.clone(),
+            self.vrf_storage.clone(),
+        );
 
         // Set the current round to match the network
         if let Some(network_round) = network_round {

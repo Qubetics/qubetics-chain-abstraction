@@ -9,7 +9,8 @@
     "broadcast-btc": "node broadcast_bitcoin_transaction.js",
     "broadcast-example": "node broadcast_example.js",
     "node-id": "node get_node_id.js",
-    "get-reward-solver": "node get_reward_solver.js"
+    "get-reward-solver": "node get_reward_solver.js",
+    "test-add-liquidity": "node test_add_liquidity.js"
   },
   "keywords": [],
   "author": "",
@@ -26,8 +27,9 @@
     "bitcoinjs-lib": "^6.1.7",
     "cbor-x": "^1.6.0",
     "ethereum-cryptography": "^3.2.0",
-    "ethers": "^6.15.0",
+    "ethers": "^5.8.0",
     "it-pipe": "^3.0.1",
+    "keccak": "^3.0.4",
     "libp2p": "^2.8.5",
     "node-fetch": "^3.3.2",
     "secp256k1": "^5.0.1",

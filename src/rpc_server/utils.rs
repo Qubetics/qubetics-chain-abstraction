@@ -50,6 +50,15 @@ pub(crate) fn convert_src_smallest_to_dst_smallest(
     dst_chain: &str,
     prices: &HashMap<String, Decimal>,
 ) -> Result<u128, TransactionError> {
+    // If source and destination chains are the same, do not perform any conversion.
+    if src_chain.eq_ignore_ascii_case(dst_chain) {
+        info!(
+            "🔄 [CONVERSION] Skipped: source and destination chains are the same ({}). Using original amount: {}",
+            src_chain, amount_src_smallest
+        );
+        return Ok(amount_src_smallest);
+    }
+
     let src_sym = symbol_for(src_chain);
     let dst_sym = symbol_for(dst_chain);
 
@@ -146,14 +155,14 @@ pub(crate) fn convert_src_smallest_to_dst_smallest(
 pub async fn fetch_crypto_prices() -> Result<HashMap<String, Decimal>, String> {
     let base_url =
         std::env::var("BACKEND_API_URL").unwrap_or_else(|_| "http://172.16.15.63:7322".to_string());
-    let url = format!("{}/api/v1/cryptos/prices?symbols=BTC,TICS", base_url);
+    let url = format!("{base_url}/api/v1/cryptos/prices?symbols=BTC,TICS");
     let client = Client::new();
 
     info!("Fetching crypto prices from URL: {}", url);
 
     let resp = client.get(&url).send().await.map_err(|e| {
         error!("Failed to fetch crypto prices: {}", e);
-        format!("Failed to fetch crypto prices: {}", e)
+        format!("Failed to fetch crypto prices: {e}")
     })?;
 
     let status = resp.status();
@@ -161,7 +170,7 @@ pub async fn fetch_crypto_prices() -> Result<HashMap<String, Decimal>, String> {
 
     let resp_text = resp.text().await.map_err(|e| {
         error!("Failed to read crypto prices response text: {}", e);
-        format!("Failed to read crypto prices response text: {}", e)
+        format!("Failed to read crypto prices response text: {e}")
     })?;
 
     debug!("Crypto prices API response body: {}", resp_text);
@@ -172,14 +181,13 @@ pub async fn fetch_crypto_prices() -> Result<HashMap<String, Decimal>, String> {
             status, resp_text
         );
         return Err(format!(
-            "Crypto prices API returned non-success status {}: {}",
-            status, resp_text
+            "Crypto prices API returned non-success status {status}: {resp_text}"
         ));
     }
 
     let resp_json: Value = serde_json::from_str(&resp_text).map_err(|e| {
         error!("Failed to parse crypto prices response: {}", e);
-        format!("Failed to parse crypto prices response: {}", e)
+        format!("Failed to parse crypto prices response: {e}")
     })?;
 
     debug!("Crypto prices API response JSON: {:?}", resp_json);
@@ -190,7 +198,7 @@ pub async fn fetch_crypto_prices() -> Result<HashMap<String, Decimal>, String> {
             .and_then(|v| v.as_str())
             .unwrap_or("Unknown error");
         error!("Crypto prices API error: {}", msg);
-        return Err(format!("Crypto prices API error: {}", msg));
+        return Err(format!("Crypto prices API error: {msg}"));
     }
 
     let data = resp_json.get("data").ok_or_else(|| {
@@ -357,6 +365,87 @@ pub(crate) async fn wait_for_transaction_result(
 
     // Return the best result we found, or None if we found nothing
     best_result
+}
+
+/// Wait for reward transaction IDs (BTC/TICS) associated with a solver.
+/// Compares against previously observed IDs to ensure we only return new values.
+pub(crate) async fn wait_for_reward_transaction_ids(
+    user_intent_manager: &UserIntentManager,
+    solver_address: &str,
+    expect_tics: bool,
+    expect_btc: bool,
+    previous_tics_tx_id: Option<String>,
+    previous_btc_tx_id: Option<String>,
+    timeout_secs: u64,
+) -> (Option<String>, Option<String>) {
+    if !expect_tics && !expect_btc {
+        return (None, None);
+    }
+
+    let start = Instant::now();
+    let poll_interval = Duration::from_millis(250);
+    let timeout = Duration::from_secs(timeout_secs);
+
+    let mut latest_tics_tx = None;
+    let mut latest_btc_tx = None;
+
+    loop {
+        if expect_tics && latest_tics_tx.is_none() {
+            if let Some(current) = user_intent_manager
+                .get_solver_tics_txn_hash(solver_address)
+                .await
+            {
+                if previous_tics_tx_id.as_ref() != Some(&current) {
+                    latest_tics_tx = Some(current);
+                }
+            }
+        }
+
+        if expect_btc && latest_btc_tx.is_none() {
+            if let Some(current) = user_intent_manager
+                .get_solver_btc_txn_hash(solver_address)
+                .await
+            {
+                if previous_btc_tx_id.as_ref() != Some(&current) {
+                    latest_btc_tx = Some(current);
+                }
+            }
+        }
+
+        if (!expect_tics || latest_tics_tx.is_some()) && (!expect_btc || latest_btc_tx.is_some()) {
+            break;
+        }
+
+        if start.elapsed() >= timeout {
+            break;
+        }
+
+        tokio::time::sleep(poll_interval).await;
+    }
+
+    (latest_tics_tx, latest_btc_tx)
+}
+
+pub(crate) async fn wait_for_withdraw_liquidity_transaction_ids(
+    user_intent_manager: &UserIntentManager,
+    solver_address: &str,
+    expect_tics: bool,
+    expect_btc: bool,
+    previous_tics_tx_id: Option<String>,
+    previous_btc_tx_id: Option<String>,
+    timeout_secs: u64,
+) -> (Option<String>, Option<String>) {
+    // Reuse the same mechanism as rewards since both use solver transaction storage
+    wait_for_reward_transaction_ids(
+        user_intent_manager,
+        solver_address,
+        expect_tics,
+        expect_btc,
+        previous_tics_tx_id,
+        previous_btc_tx_id,
+        timeout_secs,
+    )
+    .await
 }
 
 // Helper function to get the actual DKG secret share from shared state

@@ -16,6 +16,7 @@ import keccak from 'keccak';
 // Configuration
 const RPC_BASE_URL = 'http://127.0.0.1:8082'; // Default RPC port
 const CLAIM_REWARD_ENDPOINT = `${RPC_BASE_URL}/claim_reward`;
+const API_KEY = "arpit";
 
 // Test private key - REPLACE THIS WITH YOUR REGISTERED TEST PRIVATE KEY
 const TEST_PRIVATE_KEY = '0x93cc7fbc4bfd7fcfd83d11c85ba522f8fa1c03ece1a3b5f1782bc164996844d9';
@@ -46,7 +47,8 @@ function makeRequest(url, data, method = 'POST') {
             method: method,
             headers: {
                 'Content-Type': 'application/json',
-                'Content-Length': Buffer.byteLength(data)
+                'Content-Length': Buffer.byteLength(data),
+                'X-API-KEY': "2919cd546f2c4338bccb4794a3d6afba2282e5729653fc2c2ff6c5e0e194ar45" 
             }
         };
 
@@ -198,8 +200,11 @@ async function testClaimRewardEthOnly() {
                 if (result.reward_btc) {
                     console.log(`${colors.green}💰 BTC reward: ${result.reward_btc}${colors.reset}`);
                 }
-                if (result.total_reward) {
-                    console.log(`${colors.green}💰 Total reward: ${result.total_reward}${colors.reset}`);
+                if (result.tics_reward_tx_id) {
+                    console.log(`${colors.green}🧾 TICS reward tx id: ${result.tics_reward_tx_id}${colors.reset}`);
+                }
+                if (result.btc_reward_tx_id) {
+                    console.log(`${colors.green}🧾 BTC reward tx id: ${result.btc_reward_tx_id}${colors.reset}`);
                 }
             } else {
                 console.log(`${colors.red}❌ Claim reward failed: ${result.message || 'Unknown error'}${colors.reset}`);
@@ -251,8 +256,11 @@ async function testClaimRewardBtcOnly() {
                 if (result.reward_btc) {
                     console.log(`${colors.green}💰 BTC reward: ${result.reward_btc}${colors.reset}`);
                 }
-                if (result.total_reward) {
-                    console.log(`${colors.green}💰 Total reward: ${result.total_reward}${colors.reset}`);
+                if (result.tics_reward_tx_id) {
+                    console.log(`${colors.green}🧾 TICS reward tx id: ${result.tics_reward_tx_id}${colors.reset}`);
+                }
+                if (result.btc_reward_tx_id) {
+                    console.log(`${colors.green}🧾 BTC reward tx id: ${result.btc_reward_tx_id}${colors.reset}`);
                 }
             } else {
                 console.log(`${colors.red}❌ Claim reward failed: ${result.message || 'Unknown error'}${colors.reset}`);
@@ -304,8 +312,11 @@ async function testClaimRewardBoth() {
                 if (result.reward_btc) {
                     console.log(`${colors.green}💰 BTC reward: ${result.reward_btc}${colors.reset}`);
                 }
-                if (result.total_reward) {
-                    console.log(`${colors.green}💰 Total reward: ${result.total_reward}${colors.reset}`);
+                if (result.tics_reward_tx_id) {
+                    console.log(`${colors.green}🧾 TICS reward tx id: ${result.tics_reward_tx_id}${colors.reset}`);
+                }
+                if (result.btc_reward_tx_id) {
+                    console.log(`${colors.green}🧾 BTC reward tx id: ${result.btc_reward_tx_id}${colors.reset}`);
                 }
             } else {
                 console.log(`${colors.red}❌ Claim reward failed: ${result.message || 'Unknown error'}${colors.reset}`);

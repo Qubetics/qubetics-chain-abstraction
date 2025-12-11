@@ -1,11 +1,11 @@
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 
-/// ===============
+///    ===============
 /// 1) hmac256_from_addr
-/// ===============
-/// Takes an Ethereum-style address (20 bytes, hex string with/without 0x),
-/// runs HMAC-SHA256 with a secret key, and returns a full 32-byte digest.
+///    ===============
+///    Takes an Ethereum-style address (20 bytes, hex string with/without 0x),
+///    runs HMAC-SHA256 with a secret key, and returns a full 32-byte digest.
 ///
 /// Use case: whenever you want a deterministic 32-byte constant
 /// tied to a user's address but hidden behind your server's secret key.
@@ -26,12 +26,12 @@ pub fn hmac256_from_addr(addr: &str, key: &[u8]) -> Result<[u8; 32], String> {
 /// ===============
 /// 2) hmac64_from_addr
 /// ===============
-/// Convenience wrapper around hmac256_from_addr:
-/// - still HMACs the address with the key
-/// - but only returns the first 8 bytes (big-endian) as a u64.
+///    Convenience wrapper around hmac256_from_addr:
+///    - still HMACs the address with the key
+///    - but only returns the first 8 bytes (big-endian) as a u64.
 ///
-/// Use case: when you want a small constant (e.g., numeric ID, seed, index)
-/// instead of carrying around 32 bytes.
+///    Use case: when you want a small constant (e.g., numeric ID, seed, index)
+///    instead of carrying around 32 bytes.
 pub fn hmac64_from_addr(addr: &str, key: &[u8]) -> Result<u64, String> {
     let h = hmac256_from_addr(addr, key)?;
     Ok(u64::from_be_bytes(h[0..8].try_into().unwrap()))
@@ -71,6 +71,37 @@ pub fn hmac_scalar_mod_n(addr: &str, key: &[u8]) -> Result<[u8; 32], String> {
     let mut out = [0u8; 32];
     out[32 - be.len()..].copy_from_slice(&be);
     Ok(out)
+}
+
+/// ===============
+/// 4) bytes_to_scalar_mod_n
+/// ===============
+/// Safely converts arbitrary 32-byte array to a secp256k1 scalar by reducing modulo curve order.
+/// - Takes any 32-byte array
+/// - Reduces it mod the curve order `n`
+/// - Returns the reduced bytes (in [0..n-1])
+///
+/// Use case: when you have bytes that might be >= curve order and need to safely
+/// convert them to a scalar without panicking.
+pub fn bytes_to_scalar_mod_n(bytes: &[u8; 32]) -> [u8; 32] {
+    use num_bigint::BigUint;
+
+    let n = BigUint::parse_bytes(
+        b"FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141",
+        16,
+    )
+    .unwrap();
+
+    let x = BigUint::from_bytes_be(bytes);
+    let x = x % &n; // reduce mod n
+
+    let mut be = x.to_bytes_be();
+    if be.len() > 32 {
+        be = be[be.len() - 32..].to_vec();
+    }
+    let mut out = [0u8; 32];
+    out[32 - be.len()..].copy_from_slice(&be);
+    out
 }
 
 #[cfg(test)]

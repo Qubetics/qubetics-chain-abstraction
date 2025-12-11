@@ -1,6 +1,4 @@
-use crate::user_intent_manager::checksum_from_any;
-
-use super::types::ErrorResponse;
+use crate::{types::rpc_server::ErrorResponse, user_intent_manager::checksum_from_any};
 
 #[derive(Debug)]
 pub enum RpcError {
@@ -22,6 +20,7 @@ pub enum RpcError {
     // General errors
     InternalError(String),
     SerializationError(String),
+    Unauthorized(String),
 }
 
 impl RpcError {
@@ -93,6 +92,12 @@ impl RpcError {
                 message: "Data serialization failed".to_string(),
                 details: Some(msg.clone()),
             },
+            RpcError::Unauthorized(msg) => ErrorResponse {
+                status: "error".to_string(),
+                error_code: "UNAUTHORIZED".to_string(),
+                message: "Unauthorized access".to_string(),
+                details: Some(msg.clone()),
+            },
         }
     }
 }
@@ -115,8 +120,7 @@ pub(crate) fn validate_ethereum_address(address: &str) -> Result<String, RpcErro
     match checksum_from_any(address) {
         Ok(normalized) => Ok(normalized),
         Err(e) => Err(RpcError::InvalidAddress(format!(
-            "Invalid address format: {}",
-            e
+            "Invalid address format: {e}"
         ))),
     }
 }
