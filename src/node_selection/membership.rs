@@ -6,7 +6,7 @@ use tracing::info;
 use super::threshold::ThresholdCalculator;
 
 /// Trait for managing node membership in the network
-pub trait NodeMembership {
+pub trait NodeMembership: Send + Sync {
     /// Add a new node to the network
     fn add_node(&mut self, node_id: PeerId) -> Result<(), String>;
 

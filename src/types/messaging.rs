@@ -57,6 +57,7 @@ pub enum ChannelMessage {
         solver_id: String,
         amount_btc: Option<String>,
         amount_tics: Option<String>,
+        request_id: String,
     },
     WithdrawLiquidity {
         solver_address: String,
@@ -134,6 +135,7 @@ pub enum GossipsubMessage {
         solver_id: String,
         amount_btc: Option<String>,
         amount_tics: Option<String>,
+        request_id: String,
     },
     WithdrawLiquidity {
         solver_address: String,
@@ -170,5 +172,25 @@ pub enum GossipsubMessage {
     IntentHashBroadcast {
         intent_hash: String,
         node_id: String,
+    },
+    SequencerSync {
+        /// The transaction_id of the request being processed
+        transaction_id: String,
+        /// The sequence number for ordering
+        sequence: u64,
+        /// Node that is proposing/processing this request
+        node_id: String,
+        /// State: "proposed", "processing", "completed"
+        state: String,
+    },
+    NetworkTransactionSequencerSync {
+        /// The transaction_id of the request being processed
+        transaction_id: String,
+        /// The sequence number for ordering
+        sequence: u64,
+        /// Node that is proposing/processing this request
+        node_id: String,
+        /// State: "proposed", "processing", "completed"
+        state: String,
     },
 }

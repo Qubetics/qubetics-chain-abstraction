@@ -14,15 +14,15 @@ import keccak from 'keccak';
 
 
 // Configuration
-const RPC_BASE_URL = 'http://127.0.0.1:8082'; // Default RPC port
+const RPC_BASE_URL = 'http://127.0.0.1:8083'; // Default RPC port
 const CLAIM_REWARD_ENDPOINT = `${RPC_BASE_URL}/claim_reward`;
-const API_KEY = "arpit";
+const API_KEY = "2919cd546f2c4338bccb4794a3d6afba2282e5729653fc2c2ff6c5e0e194ar45";
 
 // Test private key - REPLACE THIS WITH YOUR REGISTERED TEST PRIVATE KEY
-const TEST_PRIVATE_KEY = '0x93cc7fbc4bfd7fcfd83d11c85ba522f8fa1c03ece1a3b5f1782bc164996844d9';
+const TEST_PRIVATE_KEY = '93cc7fbc4bfd7fcfd83d11c85ba522f8fa1c03ece1a3b5f1782bc164996844d9';
 
 // Test addresses - REPLACE THESE WITH YOUR ACTUAL TEST ADDRESSES
-const TEST_ETH_ADDRESS = '0x002aF85c8865DE4604dF07a1105EfEF2b8e0dE05';
+const TEST_ETH_ADDRESS = '0xf71736a05f5673da815c1853378ff12c1aad4ff6';
 const TEST_BTC_ADDRESS = 'mh12dZHkgTajT1H6t8FkWoNC4KucxByWBA';
 
 // Colors for console output

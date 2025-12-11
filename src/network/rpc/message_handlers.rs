@@ -312,14 +312,21 @@ impl MpcNetworkLayer {
                             let btc_u128 = convert_amount(btc_amount);
                             let tics_u128 = convert_amount(tics_amount);
 
-                            if btc_u128.is_some() || tics_u128.is_some() {
-                                self.submit_solver_reward_contract_update(
-                                    solver_address,
-                                    btc_u128,
-                                    tics_u128,
-                                    transaction_id,
-                                )
-                                .await?;
+                        if btc_u128.is_some() || tics_u128.is_some() {
+                            // Use sequencer to ensure sequential execution
+                            if let Err(e) = self
+                                .submit_solver_claim_reward_to_sequencer(
+                                solver_address,
+                                btc_u128,
+                                tics_u128,
+                                transaction_id,
+                            )
+                                .await
+                            {
+                                error!(
+                                    "❌ [NETWORK] Failed to enqueue claim-reward contract update for solver {} after tx {}: {}",
+                                    solver_address, transaction_id, e
+                                );
                             }
                         }
                     }
@@ -492,45 +499,35 @@ impl MpcNetworkLayer {
                         );
                     } else {
 
+                    info!(
+                        "💧 [NETWORK] Checking pending withdraw amount for solver {} ({:?})",
+                        solver_address, network
+                    );
+                    if let Some(amount) = self
+                        .take_pending_liquidity_contract_update_amount(solver_address, network)
+                        .await
+                    {
+                        let chain_name = match network {
+                            TransactionNetwork::TICS => "qubetics",
+                            TransactionNetwork::BTC => "btc",
+                        };
+                        // Keep it simple: use payout transaction_id as the sequencer request_id
                         info!(
-                            "💧 [NETWORK] Checking pending withdraw amount for solver {} ({:?})",
-                            solver_address, network
+                            "💧 [NETWORK] Enqueuing contract liquidity update via sequencer for solver {} on {} amount {} after payout tx {}",
+                            solver_address, chain_name, amount, transaction_id
                         );
-                        if let Some(amount) = self
-                            .take_pending_liquidity_contract_update_amount(solver_address, network)
+                        if let Err(e) = self
+                            .submit_solver_withdraw_liquidity_to_sequencer(
+                                solver_address,
+                                chain_name,
+                                amount,
+                                transaction_id,
+                            )
                             .await
                         {
-                            let chain_name = match network {
-                                TransactionNetwork::TICS => "qubetics",
-                                TransactionNetwork::BTC => "btc",
-                            };
-                            info!(
-                                "💧 [NETWORK] Initiating contract liquidity update for solver {} on {} amount {} after tx {}",
-                                solver_address, chain_name, amount, transaction_id
-                            );
-                            if let Err(e) = self
-                                .submit_solver_liquidity_contract_update(
-                                    solver_address,
-                                    chain_name,
-                                    amount,
-                                    transaction_id,
-                                )
-                                .await
-                            {
-                                error!(
-                                    "❌ [NETWORK] Failed to submit contract liquidity update for solver {} after tx {}: {}",
-                                    solver_address, transaction_id, e
-                                );
-                            } else {
-                                info!(
-                                    "✅ [NETWORK] Submitted contract liquidity update for solver {} (chain: {}, amount: {})",
-                                    solver_address, chain_name, amount
-                                );
-                            }
-                        } else {
-                            info!(
-                                "ℹ️ [NETWORK] No pending liquidity update amount found for solver {} after tx {}; skipping contract update",
-                                solver_address, transaction_id
+                            error!(
+                                "❌ [NETWORK] Failed to enqueue withdraw-liquidity contract update for solver {} after tx {}: {}",
+                                solver_address, transaction_id, e
                             );
                         }
                     }

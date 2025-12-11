@@ -1,5 +1,5 @@
 /// Trait for calculating threshold based on total nodes
-pub trait ThresholdCalculator {
+pub trait ThresholdCalculator: Send + Sync {
     /// Calculate the threshold based on the total number of nodes
     fn calculate_threshold(&self, total_nodes: usize) -> usize;
 

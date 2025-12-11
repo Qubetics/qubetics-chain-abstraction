@@ -20,7 +20,7 @@ const ADD_ENDPOINT = `${RPC_BASE_URL}/add_liquidity`;
 const SOLVER_ID = process.env.SOLVER_ID ?? 'arpit1';
 const TEST_PRIVATE_KEY =
   process.env.SOLVER_PRIVATE_KEY ??
-  '0x93cc7fbc4bfd7fcfd83d11c85ba522f8fa1c03ece1a3b5f1782bc164996844d9';
+  '93cc7fbc4bfd7fcfd83d11c85ba522f8fa1c03ece1a3b5f1782bc164996844d9';
 
 const DEFAULT_TICS_AMOUNT = process.env.TICS_AMOUNT ?? '10000000000000000000000';
 const DEFAULT_BTC_AMOUNT = process.env.BTC_AMOUNT ?? null;

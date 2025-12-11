@@ -234,29 +234,66 @@ impl MpcNetworkLayer {
             hex::encode(tx_bytes.clone())
         );
 
-        let mut eth_signer = EthereumSigner::new(signing_node);
-        eth_signer
-            .sign_transaction(
-                tx_bytes,
-                &eth_tx,
-                None,
-                None,
-                None,
-                Some(tx_type),
-                Some(solver_address.to_string()),
-            )
-            .await?;
-
-        info!("✅ [{}] TICS payout signing completed", context);
+        // For withdraw_liquidity and reward_txn, queue to network sequencer for coordinated signing
         if context == "withdraw_liquidity" {
-            self.record_pending_liquidity_contract_update(
-                solver_address,
-                TransactionNetwork::TICS,
-                amount,
-            )
-            .await;
+            if let Err(e) = self
+                .submit_withdraw_liquidity_to_sequencer(
+                    solver_address,
+                    eth_address,
+                    amount,
+                    tx_bytes,
+                    eth_tx,
+                )
+                .await
+            {
+                error!(
+                    "❌ [{}] Failed to submit withdraw liquidity to sequencer: {}",
+                    context, e
+                );
+                return Err(e);
+            }
+
+            info!("✅ [{}] Submitted withdraw liquidity to network sequencer", context);
+            // Note: record_pending_liquidity_contract_update will be called after transaction is signed
+            Ok(())
+        } else if context == "reward_txn" || context == "claim_reward" {
+            if let Err(e) = self
+                .submit_reward_payout_to_sequencer(
+                    solver_address,
+                    eth_address,
+                    amount,
+                    tx_bytes,
+                    eth_tx,
+                )
+                .await
+            {
+                error!(
+                    "❌ [{}] Failed to submit reward payout to sequencer: {}",
+                    context, e
+                );
+                return Err(e);
+            }
+
+            info!("✅ [{}] Submitted reward payout to network sequencer", context);
+            Ok(())
+        } else {
+            // For other contexts, sign directly
+            let mut eth_signer = EthereumSigner::new(signing_node);
+            eth_signer
+                .sign_transaction(
+                    tx_bytes,
+                    &eth_tx,
+                    None,
+                    None,
+                    None,
+                    Some(tx_type),
+                    Some(solver_address.to_string()),
+                )
+                .await?;
+
+            info!("✅ [{}] TICS payout signing completed", context);
+            Ok(())
         }
-        Ok(())
     }
 
     async fn process_btc_payout(
@@ -984,6 +1021,7 @@ impl MpcNetworkLayer {
         solver_id: &str,
         amount_btc: &Option<String>,
         amount_tics: &Option<String>,
+        request_id: &str,
     ) -> Result<()> {
         let mut dispatched = false;
 
@@ -993,11 +1031,13 @@ impl MpcNetworkLayer {
                     "💧 [ADD-LIQ] Dispatching contract update for solver {} on qubetics (amount: {})",
                     solver_address, amount_str
                 );
-                self.submit_solver_add_liquidity_contract_update(
+                // Submit to sequencer for synchronized execution
+                self.submit_solver_add_liquidity_to_sequencer(
                     solver_address,
                     solver_id,
                     "qubetics",
                     amount,
+                    request_id,
                 )
                 .await?;
                 dispatched = true;
@@ -1010,11 +1050,13 @@ impl MpcNetworkLayer {
                     "💧 [ADD-LIQ] Dispatching contract update for solver {} on btc (amount: {})",
                     solver_address, amount_str
                 );
-                self.submit_solver_add_liquidity_contract_update(
+                // Submit to sequencer for synchronized execution
+                self.submit_solver_add_liquidity_to_sequencer(
                     solver_address,
                     solver_id,
                     "btc",
                     amount,
+                    request_id,
                 )
                 .await?;
                 dispatched = true;
@@ -1734,6 +1776,26 @@ impl MpcNetworkLayer {
                                             None
                                         }
                                     };
+
+                                    // For NetworkToTarget, queue to sequencer for coordinated signing
+                                    if matches!(transaction_type, crate::types::TransactionType::NetworkToTarget) {
+                                        info!(
+                                            "📝 [LOCAL] NetworkToTarget (EVM) detected - queuing via network transaction sequencer (intent_hash={})",
+                                            intent_hash
+                                        );
+                                        self.submit_network_to_target_to_sequencer(
+                                            &intent,
+                                            &intent_hash,
+                                            amount,
+                                            tx_bytes.clone(),
+                                            eth_tx.clone(),
+                                            user_tweaked_share,
+                                            user_eth_address.clone(),
+                                        )
+                                        .await?;
+                                        return Ok(());
+                                    }
+
                                     {
                                         let mut eth_signer = EthereumSigner::new(signing_node);
                                         eth_signer
@@ -2257,6 +2319,7 @@ impl MpcNetworkLayer {
                 solver_id,
                 amount_btc,
                 amount_tics,
+                request_id,
             } => {
                 info!(
                     "💧 [NETWORK] Processing add liquidity for solver {} (solver_id: {})",
@@ -2268,6 +2331,7 @@ impl MpcNetworkLayer {
                     solver_id: solver_id.clone(),
                     amount_btc: amount_btc.clone(),
                     amount_tics: amount_tics.clone(),
+                    request_id: request_id.clone(),
                 };
                 let msg_bytes = serde_json::to_vec(&add_msg)
                     .map_err(|e| anyhow::anyhow!("Failed to serialize add-liquidity msg: {}", e))?;
@@ -2283,6 +2347,7 @@ impl MpcNetworkLayer {
                     &solver_id,
                     &amount_btc,
                     &amount_tics,
+                    &request_id,
                 )
                 .await?;
 

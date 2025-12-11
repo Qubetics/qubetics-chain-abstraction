@@ -27,6 +27,8 @@ const API_KEY = "2919cd546f2c4338bccb4794a3d6afba2282e5729653fc2c2ff6c5e0e194ar4
 
 // 👉 Private key you provided (hex, no 0x prefix needed)
 const TEST_PRIVKEY = '11d281397918948a90ce5ce2a72945ee7929a5a932e5bb3d22664ba98f86755e';
+// const TEST_PRIVKEY = '1e61daf814fae3af13d9ec447f2b2da96a7d307b5c73ec85c275fb9c67ea8f1a';
+
 let TEST_TX_ID = "0x0942448ca6f6517c05c361e249cdaf9f5e054e6290236c43f6537705ef2a7885";
 
 // =========================
@@ -176,9 +178,20 @@ async function testUserMpcDeposit({ wallet, amount, idempotencyKey }) {
       target_chain: 'qubetics',
       amount: amount, // Use the passed amount parameter
       source_token: 'TICS',
-      target_token: 'TICS',
+      target_token: 'BTC',
       timestamp: oooo,
     };
+    // const depositIntent = {
+    //   source_address: userInfo.data.derived_btc_address, // Use canonical address
+    //   target_address: userInfo.data.derived_eth_address,
+    //   source_chain: 'bitcoin',
+    //   target_chain: 'qubetics',
+    //   amount: amount, // Use the passed amount parameter
+    //   source_token: 'BTC',
+    //   target_token: 'TICS',
+    //   timestamp: oooo,
+    // };
+
     console.log(`📊 Deposit Intent: ${JSON.stringify(depositIntent)}`, 'cyan');
     // Serialize DepositIntent for signing
     const msg = JSON.stringify(depositIntent);
@@ -297,9 +310,9 @@ async function runTests() {
   log(`\n🔑 Derived signer address from TEST_PRIVKEY: ${signerAddr}`, 'blue');
 
   // 1) DKG status
-  await testDKGStatus();
+  // await testDKGStatus();
 
-  // 2) Register ONLY the derived address 
+  // // 2) Register ONLY the derived address 
   // const reg = await testRegisterUser(signerAddr);
 
   // if (reg.success) {
@@ -312,7 +325,7 @@ async function runTests() {
 
   // 3) MPC deposit test WITHOUT tx_id (should pass Some(signer) to handle_deposit_intent)
   log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
-  const amount = 25100000000000000000
+  const amount = 1000000000000000000
   await testUserMpcDeposit({ wallet, amount });
   // log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
   // const amount = 13000000000000000000

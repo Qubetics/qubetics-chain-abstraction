@@ -91,11 +91,62 @@ impl ConsensusNode {
                     ));
                 }
 
-                let selected_nodes = self.selected_nodes_by_round.get(&round).ok_or_else(|| {
-                    anyhow::anyhow!("No selected nodes recorded for consensus round {}", round)
-                })?;
+                // Get or reconstruct selected nodes for validation
+                let selected_nodes = if let Some(nodes) = self.selected_nodes_by_round.get(&round) {
+                    // We have the selected nodes - use them for validation
+                    info!(
+                        "✅ [CONSENSUS] Using existing selected nodes for round {}: {} nodes",
+                        round,
+                        nodes.len()
+                    );
+                    nodes.clone()
+                } else {
+                    // We don't have selected nodes (maybe we missed VRF broadcasts)
+                    // Reconstruct them from the consensus result's node_frequencies
+                    info!(
+                        "⚠️ [CONSENSUS] No selected nodes recorded for round {}, reconstructing from consensus result node_frequencies: {:?}",
+                        round,
+                        result.node_frequencies
+                    );
+                    
+                    if result.node_frequencies.is_empty() {
+                        return Err(anyhow::anyhow!(
+                            "Cannot reconstruct selected nodes for round {}: node_frequencies is empty in consensus result",
+                            round
+                        ));
+                    }
+                    
+                    let mut reconstructed_nodes = Vec::new();
+                    for (node, frequency) in &result.node_frequencies {
+                        info!(
+                            "🔧 [CONSENSUS] Reconstructing: adding node {:?} {} times",
+                            node, frequency
+                        );
+                        // Add each node 'frequency' times to match the original selection
+                        for _ in 0..*frequency {
+                            reconstructed_nodes.push(node.clone());
+                        }
+                    }
+                    
+                    info!(
+                        "✅ [CONSENSUS] Reconstructed {} selected nodes for round {}",
+                        reconstructed_nodes.len(),
+                        round
+                    );
+                    
+                    if reconstructed_nodes.is_empty() {
+                        return Err(anyhow::anyhow!(
+                            "Reconstruction failed for round {}: reconstructed list is empty",
+                            round
+                        ));
+                    }
+                    
+                    // Store the reconstructed nodes for future reference
+                    self.selected_nodes_by_round.insert(round, reconstructed_nodes.clone());
+                    reconstructed_nodes
+                };
 
-                let expected_result = Self::calculate_consensus_result(selected_nodes, round)?;
+                let expected_result = Self::calculate_consensus_result(&selected_nodes, round)?;
 
                 if expected_result != result {
                     return Err(anyhow::anyhow!(
