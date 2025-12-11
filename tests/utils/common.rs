@@ -70,7 +70,7 @@ pub async fn run_nodes(
     client: &Client,
     rpc_port: u16,
     node_dirs: &[&str],
-) -> anyhow::Result<(Vec<NodeProcess>, String)> {
+) -> anyhow::Result<(Vec<NodeProcess>, String, u16)> {
     // Load environment variables for test
     dotenv::dotenv().ok();
     // Ensure NETWORK_TYPE is set for the test process
@@ -199,15 +199,23 @@ pub async fn run_nodes(
         .expect("Failed to extract peer ID from multiaddr");
     println!("Node 1 Peer ID: {}", node1_peer_id);
 
-    Ok((nodes, node1_peer_id.to_string()))
+    let node1_p2p_port: u16 = node1_addr
+        .split("/tcp/")
+        .nth(1)
+        .and_then(|s| s.split('/').next())
+        .and_then(|p| p.parse().ok())
+        .ok_or_else(|| anyhow::anyhow!("Failed to parse p2p port from multiaddr: {}", node1_addr))?;
+    println!("Node 1 P2P Port: {}", node1_p2p_port);
+
+    Ok((nodes, node1_peer_id.to_string(), node1_p2p_port))
 }
 
 pub async fn sleep_for_10_seconds() {
     sleep(Duration::from_secs(10)).await;
 }
 
-pub async fn run_fifth_node(rpc_port: u16, node1_addr: &str) -> anyhow::Result<NodeProcess> {
-    let node_dir = "node5";
+pub async fn run_fifth_node(rpc_port: u16, p2p_port: u16, node1_addr: &str) -> anyhow::Result<NodeProcess> {
+    let node_dir = "node4";
     let node_id = 5;
     let source_bin = "./target/release/mpc-node";
 
@@ -223,7 +231,9 @@ pub async fn run_fifth_node(rpc_port: u16, node1_addr: &str) -> anyhow::Result<N
         .expect(&format!("Failed to copy binary to {}", node_dir));
 
     // Construct the bootstrap multiaddress using node1's peer ID
-    let node1_addr = format!("/ip4/127.0.0.1/tcp/{}/p2p/{}", rpc_port, node1_addr);
+    let node1_addr = format!("/ip4/127.0.0.1/tcp/{}/p2p/{}", p2p_port, node1_addr);
+
+    println!("Node 1 Address: {}", node1_addr);
 
     println!("Starting Node {} from ./{}", node_id, node_dir);
 
@@ -251,7 +261,7 @@ pub async fn run_fifth_node(rpc_port: u16, node1_addr: &str) -> anyhow::Result<N
     }
 
     // Give the node time to connect and sync
-    sleep(Duration::from_secs(5)).await;
+    sleep(Duration::from_secs(10)).await;
 
     println!("✅ Node {} started and connected to the network", node_id);
 

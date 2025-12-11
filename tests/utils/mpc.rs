@@ -73,11 +73,7 @@ pub fn get_vault_addresses(peer_id: &str) -> Result<(String, String)> {
     Ok((vault_eth_address, vault_btc_address))
 }
 
-pub async fn register_user_and_get_derived_addresses(
-    client: &Client,
-    rpc_port: u16,
-    user_eth_address: String,
-) -> Result<(String, String)> {
+pub async fn register_user(client: &Client, rpc_port: u16, user_eth_address: &str) -> Result<()> {
     println!("Registering User...");
     let reg_resp = client
         .post(format!("http://127.0.0.1:{}/register_user", rpc_port))
@@ -101,6 +97,14 @@ pub async fn register_user_and_get_derived_addresses(
         println!("User already registered, continuing...");
     }
 
+    Ok(())
+}
+
+pub async fn get_derived_addresses(
+    client: &Client,
+    rpc_port: u16,
+    user_eth_address: &str,
+) -> Result<(String, String)> {
     // Get derived addresses
     println!("Getting Derived ETH Address...");
     let reg_resp = client
