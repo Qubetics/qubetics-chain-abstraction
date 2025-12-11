@@ -18,9 +18,9 @@ const WITHDRAW_ENDPOINT = `${RPC_BASE_URL}/withdraw_liquidity`;
 const TEST_PRIVATE_KEY =
   '93cc7fbc4bfd7fcfd83d11c85ba522f8fa1c03ece1a3b5f1782bc164996844d9';
 const DEFAULT_ETH_ADDRESS = '0x002aF85c8865DE4604dF07a1105EfEF2b8e0dE05';
-const DEFAULT_BTC_ADDRESS = null;
-const DEFAULT_TICS_WITHDRAW = '1000'; // 1 TICS
-const DEFAULT_BTC_WITHDRAW = null; // set to string value if testing BTC
+const DEFAULT_BTC_ADDRESS = 'mh12dZHkgTajT1H6t8FkWoNC4KucxByWBA';
+const DEFAULT_TICS_WITHDRAW = null; // 1 TICS
+const DEFAULT_BTC_WITHDRAW = '999999999999500'; // set to string value if testing BTC
 
 const colors = {
   red: '\x1b[31m',

@@ -373,40 +373,36 @@ impl MpcNetworkLayer {
                         }
                     }
                     (None, Some(solver_addr)) => {
-                        if transaction_type == "reward_txn" {
-                            if let Err(e) = self
-                                .handle_reward_transaction_id_storage(
+                        let storage_result = match transaction_type.as_str() {
+                            "reward_txn" => {
+                                self.handle_reward_transaction_id_storage(
                                     solver_addr,
                                     &transaction_id,
                                     &transaction_type,
                                 )
                                 .await
-                            {
-                                error!(
-                                    "❌ [NETWORK] Failed to handle reward transaction ID storage: {}",
-                                    e
-                                );
                             }
-                        } else if transaction_type == "withdraw_liquidity"
-                            || transaction_type == "withdrawLiquidity"
-                        {
-                            if let Err(e) = self
-                                .handle_withdraw_liquidity_transaction_id_storage(
+                            "withdraw_liquidity" | "withdrawLiquidity" => {
+                                self.handle_withdraw_liquidity_transaction_id_storage(
                                     solver_addr,
                                     &transaction_id,
                                     &transaction_type,
                                 )
                                 .await
-                            {
-                                error!(
-                                    "❌ [NETWORK] Failed to handle withdraw liquidity transaction ID storage: {}",
-                                    e
-                                );
                             }
-                        } else {
-                            warn!(
-                                "⚠️ [NETWORK] Unknown solver-based transaction type '{}' in gossipsub handler",
-                                transaction_type
+                            _ => {
+                                warn!(
+                                    "❌ [NETWORK] Unknown transaction type: {}",
+                                    transaction_type
+                                );
+                                return Err(anyhow!("Unknown transaction type: {}", transaction_type));
+                            }
+                        };
+
+                        if let Err(e) = storage_result {
+                            error!(
+                                "❌ [NETWORK] Failed to handle transaction ID storage: {}",
+                                e
                             );
                         }
                     }
@@ -1107,26 +1103,40 @@ impl MpcNetworkLayer {
                 )
                 .await?;
 
-                // After processing the withdraw payout, refresh on-chain solver liquidity
-                // so this node's DB (and global totals) reflect the decreased amounts.
+                // Apply the liquidity decrease locally based on the requested amount.
                 if let Some(signing_node) = &self.signing_node {
-                    match signing_node.update_solver_liquidity(&solver_address).await {
+                    let delta_btc = amount_btc
+                        .as_ref()
+                        .and_then(|v| ethers::types::U256::from_dec_str(v).ok());
+                    let delta_tics = amount_tics
+                        .as_ref()
+                        .and_then(|v| ethers::types::U256::from_dec_str(v).ok());
+                    match signing_node
+                        .apply_liquidity_delta(
+                            &solver_address,
+                            None,
+                            delta_btc,
+                            delta_tics,
+                            false,
+                        )
+                        .await
+                    {
                         Ok(()) => {
                             info!(
-                                "✅ [GOSSIPSUB] Refreshed solver liquidity from contract after withdraw-liquidity for {}",
+                                "✅ [GOSSIPSUB] Applied local liquidity withdraw for {}",
                                 solver_address
                             );
                         }
                         Err(e) => {
                             warn!(
-                                "⚠️ [GOSSIPSUB] Failed to refresh solver liquidity after withdraw-liquidity for {}: {}",
+                                "⚠️ [GOSSIPSUB] Failed to apply local liquidity withdraw for {}: {}",
                                 solver_address, e
                             );
                         }
                     }
                 } else {
                     warn!(
-                        "⚠️ [GOSSIPSUB] Signing node unavailable; cannot refresh solver liquidity after withdraw-liquidity for {}",
+                        "⚠️ [GOSSIPSUB] Signing node unavailable; cannot apply local liquidity withdraw for {}",
                         solver_address
                     );
                 }
@@ -1156,27 +1166,40 @@ impl MpcNetworkLayer {
                 )
                 .await?;
 
-                // 2) After contract submission, refresh solver liquidity from the on-chain contract
-                //    so local DB (and global totals) stay in sync. This uses the per-solver updater
-                //    which also recomputes total liquidity across all solvers.
+                // 2) Apply the liquidity increase locally based on the requested amount.
                 if let Some(signing_node) = &self.signing_node {
-                    match signing_node.update_solver_liquidity(&solver_address).await {
+                    let delta_btc = amount_btc
+                        .as_ref()
+                        .and_then(|v| ethers::types::U256::from_dec_str(v).ok());
+                    let delta_tics = amount_tics
+                        .as_ref()
+                        .and_then(|v| ethers::types::U256::from_dec_str(v).ok());
+                    match signing_node
+                        .apply_liquidity_delta(
+                            &solver_address,
+                            Some(&solver_id),
+                            delta_btc,
+                            delta_tics,
+                            true,
+                        )
+                        .await
+                    {
                         Ok(()) => {
                             info!(
-                                "✅ [GOSSIPSUB] Refreshed solver liquidity from contract after add-liquidity for {}",
+                                "✅ [GOSSIPSUB] Applied local liquidity add for {}",
                                 solver_address
                             );
                         }
                         Err(e) => {
                             warn!(
-                                "⚠️ [GOSSIPSUB] Failed to refresh solver liquidity after add-liquidity for {}: {}",
+                                "⚠️ [GOSSIPSUB] Failed to apply local liquidity add for {}: {}",
                                 solver_address, e
                             );
                         }
                     }
                 } else {
                     warn!(
-                        "⚠️ [GOSSIPSUB] Signing node unavailable; cannot refresh solver liquidity after add-liquidity for {}",
+                        "⚠️ [GOSSIPSUB] Signing node unavailable; cannot apply local liquidity add for {}",
                         solver_address
                     );
                 }

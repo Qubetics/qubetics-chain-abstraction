@@ -5,7 +5,7 @@ use libp2p::{
     swarm::NetworkBehaviour,
     Multiaddr, PeerId,
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use tokio::task::JoinHandle;
@@ -178,6 +178,7 @@ pub struct MpcNetworkLayer {
     pub(crate) node_manager: Box<dyn NodeMembership>,
     pub(crate) scheduled_dkg_task: Option<JoinHandle<()>>,
     pub(crate) vrf_round_requested: bool,
+    pub(crate) peer_rounds: HashMap<PeerId, u64>,
     pub(crate) peer_discovery: PeerDiscoveryState,
     pub(crate) db: Database,
     pub(crate) db_sync_state: DatabaseSyncState,

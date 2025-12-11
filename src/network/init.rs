@@ -1,7 +1,7 @@
 use anyhow::Result;
 use libp2p::{gossipsub, kad, noise, tcp, yamux, Multiaddr, PeerId};
 use std::collections::hash_map::DefaultHasher;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
@@ -42,6 +42,7 @@ impl MpcNetworkLayer {
             node_manager,
             scheduled_dkg_task: None,
             vrf_round_requested: false,
+            peer_rounds: HashMap::new(),
             peer_discovery: PeerDiscoveryState::new(),
             db,
             db_sync_state: DatabaseSyncState::new(),

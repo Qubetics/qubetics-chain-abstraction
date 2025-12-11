@@ -12,7 +12,9 @@ use tracing::{error, info, warn};
 use crate::database::keys;
 use crate::protocols::DKGMessage;
 use crate::types::dkg::MSG_TOPIC_PEER_DISCOVERY;
+use crate::types::p2p::SerializablePeerId;
 use crate::types::rpc::{MPCProtocol, RPCRequest};
+use crate::types::vrf::VrfRoundSyncRequest;
 use crate::types::{ChannelMessage, GossipsubMessage};
 
 use super::types::{MpcNetworkBehaviour, MpcNetworkLayer, NetworkEvent};
@@ -191,10 +193,13 @@ impl MpcNetworkLayer {
                     "🔄 [VRF_SYNC] Requesting current VRF round from peer {} on connection",
                     peer_id
                 );
-                swarm
-                    .behaviour_mut()
-                    .request_response
-                    .send_request(&peer_id, RPCRequest::RequestCurrentVrfRound);
+                swarm.behaviour_mut().request_response.send_request(
+                    &peer_id,
+                    RPCRequest::VrfRoundSync(VrfRoundSyncRequest {
+                        from: SerializablePeerId(self.local_peer_id),
+                        current_round: self.get_local_vrf_round().await,
+                    }),
+                );
                 self.vrf_round_requested = true;
                 info!("✅ [VRF_SYNC] VRF round request sent to peer {}", peer_id);
             }

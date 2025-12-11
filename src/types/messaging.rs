@@ -4,6 +4,7 @@ use crate::{
     types::{
         intent::{DepositIntent, TransactionType},
         rpc::RPCRequest,
+        rpc_server::NodeStatus,
         secp::SerializableScalar,
         signing::SigningMessage,
         ConsensusMessage,
@@ -11,6 +12,7 @@ use crate::{
 };
 use libp2p::PeerId;
 use serde::{Deserialize, Serialize};
+use tokio::sync::oneshot;
 
 /// Share metadata for AVSS exchanges.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -19,7 +21,7 @@ pub struct KeyShare {
     pub value: SerializableScalar,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum ChannelMessage {
     Broadcast {
         topic: String,
@@ -88,6 +90,9 @@ pub enum ChannelMessage {
     ScheduledDKGStart,
     PeerDiscoveryRetry {
         attempt: u8,
+    },
+    StatusRequest {
+        responder: oneshot::Sender<NodeStatus>,
     },
 }
 

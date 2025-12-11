@@ -140,6 +140,61 @@ impl SigningNode {
             ));
         }
 
+        // We only support legacy P2PKH flows for now; reject any transaction that claims
+        // to carry witness data so every peer hashes the same legacy preimage.
+        if tx.witness.is_some() {
+            bail!("Segwit/witness inputs are not supported; only P2PKH is allowed");
+        }
+
+        // Enforce that every input carries prevout data so all nodes hash the *same* preimage.
+        // Missing witness_utxo data leads to some peers hashing a legacy path while others use
+        // BIP143, which in turn produces an invalid aggregated signature on-chain.
+        let expected_kind = SpendKind::P2PKH;
+        for (idx, inp) in tx.inputs.iter().enumerate() {
+            let prev = inp.witness_utxo.as_ref().ok_or_else(|| {
+                error!(
+                    "❌ [BTC-SIGNING] Input {} missing witness_utxo data (txid={}, vout={})",
+                    idx, inp.txid, inp.vout
+                );
+                anyhow!("Input {} missing witness_utxo data", idx)
+            })?;
+
+            match expected_kind {
+                SpendKind::P2WPKH => {
+                    let is_p2wpkh = prev.script_pubkey.len() == 22
+                        && prev.script_pubkey[0] == 0x00
+                        && prev.script_pubkey[1] == 0x14;
+                    if !is_p2wpkh {
+                        error!(
+                            "❌ [BTC-SIGNING] Input {} expected P2WPKH but script_pubkey is not v0 witness program (len={}, prefix={:02x?})",
+                            idx,
+                            prev.script_pubkey.len(),
+                            prev.script_pubkey.get(0..2)
+                        );
+                        bail!("Input {} script_pubkey is not P2WPKH", idx);
+                    }
+                }
+                SpendKind::P2PKH => {
+                    let spk = &prev.script_pubkey;
+                    let is_p2pkh = spk.len() == 25
+                        && spk[0] == 0x76
+                        && spk[1] == 0xa9
+                        && spk[2] == 0x14
+                        && spk[23] == 0x88
+                        && spk[24] == 0xac;
+                    if !is_p2pkh {
+                        error!(
+                            "❌ [BTC-SIGNING] Input {} expected P2PKH but script_pubkey is not canonical (len={}, prefix={:02x?})",
+                            idx,
+                            spk.len(),
+                            spk.get(0..3)
+                        );
+                        bail!("Input {} script_pubkey is not canonical P2PKH", idx);
+                    }
+                }
+            }
+        }
+
         fn hash160(data: &[u8]) -> [u8; 20] {
             use sha2::Digest;
             let sha = sha2::Sha256::digest(data);
@@ -154,8 +209,25 @@ impl SigningNode {
         // Build per-input digests (either BIP143 or legacy SIGHASH_ALL).
         let mut digests: Vec<[u8; 32]> = Vec::with_capacity(tx.inputs.len());
 
+        // Log transaction details for debugging digest mismatches
+        info!(
+            "🔍 [BTC-TX-DEBUG] Node {} transaction details: version={}, inputs={}, outputs={}, locktime={}",
+            self.id, tx.version, tx.inputs.len(), tx.outputs.len(), tx.lock_time
+        );
+
         for (i, inp) in tx.inputs.iter().enumerate() {
             let maybe_prev = inp.witness_utxo.as_ref();
+
+            // Log input details for debugging
+            info!(
+                "🔍 [BTC-TX-DEBUG] Node {} input {}: txid={}, vout={}, sequence={}, witness_utxo={:?}",
+                self.id, i, inp.txid, inp.vout, inp.sequence,
+                maybe_prev.as_ref().map(|w| format!("value={}, script_pubkey_len={}, script_pubkey=0x{}", 
+                    w.value, w.script_pubkey.len(), hex::encode(&w.script_pubkey)))
+            );
+
+            // With P2PKH-only enforcement, reject any witness program to avoid mixed sighash
+            // computations across peers.
             let is_p2wpkh = maybe_prev
                 .map(|p| {
                     p.script_pubkey.len() == 22
@@ -165,53 +237,61 @@ impl SigningNode {
                 .unwrap_or(false);
 
             if is_p2wpkh {
-                // --- P2WPKH (v0) ---
-                let prev = maybe_prev.expect("Some above");
-                let program20 = &prev.script_pubkey[2..22];
-
-                // Safety: signer pubkey must match the witness program
-                if signer_h160 != program20 {
-                    anyhow::bail!(
-                        "Input {}: signer HASH160(pubkey) != witness program ({} != {})",
-                        i,
-                        hex::encode(signer_h160),
-                        hex::encode(program20)
-                    );
-                }
-
-                let digest = self.compute_bip143_sighash_p2wpkh(tx, i, prev.value, program20)?;
-                digests.push(digest);
-            } else {
-                // --- Legacy P2PKH ---
-                // Prefer using the carried prev script if present; otherwise reconstruct from signer_h160.
-                let prev_spk: Vec<u8> = if let Some(prev) = maybe_prev {
-                    prev.script_pubkey.clone()
-                } else {
-                    let mut v = Vec::with_capacity(25);
-                    v.extend_from_slice(&[0x76, 0xa9, 0x14]); // OP_DUP OP_HASH160 PUSH20
-                    v.extend_from_slice(&signer_h160);
-                    v.extend_from_slice(&[0x88, 0xac]); // OP_EQUALVERIFY OP_CHECKSIG
-                    v
-                };
-
-                if prev_spk.len() != 25
-                    || !(prev_spk[0] == 0x76
-                        && prev_spk[1] == 0xa9
-                        && prev_spk[2] == 0x14
-                        && prev_spk[23] == 0x88
-                        && prev_spk[24] == 0xac)
-                {
-                    anyhow::bail!("Input {}: prevout script is not canonical P2PKH", i);
-                }
-
-                let digest = self.compute_legacy_sighash_all_p2pkh(tx, i, &prev_spk)?;
-                digests.push(digest);
+                bail!("Input {} uses P2WPKH/witness; only P2PKH is supported", i);
             }
+
+            info!(
+                "🔍 [BTC-TX-DEBUG] Node {} input {}: enforcing P2PKH, signer_h160=0x{}",
+                self.id,
+                i,
+                hex::encode(signer_h160)
+            );
+
+            // --- Legacy P2PKH ---
+            // Prefer using the carried prev script if present; otherwise reconstruct from signer_h160.
+            let prev_spk: Vec<u8> = if let Some(prev) = maybe_prev {
+                info!(
+                    "🔍 [BTC-TX-DEBUG] Node {} input {}: P2PKH detected, using witness_utxo script_pubkey (len={})",
+                    self.id, i, prev.script_pubkey.len()
+                );
+                prev.script_pubkey.clone()
+            } else {
+                info!(
+                    "🔍 [BTC-TX-DEBUG] Node {} input {}: P2PKH detected, reconstructing script_pubkey from signer_h160",
+                    self.id, i
+                );
+                let mut v = Vec::with_capacity(25);
+                v.extend_from_slice(&[0x76, 0xa9, 0x14]); // OP_DUP OP_HASH160 PUSH20
+                v.extend_from_slice(&signer_h160);
+                v.extend_from_slice(&[0x88, 0xac]); // OP_EQUALVERIFY OP_CHECKSIG
+                v
+            };
+
+            if prev_spk.len() != 25
+                || !(prev_spk[0] == 0x76
+                    && prev_spk[1] == 0xa9
+                    && prev_spk[2] == 0x14
+                    && prev_spk[23] == 0x88
+                    && prev_spk[24] == 0xac)
+            {
+                anyhow::bail!("Input {}: prevout script is not canonical P2PKH", i);
+            }
+
+            info!(
+                "🔍 [BTC-TX-DEBUG] Node {} input {}: P2PKH prev_spk=0x{}",
+                self.id,
+                i,
+                hex::encode(&prev_spk)
+            );
+
+            let digest = self.compute_legacy_sighash_all_p2pkh(tx, i, &prev_spk)?;
+            digests.push(digest);
         }
 
         // ===== Select round via VRF =====
         let available_nodes = self.coordination.get_available_nodes_from_manager().await;
         let current_round = if let Some(vrf_service) = self.coordination.vrf_service() {
+            vrf_service.sync_rounds_before_signing().await?;
             let round = vrf_service.get_next_round().await;
             let _ = vrf_service
                 .perform_node_selection(&available_nodes, 1, round, "bitcoin")
@@ -256,6 +336,16 @@ impl SigningNode {
             let msg = Message::from_digest_slice(digest)?;
             let sig = self.create_ecdsa_signature_with_signing_key(&msg, &signing_key)?;
             per_input_sigs.push((i, sig));
+
+            // Log the digest that this node signs with its share for debugging transaction failures
+            info!(
+                "🔐 [BTC-TX-DIGEST] Node {} signing digest for round {} input {}: 0x{} (DKG index: {})",
+                self.id,
+                current_round,
+                i,
+                hex::encode(digest),
+                dkg_index
+            );
             info!(
                 "✅ [SIGNING] Made signature for input {} (digest {})",
                 i,
@@ -312,11 +402,7 @@ impl SigningNode {
         }
 
         // ===== Stash BTC extras alongside the unsigned tx for the finalizer =====
-        let from_kind = if tx.witness.is_some() {
-            SpendKind::P2WPKH
-        } else {
-            SpendKind::P2PKH
-        };
+        let from_kind = SpendKind::P2PKH;
 
         // Convert to fixed arrays for serialization in extras
         let pubkey33_arr: [u8; 33] = signer_pubkey33
@@ -670,83 +756,6 @@ impl SigningNode {
         let mut out = [0u8; 32];
         out.copy_from_slice(&h2);
         out
-    }
-
-    // Build the canonical P2PKH script from a 20-byte hash160(pubkey)
-    pub(crate) fn p2pkh_script_from_h160(&self, h160: &[u8; 20]) -> [u8; 25] {
-        let mut s = [0u8; 25];
-        s[0..3].copy_from_slice(&[0x76, 0xa9, 0x14]); // OP_DUP OP_HASH160 PUSH20
-        s[3..23].copy_from_slice(h160);
-        s[23..25].copy_from_slice(&[0x88, 0xac]); // OP_EQUALVERIFY OP_CHECKSIG
-        s
-    }
-
-    // Compute BIP143 digest for P2WPKH v0 input `idx`
-    pub(crate) fn compute_bip143_sighash_p2wpkh(
-        &self,
-        tx: &BitcoinTransaction,
-        idx: usize,
-        prev_value: u64,
-        program20: &[u8], // 20 bytes
-    ) -> anyhow::Result<[u8; 32]> {
-        // hashPrevouts
-        let mut hpv = Vec::with_capacity(36 * tx.inputs.len());
-        for inp in &tx.inputs {
-            let mut txid = hex::decode(&inp.txid)?;
-            txid.reverse(); // txid LE
-            hpv.extend_from_slice(&txid);
-            hpv.extend_from_slice(&inp.vout.to_le_bytes());
-        }
-        let hash_prevouts = Self::dsha256(&hpv);
-
-        // hashSequence
-        let mut hseq = Vec::with_capacity(4 * tx.inputs.len());
-        for inp in &tx.inputs {
-            hseq.extend_from_slice(&inp.sequence.to_le_bytes());
-        }
-        let hash_sequence = Self::dsha256(&hseq);
-
-        // hashOutputs
-        let mut hout = Vec::new();
-        for out in &tx.outputs {
-            hout.extend_from_slice(&out.value.to_le_bytes());
-            // varint script len
-            let slen = out.script_pubkey.len() as u64;
-            Self::push_varint(&mut hout, slen);
-            hout.extend_from_slice(&out.script_pubkey);
-        }
-        let hash_outputs = Self::dsha256(&hout);
-
-        // scriptCode for P2WPKH is canonical P2PKH built from program20
-        let sc = {
-            let mut v = Vec::with_capacity(1 + 25);
-            v.push(0x19); // length 25
-            v.extend_from_slice(&self.p2pkh_script_from_h160(
-                <&[u8; 20]>::try_from(program20).map_err(|_| anyhow!("program20 len"))?,
-            ));
-            v
-        };
-
-        // preimage
-        let mut pre = Vec::new();
-        pre.extend_from_slice(&tx.version.to_le_bytes());
-        pre.extend_from_slice(&hash_prevouts);
-        pre.extend_from_slice(&hash_sequence);
-
-        // outpoint of input idx
-        let mut txid_i = hex::decode(&tx.inputs[idx].txid)?;
-        txid_i.reverse();
-        pre.extend_from_slice(&txid_i);
-        pre.extend_from_slice(&tx.inputs[idx].vout.to_le_bytes());
-
-        pre.extend_from_slice(&sc);
-        pre.extend_from_slice(&prev_value.to_le_bytes());
-        pre.extend_from_slice(&tx.inputs[idx].sequence.to_le_bytes());
-        pre.extend_from_slice(&hash_outputs);
-        pre.extend_from_slice(&tx.lock_time.to_le_bytes());
-        pre.extend_from_slice(&1u32.to_le_bytes()); // SIGHASH_ALL
-
-        Ok(Self::dsha256(&pre))
     }
 
     // Compute legacy SIGHASH_ALL digest for P2PKH input `idx`

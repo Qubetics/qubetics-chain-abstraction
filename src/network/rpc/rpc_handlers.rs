@@ -5,12 +5,16 @@ use libp2p::PeerId;
 use tracing::{error, info, warn};
 
 use crate::database::key_utils;
+use crate::database::VrfStorage;
 use crate::protocols::DKGStatus;
 use crate::types::p2p::SerializablePeerId;
 use crate::types::rpc::{RPCRequest, RPCResponse};
+use crate::types::vrf::{VrfRoundSyncRequest, VrfRoundSyncResponse};
 use crate::types::PeerInfo;
 
 use crate::network::transport::types::{MpcNetworkBehaviour, MpcNetworkLayer};
+
+const MAX_VRF_ROUND_SKEW: u64 = 10;
 
 impl MpcNetworkLayer {
     /// Handle RPC requests from peers
@@ -44,6 +48,9 @@ impl MpcNetworkLayer {
                 RPCResponse::Ack
             }
             RPCRequest::RequestCurrentVrfRound => self.handle_request_current_vrf_round(peer).await,
+            RPCRequest::VrfRoundSync(sync_request) => {
+                self.handle_vrf_round_sync_request(peer, sync_request).await
+            }
             RPCRequest::RequestDatabaseSync { requester_id } => {
                 self.handle_request_database_sync(peer, requester_id).await
             }
@@ -55,6 +62,72 @@ impl MpcNetworkLayer {
                     .await
             }
             _ => RPCResponse::Ack,
+        }
+    }
+
+    pub(crate) async fn get_local_vrf_round(&self) -> Option<u64> {
+        // Check signing_node first
+        if let Some(signing_node) = &self.signing_node {
+            if let Some(vrf_service) = signing_node.vrf_service() {
+                return Some(vrf_service.get_current_round().await);
+            }
+        }
+
+        // If no round from signing_node, check db_signing_node
+        if let Some(db_signing_node) = &self.db_signing_node {
+            let node = db_signing_node.lock().await;
+            if let Some(vrf_service) = &node.vrf_service {
+                return Some(vrf_service.get_current_round().await);
+            }
+        }
+
+        None
+    }
+
+    fn is_vrf_round_within_range(reference_round: Option<u64>, candidate_round: u64) -> bool {
+        reference_round
+            .map(|reference| {
+                candidate_round >= reference.saturating_sub(MAX_VRF_ROUND_SKEW)
+                    && candidate_round <= reference.saturating_add(MAX_VRF_ROUND_SKEW)
+            })
+            .unwrap_or(true)
+    }
+
+    fn store_peer_round_if_valid(
+        &mut self,
+        peer: PeerId,
+        reference_round: Option<u64>,
+        reported_round: Option<u64>,
+    ) -> bool {
+        let Some(round) = reported_round else {
+            warn!(
+                "⚠️ [VRF_SYNC] Received VRF round sync without round value from {}",
+                peer
+            );
+            return false;
+        };
+
+        if Self::is_vrf_round_within_range(reference_round, round) {
+            // Store in memory (for backward compatibility)
+            self.peer_rounds.insert(peer, round);
+            
+            // Persist to database as single source of truth
+            let vrf_storage = VrfStorage::new(self.db.clone());
+            if let Err(e) = vrf_storage.set_peer_round(&peer.to_string(), round) {
+                warn!(
+                    "⚠️ [VRF_SYNC] Failed to persist peer round {} for {} to DB: {}",
+                    round, peer, e
+                );
+            } else {
+                info!("💾 [VRF_SYNC] Stored VRF round {} for peer {} (DB)", round, peer);
+            }
+            true
+        } else {
+            warn!(
+                "⚠️ [VRF_SYNC] Ignoring VRF round {} from {} (reference: {:?}, skew limit: {})",
+                round, peer, reference_round, MAX_VRF_ROUND_SKEW
+            );
+            false
         }
     }
 
@@ -230,26 +303,30 @@ impl MpcNetworkLayer {
             "🔄 Received request for current VRF round from peer {}",
             peer
         );
-        let mut current_round = None;
-
-        // Check signing_node first
-        if let Some(signing_node) = &self.signing_node {
-            if let Some(vrf_service) = signing_node.vrf_service() {
-                current_round = Some(vrf_service.get_current_round().await);
-            }
-        }
-
-        // If no round from signing_node, check db_signing_node
-        if current_round.is_none() {
-            if let Some(db_signing_node) = &self.db_signing_node {
-                let node = db_signing_node.lock().await;
-                if let Some(vrf_service) = &node.vrf_service {
-                    current_round = Some(vrf_service.get_current_round().await);
-                }
-            }
-        }
+        let current_round = self.get_local_vrf_round().await;
 
         RPCResponse::CurrentVrfRoundResponse { current_round }
+    }
+
+    async fn handle_vrf_round_sync_request(
+        &mut self,
+        peer: PeerId,
+        request: VrfRoundSyncRequest,
+    ) -> RPCResponse {
+        if request.from.0 != peer {
+            warn!(
+                "⚠️ [VRF_SYNC] Peer mismatch in VRF round sync request: declared={}, actual={}",
+                request.from.0, peer
+            );
+        }
+
+        let local_round = self.get_local_vrf_round().await;
+        self.store_peer_round_if_valid(peer, local_round, request.current_round);
+
+        RPCResponse::VrfRoundSync(VrfRoundSyncResponse {
+            from: SerializablePeerId(self.local_peer_id),
+            current_round: local_round,
+        })
     }
 
     /// Handle RequestDatabaseSync RPC request
@@ -356,7 +433,13 @@ impl MpcNetworkLayer {
             }
             RPCResponse::ShareAccepted => {}
             RPCResponse::CurrentVrfRoundResponse { current_round } => {
+                let reference_round = self.get_local_vrf_round().await;
+                self.store_peer_round_if_valid(peer, reference_round, current_round);
                 self.handle_current_vrf_round_response(current_round).await;
+            }
+            RPCResponse::VrfRoundSync(sync_response) => {
+                self.handle_vrf_round_sync_response(peer, sync_response)
+                    .await;
             }
             RPCResponse::DatabaseSyncMetadata {
                 total_entries,
@@ -648,5 +731,76 @@ impl MpcNetworkLayer {
         } else {
             info!("ℹ️ Peer doesn't have current VRF round yet");
         }
+    }
+
+    async fn handle_vrf_round_sync_response(
+        &mut self,
+        peer: PeerId,
+        response: VrfRoundSyncResponse,
+    ) {
+        if response.from.0 != peer {
+            warn!(
+                "⚠️ [VRF_SYNC] Peer mismatch in VRF round sync response: declared={}, actual={}",
+                response.from.0, peer
+            );
+        }
+
+        let reference_round = self.get_local_vrf_round().await;
+        if self.store_peer_round_if_valid(peer, reference_round, response.current_round) {
+            info!("✅ [VRF_SYNC] Applied VRF round sync from peer {}", peer);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MpcNetworkLayer;
+    use crate::database::{Database, DatabaseConfig};
+    use crate::node_selection::{BasicNodeManager, DefaultThresholdCalculator};
+    use libp2p::PeerId;
+    use tempfile::tempdir;
+
+    async fn build_network_layer() -> MpcNetworkLayer {
+        let temp_dir = tempdir().expect("tempdir to create");
+        let db_root = temp_dir.into_path();
+        let db_path = db_root.join("db");
+        let db = Database::new(DatabaseConfig {
+            path: db_path.to_string_lossy().to_string(),
+            create_if_missing: true,
+            max_open_files: 32,
+        })
+        .expect("db to start");
+
+        let manager = Box::new(BasicNodeManager::new(Box::new(DefaultThresholdCalculator)));
+
+        MpcNetworkLayer::new(manager, db)
+            .await
+            .expect("network layer to initialize")
+    }
+
+    #[tokio::test]
+    async fn stores_peer_rounds_within_allowed_skew() {
+        let mut layer = build_network_layer().await;
+        let peer = PeerId::random();
+
+        let stored = layer.store_peer_round_if_valid(peer, Some(5), Some(6));
+
+        assert!(stored, "valid rounds should be stored");
+        assert_eq!(layer.peer_rounds.get(&peer), Some(&6));
+    }
+
+    #[tokio::test]
+    async fn ignores_peer_rounds_outside_allowed_skew() {
+        let mut layer = build_network_layer().await;
+        let peer = PeerId::random();
+
+        let stored = layer.store_peer_round_if_valid(
+            peer,
+            Some(1),
+            Some(1 + super::MAX_VRF_ROUND_SKEW + 10),
+        );
+
+        assert!(layer.peer_rounds.get(&peer).is_none());
+        assert!(!stored, "out-of-range rounds should be rejected");
     }
 }

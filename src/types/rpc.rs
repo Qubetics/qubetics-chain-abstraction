@@ -1,6 +1,7 @@
 // src/mpc_request_response.rs
 
 use crate::protocols::DKGStatus;
+use crate::types::vrf::{VrfRoundSyncRequest, VrfRoundSyncResponse};
 use futures::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use libp2p::{
     request_response::{
@@ -52,6 +53,7 @@ pub enum RPCRequest {
         first_node_start_time: u64,
     },
     RequestCurrentVrfRound,
+    VrfRoundSync(VrfRoundSyncRequest),
     SendAVSSShare {
         dealer_id: SerializablePeerId,
         receiver_id: SerializablePeerId,
@@ -114,6 +116,7 @@ pub enum RPCResponse {
     CurrentVrfRoundResponse {
         current_round: Option<u64>,
     },
+    VrfRoundSync(VrfRoundSyncResponse),
     ShareAccepted,
     ComplaintAccepted,
     FinishedADKG {
