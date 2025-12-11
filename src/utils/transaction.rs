@@ -9,7 +9,7 @@ use anyhow::{bail, Result};
 use ethabi::ethereum_types::U256;
 use ethabi::{Function, Param, ParamType, StateMutability, Token};
 use serde::{Deserialize, Serialize};
-use tracing::{info, warn}; // for Token::Uint
+use tracing::{debug, info, warn}; // for Token::Uint
 
 // use rlp::RlpStream;
 
@@ -365,11 +365,14 @@ pub fn select_utxos_for_amount(
     let mut selected = Vec::new();
     let mut total_value = 0u64;
 
+    let mut no_change_candidate: Option<UtxoSelectionResult> = None;
+
     for candidate in confirmed_utxos.into_iter() {
         total_value += candidate.value;
         selected.push(candidate);
 
         let n_inputs = selected.len();
+        let mut skip_no_change_path = false;
 
         // Try change path first (2 outputs: recipient + change)
         let fee_with_change = estimate_fee_sat(kind, n_inputs, 2, fee_rate_sat_vb);
@@ -395,6 +398,14 @@ pub fn select_utxos_for_amount(
                     change_output: true,
                 });
             }
+
+            // Change would be dust; keep adding UTXOs to try to reach a spendable change output
+            debug!(
+                "🔄 [UTXO_SELECTION] Change {} sats would be below dust ({}). Skipping no-change path to search for spendable change",
+                change,
+                DUST_LIMIT_SATS
+            );
+            skip_no_change_path = true;
         }
 
         // Try no-change path (1 output: recipient only)
@@ -402,6 +413,22 @@ pub fn select_utxos_for_amount(
         let required_no_change: u64 = required_amount + fee_no_change;
 
         if total_value >= required_no_change {
+            let candidate_result = UtxoSelectionResult {
+                selected_utxos: selected.clone(),
+                total_value,
+                fee: fee_no_change,
+                change: 0,
+                change_output: false,
+            };
+
+            if no_change_candidate.is_none() {
+                no_change_candidate = Some(candidate_result.clone());
+            }
+
+            if skip_no_change_path {
+                continue;
+            }
+
             // Use no-change path
             tracing::info!(
                 "✅ [UTXO_SELECTION] Using no-change path with {} inputs (fee {} sats)",
@@ -409,16 +436,20 @@ pub fn select_utxos_for_amount(
                 fee_no_change
             );
 
-            return Ok(UtxoSelectionResult {
-                selected_utxos: selected,
-                total_value,
-                fee: fee_no_change,
-                change: 0,
-                change_output: false,
-            });
+            return Ok(candidate_result);
         }
 
         // If we don't have enough, continue adding UTXOs
+    }
+
+    if let Some(candidate) = no_change_candidate {
+        tracing::info!(
+            "✅ [UTXO_SELECTION] Using no-change path with {} inputs (fee {} sats)",
+            candidate.selected_utxos.len(),
+            candidate.fee
+        );
+
+        return Ok(candidate);
     }
 
     // error tail - no valid combination found
@@ -2432,6 +2463,44 @@ fn test_utxo_selection_single_utxo() {
     assert!(result.change_output, "Should use change output");
     assert!(result.fee < 200, "Fee should be reasonable (< 200 sats)");
     assert!(result.change > 500, "Should have substantial change");
+}
+
+#[test]
+fn test_utxo_selection_prefers_non_dust_change_when_possible() {
+    // First UTXO alone would leave near-dust change, but adding the second UTXO enables valid change
+    let utxos = vec![
+        BitcoinUtxo {
+            txid: "d4e5f6789012345678901234567890123456789012345678901234567890a1b2c3".to_string(),
+            vout: 0,
+            value: 2000,
+            status: UtxoStatus {
+                confirmed: true,
+                block_height: Some(100),
+                block_hash: Some("block1".to_string()),
+                block_time: Some(1234567890),
+            },
+        },
+        BitcoinUtxo {
+            txid: "e5f6789012345678901234567890123456789012345678901234567890a1b2c3d4".to_string(),
+            vout: 0,
+            value: 400,
+            status: UtxoStatus {
+                confirmed: true,
+                block_height: Some(101),
+                block_hash: Some("block2".to_string()),
+                block_time: Some(1234567891),
+            },
+        },
+    ];
+
+    // With only the 2000-sat UTXO, change would be below the dust limit; the selector should keep adding inputs
+    let result = select_utxos_for_amount(&utxos, 1400, 2, SpendKind::P2WPKH).unwrap();
+
+    // Should include both inputs and produce a spendable change output
+    assert_eq!(result.selected_utxos.len(), 2, "Should add the second UTXO to avoid dust change");
+    assert!(result.change_output, "Should prefer a non-dust change output over fee-only remainder");
+    assert!(result.change >= DUST_LIMIT_SATS, "Change should be above dust");
+    assert_eq!(result.fee, estimate_fee_sat(SpendKind::P2WPKH, 2, 2, 2));
 }
 
 #[test]
