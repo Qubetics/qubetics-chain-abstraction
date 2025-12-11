@@ -234,30 +234,66 @@ impl MpcNetworkLayer {
             hex::encode(tx_bytes.clone())
         );
 
-        let mut eth_signer = EthereumSigner::new(signing_node);
-        //network sequencer for withdrawal 
-        eth_signer
-            .sign_transaction(
-                tx_bytes,
-                &eth_tx,
-                None,
-                None,
-                None,
-                Some(tx_type),
-                Some(solver_address.to_string()),
-            )
-            .await?;
-
-        info!("✅ [{}] TICS payout signing completed", context);
+        // For withdraw_liquidity and reward_txn, queue to network sequencer for coordinated signing
         if context == "withdraw_liquidity" {
-            self.record_pending_liquidity_contract_update(
-                solver_address,
-                TransactionNetwork::TICS,
-                amount,
-            )
-            .await;
+            if let Err(e) = self
+                .submit_withdraw_liquidity_to_sequencer(
+                    solver_address,
+                    eth_address,
+                    amount,
+                    tx_bytes,
+                    eth_tx,
+                )
+                .await
+            {
+                error!(
+                    "❌ [{}] Failed to submit withdraw liquidity to sequencer: {}",
+                    context, e
+                );
+                return Err(e);
+            }
+
+            info!("✅ [{}] Submitted withdraw liquidity to network sequencer", context);
+            // Note: record_pending_liquidity_contract_update will be called after transaction is signed
+            Ok(())
+        } else if context == "reward_txn" || context == "claim_reward" {
+            if let Err(e) = self
+                .submit_reward_payout_to_sequencer(
+                    solver_address,
+                    eth_address,
+                    amount,
+                    tx_bytes,
+                    eth_tx,
+                )
+                .await
+            {
+                error!(
+                    "❌ [{}] Failed to submit reward payout to sequencer: {}",
+                    context, e
+                );
+                return Err(e);
+            }
+
+            info!("✅ [{}] Submitted reward payout to network sequencer", context);
+            Ok(())
+        } else {
+            // For other contexts, sign directly
+            let mut eth_signer = EthereumSigner::new(signing_node);
+            eth_signer
+                .sign_transaction(
+                    tx_bytes,
+                    &eth_tx,
+                    None,
+                    None,
+                    None,
+                    Some(tx_type),
+                    Some(solver_address.to_string()),
+                )
+                .await?;
+
+            info!("✅ [{}] TICS payout signing completed", context);
+            Ok(())
         }
-        Ok(())
     }
 
     async fn process_btc_payout(

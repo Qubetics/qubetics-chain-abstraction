@@ -366,6 +366,12 @@ impl MpcNetworkLayer {
                             crate::network::sequencer::NetworkTransactionFlow::NetworkToTarget { intent_hash, .. } => {
                                 format!("network_to_target:{}", intent_hash)
                             }
+                            crate::network::sequencer::NetworkTransactionFlow::WithdrawLiquidity { solver_address, amount, .. } => {
+                                format!("withdraw_liquidity:{}:{}", solver_address, amount)
+                            }
+                            crate::network::sequencer::NetworkTransactionFlow::RewardPayout { solver_address, amount, .. } => {
+                                format!("reward_payout:{}:{}", solver_address, amount)
+                            }
                         };
 
                         let lock = self.network_transaction_processing_lock.clone();
@@ -374,11 +380,21 @@ impl MpcNetworkLayer {
                         info!("🚀 [NETWORK_SEQUENCER] Starting synchronized processing (locked): flow={}, tx_id={}, sequence={}", flow_desc, tx_id, sequence);
 
                         let start_time = std::time::Instant::now();
-                        if let Err(e) = self.process_network_transaction(request).await {
+                        if let Err(e) = self.process_network_transaction(request.clone()).await {
                             error!("❌ [NETWORK_SEQUENCER] Failed to process network transaction tx_id={} (sequence={}): {}", tx_id, sequence, e);
                         } else {
                             let duration = start_time.elapsed();
                             info!("⏱️ [NETWORK_SEQUENCER] Transaction tx_id={} (sequence={}) processed in {:?}", tx_id, sequence, duration);
+                            
+                            // For WithdrawLiquidity, record pending liquidity contract update (same as original flow after signing)
+                            if let crate::network::sequencer::NetworkTransactionFlow::WithdrawLiquidity { solver_address, amount, .. } = &request.flow {
+                                self.record_pending_liquidity_contract_update(
+                                    solver_address,
+                                    crate::types::TransactionNetwork::TICS,
+                                    *amount,
+                                )
+                                .await;
+                            }
                         }
 
                         if let Some(sequencer) = &self.network_transaction_sequencer {

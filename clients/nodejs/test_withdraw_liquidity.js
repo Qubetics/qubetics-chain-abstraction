@@ -11,7 +11,7 @@ import secp256k1 from 'secp256k1';
 import keccak from 'keccak';
 
 // Configuration (update as needed)
-const RPC_BASE_URL = 'http://127.0.0.1:8082';
+const RPC_BASE_URL = 'http://127.0.0.1:8083';
 const WITHDRAW_ENDPOINT = `${RPC_BASE_URL}/withdraw_liquidity`;
 
 // Private key/address pair used in test_claim_reward.js (replace for real usage)

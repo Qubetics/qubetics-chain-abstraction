@@ -312,6 +312,90 @@ impl MpcNetworkLayer {
         }
     }
 
+    /// Submit a withdraw liquidity transaction to the network sequencer
+    pub(crate) async fn submit_withdraw_liquidity_to_sequencer(
+        &mut self,
+        solver_address: &str,
+        eth_address: &str,
+        amount: u128,
+        tx_bytes: Vec<u8>,
+        eth_tx: crate::chain_abstraction::EthereumTransaction,
+    ) -> Result<()> {
+        use crate::network::sequencer::{NetworkTransactionFlow, NetworkTransactionRequest};
+
+        if self.network_transaction_sequencer.is_none() {
+            self.initialize_network_transaction_sequencer().await;
+        }
+
+        if let Some(sequencer) = &self.network_transaction_sequencer {
+            let transaction_id = crate::network::sequencer::NetworkTransactionSequencer::generate_transaction_id_for_withdraw_liquidity(&tx_bytes);
+
+            let request = NetworkTransactionRequest {
+                flow: NetworkTransactionFlow::WithdrawLiquidity {
+                    solver_address: solver_address.to_string(),
+                    eth_address: eth_address.to_string(),
+                    amount,
+                    tx_bytes,
+                    eth_tx,
+                },
+                transaction_id: transaction_id.clone(),
+                sequence: 0, // set by sequencer.submit
+            };
+
+            sequencer.submit(request).await?;
+            info!(
+                "📋 [NETWORK] Submitted WithdrawLiquidity to network transaction sequencer: solver={}, eth_address={}, amount={}, tx_id={}",
+                solver_address, eth_address, amount, transaction_id
+            );
+            Ok(())
+        } else {
+            warn!("❌ [NETWORK] Network transaction sequencer not available for WithdrawLiquidity transaction");
+            Ok(())
+        }
+    }
+
+    /// Submit a reward payout transaction to the network sequencer
+    pub(crate) async fn submit_reward_payout_to_sequencer(
+        &mut self,
+        solver_address: &str,
+        eth_address: &str,
+        amount: u128,
+        tx_bytes: Vec<u8>,
+        eth_tx: crate::chain_abstraction::EthereumTransaction,
+    ) -> Result<()> {
+        use crate::network::sequencer::{NetworkTransactionFlow, NetworkTransactionRequest};
+
+        if self.network_transaction_sequencer.is_none() {
+            self.initialize_network_transaction_sequencer().await;
+        }
+
+        if let Some(sequencer) = &self.network_transaction_sequencer {
+            let transaction_id = crate::network::sequencer::NetworkTransactionSequencer::generate_transaction_id_for_reward_payout(&tx_bytes);
+
+            let request = NetworkTransactionRequest {
+                flow: NetworkTransactionFlow::RewardPayout {
+                    solver_address: solver_address.to_string(),
+                    eth_address: eth_address.to_string(),
+                    amount,
+                    tx_bytes,
+                    eth_tx,
+                },
+                transaction_id: transaction_id.clone(),
+                sequence: 0, // set by sequencer.submit
+            };
+
+            sequencer.submit(request).await?;
+            info!(
+                "📋 [NETWORK] Submitted RewardPayout to network transaction sequencer: solver={}, eth_address={}, amount={}, tx_id={}",
+                solver_address, eth_address, amount, transaction_id
+            );
+            Ok(())
+        } else {
+            warn!("❌ [NETWORK] Network transaction sequencer not available for RewardPayout transaction");
+            Ok(())
+        }
+    }
+
     /// Process a network transaction from the sequencer (currently only NetworkToTarget)
     pub(crate) async fn process_network_transaction(
         &mut self,
@@ -352,6 +436,76 @@ impl MpcNetworkLayer {
                     info!(
                         "✅ [NETWORK_SEQUENCER] Successfully signed NetworkToTarget transaction: intent_hash={}, tx_id={}",
                         intent_hash, request.transaction_id
+                    );
+                    Ok(())
+                } else {
+                    Err(anyhow::anyhow!("Signing node not available"))
+                }
+            }
+            NetworkTransactionFlow::WithdrawLiquidity {
+                solver_address,
+                eth_address,
+                amount,
+                tx_bytes,
+                eth_tx,
+            } => {
+                info!(
+                    "📋 [NETWORK_SEQUENCER] Processing WithdrawLiquidity transaction: solver={}, eth_address={}, amount={}, tx_id={}",
+                    solver_address, eth_address, amount, request.transaction_id
+                );
+
+                if let Some(signing_node) = &mut self.signing_node {
+                    let mut eth_signer = EthereumSigner::new(signing_node);
+                    eth_signer
+                        .sign_transaction(
+                            tx_bytes.clone(),
+                            eth_tx,
+                            None, // Network DKG share (already set in signing_node)
+                            None, // No user address for network transactions
+                            None, // No intent_hash for withdraw liquidity
+                            Some(crate::types::TransactionType::WithdrawLiquidity),
+                            Some(solver_address.clone()),
+                        )
+                        .await?;
+
+                    info!(
+                        "✅ [NETWORK_SEQUENCER] Successfully signed WithdrawLiquidity transaction: solver={}, tx_id={}",
+                        solver_address, request.transaction_id
+                    );
+                    Ok(())
+                } else {
+                    Err(anyhow::anyhow!("Signing node not available"))
+                }
+            }
+            NetworkTransactionFlow::RewardPayout {
+                solver_address,
+                eth_address,
+                amount,
+                tx_bytes,
+                eth_tx,
+            } => {
+                info!(
+                    "📋 [NETWORK_SEQUENCER] Processing RewardPayout transaction: solver={}, eth_address={}, amount={}, tx_id={}",
+                    solver_address, eth_address, amount, request.transaction_id
+                );
+
+                if let Some(signing_node) = &mut self.signing_node {
+                    let mut eth_signer = EthereumSigner::new(signing_node);
+                    eth_signer
+                        .sign_transaction(
+                            tx_bytes.clone(),
+                            eth_tx,
+                            None, // Network DKG share (already set in signing_node)
+                            None, // No user address for network transactions
+                            None, // No intent_hash for reward payout
+                            Some(crate::types::TransactionType::RewardTxn),
+                            Some(solver_address.clone()),
+                        )
+                        .await?;
+
+                    info!(
+                        "✅ [NETWORK_SEQUENCER] Successfully signed RewardPayout transaction: solver={}, tx_id={}",
+                        solver_address, request.transaction_id
                     );
                     Ok(())
                 } else {

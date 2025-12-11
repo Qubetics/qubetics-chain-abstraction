@@ -814,9 +814,23 @@ pub enum NetworkTransactionFlow {
         user_tweaked_share: Option<k256::Scalar>,
         user_eth_address: Option<String>,
     },
-    // Future flows can be added here, e.g.:
-    // NetworkPayout { ... },
-    // NetworkRefund { ... },
+    /// Withdraw liquidity transaction (solver payout)
+    WithdrawLiquidity {
+        solver_address: String,
+        eth_address: String,
+        amount: u128,
+        tx_bytes: Vec<u8>,
+        eth_tx: crate::chain_abstraction::EthereumTransaction,
+    },
+    /// Reward payout transaction (solver reward)
+    RewardPayout {
+        solver_address: String,
+        eth_address: String,
+        amount: u128,
+        tx_bytes: Vec<u8>,
+        eth_tx: crate::chain_abstraction::EthereumTransaction,
+    },
+
 }
 
 /// Request to execute a network transaction
@@ -892,6 +906,22 @@ impl NetworkTransactionSequencer {
     /// Uses intent_hash directly as it's already unique
     pub fn generate_transaction_id_for_network_to_target(intent_hash: &str) -> String {
         format!("network_to_target:{}", intent_hash)
+    }
+
+    /// Generate a unique transaction ID for WithdrawLiquidity transactions
+    /// Uses Keccak256 hash of tx_bytes directly to ensure uniqueness
+    pub fn generate_transaction_id_for_withdraw_liquidity(tx_bytes: &[u8]) -> String {
+        // Hash tx_bytes using Keccak256 (same as Ethereum) to ensure uniqueness
+        let hash = Keccak256::digest(tx_bytes);
+        format!("withdraw_liquidity:0x{}", hex::encode(hash))
+    }
+
+    /// Generate a unique transaction ID for RewardPayout transactions
+    /// Uses Keccak256 hash of tx_bytes directly to ensure uniqueness
+    pub fn generate_transaction_id_for_reward_payout(tx_bytes: &[u8]) -> String {
+        // Hash tx_bytes using Keccak256 (same as Ethereum) to ensure uniqueness
+        let hash = Keccak256::digest(tx_bytes);
+        format!("reward_payout:0x{}", hex::encode(hash))
     }
 
     /// Initialize the sequencer with message channel and node ID
