@@ -176,7 +176,7 @@ async function testUserMpcDeposit({ wallet, amount, idempotencyKey }) {
     //   target_token: 'TICS',
     //   timestamp: oooo,
     // };
- 
+
     console.log(`📊 Deposit Intent: ${JSON.stringify(depositIntent)}`, 'cyan');
     // Serialize DepositIntent for signing
     const msg = JSON.stringify(depositIntent);
@@ -310,7 +310,7 @@ async function runTests() {
 
   // 3) MPC deposit test WITHOUT tx_id (should pass Some(signer) to handle_deposit_intent)
   log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
-  const amount = 800
+  const amount = 820
   await testUserMpcDeposit({ wallet, amount });
   // log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
   // const amount = 13000000000000000000

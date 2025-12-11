@@ -109,13 +109,20 @@ impl MpcNetworkLayer {
                         if let Some((tx_id, _sequence, is_confirmed)) = sequencer.get_current_processing().await {
                             // If we're processing but not confirmed, check if we need to wait for consensus
                             if !is_confirmed {
+                                // Check if we already processed and confirmed locally
+                                if sequencer.is_locally_confirmed().await {
+                                    // Wait for other nodes to confirm
+                                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                                    return None;
+                                }
+
                                 // CRITICAL: Check consensus once and return - let tokio::select! process other events!
                                 // This allows incoming "proposed" messages to be processed between checks
                                 let has_consensus = sequencer.has_consensus().await;
-                                
+
                                 if has_consensus {
                                     info!("✅ [SEQUENCER] Consensus reached for tx_id={}, proceeding to process", tx_id);
-                                    
+
                                     // Get the request from cache or queue
                                     if let Some(request) = sequencer.get_current_request().await {
                                         sequencer.mark_processing(&tx_id).await.ok();
@@ -138,45 +145,45 @@ impl MpcNetworkLayer {
                                 return None;
                             }
                         }
-                        
+
                         // Get next request from queue (only if previous is confirmed by all nodes)
                         if let Some(request) = sequencer.get_next_request().await {
                             let tx_id = request.transaction_id.clone();
                             let sequence = request.sequence;
-                            
+
                             info!(
                                 "🎯 [SEQUENCER] Got next request: tx_id={}, sequence={}",
                                 tx_id, sequence
                             );
-                            
+
                             // Cache the request before proposing (so we can retrieve it after consensus)
                             sequencer.cache_current_request(request.clone()).await;
-                            
+
                             // Propose this transaction for processing
                             if sequencer.propose_transaction(&tx_id, sequence).await.unwrap_or(false) {
                                 info!(
                                     "📤 [SEQUENCER] Proposed tx_id={}, waiting for consensus...",
                                     tx_id
                                 );
-                                
+
                                 // Wait for consensus from other nodes (majority must agree)
                                 // Give a small delay first to allow sync messages to propagate
                                 tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                                
+
                                 let mut consensus_wait_count = 0;
                                 loop {
                                     // Check consensus
                                     let has_consensus = sequencer.has_consensus().await;
-                                    
+
                                     if has_consensus {
                                         info!("✅ [SEQUENCER] Consensus reached for tx_id={}, proceeding to process", tx_id);
                                         break;
                                     }
-                                    
+
                                     // Wait before next check
                                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                                     consensus_wait_count += 1;
-                                    
+
                                     // Log progress every 10 iterations (1 second)
                                     if consensus_wait_count % 10 == 0 {
                                         info!(
@@ -184,13 +191,13 @@ impl MpcNetworkLayer {
                                             tx_id, consensus_wait_count
                                         );
                                     }
-                                    
+
                                     if consensus_wait_count > 100 {
                                         warn!("⚠️ [SEQUENCER] Consensus timeout for tx_id={}, proceeding anyway", tx_id);
                                         break;
                                     }
                                 }
-                                
+
                                 sequencer.mark_processing(&tx_id).await.ok();
                                 Some(request)
                             } else {
@@ -211,7 +218,7 @@ impl MpcNetworkLayer {
                         // Clone values for logging before moving request
                         let tx_id = request.transaction_id.clone();
                         let sequence = request.sequence;
-                        
+
                         // Get flow description for logging
                         let flow_desc = match &request.flow {
                             crate::network::sequencer::ContractTransactionFlow::DepositIntent { intent_hash, .. } => {
@@ -227,18 +234,18 @@ impl MpcNetworkLayer {
                                 format!("solver_claim_reward:{}:{}:{}:{}", solver_address, reward_btc.unwrap_or(0), reward_tics.unwrap_or(0), payout_transaction_hash)
                             }
                         };
-                        
+
                         // Clone the Arc to avoid borrowing self while holding the lock
                         let lock = self.contract_processing_lock.clone();
-                        
+
                         // Acquire lock BEFORE processing to ensure only one transaction at a time
                         let _lock = lock.lock().await;
-                        
+
                         info!(
                             "🚀 [SEQUENCER] [DETERMINISTIC] Starting synchronized processing (locked): flow={}, tx_id={}, sequence={}",
                             flow_desc, tx_id, sequence
                         );
-                        
+
                         // Process contract transaction - lock is held until this completes
                         let start_time = std::time::Instant::now();
                         if let Err(e) = self.process_contract_transaction(request).await {
@@ -253,7 +260,7 @@ impl MpcNetworkLayer {
                                 tx_id, sequence, duration
                             );
                         }
-                        
+
                         // Mark as completed (this will wait for all nodes to confirm)
                         if let Some(sequencer) = &self.contract_sequencer {
                             info!(
@@ -262,7 +269,7 @@ impl MpcNetworkLayer {
                             );
                             sequencer.mark_completed(&tx_id).await.ok();
                         }
-                        
+
                         info!(
                             "🏁 [SEQUENCER] [DETERMINISTIC] Completed synchronized processing (lock released): flow={}, tx_id={}, sequence={}",
                             flow_desc, tx_id, sequence
@@ -277,6 +284,13 @@ impl MpcNetworkLayer {
                         // Check if currently processing and waiting for consensus
                         if let Some((tx_id, _sequence, is_confirmed)) = sequencer.get_current_processing().await {
                             if !is_confirmed {
+                                // Check if we already processed and confirmed locally
+                                if sequencer.is_locally_confirmed().await {
+                                    // Wait for other nodes to confirm
+                                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                                    return None;
+                                }
+
                                 let has_consensus = sequencer.has_consensus().await;
                                 if has_consensus {
                                     info!("✅ [NETWORK_SEQUENCER] Consensus reached for tx_id={}, proceeding to process", tx_id);
