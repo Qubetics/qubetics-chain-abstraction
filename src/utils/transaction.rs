@@ -714,6 +714,47 @@ pub async fn create_bitcoin_transaction(
             value: selection.change,
             script_pubkey: from_spk,
         });
+        tracing::info!(
+            "💰 [BTC_TX] Adding change output: {} satoshis to {}",
+            selection.change,
+            from_address
+        );
+    } else {
+        tracing::warn!(
+            "⚠️ [BTC_TX] No change output (change_output=false). Remaining {} satoshis will be paid as fee!",
+            selection.total_value - amount_satoshis - selection.fee
+        );
+    }
+    
+    // Calculate and log actual fee
+    let total_output_value: u64 = outputs.iter().map(|o| o.value).sum();
+    let actual_fee = selection.total_value - total_output_value;
+    tracing::info!(
+        "💰 [BTC_TX] Fee calculation: total_input={}, total_output={}, actual_fee={}, estimated_fee={}",
+        selection.total_value,
+        total_output_value,
+        actual_fee,
+        selection.fee
+    );
+    
+    if actual_fee != selection.fee {
+        tracing::warn!(
+            "⚠️ [BTC_TX] Fee mismatch! Estimated fee: {} sats, Actual fee: {} sats (difference: {} sats)",
+            selection.fee,
+            actual_fee,
+            actual_fee as i64 - selection.fee as i64
+        );
+    }
+    
+    // Log all outputs for debugging
+    tracing::info!("📤 [BTC_TX] Transaction outputs:");
+    for (i, output) in outputs.iter().enumerate() {
+        tracing::info!(
+            "  Output {}: {} satoshis (script_pubkey_len: {})",
+            i,
+            output.value,
+            output.script_pubkey.len()
+        );
     }
 
     let (version, witness_opt) = match from_kind {
