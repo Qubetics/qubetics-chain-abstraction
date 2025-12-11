@@ -123,6 +123,88 @@ impl PendingStore {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        database::{Database, DatabaseConfig, VrfStorage},
+        types::signing::ECDSASignature,
+        vrf::service::VrfService,
+    };
+    use libp2p::{identity::Keypair, PeerId};
+    use tempfile::TempDir;
+    use tokio::sync::mpsc;
+
+    fn create_database() -> (Database, TempDir) {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let mut config = DatabaseConfig::default();
+        config.path = temp_dir.path().to_string_lossy().to_string();
+        let db = Database::new(config).unwrap();
+        (db, temp_dir)
+    }
+
+    fn random_peer_id() -> PeerId {
+        let keypair = Keypair::generate_ed25519();
+        PeerId::from_public_key(&keypair.public())
+    }
+
+    #[tokio::test]
+    async fn signatures_use_non_decreasing_rounds_after_sync() {
+        let (db, _temp_dir) = create_database();
+        let storage = VrfStorage::new(db);
+        let (tx, _rx) = mpsc::channel(4);
+        let peer_id = random_peer_id();
+        let service = VrfService::new_with_storage(peer_id, tx, storage.clone());
+        let signatures = SignatureStore::new();
+
+        let first_round = service.sync_rounds_with_mocked_peers(vec![2, 3]).await;
+        {
+            let mut signatures_by_round = signatures.signatures_by_round.write().await;
+            signatures_by_round.entry(first_round).or_default().insert(
+                "node-a".to_string(),
+                ECDSASignature {
+                    signature: vec![1u8; 65],
+                    signer_id: "node-a".to_string(),
+                    recovery_id: 0,
+                    user_eth_address: None,
+                },
+            );
+        }
+
+        let second_round = service.sync_rounds_with_mocked_peers(vec![0, 1]).await;
+        {
+            let mut signatures_by_round = signatures.signatures_by_round.write().await;
+            signatures_by_round.entry(second_round).or_default().insert(
+                "node-b".to_string(),
+                ECDSASignature {
+                    signature: vec![2u8; 65],
+                    signer_id: "node-b".to_string(),
+                    recovery_id: 1,
+                    user_eth_address: Some("0xabc".to_string()),
+                },
+            );
+        }
+
+        let mut recorded_rounds: Vec<u64> = signatures
+            .signatures_by_round
+            .read()
+            .await
+            .keys()
+            .cloned()
+            .collect();
+        recorded_rounds.sort_unstable();
+
+        assert_eq!(recorded_rounds.len(), 2);
+        assert!(recorded_rounds
+            .windows(2)
+            .all(|window| window[0] <= window[1]));
+        assert_eq!(recorded_rounds.first().copied().unwrap(), first_round);
+        assert_eq!(recorded_rounds.last().copied().unwrap(), second_round);
+        assert_eq!(service.get_current_round().await, second_round);
+        assert_eq!(storage.get_current_round().unwrap(), second_round);
+    }
+}
+
 #[derive(Clone)]
 pub struct BtcAggregationState {
     pub btc_sigs_by_round:

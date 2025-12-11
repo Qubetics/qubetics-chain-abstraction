@@ -39,7 +39,7 @@ use secp256k1::{constants::CURVE_ORDER, ecdsa::RecoveryId};
 
 use crate::chain_abstraction::{ChainHandler, ChainTransaction};
 use crate::protocols::{VrfSelectedNodesBroadcast, VrfService};
-use crate::types::{p2p::SerializablePeerId, ChannelMessage, ConsensusMessage, ConsensusResult};
+use crate::types::{p2p::SerializablePeerId, ChannelMessage, ConsensusMessage, ConsensusResult, SpendKind};
 use crate::user_intent_manager::UserIntentManager;
 use anyhow::bail;
 use num_traits::Zero;
@@ -818,8 +818,12 @@ impl SigningNode {
     }
 
     pub fn set_database(&mut self, database: Arc<crate::database::Database>) {
-        self.database = Some(database);
-        info!("🗄️ [SIGNING] Node {} database set", self.id);
+        self.database = Some(database.clone());
+        
+        // Update Coordination with database so VrfService can use it
+        self.coordination.set_database(database);
+        
+        info!("🗄️ [SIGNING] Node {} database set with VRF storage", self.id);
     }
 
     /// Get peer index directly from database
@@ -1223,6 +1227,32 @@ impl SigningNode {
                 round, from
             );
             return Ok(());
+        }
+
+        // Check if this same signature was already stored in the previous round
+        if round > 0 {
+            let prev_round = round - 1;
+            let is_duplicate = {
+                let signatures_by_round = self.signatures.signatures_by_round.read().await;
+                if let Some(prev_round_signatures) = signatures_by_round.get(&prev_round) {
+                    if let Some(prev_sig) = prev_round_signatures.get(&from) {
+                        // Compare signature bytes to detect duplicates
+                        prev_sig.signature == signature.signature
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            };
+
+            if is_duplicate {
+                warn!(
+                    "🚫 [SIGNING] Duplicate signature detected: signature from {} for round {} was already stored in round {} - skipping",
+                    from, round, prev_round
+                );
+                return Ok(());
+            }
         }
 
         // Store signature by round
@@ -1648,21 +1678,71 @@ impl SigningNode {
         }
 
         // ---- 1) BULK STORE THE WHOLE BATCH (no await per item) ----
-        {
+        // First check for duplicates from previous round and filter them out
+        let items_to_store: Vec<&BtcIndexedSignature> = if round > 0 {
+            let prev_round = round - 1;
+            let by_round = self.btc_state.btc_sigs_by_round.read().await;
+            let prev_rmap = by_round.get(&prev_round);
+            
+            items.iter()
+                .filter(|it| {
+                    let is_duplicate = if let Some(prev_rmap) = prev_rmap {
+                        if let Some(prev_imap) = prev_rmap.get(&it.input_index) {
+                            if let Some(prev_sig) = prev_imap.get(&from) {
+                                // Compare signature bytes to detect duplicates
+                                prev_sig.signature == it.signature.signature
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    };
+
+                    if is_duplicate {
+                        warn!(
+                            "🚫 [BTC] Duplicate signature detected: signature from {} for round {} input {} was already stored in round {} - skipping",
+                            from, round, it.input_index, prev_round
+                        );
+                    }
+                    !is_duplicate
+                })
+                .collect()
+        } else {
+            items.iter().collect()
+        };
+
+        let stored_count = {
             let mut by_round = self.btc_state.btc_sigs_by_round.write().await;
             let rmap = by_round.entry(round).or_insert_with(HashMap::new);
-            for it in &items {
+            let mut count = 0;
+            for it in items_to_store {
                 let imap = rmap.entry(it.input_index).or_insert_with(HashMap::new);
                 // last write wins for (round,input,peer)
                 imap.insert(from.clone(), it.signature.clone());
+                count += 1;
             }
+            count
+        };
+        
+        if stored_count < items.len() {
+            info!(
+                "💾 [BTC] stored {} sigs for round {} from {} (batch, {} duplicates filtered from previous round)",
+                stored_count,
+                round,
+                from,
+                items.len() - stored_count
+            );
+        } else {
+            info!(
+                "💾 [BTC] stored {} sigs for round {} from {} (batch)",
+                stored_count,
+                round,
+                from
+            );
         }
-        info!(
-            "💾 [BTC] stored {} sigs for round {} from {} (batch)",
-            items.len(),
-            round,
-            from
-        );
         // ---- 2) Pull unsigned tx + BTC extras from pending_transactions ----
         let (unsigned_tx, extras, total_inputs) = {
             let pt = self.pending.pending_transactions_btc.read().await;

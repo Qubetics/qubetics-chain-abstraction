@@ -1,7 +1,9 @@
 use crate::consensus::ConsensusNode;
+use crate::database::VrfStorage;
 use crate::protocols::{VrfSelectionFacade, VrfService};
 use crate::types::ChannelMessage;
 use libp2p::PeerId;
+use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::info;
 
@@ -27,14 +29,53 @@ pub struct Coordination {
     pub vrf_service: Option<VrfService>,
     pub consensus_node: Option<ConsensusNode>,
     pub available_nodes: Option<Vec<PeerId>>,
+    pub vrf_storage: Option<VrfStorage>,
+    // Store these to recreate VrfService when database is set
+    node_id: Option<PeerId>,
+    message_tx: Option<mpsc::Sender<ChannelMessage>>,
 }
 
 impl Coordination {
     pub fn new(peer_id: PeerId, message_tx: mpsc::Sender<ChannelMessage>) -> Self {
         Self {
-            vrf_service: Some(VrfSelectionFacade::new_service(peer_id, message_tx)),
+            vrf_service: Some(VrfSelectionFacade::new_service(peer_id, message_tx.clone())),
             consensus_node: Some(ConsensusNode::new()),
             available_nodes: None,
+            vrf_storage: None,
+            node_id: Some(peer_id),
+            message_tx: Some(message_tx),
+        }
+    }
+
+    pub fn new_with_database(
+        peer_id: PeerId,
+        message_tx: mpsc::Sender<ChannelMessage>,
+        database: Arc<crate::database::Database>,
+    ) -> Self {
+        let vrf_storage = VrfStorage::new(database.as_ref().clone());
+        let vrf_service = VrfService::new_with_storage(peer_id, message_tx.clone(), vrf_storage.clone());
+        Self {
+            vrf_service: Some(vrf_service),
+            consensus_node: Some(ConsensusNode::new()),
+            available_nodes: None,
+            vrf_storage: Some(vrf_storage),
+            node_id: Some(peer_id),
+            message_tx: Some(message_tx),
+        }
+    }
+
+    pub fn set_database(&mut self, database: Arc<crate::database::Database>) {
+        let vrf_storage = VrfStorage::new(database.as_ref().clone());
+        self.vrf_storage = Some(vrf_storage.clone());
+        
+        // Recreate VrfService with storage if we have the necessary info
+        // The VrfService will automatically load the current round from storage on initialization
+        if let (Some(node_id), Some(message_tx)) = (self.node_id, self.message_tx.clone()) {
+            // Create new VrfService with storage - it will load round from storage automatically
+            let new_vrf_service = VrfService::new_with_storage(node_id, message_tx, vrf_storage);
+            
+            self.vrf_service = Some(new_vrf_service);
+            info!("✅ [COORDINATION] Updated VrfService with database storage");
         }
     }
 
@@ -86,7 +127,13 @@ impl Coordination {
             return;
         }
 
-        let mut vrf_service = VrfSelectionFacade::new_service(peer_id, message_tx);
+        // Create VrfService with storage if available, otherwise without
+        let mut vrf_service = if let Some(ref storage) = self.vrf_storage {
+            VrfService::new_with_storage(peer_id, message_tx, storage.clone())
+        } else {
+            VrfSelectionFacade::new_service(peer_id, message_tx)
+        };
+        
         if let Some(round) = network_round {
             info!(
                 "🔄 [VRF] Synchronizing VRF round from network state: {}",
