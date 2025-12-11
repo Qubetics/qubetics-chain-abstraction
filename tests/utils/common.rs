@@ -214,13 +214,19 @@ pub async fn sleep_for_10_seconds() {
     sleep(Duration::from_secs(10)).await;
 }
 
-pub async fn run_fifth_node(rpc_port: u16, p2p_port: u16, node1_addr: &str) -> anyhow::Result<NodeProcess> {
-    let node_dir = "node4";
-    let node_id = 5;
+
+pub async fn run_additional_node(
+    node_number: usize,
+    rpc_port: u16,
+    bootstrap_p2p_port: u16,
+    bootstrap_peer_id: &str,
+) -> anyhow::Result<NodeProcess> {
+    // node_number 5 uses node4 dir (0-indexed), node 6 uses node5 dir, etc.
+    let node_dir = format!("node{}", node_number - 1);
     let source_bin = "./target/release/mpc-node";
 
-    // Prepare directory for node5
-    let _ = std::fs::create_dir_all(node_dir);
+    // Prepare directory
+    let _ = std::fs::create_dir_all(&node_dir);
     let _ = std::fs::remove_dir_all(format!("{}/data", node_dir));
     let _ = std::fs::remove_dir_all(format!("{}/logs", node_dir));
     std::fs::create_dir_all(format!("{}/logs", node_dir))?;
@@ -230,27 +236,30 @@ pub async fn run_fifth_node(rpc_port: u16, p2p_port: u16, node1_addr: &str) -> a
     std::fs::copy(source_bin, format!("{}/mpc-node", node_dir))
         .expect(&format!("Failed to copy binary to {}", node_dir));
 
-    // Construct the bootstrap multiaddress using node1's peer ID
-    let node1_addr = format!("/ip4/127.0.0.1/tcp/{}/p2p/{}", p2p_port, node1_addr);
+    // Construct the bootstrap multiaddress
+    let bootstrap_addr = format!(
+        "/ip4/127.0.0.1/tcp/{}/p2p/{}",
+        bootstrap_p2p_port, bootstrap_peer_id
+    );
 
-    println!("Node 1 Address: {}", node1_addr);
-
-    println!("Starting Node {} from ./{}", node_id, node_dir);
+    println!("Bootstrap Address: {}", bootstrap_addr);
+    println!("Starting Node {} from ./{}", node_number, node_dir);
 
     let log_file = std::fs::File::create(format!("{}/logs/node.log", node_dir))?;
 
     let mut child = Command::new("./mpc-node")
-        .current_dir(node_dir)
-        .env("RPC_PORT", (rpc_port + node_id as u16).to_string())
-        .arg(&node1_addr)
+        .current_dir(&node_dir)
+        .env("RPC_PORT", (rpc_port + node_number as u16).to_string())
+        .arg(&bootstrap_addr)
         .env("RUST_LOG", "info")
         .stdout(Stdio::piped())
         .stderr(Stdio::from(log_file))
         .spawn()
-        .expect(&format!("Failed to start Node {}", node_id));
+        .expect(&format!("Failed to start Node {}", node_number));
 
     if let Some(stdout) = child.stdout.take() {
         let reader = std::io::BufReader::new(stdout);
+        let node_id = node_number;
         std::thread::spawn(move || {
             for line in reader.lines() {
                 if let Ok(l) = line {
@@ -263,7 +272,10 @@ pub async fn run_fifth_node(rpc_port: u16, p2p_port: u16, node1_addr: &str) -> a
     // Give the node time to connect and sync
     sleep(Duration::from_secs(10)).await;
 
-    println!("✅ Node {} started and connected to the network", node_id);
+    println!("✅ Node {} started and connected to the network", node_number);
 
-    Ok(NodeProcess { child, id: node_id })
+    Ok(NodeProcess {
+        child,
+        id: node_number,
+    })
 }

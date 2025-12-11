@@ -1,5 +1,6 @@
 use crate::utils::{
-    SupportedNetwork, execute, get_current_address, get_derived_addresses, get_group_address_from_db, get_vault_addresses, register_user, run_fifth_node, run_nodes, wait_for_dkg
+    execute, get_current_address, get_derived_addresses, get_group_address_from_db,
+    get_vault_addresses, register_user, run_additional_node, run_nodes, wait_for_dkg, SupportedNetwork,
 };
 use reqwest::Client;
 
@@ -40,7 +41,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Run the fifth node after both deposit intents
     println!("Starting fifth node...");
-    let fifth_node = run_fifth_node(RPC_PORT, node1_p2p_port, &node1_peer_id).await?;
+    let fifth_node = run_additional_node(5, RPC_PORT, node1_p2p_port, &node1_peer_id).await?;
     nodes.push(fifth_node);
     println!("Fifth node started successfully");
 
@@ -55,7 +56,6 @@ async fn main() -> anyhow::Result<()> {
 
     let (vault_eth_address_after, vault_btc_address_after) = get_vault_addresses(&node1_peer_id)?;
 
-    register_user(&client, RPC_PORT, &user_address).await?;
     let (derived_eth_address_after, derived_btc_address_after) =
         get_derived_addresses(&client, RPC_PORT, &user_address).await?;
     let (eth_group_address_after, btc_group_address_after) =
@@ -90,6 +90,21 @@ async fn main() -> anyhow::Result<()> {
     user_deposit_intent_btc_to_eth(test_private_key_1, node1_peer_id.clone(), client.clone())
         .await?;
     println!("User mpc deposit from Bitcoin to Qubetics executed successfully");
+
+    
+    // Run the sixth node after both deposit intents
+    println!("Starting sixth node...");
+    let sixth_node = run_additional_node(6, RPC_PORT, node1_p2p_port, &node1_peer_id).await?;
+    nodes.push(sixth_node);
+    println!("Sixth node started successfully");
+
+    // Ensure node 6 finishes syncing/DKG before shutting down node 1
+    println!("Waiting for Node 6 to complete DKG sync...");
+    let node6_port = RPC_PORT + 6;
+    let node6_ready = wait_for_dkg(&client, node6_port).await;
+    assert!(node6_ready, "Node 6 failed to complete DKG sync");
+    println!("Node 6 DKG completed.");
+
 
     Ok(())
 }

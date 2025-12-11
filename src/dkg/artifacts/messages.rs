@@ -30,15 +30,20 @@ pub enum DKGMessage {
         broadcaster_node_id: String,
     },
     /// Refresh shares sent from each node during proactive refresh
-    RefreshShare {
-        from: String,
-        shares: Vec<KeyShare>,
-        commitments: Vec<SerializablePoint>,
-    },
+    // RefreshShare {
+    //     from: String,
+    //     shares: Vec<KeyShare>,
+    //     commitments: Vec<SerializablePoint>,
+    // },
     /// Individual shares are sent via P2P RPC (SendDKGShare).
     CommitmentBroadcast {
         from: String,
         commitments: Vec<SerializablePoint>,
         round: u64,
+    },
+    /// Refresh commitments broadcast (shares sent via P2P RPC SendRefreshShare)
+    RefreshCommitmentBroadcast {
+        from: String,
+        commitments: Vec<SerializablePoint>,
     },
 }

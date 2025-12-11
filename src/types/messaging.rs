@@ -94,6 +94,15 @@ pub enum ChannelMessage {
         round: u64,
         retry_count: u8,
     },
+    /// Send a refresh share to a specific peer via P2P RPC unicast
+    UnicastRefreshShare {
+        target_peer_id: String,
+        from_node_id: String,
+        share_index: usize,
+        share_value: SerializableScalar,
+        commitments: Vec<SerializablePoint>,
+        retry_count: u8,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

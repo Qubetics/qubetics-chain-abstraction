@@ -74,16 +74,6 @@ impl DKGNode {
             DKGMessage::NodeDisconnected { .. } => {
                 info!("📢 [DISCONNECT] Notification handled at network layer");
             }
-            DKGMessage::RefreshShare {
-                from,
-                shares,
-                commitments,
-            } => {
-                info!("🔄 [REFRESH] Received refresh shares from {}", from);
-                self.handle_refresh_share(from, shares, commitments, node_manager.clone())
-                    .await?;
-            }
-            // SECURE: Handle commitment broadcast (shares are sent via unicast RPC)
             DKGMessage::CommitmentBroadcast {
                 from,
                 commitments,
@@ -94,6 +84,14 @@ impl DKGNode {
                     from, round
                 );
                 self.handle_commitment_broadcast(from, commitments).await?;
+            }
+            DKGMessage::RefreshCommitmentBroadcast { from, commitments } => {
+                info!(
+                    "🔐 [REFRESH-SECURE] Received refresh commitment broadcast from {}",
+                    from
+                );
+                self.handle_refresh_commitment_broadcast(from, commitments, node_manager)
+                    .await?;
             }
         }
         Ok(())

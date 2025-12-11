@@ -1,6 +1,6 @@
 use crate::dkg::{artifacts::DKGMessage, DKGNode};
 use crate::types::dkg::MSG_TOPIC_DKG;
-use crate::types::{GossipsubMessage, KeyShare, SerializablePoint};
+use crate::types::{GossipsubMessage, KeyShare, SerializablePoint, SerializableScalar};
 use crate::utils::hmac_helper::hmac_scalar_mod_n;
 use crate::{utils, NodeMembership};
 use anyhow::{anyhow, Result};
@@ -211,8 +211,7 @@ impl DKGNode {
             total_nodes, threshold
         );
 
-        // CRITICAL: Update this node's total_nodes parameter to current network size
-        // Old nodes will have total_nodes = 4, but network now has 5 nodes
+
         info!(
             "🔄 [REFRESH] Updating node params: old total_nodes={}, new total_nodes={}",
             self.total_nodes(),
@@ -273,7 +272,6 @@ impl DKGNode {
 
         info!("🔍 [REFRESH] Refresh shares generated for all indices");
 
-        // IMPORTANT: Store our own refresh share locally (won't receive it via gossipsub)
         let my_refresh_share = refresh_shares
             .iter()
             .find(|s| s.index == my_index)
@@ -293,102 +291,224 @@ impl DKGNode {
         );
 
         tokio::time::sleep(Duration::from_secs(2)).await;
-        // Broadcast refresh shares
-        let msg = DKGMessage::RefreshShare {
-            from: self.id.clone(),
-            shares: refresh_shares,
-            commitments: refresh_commitments,
-        };
 
-        let gossip_wrap = GossipsubMessage::DKG(msg);
-        let msg_bytes = serde_json::to_vec(&gossip_wrap)?;
-        self.broadcast(MSG_TOPIC_DKG, &msg_bytes).await?;
+        self.distribute_refresh_shares_to_peers(
+            refresh_shares,
+            refresh_commitments.clone(),
+            nodes_with_indices.clone(),
+            my_index,
+        )
+        .await?;
 
-        info!("✅ [REFRESH] Broadcasted refresh shares to all nodes");
+        // Broadcast commitments 
+        self.broadcast_refresh_commitments(refresh_commitments)
+            .await?;
+
+        info!("✅ [REFRESH] Distributed refresh shares via unicast and broadcasted commitments");
 
         Ok(())
     }
 
-    pub(super) async fn handle_refresh_share(
+    /// Distribute refresh shares to peers via unicast P2P RPC
+    async fn distribute_refresh_shares_to_peers(
+        &self,
+        shares: Vec<KeyShare>,
+        commitments: Vec<SerializablePoint>,
+        nodes_with_indices: Vec<(String, usize)>,
+        my_index: usize,
+    ) -> Result<()> {
+        use crate::types::ChannelMessage;
+
+        info!("🔐 [REFRESH-SECURE] === DISTRIBUTING REFRESH SHARES VIA UNICAST ===");
+        info!("🔐 [REFRESH-SECURE] Sending each refresh share ONLY to its intended recipient");
+
+        // Build reverse mapping: index -> peer_id
+        let index_to_peer: HashMap<usize, String> = nodes_with_indices
+            .iter()
+            .map(|(peer_id, idx)| (*idx, peer_id.clone()))
+            .collect();
+
+        info!(
+            "🔐 [REFRESH-SECURE] index_to_peer mapping: {:?}",
+            index_to_peer
+        );
+        info!(
+            "🔐 [REFRESH-SECURE] shares to distribute: {:?}",
+            shares.iter().map(|s| s.index).collect::<Vec<_>>()
+        );
+
+        for share in shares {
+            // Skip our own share (already stored locally)
+            if share.index == my_index {
+                info!(
+                    "🔐 [REFRESH-SECURE] Skipping own share (index {})",
+                    share.index
+                );
+                continue;
+            }
+
+            // Find the peer for this share index
+            if let Some(target_peer_id) = index_to_peer.get(&share.index) {
+                info!(
+                    "📤 [REFRESH-SECURE] UNICAST refresh share index {} -> peer {} (NOT broadcast!)",
+                    share.index, target_peer_id
+                );
+
+                // Send via channel message to unicast
+                let send_msg = ChannelMessage::UnicastRefreshShare {
+                    target_peer_id: target_peer_id.clone(),
+                    from_node_id: self.id.clone(),
+                    share_index: share.index,
+                    share_value: share.value.clone(),
+                    commitments: commitments.clone(),
+                    retry_count: 0,
+                };
+
+                if let Err(e) = self.message_tx.send(send_msg).await {
+                    warn!(
+                        "❌ [REFRESH-SECURE] Failed to send refresh share to {}: {}",
+                        target_peer_id, e
+                    );
+                } else {
+                    info!(
+                        "✅ [REFRESH-SECURE] Refresh share for index {} queued for unicast to {}",
+                        share.index, target_peer_id
+                    );
+                }
+            } else {
+                warn!(
+                    "⚠️ [REFRESH-SECURE] No peer found for share index {} in nodes_with_indices",
+                    share.index
+                );
+            }
+        }
+
+        info!("🔐 [REFRESH-SECURE] === REFRESH SHARE DISTRIBUTION COMPLETE ===");
+        Ok(())
+    }
+
+    /// Broadcast refresh commitments only (shares sent via unicast)
+    async fn broadcast_refresh_commitments(
+        &self,
+        commitments: Vec<SerializablePoint>,
+    ) -> Result<()> {
+        let msg = DKGMessage::RefreshCommitmentBroadcast {
+            from: self.id.clone(),
+            commitments,
+        };
+
+        let gossip_wrap = GossipsubMessage::DKG(msg);
+        let msg_bytes = serde_json::to_vec(&gossip_wrap)?;
+
+        info!(
+            "📡 [REFRESH-SECURE] Broadcasting COMMITMENTS ONLY: {} bytes (shares sent privately)",
+            msg_bytes.len()
+        );
+        self.broadcast(MSG_TOPIC_DKG, &msg_bytes).await?;
+        Ok(())
+    }
+
+    /// Handle refresh commitment broadcast (commitments only, shares via unicast)
+    pub(super) async fn handle_refresh_commitment_broadcast(
         &mut self,
         from: String,
-        shares: Vec<KeyShare>,
         commitments: Vec<SerializablePoint>,
         node_manager: Box<dyn NodeMembership>,
     ) -> Result<()> {
-        info!("🔄 [REFRESH] ═══════════════════════════════════════════════════");
-        info!("🔄 [REFRESH] RECEIVED REFRESH SHARE FROM {}", from);
-        info!("🔄 [REFRESH] ═══════════════════════════════════════════════════");
         info!(
-            "📦 [REFRESH] Received {} shares, {} commitments",
-            shares.len(),
+            "🔐 [REFRESH-SECURE] Processing {} commitments from {}",
+            commitments.len(),
+            from
+        );
+
+        // Store commitments for verification when we receive the share via RPC
+        let raw_commitments: Vec<AffinePoint> = commitments.iter().map(|c| c.0).collect();
+        let key = format!("refresh_{}", from);
+        self.storage.store_commitments(&key, &raw_commitments).await?;
+
+        info!(
+            "✅ [REFRESH-SECURE] Stored {} refresh commitments from {} (waiting for unicast share)",
+            raw_commitments.len(),
+            from
+        );
+
+        // Check if we already have the share (might arrive before commitments)
+        let all_shares = self.storage.get_all_shares().await?;
+        if all_shares.contains_key(&key) {
+            info!(
+                "🔍 [REFRESH-SECURE] Share from {} already received, checking completion",
+                from
+            );
+            self.check_refresh_completion(node_manager).await?;
+        }
+
+        Ok(())
+    }
+
+    /// Handle a single refresh share received via P2P RPC unicast
+    pub async fn handle_unicast_refresh_share(
+        &mut self,
+        from: String,
+        share_index: usize,
+        share_value: SerializableScalar,
+        commitments: Vec<SerializablePoint>,
+        node_manager: Box<dyn NodeMembership>,
+    ) -> Result<bool> {
+        info!("🔐 [REFRESH-SECURE] ═══════════════════════════════════════════════════");
+        info!(
+            "🔐 [REFRESH-SECURE] RECEIVED UNICAST REFRESH SHARE FROM {}",
+            from
+        );
+        info!("🔐 [REFRESH-SECURE] ═══════════════════════════════════════════════════");
+        info!(
+            "📦 [REFRESH-SECURE] Share index: {}, Commitments: {}",
+            share_index,
             commitments.len()
         );
 
-        // Log all received shares to see what indices they have
-        info!(
-            "🔍 [REFRESH] All shares received from {} (values redacted)",
-            from
-        );
-
-        // Verify refresh shares
-        let raw_commitments: Vec<AffinePoint> = commitments.into_iter().map(|c| c.0).collect();
-        info!(
-            "🔐 [REFRESH] Verifying {} shares against {} commitments...",
-            shares.len(),
-            raw_commitments.len()
-        );
-
-        if !self.verify_shares(&shares, &raw_commitments) {
+        // Verify the share
+        let raw_commitments: Vec<AffinePoint> = commitments.iter().map(|c| c.0).collect();
+        
+        let share = KeyShare {
+            index: share_index,
+            value: share_value.clone(),
+        };
+        
+        if !self.verify_shares(&[share.clone()], &raw_commitments) {
             warn!(
-                "❌ [REFRESH] Refresh share verification failed from {}",
+                "❌ [REFRESH-SECURE] Refresh share verification failed from {}",
                 from
             );
-            return Ok(());
+            return Ok(false);
         }
 
         info!(
-            "✅ [REFRESH] All refresh shares verified successfully from {}",
+            "✅ [REFRESH-SECURE] Refresh share verified successfully from {}",
             from
         );
 
-        // CRITICAL: Use permanent index, not recalculated sorted position!
-        let my_index = self
-            .permanent_index()
-            .ok_or_else(|| anyhow!("Permanent index not set during refresh share handling"))?;
-
-        info!("🔍 [REFRESH] My permanent index: {}", my_index);
-        info!(
-            "🔍 [REFRESH] Looking for share with index {} in received shares...",
-            my_index
-        );
-
-        // Find the refresh share meant for this node
-        let my_refresh_share = shares
-            .iter()
-            .find(|s| s.index == my_index)
-            .ok_or_else(|| anyhow!("No refresh share found for my index {}", my_index))?;
+        // Store refresh share with "refresh_" prefix
+        let key = format!("refresh_{}", from);
+        self.storage.store_share(&key, &share).await?;
+        self.storage.store_commitments(&key, &raw_commitments).await?;
 
         info!(
-            "✅ [REFRESH] Found my refresh share from {}: index={}",
-            from, my_refresh_share.index
+            "💾 [REFRESH-SECURE] Stored refresh share from {} with key: {}",
+            from, key
         );
 
-        // Store refresh share temporarily with "refresh_" prefix
-        let key = format!("refresh_{from}");
-        self.storage.store_share(&key, my_refresh_share).await?;
-        self.storage
-            .store_commitments(&key, &raw_commitments)
-            .await?;
+        // Check for completion
+        self.check_refresh_completion(node_manager).await?;
 
-        info!(
-            "💾 [REFRESH] Stored refresh share from {} with key: refresh_{}",
-            from, from
-        );
+        Ok(true)
+    }
 
-        // Check if we've received refresh shares from all ACTIVE nodes
-        let expected_active_nodes = shares.len();
-        let local_node_manager_count = node_manager.get_active_nodes().len();
+    /// Check if we have received all refresh shares and compute refreshed secret
+    async fn check_refresh_completion(
+        &mut self,
+        node_manager: Box<dyn NodeMembership>,
+    ) -> Result<()> {
+        let expected_active_nodes = node_manager.get_active_nodes().len();
 
         let all_shares_stored = self.storage.get_all_shares().await?;
         let refresh_share_keys: Vec<String> = all_shares_stored
@@ -399,36 +519,26 @@ impl DKGNode {
         let refresh_shares_count = refresh_share_keys.len();
 
         info!(
-            "📊 [REFRESH] Refresh shares received: {}/{}",
+            "📊 [REFRESH-SECURE] Refresh shares received: {}/{}",
             refresh_shares_count, expected_active_nodes
         );
         info!(
-            "📊 [REFRESH] Expected nodes (from message): {}, Local node_manager: {}",
-            expected_active_nodes, local_node_manager_count
-        );
-        info!(
-            "📊 [REFRESH] Refresh share keys in storage: {:?}",
+            "📊 [REFRESH-SECURE] Refresh share keys in storage: {:?}",
             refresh_share_keys
         );
 
-        if local_node_manager_count != expected_active_nodes {
-            warn!("⚠️ [REFRESH] MISMATCH: Local node_manager has {} nodes but received message for {} nodes", 
-                  local_node_manager_count, expected_active_nodes);
-            warn!("⚠️ [REFRESH] This node might not have detected disconnect yet. Using message count as truth.");
-        }
-
         if refresh_shares_count >= expected_active_nodes {
-            info!("🎉 [REFRESH] ═══════════════════════════════════════════════════");
+            info!("🎉 [REFRESH-SECURE] ═══════════════════════════════════════════════════");
             info!(
-                "🎉 [REFRESH] RECEIVED ALL {} REFRESH SHARES!",
+                "🎉 [REFRESH-SECURE] RECEIVED ALL {} REFRESH SHARES!",
                 expected_active_nodes
             );
-            info!("🎉 [REFRESH] Now computing new secret share...");
-            info!("🎉 [REFRESH] ═══════════════════════════════════════════════════");
+            info!("🎉 [REFRESH-SECURE] Now computing new secret share...");
+            info!("🎉 [REFRESH-SECURE] ═══════════════════════════════════════════════════");
             self.compute_refreshed_secret().await?;
         } else {
             info!(
-                "⏳ [REFRESH] Waiting for more refresh shares ({}/{})",
+                "⏳ [REFRESH-SECURE] Waiting for more refresh shares ({}/{})",
                 refresh_shares_count, expected_active_nodes
             );
         }

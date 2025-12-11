@@ -86,6 +86,25 @@ impl MpcNetworkLayer {
                 )
                 .await
             }
+            // SECURE REFRESH SHARE - receive unicast refresh share via P2P RPC
+            RPCRequest::SendRefreshShare {
+                from_node_id,
+                share_index,
+                share_value,
+                commitments,
+            } => {
+                info!(
+                    "🔐 [REFRESH-SECURE] Received UNICAST refresh share index: {}, from: {}",
+                    share_index, from_node_id
+                );
+                self.handle_incoming_refresh_share(
+                    from_node_id,
+                    share_index,
+                    share_value,
+                    commitments,
+                )
+                .await
+            }
             _ => RPCResponse::Ack,
         }
     }
@@ -363,6 +382,71 @@ impl MpcNetworkLayer {
                     share_index, from_node_id, e
                 );
                 RPCResponse::Error(format!("Failed to process share: {}", e))
+            }
+        }
+    }
+
+    /// Handle incoming refresh share from unicast P2P RPC
+    async fn handle_incoming_refresh_share(
+        &mut self,
+        from_node_id: String,
+        share_index: usize,
+        share_value: SerializableScalar,
+        commitments: Vec<SerializablePoint>,
+    ) -> RPCResponse {
+        info!(
+            "🔐 [REFRESH-SECURE] Processing unicast refresh share index: {}, from: {}",
+            share_index, from_node_id
+        );
+
+        let dkg_node = match &mut self.dkg_node {
+            Some(node) => node,
+            None => {
+                warn!("❌ [REFRESH-SECURE] DKG node not initialized");
+                return RPCResponse::Error("DKG not initialized".to_string());
+            }
+        };
+
+        let receiver_node_id = dkg_node.get_id().to_string();
+
+        // Use the public method to process the refresh share
+        match dkg_node.handle_unicast_refresh_share(
+            from_node_id.clone(),
+            share_index,
+            share_value,
+            commitments,
+            self.node_manager.clone(),
+        ).await {
+            Ok(true) => {
+                info!(
+                    "✅ [REFRESH-SECURE] Refresh share index {} from {} processed successfully",
+                    share_index, from_node_id
+                );
+                RPCResponse::RefreshShareReceived {
+                    from_node_id,
+                    receiver_node_id,
+                    share_index,
+                    success: true,
+                }
+            }
+            Ok(false) => {
+                warn!(
+                    "❌ [REFRESH-SECURE] Refresh share index {} from {} was rejected",
+                    share_index, from_node_id
+                );
+                RPCResponse::RefreshShareReceived {
+                    from_node_id,
+                    receiver_node_id,
+                    share_index,
+                    success: false,
+                }
+            }
+            Err(e) => {
+                warn!(
+                    "❌ [REFRESH-SECURE] Error processing refresh share index {} from {}: {}",
+                    share_index, from_node_id, e
+                );
+                RPCResponse::Error(format!("Failed to process refresh share: {}", e))
             }
         }
     }
