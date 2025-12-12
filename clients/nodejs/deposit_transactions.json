@@ -1,9 +1,9 @@
 {
-  "last_updated": "2025-12-11T12:39:18.461Z",
+  "last_updated": "2025-12-12T08:00:06.541Z",
   "summary": {
     "total_successful": 87,
-    "total_failed": 15,
-    "total_transactions": 102
+    "total_failed": 21,
+    "total_transactions": 108
   },
   "successful_transactions": [
     {
@@ -1637,6 +1637,102 @@
         "vault_to_network": null
       },
       "error_message": "Broadcast failed: {\"code\":-32000,\"message\":\"failed to check sender balance: sender balance < tx cost (0 < 24200000000000147000): insufficient funds: insufficient funds\"}",
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-12T07:59:21.148Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "20000000000000000000",
+      "amount_tics": "20.00",
+      "timestamp": 1765526361,
+      "status": "error",
+      "transaction_ids": {
+        "user_to_network": null,
+        "network_to_target": null,
+        "vault_to_network": null
+      },
+      "error_message": "Broadcast failed: {\"code\":-32000,\"message\":\"failed to check sender balance: sender balance < tx cost (10000000000000 < 22000000000000147000): insufficient funds: insufficient funds\"}",
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-12T07:59:32.209Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "20000000000000000000",
+      "amount_tics": "20.00",
+      "timestamp": 1765526361,
+      "status": "error",
+      "transaction_ids": {
+        "user_to_network": null,
+        "network_to_target": null,
+        "vault_to_network": null
+      },
+      "error_message": "Broadcast failed: {\"code\":-32000,\"message\":\"failed to check sender balance: sender balance < tx cost (10000000000000 < 22000000000000147000): insufficient funds: insufficient funds\"}",
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-12T07:59:36.223Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "20000000000000000000",
+      "amount_tics": "20.00",
+      "timestamp": 1765526361,
+      "status": "error",
+      "transaction_ids": {
+        "user_to_network": null,
+        "network_to_target": null,
+        "vault_to_network": null
+      },
+      "error_message": "Broadcast failed: {\"code\":-32000,\"message\":\"failed to check sender balance: sender balance < tx cost (10000000000000 < 22000000000000147000): insufficient funds: insufficient funds\"}",
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-12T07:59:40.236Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "22000000000000000000",
+      "amount_tics": "22.00",
+      "timestamp": 1765526376,
+      "status": "error",
+      "transaction_ids": {
+        "user_to_network": null,
+        "network_to_target": null,
+        "vault_to_network": null
+      },
+      "error_message": "Broadcast failed: {\"code\":-32000,\"message\":\"failed to check sender balance: sender balance < tx cost (10000000000000 < 24200000000000147000): insufficient funds: insufficient funds\"}",
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-12T07:59:53.041Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "22000000000000000000",
+      "amount_tics": "22.00",
+      "timestamp": 1765526376,
+      "status": "error",
+      "transaction_ids": {
+        "user_to_network": null,
+        "network_to_target": null,
+        "vault_to_network": null
+      },
+      "error_message": "Broadcast failed: {\"code\":-32000,\"message\":\"failed to check sender balance: sender balance < tx cost (10000000000000 < 24200000000000147000): insufficient funds: insufficient funds\"}",
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-12T07:59:57.050Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "22000000000000000000",
+      "amount_tics": "22.00",
+      "timestamp": 1765526376,
+      "status": "error",
+      "transaction_ids": {
+        "user_to_network": null,
+        "network_to_target": null,
+        "vault_to_network": null
+      },
+      "error_message": "Broadcast failed: {\"code\":-32000,\"message\":\"failed to check sender balance: sender balance < tx cost (10000000000000 < 24200000000000147000): insufficient funds: insufficient funds\"}",
       "is_registered": true,
       "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
     }

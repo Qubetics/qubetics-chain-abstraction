@@ -72,6 +72,7 @@ impl SigningNode {
         }
 
         // 2) Recompute global totals and aggregate map from all solver_liquidity:* keys
+        // Skip the aggregated entry itself to avoid deserializing it as a Vec<String>.
         match database.get_values_with_prefix::<Vec<String>>("solver_liquidity:") {
             Ok(entries) => {
                 let mut total_tics = U256::zero();
@@ -80,6 +81,11 @@ impl SigningNode {
                     std::collections::HashMap::<String, Vec<String>>::new();
 
                 for (key, amounts) in entries {
+                    // Filter out the aggregate key; it is stored as a map, not Vec<String>.
+                    if key == "solver_liquidity:all" {
+                        continue;
+                    }
+
                     if let Some(addr) = key.strip_prefix("solver_liquidity:") {
                         if let Some(btc_str) = amounts.get(0) {
                             if let Ok(btc) = U256::from_dec_str(btc_str) {
