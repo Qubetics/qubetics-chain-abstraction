@@ -17,7 +17,7 @@ pub type WitnessItem = Vec<u8>;
 pub type WitnessStack = Vec<WitnessItem>;
 
 const DEFAULT_FEE_RATE_SAT_PER_VBYTE: u64 = 2;
-const DUST_LIMIT_SATS: u64 = 546;
+pub const DUST_LIMIT_SATS: u64 = 546;
 
 /// Wrapper for custom UTXO API responses
 #[derive(Debug, Clone, Serialize, Deserialize)]
