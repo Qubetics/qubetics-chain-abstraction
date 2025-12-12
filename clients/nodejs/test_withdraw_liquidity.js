@@ -11,7 +11,7 @@ import secp256k1 from 'secp256k1';
 import keccak from 'keccak';
 
 // Configuration (update as needed)
-const RPC_BASE_URL = 'http://127.0.0.1:8083';
+const RPC_BASE_URL = 'http://124.243.185.174:8083';
 const WITHDRAW_ENDPOINT = `${RPC_BASE_URL}/withdraw_liquidity`;
 
 // Private key/address pair used in test_claim_reward.js (replace for real usage)
@@ -20,7 +20,7 @@ const TEST_PRIVATE_KEY =
 const DEFAULT_ETH_ADDRESS = '0x002aF85c8865DE4604dF07a1105EfEF2b8e0dE05';
 const DEFAULT_BTC_ADDRESS = 'mh12dZHkgTajT1H6t8FkWoNC4KucxByWBA';
 const DEFAULT_TICS_WITHDRAW = null; // 1 TICS
-const DEFAULT_BTC_WITHDRAW = '999999999999500'; // set to string value if testing BTC
+const DEFAULT_BTC_WITHDRAW = '1000'; // set to string value if testing BTC
 
 const colors = {
   red: '\x1b[31m',
