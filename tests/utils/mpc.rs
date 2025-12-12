@@ -224,12 +224,12 @@ pub async fn execute(
 
         deposit_intent = DepositIntent {
             source_address: derived_eth_address.clone(),
-            target_address,
+            target_address: target_address.clone(),
             source_chain: source_chain.to_string(),
             target_chain: target_chain.to_string(),
             amount,
-            source_token,
-            target_token,
+            source_token: source_token.clone(),
+            target_token: target_token.clone(),
             timestamp: timestamp as u128,
         };
     } else if source_chain == SupportedNetwork::Bitcoin && target_chain == SupportedNetwork::Qubetics {
@@ -257,14 +257,36 @@ pub async fn execute(
 
         deposit_intent = DepositIntent {
             source_address: derived_btc_address.clone(),
-            target_address,
+            target_address: target_address.clone(),
             source_chain: source_chain.to_string(),
             target_chain: target_chain.to_string(),
             amount: deposit_amount,
-            source_token,
-            target_token,
+            source_token: source_token.clone(),
+            target_token: target_token.clone(),
             timestamp: timestamp as u128,
         };
+    }
+    if source_chain == SupportedNetwork::Qubetics && target_chain == SupportedNetwork::Qubetics {
+        println!("Sending 2 ETH to Vault: {}", vault_eth_address);
+
+        send_eth(&private_key, &vault_eth_address, 2).await?;
+
+		// Provide ETH liquidity to ETH group key address
+		println!("Sending 30 ETH to ETH Address Group Key: {}", address_group_key);
+		send_eth(&private_key, &address_group_key, 30).await?;
+
+        deposit_intent = DepositIntent {
+            source_address: derived_eth_address.clone(),
+            target_address: target_address.clone(),
+            source_chain: source_chain.to_string(),
+            target_chain: target_chain.to_string(),
+            amount: deposit_amount,
+            source_token: source_token.clone(),
+            target_token: target_token.clone(),
+            timestamp: timestamp as u128,
+        };
+        println!("Deposit Intent: {:?}", deposit_intent);
+
     }
 
     let msg = serde_json::to_string(&deposit_intent)?;

@@ -105,6 +105,11 @@ async fn main() -> anyhow::Result<()> {
     assert!(node6_ready, "Node 6 failed to complete DKG sync");
     println!("Node 6 DKG completed.");
 
+    println!("Executing user_mpc_deposit from Qubetics to Qubetics");
+    user_deposit_intent_eth_to_eth(test_private_key, node1_peer_id.clone(), client.clone())
+        .await?;
+    println!("User mpc deposit from Qubetics to Qubetics executed successfully");
+
 
     Ok(())
 }
@@ -175,6 +180,44 @@ async fn user_deposit_intent_btc_to_eth(
         SupportedNetwork::Bitcoin,
         SupportedNetwork::Qubetics,
         500,
+    )
+    .await?;
+
+    Ok(())
+}
+
+
+async fn user_deposit_intent_eth_to_eth(
+    test_private_key: String,
+    node1_peer_id: String,
+    client: Client,
+) -> anyhow::Result<()> {
+    // Get Vault Addresses from DB
+    let (vault_eth_address, _) = get_vault_addresses(&node1_peer_id)?;
+
+    // Get User ETH
+    let user_address = get_current_address(&test_private_key).await?;
+
+    // Register user and get derived addresses
+    register_user(&client, RPC_PORT, &user_address).await?;
+
+    let (derived_eth_address, derived_btc_address) =
+        get_derived_addresses(&client, RPC_PORT, &user_address).await?;
+
+    // Get ETH group address from DB
+    let (_, eth_address_group_key) = get_group_address_from_db(&node1_peer_id)?;
+
+    println!("Executing user_mpc_deposit from Qubetics to Qubetics");
+    execute(
+        test_private_key,
+        vault_eth_address.clone(),
+        derived_eth_address.clone(),
+        derived_btc_address.clone(),
+        eth_address_group_key.clone(),
+        client.clone(),
+        SupportedNetwork::Qubetics,
+        SupportedNetwork::Qubetics,
+        25,
     )
     .await?;
 

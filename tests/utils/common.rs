@@ -45,7 +45,18 @@ pub fn get_pair_and_target_address(
             "TICS".to_string(),
             TARGET_ADDRESS_ETH.to_string(),
         );
-    } else {
+    }
+    else if source_network == SupportedNetwork::Qubetics
+        && target_network == SupportedNetwork::Qubetics
+    {
+        return (
+            "TICS".to_string(),
+            "TICS".to_string(),
+            TARGET_ADDRESS_ETH.to_string(),
+        );
+    }
+
+     else {
         panic!(
             "Invalid network pair: {:?} -> {:?}",
             source_network, target_network
