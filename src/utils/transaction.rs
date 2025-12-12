@@ -378,8 +378,24 @@ pub fn select_utxos_for_amount(
         let fee_with_change = estimate_fee_sat(kind, n_inputs, 2, fee_rate_sat_vb);
         let required_with_change = required_amount + fee_with_change;
 
+        tracing::debug!(
+            "💰 [UTXO_SELECTION] Iteration {}: total_value={} sats, required_with_change={} sats (amount={} + fee={})",
+            n_inputs,
+            total_value,
+            required_with_change,
+            required_amount,
+            fee_with_change
+        );
+
         if total_value >= required_with_change {
             let change = total_value - required_with_change;
+
+            tracing::info!(
+                "💰 [UTXO_SELECTION] Change path check: change={} sats, dust_limit={} sats, above_dust={}",
+                change,
+                DUST_LIMIT_SATS,
+                change >= DUST_LIMIT_SATS
+            );
 
             if change >= DUST_LIMIT_SATS {
                 // Use change path - this is optimal
@@ -423,7 +439,31 @@ pub fn select_utxos_for_amount(
         let fee_no_change = estimate_fee_sat(kind, n_inputs, 1, fee_rate_sat_vb);
         let required_no_change: u64 = required_amount + fee_no_change;
 
+        tracing::debug!(
+            "💰 [UTXO_SELECTION] No-change path check: total_value={} sats, required_no_change={} sats (amount={} + fee={})",
+            total_value,
+            required_no_change,
+            required_amount,
+            fee_no_change
+        );
+
         if total_value >= required_no_change {
+            // IMPORTANT: Calculate what the leftover would be if we don't create change
+            let leftover = total_value - required_no_change;
+
+            tracing::info!(
+                "🚨 [UTXO_SELECTION] No-change path leftover analysis: leftover={} sats, dust_limit={} sats, leftover_is_dust={}",
+                leftover,
+                DUST_LIMIT_SATS,
+                leftover < DUST_LIMIT_SATS
+            );
+
+            // Only use no-change path if:
+            // 1. We don't have enough for the change path (checked above), OR
+            // 2. The leftover would be below dust anyway
+            // This prevents accidentally sending large amounts as fees
+            let should_use_no_change = leftover < DUST_LIMIT_SATS;
+
             let candidate_result = UtxoSelectionResult {
                 selected_utxos: selected.clone(),
                 total_value,
@@ -440,14 +480,25 @@ pub fn select_utxos_for_amount(
                 continue;
             }
 
-            // Use no-change path
-            tracing::info!(
-                "✅ [UTXO_SELECTION] Using no-change path with {} inputs (fee {} sats)",
-                n_inputs,
-                fee_no_change
-            );
-
-            return Ok(candidate_result);
+            // Only return no-change path if leftover is truly dust
+            if should_use_no_change {
+                tracing::info!(
+                    "✅ [UTXO_SELECTION] Using no-change path with {} inputs (fee {} sats, leftover {} sats folded into fee)",
+                    n_inputs,
+                    fee_no_change,
+                    leftover
+                );
+                return Ok(candidate_result);
+            } else {
+                // We have enough for no-change, but the leftover is significant
+                // Continue to try adding more UTXOs to hit the change path
+                tracing::debug!(
+                    "🔍 [UTXO_SELECTION] Skipping no-change path - leftover {} sats is above dust ({}), continuing to find change path",
+                    leftover,
+                    DUST_LIMIT_SATS
+                );
+                continue;
+            }
         }
 
         // If we don't have enough, continue adding UTXOs
@@ -736,7 +787,7 @@ pub async fn create_bitcoin_transaction(
             selection.total_value - amount_satoshis - selection.fee
         );
     }
-    
+
     // Calculate and log actual fee
     let total_output_value: u64 = outputs.iter().map(|o| o.value).sum();
     let actual_fee = selection.total_value - total_output_value;
@@ -747,7 +798,7 @@ pub async fn create_bitcoin_transaction(
         actual_fee,
         selection.fee
     );
-    
+
     if actual_fee != selection.fee {
         tracing::warn!(
             "⚠️ [BTC_TX] Fee mismatch! Estimated fee: {} sats, Actual fee: {} sats (difference: {} sats)",
@@ -756,7 +807,7 @@ pub async fn create_bitcoin_transaction(
             actual_fee as i64 - selection.fee as i64
         );
     }
-    
+
     // Log all outputs for debugging
     tracing::info!("📤 [BTC_TX] Transaction outputs:");
     for (i, output) in outputs.iter().enumerate() {
@@ -1039,8 +1090,9 @@ async fn create_chain_transaction_from_deposit_intent_internal(
             crate::types::TransactionType::NetworkToTarget => {
                 // Network withdrawal: FROM network address TO target address
                 // Group public key is required to derive the network address
-                let group_key = group_public_key
-                    .ok_or_else(|| anyhow::anyhow!("Group public key required for NetworkToTarget transactions"))?;
+                let group_key = group_public_key.ok_or_else(|| {
+                    anyhow::anyhow!("Group public key required for NetworkToTarget transactions")
+                })?;
                 let network_address = get_eth_address_from_group_key(group_key);
                 tracing::info!(
                     "💰 [TRANSACTION] Network to target: {} -> {}",
@@ -1052,8 +1104,9 @@ async fn create_chain_transaction_from_deposit_intent_internal(
             crate::types::TransactionType::VaultToNetwork => {
                 // Vault to network: FROM vault address TO network address
                 // Group public key is required to derive the network address
-                let group_key = group_public_key
-                    .ok_or_else(|| anyhow::anyhow!("Group public key required for VaultToNetwork transactions"))?;
+                let group_key = group_public_key.ok_or_else(|| {
+                    anyhow::anyhow!("Group public key required for VaultToNetwork transactions")
+                })?;
                 let network_address = get_eth_address_from_group_key(group_key);
                 tracing::info!(
                     "💰 [TRANSACTION] Vault to network: {} -> {}",
@@ -1115,8 +1168,9 @@ async fn create_chain_transaction_from_deposit_intent_internal(
             crate::types::TransactionType::NetworkToTarget => {
                 // Network withdrawal: FROM network bitcoin address TO target address
                 // Group public key is required to derive the network address
-                let group_key = group_public_key
-                    .ok_or_else(|| anyhow::anyhow!("Group public key required for NetworkToTarget transactions"))?;
+                let group_key = group_public_key.ok_or_else(|| {
+                    anyhow::anyhow!("Group public key required for NetworkToTarget transactions")
+                })?;
                 let btc_network_address = crate::utils::get_btc_address_from_group_key(group_key);
                 tracing::info!(
                     "💰 [TRANSACTION] Bitcoin network to target: {} -> {}",
@@ -1128,8 +1182,9 @@ async fn create_chain_transaction_from_deposit_intent_internal(
             crate::types::TransactionType::VaultToNetwork => {
                 // Vault to network: FROM vault bitcoin address TO network bitcoin address
                 // Group public key is required to derive the network address
-                let group_key = group_public_key
-                    .ok_or_else(|| anyhow::anyhow!("Group public key required for VaultToNetwork transactions"))?;
+                let group_key = group_public_key.ok_or_else(|| {
+                    anyhow::anyhow!("Group public key required for VaultToNetwork transactions")
+                })?;
                 let btc_network_address = crate::utils::get_btc_address_from_group_key(group_key);
                 tracing::info!(
                     "💰 [TRANSACTION] Bitcoin vault to network: {} -> {}",
@@ -1175,7 +1230,10 @@ pub async fn create_chain_transaction_from_contract_call(
     transaction_type: crate::types::TransactionType,
 ) -> Result<ChainTransaction> {
     // VaultToNetwork transaction type should not create contract transactions
-    if matches!(transaction_type, crate::types::TransactionType::VaultToNetwork) {
+    if matches!(
+        transaction_type,
+        crate::types::TransactionType::VaultToNetwork
+    ) {
         return Err(anyhow::anyhow!(
             "Contract transactions are not supported for VaultToNetwork transaction type"
         ));
@@ -1184,8 +1242,9 @@ pub async fn create_chain_transaction_from_contract_call(
     // Group public key is required for contract call transactions
     // NOTE: group_public_key will always be available once the solver ecosystem is live,
     // but we handle the None case gracefully to prevent panics
-    let group_key = group_public_key
-        .ok_or_else(|| anyhow::anyhow!("Group public key required for contract call transactions"))?;
+    let group_key = group_public_key.ok_or_else(|| {
+        anyhow::anyhow!("Group public key required for contract call transactions")
+    })?;
     let network_address = get_eth_address_from_group_key(group_key);
     let chain_id = get_chain_id_from_name("qubetics")
         .ok_or_else(|| anyhow::anyhow!("Unknown EVM chain: {}", "eth"))?;
@@ -2179,7 +2238,7 @@ fn validate_ethereum_address(address: &str) -> Result<()> {
 
     // Extract hex part after 0x
     let hex_part = &address[2..];
-    
+
     // Check that hex part is not empty (prevents "0x" from being valid)
     if hex_part.is_empty() {
         return Err(anyhow::anyhow!(
@@ -2211,7 +2270,8 @@ pub fn create_transaction_for_signing(tx: &EthereumTransaction) -> Vec<u8> {
             anyhow::anyhow!(
                 "Invalid 'to' address '{}' for transfer transaction: {}. \
                  This function is intended for standard Ethereum transfers, not contract creation.",
-                tx.to, e
+                tx.to,
+                e
             )
         })
         .expect("Address validation failed");
@@ -2549,9 +2609,19 @@ fn test_utxo_selection_prefers_non_dust_change_when_possible() {
     let result = select_utxos_for_amount(&utxos, 1400, 2, SpendKind::P2WPKH).unwrap();
 
     // Should include both inputs and produce a spendable change output
-    assert_eq!(result.selected_utxos.len(), 2, "Should add the second UTXO to avoid dust change");
-    assert!(result.change_output, "Should prefer a non-dust change output over fee-only remainder");
-    assert!(result.change >= DUST_LIMIT_SATS, "Change should be above dust");
+    assert_eq!(
+        result.selected_utxos.len(),
+        2,
+        "Should add the second UTXO to avoid dust change"
+    );
+    assert!(
+        result.change_output,
+        "Should prefer a non-dust change output over fee-only remainder"
+    );
+    assert!(
+        result.change >= DUST_LIMIT_SATS,
+        "Change should be above dust"
+    );
     assert_eq!(result.fee, estimate_fee_sat(SpendKind::P2WPKH, 2, 2, 2));
 }
 
@@ -2606,7 +2676,8 @@ pub fn create_transaction_for_signing_contract(tx: &ContractTransaction) -> Vec<
             anyhow::anyhow!(
                 "Invalid 'to' address '{}' for contract transaction: {}. \
                  Contract address must be a valid 20-byte Ethereum address.",
-                tx.to, e
+                tx.to,
+                e
             )
         })
         .expect("Address validation failed");
@@ -2688,7 +2759,8 @@ pub fn create_signed_transaction(
             anyhow::anyhow!(
                 "Invalid 'to' address '{}' for transfer transaction: {}. \
                  This function is intended for standard Ethereum transfers, not contract creation.",
-                tx.to, e
+                tx.to,
+                e
             )
         })
         .expect("Address validation failed");
