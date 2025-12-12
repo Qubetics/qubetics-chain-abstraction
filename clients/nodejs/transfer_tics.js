@@ -22,7 +22,7 @@ const QUBETICS_RPC_URL = 'http://114.119.184.52:8545';
 const QUBETICS_CHAIN_ID = 9029;
 const TICS_AMOUNT = 1000; // Amount in TICS (whole units)
 // TICS uses 10 decimals on this chain; adjust if your deployment differs.
-const TICS_DECIMALS = 10;
+const TICS_DECIMALS = 18;
 
 // Test private key (for testing only - DO NOT use in production)
 const TEST_PRIVATE_KEY = '0x2f1765e04f0a5c394eb3b07ee38bf210008473f6e679a4f901f554905f7f3f89';

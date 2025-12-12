@@ -2066,33 +2066,39 @@ impl SigningNode {
         // ---- 4) FINALIZE only when *all* inputs aggregated ----
         let (should_finalize, total_inputs2, unsigned_tx2) = {
             // Use the same round classification to pull the correct pending entry
-            let (chain_tx, _extras_opt) = if is_reward_round {
+            let chain_tx = if is_reward_round {
                 let reward_pt = self.pending.reward_pending_transactions_btc.read().await;
-                reward_pt.get(&round).cloned().ok_or_else(|| {
-                    error!(
-                        "[handle_btc_signature_for_round] No reward pending tx for round {} (finalize step)",
-                        round
-                    );
-                    anyhow!("no reward pending tx for round {}", round)
-                })?
+                let (chain_tx, _raw, _solver_address, _tx_type_opt, _extras) =
+                    reward_pt.get(&round).ok_or_else(|| {
+                        error!(
+                            "[handle_btc_signature_for_round] No reward pending tx for round {} (finalize step)",
+                            round
+                        );
+                        anyhow!("no reward pending tx for round {}", round)
+                    })?;
+                chain_tx.clone()
             } else if is_withdraw_round {
                 let withdraw_pt = self.pending.withdraw_pending_transactions_btc.read().await;
-                withdraw_pt.get(&round).cloned().ok_or_else(|| {
-                    error!(
-                        "[handle_btc_signature_for_round] No withdraw pending tx for round {} (finalize step)",
-                        round
-                    );
-                    anyhow!("no withdraw pending tx for round {}", round)
-                })?
+                let (chain_tx, _raw, _solver_address, _tx_type_opt, _extras) =
+                    withdraw_pt.get(&round).ok_or_else(|| {
+                        error!(
+                            "[handle_btc_signature_for_round] No withdraw pending tx for round {} (finalize step)",
+                            round
+                        );
+                        anyhow!("no withdraw pending tx for round {}", round)
+                    })?;
+                chain_tx.clone()
             } else {
                 let pt = self.pending.pending_transactions_btc.read().await;
-                pt.get(&round).cloned().ok_or_else(|| {
-                    error!(
-                        "[handle_btc_signature_for_round] No pending tx for round {} (finalize step)",
-                        round
-                    );
-                    anyhow!("no pending tx for round {}", round)
-                })?
+                let (chain_tx, _raw, _intent_hash, _tx_type_opt, _extras) =
+                    pt.get(&round).ok_or_else(|| {
+                        error!(
+                            "[handle_btc_signature_for_round] No pending tx for round {} (finalize step)",
+                            round
+                        );
+                        anyhow!("no pending tx for round {}", round)
+                    })?;
+                chain_tx.clone()
             };
 
             let btc_tx = match chain_tx {
