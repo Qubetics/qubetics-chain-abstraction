@@ -2,14 +2,12 @@ use crate::dkg::{
     artifacts::{DKGMessage, DKGStatus},
     DKGNode,
 };
-use crate::types::dkg::MSG_TOPIC_DKG;
-use crate::types::{GossipsubMessage, KeyShare, SerializablePoint, SerializableScalar};
+use crate::types::{KeyShare, SerializablePoint, SerializableScalar};
 use crate::utils::hmac_helper::hmac_scalar_mod_n;
 use crate::{utils, NodeMembership};
 use anyhow::{anyhow, Result};
 use ff::PrimeField;
 use k256::{AffinePoint, ProjectivePoint, Scalar};
-use serde_json;
 use tracing::{info, warn};
 
 impl DKGNode {
@@ -19,15 +17,7 @@ impl DKGNode {
         node_manager: Box<dyn NodeMembership>,
     ) -> Result<()> {
         match msg {
-            DKGMessage::ShareDistribution {
-                from,
-                shares,
-                commitments,
-            } => {
-                info!("📥 Received share distribution from {}", from);
-                self.handle_share_distribution(from, shares, commitments, node_manager.clone())
-                    .await?;
-            }
+
             DKGMessage::ShareValidation {
                 from,
                 to,
@@ -84,110 +74,55 @@ impl DKGNode {
             DKGMessage::NodeDisconnected { .. } => {
                 info!("📢 [DISCONNECT] Notification handled at network layer");
             }
-            DKGMessage::RefreshShare {
+            DKGMessage::CommitmentBroadcast {
                 from,
-                shares,
                 commitments,
+                round,
             } => {
-                info!("🔄 [REFRESH] Received refresh shares from {}", from);
-                self.handle_refresh_share(from, shares, commitments, node_manager.clone())
+                info!(
+                    "🔐 [DKG-SECURE] Received commitment broadcast from {} (round {})",
+                    from, round
+                );
+                self.handle_commitment_broadcast(from, commitments).await?;
+            }
+            DKGMessage::RefreshCommitmentBroadcast { from, commitments } => {
+                info!(
+                    "🔐 [REFRESH-SECURE] Received refresh commitment broadcast from {}",
+                    from
+                );
+                self.handle_refresh_commitment_broadcast(from, commitments, node_manager)
                     .await?;
             }
         }
         Ok(())
     }
 
-    pub(super) async fn handle_share_distribution(
+    /// Handle commitment broadcast (public, safe to broadcast)
+    /// Individual shares are received via P2P RPC (SendDKGShare)
+    async fn handle_commitment_broadcast(
         &mut self,
         from: String,
-        shares: Vec<KeyShare>,
         commitments: Vec<SerializablePoint>,
-        node_manager: Box<dyn NodeMembership>,
     ) -> Result<()> {
-        let raw_commitments: Vec<AffinePoint> = commitments.into_iter().map(|c| c.0).collect();
-
-        let node_index = self.get_node_index(node_manager.clone())?;
-
-        info!("🔍 [DKG] === SHARE DISTRIBUTION RECEIVED ===");
         info!(
-            "📥 [DKG] Node {} received {} shares from node {}",
-            self.id,
-            shares.len(),
+            "🔐 [DKG-SECURE] Processing {} commitments from {}",
+            commitments.len(),
             from
         );
-
-        info!("🔍 [DKG] All shares received from {}:", from);
-        for (i, share) in shares.iter().enumerate() {
-            info!("🔍 [DKG] Share {}: index={}", i + 1, share.index);
-        }
-
+        
+        // Store commitments for verification when we receive the share via RPC
+        let raw_commitments: Vec<k256::AffinePoint> = commitments.iter().map(|c| c.0).collect();
+        self.storage.store_commitments(&from, &raw_commitments).await?;
+        
         info!(
-            "🔍 [DKG] Looking for share with index {} in {} shares from node {}",
-            node_index,
-            shares.len(),
+            "✅ [DKG-SECURE] Stored {} commitments from {} (waiting for unicast share)",
+            raw_commitments.len(),
             from
         );
-
-        if self.verify_shares(&shares, &raw_commitments) {
-            let my_share = shares.into_iter().find(|s| s.index == node_index);
-            if let Some(share) = my_share {
-                info!(
-                    "✅ [DKG] Found valid share for node {} from {}",
-                    self.id, from
-                );
-
-                self.storage.store_share(&from, &share).await?;
-                self.storage
-                    .store_commitments(&from, &raw_commitments)
-                    .await?;
-
-                self.handle_share_validation(self.id.clone(), from.clone(), true, node_manager)
-                    .await?;
-
-                let round = self.current_round();
-                let validation_msg = DKGMessage::ShareValidation {
-                    from: self.id.clone(),
-                    to: from,
-                    is_valid: true,
-                    round,
-                };
-                let gossip_wrapped = GossipsubMessage::DKG(validation_msg);
-                let msg_bytes = serde_json::to_vec(&gossip_wrapped)?;
-                self.broadcast(MSG_TOPIC_DKG, &msg_bytes).await?;
-            } else {
-                info!(
-                    "❌ [DKG] Share for index {} not found in shares from {}",
-                    node_index, from
-                );
-                let round = self.current_round();
-                let validation_msg = DKGMessage::ShareValidation {
-                    from: self.id.clone(),
-                    to: from,
-                    is_valid: false,
-                    round,
-                };
-                let gossip_wrapped = GossipsubMessage::DKG(validation_msg);
-                let msg_bytes = serde_json::to_vec(&gossip_wrapped)?;
-                self.broadcast(MSG_TOPIC_DKG, &msg_bytes).await?;
-            }
-        } else {
-            info!(
-                "❌ [DKG] Share verification failed for shares from {}",
-                from
-            );
-            let round = self.current_round();
-            let validation_msg = DKGMessage::ShareValidation {
-                from: self.id.clone(),
-                to: from,
-                is_valid: false,
-                round,
-            };
-            let gossip_wrapped = GossipsubMessage::DKG(validation_msg);
-            let msg_bytes = serde_json::to_vec(&gossip_wrapped)?;
-            self.broadcast(MSG_TOPIC_DKG, &msg_bytes).await?;
-        }
+        
         Ok(())
     }
+
 
     fn get_node_index(&self, _node_manager: Box<dyn NodeMembership>) -> Result<usize> {
         info!("🔍 [DKG] === NODE INDEX LOOKUP (DB-only) ===");
@@ -285,7 +220,7 @@ impl DKGNode {
         true
     }
 
-    async fn handle_share_validation(
+    pub async fn handle_share_validation(
         &mut self,
         from: String,
         to: String,
@@ -298,7 +233,7 @@ impl DKGNode {
         Ok(())
     }
 
-    async fn check_completion(&mut self, node_manager: Box<dyn NodeMembership>) -> Result<()> {
+    pub(crate) async fn check_completion(&mut self, node_manager: Box<dyn NodeMembership>) -> Result<()> {
         let (shares_len, validations_len, valid_validations) = {
             let validations = self.storage.get_all_validations().await?;
             let shares = self.storage.get_all_shares().await?;
@@ -319,9 +254,12 @@ impl DKGNode {
             (shares.len(), validations.len(), valid_validations)
         };
 
+        info!("Validations :{:?}", self.storage.get_all_validations().await?);
+        
+
         info!(
-            "🔍 [DKG] Checking DKG completion - shares: {}, validations: {}",
-            shares_len, validations_len
+            "🔍 [DKG] Checking DKG completion - shares: {}, validations: {}, valid validations: {}",
+            shares_len, validations_len, valid_validations
         );
 
         if valid_validations >= (node_manager.get_total_nodes()) * (node_manager.get_total_nodes())
@@ -332,6 +270,22 @@ impl DKGNode {
                 (node_manager.get_total_nodes()) * (node_manager.get_total_nodes()),
                 valid_validations
             );
+
+            let received = self.storage.get_received_shares().await.unwrap_or_default();
+            let expected = self.storage.get_expected_shares().await.unwrap_or_default();
+            
+            let received_set: std::collections::HashSet<_> = received.iter().collect();
+            let expected_set: std::collections::HashSet<_> = expected.iter().collect();
+            
+            if !expected.is_empty() && received_set != expected_set {
+                let pending = self.storage.get_pending_shares().await.unwrap_or_default();
+                warn!(
+                    "⚠️ [DKG] Received shares ({:?}) do not match expected shares ({:?}). Pending: {:?}",
+                    received, expected, pending
+                );
+                return Err(anyhow!("DKG failed: received shares do not match expected shares"));
+            }
+
             info!("🎉 [DKG] DKG completion criteria met! Generating final keys...");
             self.generate_group_key(node_manager).await?;
         } else {

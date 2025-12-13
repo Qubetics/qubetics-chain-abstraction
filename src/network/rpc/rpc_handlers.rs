@@ -4,13 +4,14 @@ use anyhow::Result;
 use libp2p::PeerId;
 use tracing::{error, info, warn};
 
-use crate::database::key_utils;
+use crate::database::key_utils::{self, peer_addr_key};
+use crate::types::p2p::SerializablePeerId;
+use crate::types::{PeerInfo, SerializablePoint, SerializableScalar};
+
 use crate::database::VrfStorage;
 use crate::protocols::DKGStatus;
-use crate::types::p2p::SerializablePeerId;
 use crate::types::rpc::{RPCRequest, RPCResponse};
 use crate::types::vrf::{VrfRoundSyncRequest, VrfRoundSyncResponse};
-use crate::types::PeerInfo;
 
 use crate::network::transport::types::{MpcNetworkBehaviour, MpcNetworkLayer};
 
@@ -22,14 +23,25 @@ impl MpcNetworkLayer {
         &mut self,
         peer: PeerId,
         request: RPCRequest,
+        swarm: &mut libp2p::Swarm<MpcNetworkBehaviour>,
     ) -> RPCResponse {
         match request {
-            RPCRequest::GetPeerList => self.handle_get_peer_list_request(peer).await,
+            RPCRequest::GetPeerList => self.handle_get_peer_list_request(peer, swarm).await,
             RPCRequest::Ping => RPCResponse::Pong,
-            RPCRequest::GetPeerInfo => RPCResponse::PeerInfo(PeerInfo {
-                addresses: vec![],
-                connected: true,
-            }),
+            RPCRequest::GetPeerInfo => {
+                let self_peer = self.get_local_peer_id();
+                let listen_addrs: Vec<_> = swarm
+                    .listeners()
+                    .cloned()
+                    .map(|a| format!("{}/p2p/{}", a, self_peer))
+                    .filter_map(|s| s.parse().ok())
+                    .collect();
+
+                RPCResponse::PeerInfo(PeerInfo {
+                    addresses: listen_addrs,
+                    connected: true,
+                })
+            }
             RPCRequest::Custom { id, data } => RPCResponse::Custom { id, data },
             RPCRequest::StartADKG => self.handle_start_adkg_request(peer).await,
             RPCRequest::GetDKGStatus => self.handle_get_dkg_status_request().await,
@@ -60,6 +72,46 @@ impl MpcNetworkLayer {
             } => {
                 self.handle_request_database_batch(peer, batch_index, batch_size)
                     .await
+            }
+            // SECURE DKG SHARE - receive unicast share via P2P RPC
+            RPCRequest::SendDKGShare {
+                from_node_id,
+                share_index,
+                share_value,
+                commitments,
+                round,
+            } => {
+                info!(
+                    "🔐 [DKG-SECURE] Received UNICAST share index: {}, share value: {:?}, commitments: {:?}, from: {}, round: {}",
+                    share_index, share_value, commitments, from_node_id, round
+                );
+                self.handle_incoming_dkg_share(
+                    from_node_id,
+                    share_index,
+                    share_value,
+                    commitments,
+                    round,
+                )
+                .await
+            }
+            // SECURE REFRESH SHARE - receive unicast refresh share via P2P RPC
+            RPCRequest::SendRefreshShare {
+                from_node_id,
+                share_index,
+                share_value,
+                commitments,
+            } => {
+                info!(
+                    "🔐 [REFRESH-SECURE] Received UNICAST refresh share index: {}, from: {}",
+                    share_index, from_node_id
+                );
+                self.handle_incoming_refresh_share(
+                    from_node_id,
+                    share_index,
+                    share_value,
+                    commitments,
+                )
+                .await
             }
             _ => RPCResponse::Ack,
         }
@@ -132,7 +184,11 @@ impl MpcNetworkLayer {
     }
 
     /// Handle GetPeerList RPC request
-    async fn handle_get_peer_list_request(&mut self, peer: PeerId) -> RPCResponse {
+    async fn handle_get_peer_list_request(
+        &mut self,
+        peer: PeerId,
+        swarm: &libp2p::Swarm<MpcNetworkBehaviour>,
+    ) -> RPCResponse {
         info!("🔄 GetPeerList RPC received from {}", peer);
 
         // Gather everyone we know
@@ -187,16 +243,56 @@ impl MpcNetworkLayer {
             }
         }
 
+        // Build listen addresses (string) aligned with peers.
+        let mut addresses: Vec<Option<String>> = Vec::with_capacity(peers.len());
+        let self_peer = self.get_local_peer_id();
+        let self_listen: Vec<String> = swarm
+            .listeners()
+            .cloned()
+            .map(|a| format!("{}/p2p/{}", a, self_peer))
+            .collect();
+
+        for SerializablePeerId(pid) in &peers {
+            // If we have a stored listen addr for this peer, use it (DB or in-memory)
+            if let Some(addr) = self.peer_discovery.peer_multiaddresses.get(pid) {
+                addresses.push(Some(format!("{}/p2p/{}", addr, pid)));
+                continue;
+            }
+            let key = peer_addr_key(&pid.to_string());
+            if let Ok(Some(addr_str)) = self.db.get_string::<String>(&key) {
+                // Ensure /p2p/<peer> suffix
+                let normalized = if addr_str.contains(&format!("/p2p/{}", pid)) {
+                    addr_str
+                } else {
+                    format!("{}/p2p/{}", addr_str, pid)
+                };
+                addresses.push(Some(normalized));
+                continue;
+            }
+
+            // If this is us, include our listen addr(s)
+            if *pid == *self_peer && !self_listen.is_empty() {
+                addresses.push(Some(self_listen[0].clone()));
+                continue;
+            }
+
+            // Otherwise unknown
+            addresses.push(None);
+        }
+
         // Log how many peers we're returning
         info!(
-            "📋 Sending PeerList response to {}: {} entries: {:?} {:?}",
+            "📋 Sending PeerList response to {}: {} entries (addresses count: {})",
             peer,
             peers.len(),
-            peers,
-            indices
+            addresses.iter().filter(|a| a.is_some()).count()
         );
 
-        RPCResponse::PeerList { peers, indices }
+        RPCResponse::PeerList {
+            peers,
+            indices,
+            addresses,
+        }
     }
 
     /// Handle StartADKG RPC request
@@ -294,6 +390,138 @@ impl MpcNetworkLayer {
             RPCResponse::ShareAccepted
         } else {
             RPCResponse::Error("Invalid share".into())
+        }
+    }
+
+    /// Handle incoming DKG share from unicast P2P RPC
+    async fn handle_incoming_dkg_share(
+        &mut self,
+        from_node_id: String,
+        share_index: usize,
+        share_value: SerializableScalar,
+        commitments: Vec<SerializablePoint>,
+        _round: u64,
+    ) -> RPCResponse {
+        info!(
+            "🔐 [DKG-SECURE] Processing unicast share index: {}, share value: {:?}, commitments: {:?}, from: {}",
+            share_index, share_value, commitments, from_node_id
+        );
+
+        let dkg_node = match &mut self.dkg_node {
+            Some(node) => node,
+            None => {
+                warn!("❌ [DKG-SECURE] DKG node not initialized");
+                return RPCResponse::Error("DKG not initialized".to_string());
+            }
+        };
+
+        let receiver_node_id = dkg_node.get_id().to_string();
+
+        
+        // Use the public method to process the share
+        match dkg_node.process_incoming_share(
+            from_node_id.clone(),
+            share_index,
+            share_value,
+            commitments,
+            self.node_manager.clone(),
+        ).await {
+            Ok(true) => {
+                info!(
+                    "✅ [DKG-SECURE] Share index {} from {} processed incoming share successfully ",
+                    share_index, from_node_id
+                );
+                RPCResponse::DKGShareReceived {
+                    from_node_id,
+                    receiver_node_id,
+                    share_index,
+                    success: true,
+                }
+            }
+            Ok(false) => {
+                warn!(
+                    "❌ [DKG-SECURE] Share index {} from {} was rejected",
+                    share_index, from_node_id
+                );
+                RPCResponse::DKGShareReceived {
+                    from_node_id,
+                    receiver_node_id,
+                    share_index,
+                    success: false,
+                }
+            }
+            Err(e) => {
+                warn!(
+                    "❌ [DKG-SECURE] Error processing share index {} from {}: {}",
+                    share_index, from_node_id, e
+                );
+                RPCResponse::Error(format!("Failed to process share: {}", e))
+            }
+        }
+    }
+
+    /// Handle incoming refresh share from unicast P2P RPC
+    async fn handle_incoming_refresh_share(
+        &mut self,
+        from_node_id: String,
+        share_index: usize,
+        share_value: SerializableScalar,
+        commitments: Vec<SerializablePoint>,
+    ) -> RPCResponse {
+        info!(
+            "🔐 [REFRESH-SECURE] Processing unicast refresh share index: {}, from: {}",
+            share_index, from_node_id
+        );
+
+        let dkg_node = match &mut self.dkg_node {
+            Some(node) => node,
+            None => {
+                warn!("❌ [REFRESH-SECURE] DKG node not initialized");
+                return RPCResponse::Error("DKG not initialized".to_string());
+            }
+        };
+
+        let receiver_node_id = dkg_node.get_id().to_string();
+
+        // Use the public method to process the refresh share
+        match dkg_node.handle_unicast_refresh_share(
+            from_node_id.clone(),
+            share_index,
+            share_value,
+            commitments,
+            self.node_manager.clone(),
+        ).await {
+            Ok(true) => {
+                info!(
+                    "✅ [REFRESH-SECURE] Refresh share index {} from {} processed successfully",
+                    share_index, from_node_id
+                );
+                RPCResponse::RefreshShareReceived {
+                    from_node_id,
+                    receiver_node_id,
+                    share_index,
+                    success: true,
+                }
+            }
+            Ok(false) => {
+                warn!(
+                    "❌ [REFRESH-SECURE] Refresh share index {} from {} was rejected",
+                    share_index, from_node_id
+                );
+                RPCResponse::RefreshShareReceived {
+                    from_node_id,
+                    receiver_node_id,
+                    share_index,
+                    success: false,
+                }
+            }
+            Err(e) => {
+                warn!(
+                    "❌ [REFRESH-SECURE] Error processing refresh share index {} from {}: {}",
+                    share_index, from_node_id, e
+                );
+                RPCResponse::Error(format!("Failed to process refresh share: {}", e))
+            }
         }
     }
 
@@ -420,9 +648,37 @@ impl MpcNetworkLayer {
         info!("📥 Got RPC response {:?} from {}", response, peer);
 
         match response {
-            RPCResponse::PeerList { peers, indices } => {
-                self.handle_peer_list_response(swarm, peers, indices)
+            RPCResponse::PeerList {
+                peers,
+                indices,
+                addresses,
+            } => {
+                self.handle_peer_list_response(swarm, peers, indices, addresses)
                     .await?;
+            }
+            RPCResponse::PeerInfo(peer_info) => {
+                let addr_count = peer_info.addresses.len();
+                for addr in peer_info.addresses {
+                    // Extract PeerId from the /p2p/ component of the multiaddr string
+                    let maybe_peer = addr
+                        .to_string()
+                        .rsplit_once("/p2p/")
+                        .and_then(|(_, pid_str)| pid_str.parse::<PeerId>().ok());
+
+                    if let Some(peer_id) = maybe_peer {
+                        self.peer_discovery
+                            .peer_multiaddresses
+                            .insert(peer_id, addr.clone());
+                        let key = peer_addr_key(&peer_id.to_string());
+                        if let Err(e) = self.db.put_string(&key, &addr.to_string()) {
+                            warn!("⚠️ [PEER_INFO] Failed to persist addr for {}: {}", peer_id, e);
+                        }
+                    }
+                }
+                info!(
+                    "🌐 [PEER_INFO] Stored {} addresses from peer {}",
+                    addr_count, peer
+                );
             }
             RPCResponse::GotAVSSShare { .. } => {}
             RPCResponse::DKGStarted { peer_id } => {
@@ -504,9 +760,14 @@ impl MpcNetworkLayer {
         swarm: &mut libp2p::Swarm<MpcNetworkBehaviour>,
         peers: Vec<SerializablePeerId>,
         indices: Vec<Option<usize>>,
+        addresses: Vec<Option<String>>,
     ) -> Result<()> {
         info!("🔄 Merging peer‐set: {:?}", peers);
         info!("🔄 Received indices: {:?}", indices);
+        info!(
+            "🔄 Received addresses (count with some): {}",
+            addresses.iter().filter(|a| a.is_some()).count()
+        );
 
         let mut batch_updates: Vec<(String, usize)> = Vec::new();
 
@@ -562,6 +823,34 @@ impl MpcNetworkLayer {
                 self.peer_discovery.peer_indices.insert(p, idx);
                 let key = key_utils::peer_index_key(&p.to_string());
                 batch_updates.push((key, idx));
+            }
+
+            // Insert advertised address into map/db and dial if needed
+            if let Some(addr_str) = addresses.get(i).cloned().flatten() {
+                // Ensure /p2p/<peer> suffix
+                let suffix = format!("/p2p/{}", p);
+                let addr_with_p2p = if addr_str.contains(&suffix) {
+                    addr_str.clone()
+                } else {
+                    format!("{}/p2p/{}", addr_str, p)
+                };
+
+                if let Ok(addr) = addr_with_p2p.parse::<libp2p::Multiaddr>() {
+                    info!("🔐 [PEER_LIST] Inserting advertised address into map/db for peer {}: {}", p, addr);
+                    self.peer_discovery.peer_multiaddresses.insert(p, addr.clone());
+                    let key = peer_addr_key(&p.to_string());
+                    if let Err(e) = self.db.put_string(&key, &addr.to_string()) {
+                        warn!("⚠️ [PEER_LIST] Failed to persist addr for {}: {}", p, e);
+                    }
+                    if p != *self.get_local_peer_id() && !swarm.is_connected(&p) {
+                        info!("📞 [PEER_LIST] Dialing peer {} at {}", p, addr);
+                        if let Err(e) = swarm.dial(addr.clone()) {
+                            warn!("⚠️ [PEER_LIST] Dial to {} failed: {}", p, e);
+                        }
+                    }
+                } else {
+                    warn!("⚠️ [PEER_LIST] Invalid multiaddr for {}: {}", p, addr_str);
+                }
             }
         }
 

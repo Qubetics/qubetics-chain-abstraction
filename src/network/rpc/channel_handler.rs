@@ -1,3 +1,6 @@
+
+use libp2p::Multiaddr;
+
 impl MpcNetworkLayer {
     pub(crate) async fn record_pending_liquidity_contract_update(
         &self,
@@ -1219,22 +1222,256 @@ impl MpcNetworkLayer {
                     );
                 }
             }
-            // this is not used anywhere yet
-            ChannelMessage::Unicast { peer_id, data } => {
-                // Implement direct message sending using request-response protocol
-                let peer_id = PeerId::from_bytes(&hex::decode(peer_id)?)
-                    .map_err(|e| anyhow::anyhow!("Invalid peer ID: {}", e))?;
-                let request = RPCRequest::Custom {
-                    id: "custom".to_string(),
-                    data,
+            // SECURE DKG SHARE DISTRIBUTION - sends share to specific peer via P2P RPC
+            ChannelMessage::UnicastShareDKG {
+                target_peer_id,
+                from_node_id,
+                share_index,
+                share_value,
+                commitments,
+                round,
+                retry_count,
+            } => {
+                const MAX_RETRIES: u8 = 10;
+                
+                info!(
+                    "🔐 [DKG-SECURE] Sending share index {} via UNICAST to peer {} (attempt {})",
+                    share_index, target_peer_id, retry_count + 1
+                );
+                
+                // Parse the target peer ID
+                let peer_id = match target_peer_id.parse::<PeerId>() {
+                    Ok(pid) => pid,
+                    Err(e) => {
+                        warn!(
+                            "❌ [DKG-SECURE] Invalid peer ID '{}': {}",
+                            target_peer_id, e
+                        );
+                        return Err(anyhow!("Invalid peer ID: {}", e));
+                    }
                 };
-                // this will send the channel msg as
-                // NetworkEvent::RequestResponse under ReqRespMessage::Request type
-                // to just single peer
-                swarm
+                
+                // Attempt to dial if not connected and we have a listen address
+                let mut is_connected = swarm.is_connected(&peer_id);
+                info!("🔐 [DKG-SECURE]  Target Peer {} connected: {}", target_peer_id, is_connected);
+                let connected_peers = swarm.connected_peers().collect::<Vec<_>>();
+                info!("🔐 [DKG-SECURE]  Connected peers: {:?}", connected_peers);
+
+                info!("🔐 [DKG-SECURE]  Peer discovery {} address: {:?}", target_peer_id, self.peer_discovery.peer_multiaddresses.get(&peer_id));
+
+                if !is_connected {
+                    if let Some(addr) = self
+                        .peer_discovery
+                        .peer_multiaddresses
+                        .get(&peer_id)
+                        .cloned()
+                    {
+                        info!(
+                            "📞 [DKG-SECURE] Not connected to {}, dialing before send: {}",
+                            target_peer_id, addr
+                        );
+                        let address: Multiaddr = if addr.to_string().contains(&format!("/p2p/{}", target_peer_id)) {
+                            addr.clone()
+                        } else {
+                            format!("{}/p2p/{}", addr, target_peer_id)
+                                .parse()
+                                .expect("valid multiaddr")
+                        };
+                        if let Err(e) = swarm.dial(address.clone()) {
+                            warn!("⚠️ [DKG-SECURE] Dial to {} failed: {}", target_peer_id, e);
+                        } else {
+                            // allow a brief window for connection to establish
+                            tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+                            is_connected = swarm.is_connected(&peer_id);
+                            info!("🔐 [DKG-SECURE] Dial to connect to {} successful {}", target_peer_id, is_connected);
+                        }
+                    } else {
+                        warn!(
+                            "⚠️ [DKG-SECURE] No known address to dial peer {}; will rely on retries",
+                            target_peer_id
+                        );
+                    }
+                }
+                
+                if !is_connected && retry_count < MAX_RETRIES {
+                    // Not connected - schedule retry with exponential backoff
+                    let delay_ms = 1000 * (1 << retry_count.min(5)); // 1s, 2s, 4s, 8s, 16s, 32s max
+                    info!(
+                        "🔄 [DKG-SECURE] Peer send {} not connected - scheduling retry {} in {}ms",
+                        target_peer_id, retry_count + 1, delay_ms
+                    );
+                    
+                    let tx = self.message_tx.clone();
+                    let retry_msg = ChannelMessage::UnicastShareDKG {
+                        target_peer_id: target_peer_id.clone(),
+                        from_node_id,
+                        share_index,
+                        share_value,
+                        commitments,
+                        round,
+                        retry_count: retry_count + 1,
+                    };
+                    
+                    tokio::spawn(async move {
+                        tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
+                        if let Err(e) = tx.send(retry_msg).await {
+                            tracing::warn!(
+                                "❌ [DKG-SECURE] Failed to schedule retry for share {}: {}",
+                                share_index, e
+                            );
+                        }
+                    });
+                    
+                    return Ok(());
+                }
+                
+                if !is_connected {
+                    warn!(
+                        "❌ [DKG-SECURE] Peer {} still not connected after {} retries - giving up",
+                        target_peer_id, MAX_RETRIES
+                    );
+                }
+                
+                // Create the RPC request
+                let request = RPCRequest::SendDKGShare {
+                    from_node_id,
+                    share_index,
+                    share_value,
+                    commitments,
+                    round,
+                };
+                
+                // Send via request-response protocol (unicast, not broadcast)
+                let request_id = swarm
                     .behaviour_mut()
                     .request_response
                     .send_request(&peer_id, request);
+                
+                info!(
+                    "✅ [DKG-SECURE] Share index {} sent via P2P RPC to {} (request_id: {:?}, connected: {})",
+                    share_index, target_peer_id, request_id, is_connected
+                );
+            }
+            // SECURE REFRESH SHARE DISTRIBUTION - sends refresh share to specific peer via P2P RPC
+            ChannelMessage::UnicastRefreshShare {
+                target_peer_id,
+                from_node_id,
+                share_index,
+                share_value,
+                commitments,
+                retry_count,
+            } => {
+                const MAX_RETRIES: u8 = 10;
+                
+                info!(
+                    "🔐 [REFRESH-SECURE] Sending refresh share index {} via UNICAST to peer {} (attempt {})",
+                    share_index, target_peer_id, retry_count + 1
+                );
+                
+                // Parse the target peer ID
+                let peer_id = match target_peer_id.parse::<PeerId>() {
+                    Ok(pid) => pid,
+                    Err(e) => {
+                        warn!(
+                            "❌ [REFRESH-SECURE] Invalid peer ID '{}': {}",
+                            target_peer_id, e
+                        );
+                        return Err(anyhow!("Invalid peer ID: {}", e));
+                    }
+                };
+                
+                // Attempt to dial if not connected
+                let mut is_connected = swarm.is_connected(&peer_id);
+                info!("🔐 [REFRESH-SECURE] Target Peer {} connected: {}", target_peer_id, is_connected);
+
+                if !is_connected {
+                    if let Some(addr) = self
+                        .peer_discovery
+                        .peer_multiaddresses
+                        .get(&peer_id)
+                        .cloned()
+                    {
+                        info!(
+                            "📞 [REFRESH-SECURE] Not connected to {}, dialing before send: {}",
+                            target_peer_id, addr
+                        );
+                        let address: Multiaddr = if addr.to_string().contains(&format!("/p2p/{}", target_peer_id)) {
+                            addr.clone()
+                        } else {
+                            format!("{}/p2p/{}", addr, target_peer_id)
+                                .parse()
+                                .expect("valid multiaddr")
+                        };
+                        if let Err(e) = swarm.dial(address.clone()) {
+                            warn!("⚠️ [REFRESH-SECURE] Dial to {} failed: {}", target_peer_id, e);
+                        } else {
+                            tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+                            is_connected = swarm.is_connected(&peer_id);
+                            info!("🔐 [REFRESH-SECURE] Dial to {} successful: {}", target_peer_id, is_connected);
+                        }
+                    } else {
+                        warn!(
+                            "⚠️ [REFRESH-SECURE] No known address to dial peer {}; will rely on retries",
+                            target_peer_id
+                        );
+                    }
+                }
+                
+                if !is_connected && retry_count < MAX_RETRIES {
+                    let delay_ms = 1000 * (1 << retry_count.min(5));
+                    info!(
+                        "🔄 [REFRESH-SECURE] Peer {} not connected - scheduling retry {} in {}ms",
+                        target_peer_id, retry_count + 1, delay_ms
+                    );
+                    
+                    let tx = self.message_tx.clone();
+                    let retry_msg = ChannelMessage::UnicastRefreshShare {
+                        target_peer_id: target_peer_id.clone(),
+                        from_node_id,
+                        share_index,
+                        share_value,
+                        commitments,
+                        retry_count: retry_count + 1,
+                    };
+                    
+                    tokio::spawn(async move {
+                        tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
+                        if let Err(e) = tx.send(retry_msg).await {
+                            tracing::warn!(
+                                "❌ [REFRESH-SECURE] Failed to schedule retry for refresh share {}: {}",
+                                share_index, e
+                            );
+                        }
+                    });
+                    
+                    return Ok(());
+                }
+                
+                if !is_connected {
+                    warn!(
+                        "❌ [REFRESH-SECURE] Peer {} still not connected after {} retries - giving up",
+                        target_peer_id, MAX_RETRIES
+                    );
+                }
+                
+                // Create the RPC request
+                let request = RPCRequest::SendRefreshShare {
+                    from_node_id,
+                    share_index,
+                    share_value,
+                    commitments,
+                };
+                
+                // Send via request-response protocol (unicast, not broadcast)
+                let request_id = swarm
+                    .behaviour_mut()
+                    .request_response
+                    .send_request(&peer_id, request);
+                
+                info!(
+                    "✅ [REFRESH-SECURE] Refresh share index {} sent via P2P RPC to {} (request_id: {:?}, connected: {})",
+                    share_index, target_peer_id, request_id, is_connected
+                );
             }
             ChannelMessage::IntentHash {
                 intent_hash,

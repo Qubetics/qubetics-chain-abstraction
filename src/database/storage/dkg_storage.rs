@@ -429,4 +429,108 @@ impl DkgStorage {
         }
         Ok(indices)
     }
+
+    // ============ SHARE TRACKING METHODS (Database-persistent) ============
+
+    /// Set the list of peer IDs from which we expect to receive shares this round
+    pub async fn set_expected_shares(&self, peer_ids: &[String]) -> Result<()> {
+        self.db.put_string(keys::DKG_EXPECTED_SHARES, &peer_ids.to_vec())?;
+        info!(
+            "📋 [DKG_STORAGE] Set expected shares from {} peers: {:?}",
+            peer_ids.len(),
+            peer_ids
+        );
+        Ok(())
+    }
+
+    /// Get the list of peer IDs from which we expect to receive shares
+    pub async fn get_expected_shares(&self) -> Result<Vec<String>> {
+        let result = self
+            .db
+            .get_string::<Vec<String>>(keys::DKG_EXPECTED_SHARES)?
+            .unwrap_or_default();
+        Ok(result)
+    }
+
+    /// Mark that we have received a share from a specific peer
+    pub async fn mark_share_received(&self, from_peer_id: &str) -> Result<bool> {
+        let key = format!("{}{}", keys::DKG_RECEIVED_SHARE, from_peer_id);
+        
+        // Check if already received (return false if duplicate)
+        if self.db.get_string::<bool>(&key)?.unwrap_or(false) {
+            info!(
+                "⚠️ [DKG_STORAGE] Share from {} already marked as received",
+                from_peer_id
+            );
+            return Ok(false);
+        }
+
+        self.db.put_string(&key, &true)?;
+        info!(
+            "✅ [DKG_STORAGE] Marked share received from {}",
+            from_peer_id
+        );
+        Ok(true)
+    }
+
+    /// Check if we have already received a share from a specific peer
+    pub async fn is_share_received(&self, from_peer_id: &str) -> Result<bool> {
+        let key = format!("{}{}", keys::DKG_RECEIVED_SHARE, from_peer_id);
+        Ok(self.db.get_string::<bool>(&key)?.unwrap_or(false))
+    }
+
+    /// Get list of all peers from which we have received shares
+    pub async fn get_received_shares(&self) -> Result<Vec<String>> {
+        let prefix = keys::DKG_RECEIVED_SHARE;
+        let results: Vec<(String, bool)> = self.db.get_values_with_prefix(prefix)?;
+        let received: Vec<String> = results
+            .into_iter()
+            .filter_map(|(key, received)| {
+                if received {
+                    key.strip_prefix(prefix).map(|s| s.to_string())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        Ok(received)
+    }
+
+    /// Get pending shares (expected but not yet received)
+    pub async fn get_pending_shares(&self) -> Result<Vec<String>> {
+        let expected = self.get_expected_shares().await?;
+        let received = self.get_received_shares().await?;
+        let received_set: std::collections::HashSet<_> = received.into_iter().collect();
+        let pending: Vec<String> = expected
+            .into_iter()
+            .filter(|peer| !received_set.contains(peer))
+            .collect();
+        Ok(pending)
+    }
+
+    /// Clear all share tracking data (called at reset/new round start)
+    pub async fn clear_share_tracking(&self) -> Result<()> {
+        // Clear received shares
+        let prefix = keys::DKG_RECEIVED_SHARE;
+        let keys_vec = self.db.get_keys_with_prefix(prefix)?;
+        for key in keys_vec {
+            self.db.delete_string(&key)?;
+        }
+
+        // Clear expected shares
+        self.db.delete_string(keys::DKG_EXPECTED_SHARES)?;
+        
+        info!("🗑️ [DKG_STORAGE] Cleared share tracking data");
+        Ok(())
+    }
+
+    /// Get commitments from a specific sender
+    pub async fn get_commitments_for(&self, from: &str) -> Result<Option<Vec<AffinePoint>>> {
+        let key = format!("{}{}", keys::DKG_COMMITMENT, from);
+        let result = self
+            .db
+            .get_string::<Vec<SerializablePoint>>(&key)?
+            .map(|ser_vec| ser_vec.into_iter().map(|p| p.0).collect());
+        Ok(result)
+    }
 }

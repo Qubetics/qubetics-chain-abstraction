@@ -50,6 +50,7 @@ impl MpcNetworkLayer {
             bootstrap_addresses: Self::load_multiaddrs_from_env("BOOTSTRAP_PEERS"),
             bootstrap_peer_ids: Vec::new(),
             discovery_seeds: Self::load_multiaddrs_from_env("DISCOVERY_SEEDS"),
+            connected_peers_cache: std::collections::HashSet::new(),
             contract_sequencer: None,
             network_transaction_sequencer: None,
             network_transaction_processing_lock: Arc::new(Mutex::new(())),
@@ -68,6 +69,27 @@ impl MpcNetworkLayer {
                     if let Ok(Some(idx)) = this.db.get_string_async::<usize>(&k).await {
                         if let Ok(pid) = peer_str.parse() {
                             this.peer_discovery.peer_indices.insert(pid, idx);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Preload any persisted peer addresses into memory
+        if let Ok(keys) = this
+            .db
+            .get_keys_with_prefix_async(crate::database::keys::PEER_ADDR)
+            .await
+        {
+            info!("🔐 [PEER_LIST] Loading peer addresses from database");
+            for k in keys {
+                if let Some(peer_str) = k.strip_prefix(crate::database::keys::PEER_ADDR) {
+                    if let (Ok(Some(addr_str)), Ok(pid)) = (
+                        this.db.get_string_async::<String>(&k).await,
+                        peer_str.parse(),
+                    ) {
+                        if let Ok(addr) = addr_str.parse::<Multiaddr>() {
+                            this.peer_discovery.peer_multiaddresses.insert(pid, addr);
                         }
                     }
                 }

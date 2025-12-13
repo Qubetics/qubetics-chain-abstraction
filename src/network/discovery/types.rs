@@ -1,4 +1,4 @@
-use libp2p::PeerId;
+use libp2p::{Multiaddr, PeerId};
 use std::collections::HashMap;
 use std::time::Instant;
 
@@ -67,6 +67,7 @@ pub struct PeerDiscoveryState {
     pub peer_indices: HashMap<PeerId, usize>,
     pub pending_peer_discovery_retry: bool,
     pub processed_disconnects: HashMap<PeerId, Instant>,
+    pub peer_multiaddresses: HashMap<PeerId, Multiaddr>,
 }
 
 impl PeerDiscoveryState {

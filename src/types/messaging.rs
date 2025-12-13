@@ -4,8 +4,8 @@ use crate::{
     types::{
         intent::{DepositIntent, TransactionType},
         rpc::RPCRequest,
+        secp::{SerializablePoint, SerializableScalar},
         rpc_server::NodeStatus,
-        secp::SerializableScalar,
         signing::SigningMessage,
         ConsensusMessage,
     },
@@ -25,10 +25,6 @@ pub struct KeyShare {
 pub enum ChannelMessage {
     Broadcast {
         topic: String,
-        data: Vec<u8>,
-    },
-    Unicast {
-        peer_id: String,
         data: Vec<u8>,
     },
     DepositIntent {
@@ -91,6 +87,25 @@ pub enum ChannelMessage {
     PeerDiscoveryRetry {
         attempt: u8,
     },
+    /// Send a DKG share to a specific peer via P2P RPC unicast
+    UnicastShareDKG {
+        target_peer_id: String,
+        from_node_id: String,
+        share_index: usize,
+        share_value: SerializableScalar,
+        commitments: Vec<SerializablePoint>,
+        round: u64,
+        retry_count: u8,
+    },
+    /// Send a refresh share to a specific peer via P2P RPC unicast
+    UnicastRefreshShare {
+        target_peer_id: String,
+        from_node_id: String,
+        share_index: usize,
+        share_value: SerializableScalar,
+        commitments: Vec<SerializablePoint>,
+        retry_count: u8,
+
     StatusRequest {
         responder: oneshot::Sender<NodeStatus>,
     },

@@ -9,7 +9,7 @@ use libp2p::{
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{error, info, warn};
 
-use crate::database::keys;
+use crate::database::{key_utils::peer_addr_key, keys};
 use crate::protocols::DKGMessage;
 use crate::types::dkg::MSG_TOPIC_PEER_DISCOVERY;
 use crate::types::p2p::SerializablePeerId;
@@ -100,9 +100,38 @@ impl MpcNetworkLayer {
         let remote_addr = endpoint.get_remote_address();
         info!("📍 Remote address: {:?}", remote_addr);
 
+        // Track connected peer
+        self.connected_peers_cache.insert(peer_id);
+
+        // Only persist the dialed address when we are the dialer; listener side remote_addr is ephemeral (caller source port).
+        let is_dialer = matches!(endpoint, ConnectedPoint::Dialer { .. });
+        if is_dialer {
+            info!("🔗 [CONNECTION_ESTABLISHED] Storing peer address {} => {} in peer_multiaddresses", peer_id, remote_addr);
+            self.peer_discovery
+                .peer_multiaddresses
+                .insert(peer_id, remote_addr.clone());
+            let addr_key = peer_addr_key(&peer_id.to_string());
+            if let Err(e) = self.db.put_string(&addr_key, &remote_addr.to_string()) {
+                warn!(
+                    "⚠️ Failed to persist peer address {} => {}: {}",
+                    peer_id, remote_addr, e
+                );
+            }
+        } else {
+            info!(
+                "ℹ️ Listener-side connection from {} at {}; not persisting (likely ephemeral)",
+                peer_id, remote_addr
+            );
+        }
+
+        // Always request PeerInfo to learn the peer's listen addresses
+        swarm
+            .behaviour_mut()
+            .request_response
+            .send_request(&peer_id, RPCRequest::GetPeerInfo);
+
         // Determine whether they dialed us or we dialed them
         let is_listener = matches!(endpoint, ConnectedPoint::Listener { .. });
-        let is_dialer = matches!(endpoint, ConnectedPoint::Dialer { .. });
 
         // Check if we already know this peer
         let already_known = self.node_manager.get_active_nodes().contains(&peer_id);
@@ -247,7 +276,7 @@ impl MpcNetworkLayer {
                     ReqRespMessage::Request {
                         request, channel, ..
                     } => {
-                        let response = self.handle_rpc_request(peer, request).await;
+                        let response = self.handle_rpc_request(peer, request, swarm).await;
                         let res = swarm
                             .behaviour_mut()
                             .request_response
@@ -463,6 +492,7 @@ impl MpcNetworkLayer {
         num_established: u32,
         cause: Option<ConnectionError>,
     ) {
+        self.connected_peers_cache.remove(&peer_id);
         if let Some(ca) = cause {
             if let ConnectionError::IO(e) = ca {
                 info!(

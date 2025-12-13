@@ -87,6 +87,23 @@ pub enum RPCRequest {
         batch_index: usize,
         batch_size: usize,
     },
+
+    /// Unicast a single DKG share to a specific participant (P2P, not broadcast)
+    SendDKGShare {
+        from_node_id: String,
+        share_index: usize,
+        share_value: SerializableScalar,
+        commitments: Vec<SerializablePoint>,
+        round: u64,
+    },
+
+    /// Unicast a single refresh share to a specific participant (P2P, not broadcast)
+    SendRefreshShare {
+        from_node_id: String,
+        share_index: usize,
+        share_value: SerializableScalar,
+        commitments: Vec<SerializablePoint>,
+    },
 }
 
 /// RPC response variants.
@@ -94,7 +111,8 @@ pub enum RPCRequest {
 pub enum RPCResponse {
     PeerList {
         peers: Vec<SerializablePeerId>,
-        indices: Vec<Option<usize>>, // index per peer, None if unknown
+        indices: Vec<Option<usize>>,        // index per peer, None if unknown
+        addresses: Vec<Option<String>>,     // multiaddr per peer, None if unknown
     },
     Custom {
         id: String,
@@ -144,6 +162,22 @@ pub enum RPCResponse {
 
     /// Database sync completed
     DatabaseSyncComplete,
+
+    /// Acknowledge receipt of a DKG share via unicast
+    DKGShareReceived {
+        from_node_id: String,
+        receiver_node_id: String,
+        share_index: usize,
+        success: bool,
+    },
+
+    /// Acknowledge receipt of a refresh share via unicast
+    RefreshShareReceived {
+        from_node_id: String,
+        receiver_node_id: String,
+        share_index: usize,
+        success: bool,
+    },
 }
 
 /// A single database entry for syncing

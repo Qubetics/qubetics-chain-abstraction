@@ -186,6 +186,9 @@ pub struct MpcNetworkLayer {
     pub(crate) bootstrap_addresses: Vec<Multiaddr>,
     pub(crate) bootstrap_peer_ids: Vec<PeerId>,
     pub(crate) discovery_seeds: Vec<Multiaddr>,
+    /// Cache of currently connected peers (for fast address responses)
+    pub(crate) connected_peers_cache: HashSet<PeerId>,
+
     pub(crate) contract_sequencer: Option<ContractTransactionSequencer>,
     /// Mutex to ensure only one contract transaction is processed at a time
     /// This prevents parallel processing even if multiple requests are queued

@@ -5,8 +5,12 @@ use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 use super::artifacts::{DKGCompletionCallback, DKGStatus};
+use crate::NodeMembership;
 use crate::database::DkgStorage;
-use crate::types::ChannelMessage;
+use crate::types::{ChannelMessage, KeyShare, SerializablePoint, SerializableScalar, GossipsubMessage};
+use k256::AffinePoint;
+use crate::DKGMessage::*;
+use crate::types::dkg::MSG_TOPIC_DKG;
 
 #[derive(Clone)]
 struct DKGState {
@@ -160,6 +164,9 @@ impl DKGNode {
         if let Err(e) = self.storage.delete_polynomial().await {
             failures.push(format!("delete polynomial: {e}"));
         }
+        if let Err(e) = self.storage.clear_share_tracking().await {
+            failures.push(format!("clear share tracking: {e}"));
+        }
 
         if failures.is_empty() {
             self.transition_status(DKGStatus::New)?;
@@ -242,31 +249,144 @@ impl DKGNode {
             .unwrap_or(false)
     }
 
-    // Test function to verify share generation
-    pub fn test_share_generation(&self) -> Result<()> {
-        debug!("🧪 Testing share generation for node {}", self.id);
+    /// Get the node's ID
+    pub fn get_id(&self) -> &str {
+        &self.id
+    }
 
-        let polynomial = self.generate_polynomial()?;
-        let shares = self.generate_shares(&polynomial)?;
+    /// Get peer index for a given peer ID (for secure share distribution)
+    pub fn get_peer_index_for(&self, peer_id: &str) -> Result<Option<usize>> {
+        self.storage.get_peer_index_for(peer_id)
+    }
 
-        debug!("🔬 Node {} generated {} shares", self.id, shares.len());
-        #[cfg(debug_assertions)]
-        {
-            debug!(
-                "🔬 First share value: {:?}",
-                shares.first().map(|s| s.value.0)
+    pub async fn process_incoming_share(
+        &mut self,
+        from_node_id: String,
+        share_index: usize,
+        share_value: SerializableScalar,
+        commitments: Vec<SerializablePoint>,
+        node_manager: Box<dyn NodeMembership>,
+    ) -> Result<bool> {
+        info!(
+            "🔐 [DKG-SECURE] Processing unicast share index {} from {}",
+            share_index, from_node_id
+        );
+
+        // Check for duplicate share (prevents replay attacks)
+        if self.storage.is_share_received(&from_node_id).await? {
+            warn!(
+                "⚠️ [DKG-SECURE] Duplicate share from {} (already received), ignoring",
+                from_node_id
             );
-            debug!(
-                "🔬 Last share value: {:?}",
-                shares.last().map(|s| s.value.0)
-            );
-        }
-        #[cfg(not(debug_assertions))]
-        {
-            debug!("🔬 Share value logging skipped in release builds");
+            return Ok(false);
         }
 
-        Ok(())
+        // Get our own index to verify this share is for us
+        let my_index = match self.storage.get_peer_index_for(&self.id) {
+            Ok(Some(idx)) => idx,
+            _ => {
+                warn!("❌ [DKG-SECURE] Cannot determine own peer index");
+                return Err(anyhow!("Cannot determine own peer index"));
+            }
+        };
+        // Verify the share is intended for us
+        if share_index != my_index {
+            warn!(
+                "❌ [DKG-SECURE] Received share for wrong index: {} (expected {})",
+                share_index, my_index
+            );
+            return Ok(false);
+        }
+
+        // Use provided commitments or fallback to stored commitments from CommitmentBroadcast
+        let verification_commitments: Vec<SerializablePoint> = if !commitments.is_empty() {
+            commitments.clone()
+        } else {
+            // Try to get from storage (received via CommitmentBroadcast)
+            match self.storage.get_commitments_for(&from_node_id).await {
+                Ok(Some(stored)) => stored.into_iter().map(SerializablePoint).collect(),
+                _ => {
+                    warn!(
+                        "❌ [DKG-SECURE] No commitments available for verification from {}",
+                        from_node_id
+                    );
+                    return Ok(false);
+                }
+            }
+        };
+
+        // Verify the share against commitments
+        if self.verify_share(&share_value, share_index, &verification_commitments) {
+            // Store the share
+            let key_share = KeyShare {
+                index: share_index,
+                value: share_value,
+            };
+
+            self.storage.store_share(&from_node_id, &key_share).await?;
+
+            // Store commitments
+            let raw_commitments: Vec<AffinePoint> =
+                verification_commitments.iter().map(|c| c.0).collect();
+            self.storage
+                .store_commitments(&from_node_id, &raw_commitments)
+                .await?;
+
+            // Mark share as received in tracking database
+            self.storage.mark_share_received(&from_node_id).await?;
+
+            // Add validation
+            self.storage
+                .add_validation(&self.id, &from_node_id, true)
+                .await?;
+
+
+            self.handle_share_validation(self.id.clone(), from_node_id.clone(), true, node_manager).await?;
+
+            // Broadcast validation message to network
+            let round = self.current_round();
+            let validation_msg = ShareValidation {
+                from: self.id.clone(),
+                to: from_node_id.clone(),
+                is_valid: true,
+                round,
+            };
+            let gossip_wrapped = GossipsubMessage::DKG(validation_msg);
+            let msg_bytes = serde_json::to_vec(&gossip_wrapped)?;
+            self.broadcast(MSG_TOPIC_DKG, &msg_bytes).await?;
+
+            info!(
+                "📡 [DKG-SECURE] Broadcasted ShareValidation (valid) for {} to network",
+                from_node_id
+            );
+
+
+            Ok(true)
+        } else {
+            warn!(
+                "❌ [DKG-SECURE] Share verification failed for index {} from {}",
+                share_index, from_node_id
+            );
+
+            // Broadcast failed validation
+            let round = self.current_round();
+            let validation_msg = ShareValidation {
+                from: self.id.clone(),
+                to: from_node_id.clone(),
+                is_valid: false,
+                round,
+            };
+            let gossip_wrapped = GossipsubMessage::DKG(validation_msg);
+            let msg_bytes = serde_json::to_vec(&gossip_wrapped)?;
+            self.broadcast(MSG_TOPIC_DKG, &msg_bytes).await?;
+
+            info!(
+                "📡 [DKG-SECURE] Broadcasted ShareValidation (invalid) for {} to network",
+                from_node_id
+            );
+
+            Ok(false)
+        }
     }
 
     // Debug function to log all current shares

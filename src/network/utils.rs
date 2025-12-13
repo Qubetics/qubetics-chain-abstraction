@@ -94,19 +94,6 @@ impl MpcNetworkLayer {
         Ok(())
     }
 
-    /// Send a direct message to a specific peer
-    pub async fn send_direct_message(&self, peer_id: &str, data: &[u8]) -> Result<()> {
-        use crate::types::ChannelMessage;
-
-        self.message_tx
-            .send(ChannelMessage::Unicast {
-                peer_id: peer_id.to_string(),
-                data: data.to_vec(),
-            })
-            .await?;
-        Ok(())
-    }
-
     /// Get the appropriate signing key based on the user eth address
     pub(crate) async fn get_signing_key_for_user(
         &self,
