@@ -1,4 +1,3 @@
-
 use libp2p::Multiaddr;
 
 impl MpcNetworkLayer {
@@ -225,7 +224,6 @@ impl MpcNetworkLayer {
             }
         };
 
-        signing_node.set_private_key_from_scalar(secret_share);
         if let Some(group_key) = dkg_node.get_final_public_key().await {
             signing_node.set_group_public_key(group_key);
         }
@@ -256,7 +254,10 @@ impl MpcNetworkLayer {
                 return Err(e);
             }
 
-            info!("✅ [{}] Submitted withdraw liquidity to network sequencer", context);
+            info!(
+                "✅ [{}] Submitted withdraw liquidity to network sequencer",
+                context
+            );
             // Note: record_pending_liquidity_contract_update will be called after transaction is signed
             Ok(())
         } else if context == "reward_txn" || context == "claim_reward" {
@@ -277,7 +278,10 @@ impl MpcNetworkLayer {
                 return Err(e);
             }
 
-            info!("✅ [{}] Submitted reward payout to network sequencer", context);
+            info!(
+                "✅ [{}] Submitted reward payout to network sequencer",
+                context
+            );
             Ok(())
         } else {
             // For other contexts, sign directly
@@ -291,6 +295,7 @@ impl MpcNetworkLayer {
                     None,
                     Some(tx_type),
                     Some(solver_address.to_string()),
+                    Some(secret_share),
                 )
                 .await?;
 
@@ -383,7 +388,6 @@ impl MpcNetworkLayer {
             }
         };
 
-        signing_node.set_private_key_from_scalar(secret_share);
         if let Some(group_key) = dkg_node.get_final_public_key().await {
             signing_node.set_group_public_key(group_key);
         }
@@ -410,6 +414,7 @@ impl MpcNetworkLayer {
                 Some(tx_type),
                 None,
                 Some(solver_address.to_string()),
+                Some(secret_share),
             )
             .await?;
 
@@ -597,7 +602,6 @@ impl MpcNetworkLayer {
             let vault_tweaked_share = dkg_node.get_vault_tweaked_secret_share().await;
 
             if let Some(ref secret_share) = vault_tweaked_share {
-                signing_node.set_private_key_from_scalar(*secret_share);
                 signing_node.set_group_public_key(group_public_key);
                 signing_node.set_vault_group_key(group_public_key);
 
@@ -649,6 +653,7 @@ impl MpcNetworkLayer {
                         &contract_tx,
                         vault_tweaked_share,
                         None,
+                        vault_tweaked_share,
                     )
                     .await?;
                 info!(
@@ -781,7 +786,6 @@ impl MpcNetworkLayer {
             let vault_tweaked_share = dkg_node.get_vault_tweaked_secret_share().await;
 
             if let Some(ref secret_share) = vault_tweaked_share {
-                signing_node.set_private_key_from_scalar(*secret_share);
                 signing_node.set_group_public_key(group_public_key);
                 signing_node.set_vault_group_key(group_public_key);
 
@@ -809,7 +813,13 @@ impl MpcNetworkLayer {
                 );
                 let mut eth_signer = EthereumSigner::new(signing_node);
                 eth_signer
-                    .sign_contract_message(tx_bytes, &contract_tx, vault_tweaked_share, None)
+                    .sign_contract_message(
+                        tx_bytes,
+                        &contract_tx,
+                        vault_tweaked_share,
+                        None,
+                        vault_tweaked_share,
+                    )
                     .await?;
                 info!(
                     "✅ [SOLVER] Contract liquidity update transaction signed for solver {} (chain_id: {}, amount: {})",
@@ -940,7 +950,6 @@ impl MpcNetworkLayer {
             let vault_tweaked_share = dkg_node.get_vault_tweaked_secret_share().await;
 
             if let Some(ref secret_share) = vault_tweaked_share {
-                signing_node.set_private_key_from_scalar(*secret_share);
                 signing_node.set_group_public_key(group_public_key);
                 signing_node.set_vault_group_key(group_public_key);
 
@@ -967,7 +976,13 @@ impl MpcNetworkLayer {
                 );
                 let mut eth_signer = EthereumSigner::new(signing_node);
                 eth_signer
-                    .sign_contract_message(tx_bytes, &contract_tx, vault_tweaked_share, None)
+                    .sign_contract_message(
+                        tx_bytes,
+                        &contract_tx,
+                        vault_tweaked_share,
+                        None,
+                        vault_tweaked_share,
+                    )
                     .await?;
                 info!(
                     "✅ [SOLVER] Contract add-liquidity transaction signed for solver {} (chain: {}, amount: {})",
@@ -1148,12 +1163,18 @@ impl MpcNetworkLayer {
                 info!("📊 [STATUS] Processing status request");
                 let peer_id = self.local_peer_id.to_string();
                 let connected_peers = swarm.connected_peers().count();
-                info!("📊 [STATUS] Peer ID: {}, Connected peers: {}", peer_id, connected_peers);
+                info!(
+                    "📊 [STATUS] Peer ID: {}, Connected peers: {}",
+                    peer_id, connected_peers
+                );
 
                 let (dkg_status, has_final_share) = if let Some(dkg_node) = &self.dkg_node {
                     let status = dkg_node.get_status();
                     let has_share = dkg_node.get_final_secret_share().await.is_some();
-                    info!("📊 [STATUS] DKG node available - status: {:?}, has_share: {}", status, has_share);
+                    info!(
+                        "📊 [STATUS] DKG node available - status: {:?}, has_share: {}",
+                        status, has_share
+                    );
                     (status, has_share)
                 } else {
                     info!("📊 [STATUS] DKG node not available - using default status");
@@ -1162,8 +1183,11 @@ impl MpcNetworkLayer {
 
                 let is_ready = has_final_share && matches!(dkg_status, DKGStatus::Completed);
                 let dkg_status_str = format!("{:?}", dkg_status);
-                info!("📊 [STATUS] Final status - DKG: {}, Ready: {}", dkg_status_str, is_ready);
-                
+                info!(
+                    "📊 [STATUS] Final status - DKG: {}, Ready: {}",
+                    dkg_status_str, is_ready
+                );
+
                 let status = NodeStatus {
                     peer_id,
                     connected_peers,
@@ -1233,12 +1257,14 @@ impl MpcNetworkLayer {
                 retry_count,
             } => {
                 const MAX_RETRIES: u8 = 10;
-                
+
                 info!(
                     "🔐 [DKG-SECURE] Sending share index {} via UNICAST to peer {} (attempt {})",
-                    share_index, target_peer_id, retry_count + 1
+                    share_index,
+                    target_peer_id,
+                    retry_count + 1
                 );
-                
+
                 // Parse the target peer ID
                 let peer_id = match target_peer_id.parse::<PeerId>() {
                     Ok(pid) => pid,
@@ -1250,14 +1276,21 @@ impl MpcNetworkLayer {
                         return Err(anyhow!("Invalid peer ID: {}", e));
                     }
                 };
-                
+
                 // Attempt to dial if not connected and we have a listen address
                 let mut is_connected = swarm.is_connected(&peer_id);
-                info!("🔐 [DKG-SECURE]  Target Peer {} connected: {}", target_peer_id, is_connected);
+                info!(
+                    "🔐 [DKG-SECURE]  Target Peer {} connected: {}",
+                    target_peer_id, is_connected
+                );
                 let connected_peers = swarm.connected_peers().collect::<Vec<_>>();
                 info!("🔐 [DKG-SECURE]  Connected peers: {:?}", connected_peers);
 
-                info!("🔐 [DKG-SECURE]  Peer discovery {} address: {:?}", target_peer_id, self.peer_discovery.peer_multiaddresses.get(&peer_id));
+                info!(
+                    "🔐 [DKG-SECURE]  Peer discovery {} address: {:?}",
+                    target_peer_id,
+                    self.peer_discovery.peer_multiaddresses.get(&peer_id)
+                );
 
                 if !is_connected {
                     if let Some(addr) = self
@@ -1270,7 +1303,10 @@ impl MpcNetworkLayer {
                             "📞 [DKG-SECURE] Not connected to {}, dialing before send: {}",
                             target_peer_id, addr
                         );
-                        let address: Multiaddr = if addr.to_string().contains(&format!("/p2p/{}", target_peer_id)) {
+                        let address: Multiaddr = if addr
+                            .to_string()
+                            .contains(&format!("/p2p/{}", target_peer_id))
+                        {
                             addr.clone()
                         } else {
                             format!("{}/p2p/{}", addr, target_peer_id)
@@ -1283,7 +1319,10 @@ impl MpcNetworkLayer {
                             // allow a brief window for connection to establish
                             tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
                             is_connected = swarm.is_connected(&peer_id);
-                            info!("🔐 [DKG-SECURE] Dial to connect to {} successful {}", target_peer_id, is_connected);
+                            info!(
+                                "🔐 [DKG-SECURE] Dial to connect to {} successful {}",
+                                target_peer_id, is_connected
+                            );
                         }
                     } else {
                         warn!(
@@ -1292,15 +1331,17 @@ impl MpcNetworkLayer {
                         );
                     }
                 }
-                
+
                 if !is_connected && retry_count < MAX_RETRIES {
                     // Not connected - schedule retry with exponential backoff
                     let delay_ms = 1000 * (1 << retry_count.min(5)); // 1s, 2s, 4s, 8s, 16s, 32s max
                     info!(
                         "🔄 [DKG-SECURE] Peer send {} not connected - scheduling retry {} in {}ms",
-                        target_peer_id, retry_count + 1, delay_ms
+                        target_peer_id,
+                        retry_count + 1,
+                        delay_ms
                     );
-                    
+
                     let tx = self.message_tx.clone();
                     let retry_msg = ChannelMessage::UnicastShareDKG {
                         target_peer_id: target_peer_id.clone(),
@@ -1311,27 +1352,28 @@ impl MpcNetworkLayer {
                         round,
                         retry_count: retry_count + 1,
                     };
-                    
+
                     tokio::spawn(async move {
                         tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
                         if let Err(e) = tx.send(retry_msg).await {
                             tracing::warn!(
                                 "❌ [DKG-SECURE] Failed to schedule retry for share {}: {}",
-                                share_index, e
+                                share_index,
+                                e
                             );
                         }
                     });
-                    
+
                     return Ok(());
                 }
-                
+
                 if !is_connected {
                     warn!(
                         "❌ [DKG-SECURE] Peer {} still not connected after {} retries - giving up",
                         target_peer_id, MAX_RETRIES
                     );
                 }
-                
+
                 // Create the RPC request
                 let request = RPCRequest::SendDKGShare {
                     from_node_id,
@@ -1340,13 +1382,13 @@ impl MpcNetworkLayer {
                     commitments,
                     round,
                 };
-                
+
                 // Send via request-response protocol (unicast, not broadcast)
                 let request_id = swarm
                     .behaviour_mut()
                     .request_response
                     .send_request(&peer_id, request);
-                
+
                 info!(
                     "✅ [DKG-SECURE] Share index {} sent via P2P RPC to {} (request_id: {:?}, connected: {})",
                     share_index, target_peer_id, request_id, is_connected
@@ -1362,12 +1404,12 @@ impl MpcNetworkLayer {
                 retry_count,
             } => {
                 const MAX_RETRIES: u8 = 10;
-                
+
                 info!(
                     "🔐 [REFRESH-SECURE] Sending refresh share index {} via UNICAST to peer {} (attempt {})",
                     share_index, target_peer_id, retry_count + 1
                 );
-                
+
                 // Parse the target peer ID
                 let peer_id = match target_peer_id.parse::<PeerId>() {
                     Ok(pid) => pid,
@@ -1379,10 +1421,13 @@ impl MpcNetworkLayer {
                         return Err(anyhow!("Invalid peer ID: {}", e));
                     }
                 };
-                
+
                 // Attempt to dial if not connected
                 let mut is_connected = swarm.is_connected(&peer_id);
-                info!("🔐 [REFRESH-SECURE] Target Peer {} connected: {}", target_peer_id, is_connected);
+                info!(
+                    "🔐 [REFRESH-SECURE] Target Peer {} connected: {}",
+                    target_peer_id, is_connected
+                );
 
                 if !is_connected {
                     if let Some(addr) = self
@@ -1395,7 +1440,10 @@ impl MpcNetworkLayer {
                             "📞 [REFRESH-SECURE] Not connected to {}, dialing before send: {}",
                             target_peer_id, addr
                         );
-                        let address: Multiaddr = if addr.to_string().contains(&format!("/p2p/{}", target_peer_id)) {
+                        let address: Multiaddr = if addr
+                            .to_string()
+                            .contains(&format!("/p2p/{}", target_peer_id))
+                        {
                             addr.clone()
                         } else {
                             format!("{}/p2p/{}", addr, target_peer_id)
@@ -1403,11 +1451,17 @@ impl MpcNetworkLayer {
                                 .expect("valid multiaddr")
                         };
                         if let Err(e) = swarm.dial(address.clone()) {
-                            warn!("⚠️ [REFRESH-SECURE] Dial to {} failed: {}", target_peer_id, e);
+                            warn!(
+                                "⚠️ [REFRESH-SECURE] Dial to {} failed: {}",
+                                target_peer_id, e
+                            );
                         } else {
                             tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
                             is_connected = swarm.is_connected(&peer_id);
-                            info!("🔐 [REFRESH-SECURE] Dial to {} successful: {}", target_peer_id, is_connected);
+                            info!(
+                                "🔐 [REFRESH-SECURE] Dial to {} successful: {}",
+                                target_peer_id, is_connected
+                            );
                         }
                     } else {
                         warn!(
@@ -1416,14 +1470,16 @@ impl MpcNetworkLayer {
                         );
                     }
                 }
-                
+
                 if !is_connected && retry_count < MAX_RETRIES {
                     let delay_ms = 1000 * (1 << retry_count.min(5));
                     info!(
                         "🔄 [REFRESH-SECURE] Peer {} not connected - scheduling retry {} in {}ms",
-                        target_peer_id, retry_count + 1, delay_ms
+                        target_peer_id,
+                        retry_count + 1,
+                        delay_ms
                     );
-                    
+
                     let tx = self.message_tx.clone();
                     let retry_msg = ChannelMessage::UnicastRefreshShare {
                         target_peer_id: target_peer_id.clone(),
@@ -1433,7 +1489,7 @@ impl MpcNetworkLayer {
                         commitments,
                         retry_count: retry_count + 1,
                     };
-                    
+
                     tokio::spawn(async move {
                         tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
                         if let Err(e) = tx.send(retry_msg).await {
@@ -1443,17 +1499,17 @@ impl MpcNetworkLayer {
                             );
                         }
                     });
-                    
+
                     return Ok(());
                 }
-                
+
                 if !is_connected {
                     warn!(
                         "❌ [REFRESH-SECURE] Peer {} still not connected after {} retries - giving up",
                         target_peer_id, MAX_RETRIES
                     );
                 }
-                
+
                 // Create the RPC request
                 let request = RPCRequest::SendRefreshShare {
                     from_node_id,
@@ -1461,13 +1517,13 @@ impl MpcNetworkLayer {
                     share_value,
                     commitments,
                 };
-                
+
                 // Send via request-response protocol (unicast, not broadcast)
                 let request_id = swarm
                     .behaviour_mut()
                     .request_response
                     .send_request(&peer_id, request);
-                
+
                 info!(
                     "✅ [REFRESH-SECURE] Refresh share index {} sent via P2P RPC to {} (request_id: {:?}, connected: {})",
                     share_index, target_peer_id, request_id, is_connected
@@ -1843,7 +1899,6 @@ impl MpcNetworkLayer {
                             // Use the signing key we got earlier
                             if let Some(key) = signing_key {
                                 info!("🔐 [LOCAL] Got signing key for deposit intent");
-                                signing_node.set_private_key_from_scalar(key);
 
                                 // Set the appropriate group public key based on transaction type
                                 match transaction_type {
@@ -1944,6 +1999,7 @@ impl MpcNetworkLayer {
                                                 Some(transaction_type.clone()),
                                                 signing_key,
                                                 None,
+                                                signing_key,
                                             )
                                             .await?;
                                     }
@@ -2015,7 +2071,10 @@ impl MpcNetworkLayer {
                                     };
 
                                     // For NetworkToTarget, queue to sequencer for coordinated signing
-                                    if matches!(transaction_type, crate::types::TransactionType::NetworkToTarget) {
+                                    if matches!(
+                                        transaction_type,
+                                        crate::types::TransactionType::NetworkToTarget
+                                    ) {
                                         info!(
                                             "📝 [LOCAL] NetworkToTarget (EVM) detected - queuing via network transaction sequencer (intent_hash={})",
                                             intent_hash
@@ -2044,6 +2103,7 @@ impl MpcNetworkLayer {
                                                 Some(intent_hash.clone()),
                                                 Some(transaction_type.clone()),
                                                 None,
+                                                signing_key,
                                             )
                                             .await?;
                                     }
@@ -2266,7 +2326,10 @@ impl MpcNetworkLayer {
                                     "❌ [NETWORK] Unknown transaction type: {}",
                                     transaction_type
                                 );
-                                return Err(anyhow!("Unknown transaction type: {}", transaction_type));
+                                return Err(anyhow!(
+                                    "Unknown transaction type: {}",
+                                    transaction_type
+                                ));
                             }
                         };
 
@@ -2591,9 +2654,7 @@ impl MpcNetworkLayer {
                 // 2) Apply the liquidity delta locally based on the requested amount (avoid waiting
                 //    for on-chain confirmation to keep DB in sync).
                 if let Some(signing_node) = &self.signing_node {
-                    let delta_btc = amount_btc
-                        .as_ref()
-                        .and_then(|v| U256::from_dec_str(v).ok());
+                    let delta_btc = amount_btc.as_ref().and_then(|v| U256::from_dec_str(v).ok());
                     let delta_tics = amount_tics
                         .as_ref()
                         .and_then(|v| U256::from_dec_str(v).ok());
@@ -2669,20 +2730,12 @@ impl MpcNetworkLayer {
 
                 // Apply the liquidity decrease locally based on requested amount (avoid waiting for chain).
                 if let Some(signing_node) = &self.signing_node {
-                    let delta_btc = amount_btc
-                        .as_ref()
-                        .and_then(|v| U256::from_dec_str(v).ok());
+                    let delta_btc = amount_btc.as_ref().and_then(|v| U256::from_dec_str(v).ok());
                     let delta_tics = amount_tics
                         .as_ref()
                         .and_then(|v| U256::from_dec_str(v).ok());
                     match signing_node
-                        .apply_liquidity_delta(
-                            &solver_address,
-                            None,
-                            delta_btc,
-                            delta_tics,
-                            false,
-                        )
+                        .apply_liquidity_delta(&solver_address, None, delta_btc, delta_tics, false)
                         .await
                     {
                         Ok(()) => {

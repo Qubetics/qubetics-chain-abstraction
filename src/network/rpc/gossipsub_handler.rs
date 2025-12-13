@@ -395,7 +395,10 @@ impl MpcNetworkLayer {
                                     "❌ [NETWORK] Unknown transaction type: {}",
                                     transaction_type
                                 );
-                                return Err(anyhow!("Unknown transaction type: {}", transaction_type));
+                                return Err(anyhow!(
+                                    "Unknown transaction type: {}",
+                                    transaction_type
+                                ));
                             }
                         };
 
@@ -821,7 +824,6 @@ impl MpcNetworkLayer {
                             // Use the signing key we got earlier
                             if let Some(key) = signing_key {
                                 info!("🔐 [GOSSIPSUB] Got signing key for deposit intent");
-                                signing_node.set_private_key_from_scalar(key);
 
                                 // Set the appropriate group public key based on transaction type
                                 match transaction_type {
@@ -919,6 +921,7 @@ impl MpcNetworkLayer {
                                                 Some(transaction_type.clone()),
                                                 signing_key,
                                                 None,
+                                                signing_key,
                                             )
                                             .await?;
                                     }
@@ -989,7 +992,10 @@ impl MpcNetworkLayer {
                                     };
 
                                     // For NetworkToTarget, queue to sequencer for coordinated signing
-                                    if matches!(transaction_type, crate::types::TransactionType::NetworkToTarget) {
+                                    if matches!(
+                                        transaction_type,
+                                        crate::types::TransactionType::NetworkToTarget
+                                    ) {
                                         info!(
                                             "📝 [GOSSIPSUB] NetworkToTarget (EVM) detected - queuing via network transaction sequencer (intent_hash={})",
                                             intent_hash
@@ -1018,6 +1024,7 @@ impl MpcNetworkLayer {
                                                 Some(intent_hash.clone()),
                                                 Some(transaction_type.clone()),
                                                 None,
+                                                signing_key,
                                             )
                                             .await?;
                                     }
@@ -1112,13 +1119,7 @@ impl MpcNetworkLayer {
                         .as_ref()
                         .and_then(|v| ethers::types::U256::from_dec_str(v).ok());
                     match signing_node
-                        .apply_liquidity_delta(
-                            &solver_address,
-                            None,
-                            delta_btc,
-                            delta_tics,
-                            false,
-                        )
+                        .apply_liquidity_delta(&solver_address, None, delta_btc, delta_tics, false)
                         .await
                     {
                         Ok(()) => {
@@ -1280,9 +1281,11 @@ impl MpcNetworkLayer {
                     "🔄 [SEQUENCER] Received sequencer sync: tx_id={}, sequence={}, node={}, state={}",
                     transaction_id, sequence, node_id, state
                 );
-                
+
                 if let Some(sequencer) = &self.contract_sequencer {
-                    sequencer.handle_sync_message(transaction_id, sequence, node_id, state).await;
+                    sequencer
+                        .handle_sync_message(transaction_id, sequence, node_id, state)
+                        .await;
                 } else {
                     warn!("⚠️ [SEQUENCER] Received sync message but sequencer not initialized");
                 }
@@ -1297,10 +1300,11 @@ impl MpcNetworkLayer {
                     "🔄 [NETWORK_SEQUENCER] Received network transaction sequencer sync: tx_id={}, sequence={}, node={}, state={}",
                     transaction_id, sequence, node_id, state
                 );
-                
+
                 // Initialize sequencer if not already initialized (e.g., when receiving sync before submitting)
                 if self.network_transaction_sequencer.is_none() {
-                    let mut sequencer = crate::network::sequencer::NetworkTransactionSequencer::new();
+                    let mut sequencer =
+                        crate::network::sequencer::NetworkTransactionSequencer::new();
                     let total_nodes = self.node_manager.get_total_nodes();
                     let node_id = self.local_peer_id.to_string();
                     let message_tx = self.message_tx.clone();
@@ -1311,9 +1315,11 @@ impl MpcNetworkLayer {
                         total_nodes
                     );
                 }
-                
+
                 if let Some(sequencer) = &self.network_transaction_sequencer {
-                    sequencer.handle_sync_message(transaction_id, sequence, node_id, state).await;
+                    sequencer
+                        .handle_sync_message(transaction_id, sequence, node_id, state)
+                        .await;
                 } else {
                     warn!("⚠️ [NETWORK_SEQUENCER] Failed to initialize sequencer");
                 }
