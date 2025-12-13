@@ -113,29 +113,39 @@ pub fn validate_contract_transaction_hex_fields(tx: &ContractTransaction) -> Res
 }
 
 /// Chain mapping to convert string names to chain IDs
+/// Only supports Qubetics as an EVM chain
 pub fn get_chain_id_from_name(chain_name: &str) -> Option<u64> {
     match chain_name.to_lowercase().as_str() {
-        "ethereum" | "eth" => Some(1),
         // Qubetics EVM chain
         "qubetics" => Some(9029),
         // Bitcoin uses a structural chain id of 0 (non-EVM, used for routing/metadata)
         "btc" | "bitcoin" => Some(0),
-        "polygon" | "matic" => Some(137),
-        "bsc" | "binance" => Some(56),
-        "avalanche" | "avax" => Some(43114),
-        "arbitrum" => Some(42161),
-        "optimism" => Some(10),
-        "base" => Some(8453),
         _ => None,
     }
 }
 
 /// Determine if a chain is EVM-compatible
+/// Only Qubetics is supported as an EVM chain
 pub fn is_evm_chain(chain_name: &str) -> bool {
     match chain_name.to_lowercase().as_str() {
+        "qubetics" => true,
         // Explicitly treat Bitcoin as non-EVM even though it has a structural ID (0)
         "btc" | "bitcoin" => false,
-        _ => get_chain_id_from_name(chain_name).is_some(),
+        _ => false,
+    }
+}
+
+/// Get RPC URL for an EVM chain by chain ID
+/// Only supports Qubetics (chain ID 9029) as an EVM chain
+/// Uses the MPC_ETHEREUM_RPC_URL environment variable
+pub fn get_evm_rpc_url(chain_id: u64) -> Result<String> {
+    match chain_id {
+        // Qubetics - use environment variable
+        9029 => network_cfg::qubetics_rpc_url_from_env(),
+        _ => Err(anyhow::anyhow!(
+            "Unsupported EVM chain ID: {}. Only Qubetics (9029) is supported as an EVM chain",
+            chain_id
+        )),
     }
 }
 
@@ -538,16 +548,7 @@ pub fn extract_utxo_identifiers(utxos: &[BitcoinUtxo]) -> Vec<(String, u32)> {
 }
 
 pub async fn fetch_ethereum_nonce(address: &str, chain_id: u64) -> Result<u64> {
-    let rpc_url = match chain_id {
-        9029 => network_cfg::qubetics_rpc_url_from_env()?,
-        1 => "https://mainnet.infura.io/v3/YOUR_PROJECT_ID".to_string(), // Ethereum mainnet
-        _ => {
-            return Err(anyhow::anyhow!(
-                "Unsupported chain ID for nonce fetching: {}",
-                chain_id
-            ))
-        }
-    };
+    let rpc_url = get_evm_rpc_url(chain_id)?;
 
     let client = reqwest::Client::new();
     let payload = serde_json::json!({
@@ -852,16 +853,7 @@ async fn estimate_gas_for_deposit_intent(
     data_hex: &str,
     chain_id: u64,
 ) -> Result<u64> {
-    let rpc_url = match chain_id {
-        9029 => network_cfg::qubetics_rpc_url_from_env()?,
-        1 => "https://mainnet.infura.io/v3/YOUR_PROJECT_ID".to_string(),
-        _ => {
-            return Err(anyhow::anyhow!(
-                "Unsupported chain ID for gas estimation: {}",
-                chain_id
-            ))
-        }
-    };
+    let rpc_url = get_evm_rpc_url(chain_id)?;
 
     let client = reqwest::Client::new();
     let payload = serde_json::json!({
@@ -1897,16 +1889,9 @@ pub fn encode_add_liquidity_calldata(
 }
 
 /// Fetch current gas price from RPC for Qubetics chain
+/// Only supports Qubetics (chain ID 9029)
 pub async fn fetch_qubetics_gas_price(chain_id: u64) -> Result<String> {
-    let rpc_url = match chain_id {
-        9029 => network_cfg::qubetics_rpc_url_from_env()?,
-        _ => {
-            return Err(anyhow::anyhow!(
-                "Unsupported chain ID for gas price fetching: {}",
-                chain_id
-            ))
-        }
-    };
+    let rpc_url = get_evm_rpc_url(chain_id)?;
 
     let client = reqwest::Client::new();
     let payload = serde_json::json!({
@@ -1945,22 +1930,17 @@ pub async fn fetch_qubetics_gas_price(chain_id: u64) -> Result<String> {
     }
 }
 
-/// Get default gas price for different EVM chains
+/// Get default gas price for Qubetics chain
+/// Only supports Qubetics as an EVM chain
 pub fn get_default_gas_price_for_chain(chain_name: &str) -> String {
     match chain_name {
-        "ethereum" | "eth" => "0x4A817C800".to_string(), // 20 Gwei
-        "qubetics" => "0x3B9ACA00".to_string(),          // 1 Gwei (fallback)
-        "polygon" | "matic" => "0x12A05F200".to_string(), // 5 Gwei
-        "bsc" | "binance" => "0x12A05F200".to_string(),  // 5 Gwei
-        "avalanche" | "avax" => "0x5D21DBA00".to_string(), // 25 Gwei
-        "arbitrum" => "0x5F5E100".to_string(),           // 0.1 Gwei
-        "optimism" => "0x5F5E100".to_string(),           // 0.1 Gwei
-        "base" => "0x5F5E100".to_string(),               // 0.1 Gwei
-        _ => "0x4A817C800".to_string(),                  // Default to 20 Gwei
+        "qubetics" => "0x3B9ACA00".to_string(), // 1 Gwei (fallback)
+        _ => "0x3B9ACA00".to_string(),          // Default to 1 Gwei for Qubetics
     }
 }
 
-/// Get gas price for chain with dynamic fetching for Qubetics
+/// Get gas price for Qubetics chain with dynamic fetching
+/// Only supports Qubetics as an EVM chain
 pub async fn get_gas_price_for_chain(chain_name: &str, chain_id: u64) -> Result<String> {
     // Reduced noisy stdout logging in production path
 
@@ -2005,24 +1985,11 @@ pub async fn get_gas_price_for_chain(chain_name: &str, chain_id: u64) -> Result<
             }
         }
         _ => {
-            // Reduced noisy stdout logging in production path
-            // Use static gas price for other chains
-            let static_price = get_default_gas_price_for_chain(chain_name);
-            info!(
-                "Using static gas price for {}: {}",
-                chain_name, static_price
-            );
-            // Convert static to decimal to show the actual value
-            if let Some(hex_part) = static_price.strip_prefix("0x") {
-                if let Ok(price_decimal) = u64::from_str_radix(hex_part, 16) {
-                    info!(
-                        "Static gas price in decimal: {} wei ({} Gwei)",
-                        price_decimal,
-                        price_decimal / 1_000_000_000
-                    );
-                }
-            }
-            Ok(static_price)
+            // Only Qubetics is supported as an EVM chain
+            Err(anyhow::anyhow!(
+                "Unsupported EVM chain: {}. Only Qubetics is supported as an EVM chain",
+                chain_name
+            ))
         }
     }
 }
@@ -2111,11 +2078,11 @@ mod tests {
     async fn test_qubetics_unsupported_chain() {
         ensure_testnet_network_type();
         // Test that unsupported chain IDs return an error
-        let result = fetch_qubetics_gas_price(1).await; // Ethereum mainnet
+        let result = fetch_qubetics_gas_price(1).await; // Ethereum mainnet (unsupported)
         assert!(result.is_err());
         let error_msg = result.unwrap_err().to_string();
         println!("🔧 Expected error for unsupported chain: {}", error_msg);
-        assert!(error_msg.contains("Unsupported chain ID"));
+        assert!(error_msg.contains("Unsupported EVM chain ID"));
     }
 
     #[test]

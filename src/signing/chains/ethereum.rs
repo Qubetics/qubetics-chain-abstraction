@@ -3,11 +3,10 @@ use crate::{
     chain_abstraction::{ChainTransaction, EthereumTransaction},
     types::{
         intent::{ContractTransaction, DummyTransaction},
-        network as network_cfg,
         signing::ECDSASignature,
         TransactionType,
     },
-    utils::{get_eth_address_from_group_key, transaction::create_signed_transaction},
+    utils::{get_eth_address_from_group_key, transaction::{create_signed_transaction, get_evm_rpc_url}},
 };
 use anyhow::{anyhow, Result};
 use hex;
@@ -74,16 +73,7 @@ impl<'a> EthereumSigner<'a> {
 
 impl SigningNode {
     pub async fn fetch_ethereum_nonce(address: &str, chain_id: u64) -> Result<u64> {
-        let rpc_url = match chain_id {
-            9029 => network_cfg::qubetics_rpc_url_from_env()?,
-            1 => "https://mainnet.infura.io/v3/YOUR_PROJECT_ID".to_string(),
-            _ => {
-                return Err(anyhow!(
-                    "Unsupported chain ID for nonce fetching: {}",
-                    chain_id
-                ))
-            }
-        };
+        let rpc_url = get_evm_rpc_url(chain_id)?;
 
         let client = Client::new();
         let payload = serde_json::json!({
@@ -131,16 +121,7 @@ impl SigningNode {
         raw_tx_hex: &str,
         chain_id: u64,
     ) -> Result<Option<String>> {
-        let rpc_url = match chain_id {
-            9029 => network_cfg::qubetics_rpc_url_from_env()?,
-            1 => "https://mainnet.infura.io/v3/YOUR_PROJECT_ID".to_string(),
-            _ => {
-                return Err(anyhow!(
-                    "Unsupported chain ID for broadcasting: {}",
-                    chain_id
-                ))
-            }
-        };
+        let rpc_url = get_evm_rpc_url(chain_id)?;
 
         let client = Client::new();
         let payload = serde_json::json!({
