@@ -105,10 +105,11 @@ pub enum ChannelMessage {
         share_value: SerializableScalar,
         commitments: Vec<SerializablePoint>,
         retry_count: u8,
+    },
 
     StatusRequest {
         responder: oneshot::Sender<NodeStatus>,
-    },
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
