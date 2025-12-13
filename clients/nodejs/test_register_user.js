@@ -2,16 +2,33 @@
 
 import axios from 'axios';
 import { Wallet } from 'ethers';
-import { randomUUID } from 'crypto';
+import { randomBytes } from 'crypto';
+
+// Polyfill for randomUUID (Node.js v12 compatible)
+function randomUUID() {
+  const bytes = randomBytes(16);
+  bytes[6] = (bytes[6] & 0x0f) | 0x40; // Version 4
+  bytes[8] = (bytes[8] & 0x3f) | 0x80; // Variant 10
+  const hex = bytes.toString('hex');
+  return [
+    hex.slice(0, 8),
+    hex.slice(8, 12),
+    hex.slice(12, 16),
+    hex.slice(16, 20),
+    hex.slice(20, 32)
+  ].join('-');
+}
 
 // =========================
 // Configuration
 // =========================
-const RPC_BASE_URL = 'http://127.0.0.1:8082';
-const API_KEY = "arpit";
+const RPC_BASE_URL = 'http://127.0.0.1:8083';
+const API_KEY = "2919cd546f2c4338bccb4794a3d6afba2282e5729653fc2c2ff6c5e0e194ar45";
 
 // 👉 Private key you provided (hex, no 0x prefix needed)
 const TEST_PRIVKEY = '11d281397918948a90ce5ce2a72945ee7929a5a932e5bb3d22664ba98f86755e';
+// const TEST_PRIVKEY = '1e61daf814fae3af13d9ec447f2b2da96a7d307b5c73ec85c275fb9c67ea8f1a';
+
 let TEST_TX_ID = "0x0942448ca6f6517c05c361e249cdaf9f5e054e6290236c43f6537705ef2a7885";
 
 // =========================
@@ -27,11 +44,10 @@ const colors = {
   green: '\x1b[32m'
 };
 
-const oooo = 4752452342635
+const oooo = 2323232
 function log(message, color = 'reset') {
   console.log(`${colors[color]}${message}${colors.reset}`);
 }
-
 
 // =========================
 // HTTP helpers
@@ -59,7 +75,7 @@ async function testRegisterUser(ethereumAddress) {
   } catch (error) {
     if (error.response) {
       log(`❌ Registration failed with status ${error.response.status}:`, 'red');
-      log(`   Error: ${error.response.data?.message || error.response.statusText}`, 'red');
+      log(`   Error: ${(error.response.data && error.response.data.message) || error.response.statusText}`, 'red');
       if (error.response.data) {
         log(`   Full Error Response:`, 'red');
         console.log(JSON.stringify(error.response.data, null, 2));
@@ -90,6 +106,7 @@ async function testGetUserInfo(ethereumAddress) {
     log(`📊 User Info:`, 'cyan');
     log(`   User ID: ${response.data.user_id}`, 'cyan');
     log(`   Ethereum Address: ${response.data.ethereum_address}`, 'cyan');
+    log(`   HMAC Constant: ${response.data.hmac_constant}`, 'cyan');
     log(`   Has Tweaked Share: ${response.data.has_tweaked_share}`, 'cyan');
     log(`   Has User Group Key: ${response.data.has_user_group_key}`, 'cyan');
     log(`   Derived ETH Address: ${response.data.derived_eth_address || 'Not available'}`, 'cyan');
@@ -98,10 +115,10 @@ async function testGetUserInfo(ethereumAddress) {
 
     return { success: true, data: response.data };
   } catch (error) {
-    if (error.response?.status === 404) {
+    if (error.response && error.response.status === 404) {
       log(`❌ User not found: ${ethereumAddress}`, 'yellow');
     } else if (error.response) {
-      log(`❌ Failed to get user info: ${error.response.data?.message || error.response.statusText}`, 'red');
+      log(`❌ Failed to get user info: ${(error.response.data && error.response.data.message) || error.response.statusText}`, 'red');
     } else {
       log(`❌ Error getting user info: ${error.message}`, 'red');
     }
@@ -156,7 +173,7 @@ async function testUserMpcDeposit({ wallet, amount, idempotencyKey }) {
     // Construct DepositIntent
     const depositIntent = {
       source_address: userInfo.data.derived_eth_address, // Use canonical address
-      target_address: '0xfbc7e1789af2496ce49652a9f86bbf952bda2d36',
+      target_address: userInfo.data.derived_eth_address,
       source_chain: 'qubetics',
       target_chain: 'qubetics',
       amount: amount, // Use the passed amount parameter
@@ -164,6 +181,17 @@ async function testUserMpcDeposit({ wallet, amount, idempotencyKey }) {
       target_token: 'TICS',
       timestamp: oooo,
     };
+    // const depositIntent = {
+    //   source_address: userInfo.data.derived_btc_address, // Use canonical address
+    //   target_address: userInfo.data.derived_eth_address,
+    //   source_chain: 'bitcoin',
+    //   target_chain: 'qubetics',
+    //   amount: amount, // Use the passed amount parameter
+    //   source_token: 'BTC',
+    //   target_token: 'TICS',
+    //   timestamp: oooo,
+    // };
+
     console.log(`📊 Deposit Intent: ${JSON.stringify(depositIntent)}`, 'cyan');
     // Serialize DepositIntent for signing
     const msg = JSON.stringify(depositIntent);
@@ -249,7 +277,7 @@ async function testUserMpcDeposit({ wallet, amount, idempotencyKey }) {
         }
       } else {
         // Fallback for generic HTTP errors
-        log(`   Error: ${error.response.data?.message || error.response.statusText}`, 'red');
+        log(`   Error: ${(error.response.data && error.response.data.message) || error.response.statusText}`, 'red');
       }
 
       // Always show full response for debugging
@@ -281,10 +309,10 @@ async function runTests() {
   const signerAddr = await wallet.getAddress();
   log(`\n🔑 Derived signer address from TEST_PRIVKEY: ${signerAddr}`, 'blue');
 
-  // // 1) DKG status
+  // 1) DKG status
   // await testDKGStatus();
 
-  // // // 2) Register ONLY the derived address 
+  // // 2) Register ONLY the derived address 
   // const reg = await testRegisterUser(signerAddr);
 
   // if (reg.success) {
@@ -296,8 +324,11 @@ async function runTests() {
   // }
 
   // 3) MPC deposit test WITHOUT tx_id (should pass Some(signer) to handle_deposit_intent)
+  // log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
+  // const amount = 900
+  // await testUserMpcDeposit({ wallet, amount });
   log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
-  const amount = 26000000000000000000
+  const amount = 30000000000000000000
   await testUserMpcDeposit({ wallet, amount });
 
   // const address = '0xbac113cebd9CB2fBD2a01B5CBC43D0fC0EBed5e9';

@@ -11,3 +11,9 @@ mod getters;
 mod init;
 mod setters;
 mod utils;
+mod sequencer;
+
+pub use sequencer::{
+    ContractTransactionRequest, ContractTransactionSequencer,
+    NetworkTransactionRequest, NetworkTransactionSequencer, NetworkTransactionFlow,
+};

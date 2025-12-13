@@ -15,6 +15,8 @@ use mpc_node::{
     user_intent_manager::UserIntentManager,
 };
 use rand::{thread_rng, Rng};
+use std::fs;
+use std::io::ErrorKind;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::Mutex;
@@ -355,6 +357,27 @@ async fn main() -> Result<()> {
     let mut context = NodeContext::new(config)?;
 
     context.init_logging()?;
+
+    // Clean up local data and logs directories on every startup
+    match fs::remove_dir_all("./data") {
+        Ok(_) => info!("🧹 [MAIN] Removed ./data directory on startup"),
+        Err(e) if e.kind() == ErrorKind::NotFound => {
+            info!("ℹ️ [MAIN] ./data directory not found, nothing to clean");
+        }
+        Err(e) => {
+            warn!("⚠️ [MAIN] Failed to remove ./data directory on startup: {:?}", e);
+        }
+    }
+
+    // match fs::remove_dir_all("./logs") {
+    //     Ok(_) => info!("🧹 [MAIN] Removed ./logs directory on startup"),
+    //     Err(e) if e.kind() == ErrorKind::NotFound => {
+    //         info!("ℹ️ [MAIN] ./logs directory not found, nothing to clean");
+    //     }
+    //     Err(e) => {
+    //         warn!("⚠️ [MAIN] Failed to remove ./logs directory on startup: {:?}", e);
+    //     }
+    // }
     context.init_database()?;
     context.init_network().await?;
     context.spawn_rpc().await?;

@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use std::collections::HashMap;
 
 use crate::types::{ContractTransaction, DummyTransaction};
@@ -17,6 +17,17 @@ impl EthereumChainHandler {
     pub fn new(chain_id: u64) -> Self {
         Self { chain_id }
     }
+
+    fn ensure_chain_id(&self, tx_chain_id: u64) -> Result<()> {
+        if tx_chain_id != self.chain_id {
+            Err(anyhow!(
+                "Mismatched chain ID for Ethereum handler: expected {}, got {}",
+                self.chain_id, tx_chain_id
+            ))
+        } else {
+            Ok(())
+        }
+    }
 }
 
 impl ChainHandler for EthereumChainHandler {
@@ -27,6 +38,8 @@ impl ChainHandler for EthereumChainHandler {
     fn create_transaction_bytes(&self, transaction: &ChainTransaction) -> Result<Vec<u8>> {
         match transaction {
             ChainTransaction::Ethereum(eth_tx) => {
+                self.ensure_chain_id(eth_tx.chain_id)?;
+
                 if let Some(data) = &eth_tx.data {
                     let contract_tx = ContractTransaction {
                         to: eth_tx.to.clone(),
@@ -34,7 +47,7 @@ impl ChainHandler for EthereumChainHandler {
                         gas_limit: eth_tx.gas_limit,
                         gas_price: eth_tx.gas_price.clone(),
                         nonce: eth_tx.nonce,
-                        chain_id: eth_tx.chain_id,
+                        chain_id: self.chain_id,
                         data: hex::encode(data),
                     };
                     Ok(
@@ -43,8 +56,12 @@ impl ChainHandler for EthereumChainHandler {
                         ),
                     )
                 } else {
+                    let sanitized_tx = EthereumTransaction {
+                        chain_id: self.chain_id,
+                        ..eth_tx.clone()
+                    };
                     Ok(crate::utils::transaction::create_transaction_for_signing(
-                        eth_tx,
+                        &sanitized_tx,
                     ))
                 }
             }
@@ -57,6 +74,8 @@ impl ChainHandler for EthereumChainHandler {
     fn create_transaction_bytes_contract(&self, transaction: &ChainTransaction) -> Result<Vec<u8>> {
         match transaction {
             ChainTransaction::Ethereum(eth_tx) => {
+                self.ensure_chain_id(eth_tx.chain_id)?;
+
                 if let Some(data) = &eth_tx.data {
                     let contract_tx = ContractTransaction {
                         to: eth_tx.to.clone(),
@@ -64,7 +83,7 @@ impl ChainHandler for EthereumChainHandler {
                         gas_limit: eth_tx.gas_limit,
                         gas_price: eth_tx.gas_price.clone(),
                         nonce: eth_tx.nonce,
-                        chain_id: eth_tx.chain_id,
+                        chain_id: self.chain_id,
                         data: hex::encode(data),
                     };
                     Ok(
@@ -73,8 +92,12 @@ impl ChainHandler for EthereumChainHandler {
                         ),
                     )
                 } else {
+                    let sanitized_tx = EthereumTransaction {
+                        chain_id: self.chain_id,
+                        ..eth_tx.clone()
+                    };
                     Ok(crate::utils::transaction::create_transaction_for_signing(
-                        eth_tx,
+                        &sanitized_tx,
                     ))
                 }
             }
@@ -98,7 +121,8 @@ impl ChainHandler for EthereumChainHandler {
         let s = signature_data[32..64].to_vec();
 
         let v = if let ChainTransaction::Ethereum(eth_tx) = transaction {
-            recovery_id as u64 + 35 + eth_tx.chain_id * 2
+            self.ensure_chain_id(eth_tx.chain_id)?;
+            recovery_id as u64 + 35 + self.chain_id * 2
         } else {
             recovery_id as u64 + 27
         };
@@ -140,6 +164,8 @@ impl ChainHandler for EthereumChainHandler {
     }
 
     fn from_dummy_transaction(&self, dummy_tx: &DummyTransaction) -> Result<ChainTransaction> {
+        self.ensure_chain_id(dummy_tx.chain_id)?;
+
         Ok(ChainTransaction::Ethereum(EthereumTransaction {
             to: dummy_tx.to.clone(),
             value: dummy_tx.value.clone(),
@@ -147,7 +173,7 @@ impl ChainHandler for EthereumChainHandler {
             gas_price: dummy_tx.gas_price.clone(),
             nonce: dummy_tx.nonce,
             data: None,
-            chain_id: dummy_tx.chain_id,
+            chain_id: self.chain_id,
         }))
     }
 
@@ -160,5 +186,40 @@ impl ChainHandler for EthereumChainHandler {
 
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn base_eth_transaction(chain_id: u64) -> EthereumTransaction {
+        EthereumTransaction {
+            to: "0x0000000000000000000000000000000000000000".to_string(),
+            value: "0x0".to_string(),
+            gas_limit: 21_000,
+            gas_price: "0x1".to_string(),
+            nonce: 0,
+            data: None,
+            chain_id,
+        }
+    }
+
+    #[test]
+    fn rejects_transactions_with_mismatched_chain_id() {
+        let handler = EthereumChainHandler::new(1);
+        let tx = ChainTransaction::Ethereum(base_eth_transaction(2));
+
+        assert!(handler.create_transaction_bytes(&tx).is_err());
+        assert!(handler.create_transaction_bytes_contract(&tx).is_err());
+    }
+
+    #[test]
+    fn rejects_signatures_for_wrong_chain_id() {
+        let handler = EthereumChainHandler::new(1);
+        let tx = ChainTransaction::Ethereum(base_eth_transaction(2));
+        let sig = vec![0u8; 64];
+
+        assert!(handler.create_signature(&sig, 0, &tx).is_err());
     }
 }

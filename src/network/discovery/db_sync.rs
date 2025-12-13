@@ -4,6 +4,7 @@ use tracing::info;
 
 use crate::types::p2p::SerializablePeerId;
 use crate::types::rpc::RPCRequest;
+use crate::types::vrf::VrfRoundSyncRequest;
 
 use crate::network::transport::types::{MpcNetworkBehaviour, MpcNetworkLayer};
 
@@ -145,10 +146,14 @@ impl MpcNetworkLayer {
                     "🔄 [VRF_SYNC] Requesting current VRF round from peer {}",
                     peer_id
                 );
-                swarm
-                    .behaviour_mut()
-                    .request_response
-                    .send_request(&peer_id, RPCRequest::RequestCurrentVrfRound);
+                let current_round = self.get_local_vrf_round().await;
+                swarm.behaviour_mut().request_response.send_request(
+                    &peer_id,
+                    RPCRequest::VrfRoundSync(VrfRoundSyncRequest {
+                        from: SerializablePeerId(self.local_peer_id),
+                        current_round,
+                    }),
+                );
                 self.vrf_round_requested = true;
                 info!("✅ [VRF_SYNC] VRF round request sent to peer {}", peer_id);
             }

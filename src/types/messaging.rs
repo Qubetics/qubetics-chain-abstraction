@@ -5,12 +5,14 @@ use crate::{
         intent::{DepositIntent, TransactionType},
         rpc::RPCRequest,
         secp::{SerializablePoint, SerializableScalar},
+        rpc_server::NodeStatus,
         signing::SigningMessage,
         ConsensusMessage,
     },
 };
 use libp2p::PeerId;
 use serde::{Deserialize, Serialize};
+use tokio::sync::oneshot;
 
 /// Share metadata for AVSS exchanges.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -19,7 +21,7 @@ pub struct KeyShare {
     pub value: SerializableScalar,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum ChannelMessage {
     Broadcast {
         topic: String,
@@ -51,6 +53,7 @@ pub enum ChannelMessage {
         solver_id: String,
         amount_btc: Option<String>,
         amount_tics: Option<String>,
+        request_id: String,
     },
     WithdrawLiquidity {
         solver_address: String,
@@ -102,6 +105,9 @@ pub enum ChannelMessage {
         share_value: SerializableScalar,
         commitments: Vec<SerializablePoint>,
         retry_count: u8,
+
+    StatusRequest {
+        responder: oneshot::Sender<NodeStatus>,
     },
 }
 
@@ -144,6 +150,7 @@ pub enum GossipsubMessage {
         solver_id: String,
         amount_btc: Option<String>,
         amount_tics: Option<String>,
+        request_id: String,
     },
     WithdrawLiquidity {
         solver_address: String,
@@ -180,5 +187,25 @@ pub enum GossipsubMessage {
     IntentHashBroadcast {
         intent_hash: String,
         node_id: String,
+    },
+    SequencerSync {
+        /// The transaction_id of the request being processed
+        transaction_id: String,
+        /// The sequence number for ordering
+        sequence: u64,
+        /// Node that is proposing/processing this request
+        node_id: String,
+        /// State: "proposed", "processing", "completed"
+        state: String,
+    },
+    NetworkTransactionSequencerSync {
+        /// The transaction_id of the request being processed
+        transaction_id: String,
+        /// The sequence number for ordering
+        sequence: u64,
+        /// Node that is proposing/processing this request
+        node_id: String,
+        /// State: "proposed", "processing", "completed"
+        state: String,
     },
 }

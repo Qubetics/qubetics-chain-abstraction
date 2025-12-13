@@ -2,7 +2,7 @@ use anyhow::Result;
 use libp2p::identity::Keypair;
 use libp2p::PeerId;
 use std::sync::Arc;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use crate::database::{keys, KeyStore};
 
@@ -164,22 +164,698 @@ impl MpcNetworkLayer {
         vault_group_key: Option<k256::ProjectivePoint>,
         amount: u128,
     ) -> Result<()> {
-        if let Some(signing_node) = &mut self.signing_node {
-            crate::chain_abstraction::MpcChainExecutor::execute_contract_call(
-                signing_node,
-                self.node_manager.as_ref(),
-                self.dkg_node.as_ref(),
+        // Use sequencer to ensure sequential execution and prevent nonce collisions
+        self.submit_contract_transaction_to_sequencer(
+            intent,
+            intent_hash,
+            transaction_type,
+            tx_hash,
+            vault_group_key,
+            amount,
+        )
+        .await
+    }
+
+    /// Submit a solver add-liquidity operation to the sequencer
+    pub(crate) async fn submit_solver_add_liquidity_to_sequencer(
+        &mut self,
+        solver_address: &str,
+        solver_id: &str,
+        asset_chain_name: &str,
+        amount: u128,
+        request_id: &str,
+    ) -> Result<()> {
+        use crate::network::sequencer::{ContractTransactionFlow, ContractTransactionRequest};
+        
+        // Initialize sequencer if not already initialized
+        if self.contract_sequencer.is_none() {
+            self.initialize_contract_sequencer().await;
+        }
+
+        if let Some(sequencer) = &self.contract_sequencer {
+            // Generate a deterministic transaction ID using hash (includes request_id for uniqueness)
+            let transaction_id = crate::network::sequencer::ContractTransactionSequencer::generate_transaction_id_for_add_liquidity(
+                solver_address,
+                solver_id,
+                asset_chain_name,
+                amount,
+                request_id,
+            );
+            
+            let request = ContractTransactionRequest {
+                flow: ContractTransactionFlow::SolverAddLiquidity {
+                    solver_address: solver_address.to_string(),
+                    solver_id: solver_id.to_string(),
+                    asset_chain_name: asset_chain_name.to_string(),
+                    amount,
+                },
+                transaction_id: transaction_id.clone(),
+                sequence: 0, // Will be set by sequencer.submit()
+            };
+
+            sequencer.submit(request).await?;
+            info!(
+                "📋 [NETWORK] Submitted solver add-liquidity to sequencer: solver={}, solver_id={}, chain={}, amount={}, tx_id={}",
+                solver_address, solver_id, asset_chain_name, amount, transaction_id
+            );
+            Ok(())
+        } else {
+            warn!("❌ [NETWORK] Contract sequencer not available, falling back to direct execution");
+            // Fallback to direct execution if sequencer initialization failed
+            self.submit_solver_add_liquidity_contract_update(
+                solver_address,
+                solver_id,
+                asset_chain_name,
+                amount,
+            )
+            .await
+        }
+    }
+
+    // ----------------------------------------------------------------------------
+    // Network transaction sequencer (NetworkToTarget and future flows)
+    // ----------------------------------------------------------------------------
+
+    /// Initialize the network transaction sequencer if not already present
+    async fn initialize_network_transaction_sequencer(&mut self) {
+        if self.network_transaction_sequencer.is_none() {
+            let mut sequencer = crate::network::sequencer::NetworkTransactionSequencer::new();
+            let total_nodes = self.node_manager.get_total_nodes();
+            let node_id = self.local_peer_id.to_string();
+            let message_tx = self.message_tx.clone();
+            sequencer.initialize(message_tx, node_id, total_nodes).await;
+            self.network_transaction_sequencer = Some(sequencer);
+            info!(
+                "✅ [NETWORK] Network transaction sequencer initialized with {} total nodes",
+                total_nodes
+            );
+        }
+    }
+
+    /// Submit a NetworkToTarget transaction to the network transaction sequencer
+    pub(crate) async fn submit_network_to_target_to_sequencer(
+        &mut self,
+        intent: &crate::types::DepositIntent,
+        intent_hash: &str,
+        amount: u128,
+        tx_bytes: Vec<u8>,
+        eth_tx: crate::chain_abstraction::EthereumTransaction,
+        user_tweaked_share: Option<k256::Scalar>,
+        user_eth_address: Option<String>,
+    ) -> Result<()> {
+        use crate::network::sequencer::{NetworkTransactionFlow, NetworkTransactionRequest};
+
+        if self.network_transaction_sequencer.is_none() {
+            self.initialize_network_transaction_sequencer().await;
+        }
+
+        if let Some(sequencer) = &self.network_transaction_sequencer {
+            let transaction_id = crate::network::sequencer::NetworkTransactionSequencer::generate_transaction_id_for_network_to_target(intent_hash);
+
+            let request = NetworkTransactionRequest {
+                flow: NetworkTransactionFlow::NetworkToTarget {
+                    intent: intent.clone(),
+                    intent_hash: intent_hash.to_string(),
+                    transaction_type: crate::types::TransactionType::NetworkToTarget,
+                    amount,
+                    tx_bytes,
+                    eth_tx,
+                    user_tweaked_share,
+                    user_eth_address,
+                },
+                transaction_id: transaction_id.clone(),
+                sequence: 0, // set by sequencer.submit
+            };
+
+            sequencer.submit(request).await?;
+            info!(
+                "📋 [NETWORK] Submitted NetworkToTarget to network transaction sequencer: intent_hash={}, amount={}, tx_id={}",
+                intent_hash, amount, transaction_id
+            );
+            Ok(())
+        } else {
+            warn!("❌ [NETWORK] Network transaction sequencer not available for NetworkToTarget transaction");
+            Ok(())
+        }
+    }
+
+    /// Submit a withdraw liquidity transaction to the network sequencer
+    pub(crate) async fn submit_withdraw_liquidity_to_sequencer(
+        &mut self,
+        solver_address: &str,
+        eth_address: &str,
+        amount: u128,
+        tx_bytes: Vec<u8>,
+        eth_tx: crate::chain_abstraction::EthereumTransaction,
+    ) -> Result<()> {
+        use crate::network::sequencer::{NetworkTransactionFlow, NetworkTransactionRequest};
+
+        if self.network_transaction_sequencer.is_none() {
+            self.initialize_network_transaction_sequencer().await;
+        }
+
+        if let Some(sequencer) = &self.network_transaction_sequencer {
+            let transaction_id = crate::network::sequencer::NetworkTransactionSequencer::generate_transaction_id_for_withdraw_liquidity(&tx_bytes);
+
+            let request = NetworkTransactionRequest {
+                flow: NetworkTransactionFlow::WithdrawLiquidity {
+                    solver_address: solver_address.to_string(),
+                    eth_address: eth_address.to_string(),
+                    amount,
+                    tx_bytes,
+                    eth_tx,
+                },
+                transaction_id: transaction_id.clone(),
+                sequence: 0, // set by sequencer.submit
+            };
+
+            sequencer.submit(request).await?;
+            info!(
+                "📋 [NETWORK] Submitted WithdrawLiquidity to network transaction sequencer: solver={}, eth_address={}, amount={}, tx_id={}",
+                solver_address, eth_address, amount, transaction_id
+            );
+            Ok(())
+        } else {
+            warn!("❌ [NETWORK] Network transaction sequencer not available for WithdrawLiquidity transaction");
+            Ok(())
+        }
+    }
+
+    /// Submit a reward payout transaction to the network sequencer
+    pub(crate) async fn submit_reward_payout_to_sequencer(
+        &mut self,
+        solver_address: &str,
+        eth_address: &str,
+        amount: u128,
+        tx_bytes: Vec<u8>,
+        eth_tx: crate::chain_abstraction::EthereumTransaction,
+    ) -> Result<()> {
+        use crate::network::sequencer::{NetworkTransactionFlow, NetworkTransactionRequest};
+
+        if self.network_transaction_sequencer.is_none() {
+            self.initialize_network_transaction_sequencer().await;
+        }
+
+        if let Some(sequencer) = &self.network_transaction_sequencer {
+            let transaction_id = crate::network::sequencer::NetworkTransactionSequencer::generate_transaction_id_for_reward_payout(&tx_bytes);
+
+            let request = NetworkTransactionRequest {
+                flow: NetworkTransactionFlow::RewardPayout {
+                    solver_address: solver_address.to_string(),
+                    eth_address: eth_address.to_string(),
+                    amount,
+                    tx_bytes,
+                    eth_tx,
+                },
+                transaction_id: transaction_id.clone(),
+                sequence: 0, // set by sequencer.submit
+            };
+
+            sequencer.submit(request).await?;
+            info!(
+                "📋 [NETWORK] Submitted RewardPayout to network transaction sequencer: solver={}, eth_address={}, amount={}, tx_id={}",
+                solver_address, eth_address, amount, transaction_id
+            );
+            Ok(())
+        } else {
+            warn!("❌ [NETWORK] Network transaction sequencer not available for RewardPayout transaction");
+            Ok(())
+        }
+    }
+
+    /// Process a network transaction from the sequencer (currently only NetworkToTarget)
+    pub(crate) async fn process_network_transaction(
+        &mut self,
+        request: crate::network::sequencer::NetworkTransactionRequest,
+    ) -> Result<()> {
+        use crate::network::sequencer::NetworkTransactionFlow;
+        use crate::signing::EthereumSigner;
+
+        match &request.flow {
+            NetworkTransactionFlow::NetworkToTarget {
+                intent_hash,
+                tx_bytes,
+                eth_tx,
+                user_tweaked_share,
+                user_eth_address,
+                transaction_type,
+                ..
+            } => {
+                info!(
+                    "📋 [NETWORK_SEQUENCER] Processing NetworkToTarget transaction: intent_hash={}, tx_id={}",
+                    intent_hash, request.transaction_id
+                );
+
+                if let Some(signing_node) = &mut self.signing_node {
+                    let mut eth_signer = EthereumSigner::new(signing_node);
+                    eth_signer
+                        .sign_transaction(
+                            tx_bytes.clone(),
+                            eth_tx,
+                            *user_tweaked_share,
+                            user_eth_address.clone(),
+                            Some(intent_hash.clone()),
+                            Some(transaction_type.clone()),
+                            None,
+                        )
+                        .await?;
+
+                    info!(
+                        "✅ [NETWORK_SEQUENCER] Successfully signed NetworkToTarget transaction: intent_hash={}, tx_id={}",
+                        intent_hash, request.transaction_id
+                    );
+                    Ok(())
+                } else {
+                    Err(anyhow::anyhow!("Signing node not available"))
+                }
+            }
+            NetworkTransactionFlow::WithdrawLiquidity {
+                solver_address,
+                eth_address,
+                amount,
+                tx_bytes,
+                eth_tx,
+            } => {
+                info!(
+                    "📋 [NETWORK_SEQUENCER] Processing WithdrawLiquidity transaction: solver={}, eth_address={}, amount={}, tx_id={}",
+                    solver_address, eth_address, amount, request.transaction_id
+                );
+
+                if let Some(signing_node) = &mut self.signing_node {
+                    let mut eth_signer = EthereumSigner::new(signing_node);
+                    eth_signer
+                        .sign_transaction(
+                            tx_bytes.clone(),
+                            eth_tx,
+                            None, // Network DKG share (already set in signing_node)
+                            None, // No user address for network transactions
+                            None, // No intent_hash for withdraw liquidity
+                            Some(crate::types::TransactionType::WithdrawLiquidity),
+                            Some(solver_address.clone()),
+                        )
+                        .await?;
+
+                    info!(
+                        "✅ [NETWORK_SEQUENCER] Successfully signed WithdrawLiquidity transaction: solver={}, tx_id={}",
+                        solver_address, request.transaction_id
+                    );
+                    Ok(())
+                } else {
+                    Err(anyhow::anyhow!("Signing node not available"))
+                }
+            }
+            NetworkTransactionFlow::RewardPayout {
+                solver_address,
+                eth_address,
+                amount,
+                tx_bytes,
+                eth_tx,
+            } => {
+                info!(
+                    "📋 [NETWORK_SEQUENCER] Processing RewardPayout transaction: solver={}, eth_address={}, amount={}, tx_id={}",
+                    solver_address, eth_address, amount, request.transaction_id
+                );
+
+                if let Some(signing_node) = &mut self.signing_node {
+                    let mut eth_signer = EthereumSigner::new(signing_node);
+                    eth_signer
+                        .sign_transaction(
+                            tx_bytes.clone(),
+                            eth_tx,
+                            None, // Network DKG share (already set in signing_node)
+                            None, // No user address for network transactions
+                            None, // No intent_hash for reward payout
+                            Some(crate::types::TransactionType::RewardTxn),
+                            Some(solver_address.clone()),
+                        )
+                        .await?;
+
+                    info!(
+                        "✅ [NETWORK_SEQUENCER] Successfully signed RewardPayout transaction: solver={}, tx_id={}",
+                        solver_address, request.transaction_id
+                    );
+                    Ok(())
+                } else {
+                    Err(anyhow::anyhow!("Signing node not available"))
+                }
+            }
+        }
+    }
+
+    /// Submit a solver withdraw-liquidity contract update to the sequencer
+    pub(crate) async fn submit_solver_withdraw_liquidity_to_sequencer(
+        &mut self,
+        solver_address: &str,
+        asset_chain_name: &str,
+        amount: u128,
+        payout_tx_hash: &str,
+    ) -> Result<()> {
+        use crate::network::sequencer::{ContractTransactionFlow, ContractTransactionRequest};
+
+        if amount == 0 {
+            info!(
+                "⏭️ [NETWORK] Skipping withdraw-liquidity sequencing for solver {} (amount=0)",
+                solver_address
+            );
+            return Ok(());
+        }
+
+        // Initialize sequencer if not already initialized
+        if self.contract_sequencer.is_none() {
+            self.initialize_contract_sequencer().await;
+        }
+
+        if let Some(sequencer) = &self.contract_sequencer {
+            let transaction_id = crate::network::sequencer::ContractTransactionSequencer::generate_transaction_id_for_withdraw_liquidity(
+                solver_address,
+                asset_chain_name,
+                amount,
+                payout_tx_hash,
+            );
+
+            let request = ContractTransactionRequest {
+                flow: ContractTransactionFlow::SolverWithdrawLiquidity {
+                    solver_address: solver_address.to_string(),
+                    asset_chain_name: asset_chain_name.to_string(),
+                    amount,
+                    payout_transaction_hash: payout_tx_hash.to_string(),
+                },
+                transaction_id: transaction_id.clone(),
+                sequence: 0, // will be set by sequencer.submit()
+            };
+
+            sequencer.submit(request).await?;
+            info!(
+                "📋 [NETWORK] Submitted solver withdraw-liquidity to sequencer: solver={}, chain={}, amount={}, payout_tx={}, tx_id={}",
+                solver_address, asset_chain_name, amount, payout_tx_hash, transaction_id
+            );
+            Ok(())
+        } else {
+            warn!("❌ [NETWORK] Contract sequencer not available, falling back to direct execution");
+            self
+                .submit_solver_liquidity_contract_update(
+                    solver_address,
+                    asset_chain_name,
+                    amount,
+                    payout_tx_hash,
+                )
+                .await
+        }
+    }
+
+    /// Submit a solver claim-reward contract update to the sequencer
+    pub(crate) async fn submit_solver_claim_reward_to_sequencer(
+        &mut self,
+        solver_address: &str,
+        reward_btc: Option<u128>,
+        reward_tics: Option<u128>,
+        payout_tx_hash: &str,
+    ) -> Result<()> {
+        use crate::network::sequencer::{ContractTransactionFlow, ContractTransactionRequest};
+
+        if reward_btc.is_none() && reward_tics.is_none() {
+            info!(
+                "⏭️ [NETWORK] Skipping claim-reward sequencing for solver {} (both rewards are None)",
+                solver_address
+            );
+            return Ok(());
+        }
+
+        if reward_btc.unwrap_or(0) == 0 && reward_tics.unwrap_or(0) == 0 {
+            info!(
+                "⏭️ [NETWORK] Skipping claim-reward sequencing for solver {} (both rewards are zero)",
+                solver_address
+            );
+            return Ok(());
+        }
+
+        // Initialize sequencer if not already initialized
+        if self.contract_sequencer.is_none() {
+            self.initialize_contract_sequencer().await;
+        }
+
+        if let Some(sequencer) = &self.contract_sequencer {
+            // Use payout_tx_hash directly as transaction_id for simplicity
+            let transaction_id = payout_tx_hash.to_string();
+
+            let request = ContractTransactionRequest {
+                flow: ContractTransactionFlow::SolverClaimReward {
+                    solver_address: solver_address.to_string(),
+                    reward_btc,
+                    reward_tics,
+                    payout_transaction_hash: payout_tx_hash.to_string(),
+                },
+                transaction_id: transaction_id.clone(),
+                sequence: 0, // will be set by sequencer.submit()
+            };
+
+            sequencer.submit(request).await?;
+            info!(
+                "📋 [NETWORK] Submitted solver claim-reward to sequencer: solver={}, btc={:?}, tics={:?}, payout_tx={}, tx_id={}",
+                solver_address, reward_btc, reward_tics, payout_tx_hash, transaction_id
+            );
+            Ok(())
+        } else {
+            warn!("❌ [NETWORK] Contract sequencer not available, falling back to direct execution");
+            self
+                .submit_solver_reward_contract_update(
+                    solver_address,
+                    reward_btc,
+                    reward_tics,
+                    payout_tx_hash,
+                )
+                .await
+        }
+    }
+
+    /// Submit a contract transaction to the sequencer for sequential processing
+    async fn submit_contract_transaction_to_sequencer(
+        &mut self,
+        intent: &crate::types::DepositIntent,
+        intent_hash: &str,
+        transaction_type: crate::types::TransactionType,
+        tx_hash: &str,
+        vault_group_key: Option<k256::ProjectivePoint>,
+        amount: u128,
+    ) -> Result<()> {
+        use crate::network::sequencer::ContractTransactionRequest;
+
+        // Initialize sequencer if not already initialized
+        if self.contract_sequencer.is_none() {
+            self.initialize_contract_sequencer().await;
+        }
+
+        if let Some(sequencer) = &self.contract_sequencer {
+            use crate::network::sequencer::ContractTransactionFlow;
+            let request = ContractTransactionRequest {
+                flow: ContractTransactionFlow::DepositIntent {
+                intent: intent.clone(),
+                intent_hash: intent_hash.to_string(),
+                transaction_type: transaction_type.clone(),
+                    vault_group_key,
+                    amount,
+                },
+                transaction_id: tx_hash.to_string(),
+                sequence: 0, // Will be set by sequencer.submit()
+            };
+
+            sequencer.submit(request).await?;
+            info!(
+                "📋 [NETWORK] Submitted contract transaction to sequencer: intent_hash={}, tx_id={}",
+                intent_hash, tx_hash
+            );
+            Ok(())
+        } else {
+            warn!("❌ [NETWORK] Contract sequencer not available, falling back to direct execution");
+            // Fallback to direct execution if sequencer initialization failed
+            if let Some(signing_node) = &mut self.signing_node {
+                crate::chain_abstraction::MpcChainExecutor::execute_contract_call(
+                    signing_node,
+                    self.node_manager.as_ref(),
+                    self.dkg_node.as_ref(),
+                    intent,
+                    intent_hash,
+                    transaction_type,
+                    vault_group_key,
+                    amount,
+                    tx_hash,
+                )
+                .await
+            } else {
+                warn!("❌ [NETWORK] Signing node not available for contract call execution");
+                Ok(())
+            }
+        }
+    }
+
+    /// Initialize the contract transaction sequencer
+    /// 
+    /// Production-ready implementation that creates a queue for sequential processing
+    async fn initialize_contract_sequencer(&mut self) {
+        let mut sequencer = crate::network::sequencer::ContractTransactionSequencer::new();
+        let total_nodes = self.node_manager.get_total_nodes();
+        let node_id = self.local_peer_id.to_string();
+        let message_tx = self.message_tx.clone();
+        sequencer.initialize(message_tx, node_id, total_nodes).await;
+        self.contract_sequencer = Some(sequencer);
+        info!("✅ [NETWORK] Contract transaction sequencer initialized with {} total nodes", total_nodes);
+    }
+
+    /// Process a single contract transaction from the sequencer
+    /// 
+    /// Called automatically by the event loop when a transaction is received from the sequencer channel.
+    /// Processes transactions sequentially to prevent nonce collisions.
+    pub(crate) async fn process_contract_transaction(
+        &mut self,
+        request: crate::network::sequencer::ContractTransactionRequest,
+    ) -> Result<()> {
+        use crate::network::sequencer::ContractTransactionFlow;
+        
+        match &request.flow {
+            ContractTransactionFlow::DepositIntent {
                 intent,
                 intent_hash,
                 transaction_type,
                 vault_group_key,
                 amount,
-                tx_hash,
+            } => {
+        info!(
+                    "📋 [SEQUENCER] Processing deposit intent transaction: intent_hash={}, tx_id={}, type={:?}",
+                    intent_hash, request.transaction_id, transaction_type
+        );
+
+                // Execute deposit intent contract call
+        if let Some(signing_node) = &mut self.signing_node {
+            let result = crate::chain_abstraction::MpcChainExecutor::execute_contract_call(
+                signing_node,
+                self.node_manager.as_ref(),
+                self.dkg_node.as_ref(),
+                        intent,
+                        intent_hash,
+                        transaction_type.clone(),
+                        *vault_group_key,
+                        *amount,
+                &request.transaction_id,
             )
-            .await
+            .await;
+
+            match result {
+                Ok(()) => {
+                    info!(
+                                "✅ [SEQUENCER] Successfully executed deposit intent contract call for transaction ID {}",
+                        request.transaction_id
+                    );
+                }
+                Err(e) => {
+                    error!(
+                                "❌ [SEQUENCER] Failed to execute deposit intent contract call for transaction ID {}: {}",
+                        request.transaction_id, e
+                    );
+                }
+            }
         } else {
-            warn!("❌ [NETWORK] Signing node not available for contract call execution");
-            Ok(())
+            warn!(
+                        "⚠️ [SEQUENCER] Signing node not available, skipping deposit intent transaction for tx_id={}",
+                        request.transaction_id
+                    );
+                }
+            }
+            ContractTransactionFlow::SolverAddLiquidity {
+                solver_address,
+                solver_id,
+                asset_chain_name,
+                amount,
+            } => {
+                info!(
+                    "📋 [SEQUENCER] Processing solver add-liquidity transaction: solver={}, solver_id={}, chain={}, amount={}, tx_id={}",
+                    solver_address, solver_id, asset_chain_name, amount, request.transaction_id
+                );
+
+                // Execute solver add-liquidity contract call
+                if let Err(e) = self
+                    .submit_solver_add_liquidity_contract_update(
+                        solver_address,
+                        solver_id,
+                        asset_chain_name,
+                        *amount,
+                    )
+                    .await
+                {
+                    error!(
+                        "❌ [SEQUENCER] Failed to execute solver add-liquidity contract call for transaction ID {}: {}",
+                        request.transaction_id, e
+                    );
+                } else {
+                    info!(
+                        "✅ [SEQUENCER] Successfully executed solver add-liquidity contract call for transaction ID {}",
+                request.transaction_id
+            );
+                }
+            }
+            ContractTransactionFlow::SolverWithdrawLiquidity {
+                solver_address,
+                asset_chain_name,
+                amount,
+                payout_transaction_hash,
+            } => {
+                info!(
+                    "📋 [SEQUENCER] Processing solver withdraw-liquidity contract update: solver={}, chain={}, amount={}, payout_tx={}, tx_id={}",
+                    solver_address, asset_chain_name, amount, payout_transaction_hash, request.transaction_id
+                );
+
+                if let Err(e) = self
+                    .submit_solver_liquidity_contract_update(
+                        solver_address,
+                        asset_chain_name,
+                        *amount,
+                        payout_transaction_hash,
+                    )
+                    .await
+                {
+                    error!(
+                        "❌ [SEQUENCER] Failed to execute solver withdraw-liquidity contract call for transaction ID {}: {}",
+                        request.transaction_id, e
+                    );
+                } else {
+                    info!(
+                        "✅ [SEQUENCER] Successfully executed solver withdraw-liquidity contract call for transaction ID {}",
+                        request.transaction_id
+                    );
+                }
+            }
+            ContractTransactionFlow::SolverClaimReward {
+                solver_address,
+                reward_btc,
+                reward_tics,
+                payout_transaction_hash,
+            } => {
+                info!(
+                    "📋 [SEQUENCER] Processing solver claim-reward contract update: solver={}, btc={:?}, tics={:?}, payout_tx={}, tx_id={}",
+                    solver_address, reward_btc, reward_tics, payout_transaction_hash, request.transaction_id
+                );
+
+                if let Err(e) = self
+                    .submit_solver_reward_contract_update(
+                        solver_address,
+                        *reward_btc,
+                        *reward_tics,
+                        payout_transaction_hash,
+                    )
+                    .await
+                {
+                    error!(
+                        "❌ [SEQUENCER] Failed to execute solver claim-reward contract call for transaction ID {}: {}",
+                        request.transaction_id, e
+                    );
+                } else {
+                    info!(
+                        "✅ [SEQUENCER] Successfully executed solver claim-reward contract call for transaction ID {}",
+                        request.transaction_id
+                    );
+                }
+            }
         }
+        
+        Ok(())
     }
 }

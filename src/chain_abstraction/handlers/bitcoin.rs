@@ -27,6 +27,32 @@ fn encode_varint(value: u64) -> Vec<u8> {
     }
 }
 
+fn sorted_inputs(
+    inputs: &[crate::types::chain::bitcoin::BitcoinInput],
+) -> Vec<crate::types::chain::bitcoin::BitcoinInput> {
+    let mut sorted = inputs.to_vec();
+    sorted.sort_by(|a, b| {
+        a.txid
+            .cmp(&b.txid)
+            .then_with(|| a.vout.cmp(&b.vout))
+            .then_with(|| a.sequence.cmp(&b.sequence))
+            .then_with(|| a.script_sig.cmp(&b.script_sig))
+    });
+    sorted
+}
+
+fn sorted_outputs(
+    outputs: &[crate::types::chain::bitcoin::BitcoinOutput],
+) -> Vec<crate::types::chain::bitcoin::BitcoinOutput> {
+    let mut sorted = outputs.to_vec();
+    sorted.sort_by(|a, b| {
+        a.value
+            .cmp(&b.value)
+            .then_with(|| a.script_pubkey.cmp(&b.script_pubkey))
+    });
+    sorted
+}
+
 /// Create P2PKH script_pubkey for Bitcoin signing using the actual DKG group public key
 fn create_p2pkh_script_for_signing(group_public_key: &[u8]) -> Result<Vec<u8>> {
     use ripemd::Ripemd160;
@@ -80,8 +106,10 @@ impl ChainHandler for BitcoinChainHandler {
     fn create_transaction_bytes(&self, transaction: &ChainTransaction) -> Result<Vec<u8>> {
         match transaction {
             ChainTransaction::Bitcoin(btc_tx) => {
-                let first_input = btc_tx
-                    .inputs
+                let sorted_inputs = sorted_inputs(&btc_tx.inputs);
+                let sorted_outputs = sorted_outputs(&btc_tx.outputs);
+
+                let first_input = sorted_inputs
                     .first()
                     .ok_or_else(|| anyhow::anyhow!("Bitcoin transaction has no inputs"))?;
 
@@ -97,7 +125,7 @@ impl ChainHandler for BitcoinChainHandler {
                     };
 
                     let mut prevouts = Vec::new();
-                    for inp in &btc_tx.inputs {
+                    for inp in &sorted_inputs {
                         let mut txid = hex::decode(&inp.txid)
                             .map_err(|e| anyhow::anyhow!("Invalid txid hex: {}", e))?;
                         txid.reverse();
@@ -107,13 +135,13 @@ impl ChainHandler for BitcoinChainHandler {
                     let hash_prevouts = dbl_sha256(&prevouts);
 
                     let mut sequences = Vec::new();
-                    for inp in &btc_tx.inputs {
+                    for inp in &sorted_inputs {
                         sequences.extend_from_slice(&inp.sequence.to_le_bytes());
                     }
                     let hash_sequence = dbl_sha256(&sequences);
 
                     let mut outs = Vec::new();
-                    for out in &btc_tx.outputs {
+                    for out in &sorted_outputs {
                         outs.extend_from_slice(&out.value.to_le_bytes());
                         outs.extend_from_slice(&encode_varint(out.script_pubkey.len() as u64));
                         outs.extend_from_slice(&out.script_pubkey);
@@ -160,9 +188,9 @@ impl ChainHandler for BitcoinChainHandler {
                 } else {
                     let mut tx_bytes = Vec::new();
                     tx_bytes.extend_from_slice(&btc_tx.version.to_le_bytes());
-                    tx_bytes.extend_from_slice(&encode_varint(btc_tx.inputs.len() as u64));
+                    tx_bytes.extend_from_slice(&encode_varint(sorted_inputs.len() as u64));
 
-                    for (i, input) in btc_tx.inputs.iter().enumerate() {
+                    for (i, input) in sorted_inputs.iter().enumerate() {
                         let mut txid = hex::decode(&input.txid)
                             .map_err(|e| anyhow::anyhow!("Invalid txid hex: {}", e))?;
                         txid.reverse();
@@ -188,8 +216,8 @@ impl ChainHandler for BitcoinChainHandler {
                         tx_bytes.extend_from_slice(&input.sequence.to_le_bytes());
                     }
 
-                    tx_bytes.extend_from_slice(&encode_varint(btc_tx.outputs.len() as u64));
-                    for out in &btc_tx.outputs {
+                    tx_bytes.extend_from_slice(&encode_varint(sorted_outputs.len() as u64));
+                    for out in &sorted_outputs {
                         tx_bytes.extend_from_slice(&out.value.to_le_bytes());
                         tx_bytes.extend_from_slice(&encode_varint(out.script_pubkey.len() as u64));
                         tx_bytes.extend_from_slice(&out.script_pubkey);

@@ -1,0 +1,1740 @@
+{
+  "last_updated": "2025-12-12T08:00:06.541Z",
+  "summary": {
+    "total_successful": 87,
+    "total_failed": 21,
+    "total_transactions": 108
+  },
+  "successful_transactions": [
+    {
+      "request_time": "2025-12-07T08:43:13.107Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "20000000000000000000",
+      "amount_tics": "20.00",
+      "timestamp": 1765096993,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0x4f3f9372205e0be3afa01cbd049cf22f3e36222247606bccf892235c66b419e8",
+        "network_to_target": null,
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T08:43:57.351Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "20000000000000000000",
+      "amount_tics": "20.00",
+      "timestamp": 1765096993,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0x4f3f9372205e0be3afa01cbd049cf22f3e36222247606bccf892235c66b419e8",
+        "network_to_target": "0x9802653316dce3d3899e71683b8a86358442cada8a677697840cee5186a44021",
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T08:44:44.315Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "20000000000000000000",
+      "amount_tics": "20.00",
+      "timestamp": 1765096993,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0x4f3f9372205e0be3afa01cbd049cf22f3e36222247606bccf892235c66b419e8",
+        "network_to_target": "0x9802653316dce3d3899e71683b8a86358442cada8a677697840cee5186a44021",
+        "vault_to_network": "0x547668b82490638bad68192e7828e249de1cadb672e5bc66bbe5a57f66b71acb"
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T08:44:56.368Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "22000000000000000000",
+      "amount_tics": "22.00",
+      "timestamp": 1765097092,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0x0cadadb728cb69f7ccc1d6dfd7238fc1eae9f31588cb63cc7d15801de034bda0",
+        "network_to_target": null,
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T08:45:40.582Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "22000000000000000000",
+      "amount_tics": "22.00",
+      "timestamp": 1765097092,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0x0cadadb728cb69f7ccc1d6dfd7238fc1eae9f31588cb63cc7d15801de034bda0",
+        "network_to_target": "0xdcaf33adb0d8a520664d0ca3d7fb35537c25ae68753b957405383df57ff21f96",
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T08:46:26.482Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "22000000000000000000",
+      "amount_tics": "22.00",
+      "timestamp": 1765097092,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0x0cadadb728cb69f7ccc1d6dfd7238fc1eae9f31588cb63cc7d15801de034bda0",
+        "network_to_target": "0xdcaf33adb0d8a520664d0ca3d7fb35537c25ae68753b957405383df57ff21f96",
+        "vault_to_network": "0xe5cc1fb89aa47c4495a0e874f95568bb1660249d0bdccee88d9bc88bcf66ce62"
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T08:46:38.536Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "15000000000000000000",
+      "amount_tics": "15.00",
+      "timestamp": 1765097194,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0x3f648bd21e2d336eb516444fc8b64d8e9086d1c808379575f920d4eb86a902c7",
+        "network_to_target": null,
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T08:47:22.756Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "15000000000000000000",
+      "amount_tics": "15.00",
+      "timestamp": 1765097194,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0x3f648bd21e2d336eb516444fc8b64d8e9086d1c808379575f920d4eb86a902c7",
+        "network_to_target": "0x5abb7abf155662025dd7e484a10f81fb50c0d7e9aeddcd736b4d145487c0385d",
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T08:48:08.025Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "15000000000000000000",
+      "amount_tics": "15.00",
+      "timestamp": 1765097194,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0x3f648bd21e2d336eb516444fc8b64d8e9086d1c808379575f920d4eb86a902c7",
+        "network_to_target": "0x5abb7abf155662025dd7e484a10f81fb50c0d7e9aeddcd736b4d145487c0385d",
+        "vault_to_network": "0x927db5831017d51637ddd089609da8111871c3f863a870444521654c88c1c64b"
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T08:48:20.330Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "16000000000000000000",
+      "amount_tics": "16.00",
+      "timestamp": 1765097296,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0x9334c5a2e8637c733a8fe766dfebf94095e669874566d428b8edda517fa1c761",
+        "network_to_target": null,
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T08:49:04.532Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "16000000000000000000",
+      "amount_tics": "16.00",
+      "timestamp": 1765097296,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0x9334c5a2e8637c733a8fe766dfebf94095e669874566d428b8edda517fa1c761",
+        "network_to_target": "0x1b171d24b57552958a3e6fdb7e64c122d08d194715fe9b6450d034d843799d6a",
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T08:49:49.765Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "16000000000000000000",
+      "amount_tics": "16.00",
+      "timestamp": 1765097296,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0x9334c5a2e8637c733a8fe766dfebf94095e669874566d428b8edda517fa1c761",
+        "network_to_target": "0x1b171d24b57552958a3e6fdb7e64c122d08d194715fe9b6450d034d843799d6a",
+        "vault_to_network": "0xbd2a42b91c6aa010f82641754ebe6722e0f7e18df05a1e7e8903b4348f5df126"
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T08:50:02.316Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "25000000000000000000",
+      "amount_tics": "25.00",
+      "timestamp": 1765097398,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0xbe3fa41318d45cc31e7121ca55f49285cd365ada2b3bc3c59048e7e4a713c9b3",
+        "network_to_target": null,
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T08:50:46.527Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "25000000000000000000",
+      "amount_tics": "25.00",
+      "timestamp": 1765097398,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0xbe3fa41318d45cc31e7121ca55f49285cd365ada2b3bc3c59048e7e4a713c9b3",
+        "network_to_target": "0x8482b365d9148b078ae3c9bd4659655024a5345ed136d3cfd3b3a82836313ab4",
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T08:51:31.395Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "25000000000000000000",
+      "amount_tics": "25.00",
+      "timestamp": 1765097398,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0xbe3fa41318d45cc31e7121ca55f49285cd365ada2b3bc3c59048e7e4a713c9b3",
+        "network_to_target": "0x8482b365d9148b078ae3c9bd4659655024a5345ed136d3cfd3b3a82836313ab4",
+        "vault_to_network": "0xb096fe8fec21326a706a10a620ae37162817af6af3f5a498b691c2d003e33cf2"
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T08:51:43.953Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "21000000000000000000",
+      "amount_tics": "21.00",
+      "timestamp": 1765097499,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0xa1873d745a1444dd434dad472490bb7179f0dc2856bc51ac553e388c6f7cb438",
+        "network_to_target": null,
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T08:52:28.165Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "21000000000000000000",
+      "amount_tics": "21.00",
+      "timestamp": 1765097499,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0xa1873d745a1444dd434dad472490bb7179f0dc2856bc51ac553e388c6f7cb438",
+        "network_to_target": "0xec314b7531591288fdc85b9cddd15759ccbf8987575aca423f0020ee0b843b31",
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T08:53:15.338Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "21000000000000000000",
+      "amount_tics": "21.00",
+      "timestamp": 1765097499,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0xa1873d745a1444dd434dad472490bb7179f0dc2856bc51ac553e388c6f7cb438",
+        "network_to_target": "0xec314b7531591288fdc85b9cddd15759ccbf8987575aca423f0020ee0b843b31",
+        "vault_to_network": "0x5027abc50cfdfbefec9856e910c9d77b231b3ca2136e085361a9d890561444c7"
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T08:53:26.640Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "18000000000000000000",
+      "amount_tics": "18.00",
+      "timestamp": 1765097602,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0xb3dcee81fda268da67a355ff556551f06c8a4b67887e948209b7fe470f21171b",
+        "network_to_target": null,
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T08:54:10.848Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "18000000000000000000",
+      "amount_tics": "18.00",
+      "timestamp": 1765097602,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0xb3dcee81fda268da67a355ff556551f06c8a4b67887e948209b7fe470f21171b",
+        "network_to_target": "0xeba0c0bf6bc4021496b7569bd023bb30ba4bc01ba0081a8852d9c72cf741e8d9",
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T08:54:57.485Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "18000000000000000000",
+      "amount_tics": "18.00",
+      "timestamp": 1765097602,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0xb3dcee81fda268da67a355ff556551f06c8a4b67887e948209b7fe470f21171b",
+        "network_to_target": "0xeba0c0bf6bc4021496b7569bd023bb30ba4bc01ba0081a8852d9c72cf741e8d9",
+        "vault_to_network": "0xb9a1ed85ecf81d4c19640532fb57c2f0ec188a6a37a920442c28a9ef551acced"
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T08:55:09.288Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "10000000000000000000",
+      "amount_tics": "10.00",
+      "timestamp": 1765097705,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0x40d1f57f73c70e8ceb0a34d066a507d5e88b7acbbae2f578c98ed2ff7a972ec2",
+        "network_to_target": null,
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T08:55:53.506Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "10000000000000000000",
+      "amount_tics": "10.00",
+      "timestamp": 1765097705,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0x40d1f57f73c70e8ceb0a34d066a507d5e88b7acbbae2f578c98ed2ff7a972ec2",
+        "network_to_target": "0xf0dde33322e19ac966e7ef847eb86d7767f8c3b466a71a93d6e2372dff36b818",
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T08:56:38.472Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "10000000000000000000",
+      "amount_tics": "10.00",
+      "timestamp": 1765097705,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0x40d1f57f73c70e8ceb0a34d066a507d5e88b7acbbae2f578c98ed2ff7a972ec2",
+        "network_to_target": "0xf0dde33322e19ac966e7ef847eb86d7767f8c3b466a71a93d6e2372dff36b818",
+        "vault_to_network": "0xe6627c17ff807d0b22c561f9134dc9472e58cf97da713d3e3e833a2e07b7c261"
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T08:56:51.028Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "14000000000000000000",
+      "amount_tics": "14.00",
+      "timestamp": 1765097807,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0x124ad9cd6dad642cb20dc838f8018aa7f0051b7cbd2766dc7ff14cc3d376b945",
+        "network_to_target": null,
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T08:57:35.240Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "14000000000000000000",
+      "amount_tics": "14.00",
+      "timestamp": 1765097807,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0x124ad9cd6dad642cb20dc838f8018aa7f0051b7cbd2766dc7ff14cc3d376b945",
+        "network_to_target": "0xcef5e6594e40737bbf9124f187e86074636db7aac40242bba7197d2809ca8421",
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T08:58:21.880Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "14000000000000000000",
+      "amount_tics": "14.00",
+      "timestamp": 1765097807,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0x124ad9cd6dad642cb20dc838f8018aa7f0051b7cbd2766dc7ff14cc3d376b945",
+        "network_to_target": "0xcef5e6594e40737bbf9124f187e86074636db7aac40242bba7197d2809ca8421",
+        "vault_to_network": "0xddae7c39f374449e897802774808ef8a9963ec1b97cdf7f7e7084dd6f260220d"
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T08:58:35.682Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "21000000000000000000",
+      "amount_tics": "21.00",
+      "timestamp": 1765097911,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0x8da325303cae5c5eece4005b3e4be3bbf90e5f7bcbdd41c4956d056ad3780d2e",
+        "network_to_target": null,
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T08:59:19.893Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "21000000000000000000",
+      "amount_tics": "21.00",
+      "timestamp": 1765097911,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0x8da325303cae5c5eece4005b3e4be3bbf90e5f7bcbdd41c4956d056ad3780d2e",
+        "network_to_target": "0xce0d0207b055f186cee742af0c4ac4abd75e9fc995c5ee0146382390b5468f4b",
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T09:00:05.100Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "21000000000000000000",
+      "amount_tics": "21.00",
+      "timestamp": 1765097911,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0x8da325303cae5c5eece4005b3e4be3bbf90e5f7bcbdd41c4956d056ad3780d2e",
+        "network_to_target": "0xce0d0207b055f186cee742af0c4ac4abd75e9fc995c5ee0146382390b5468f4b",
+        "vault_to_network": "0x6989b73c4f7e65e551d86ddfa17f1ed500530317afb0c3533457291532de53dd"
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T09:00:17.148Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "15000000000000000000",
+      "amount_tics": "15.00",
+      "timestamp": 1765098013,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0x1d63199394edf654228bd717288b296725b2f218f5ed77c585363fd18b6fd34d",
+        "network_to_target": null,
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T09:01:01.362Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "15000000000000000000",
+      "amount_tics": "15.00",
+      "timestamp": 1765098013,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0x1d63199394edf654228bd717288b296725b2f218f5ed77c585363fd18b6fd34d",
+        "network_to_target": "0x2458fbb4e778f775a957926211761f26caf5019aad2d7de184f08b2f6478ad72",
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T09:01:48.796Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "15000000000000000000",
+      "amount_tics": "15.00",
+      "timestamp": 1765098013,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0x1d63199394edf654228bd717288b296725b2f218f5ed77c585363fd18b6fd34d",
+        "network_to_target": "0x2458fbb4e778f775a957926211761f26caf5019aad2d7de184f08b2f6478ad72",
+        "vault_to_network": "0xbec5a75bdb6881826b17c3040c17e3aefcb81255a26111ec7f3c1e0f81552ff7"
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T09:02:01.599Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "24000000000000000000",
+      "amount_tics": "24.00",
+      "timestamp": 1765098117,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0xcd00c12e8eba08783de18b4228f0c4ff14546f9d20217ee3dbaf76a5e3cd92b5",
+        "network_to_target": null,
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T09:02:45.806Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "24000000000000000000",
+      "amount_tics": "24.00",
+      "timestamp": 1765098117,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0xcd00c12e8eba08783de18b4228f0c4ff14546f9d20217ee3dbaf76a5e3cd92b5",
+        "network_to_target": "0xea9626c5edeb2f15657ea30c87b028ceb3e468afe0b13344219de31a8aa9a9fe",
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T09:03:31.161Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "24000000000000000000",
+      "amount_tics": "24.00",
+      "timestamp": 1765098117,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0xcd00c12e8eba08783de18b4228f0c4ff14546f9d20217ee3dbaf76a5e3cd92b5",
+        "network_to_target": "0xea9626c5edeb2f15657ea30c87b028ceb3e468afe0b13344219de31a8aa9a9fe",
+        "vault_to_network": "0x8d7a91b7febfadb9d876ffeec0d7bd839f1ca62a8f8affe3493f05855805ac0e"
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T09:03:46.982Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "21000000000000000000",
+      "amount_tics": "21.00",
+      "timestamp": 1765098222,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0xe8c9298d46aa3bc1838442f27739e78c903501ae5a6128d45acd5b4c9f5f11aa",
+        "network_to_target": null,
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T09:04:31.196Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "21000000000000000000",
+      "amount_tics": "21.00",
+      "timestamp": 1765098222,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0xe8c9298d46aa3bc1838442f27739e78c903501ae5a6128d45acd5b4c9f5f11aa",
+        "network_to_target": "0xef948f00e24976009ea450b602bdbe01931ae4d4dd2589ac3582d332a3c73d22",
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T09:05:19.011Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "21000000000000000000",
+      "amount_tics": "21.00",
+      "timestamp": 1765098222,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0xe8c9298d46aa3bc1838442f27739e78c903501ae5a6128d45acd5b4c9f5f11aa",
+        "network_to_target": "0xef948f00e24976009ea450b602bdbe01931ae4d4dd2589ac3582d332a3c73d22",
+        "vault_to_network": "0x4b3667d428b1868a94e2272f6356fb145707f720459124614eb5f60e23b3336e"
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T09:05:31.061Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "19000000000000000000",
+      "amount_tics": "19.00",
+      "timestamp": 1765098327,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0x1d5c8f2beeb9ef475a01f2aeccef7d37517945b5beb14dee27a806e12918b121",
+        "network_to_target": null,
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T09:06:15.275Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "19000000000000000000",
+      "amount_tics": "19.00",
+      "timestamp": 1765098327,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0x1d5c8f2beeb9ef475a01f2aeccef7d37517945b5beb14dee27a806e12918b121",
+        "network_to_target": "0x4ee17913c658835c8be0e376353d04449ba7362f0140d9a1d511b38786610fc6",
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T09:07:00.616Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "19000000000000000000",
+      "amount_tics": "19.00",
+      "timestamp": 1765098327,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0x1d5c8f2beeb9ef475a01f2aeccef7d37517945b5beb14dee27a806e12918b121",
+        "network_to_target": "0x4ee17913c658835c8be0e376353d04449ba7362f0140d9a1d511b38786610fc6",
+        "vault_to_network": "0x27371f8fdedd3c8b7b96eb3b1e1390778d93c00f543c7c6ef436ec668aee2579"
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T09:07:13.673Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "24000000000000000000",
+      "amount_tics": "24.00",
+      "timestamp": 1765098429,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0x089e91b4bf51fe347ac4958e2da5e71bc6cfa93e0a7e16831070f3e5c44e0a91",
+        "network_to_target": null,
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T09:07:57.876Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "24000000000000000000",
+      "amount_tics": "24.00",
+      "timestamp": 1765098429,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0x089e91b4bf51fe347ac4958e2da5e71bc6cfa93e0a7e16831070f3e5c44e0a91",
+        "network_to_target": null,
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T09:08:56.456Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "20000000000000000000",
+      "amount_tics": "20.00",
+      "timestamp": 1765098532,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0xe5028294faf3ebffb76c3bad49f54d6e3de071f1d16e144cc00582c69b26952a",
+        "network_to_target": null,
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T09:09:40.656Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "20000000000000000000",
+      "amount_tics": "20.00",
+      "timestamp": 1765098532,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0xe5028294faf3ebffb76c3bad49f54d6e3de071f1d16e144cc00582c69b26952a",
+        "network_to_target": null,
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T09:10:27.171Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "20000000000000000000",
+      "amount_tics": "20.00",
+      "timestamp": 1765098532,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0xe5028294faf3ebffb76c3bad49f54d6e3de071f1d16e144cc00582c69b26952a",
+        "network_to_target": "0x4a9657317a54cb7063a4cd726e889107e234d1855a762386cc796326af292ec3",
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T09:11:12.633Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "17000000000000000000",
+      "amount_tics": "17.00",
+      "timestamp": 1765098668,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0x5cd08a69fa3e5c1c2e6de56c0148fbce703c6e0d2ad0e87819d01adbb27b3b32",
+        "network_to_target": null,
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T09:11:56.839Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "17000000000000000000",
+      "amount_tics": "17.00",
+      "timestamp": 1765098668,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0x5cd08a69fa3e5c1c2e6de56c0148fbce703c6e0d2ad0e87819d01adbb27b3b32",
+        "network_to_target": "0xc233c7b9d1654f7cd9409db500bcf5ea3f135999a4baae3027988c2cd66d750d",
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T09:12:57.083Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "17000000000000000000",
+      "amount_tics": "17.00",
+      "timestamp": 1765098773,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0x5149497cb8e74ba1630dc8208bb7a7e58291c12d22bc669c5a7374f5a7c92068",
+        "network_to_target": null,
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T09:13:41.292Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "17000000000000000000",
+      "amount_tics": "17.00",
+      "timestamp": 1765098773,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0x5149497cb8e74ba1630dc8208bb7a7e58291c12d22bc669c5a7374f5a7c92068",
+        "network_to_target": "0xa26663d2b9a4bc830613eefd55c37f3965b2cf7c4144e474b5146be12ad7967c",
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T09:14:28.086Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "17000000000000000000",
+      "amount_tics": "17.00",
+      "timestamp": 1765098773,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0x5149497cb8e74ba1630dc8208bb7a7e58291c12d22bc669c5a7374f5a7c92068",
+        "network_to_target": "0xa26663d2b9a4bc830613eefd55c37f3965b2cf7c4144e474b5146be12ad7967c",
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T09:15:12.304Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "11000000000000000000",
+      "amount_tics": "11.00",
+      "timestamp": 1765098908,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0xa1a8536d610902d84377508d1d926fee210049e138bc6a494b699729ff1db376",
+        "network_to_target": null,
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T09:15:56.524Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "11000000000000000000",
+      "amount_tics": "11.00",
+      "timestamp": 1765098908,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0xa1a8536d610902d84377508d1d926fee210049e138bc6a494b699729ff1db376",
+        "network_to_target": "0xa48b1ecc0f73f4a7f386b20e39fd90cef71ea69024554d792b9078a6f14682cb",
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T09:16:42.046Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "11000000000000000000",
+      "amount_tics": "11.00",
+      "timestamp": 1765098908,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0xa1a8536d610902d84377508d1d926fee210049e138bc6a494b699729ff1db376",
+        "network_to_target": "0xa48b1ecc0f73f4a7f386b20e39fd90cef71ea69024554d792b9078a6f14682cb",
+        "vault_to_network": "0xef9e941c9998a4ab8e9277472ef051c4cb0fc329a2ce7ee88945758c61388efc"
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T09:16:54.852Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "12000000000000000000",
+      "amount_tics": "12.00",
+      "timestamp": 1765099010,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0x633340a14123c4c20cab5928658077d0217d46a45fd034a58d8f4f4f5a773398",
+        "network_to_target": null,
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T09:17:39.060Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "12000000000000000000",
+      "amount_tics": "12.00",
+      "timestamp": 1765099010,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0x633340a14123c4c20cab5928658077d0217d46a45fd034a58d8f4f4f5a773398",
+        "network_to_target": "0x18dbc26495ccb268f34f23233043433b5752e687bad42ef1c91852f4332d5fc0",
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T09:19:28.160Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "19000000000000000000",
+      "amount_tics": "19.00",
+      "timestamp": 1765099117,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0xcddb86cc3f8cccae1c8e17cf6d51d0937e111b6dbad29d757aed513e193c421b",
+        "network_to_target": null,
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T09:20:25.792Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "16000000000000000000",
+      "amount_tics": "16.00",
+      "timestamp": 1765099221,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0x35b1de7b21ab0fdb31d978cfcd91696dbc1fda28a11aef0dbec758dac1a73fb0",
+        "network_to_target": null,
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T09:21:10.000Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "16000000000000000000",
+      "amount_tics": "16.00",
+      "timestamp": 1765099221,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0x35b1de7b21ab0fdb31d978cfcd91696dbc1fda28a11aef0dbec758dac1a73fb0",
+        "network_to_target": null,
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T09:21:55.220Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "16000000000000000000",
+      "amount_tics": "16.00",
+      "timestamp": 1765099221,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0x35b1de7b21ab0fdb31d978cfcd91696dbc1fda28a11aef0dbec758dac1a73fb0",
+        "network_to_target": "0xcbc3c9da6e0a4d6b90e01059c008e49e8bf16063834e67156d90e7f4c0946ab2",
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T09:23:26.522Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "20000000000000000000",
+      "amount_tics": "20.00",
+      "timestamp": 1765099356,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0x91e1b1947d8d4054bf7c25e2ad2b6a2406be04032ed98421bc61f8337eff7a8f",
+        "network_to_target": null,
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T09:24:10.736Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "20000000000000000000",
+      "amount_tics": "20.00",
+      "timestamp": 1765099356,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0x91e1b1947d8d4054bf7c25e2ad2b6a2406be04032ed98421bc61f8337eff7a8f",
+        "network_to_target": "0xe315793a4fd63e19619b86627ad98df766bdcb2b65cb8ef68fdd993072c36928",
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-11T12:25:14.239Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "20000000000000000000",
+      "amount_tics": "20.00",
+      "timestamp": 1765455914,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0x10756b5e34013f761e7ebffbfd8d359115fbceaded32d540f3de727ad9b821bd",
+        "network_to_target": null,
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-11T12:25:58.466Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "20000000000000000000",
+      "amount_tics": "20.00",
+      "timestamp": 1765455914,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0x10756b5e34013f761e7ebffbfd8d359115fbceaded32d540f3de727ad9b821bd",
+        "network_to_target": "0x488f49483d4ce0c87b19bbdde320e407f8907938a8ccd25ceb99c5c73ad01575",
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-11T12:26:43.543Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "20000000000000000000",
+      "amount_tics": "20.00",
+      "timestamp": 1765455914,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0x10756b5e34013f761e7ebffbfd8d359115fbceaded32d540f3de727ad9b821bd",
+        "network_to_target": "0x488f49483d4ce0c87b19bbdde320e407f8907938a8ccd25ceb99c5c73ad01575",
+        "vault_to_network": "0x47121c7e3baf105f1ccc008bf67c29d937cea6b17f188341a94e43eaf02a4f52"
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-11T12:26:54.591Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "15000000000000000000",
+      "amount_tics": "15.00",
+      "timestamp": 1765456010,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0x4feb79f93ecf672e770d0a5ed9c552bcc28edeaf52e70251f20ba43bb00ce2bd",
+        "network_to_target": null,
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-11T12:27:38.802Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "15000000000000000000",
+      "amount_tics": "15.00",
+      "timestamp": 1765456010,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0x4feb79f93ecf672e770d0a5ed9c552bcc28edeaf52e70251f20ba43bb00ce2bd",
+        "network_to_target": "0x2df13ab44cbc14d505bb04a4b2b551d409ec7949b053c72c24b801052da63272",
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-11T12:28:23.935Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "15000000000000000000",
+      "amount_tics": "15.00",
+      "timestamp": 1765456010,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0x4feb79f93ecf672e770d0a5ed9c552bcc28edeaf52e70251f20ba43bb00ce2bd",
+        "network_to_target": "0x2df13ab44cbc14d505bb04a4b2b551d409ec7949b053c72c24b801052da63272",
+        "vault_to_network": "0x6fc2d062d83b8cb04c92372d9d910b5736c59f7768ed0558fdfe4fbd5be0c272"
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-11T12:28:35.987Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "12000000000000000000",
+      "amount_tics": "12.00",
+      "timestamp": 1765456111,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0xf3e157856163b2a9e4125778fe45f20e68654641547aaa8afc8dfa0fbe84fd46",
+        "network_to_target": null,
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-11T12:29:20.191Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "12000000000000000000",
+      "amount_tics": "12.00",
+      "timestamp": 1765456111,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0xf3e157856163b2a9e4125778fe45f20e68654641547aaa8afc8dfa0fbe84fd46",
+        "network_to_target": "0x9fbf8a29962011a3fc71c8def7cd0978644ede1b1a16056d7a8bf544df9f357f",
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-11T12:30:05.379Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "12000000000000000000",
+      "amount_tics": "12.00",
+      "timestamp": 1765456111,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0xf3e157856163b2a9e4125778fe45f20e68654641547aaa8afc8dfa0fbe84fd46",
+        "network_to_target": "0x9fbf8a29962011a3fc71c8def7cd0978644ede1b1a16056d7a8bf544df9f357f",
+        "vault_to_network": "0xd23f6b2638f0196bdfb394183795850fdb68677b43ab83f1ea477bc898ef380a"
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-11T12:30:16.923Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "11000000000000000000",
+      "amount_tics": "11.00",
+      "timestamp": 1765456212,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0x376420dedf191c958175a8dc4a138991a9d3ce90a602a6e0dd254b17ecbff91f",
+        "network_to_target": null,
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-11T12:31:01.135Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "11000000000000000000",
+      "amount_tics": "11.00",
+      "timestamp": 1765456212,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0x376420dedf191c958175a8dc4a138991a9d3ce90a602a6e0dd254b17ecbff91f",
+        "network_to_target": "0xdde9738e86f42f3eafbfe87b58aaa695eee5a16d337132c647e949465f1d5e57",
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-11T12:31:46.404Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "11000000000000000000",
+      "amount_tics": "11.00",
+      "timestamp": 1765456212,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0x376420dedf191c958175a8dc4a138991a9d3ce90a602a6e0dd254b17ecbff91f",
+        "network_to_target": "0xdde9738e86f42f3eafbfe87b58aaa695eee5a16d337132c647e949465f1d5e57",
+        "vault_to_network": "0xc686960e06ded40848f97f8b146fac0a843e1483a2294c0c52387e17968b53d8"
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-11T12:31:57.448Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "23000000000000000000",
+      "amount_tics": "23.00",
+      "timestamp": 1765456313,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0xa046955b78275d2415614108e808ec142226abd40a71b2e1313b64280481cfb4",
+        "network_to_target": null,
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-11T12:32:41.651Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "23000000000000000000",
+      "amount_tics": "23.00",
+      "timestamp": 1765456313,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0xa046955b78275d2415614108e808ec142226abd40a71b2e1313b64280481cfb4",
+        "network_to_target": "0xb8d1e54455f39865eecedef97fd259bbb25a2dbfbc5892a370a68476017c42a3",
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-11T12:33:26.774Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "23000000000000000000",
+      "amount_tics": "23.00",
+      "timestamp": 1765456313,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0xa046955b78275d2415614108e808ec142226abd40a71b2e1313b64280481cfb4",
+        "network_to_target": "0xb8d1e54455f39865eecedef97fd259bbb25a2dbfbc5892a370a68476017c42a3",
+        "vault_to_network": "0x096b16fae202c4630b46ef600d878f686812a45d0d7b84a7fb1ef1f3c287e6fa"
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-11T12:33:37.818Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "11000000000000000000",
+      "amount_tics": "11.00",
+      "timestamp": 1765456413,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0xe5e1b14d40857cb4793a0f7ef1764d497f3457ee20def045a698d9f0a910a6b8",
+        "network_to_target": null,
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-11T12:34:22.007Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "11000000000000000000",
+      "amount_tics": "11.00",
+      "timestamp": 1765456413,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0xe5e1b14d40857cb4793a0f7ef1764d497f3457ee20def045a698d9f0a910a6b8",
+        "network_to_target": "0xf358c6c8d720c0e09d6684f56e318c0d23c9a9f6c385e4ef9fcdc6fe28a02547",
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-11T12:35:07.087Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "11000000000000000000",
+      "amount_tics": "11.00",
+      "timestamp": 1765456413,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0xe5e1b14d40857cb4793a0f7ef1764d497f3457ee20def045a698d9f0a910a6b8",
+        "network_to_target": "0xf358c6c8d720c0e09d6684f56e318c0d23c9a9f6c385e4ef9fcdc6fe28a02547",
+        "vault_to_network": "0x9f7bf776caaadb814e516b31180f04032f9553fefd5837bf3653be791ac4d388"
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-11T12:35:18.127Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "22000000000000000000",
+      "amount_tics": "22.00",
+      "timestamp": 1765456514,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0x13711cff411b6417d48cd1f7913fdb6911b0987a267bd784630bf07997183217",
+        "network_to_target": null,
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-11T12:36:02.331Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "22000000000000000000",
+      "amount_tics": "22.00",
+      "timestamp": 1765456514,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0x13711cff411b6417d48cd1f7913fdb6911b0987a267bd784630bf07997183217",
+        "network_to_target": "0xb234edcb4c8646fcf4cea8b8a407dfb145f547ba0d02f20c46581ba219662e9f",
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-11T12:36:47.607Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "22000000000000000000",
+      "amount_tics": "22.00",
+      "timestamp": 1765456514,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0x13711cff411b6417d48cd1f7913fdb6911b0987a267bd784630bf07997183217",
+        "network_to_target": "0xb234edcb4c8646fcf4cea8b8a407dfb145f547ba0d02f20c46581ba219662e9f",
+        "vault_to_network": "0x0afd9413187b7543baf5d5b2a4da5f25fa82bc8c5a3321397478b944233607ff"
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-11T12:36:59.155Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "24000000000000000000",
+      "amount_tics": "24.00",
+      "timestamp": 1765456615,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0x19d7e48b22e277ce6600e878b339d96ffa200a4973420d566b1bbf8782dbba85",
+        "network_to_target": null,
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-11T12:37:43.355Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "24000000000000000000",
+      "amount_tics": "24.00",
+      "timestamp": 1765456615,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0x19d7e48b22e277ce6600e878b339d96ffa200a4973420d566b1bbf8782dbba85",
+        "network_to_target": "0xe735fa5eaad18924a9778e51fdad86566678c8ef30c67b68065e4e3cc3217176",
+        "vault_to_network": null
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-11T12:38:28.365Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "24000000000000000000",
+      "amount_tics": "24.00",
+      "timestamp": 1765456615,
+      "status": "success",
+      "transaction_ids": {
+        "user_to_network": "0x19d7e48b22e277ce6600e878b339d96ffa200a4973420d566b1bbf8782dbba85",
+        "network_to_target": "0xe735fa5eaad18924a9778e51fdad86566678c8ef30c67b68065e4e3cc3217176",
+        "vault_to_network": "0x8377990e932844cd432ba93c6cb053ca889f58f0f3f00988ca184bd749ad4c9f"
+      },
+      "error_message": null,
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    }
+  ],
+  "failed_transactions": [
+    {
+      "request_time": "2025-12-07T09:08:43.459Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "24000000000000000000",
+      "amount_tics": "24.00",
+      "timestamp": 1765098429,
+      "status": "error",
+      "transaction_ids": {
+        "user_to_network": null,
+        "network_to_target": null,
+        "vault_to_network": null
+      },
+      "error_message": "Broadcast failed: {\"code\":-32000,\"message\":\"failed to check sender balance: sender balance < tx cost (0 < 24000000000000147000): insufficient funds: insufficient funds\"}",
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T09:12:43.274Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "17000000000000000000",
+      "amount_tics": "17.00",
+      "timestamp": 1765098668,
+      "status": "error",
+      "transaction_ids": {
+        "user_to_network": null,
+        "network_to_target": null,
+        "vault_to_network": null
+      },
+      "error_message": "Broadcast failed: {\"code\":-32000,\"message\":\"failed to check sender balance: sender balance < tx cost (0 < 18700000000000147000): insufficient funds: insufficient funds\"}",
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T09:18:25.124Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "12000000000000000000",
+      "amount_tics": "12.00",
+      "timestamp": 1765099010,
+      "status": "error",
+      "transaction_ids": {
+        "user_to_network": null,
+        "network_to_target": null,
+        "vault_to_network": null
+      },
+      "error_message": "Broadcast failed: {\"code\":-32000,\"message\":\"failed to check sender balance: sender balance < tx cost (0 < 13200000000000147000): insufficient funds: insufficient funds\"}",
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T09:18:41.946Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "19000000000000000000",
+      "amount_tics": "19.00",
+      "timestamp": 1765099117,
+      "status": "timeout",
+      "transaction_ids": {
+        "user_to_network": null,
+        "network_to_target": null,
+        "vault_to_network": null
+      },
+      "error_message": "Transaction processing timeout. Intent hash: 100a3e66ffbcc7fb018fefd515b03590bd0405ee1e515b9fba18cd25bb701e5c. The transaction may still be processing or may have failed. Please check the status later.",
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T09:20:12.372Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "19000000000000000000",
+      "amount_tics": "19.00",
+      "timestamp": 1765099117,
+      "status": "error",
+      "transaction_ids": {
+        "user_to_network": null,
+        "network_to_target": null,
+        "vault_to_network": null
+      },
+      "error_message": "Broadcast failed: {\"code\":-32000,\"message\":\"failed to check sender balance: sender balance < tx cost (0 < 19000000000000147000): insufficient funds: insufficient funds\"}",
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T09:22:40.308Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "20000000000000000000",
+      "amount_tics": "20.00",
+      "timestamp": 1765099356,
+      "status": "timeout",
+      "transaction_ids": {
+        "user_to_network": null,
+        "network_to_target": null,
+        "vault_to_network": null
+      },
+      "error_message": "Transaction processing timeout. Intent hash: 9d5a6141ab389cbba08b45ee7eabc35c408f0b3a193465dfcb4a843de420d441. The transaction may still be processing or may have failed. Please check the status later.",
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T09:24:56.008Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "11000000000000000000",
+      "amount_tics": "11.00",
+      "timestamp": 1765099492,
+      "status": "timeout",
+      "transaction_ids": {
+        "user_to_network": null,
+        "network_to_target": null,
+        "vault_to_network": null
+      },
+      "error_message": "Transaction processing timeout. Intent hash: e3fbdeba7fe81d9d47eec3a891033a612e5c9ddbaec2c6ab144024e67fdbe9ee. The transaction may still be processing or may have failed. Please check the status later.",
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T09:25:42.234Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "11000000000000000000",
+      "amount_tics": "11.00",
+      "timestamp": 1765099492,
+      "status": "error",
+      "transaction_ids": {
+        "user_to_network": null,
+        "network_to_target": null,
+        "vault_to_network": null
+      },
+      "error_message": "Broadcast failed: {\"code\":-32000,\"message\":\"failed to check sender balance: sender balance < tx cost (0 < 12100000000000147000): insufficient funds: insufficient funds\"}",
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T09:25:55.541Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "11000000000000000000",
+      "amount_tics": "11.00",
+      "timestamp": 1765099492,
+      "status": "error",
+      "transaction_ids": {
+        "user_to_network": null,
+        "network_to_target": null,
+        "vault_to_network": null
+      },
+      "error_message": "Broadcast failed: {\"code\":-32000,\"message\":\"failed to check sender balance: sender balance < tx cost (0 < 12100000000000147000): insufficient funds: insufficient funds\"}",
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T09:25:59.568Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "15000000000000000000",
+      "amount_tics": "15.00",
+      "timestamp": 1765099555,
+      "status": "error",
+      "transaction_ids": {
+        "user_to_network": null,
+        "network_to_target": null,
+        "vault_to_network": null
+      },
+      "error_message": "Broadcast failed: {\"code\":-32000,\"message\":\"failed to check sender balance: sender balance < tx cost (0 < 16500000000000147000): insufficient funds: insufficient funds\"}",
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T09:26:12.660Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "15000000000000000000",
+      "amount_tics": "15.00",
+      "timestamp": 1765099555,
+      "status": "error",
+      "transaction_ids": {
+        "user_to_network": null,
+        "network_to_target": null,
+        "vault_to_network": null
+      },
+      "error_message": "Broadcast failed: {\"code\":-32000,\"message\":\"failed to check sender balance: sender balance < tx cost (0 < 16500000000000147000): insufficient funds: insufficient funds\"}",
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T09:26:16.668Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "15000000000000000000",
+      "amount_tics": "15.00",
+      "timestamp": 1765099555,
+      "status": "error",
+      "transaction_ids": {
+        "user_to_network": null,
+        "network_to_target": null,
+        "vault_to_network": null
+      },
+      "error_message": "Broadcast failed: {\"code\":-32000,\"message\":\"failed to check sender balance: sender balance < tx cost (0 < 16500000000000147000): insufficient funds: insufficient funds\"}",
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T09:26:20.676Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "22000000000000000000",
+      "amount_tics": "22.00",
+      "timestamp": 1765099576,
+      "status": "error",
+      "transaction_ids": {
+        "user_to_network": null,
+        "network_to_target": null,
+        "vault_to_network": null
+      },
+      "error_message": "Broadcast failed: {\"code\":-32000,\"message\":\"failed to check sender balance: sender balance < tx cost (0 < 24200000000000147000): insufficient funds: insufficient funds\"}",
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T09:26:47.043Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "22000000000000000000",
+      "amount_tics": "22.00",
+      "timestamp": 1765099576,
+      "status": "error",
+      "transaction_ids": {
+        "user_to_network": null,
+        "network_to_target": null,
+        "vault_to_network": null
+      },
+      "error_message": "Broadcast failed: {\"code\":-32000,\"message\":\"failed to check sender balance: sender balance < tx cost (0 < 24200000000000147000): insufficient funds: insufficient funds\"}",
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-07T09:26:51.052Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "22000000000000000000",
+      "amount_tics": "22.00",
+      "timestamp": 1765099576,
+      "status": "error",
+      "transaction_ids": {
+        "user_to_network": null,
+        "network_to_target": null,
+        "vault_to_network": null
+      },
+      "error_message": "Broadcast failed: {\"code\":-32000,\"message\":\"failed to check sender balance: sender balance < tx cost (0 < 24200000000000147000): insufficient funds: insufficient funds\"}",
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-12T07:59:21.148Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "20000000000000000000",
+      "amount_tics": "20.00",
+      "timestamp": 1765526361,
+      "status": "error",
+      "transaction_ids": {
+        "user_to_network": null,
+        "network_to_target": null,
+        "vault_to_network": null
+      },
+      "error_message": "Broadcast failed: {\"code\":-32000,\"message\":\"failed to check sender balance: sender balance < tx cost (10000000000000 < 22000000000000147000): insufficient funds: insufficient funds\"}",
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-12T07:59:32.209Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "20000000000000000000",
+      "amount_tics": "20.00",
+      "timestamp": 1765526361,
+      "status": "error",
+      "transaction_ids": {
+        "user_to_network": null,
+        "network_to_target": null,
+        "vault_to_network": null
+      },
+      "error_message": "Broadcast failed: {\"code\":-32000,\"message\":\"failed to check sender balance: sender balance < tx cost (10000000000000 < 22000000000000147000): insufficient funds: insufficient funds\"}",
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-12T07:59:36.223Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "20000000000000000000",
+      "amount_tics": "20.00",
+      "timestamp": 1765526361,
+      "status": "error",
+      "transaction_ids": {
+        "user_to_network": null,
+        "network_to_target": null,
+        "vault_to_network": null
+      },
+      "error_message": "Broadcast failed: {\"code\":-32000,\"message\":\"failed to check sender balance: sender balance < tx cost (10000000000000 < 22000000000000147000): insufficient funds: insufficient funds\"}",
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-12T07:59:40.236Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "22000000000000000000",
+      "amount_tics": "22.00",
+      "timestamp": 1765526376,
+      "status": "error",
+      "transaction_ids": {
+        "user_to_network": null,
+        "network_to_target": null,
+        "vault_to_network": null
+      },
+      "error_message": "Broadcast failed: {\"code\":-32000,\"message\":\"failed to check sender balance: sender balance < tx cost (10000000000000 < 24200000000000147000): insufficient funds: insufficient funds\"}",
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-12T07:59:53.041Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "22000000000000000000",
+      "amount_tics": "22.00",
+      "timestamp": 1765526376,
+      "status": "error",
+      "transaction_ids": {
+        "user_to_network": null,
+        "network_to_target": null,
+        "vault_to_network": null
+      },
+      "error_message": "Broadcast failed: {\"code\":-32000,\"message\":\"failed to check sender balance: sender balance < tx cost (10000000000000 < 24200000000000147000): insufficient funds: insufficient funds\"}",
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    },
+    {
+      "request_time": "2025-12-12T07:59:57.050Z",
+      "signer_address": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
+      "amount": "22000000000000000000",
+      "amount_tics": "22.00",
+      "timestamp": 1765526376,
+      "status": "error",
+      "transaction_ids": {
+        "user_to_network": null,
+        "network_to_target": null,
+        "vault_to_network": null
+      },
+      "error_message": "Broadcast failed: {\"code\":-32000,\"message\":\"failed to check sender balance: sender balance < tx cost (10000000000000 < 24200000000000147000): insufficient funds: insufficient funds\"}",
+      "is_registered": true,
+      "signer_address_recovered": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46"
+    }
+  ]
+}

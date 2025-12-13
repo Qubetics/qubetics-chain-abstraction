@@ -17,7 +17,7 @@ pub type WitnessItem = Vec<u8>;
 pub type WitnessStack = Vec<WitnessItem>;
 
 const DEFAULT_FEE_RATE_SAT_PER_VBYTE: u64 = 2;
-const DUST_LIMIT_SATS: u64 = 546;
+pub const DUST_LIMIT_SATS: u64 = 546;
 
 /// Wrapper for custom UTXO API responses
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -116,20 +116,27 @@ pub fn validate_contract_transaction_hex_fields(tx: &ContractTransaction) -> Res
 pub fn get_chain_id_from_name(chain_name: &str) -> Option<u64> {
     match chain_name.to_lowercase().as_str() {
         "ethereum" | "eth" => Some(1),
+        // Qubetics EVM chain
         "qubetics" => Some(9029),
+        // Bitcoin uses a structural chain id of 0 (non-EVM, used for routing/metadata)
+        "btc" | "bitcoin" => Some(0),
         "polygon" | "matic" => Some(137),
         "bsc" | "binance" => Some(56),
         "avalanche" | "avax" => Some(43114),
         "arbitrum" => Some(42161),
         "optimism" => Some(10),
         "base" => Some(8453),
-        _ => None, // Bitcoin and other non-EVM chains return None
+        _ => None,
     }
 }
 
 /// Determine if a chain is EVM-compatible
 pub fn is_evm_chain(chain_name: &str) -> bool {
-    get_chain_id_from_name(chain_name).is_some()
+    match chain_name.to_lowercase().as_str() {
+        // Explicitly treat Bitcoin as non-EVM even though it has a structural ID (0)
+        "btc" | "bitcoin" => false,
+        _ => get_chain_id_from_name(chain_name).is_some(),
+    }
 }
 
 /// Fetch UTXOs for a Bitcoin address from Mempool.space Esplora API
@@ -287,6 +294,16 @@ pub fn select_utxos_for_amount(
         return Err(anyhow::anyhow!("Required amount must be greater than zero"));
     }
 
+    // Enforce Bitcoin dust limit on recipient output (BIP-125)
+    // Transactions with outputs below 546 satoshis are non-standard and will be rejected
+    if required_amount < DUST_LIMIT_SATS {
+        return Err(anyhow::anyhow!(
+            "Recipient amount {} sats is below Bitcoin dust limit (minimum: {} sats). Transaction would be rejected by Bitcoin nodes.",
+            required_amount,
+            DUST_LIMIT_SATS
+        ));
+    }
+
     let mut confirmed_utxos: Vec<_> = utxos
         .iter()
         .filter(|utxo| {
@@ -328,8 +345,15 @@ pub fn select_utxos_for_amount(
         ));
     }
 
-    // Sort descending (largest first) to minimize the number of inputs needed
-    confirmed_utxos.sort_by_key(|utxo| std::cmp::Reverse(utxo.value));
+    // Sort descending (largest first) to minimize the number of inputs needed.
+    // Break ties deterministically on (txid, vout) so every node selects the
+    // same UTXOs even if the upstream API returns them in different orders.
+    confirmed_utxos.sort_by(|a, b| {
+        b.value
+            .cmp(&a.value)
+            .then_with(|| a.txid.cmp(&b.txid))
+            .then_with(|| a.vout.cmp(&b.vout))
+    });
 
     tracing::info!(
         "🔍 [UTXO_SELECTION] {} confirmed UTXOs remain after filtering ({} fetched)",
@@ -341,18 +365,37 @@ pub fn select_utxos_for_amount(
     let mut selected = Vec::new();
     let mut total_value = 0u64;
 
+    let mut no_change_candidate: Option<UtxoSelectionResult> = None;
+
     for candidate in confirmed_utxos.into_iter() {
         total_value += candidate.value;
         selected.push(candidate);
 
         let n_inputs = selected.len();
+        let mut skip_no_change_path = false;
 
         // Try change path first (2 outputs: recipient + change)
         let fee_with_change = estimate_fee_sat(kind, n_inputs, 2, fee_rate_sat_vb);
         let required_with_change = required_amount + fee_with_change;
 
+        tracing::debug!(
+            "💰 [UTXO_SELECTION] Iteration {}: total_value={} sats, required_with_change={} sats (amount={} + fee={})",
+            n_inputs,
+            total_value,
+            required_with_change,
+            required_amount,
+            fee_with_change
+        );
+
         if total_value >= required_with_change {
             let change = total_value - required_with_change;
+
+            tracing::info!(
+                "💰 [UTXO_SELECTION] Change path check: change={} sats, dust_limit={} sats, above_dust={}",
+                change,
+                DUST_LIMIT_SATS,
+                change >= DUST_LIMIT_SATS
+            );
 
             if change >= DUST_LIMIT_SATS {
                 // Use change path - this is optimal
@@ -371,30 +414,104 @@ pub fn select_utxos_for_amount(
                     change_output: true,
                 });
             }
+
+            // Change would be dust; fold it into the fee
+            // Use the change path fee calculation but don't create a change output
+            let actual_fee = fee_with_change + change;
+            tracing::info!(
+                "✅ [UTXO_SELECTION] Using change path with {} inputs, folding dust change {} sats into fee (fee {} sats, total fee {} sats)",
+                n_inputs,
+                change,
+                fee_with_change,
+                actual_fee
+            );
+
+            return Ok(UtxoSelectionResult {
+                selected_utxos: selected,
+                total_value,
+                fee: actual_fee,
+                change: 0,
+                change_output: false,
+            });
         }
 
         // Try no-change path (1 output: recipient only)
         let fee_no_change = estimate_fee_sat(kind, n_inputs, 1, fee_rate_sat_vb);
         let required_no_change: u64 = required_amount + fee_no_change;
 
+        tracing::debug!(
+            "💰 [UTXO_SELECTION] No-change path check: total_value={} sats, required_no_change={} sats (amount={} + fee={})",
+            total_value,
+            required_no_change,
+            required_amount,
+            fee_no_change
+        );
+
         if total_value >= required_no_change {
-            // Use no-change path
+            // IMPORTANT: Calculate what the leftover would be if we don't create change
+            let leftover = total_value - required_no_change;
+
             tracing::info!(
-                "✅ [UTXO_SELECTION] Using no-change path with {} inputs (fee {} sats)",
-                n_inputs,
-                fee_no_change
+                "🚨 [UTXO_SELECTION] No-change path leftover analysis: leftover={} sats, dust_limit={} sats, leftover_is_dust={}",
+                leftover,
+                DUST_LIMIT_SATS,
+                leftover < DUST_LIMIT_SATS
             );
 
-            return Ok(UtxoSelectionResult {
-                selected_utxos: selected,
+            // Only use no-change path if:
+            // 1. We don't have enough for the change path (checked above), OR
+            // 2. The leftover would be below dust anyway
+            // This prevents accidentally sending large amounts as fees
+            let should_use_no_change = leftover < DUST_LIMIT_SATS;
+
+            let candidate_result = UtxoSelectionResult {
+                selected_utxos: selected.clone(),
                 total_value,
                 fee: fee_no_change,
                 change: 0,
                 change_output: false,
-            });
+            };
+
+            if no_change_candidate.is_none() {
+                no_change_candidate = Some(candidate_result.clone());
+            }
+
+            if skip_no_change_path {
+                continue;
+            }
+
+            // Only return no-change path if leftover is truly dust
+            if should_use_no_change {
+                tracing::info!(
+                    "✅ [UTXO_SELECTION] Using no-change path with {} inputs (fee {} sats, leftover {} sats folded into fee)",
+                    n_inputs,
+                    fee_no_change,
+                    leftover
+                );
+                return Ok(candidate_result);
+            } else {
+                // We have enough for no-change, but the leftover is significant
+                // Continue to try adding more UTXOs to hit the change path
+                tracing::debug!(
+                    "🔍 [UTXO_SELECTION] Skipping no-change path - leftover {} sats is above dust ({}), continuing to find change path",
+                    leftover,
+                    DUST_LIMIT_SATS
+                );
+                continue;
+            }
         }
 
         // If we don't have enough, continue adding UTXOs
+    }
+
+    if let Some(candidate) = no_change_candidate {
+        tracing::info!(
+            "✅ [UTXO_SELECTION] Using no-change path with {} inputs (fee {} sats)",
+            candidate.selected_utxos.len(),
+            candidate.fee
+        );
+
+        return Ok(candidate);
     }
 
     // error tail - no valid combination found
@@ -659,6 +776,47 @@ pub async fn create_bitcoin_transaction(
             value: selection.change,
             script_pubkey: from_spk,
         });
+        tracing::info!(
+            "💰 [BTC_TX] Adding change output: {} satoshis to {}",
+            selection.change,
+            from_address
+        );
+    } else {
+        tracing::warn!(
+            "⚠️ [BTC_TX] No change output (change_output=false). Remaining {} satoshis will be paid as fee!",
+            selection.total_value - amount_satoshis - selection.fee
+        );
+    }
+
+    // Calculate and log actual fee
+    let total_output_value: u64 = outputs.iter().map(|o| o.value).sum();
+    let actual_fee = selection.total_value - total_output_value;
+    tracing::info!(
+        "💰 [BTC_TX] Fee calculation: total_input={}, total_output={}, actual_fee={}, estimated_fee={}",
+        selection.total_value,
+        total_output_value,
+        actual_fee,
+        selection.fee
+    );
+
+    if actual_fee != selection.fee {
+        tracing::warn!(
+            "⚠️ [BTC_TX] Fee mismatch! Estimated fee: {} sats, Actual fee: {} sats (difference: {} sats)",
+            selection.fee,
+            actual_fee,
+            actual_fee as i64 - selection.fee as i64
+        );
+    }
+
+    // Log all outputs for debugging
+    tracing::info!("📤 [BTC_TX] Transaction outputs:");
+    for (i, output) in outputs.iter().enumerate() {
+        tracing::info!(
+            "  Output {}: {} satoshis (script_pubkey_len: {})",
+            i,
+            output.value,
+            output.script_pubkey.len()
+        );
     }
 
     let (version, witness_opt) = match from_kind {
@@ -775,7 +933,6 @@ pub async fn create_chain_transaction_from_deposit_intent(
         transaction_type,
         vault_eth_address,
         vault_btc_address,
-        None,
         amount,
     )
     .await
@@ -872,7 +1029,6 @@ async fn create_chain_transaction_from_deposit_intent_internal(
     transaction_type: crate::types::TransactionType,
     vault_eth_address: Option<&String>,
     vault_btc_address: Option<&String>,
-    _user_intent_manager: Option<&crate::user_intent_manager::UserIntentManager>,
     amount: u128,
 ) -> Result<ChainTransaction> {
     // Determine chain type based on transaction type:
@@ -908,19 +1064,23 @@ async fn create_chain_transaction_from_deposit_intent_internal(
         let vault_address =
             vault_eth_address.ok_or_else(|| anyhow::anyhow!("Vault ETH address not provided"))?;
 
-        let network_address = get_eth_address_from_group_key(group_public_key.unwrap());
-
         // Determine source and target based on transaction type
+        // NOTE: group_public_key will always be available once the solver ecosystem is live,
+        // but it's passed or not depending on transaction type. For UserToVault transactions
+        // on EVM chains, the group key is not required as we use the derived user address.
+        // For NetworkToTarget and VaultToNetwork, the group key is required to derive the
+        // network address. We only unwrap and compute network_address when it's actually needed.
         let (from_address, to_address) = match transaction_type {
             crate::types::TransactionType::UserToVault => {
                 // User deposit: FROM derived ethereum address TO vault address
+                // Group public key is not needed for UserToVault on EVM chains
                 if let Some(derived_addr) = derived_eth_addr {
                     tracing::info!(
                         "💰 [TRANSACTION] User to vault: {} -> {}",
                         derived_addr,
                         vault_address
                     );
-                    (derived_addr.clone(), vault_address)
+                    (derived_addr.clone(), vault_address.clone())
                 } else {
                     return Err(anyhow::anyhow!(
                         "UserToVault transaction requires derived_eth_address"
@@ -929,21 +1089,31 @@ async fn create_chain_transaction_from_deposit_intent_internal(
             }
             crate::types::TransactionType::NetworkToTarget => {
                 // Network withdrawal: FROM network address TO target address
+                // Group public key is required to derive the network address
+                let group_key = group_public_key.ok_or_else(|| {
+                    anyhow::anyhow!("Group public key required for NetworkToTarget transactions")
+                })?;
+                let network_address = get_eth_address_from_group_key(group_key);
                 tracing::info!(
                     "💰 [TRANSACTION] Network to target: {} -> {}",
                     network_address,
                     intent.target_address
                 );
-                (network_address.clone(), &intent.target_address)
+                (network_address.clone(), intent.target_address.clone())
             }
             crate::types::TransactionType::VaultToNetwork => {
                 // Vault to network: FROM vault address TO network address
+                // Group public key is required to derive the network address
+                let group_key = group_public_key.ok_or_else(|| {
+                    anyhow::anyhow!("Group public key required for VaultToNetwork transactions")
+                })?;
+                let network_address = get_eth_address_from_group_key(group_key);
                 tracing::info!(
                     "💰 [TRANSACTION] Vault to network: {} -> {}",
                     vault_address,
                     network_address
                 );
-                (vault_address.clone(), &network_address)
+                (vault_address.clone(), network_address.clone())
             }
             crate::types::TransactionType::RewardTxn => {
                 // RewardTxn is not valid for intent flow
@@ -964,31 +1134,31 @@ async fn create_chain_transaction_from_deposit_intent_internal(
         };
 
         let ethereum_tx =
-            create_ethereum_transaction(&from_address, to_address, amount, chain_to_use).await?;
+            create_ethereum_transaction(&from_address, &to_address, amount, chain_to_use).await?;
 
         Ok(ChainTransaction::Ethereum(ethereum_tx))
     } else if chain_to_use == "bitcoin" || chain_to_use == "btc" {
-        // Create Bitcoin transaction with proper UTXO fetching
-        let group_key = group_public_key
-            .ok_or_else(|| anyhow::anyhow!("Group public key required for Bitcoin transactions"))?;
-
-        // Get Bitcoin addresses
-        let btc_network_address = crate::utils::get_btc_address_from_group_key(group_key);
         // Get vault address from parameter
         let btc_vault_address =
             vault_btc_address.ok_or_else(|| anyhow::anyhow!("Vault BTC address not provided"))?;
 
         // Determine source and target based on transaction type
+        // NOTE: group_public_key will always be available once the solver ecosystem is live,
+        // but it's passed or not depending on transaction type. For UserToVault transactions
+        // on Bitcoin, the group key is not required as we use the derived user address.
+        // For NetworkToTarget and VaultToNetwork, the group key is required to derive the
+        // network address. We only unwrap and compute btc_network_address when it's actually needed.
         let (from_address, to_address) = match transaction_type {
             crate::types::TransactionType::UserToVault => {
                 // User deposit: FROM derived bitcoin address TO vault bitcoin address
+                // Group public key is not needed for UserToVault on Bitcoin
                 if let Some(derived_btc_addr) = derived_btc_addr {
                     tracing::info!(
                         "💰 [TRANSACTION] Bitcoin user to vault: {} -> {}",
                         derived_btc_addr,
                         btc_vault_address
                     );
-                    (derived_btc_addr.clone(), btc_vault_address)
+                    (derived_btc_addr.clone(), btc_vault_address.clone())
                 } else {
                     return Err(anyhow::anyhow!(
                         "UserToVault transaction requires derived_btc_address"
@@ -997,21 +1167,31 @@ async fn create_chain_transaction_from_deposit_intent_internal(
             }
             crate::types::TransactionType::NetworkToTarget => {
                 // Network withdrawal: FROM network bitcoin address TO target address
+                // Group public key is required to derive the network address
+                let group_key = group_public_key.ok_or_else(|| {
+                    anyhow::anyhow!("Group public key required for NetworkToTarget transactions")
+                })?;
+                let btc_network_address = crate::utils::get_btc_address_from_group_key(group_key);
                 tracing::info!(
                     "💰 [TRANSACTION] Bitcoin network to target: {} -> {}",
                     btc_network_address,
                     intent.target_address
                 );
-                (btc_network_address.clone(), &intent.target_address)
+                (btc_network_address.clone(), intent.target_address.clone())
             }
             crate::types::TransactionType::VaultToNetwork => {
                 // Vault to network: FROM vault bitcoin address TO network bitcoin address
+                // Group public key is required to derive the network address
+                let group_key = group_public_key.ok_or_else(|| {
+                    anyhow::anyhow!("Group public key required for VaultToNetwork transactions")
+                })?;
+                let btc_network_address = crate::utils::get_btc_address_from_group_key(group_key);
                 tracing::info!(
                     "💰 [TRANSACTION] Bitcoin vault to network: {} -> {}",
                     btc_vault_address,
                     btc_network_address
                 );
-                (btc_vault_address.clone(), &btc_network_address)
+                (btc_vault_address.clone(), btc_network_address.clone())
             }
             crate::types::TransactionType::RewardTxn => {
                 // RewardTxn is not valid for intent flow
@@ -1033,7 +1213,7 @@ async fn create_chain_transaction_from_deposit_intent_internal(
 
         tracing::info!("Using Bitcoin source address for UTXOs: {}", from_address);
 
-        let bitcoin_tx = create_bitcoin_transaction(&from_address, to_address, amount).await?;
+        let bitcoin_tx = create_bitcoin_transaction(&from_address, &to_address, amount).await?;
 
         Ok(ChainTransaction::Bitcoin(bitcoin_tx))
     } else {
@@ -1049,7 +1229,23 @@ pub async fn create_chain_transaction_from_contract_call(
     tx_hash: &str,
     transaction_type: crate::types::TransactionType,
 ) -> Result<ChainTransaction> {
-    let network_address = get_eth_address_from_group_key(group_public_key.unwrap());
+    // VaultToNetwork transaction type should not create contract transactions
+    if matches!(
+        transaction_type,
+        crate::types::TransactionType::VaultToNetwork
+    ) {
+        return Err(anyhow::anyhow!(
+            "Contract transactions are not supported for VaultToNetwork transaction type"
+        ));
+    }
+
+    // Group public key is required for contract call transactions
+    // NOTE: group_public_key will always be available once the solver ecosystem is live,
+    // but we handle the None case gracefully to prevent panics
+    let group_key = group_public_key.ok_or_else(|| {
+        anyhow::anyhow!("Group public key required for contract call transactions")
+    })?;
+    let network_address = get_eth_address_from_group_key(group_key);
     let chain_id = get_chain_id_from_name("qubetics")
         .ok_or_else(|| anyhow::anyhow!("Unknown EVM chain: {}", "eth"))?;
 
@@ -1136,8 +1332,7 @@ pub async fn create_chain_transaction_from_contract_call(
         &calldata_hex,
         chain_id,
     )
-    .await
-    .unwrap_or(300000);
+    .await?; // Abort if gas estimation fails - indicates transaction would revert
     let gas_limit = estimated_gas + (estimated_gas / 10); // Add 10% buffer
 
     info!(
@@ -1222,8 +1417,7 @@ pub async fn create_solver_rewards_update_transaction(
         &calldata_hex,
         chain_id,
     )
-    .await
-    .unwrap_or(300000);
+    .await?; // Abort if gas estimation fails - indicates transaction would revert
     let gas_limit = estimated_gas + (estimated_gas / 10);
 
     let gas_price = get_gas_price_for_chain("qubetics", chain_id)
@@ -1294,8 +1488,7 @@ pub async fn create_solver_remove_liquidity_transaction(
         &calldata_hex,
         chain_id,
     )
-    .await
-    .unwrap_or(200000);
+    .await?; // Abort if gas estimation fails - indicates transaction would revert
     let gas_limit = estimated_gas + (estimated_gas / 5).max(25_000);
     info!(
         "🔧 [CONTRACT][LIQ] Estimated gas={} -> gas_limit={}",
@@ -1366,8 +1559,7 @@ pub async fn create_solver_add_liquidity_transaction(
         &calldata_hex,
         chain_id,
     )
-    .await
-    .unwrap_or(200000);
+    .await?; // Abort if gas estimation fails - indicates transaction would revert
     let gas_limit = estimated_gas + (estimated_gas / 5).max(25_000);
     info!(
         "🔧 [CONTRACT][LIQ] Estimated gas={} -> gas_limit={}",
@@ -2031,7 +2223,59 @@ fn create_bitcoin_script_pubkey(address: &str) -> Result<Vec<u8>> {
     Ok(script_bytes)
 }
 
+/// Validate that an address is a valid, non-empty 20-byte Ethereum address.
+/// This prevents contract creation transactions from being created when a transfer is intended.
+fn validate_ethereum_address(address: &str) -> Result<()> {
+    // Check that address is not empty
+    if address.is_empty() {
+        return Err(anyhow::anyhow!("Address cannot be empty"));
+    }
+
+    // Check that address starts with 0x
+    if !address.starts_with("0x") {
+        return Err(anyhow::anyhow!("Address must start with '0x' prefix"));
+    }
+
+    // Extract hex part after 0x
+    let hex_part = &address[2..];
+
+    // Check that hex part is not empty (prevents "0x" from being valid)
+    if hex_part.is_empty() {
+        return Err(anyhow::anyhow!(
+            "Address cannot be '0x' - this would create a contract creation transaction"
+        ));
+    }
+
+    // Decode hex to bytes
+    let bytes = hex::decode(hex_part)
+        .map_err(|e| anyhow::anyhow!("Invalid hex characters in address: {}", e))?;
+
+    // Check that address is exactly 20 bytes (standard Ethereum address length)
+    if bytes.len() != 20 {
+        return Err(anyhow::anyhow!(
+            "Address must be exactly 20 bytes (40 hex characters), got {} bytes",
+            bytes.len()
+        ));
+    }
+
+    Ok(())
+}
+
 pub fn create_transaction_for_signing(tx: &EthereumTransaction) -> Vec<u8> {
+    // Validate the 'to' address before encoding to prevent contract creation transactions
+    // when a transfer is intended. An empty or malformed address would RLP-encode as 0x80,
+    // which Ethereum interprets as contract creation, potentially locking funds irreversibly.
+    validate_ethereum_address(&tx.to)
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "Invalid 'to' address '{}' for transfer transaction: {}. \
+                 This function is intended for standard Ethereum transfers, not contract creation.",
+                tx.to,
+                e
+            )
+        })
+        .expect("Address validation failed");
+
     // Log transaction details before creating raw transaction
     info!(
         "🔧 [ETH_RAW_TXN] Creating raw Ethereum transaction - To: {}, Value: {}, Nonce: {}, GasLimit: {}, GasPrice: {}, ChainId: {}",
@@ -2333,7 +2577,111 @@ fn test_utxo_selection_single_utxo() {
     assert!(result.change > 500, "Should have substantial change");
 }
 
+#[test]
+fn test_utxo_selection_prefers_non_dust_change_when_possible() {
+    // First UTXO alone would leave near-dust change, but adding the second UTXO enables valid change
+    let utxos = vec![
+        BitcoinUtxo {
+            txid: "d4e5f6789012345678901234567890123456789012345678901234567890a1b2c3".to_string(),
+            vout: 0,
+            value: 2000,
+            status: UtxoStatus {
+                confirmed: true,
+                block_height: Some(100),
+                block_hash: Some("block1".to_string()),
+                block_time: Some(1234567890),
+            },
+        },
+        BitcoinUtxo {
+            txid: "e5f6789012345678901234567890123456789012345678901234567890a1b2c3d4".to_string(),
+            vout: 0,
+            value: 400,
+            status: UtxoStatus {
+                confirmed: true,
+                block_height: Some(101),
+                block_hash: Some("block2".to_string()),
+                block_time: Some(1234567891),
+            },
+        },
+    ];
+
+    // With only the 2000-sat UTXO, change would be below the dust limit; the selector should keep adding inputs
+    let result = select_utxos_for_amount(&utxos, 1400, 2, SpendKind::P2WPKH).unwrap();
+
+    // Should include both inputs and produce a spendable change output
+    assert_eq!(
+        result.selected_utxos.len(),
+        2,
+        "Should add the second UTXO to avoid dust change"
+    );
+    assert!(
+        result.change_output,
+        "Should prefer a non-dust change output over fee-only remainder"
+    );
+    assert!(
+        result.change >= DUST_LIMIT_SATS,
+        "Change should be above dust"
+    );
+    assert_eq!(result.fee, estimate_fee_sat(SpendKind::P2WPKH, 2, 2, 2));
+}
+
+#[test]
+fn test_validate_ethereum_address_valid() {
+    // Test valid 20-byte address
+    let valid_addr = "0x1234567890123456789012345678901234567890";
+    assert!(validate_ethereum_address(valid_addr).is_ok());
+}
+
+#[test]
+fn test_validate_ethereum_address_empty() {
+    // Test empty address
+    assert!(validate_ethereum_address("").is_err());
+}
+
+#[test]
+fn test_validate_ethereum_address_just_0x() {
+    // Test "0x" which would create contract creation transaction
+    let result = validate_ethereum_address("0x");
+    assert!(result.is_err());
+    assert!(result.unwrap_err().to_string().contains("cannot be '0x'"));
+}
+
+#[test]
+fn test_validate_ethereum_address_no_prefix() {
+    // Test address without 0x prefix
+    assert!(validate_ethereum_address("1234567890123456789012345678901234567890").is_err());
+}
+
+#[test]
+fn test_validate_ethereum_address_wrong_length() {
+    // Test address with wrong length (not 20 bytes)
+    // 19 bytes (38 hex chars)
+    assert!(validate_ethereum_address("0x12345678901234567890123456789012345678").is_err());
+    // 21 bytes (42 hex chars)
+    assert!(validate_ethereum_address("0x12345678901234567890123456789012345678901").is_err());
+}
+
+#[test]
+fn test_validate_ethereum_address_invalid_hex() {
+    // Test address with invalid hex characters
+    assert!(validate_ethereum_address("0x123456789012345678901234567890123456789g").is_err());
+}
+
 pub fn create_transaction_for_signing_contract(tx: &ContractTransaction) -> Vec<u8> {
+    // Validate the 'to' address before encoding to prevent contract creation transactions
+    // when a contract call is intended. An empty or malformed address would RLP-encode as 0x80,
+    // which Ethereum interprets as contract creation, potentially locking funds irreversibly.
+    validate_ethereum_address(&tx.to)
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "Invalid 'to' address '{}' for contract transaction: {}. \
+                 Contract address must be a valid 20-byte Ethereum address.",
+                tx.to,
+                e
+            )
+        })
+        .expect("Address validation failed");
+
     // Log contract transaction details before creating raw transaction
     info!(
         "🔧 [ETH_RAW_CONTRACT_TXN] Creating raw Ethereum contract transaction - To: {}, Value: {}, Nonce: {}, GasLimit: {}, GasPrice: {}, ChainId: {}, DataLength: {}",
@@ -2403,6 +2751,20 @@ pub fn create_signed_transaction(
     s: &[u8],
     v: u64,
 ) -> Vec<u8> {
+    // Validate the 'to' address before encoding to prevent contract creation transactions
+    // when a transfer is intended. An empty or malformed address would RLP-encode as 0x80,
+    // which Ethereum interprets as contract creation, potentially locking funds irreversibly.
+    validate_ethereum_address(&tx.to)
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "Invalid 'to' address '{}' for transfer transaction: {}. \
+                 This function is intended for standard Ethereum transfers, not contract creation.",
+                tx.to,
+                e
+            )
+        })
+        .expect("Address validation failed");
+
     // Log signed transaction details before creating final raw transaction
     info!(
         "🔧 [ETH_SIGNED_TXN] Creating final signed Ethereum transaction - To: {}, Value: {}, Nonce: {}, GasLimit: {}, GasPrice: {}, ChainId: {}, v: {}, HasData: {}",

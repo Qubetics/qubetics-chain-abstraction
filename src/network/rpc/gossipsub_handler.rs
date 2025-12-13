@@ -181,9 +181,9 @@ impl MpcNetworkLayer {
                 }
 
                 // Also handle in standalone consensus node if available
-                if let Some(consensus_node) = &mut self.consensus_node {
-                    consensus_node.handle_message(consensus_msg).await?;
-                }
+                // if let Some(consensus_node) = &mut self.consensus_node {
+                //     consensus_node.handle_message(consensus_msg).await?;
+                // }
             }
             GossipsubMessage::VrfSelection(vrf_msg) => {
                 // Handle VRF selection messages
@@ -373,40 +373,36 @@ impl MpcNetworkLayer {
                         }
                     }
                     (None, Some(solver_addr)) => {
-                        if transaction_type == "reward_txn" {
-                            if let Err(e) = self
-                                .handle_reward_transaction_id_storage(
+                        let storage_result = match transaction_type.as_str() {
+                            "reward_txn" => {
+                                self.handle_reward_transaction_id_storage(
                                     solver_addr,
                                     &transaction_id,
                                     &transaction_type,
                                 )
                                 .await
-                            {
-                                error!(
-                                    "❌ [NETWORK] Failed to handle reward transaction ID storage: {}",
-                                    e
-                                );
                             }
-                        } else if transaction_type == "withdraw_liquidity"
-                            || transaction_type == "withdrawLiquidity"
-                        {
-                            if let Err(e) = self
-                                .handle_withdraw_liquidity_transaction_id_storage(
+                            "withdraw_liquidity" | "withdrawLiquidity" => {
+                                self.handle_withdraw_liquidity_transaction_id_storage(
                                     solver_addr,
                                     &transaction_id,
                                     &transaction_type,
                                 )
                                 .await
-                            {
-                                error!(
-                                    "❌ [NETWORK] Failed to handle withdraw liquidity transaction ID storage: {}",
-                                    e
-                                );
                             }
-                        } else {
-                            warn!(
-                                "⚠️ [NETWORK] Unknown solver-based transaction type '{}' in gossipsub handler",
-                                transaction_type
+                            _ => {
+                                warn!(
+                                    "❌ [NETWORK] Unknown transaction type: {}",
+                                    transaction_type
+                                );
+                                return Err(anyhow!("Unknown transaction type: {}", transaction_type));
+                            }
+                        };
+
+                        if let Err(e) = storage_result {
+                            error!(
+                                "❌ [NETWORK] Failed to handle transaction ID storage: {}",
+                                e
                             );
                         }
                     }
@@ -991,6 +987,26 @@ impl MpcNetworkLayer {
                                             None
                                         }
                                     };
+
+                                    // For NetworkToTarget, queue to sequencer for coordinated signing
+                                    if matches!(transaction_type, crate::types::TransactionType::NetworkToTarget) {
+                                        info!(
+                                            "📝 [GOSSIPSUB] NetworkToTarget (EVM) detected - queuing via network transaction sequencer (intent_hash={})",
+                                            intent_hash
+                                        );
+                                        self.submit_network_to_target_to_sequencer(
+                                            &intent,
+                                            &intent_hash,
+                                            amount,
+                                            tx_bytes.clone(),
+                                            eth_tx.clone(),
+                                            user_tweaked_share,
+                                            user_eth_address.clone(),
+                                        )
+                                        .await?;
+                                        return Ok(());
+                                    }
+
                                     {
                                         let mut eth_signer = EthereumSigner::new(signing_node);
                                         eth_signer
@@ -1086,12 +1102,51 @@ impl MpcNetworkLayer {
                     &amount_tics,
                 )
                 .await?;
+
+                // Apply the liquidity decrease locally based on the requested amount.
+                if let Some(signing_node) = &self.signing_node {
+                    let delta_btc = amount_btc
+                        .as_ref()
+                        .and_then(|v| ethers::types::U256::from_dec_str(v).ok());
+                    let delta_tics = amount_tics
+                        .as_ref()
+                        .and_then(|v| ethers::types::U256::from_dec_str(v).ok());
+                    match signing_node
+                        .apply_liquidity_delta(
+                            &solver_address,
+                            None,
+                            delta_btc,
+                            delta_tics,
+                            false,
+                        )
+                        .await
+                    {
+                        Ok(()) => {
+                            info!(
+                                "✅ [GOSSIPSUB] Applied local liquidity withdraw for {}",
+                                solver_address
+                            );
+                        }
+                        Err(e) => {
+                            warn!(
+                                "⚠️ [GOSSIPSUB] Failed to apply local liquidity withdraw for {}: {}",
+                                solver_address, e
+                            );
+                        }
+                    }
+                } else {
+                    warn!(
+                        "⚠️ [GOSSIPSUB] Signing node unavailable; cannot apply local liquidity withdraw for {}",
+                        solver_address
+                    );
+                }
             }
             GossipsubMessage::AddLiquidity {
                 solver_address,
                 solver_id,
                 amount_btc,
                 amount_tics,
+                request_id,
             } => {
                 info!(
                     "💧 [GOSSIPSUB] Received add-liquidity broadcast for solver {} (solver_id: {})",
@@ -1101,13 +1156,53 @@ impl MpcNetworkLayer {
                     "💧 [GOSSIPSUB] Amounts - BTC: {:?}, TICS: {:?}",
                     amount_btc, amount_tics
                 );
+                // 1) Submit / relay the add-liquidity contract call on this node (if applicable)
                 self.handle_add_liquidity_contract_calls(
                     &solver_address,
                     &solver_id,
                     &amount_btc,
                     &amount_tics,
+                    &request_id,
                 )
                 .await?;
+
+                // 2) Apply the liquidity increase locally based on the requested amount.
+                if let Some(signing_node) = &self.signing_node {
+                    let delta_btc = amount_btc
+                        .as_ref()
+                        .and_then(|v| ethers::types::U256::from_dec_str(v).ok());
+                    let delta_tics = amount_tics
+                        .as_ref()
+                        .and_then(|v| ethers::types::U256::from_dec_str(v).ok());
+                    match signing_node
+                        .apply_liquidity_delta(
+                            &solver_address,
+                            Some(&solver_id),
+                            delta_btc,
+                            delta_tics,
+                            true,
+                        )
+                        .await
+                    {
+                        Ok(()) => {
+                            info!(
+                                "✅ [GOSSIPSUB] Applied local liquidity add for {}",
+                                solver_address
+                            );
+                        }
+                        Err(e) => {
+                            warn!(
+                                "⚠️ [GOSSIPSUB] Failed to apply local liquidity add for {}: {}",
+                                solver_address, e
+                            );
+                        }
+                    }
+                } else {
+                    warn!(
+                        "⚠️ [GOSSIPSUB] Signing node unavailable; cannot apply local liquidity add for {}",
+                        solver_address
+                    );
+                }
             }
             GossipsubMessage::PeerDiscovered {
                 peer,
@@ -1144,6 +1239,11 @@ impl MpcNetworkLayer {
                         let threshold = self.node_manager.get_threshold();
                         info!("📊 Updated node count: {}, threshold: {}", total, threshold);
 
+                        // Update sequencer with new total nodes
+                        if let Some(sequencer) = &self.contract_sequencer {
+                            sequencer.update_total_nodes(total).await;
+                        }
+
                         // Update signing node threshold to match current network state
                         if let Some(signing_node) = &mut self.signing_node {
                             let new_threshold = self.node_manager.get_threshold();
@@ -1168,6 +1268,54 @@ impl MpcNetworkLayer {
                     Err(e) => {
                         warn!("❌ Failed to add peer {} to node manager: {:?}", peer, e);
                     }
+                }
+            }
+            GossipsubMessage::SequencerSync {
+                transaction_id,
+                sequence,
+                node_id,
+                state,
+            } => {
+                info!(
+                    "🔄 [SEQUENCER] Received sequencer sync: tx_id={}, sequence={}, node={}, state={}",
+                    transaction_id, sequence, node_id, state
+                );
+                
+                if let Some(sequencer) = &self.contract_sequencer {
+                    sequencer.handle_sync_message(transaction_id, sequence, node_id, state).await;
+                } else {
+                    warn!("⚠️ [SEQUENCER] Received sync message but sequencer not initialized");
+                }
+            }
+            GossipsubMessage::NetworkTransactionSequencerSync {
+                transaction_id,
+                sequence,
+                node_id,
+                state,
+            } => {
+                info!(
+                    "🔄 [NETWORK_SEQUENCER] Received network transaction sequencer sync: tx_id={}, sequence={}, node={}, state={}",
+                    transaction_id, sequence, node_id, state
+                );
+                
+                // Initialize sequencer if not already initialized (e.g., when receiving sync before submitting)
+                if self.network_transaction_sequencer.is_none() {
+                    let mut sequencer = crate::network::sequencer::NetworkTransactionSequencer::new();
+                    let total_nodes = self.node_manager.get_total_nodes();
+                    let node_id = self.local_peer_id.to_string();
+                    let message_tx = self.message_tx.clone();
+                    sequencer.initialize(message_tx, node_id, total_nodes).await;
+                    self.network_transaction_sequencer = Some(sequencer);
+                    info!(
+                        "✅ [NETWORK_SEQUENCER] Initialized sequencer on sync message receipt with {} total nodes",
+                        total_nodes
+                    );
+                }
+                
+                if let Some(sequencer) = &self.network_transaction_sequencer {
+                    sequencer.handle_sync_message(transaction_id, sequence, node_id, state).await;
+                } else {
+                    warn!("⚠️ [NETWORK_SEQUENCER] Failed to initialize sequencer");
                 }
             }
         }

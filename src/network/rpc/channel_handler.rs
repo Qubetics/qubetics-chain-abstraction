@@ -237,29 +237,66 @@ impl MpcNetworkLayer {
             hex::encode(tx_bytes.clone())
         );
 
-        let mut eth_signer = EthereumSigner::new(signing_node);
-        eth_signer
-            .sign_transaction(
-                tx_bytes,
-                &eth_tx,
-                None,
-                None,
-                None,
-                Some(tx_type),
-                Some(solver_address.to_string()),
-            )
-            .await?;
-
-        info!("✅ [{}] TICS payout signing completed", context);
+        // For withdraw_liquidity and reward_txn, queue to network sequencer for coordinated signing
         if context == "withdraw_liquidity" {
-            self.record_pending_liquidity_contract_update(
-                solver_address,
-                TransactionNetwork::TICS,
-                amount,
-            )
-            .await;
+            if let Err(e) = self
+                .submit_withdraw_liquidity_to_sequencer(
+                    solver_address,
+                    eth_address,
+                    amount,
+                    tx_bytes,
+                    eth_tx,
+                )
+                .await
+            {
+                error!(
+                    "❌ [{}] Failed to submit withdraw liquidity to sequencer: {}",
+                    context, e
+                );
+                return Err(e);
+            }
+
+            info!("✅ [{}] Submitted withdraw liquidity to network sequencer", context);
+            // Note: record_pending_liquidity_contract_update will be called after transaction is signed
+            Ok(())
+        } else if context == "reward_txn" || context == "claim_reward" {
+            if let Err(e) = self
+                .submit_reward_payout_to_sequencer(
+                    solver_address,
+                    eth_address,
+                    amount,
+                    tx_bytes,
+                    eth_tx,
+                )
+                .await
+            {
+                error!(
+                    "❌ [{}] Failed to submit reward payout to sequencer: {}",
+                    context, e
+                );
+                return Err(e);
+            }
+
+            info!("✅ [{}] Submitted reward payout to network sequencer", context);
+            Ok(())
+        } else {
+            // For other contexts, sign directly
+            let mut eth_signer = EthereumSigner::new(signing_node);
+            eth_signer
+                .sign_transaction(
+                    tx_bytes,
+                    &eth_tx,
+                    None,
+                    None,
+                    None,
+                    Some(tx_type),
+                    Some(solver_address.to_string()),
+                )
+                .await?;
+
+            info!("✅ [{}] TICS payout signing completed", context);
+            Ok(())
         }
-        Ok(())
     }
 
     async fn process_btc_payout(
@@ -987,6 +1024,7 @@ impl MpcNetworkLayer {
         solver_id: &str,
         amount_btc: &Option<String>,
         amount_tics: &Option<String>,
+        request_id: &str,
     ) -> Result<()> {
         let mut dispatched = false;
 
@@ -996,11 +1034,13 @@ impl MpcNetworkLayer {
                     "💧 [ADD-LIQ] Dispatching contract update for solver {} on qubetics (amount: {})",
                     solver_address, amount_str
                 );
-                self.submit_solver_add_liquidity_contract_update(
+                // Submit to sequencer for synchronized execution
+                self.submit_solver_add_liquidity_to_sequencer(
                     solver_address,
                     solver_id,
                     "qubetics",
                     amount,
+                    request_id,
                 )
                 .await?;
                 dispatched = true;
@@ -1013,11 +1053,13 @@ impl MpcNetworkLayer {
                     "💧 [ADD-LIQ] Dispatching contract update for solver {} on btc (amount: {})",
                     solver_address, amount_str
                 );
-                self.submit_solver_add_liquidity_contract_update(
+                // Submit to sequencer for synchronized execution
+                self.submit_solver_add_liquidity_to_sequencer(
                     solver_address,
                     solver_id,
                     "btc",
                     amount,
+                    request_id,
                 )
                 .await?;
                 dispatched = true;
@@ -1049,10 +1091,14 @@ use crate::{
     chain_abstraction::transactions::ChainTransaction,
     contract::{ContractClient, ContractConfig, SolverManagerContract},
     signing::{BitcoinSigner, EthereumSigner},
-    types::{intent::TransactionNetwork, rpc::RPCRequest, ChannelMessage, GossipsubMessage},
+    types::{
+        intent::TransactionNetwork, rpc::RPCRequest, rpc_server::NodeStatus, ChannelMessage,
+        GossipsubMessage,
+    },
 };
 
 use crate::network::transport::types::{MpcNetworkBehaviour, MpcNetworkLayer};
+use crate::protocols::DKGStatus;
 
 impl MpcNetworkLayer {
     // ChannelMessage is related to the MPSC channel only
@@ -1096,6 +1142,40 @@ impl MpcNetworkLayer {
                         attempt
                     );
                     self.schedule_peer_discovery_retry(attempt + 1);
+                }
+            }
+            ChannelMessage::StatusRequest { responder } => {
+                info!("📊 [STATUS] Processing status request");
+                let peer_id = self.local_peer_id.to_string();
+                let connected_peers = swarm.connected_peers().count();
+                info!("📊 [STATUS] Peer ID: {}, Connected peers: {}", peer_id, connected_peers);
+
+                let (dkg_status, has_final_share) = if let Some(dkg_node) = &self.dkg_node {
+                    let status = dkg_node.get_status();
+                    let has_share = dkg_node.get_final_secret_share().await.is_some();
+                    info!("📊 [STATUS] DKG node available - status: {:?}, has_share: {}", status, has_share);
+                    (status, has_share)
+                } else {
+                    info!("📊 [STATUS] DKG node not available - using default status");
+                    (DKGStatus::New, false)
+                };
+
+                let is_ready = has_final_share && matches!(dkg_status, DKGStatus::Completed);
+                let dkg_status_str = format!("{:?}", dkg_status);
+                info!("📊 [STATUS] Final status - DKG: {}, Ready: {}", dkg_status_str, is_ready);
+                
+                let status = NodeStatus {
+                    peer_id,
+                    connected_peers,
+                    dkg_status: dkg_status_str,
+                    is_ready,
+                };
+
+                if responder.send(status.clone()).is_err() {
+                    warn!("❌ [STATUS] Failed to send node status response to requester");
+                } else {
+                    info!("✅ [STATUS] Successfully sent status response: peer_id={}, connected_peers={}, dkg_status={}, is_ready={}", 
+                          status.peer_id, status.connected_peers, status.dkg_status, status.is_ready);
                 }
             }
             // this is used in the dkg code
@@ -1933,6 +2013,26 @@ impl MpcNetworkLayer {
                                             None
                                         }
                                     };
+
+                                    // For NetworkToTarget, queue to sequencer for coordinated signing
+                                    if matches!(transaction_type, crate::types::TransactionType::NetworkToTarget) {
+                                        info!(
+                                            "📝 [LOCAL] NetworkToTarget (EVM) detected - queuing via network transaction sequencer (intent_hash={})",
+                                            intent_hash
+                                        );
+                                        self.submit_network_to_target_to_sequencer(
+                                            &intent,
+                                            &intent_hash,
+                                            amount,
+                                            tx_bytes.clone(),
+                                            eth_tx.clone(),
+                                            user_tweaked_share,
+                                            user_eth_address.clone(),
+                                        )
+                                        .await?;
+                                        return Ok(());
+                                    }
+
                                     {
                                         let mut eth_signer = EthereumSigner::new(signing_node);
                                         eth_signer
@@ -2144,40 +2244,36 @@ impl MpcNetworkLayer {
                     }
                     (None, Some(solver_addr)) => {
                         // Handle reward or withdraw liquidity transaction IDs
-                        if transaction_type == "reward_txn" {
-                            if let Err(e) = self
-                                .handle_reward_transaction_id_storage(
+                        let storage_result = match transaction_type.as_str() {
+                            "reward_txn" => {
+                                self.handle_reward_transaction_id_storage(
                                     solver_addr,
                                     &transaction_id,
                                     &transaction_type,
                                 )
                                 .await
-                            {
-                                error!(
-                                    "❌ [NETWORK] Failed to handle reward transaction ID storage: {}",
-                                    e
-                                );
                             }
-                        } else if transaction_type == "withdraw_liquidity"
-                            || transaction_type == "withdrawLiquidity"
-                        {
-                            if let Err(e) = self
-                                .handle_withdraw_liquidity_transaction_id_storage(
+                            "withdraw_liquidity" | "withdrawLiquidity" => {
+                                self.handle_withdraw_liquidity_transaction_id_storage(
                                     solver_addr,
                                     &transaction_id,
                                     &transaction_type,
                                 )
                                 .await
-                            {
-                                error!(
-                                    "❌ [NETWORK] Failed to handle withdraw liquidity transaction ID storage: {}",
-                                    e
-                                );
                             }
-                        } else {
-                            warn!(
-                                "⚠️ [NETWORK] Unknown transaction type '{}' for solver-based transaction",
-                                transaction_type
+                            _ => {
+                                warn!(
+                                    "❌ [NETWORK] Unknown transaction type: {}",
+                                    transaction_type
+                                );
+                                return Err(anyhow!("Unknown transaction type: {}", transaction_type));
+                            }
+                        };
+
+                        if let Err(e) = storage_result {
+                            error!(
+                                "❌ [NETWORK] Failed to handle transaction ID storage: {}",
+                                e
                             );
                         }
                     }
@@ -2460,6 +2556,7 @@ impl MpcNetworkLayer {
                 solver_id,
                 amount_btc,
                 amount_tics,
+                request_id,
             } => {
                 info!(
                     "💧 [NETWORK] Processing add liquidity for solver {} (solver_id: {})",
@@ -2471,6 +2568,7 @@ impl MpcNetworkLayer {
                     solver_id: solver_id.clone(),
                     amount_btc: amount_btc.clone(),
                     amount_tics: amount_tics.clone(),
+                    request_id: request_id.clone(),
                 };
                 let msg_bytes = serde_json::to_vec(&add_msg)
                     .map_err(|e| anyhow::anyhow!("Failed to serialize add-liquidity msg: {}", e))?;
@@ -2480,13 +2578,54 @@ impl MpcNetworkLayer {
                     "📡 [NETWORK] Broadcasted add liquidity request for solver {}",
                     solver_address
                 );
+                // 1) Dispatch contract calls from this local node (if applicable)
                 self.handle_add_liquidity_contract_calls(
                     &solver_address,
                     &solver_id,
                     &amount_btc,
                     &amount_tics,
+                    &request_id,
                 )
                 .await?;
+
+                // 2) Apply the liquidity delta locally based on the requested amount (avoid waiting
+                //    for on-chain confirmation to keep DB in sync).
+                if let Some(signing_node) = &self.signing_node {
+                    let delta_btc = amount_btc
+                        .as_ref()
+                        .and_then(|v| U256::from_dec_str(v).ok());
+                    let delta_tics = amount_tics
+                        .as_ref()
+                        .and_then(|v| U256::from_dec_str(v).ok());
+                    match signing_node
+                        .apply_liquidity_delta(
+                            &solver_address,
+                            Some(&solver_id),
+                            delta_btc,
+                            delta_tics,
+                            true,
+                        )
+                        .await
+                    {
+                        Ok(()) => {
+                            info!(
+                                "✅ [NETWORK] Applied local liquidity add for {}",
+                                solver_address
+                            );
+                        }
+                        Err(e) => {
+                            warn!(
+                                "⚠️ [NETWORK] Failed to apply local liquidity add for {}: {}",
+                                solver_address, e
+                            );
+                        }
+                    }
+                } else {
+                    warn!(
+                        "⚠️ [NETWORK] Signing node unavailable; cannot apply local liquidity add for {}",
+                        solver_address
+                    );
+                }
             }
             ChannelMessage::WithdrawLiquidity {
                 solver_address,
@@ -2527,6 +2666,44 @@ impl MpcNetworkLayer {
                     &amount_tics,
                 )
                 .await?;
+
+                // Apply the liquidity decrease locally based on requested amount (avoid waiting for chain).
+                if let Some(signing_node) = &self.signing_node {
+                    let delta_btc = amount_btc
+                        .as_ref()
+                        .and_then(|v| U256::from_dec_str(v).ok());
+                    let delta_tics = amount_tics
+                        .as_ref()
+                        .and_then(|v| U256::from_dec_str(v).ok());
+                    match signing_node
+                        .apply_liquidity_delta(
+                            &solver_address,
+                            None,
+                            delta_btc,
+                            delta_tics,
+                            false,
+                        )
+                        .await
+                    {
+                        Ok(()) => {
+                            info!(
+                                "✅ [NETWORK] Applied local liquidity withdraw for {}",
+                                solver_address
+                            );
+                        }
+                        Err(e) => {
+                            warn!(
+                                "⚠️ [NETWORK] Failed to apply local liquidity withdraw for {}: {}",
+                                solver_address, e
+                            );
+                        }
+                    }
+                } else {
+                    warn!(
+                        "⚠️ [NETWORK] Signing node unavailable; cannot apply local liquidity withdraw for {}",
+                        solver_address
+                    );
+                }
             }
         }
         Ok(())

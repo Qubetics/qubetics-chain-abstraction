@@ -111,6 +111,11 @@ impl MpcNetworkLayer {
             new_total, new_threshold
         );
 
+        // Update sequencer with new total nodes
+        if let Some(sequencer) = &self.contract_sequencer {
+            sequencer.update_total_nodes(new_total).await;
+        }
+
         // Update DKG and signing node parameters
         if let Some(dkg_node) = &mut self.dkg_node {
             if let Err(e) = dkg_node.update_node_params(new_total, new_threshold) {

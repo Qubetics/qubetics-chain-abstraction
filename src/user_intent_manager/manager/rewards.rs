@@ -471,6 +471,23 @@ impl UserIntentManager {
             })
     }
 
+    pub async fn get_solver_remove_liquidity_txn_hash(
+        &self,
+        solver_address: &str,
+        network: TransactionNetwork,
+    ) -> Result<Option<String>, String> {
+        self.liquidity_storage
+            .get_remove_liquidity_tx_id(solver_address, network)
+            .await
+            .map_err(|e| {
+                error!(
+                    "❌ [DB_USER_REGISTRY] Failed to get remove-liquidity txn hash for solver {}: {}",
+                    solver_address, e
+                );
+                e.to_string()
+            })
+    }
+
     pub async fn add_solver_remove_liquidity_txn_hash(
         &self,
         solver_address: &str,

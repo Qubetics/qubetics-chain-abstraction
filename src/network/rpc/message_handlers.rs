@@ -36,18 +36,11 @@ impl MpcNetworkLayer {
     ) -> Result<()> {
         match transaction_type {
             "user_to_vault" => {
-                // Update solver amounts and calculate rewards for UserToVault
+                // Calculate rewards for UserToVault
                 if let Some(signing_node) = &self.signing_node {
                     if let Err(e) = signing_node
-                        .update_solver_amounts_for_user_to_vault(intent_hash)
+                        .calculate_reward_per_solver(intent_hash)
                         .await
-                    {
-                        warn!(
-                            "⚠️ [SIGNING] Failed to update solver amounts for UserToVault transaction: {}",
-                            e
-                        );
-                    } else if let Err(e) =
-                        signing_node.calculate_reward_per_solver(intent_hash).await
                     {
                         warn!(
                             "⚠️ [SIGNING] Failed to calculate rewards for UserToVault transaction: {}",
@@ -96,7 +89,21 @@ impl MpcNetworkLayer {
         node_id: &str,
     ) -> Result<()> {
         if let Some(user_intent_manager) = &self.user_intent_manager {
-            // Store transaction ID
+            // Check if this transaction ID was already processed before storing
+            let was_already_processed = {
+                if let Some(existing_tx_ids) = user_intent_manager.get_intent_transaction_ids(intent_hash).await {
+                    match transaction_type {
+                        "user_to_vault" => existing_tx_ids.user_to_network_tx_id.as_ref() == Some(&transaction_id.to_string()),
+                        "network_to_target" => existing_tx_ids.network_to_target_tx_id.as_ref() == Some(&transaction_id.to_string()),
+                        "vault_to_network" => existing_tx_ids.vault_to_network_tx_id.as_ref() == Some(&transaction_id.to_string()),
+                        _ => false,
+                    }
+                } else {
+                    false
+                }
+            };
+
+            // Store transaction ID (this will update if it already exists, which is fine for synchronization)
             match self
                 .store_transaction_id_by_type(
                     user_intent_manager,
@@ -123,48 +130,64 @@ impl MpcNetworkLayer {
                         transaction_id, intent_hash, transaction_type
                     );
 
-                    // Execute contract call if needed
-                    if let Some(intent) = user_intent_manager.get_intent(intent_hash).await {
-                        let tx_type_enum = Self::parse_transaction_type(transaction_type)?;
-
-                        let vault_group_key = if let Some(dkg_node) = &self.dkg_node {
-                            dkg_node.get_vault_group_key().await
+                    // Only execute contract call if this is a new transaction ID (not already processed)
+                    if was_already_processed {
+                        info!(
+                            "⏭️ [NETWORK] Transaction ID {} for intent {} (type: {}) was already processed, skipping contract call to prevent duplicate execution",
+                            transaction_id, intent_hash, transaction_type
+                        );
+                    } else {
+                        // Skip contract call execution for VaultToNetwork transaction type
+                        if transaction_type == "vault_to_network" {
+                            info!(
+                                "⏭️ [CONTRACT] Skipping contract call execution for VaultToNetwork transaction type (transaction ID: {})",
+                                transaction_id
+                            );
                         } else {
-                            None
-                        };
+                            // Execute contract call if needed
+                            if let Some(intent) = user_intent_manager.get_intent(intent_hash).await {
+                                let tx_type_enum = Self::parse_transaction_type(transaction_type)?;
 
-                        if let Some(vault_group_key) = vault_group_key {
-                            if let Err(e) = self
-                                .execute_contract_call_for_transaction(
-                                    &intent,
-                                    intent_hash,
-                                    tx_type_enum,
-                                    transaction_id,
-                                    Some(vault_group_key),
-                                    intent.amount,
-                                )
-                                .await
-                            {
-                                warn!(
-                                    "❌ [CONTRACT] Failed to execute contract call for transaction ID {}: {}",
-                                    transaction_id, e
-                                );
+                                let vault_group_key = if let Some(dkg_node) = &self.dkg_node {
+                                    dkg_node.get_vault_group_key().await
+                                } else {
+                                    None
+                                };
+
+                                if let Some(vault_group_key) = vault_group_key {
+                                    if let Err(e) = self
+                                        .execute_contract_call_for_transaction(
+                                            &intent,
+                                            intent_hash,
+                                            tx_type_enum,
+                                            transaction_id,
+                                            Some(vault_group_key),
+                                            intent.amount,
+                                        )
+                                        .await
+                                    {
+                                        warn!(
+                                            "❌ [CONTRACT] Failed to execute contract call for transaction ID {}: {}",
+                                            transaction_id, e
+                                        );
+                                    } else {
+                                        info!(
+                                            "✅ [CONTRACT] Successfully executed contract call for transaction ID {}",
+                                            transaction_id
+                                        );
+                                    }
+                                } else {
+                                    warn!(
+                                        "❌ [CONTRACT] No vault group key available for contract call execution"
+                                    );
+                                }
                             } else {
-                                info!(
-                                    "✅ [CONTRACT] Successfully executed contract call for transaction ID {}",
-                                    transaction_id
+                                warn!(
+                                    "❌ [CONTRACT] Could not retrieve intent {} for contract call execution",
+                                    intent_hash
                                 );
                             }
-                        } else {
-                            warn!(
-                                "❌ [CONTRACT] No vault group key available for contract call execution"
-                            );
                         }
-                    } else {
-                        warn!(
-                            "❌ [CONTRACT] Could not retrieve intent {} for contract call execution",
-                            intent_hash
-                        );
                     }
                 }
                 Err(e) => {
@@ -194,6 +217,19 @@ impl MpcNetworkLayer {
                     transaction_type, transaction_id
                 );
                 return Ok(());
+            };
+
+            // Check if this transaction ID was already processed before storing
+            let was_already_processed = {
+                let existing_tx_id = match network {
+                    TransactionNetwork::TICS => {
+                        user_intent_manager.get_solver_tics_txn_hash(solver_address).await
+                    }
+                    TransactionNetwork::BTC => {
+                        user_intent_manager.get_solver_btc_txn_hash(solver_address).await
+                    }
+                };
+                existing_tx_id.as_ref() == Some(&transaction_id.to_string())
             };
 
             let storage_result = match network {
@@ -228,55 +264,71 @@ impl MpcNetworkLayer {
                         network
                     );
 
-                    if let Err(e) = user_intent_manager
-                        .set_solver_add_liquidity_txn_hash(
-                            solver_address,
-                            network,
-                            transaction_id.to_string(),
-                        )
-                        .await
-                    {
-                        warn!(
-                            "⚠️ [NETWORK] Failed to store add-liquidity txn hash for solver {}: {}",
-                            solver_address, e
+                    // Only execute contract calls if this is a new transaction ID (not already processed)
+                    if was_already_processed {
+                        info!(
+                            "⏭️ [NETWORK] Reward transaction ID {} for solver {} (network: {:?}) was already processed, skipping contract calls to prevent duplicate execution",
+                            transaction_id, solver_address, network
                         );
-                    }
-
-                    // Update claimed amounts and reduce rewards
-                    if let Some(amount) = self
-                        .update_reward_claims(solver_address, network, transaction_id)
-                        .await?
-                    {
-                        let (btc_amount, tics_amount) = match network {
-                            TransactionNetwork::BTC => (Some(amount), None),
-                            TransactionNetwork::TICS => (None, Some(amount)),
-                        };
-
-                        let convert_amount = |value: Option<ethers::types::U256>| -> Option<u128> {
-                            value.and_then(|v| {
-                                if v.bits() > 128 {
-                                    warn!(
-                                        "⚠️ [NETWORK] Reward amount {} exceeds u128, skipping contract update",
-                                        v
-                                    );
-                                    None
-                                } else {
-                                    Some(v.low_u128())
-                                }
-                            })
-                        };
-
-                        let btc_u128 = convert_amount(btc_amount);
-                        let tics_u128 = convert_amount(tics_amount);
-
-                        if btc_u128.is_some() || tics_u128.is_some() {
-                            self.submit_solver_reward_contract_update(
+                    } else {
+                        if let Err(e) = user_intent_manager
+                            .set_solver_add_liquidity_txn_hash(
                                 solver_address,
-                                btc_u128,
-                                tics_u128,
-                                transaction_id,
+                                network,
+                                transaction_id.to_string(),
                             )
-                            .await?;
+                            .await
+                        {
+                            warn!(
+                                "⚠️ [NETWORK] Failed to store add-liquidity txn hash for solver {}: {}",
+                                solver_address, e
+                            );
+                        }
+
+                        // Update claimed amounts and reduce rewards
+                        if let Some(amount) = self
+                            .update_reward_claims(solver_address, network, transaction_id)
+                            .await?
+                        {
+                            let (btc_amount, tics_amount) = match network {
+                                TransactionNetwork::BTC => (Some(amount), None),
+                                TransactionNetwork::TICS => (None, Some(amount)),
+                            };
+
+                            let convert_amount = |value: Option<ethers::types::U256>| -> Option<u128> {
+                                value.and_then(|v| {
+                                    if v.bits() > 128 {
+                                        warn!(
+                                            "⚠️ [NETWORK] Reward amount {} exceeds u128, skipping contract update",
+                                            v
+                                        );
+                                        None
+                                    } else {
+                                        Some(v.low_u128())
+                                    }
+                                })
+                            };
+
+                            let btc_u128 = convert_amount(btc_amount);
+                            let tics_u128 = convert_amount(tics_amount);
+
+                            if btc_u128.is_some() || tics_u128.is_some() {
+                                // Use sequencer to ensure sequential execution
+                                if let Err(e) = self
+                                    .submit_solver_claim_reward_to_sequencer(
+                                        solver_address,
+                                        btc_u128,
+                                        tics_u128,
+                                        transaction_id,
+                                    )
+                                    .await
+                                {
+                                    error!(
+                                        "❌ [NETWORK] Failed to enqueue claim-reward contract update for solver {} after tx {}: {}",
+                                        solver_address, transaction_id, e
+                                    );
+                                }
+                            }
                         }
                     }
                 }
@@ -399,18 +451,27 @@ impl MpcNetworkLayer {
                 return Ok(());
             };
 
-            let storage_result = match network {
-                TransactionNetwork::TICS => {
-                    user_intent_manager
-                        .add_solver_tics_txn_hash(solver_address, transaction_id.to_string())
-                        .await
-                }
-                TransactionNetwork::BTC => {
-                    user_intent_manager
-                        .add_solver_btc_txn_hash(solver_address, transaction_id.to_string())
-                        .await
+            // Check if this transaction ID was already processed before storing
+            // Use remove_liquidity_txn_hash for duplicate check (not the shared tics/btc txn hash)
+            let was_already_processed = {
+                if let Ok(Some(existing_tx_id)) = user_intent_manager
+                    .get_solver_remove_liquidity_txn_hash(solver_address, network)
+                    .await
+                {
+                    existing_tx_id == transaction_id
+                } else {
+                    false
                 }
             };
+
+            // Store transaction ID in remove_liquidity storage (not in shared tics/btc txn hash to avoid overlap with reward transactions)
+            let storage_result = user_intent_manager
+                .add_solver_remove_liquidity_txn_hash(
+                    solver_address,
+                    network,
+                    transaction_id.to_string(),
+                )
+                .await;
 
             match storage_result {
                 Ok(()) => {
@@ -431,60 +492,45 @@ impl MpcNetworkLayer {
                         network
                     );
 
-                    if let Err(e) = user_intent_manager
-                        .add_solver_remove_liquidity_txn_hash(
-                            solver_address,
-                            network,
-                            transaction_id.to_string(),
-                        )
-                        .await
-                    {
-                        warn!(
-                            "⚠️ [NETWORK] Failed to store remove-liquidity txn hash for solver {}: {}",
-                            solver_address, e
-                        );
-                    }
-
-                    info!(
-                        "💧 [NETWORK] Checking pending withdraw amount for solver {} ({:?})",
-                        solver_address, network
-                    );
-                    if let Some(amount) = self
-                        .take_pending_liquidity_contract_update_amount(solver_address, network)
-                        .await
-                    {
-                        let chain_name = match network {
-                            TransactionNetwork::TICS => "qubetics",
-                            TransactionNetwork::BTC => "btc",
-                        };
+                    // Only execute contract calls if this is a new transaction ID (not already processed)
+                    if was_already_processed {
                         info!(
-                            "💧 [NETWORK] Initiating contract liquidity update for solver {} on {} amount {} after tx {}",
-                            solver_address, chain_name, amount, transaction_id
+                            "⏭️ [NETWORK] Withdraw liquidity transaction ID {} for solver {} (network: {:?}) was already processed, skipping contract calls to prevent duplicate execution",
+                            transaction_id, solver_address, network
                         );
-                        if let Err(e) = self
-                            .submit_solver_liquidity_contract_update(
-                                solver_address,
-                                chain_name,
-                                amount,
-                                transaction_id,
-                            )
-                            .await
-                        {
-                            error!(
-                                "❌ [NETWORK] Failed to submit contract liquidity update for solver {} after tx {}: {}",
-                                solver_address, transaction_id, e
-                            );
-                        } else {
-                            info!(
-                                "✅ [NETWORK] Submitted contract liquidity update for solver {} (chain: {}, amount: {})",
-                                solver_address, chain_name, amount
-                            );
-                        }
                     } else {
                         info!(
-                            "ℹ️ [NETWORK] No pending liquidity update amount found for solver {} after tx {}; skipping contract update",
-                            solver_address, transaction_id
+                            "💧 [NETWORK] Checking pending withdraw amount for solver {} ({:?})",
+                            solver_address, network
                         );
+                        if let Some(amount) = self
+                            .take_pending_liquidity_contract_update_amount(solver_address, network)
+                            .await
+                        {
+                            let chain_name = match network {
+                                TransactionNetwork::TICS => "qubetics",
+                                TransactionNetwork::BTC => "btc",
+                            };
+                            // Keep it simple: use payout transaction_id as the sequencer request_id
+                            info!(
+                                "💧 [NETWORK] Enqueuing contract liquidity update via sequencer for solver {} on {} amount {} after payout tx {}",
+                                solver_address, chain_name, amount, transaction_id
+                            );
+                            if let Err(e) = self
+                                .submit_solver_withdraw_liquidity_to_sequencer(
+                                    solver_address,
+                                    chain_name,
+                                    amount,
+                                    transaction_id,
+                                )
+                                .await
+                            {
+                                error!(
+                                    "❌ [NETWORK] Failed to enqueue withdraw-liquidity contract update for solver {} after tx {}: {}",
+                                    solver_address, transaction_id, e
+                                );
+                            }
+                        }
                     }
                 }
                 Err(e) => {
