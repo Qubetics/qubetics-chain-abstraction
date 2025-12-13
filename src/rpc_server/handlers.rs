@@ -26,6 +26,7 @@ use crate::{
         },
     },
     user_intent_manager::{checksum_from_any, UserIntentManager},
+    utils::transaction::DUST_LIMIT_SATS,
 };
 
 use super::{
@@ -1367,6 +1368,33 @@ pub(crate) async fn handle_claim_reward(
     } else {
         None
     };
+
+    // Check if BTC reward is below dust limit
+    if wants_btc {
+        if let Some(ref btc_reward) = reward_btc {
+            // Convert U256 to u64 for comparison (saturating to avoid overflow)
+            let btc_reward_u64 = btc_reward.as_u64();
+            if btc_reward_u64 > 0 && btc_reward_u64 < DUST_LIMIT_SATS {
+                let msg = format!(
+                    "BTC reward {} sats is below Bitcoin dust limit (minimum: {} sats). Transaction would be rejected by Bitcoin nodes.",
+                    btc_reward_u64,
+                    DUST_LIMIT_SATS
+                );
+                warn!("❌ {}", msg);
+                return Ok(warp::reply::json(&ClaimRewardResponse {
+                    status: "error".to_string(),
+                    ethereum_address: normalized_eth_address,
+                    btc_address: req.btc_address,
+                    reward_btc: None,
+                    reward_tics: None,
+                    message: msg.clone(),
+                    error_message: Some(msg),
+                    tics_reward_tx_id: None,
+                    btc_reward_tx_id: None,
+                }));
+            }
+        }
+    }
 
     let reward_btc_str = reward_btc.as_ref().map(|v| v.to_string());
     let reward_tics_str = reward_tics.as_ref().map(|v| v.to_string());

@@ -17,12 +17,12 @@ import keccak from 'keccak';
 const RPC_BASE_URL = process.env.QUBETICS_RPC_URL ?? 'http://127.0.0.1:8083';
 const ADD_ENDPOINT = `${RPC_BASE_URL}/add_liquidity`;
 
-const SOLVER_ID = process.env.SOLVER_ID ?? 'arpit1';
+const SOLVER_ID = process.env.SOLVER_ID ?? 'qwwert';
 const TEST_PRIVATE_KEY =
   process.env.SOLVER_PRIVATE_KEY ??
-  '93cc7fbc4bfd7fcfd83d11c85ba522f8fa1c03ece1a3b5f1782bc164996844d9';
+  'c59742325077e7352e93ebc0796b95308e0a6e23ec2a5d549c073be0f733e95f';
 
-const DEFAULT_TICS_AMOUNT = process.env.TICS_AMOUNT ?? '10000000000000000000000';
+const DEFAULT_TICS_AMOUNT = process.env.TICS_AMOUNT ?? '1000000000000000000000';
 const DEFAULT_BTC_AMOUNT = process.env.BTC_AMOUNT ?? null;
 
 const colors = {

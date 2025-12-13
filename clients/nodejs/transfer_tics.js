@@ -11,15 +11,18 @@
  * DO NOT use this script in production or with real funds.
  */
 
-import { Wallet, JsonRpcProvider, parseUnits, formatUnits } from 'ethers';
+// ethers v5 is CommonJS; use default import for ESM compatibility
+import ethers from 'ethers';
+const { Wallet, providers, utils } = ethers;
+const { JsonRpcProvider } = providers;
+const { parseUnits, formatUnits } = utils;
 
 // Configuration
 const QUBETICS_RPC_URL = 'http://114.119.184.52:8545';
 const QUBETICS_CHAIN_ID = 9029;
-const TICS_AMOUNT = 10000; // Amount in TICS (whole units)
-// Note: Standard native EVM tokens use 18 decimals. If TICS uses different decimals, adjust below.
-// Based on codebase, TICS may use 10 decimals (10^10 conversion factor), but native tokens typically use 18.
-const TICS_DECIMALS = 18; // Standard for native EVM tokens (adjust to 10 if TICS uses 10 decimals)
+const TICS_AMOUNT = 1000; // Amount in TICS (whole units)
+// TICS uses 10 decimals on this chain; adjust if your deployment differs.
+const TICS_DECIMALS = 18;
 
 // Test private key (for testing only - DO NOT use in production)
 const TEST_PRIVATE_KEY = '0x2f1765e04f0a5c394eb3b07ee38bf210008473f6e679a4f901f554905f7f3f89';
@@ -75,6 +78,7 @@ async function transferTics(recipientAddress) {
     // With 18 decimals: 1000 TICS = 1000 * 10^18 = 1000000000000000000000
     // With 10 decimals: 1000 TICS = 1000 * 10^10 = 10000000000000
     const amountInSmallestUnits = parseUnits(TICS_AMOUNT.toString(), TICS_DECIMALS);
+    log(`   Amount (raw units): ${amountInSmallestUnits.toString()}`, 'cyan');
     
     if (balance < amountInSmallestUnits) {
       throw new Error(
@@ -85,9 +89,11 @@ async function transferTics(recipientAddress) {
     // Get current gas price and nonce
     log('⛽ Fetching gas price...', 'yellow');
     const feeData = await provider.getFeeData();
-    const gasPrice = feeData.gasPrice;
-    if (!gasPrice) {
-      throw new Error('Failed to fetch gas price');
+    let gasPrice = feeData.gasPrice;
+    // Fallback: if RPC returns null/0 or too low, use 1 gwei
+    if (!gasPrice || gasPrice.lte(0) || gasPrice.lt(parseUnits('1', 'gwei'))) {
+      gasPrice = parseUnits('1', 'gwei');
+      log('   ⚠️ Gas price missing/too low from RPC; using fallback 1 gwei', 'yellow');
     }
     log(`   Gas price: ${formatUnits(gasPrice, 'gwei')} Gwei`, 'cyan');
 
@@ -106,8 +112,9 @@ async function transferTics(recipientAddress) {
       log(`   Estimated gas: ${gasEstimate.toString()}`, 'cyan');
     } catch (estimateError) {
       gasEstimate = 21_000n;
+      const msg = estimateError && estimateError.message ? estimateError.message : 'unknown error';
       log(
-        `   ⚠️ Gas estimation failed (${estimateError?.message ?? 'unknown error'}). Falling back to 21,000.`,
+        `   ⚠️ Gas estimation failed (${msg}). Falling back to 21,000.`,
         'yellow'
       );
     }
@@ -123,12 +130,8 @@ async function transferTics(recipientAddress) {
       chainId: QUBETICS_CHAIN_ID,
     };
 
-    log('✍️ Signing transaction...', 'yellow');
-    const signedTx = await wallet.signTransaction(tx);
-    log(`   Transaction hash: ${signedTx.hash}`, 'cyan');
-
-    log('📤 Broadcasting transaction...', 'yellow');
-    const txResponse = await provider.broadcastTransaction(signedTx);
+    log('📤 Sending transaction...', 'yellow');
+    const txResponse = await wallet.sendTransaction(tx);
     log(`   Transaction hash: ${txResponse.hash}`, 'green');
     log(`   Explorer: https://explorer.qubetics.work/tx/${txResponse.hash}`, 'cyan');
 

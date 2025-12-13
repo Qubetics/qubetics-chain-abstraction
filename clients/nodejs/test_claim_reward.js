@@ -19,7 +19,7 @@ const CLAIM_REWARD_ENDPOINT = `${RPC_BASE_URL}/claim_reward`;
 const API_KEY = "2919cd546f2c4338bccb4794a3d6afba2282e5729653fc2c2ff6c5e0e194ar45";
 
 // Test private key - REPLACE THIS WITH YOUR REGISTERED TEST PRIVATE KEY
-const TEST_PRIVATE_KEY = '93cc7fbc4bfd7fcfd83d11c85ba522f8fa1c03ece1a3b5f1782bc164996844d9';
+const TEST_PRIVATE_KEY = 'c59742325077e7352e93ebc0796b95308e0a6e23ec2a5d549c073be0f733e95f';
 
 // Test addresses - REPLACE THESE WITH YOUR ACTUAL TEST ADDRESSES
 const TEST_ETH_ADDRESS = '0xf71736a05f5673da815c1853378ff12c1aad4ff6';
@@ -437,6 +437,7 @@ async function main() {
 
     // Run successful test only
     await testClaimRewardEthOnly();
+    // await testClaimRewardBtcOnly();
 
     console.log('\n==================================================');
     console.log(`${colors.green}🏁 Test script completed!${colors.reset}`);

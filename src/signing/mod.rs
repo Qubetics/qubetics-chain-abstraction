@@ -1747,17 +1747,52 @@ impl SigningNode {
                 from
             );
         }
-        // ---- 2) Pull unsigned tx + BTC extras from pending_transactions ----
+        // ---- 2) Pull unsigned tx + BTC extras from the correct pending store ----
+        let is_reward_round = {
+            let reward_rounds = self.pending.reward_rounds.read().await;
+            reward_rounds.contains(&round)
+        };
+        let is_withdraw_round = {
+            let withdraw_rounds = self.pending.withdraw_rounds.read().await;
+            withdraw_rounds.contains(&round)
+        };
+
         let (unsigned_tx, extras, total_inputs) = {
-            let pt = self.pending.pending_transactions_btc.read().await;
-            let (chain_tx, _raw, _intent_hash, _tx_type_opt, extras_opt) =
-                pt.get(&round).ok_or_else(|| {
-                    error!(
-                        "[handle_btc_signature_for_round] No pending tx for round {}",
-                        round
-                    );
-                    anyhow!("no pending tx for round {}", round)
-                })?;
+            let (chain_tx, extras_opt) = if is_reward_round {
+                let reward_pt = self.pending.reward_pending_transactions_btc.read().await;
+                let (chain_tx, _raw, _solver_address, _tx_type_opt, extras_opt) =
+                    reward_pt.get(&round).ok_or_else(|| {
+                        error!(
+                            "[handle_btc_signature_for_round] No reward pending tx for round {}",
+                            round
+                        );
+                        anyhow!("no reward pending tx for round {}", round)
+                    })?;
+                (chain_tx.clone(), extras_opt.clone())
+            } else if is_withdraw_round {
+                let withdraw_pt = self.pending.withdraw_pending_transactions_btc.read().await;
+                let (chain_tx, _raw, _solver_address, _tx_type_opt, extras_opt) =
+                    withdraw_pt.get(&round).ok_or_else(|| {
+                        error!(
+                            "[handle_btc_signature_for_round] No withdraw pending tx for round {}",
+                            round
+                        );
+                        anyhow!("no withdraw pending tx for round {}", round)
+                    })?;
+                (chain_tx.clone(), extras_opt.clone())
+            } else {
+                let pt = self.pending.pending_transactions_btc.read().await;
+                let (chain_tx, _raw, _intent_hash, _tx_type_opt, extras_opt) =
+                    pt.get(&round).ok_or_else(|| {
+                        error!(
+                            "[handle_btc_signature_for_round] No pending tx for round {}",
+                            round
+                        );
+                        anyhow!("no pending tx for round {}", round)
+                    })?;
+                (chain_tx.clone(), extras_opt.clone())
+            };
+
             let btc_tx = match chain_tx {
                 ChainTransaction::Bitcoin(t) => t.clone(),
                 _ => {
@@ -1768,7 +1803,7 @@ impl SigningNode {
                     bail!("round {} is not a Bitcoin round", round)
                 }
             };
-            let ex = extras_opt.clone().ok_or_else(|| {
+            let ex = extras_opt.ok_or_else(|| {
                 error!(
                     "[handle_btc_signature_for_round] Missing BtcRoundExtras for round {}",
                     round
@@ -2030,15 +2065,42 @@ impl SigningNode {
 
         // ---- 4) FINALIZE only when *all* inputs aggregated ----
         let (should_finalize, total_inputs2, unsigned_tx2) = {
-            let pt = self.pending.pending_transactions_btc.read().await;
-            let (chain_tx, _raw, _intent_hash, _tx_type_opt, _extras) =
-                pt.get(&round).ok_or_else(|| {
-                    error!(
-                    "[handle_btc_signature_for_round] No pending tx for round {} (finalize step)",
-                    round
-                );
-                    anyhow!("no pending tx for round {}", round)
-                })?;
+            // Use the same round classification to pull the correct pending entry
+            let chain_tx = if is_reward_round {
+                let reward_pt = self.pending.reward_pending_transactions_btc.read().await;
+                let (chain_tx, _raw, _solver_address, _tx_type_opt, _extras) =
+                    reward_pt.get(&round).ok_or_else(|| {
+                        error!(
+                            "[handle_btc_signature_for_round] No reward pending tx for round {} (finalize step)",
+                            round
+                        );
+                        anyhow!("no reward pending tx for round {}", round)
+                    })?;
+                chain_tx.clone()
+            } else if is_withdraw_round {
+                let withdraw_pt = self.pending.withdraw_pending_transactions_btc.read().await;
+                let (chain_tx, _raw, _solver_address, _tx_type_opt, _extras) =
+                    withdraw_pt.get(&round).ok_or_else(|| {
+                        error!(
+                            "[handle_btc_signature_for_round] No withdraw pending tx for round {} (finalize step)",
+                            round
+                        );
+                        anyhow!("no withdraw pending tx for round {}", round)
+                    })?;
+                chain_tx.clone()
+            } else {
+                let pt = self.pending.pending_transactions_btc.read().await;
+                let (chain_tx, _raw, _intent_hash, _tx_type_opt, _extras) =
+                    pt.get(&round).ok_or_else(|| {
+                        error!(
+                            "[handle_btc_signature_for_round] No pending tx for round {} (finalize step)",
+                            round
+                        );
+                        anyhow!("no pending tx for round {}", round)
+                    })?;
+                chain_tx.clone()
+            };
+
             let btc_tx = match chain_tx {
                 ChainTransaction::Bitcoin(t) => t.clone(),
                 _ => {
