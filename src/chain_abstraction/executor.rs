@@ -106,6 +106,7 @@ impl MpcChainExecutor {
                                     &contract_tx,
                                     vault_tweaked_share,
                                     None,
+                                    vault_tweaked_share,
                                 )
                                 .await?;
                         }

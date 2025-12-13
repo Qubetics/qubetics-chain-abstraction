@@ -6,7 +6,10 @@ use crate::{
         signing::ECDSASignature,
         TransactionType,
     },
-    utils::{get_eth_address_from_group_key, transaction::{create_signed_transaction, get_evm_rpc_url}},
+    utils::{
+        get_eth_address_from_group_key,
+        transaction::{create_signed_transaction, get_evm_rpc_url},
+    },
 };
 use anyhow::{anyhow, Result};
 use hex;
@@ -44,6 +47,7 @@ impl<'a> EthereumSigner<'a> {
         intent_hash: Option<String>,
         transaction_type: Option<TransactionType>,
         solver_address: Option<String>,
+        signing_key_override: Option<Scalar>,
     ) -> Result<()> {
         self.node
             .sign_message(
@@ -54,6 +58,7 @@ impl<'a> EthereumSigner<'a> {
                 intent_hash,
                 transaction_type,
                 solver_address,
+                signing_key_override,
             )
             .await
     }
@@ -64,9 +69,16 @@ impl<'a> EthereumSigner<'a> {
         contract_tx: &ContractTransaction,
         user_tweaked_share: Option<Scalar>,
         user_eth_address: Option<String>,
+        signing_key_override: Option<Scalar>,
     ) -> Result<()> {
         self.node
-            .sign_contract_message(message, contract_tx, user_tweaked_share, user_eth_address)
+            .sign_contract_message(
+                message,
+                contract_tx,
+                user_tweaked_share,
+                user_eth_address,
+                signing_key_override,
+            )
             .await
     }
 }
@@ -172,6 +184,7 @@ impl SigningNode {
         intent_hash: Option<String>,
         transaction_type: Option<TransactionType>,
         solver_address: Option<String>,
+        signing_key_override: Option<Scalar>,
     ) -> Result<()> {
         // Validate parameters: if transaction_type is RewardTxn, solver_address must be provided
         if let Some(TransactionType::RewardTxn) = transaction_type {
@@ -189,6 +202,9 @@ impl SigningNode {
             // Use user's tweaked share for user deposits
             info!("🔑 [SIGNING] Using user-specific tweaked share for signing");
             Self::derive_secp_secret(&tweaked_share)?
+        } else if let Some(explicit_key) = signing_key_override {
+            info!("🔑 [SIGNING] Using provided signing key override for signing");
+            Self::derive_secp_secret(&explicit_key)?
         } else {
             // Use network DKG share for network withdrawals
             info!("🔑 [SIGNING] Using network DKG share for signing");
@@ -436,6 +452,7 @@ impl SigningNode {
         transaction: &ContractTransaction,
         user_tweaked_share: Option<Scalar>,
         user_eth_address: Option<String>,
+        signing_key_override: Option<Scalar>,
     ) -> Result<()> {
         // Determine which key to use for signing
         // Redacted user_tweaked_share from logs
@@ -443,6 +460,9 @@ impl SigningNode {
             // Use user's tweaked share for user deposits
             info!("🔑 [SIGNING] Using user-specific tweaked share for signing");
             Self::derive_secp_secret(&tweaked_share)?
+        } else if let Some(explicit_key) = signing_key_override {
+            info!("🔑 [SIGNING] Using provided signing key override for signing");
+            Self::derive_secp_secret(&explicit_key)?
         } else {
             // Use network DKG share for network withdrawals
             info!("🔑 [SIGNING] Using network DKG share for signing");

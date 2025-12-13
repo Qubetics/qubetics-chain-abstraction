@@ -45,6 +45,7 @@ impl<'a> BitcoinSigner<'a> {
         transaction_type: Option<TransactionType>,
         user_tweaked_share: Option<Scalar>,
         solver_address: Option<String>,
+        signing_key_override: Option<Scalar>,
     ) -> Result<()> {
         self.node
             .sign_bitcoin_transaction(
@@ -55,6 +56,7 @@ impl<'a> BitcoinSigner<'a> {
                 transaction_type,
                 user_tweaked_share,
                 solver_address,
+                signing_key_override,
             )
             .await
     }
@@ -102,6 +104,7 @@ impl SigningNode {
         transaction_type: Option<TransactionType>,
         user_tweaked_share: Option<Scalar>,
         solver_address: Option<String>,
+        signing_key_override: Option<Scalar>,
     ) -> Result<()> {
         use secp256k1::{ecdsa::RecoverableSignature, Message};
 
@@ -113,10 +116,6 @@ impl SigningNode {
                     "Solver address is required when transaction_type is RewardTxn"
                 ));
             }
-        }
-
-        if !self.key_store.has_private_key() {
-            return Err(anyhow!("No private key available"));
         }
 
         info!(
@@ -309,6 +308,9 @@ impl SigningNode {
         // ===== Sign each input digest with our key share (or tweaked) =====
         let signing_key = if let Some(tweaked_share) = user_tweaked_share {
             Self::derive_secp_secret(&tweaked_share)?
+        } else if let Some(explicit_key) = signing_key_override {
+            info!("🔑 [BTC-SIGNING] Using provided signing key override for signing");
+            Self::derive_secp_secret(&explicit_key)?
         } else {
             self.key_store
                 .clone_private_key()

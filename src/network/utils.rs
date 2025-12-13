@@ -186,7 +186,7 @@ impl MpcNetworkLayer {
         request_id: &str,
     ) -> Result<()> {
         use crate::network::sequencer::{ContractTransactionFlow, ContractTransactionRequest};
-        
+
         // Initialize sequencer if not already initialized
         if self.contract_sequencer.is_none() {
             self.initialize_contract_sequencer().await;
@@ -201,7 +201,7 @@ impl MpcNetworkLayer {
                 amount,
                 request_id,
             );
-            
+
             let request = ContractTransactionRequest {
                 flow: ContractTransactionFlow::SolverAddLiquidity {
                     solver_address: solver_address.to_string(),
@@ -220,7 +220,9 @@ impl MpcNetworkLayer {
             );
             Ok(())
         } else {
-            warn!("❌ [NETWORK] Contract sequencer not available, falling back to direct execution");
+            warn!(
+                "❌ [NETWORK] Contract sequencer not available, falling back to direct execution"
+            );
             // Fallback to direct execution if sequencer initialization failed
             self.submit_solver_add_liquidity_contract_update(
                 solver_address,
@@ -417,6 +419,7 @@ impl MpcNetworkLayer {
                             Some(intent_hash.clone()),
                             Some(transaction_type.clone()),
                             None,
+                            None,
                         )
                         .await?;
 
@@ -452,6 +455,7 @@ impl MpcNetworkLayer {
                             None, // No intent_hash for withdraw liquidity
                             Some(crate::types::TransactionType::WithdrawLiquidity),
                             Some(solver_address.clone()),
+                            None,
                         )
                         .await?;
 
@@ -487,6 +491,7 @@ impl MpcNetworkLayer {
                             None, // No intent_hash for reward payout
                             Some(crate::types::TransactionType::RewardTxn),
                             Some(solver_address.clone()),
+                            None,
                         )
                         .await?;
 
@@ -551,15 +556,16 @@ impl MpcNetworkLayer {
             );
             Ok(())
         } else {
-            warn!("❌ [NETWORK] Contract sequencer not available, falling back to direct execution");
-            self
-                .submit_solver_liquidity_contract_update(
-                    solver_address,
-                    asset_chain_name,
-                    amount,
-                    payout_tx_hash,
-                )
-                .await
+            warn!(
+                "❌ [NETWORK] Contract sequencer not available, falling back to direct execution"
+            );
+            self.submit_solver_liquidity_contract_update(
+                solver_address,
+                asset_chain_name,
+                amount,
+                payout_tx_hash,
+            )
+            .await
         }
     }
 
@@ -616,15 +622,16 @@ impl MpcNetworkLayer {
             );
             Ok(())
         } else {
-            warn!("❌ [NETWORK] Contract sequencer not available, falling back to direct execution");
-            self
-                .submit_solver_reward_contract_update(
-                    solver_address,
-                    reward_btc,
-                    reward_tics,
-                    payout_tx_hash,
-                )
-                .await
+            warn!(
+                "❌ [NETWORK] Contract sequencer not available, falling back to direct execution"
+            );
+            self.submit_solver_reward_contract_update(
+                solver_address,
+                reward_btc,
+                reward_tics,
+                payout_tx_hash,
+            )
+            .await
         }
     }
 
@@ -649,9 +656,9 @@ impl MpcNetworkLayer {
             use crate::network::sequencer::ContractTransactionFlow;
             let request = ContractTransactionRequest {
                 flow: ContractTransactionFlow::DepositIntent {
-                intent: intent.clone(),
-                intent_hash: intent_hash.to_string(),
-                transaction_type: transaction_type.clone(),
+                    intent: intent.clone(),
+                    intent_hash: intent_hash.to_string(),
+                    transaction_type: transaction_type.clone(),
                     vault_group_key,
                     amount,
                 },
@@ -666,7 +673,9 @@ impl MpcNetworkLayer {
             );
             Ok(())
         } else {
-            warn!("❌ [NETWORK] Contract sequencer not available, falling back to direct execution");
+            warn!(
+                "❌ [NETWORK] Contract sequencer not available, falling back to direct execution"
+            );
             // Fallback to direct execution if sequencer initialization failed
             if let Some(signing_node) = &mut self.signing_node {
                 crate::chain_abstraction::MpcChainExecutor::execute_contract_call(
@@ -689,7 +698,7 @@ impl MpcNetworkLayer {
     }
 
     /// Initialize the contract transaction sequencer
-    /// 
+    ///
     /// Production-ready implementation that creates a queue for sequential processing
     async fn initialize_contract_sequencer(&mut self) {
         let mut sequencer = crate::network::sequencer::ContractTransactionSequencer::new();
@@ -698,11 +707,14 @@ impl MpcNetworkLayer {
         let message_tx = self.message_tx.clone();
         sequencer.initialize(message_tx, node_id, total_nodes).await;
         self.contract_sequencer = Some(sequencer);
-        info!("✅ [NETWORK] Contract transaction sequencer initialized with {} total nodes", total_nodes);
+        info!(
+            "✅ [NETWORK] Contract transaction sequencer initialized with {} total nodes",
+            total_nodes
+        );
     }
 
     /// Process a single contract transaction from the sequencer
-    /// 
+    ///
     /// Called automatically by the event loop when a transaction is received from the sequencer channel.
     /// Processes transactions sequentially to prevent nonce collisions.
     pub(crate) async fn process_contract_transaction(
@@ -710,7 +722,7 @@ impl MpcNetworkLayer {
         request: crate::network::sequencer::ContractTransactionRequest,
     ) -> Result<()> {
         use crate::network::sequencer::ContractTransactionFlow;
-        
+
         match &request.flow {
             ContractTransactionFlow::DepositIntent {
                 intent,
@@ -719,42 +731,42 @@ impl MpcNetworkLayer {
                 vault_group_key,
                 amount,
             } => {
-        info!(
+                info!(
                     "📋 [SEQUENCER] Processing deposit intent transaction: intent_hash={}, tx_id={}, type={:?}",
                     intent_hash, request.transaction_id, transaction_type
         );
 
                 // Execute deposit intent contract call
-        if let Some(signing_node) = &mut self.signing_node {
-            let result = crate::chain_abstraction::MpcChainExecutor::execute_contract_call(
-                signing_node,
-                self.node_manager.as_ref(),
-                self.dkg_node.as_ref(),
+                if let Some(signing_node) = &mut self.signing_node {
+                    let result = crate::chain_abstraction::MpcChainExecutor::execute_contract_call(
+                        signing_node,
+                        self.node_manager.as_ref(),
+                        self.dkg_node.as_ref(),
                         intent,
                         intent_hash,
                         transaction_type.clone(),
                         *vault_group_key,
                         *amount,
-                &request.transaction_id,
-            )
-            .await;
+                        &request.transaction_id,
+                    )
+                    .await;
 
-            match result {
-                Ok(()) => {
-                    info!(
+                    match result {
+                        Ok(()) => {
+                            info!(
                                 "✅ [SEQUENCER] Successfully executed deposit intent contract call for transaction ID {}",
                         request.transaction_id
                     );
-                }
-                Err(e) => {
-                    error!(
+                        }
+                        Err(e) => {
+                            error!(
                                 "❌ [SEQUENCER] Failed to execute deposit intent contract call for transaction ID {}: {}",
                         request.transaction_id, e
                     );
-                }
-            }
-        } else {
-            warn!(
+                        }
+                    }
+                } else {
+                    warn!(
                         "⚠️ [SEQUENCER] Signing node not available, skipping deposit intent transaction for tx_id={}",
                         request.transaction_id
                     );
@@ -855,7 +867,7 @@ impl MpcNetworkLayer {
                 }
             }
         }
-        
+
         Ok(())
     }
 }
