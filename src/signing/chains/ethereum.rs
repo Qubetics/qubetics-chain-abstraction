@@ -354,8 +354,13 @@ impl SigningNode {
                     chain_id: transaction.chain_id,
                 });
 
-            // Store in TICS reward pending transactions (assuming TICS for now)
-            // TODO: Determine network type based on transaction context
+            // Ethereum handler always stores to TICS (EVM network)
+            // Bitcoin transactions would be handled by the Bitcoin handler
+            info!(
+                "💰 [REWARD] Storing TICS reward transaction for round {} (solver: {})",
+                round, solver_addr
+            );
+            
             self.store_reward_transaction_tics(
                 round,
                 chain_tx,

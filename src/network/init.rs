@@ -54,6 +54,7 @@ impl MpcNetworkLayer {
             contract_sequencer: None,
             network_transaction_sequencer: None,
             network_transaction_processing_lock: Arc::new(Mutex::new(())),
+            // Removed: deterministic_selection field
         };
 
         this.bootstrap_peer_ids = this

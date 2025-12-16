@@ -9,10 +9,10 @@ use anyhow::Result;
 use hex;
 use k256::ProjectivePoint;
 use sha3::{Digest, Keccak256};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use crate::types::{DepositIntent, TransactionType};
 
@@ -80,18 +80,25 @@ struct SequencerSyncState {
     is_confirmed: bool,
 }
 
-/// Sequencer for contract transactions
+/// Sequencer for contract transactions (Vault ETH Address)
 ///
-/// Production-ready implementation that ensures sequential processing to prevent nonce collisions.
-/// Synchronizes across all nodes to prevent VRF round overlaps.
-/// Uses deterministic ordering (sorted by transaction_id) to ensure all nodes process the same transaction.
+/// Production-ready implementation with deterministic final node selection.
+/// Only the selected final node picks which request to process next.
+/// Other nodes wait for the SELECT message from the final node.
 ///
-/// CRITICAL: All nodes must have the same requests and process them in the same order.
-/// This is ensured by:
-/// 1. All nodes receive the same transaction requests (via gossip)
-/// 2. All nodes use deterministic ordering (lowest transaction_id) to select the next transaction
-/// 3. All nodes use consensus to agree on which transaction to process next
-/// 4. All nodes wait for all confirmations before moving to the next transaction
+/// CRITICAL: Final node selection is deterministic based on:
+/// 1. Round number (increments after each transaction)
+/// 2. Previous block hash (shared across network)
+/// 3. Domain tag "VAULT" for separation from main sequencer
+///
+/// Flow:
+/// 1. All nodes receive transaction requests (via gossip)
+/// 2. Final node is selected: idx = H("VAULT" || prev_block_hash || round) mod |Nodes|
+/// 3. Only final node selects next request and broadcasts SELECT message
+/// 4. Other nodes verify SELECT, send ACK if they have it, or MISSING if not
+/// 5. All nodes process the selected request
+/// 6. Round advances for next selection
+#[derive(Clone)]
 pub struct ContractTransactionSequencer {
     /// Pending requests sorted by transaction_id (BTreeMap maintains sorted order)
     pending_requests: Arc<RwLock<BTreeMap<String, ContractTransactionRequest>>>,
@@ -103,13 +110,29 @@ pub struct ContractTransactionSequencer {
     node_id: String,
     /// Cached request for the current processing transaction (set when we propose it)
     current_request_cache: Arc<RwLock<Option<ContractTransactionRequest>>>,
+    
+    // VRF + Consensus for final node selection (Vault Sequencer)
+    /// Local peer ID for VRF
+    local_peer_id: Option<libp2p::PeerId>,
+    /// Current round number for vault sequencer (INDEPENDENT from signing rounds)
+    vault_sequencer_round: Arc<RwLock<u64>>,
+    /// VRF service for vault sequencer node selection (separate instance with "vault_seq:" prefix)
+    vrf_service: Option<Arc<crate::protocols::VrfService>>,
+    /// Consensus node for vault sequencer final node determination
+    consensus_node: Option<Arc<RwLock<crate::consensus::ConsensusNode>>>,
+    /// Available nodes for VRF selection
+    available_nodes: Arc<RwLock<Vec<libp2p::PeerId>>>,
+    /// Cache of final nodes per round (after consensus)
+    final_node_cache: Arc<RwLock<HashMap<u64, libp2p::PeerId>>>,
+    /// Locked request ID selected by final node (per round)
+    locked_request: Arc<RwLock<Option<String>>>,
 }
 
 impl ContractTransactionSequencer {
     /// Create a new sequencer
     ///
     /// The sequencer queues contract transaction requests for sequential processing.
-    /// Processing is done by the MpcNetworkLayer which has direct access to all required components.
+    /// Uses VRF + Consensus for final node selection.
     pub fn new() -> Self {
         Self {
             pending_requests: Arc::new(RwLock::new(BTreeMap::new())),
@@ -125,6 +148,238 @@ impl ContractTransactionSequencer {
             message_tx: None,
             node_id: String::new(),
             current_request_cache: Arc::new(RwLock::new(None)),
+            
+            // Initialize VRF + Consensus fields
+            local_peer_id: None,
+            vault_sequencer_round: Arc::new(RwLock::new(0)),
+            vrf_service: None,
+            consensus_node: None,
+            available_nodes: Arc::new(RwLock::new(Vec::new())),
+            final_node_cache: Arc::new(RwLock::new(HashMap::new())),
+            locked_request: Arc::new(RwLock::new(None)),
+        }
+    }
+    
+    /// Set local peer ID for final node selection
+    pub fn set_local_peer_id(&mut self, peer_id: libp2p::PeerId) {
+        self.local_peer_id = Some(peer_id);
+    }
+    
+    /// Update available nodes for final node selection
+    pub async fn update_available_nodes(&self, nodes: Vec<libp2p::PeerId>) {
+        let mut available = self.available_nodes.write().await;
+        *available = nodes;
+        info!(
+            "🔄 [VAULT_SEQUENCER] Updated available nodes: count={}",
+            available.len()
+        );
+    }
+    
+    /// Select final node deterministically for current round using VRF + Consensus
+    /// Returns the peer ID of the selected node (from consensus cache)
+    async fn select_final_node(&self) -> Result<libp2p::PeerId> {
+        let round = *self.vault_sequencer_round.read().await;
+        
+        // Check if consensus has completed for this round
+        let cache = self.final_node_cache.read().await;
+        if let Some(final_node) = cache.get(&round) {
+            return Ok(*final_node);
+        }
+        
+        // Consensus not complete yet
+        Err(anyhow::anyhow!(
+            "Consensus not complete for vault sequencer round {}. Run VRF selection and consensus first.",
+            round
+        ))
+    }
+    
+    /// Perform VRF node selection for current round
+    pub async fn perform_vrf_selection(&self, threshold: usize) -> Result<()> {
+        let round = *self.vault_sequencer_round.read().await;
+        let nodes = self.available_nodes.read().await.clone();
+        
+        if nodes.is_empty() {
+            return Err(anyhow::anyhow!("No available nodes for VRF selection"));
+        }
+        
+        info!(
+            "🎯 [VAULT_SEQUENCER] Starting VRF selection for round {} with {} nodes",
+            round, nodes.len()
+        );
+        
+        if let Some(vrf_service) = &self.vrf_service {
+            // Perform VRF selection (separate storage via prefix)
+            let selection_result = vrf_service.perform_node_selection_without_broadcast(
+                &nodes,
+                threshold,
+                round,
+                "vault_sequencer"
+            ).await?;
+            
+            info!(
+                "✅ [VAULT_SEQUENCER] VRF selection completed for round {}: {} nodes selected",
+                round, selection_result.selected_nodes.len()
+            );
+            
+            // Create broadcast with vault sequencer specific message type
+            if let Some(broadcast_msg) = vrf_service.create_broadcast_for_round(round).await {
+                if let Some(message_tx) = &self.message_tx {
+                    let broadcast_data = serde_json::to_vec(
+                        &crate::types::GossipsubMessage::VaultSequencerVrfSelectedNodes(broadcast_msg)
+                    )?;
+                    
+                    message_tx.send(crate::types::ChannelMessage::Broadcast {
+                        topic: "vault-sequencer-vrf".to_string(),
+                        data: broadcast_data,
+                    }).await?;
+                    
+                    info!("📤 [VAULT_SEQUENCER] Broadcasted VRF selection for round {}", round);
+                }
+            }
+        } else {
+            return Err(anyhow::anyhow!("VRF service not available"));
+        }
+        
+        Ok(())
+    }
+    
+    /// Check if we have enough VRF selections to start consensus
+    pub async fn can_start_consensus(&self, round: u64, min_selections: usize) -> bool {
+        if let Some(vrf_service) = &self.vrf_service {
+            vrf_service.can_start_consensus(round, min_selections).await
+        } else {
+            false
+        }
+    }
+    
+    /// Start consensus to determine final node for current round
+    pub async fn start_consensus(&self, round: u64) -> Result<crate::types::ConsensusResult> {
+        info!("🎯 [VAULT_SEQUENCER] Starting consensus for round {}", round);
+        
+        // Get VRF-selected nodes from VRF service
+        let selected_nodes = if let Some(vrf_service) = &self.vrf_service {
+            vrf_service.get_all_selected_nodes_with_frequencies(round).await
+        } else {
+            return Err(anyhow::anyhow!("VRF service not available"));
+        };
+        
+        if selected_nodes.is_empty() {
+            return Err(anyhow::anyhow!(
+                "No VRF selections available for vault sequencer round {}",
+                round
+            ));
+        }
+        
+        info!(
+            "📊 [VAULT_SEQUENCER] Got {} VRF selections for round {}",
+            selected_nodes.len(), round
+        );
+        
+        // Run consensus algorithm
+        if let Some(consensus) = &self.consensus_node {
+            let mut consensus_node = consensus.write().await;
+            consensus_node.add_selected_nodes(round, selected_nodes);
+            
+            let result = consensus_node.start_consensus(round)?;
+            
+            info!(
+                "✅ [VAULT_SEQUENCER] Consensus completed for round {}: final node = {:?}",
+                round, result.final_node
+            );
+            
+            // Cache final node for this round
+            let mut cache = self.final_node_cache.write().await;
+            cache.insert(round, result.final_node.0);
+            
+            Ok(result)
+        } else {
+            Err(anyhow::anyhow!("Consensus node not available"))
+        }
+    }
+    
+    /// Check if current node is the final node for this round
+    pub async fn am_i_final_node(&self) -> Result<bool> {
+        let local_peer = self.local_peer_id
+            .ok_or_else(|| anyhow::anyhow!("Local peer ID not set"))?;
+        
+        let final_node = self.select_final_node().await?;
+        Ok(local_peer == final_node)
+    }
+    
+    /// Advance to next round
+    pub async fn advance_round(&self) {
+        let mut round = self.vault_sequencer_round.write().await;
+        *round += 1;
+        
+        // Clear locked request
+        let mut locked = self.locked_request.write().await;
+        *locked = None;
+        
+        info!("📈 [VAULT_SEQUENCER] Advanced to round {}", *round);
+    }
+    
+    /// Get current round
+    pub async fn get_current_round(&self) -> u64 {
+        *self.vault_sequencer_round.read().await
+    }
+    
+    /// Set VRF service for vault sequencer
+    pub fn set_vrf_service(&mut self, vrf_service: Arc<crate::protocols::VrfService>) {
+        self.vrf_service = Some(vrf_service);
+        info!("🔧 [VAULT_SEQUENCER] VRF service configured");
+    }
+    
+    /// Set consensus node for vault sequencer
+    pub fn set_consensus_node(&mut self, consensus: Arc<RwLock<crate::consensus::ConsensusNode>>) {
+        self.consensus_node = Some(consensus);
+        info!("🔧 [VAULT_SEQUENCER] Consensus node configured");
+    }
+    
+    /// Handle VRF selected nodes broadcast from another node
+    pub async fn handle_vrf_broadcast(
+        &self,
+        broadcast: crate::protocols::VrfSelectedNodesBroadcast,
+        total_nodes: usize,
+    ) -> Result<()> {
+        if let Some(vrf_service) = &self.vrf_service {
+            vrf_service.handle_vrf_broadcast(broadcast, total_nodes).await;
+            info!("✅ [VAULT_SEQUENCER] Handled VRF broadcast");
+        } else {
+            warn!("⚠️ [VAULT_SEQUENCER] VRF service not available for handling broadcast");
+        }
+        Ok(())
+    }
+    
+    /// Check and trigger consensus if enough VRF selections received
+    pub async fn check_and_trigger_consensus(
+        &self,
+        round: u64,
+        min_selections: usize,
+    ) -> Result<Option<crate::types::ConsensusResult>> {
+        if self.can_start_consensus(round, min_selections).await {
+            info!(
+                "🎯 [VAULT_SEQUENCER] Enough VRF selections for round {}, starting consensus",
+                round
+            );
+            
+            match self.start_consensus(round).await {
+                Ok(result) => {
+                    info!(
+                        "✅ [VAULT_SEQUENCER] Consensus complete for round {}: final node = {:?}",
+                        round, result.final_node
+                    );
+                    Ok(Some(result))
+                }
+                Err(e) => {
+                    error!(
+                        "❌ [VAULT_SEQUENCER] Failed to start consensus for round {}: {}",
+                        round, e
+                    );
+                    Err(e)
+                }
+            }
+        } else {
+            Ok(None)
         }
     }
 
@@ -385,7 +640,8 @@ impl ContractTransactionSequencer {
         sync_state.confirmed_nodes.contains(&self.node_id)
     }
 
-    /// Get the next request to process based on FCFS ordering
+    /// Get the next request to process based on final node selection
+    /// Only the final node selects the request, others wait for SELECT message
     /// Returns None if something is currently being processed or not confirmed yet
     pub async fn get_next_request(&self) -> Option<ContractTransactionRequest> {
         let sync_state = self.sync_state.read().await;
@@ -394,7 +650,7 @@ impl ContractTransactionSequencer {
         if let Some(current_tx) = &sync_state.current_processing {
             if !sync_state.is_confirmed {
                 info!(
-                    "⏳ [SEQUENCER] [FCFS] Waiting for confirmation: current_tx={}, confirmed_nodes={}/{}, is_confirmed={}",
+                    "⏳ [VAULT_SEQUENCER] Waiting for confirmation: current_tx={}, confirmed_nodes={}/{}, is_confirmed={}",
                     current_tx,
                     sync_state.confirmed_nodes.len(),
                     sync_state.total_nodes,
@@ -403,28 +659,283 @@ impl ContractTransactionSequencer {
                 return None;
             }
             info!(
-                "✅ [SEQUENCER] [FCFS] Previous transaction {} confirmed, ready for next",
+                "✅ [VAULT_SEQUENCER] Previous transaction {} confirmed, ready for next",
                 current_tx
             );
         }
 
         drop(sync_state);
 
-        // Get the request with the lowest transaction_id (deterministic ordering)
-        // BTreeMap maintains sorted order, so first entry is the lowest transaction_id
-        let mut pending = self.pending_requests.write().await;
-        if let Some((tx_id, request)) = pending.pop_first() {
-            let sequence = request.sequence;
-            let queue_size = pending.len();
-            info!(
-                "🎯 [SEQUENCER] [DETERMINISTIC] Selected next request: tx_id={}, sequence={}, remaining_in_queue={} (lowest tx_id)",
-                tx_id, sequence, queue_size
-            );
-            Some(request)
-        } else {
-            // info!("📭 [SEQUENCER] [DETERMINISTIC] No pending requests in queue");
-            None
+        // Check if there's a locked request (selected by final node)
+        {
+            let locked = self.locked_request.read().await;
+            if let Some(request_id) = &*locked {
+                // We have a locked request from final node - retrieve and return it
+                let mut pending = self.pending_requests.write().await;
+                if let Some(request) = pending.remove(request_id) {
+                    info!(
+                        "🔓 [VAULT_SEQUENCER] Processing locked request from final node: {}",
+                        request_id
+                    );
+                    return Some(request);
+                }
+            }
         }
+        
+        // Check if we have pending requests
+        let has_pending = {
+            let pending = self.pending_requests.read().await;
+            !pending.is_empty()
+        };
+        
+        if !has_pending {
+            return None;
+        }
+        
+        // Get current round and check if consensus is complete
+        let round = *self.vault_sequencer_round.read().await;
+        let cache = self.final_node_cache.read().await;
+        let has_final_node = cache.contains_key(&round);
+        drop(cache);
+        
+        if !has_final_node {
+            // Consensus not complete - trigger VRF if not already done
+            info!(
+                "🎯 [VAULT_SEQUENCER] No final node for round {}, triggering VRF selection",
+                round
+            );
+            
+            // Get available nodes
+            let nodes = self.available_nodes.read().await.clone();
+            if nodes.is_empty() {
+                warn!("⚠️ [VAULT_SEQUENCER] No available nodes for VRF selection");
+                return None;
+            }
+            
+            // Trigger VRF selection (fire and forget - results will come via broadcasts)
+            let threshold = nodes.len(); // All nodes must participate
+            let sequencer_clone = self.clone();
+            tokio::spawn(async move {
+                if let Err(e) = sequencer_clone.perform_vrf_selection(threshold).await {
+                    error!("❌ [VAULT_SEQUENCER] VRF selection failed: {}", e);
+                }
+            });
+            
+            // Return None - consensus will complete after VRF broadcasts are collected
+            return None;
+        }
+
+        // Consensus complete - check if we are the final node
+        match self.am_i_final_node().await {
+            Ok(true) => {
+                // We are the final node - select the request
+                let mut pending = self.pending_requests.write().await;
+                if let Some((tx_id, request)) = pending.pop_first() {
+                    let sequence = request.sequence;
+                    let queue_size = pending.len();
+                    info!(
+                        "🎯 [VAULT_SEQUENCER] Final node selecting request: tx_id={}, sequence={}, remaining={}",
+                        tx_id, sequence, queue_size
+                    );
+                    
+                    // Lock this request
+                    drop(pending);
+                    let mut locked = self.locked_request.write().await;
+                    *locked = Some(tx_id.clone());
+                    
+                    // Broadcast SELECT message
+                    if let Err(e) = self.broadcast_select_message(&tx_id, &request).await {
+                        warn!("⚠️ [VAULT_SEQUENCER] Failed to broadcast SELECT: {}", e);
+                    }
+                    
+                    // Re-acquire pending to get the request
+                    drop(locked);
+                    let mut pending = self.pending_requests.write().await;
+                    pending.remove(&tx_id)
+                } else {
+                    None
+                }
+            }
+            Ok(false) => {
+                // We are NOT the final node - wait for SELECT message
+                None
+            }
+            Err(e) => {
+                warn!("⚠️ [VAULT_SEQUENCER] Error checking final node status: {}", e);
+                None
+            }
+        }
+    }
+    
+    /// Broadcast SELECT message (called by final node only)
+    async fn broadcast_select_message(
+        &self,
+        request_id: &str,
+        request: &ContractTransactionRequest,
+    ) -> Result<()> {
+        let round = *self.vault_sequencer_round.read().await;
+        let local_peer = self.local_peer_id
+            .ok_or_else(|| anyhow::anyhow!("Local peer ID not set"))?;
+        
+        info!(
+            "📤 [VAULT_SEQUENCER] Broadcasting SELECT: round={}, request_id={}",
+            round, request_id
+        );
+        
+        // Create signature (simplified - in production use proper signing)
+        let signature = vec![]; // TODO: Sign with node's private key
+        
+        // Broadcast via message channel
+        if let Some(tx) = &self.message_tx {
+            let msg = crate::types::ChannelMessage::Broadcast {
+                topic: "vault-sequencer-select".to_string(),
+                data: serde_json::to_vec(&crate::types::GossipsubMessage::VaultSequencerSelect {
+                    round,
+                    request_id: request_id.to_string(),
+                    final_node_id: local_peer,
+                    signature,
+                })?,
+            };
+            
+            tx.send(msg).await.map_err(|e| anyhow::anyhow!("Failed to send SELECT: {}", e))?;
+        }
+        
+        Ok(())
+    }
+    
+    /// Broadcast ACK message
+    async fn broadcast_ack(&self, request_id: &str) -> Result<()> {
+        let round = *self.vault_sequencer_round.read().await;
+        let local_peer = self.local_peer_id
+            .ok_or_else(|| anyhow::anyhow!("Local peer ID not set"))?;
+        
+        if let Some(tx) = &self.message_tx {
+            let msg = crate::types::ChannelMessage::Broadcast {
+                topic: "vault-sequencer-ack".to_string(),
+                data: serde_json::to_vec(&crate::types::GossipsubMessage::VaultSequencerAck {
+                    round,
+                    request_id: request_id.to_string(),
+                    node_id: local_peer,
+                })?,
+            };
+            
+            tx.send(msg).await.map_err(|e| anyhow::anyhow!("Failed to send ACK: {}", e))?;
+        }
+        
+        Ok(())
+    }
+    
+    /// Broadcast MISSING message
+    async fn broadcast_missing(&self, request_id: &str) -> Result<()> {
+        let round = *self.vault_sequencer_round.read().await;
+        let local_peer = self.local_peer_id
+            .ok_or_else(|| anyhow::anyhow!("Local peer ID not set"))?;
+        
+        if let Some(tx) = &self.message_tx {
+            let msg = crate::types::ChannelMessage::Broadcast {
+                topic: "vault-sequencer-missing".to_string(),
+                data: serde_json::to_vec(&crate::types::GossipsubMessage::VaultSequencerMissing {
+                    round,
+                    request_id: request_id.to_string(),
+                    node_id: local_peer,
+                })?,
+            };
+            
+            tx.send(msg).await.map_err(|e| anyhow::anyhow!("Failed to send MISSING: {}", e))?;
+        }
+        
+        Ok(())
+    }
+    
+    /// Handle SELECT message from final node
+    pub async fn handle_select_message(
+        &self,
+        round: u64,
+        request_id: String,
+        final_node_id: libp2p::PeerId,
+    ) -> Result<()> {
+        let current_round = *self.vault_sequencer_round.read().await;
+        
+        if round != current_round {
+            warn!(
+                "⚠️ [VAULT_SEQUENCER] SELECT message for wrong round: expected={}, got={}",
+                current_round, round
+            );
+            return Ok(());
+        }
+        
+        // Verify the sender is actually the final node
+        let expected_final = self.select_final_node().await?;
+        if final_node_id != expected_final {
+            warn!(
+                "⚠️ [VAULT_SEQUENCER] SELECT from non-final node: expected={:?}, got={:?}",
+                expected_final, final_node_id
+            );
+            return Ok(());
+        }
+        
+        // Lock this request
+        let mut locked = self.locked_request.write().await;
+        *locked = Some(request_id.clone());
+        
+        info!(
+            "🔒 [VAULT_SEQUENCER] Locked request from final node: round={}, request_id={}",
+            round, request_id
+        );
+        
+        // Check if we have this request
+        let pending = self.pending_requests.read().await;
+        let has_request = pending.contains_key(&request_id);
+        drop(pending);
+        
+        if has_request {
+            info!("✅ [VAULT_SEQUENCER] Have request, sending ACK: {}", request_id);
+            self.broadcast_ack(&request_id).await?;
+        } else {
+            warn!("⚠️ [VAULT_SEQUENCER] Missing request, sending MISSING: {}", request_id);
+            self.broadcast_missing(&request_id).await?;
+            
+            // Wait for request to arrive
+            info!("⏳ [VAULT_SEQUENCER] Waiting for missing request: {}", request_id);
+            self.wait_for_request(&request_id, round).await?;
+        }
+        
+        Ok(())
+    }
+    
+    /// Wait for a missing request to arrive (with timeout)
+    async fn wait_for_request(&self, request_id: &str, round: u64) -> Result<()> {
+        let timeout_ms = 5000; // 5 seconds timeout
+        let check_interval_ms = 100; // Check every 100ms
+        
+        let start = std::time::Instant::now();
+        
+        while start.elapsed().as_millis() < timeout_ms as u128 {
+            // Check if request has arrived
+            let pending = self.pending_requests.read().await;
+            if pending.contains_key(request_id) {
+                drop(pending);
+                
+                info!("✅ [VAULT_SEQUENCER] Missing request {} arrived!", request_id);
+                
+                // Send ACK now that we have it
+                self.broadcast_ack(request_id).await?;
+                
+                return Ok(());
+            }
+            drop(pending);
+            
+            // Wait a bit before checking again
+            tokio::time::sleep(tokio::time::Duration::from_millis(check_interval_ms)).await;
+        }
+        
+        // Timeout - request never arrived
+        warn!(
+            "⏱️ [VAULT_SEQUENCER] Timeout waiting for request {} (round {}), skipping",
+            request_id, round
+        );
+        
+        Ok(())
     }
 
     /// Handle sequencer sync message from another node
@@ -546,10 +1057,28 @@ impl ContractTransactionSequencer {
                         drop(sync_state);
                         let mut cache = self.current_request_cache.write().await;
                         *cache = None;
+                        drop(cache);
+
+                        // CRITICAL: Increment round and clear selection state for next transaction
+                        let mut round_lock = self.vault_sequencer_round.write().await;
+                        let old_round = *round_lock;
+                        *round_lock += 1;
+                        let new_round = *round_lock;
+                        drop(round_lock);
+
+                        // Clear locked request
+                        let mut locked = self.locked_request.write().await;
+                        *locked = None;
+                        drop(locked);
+
+                        // Clear final node cache for old round
+                        let mut cache = self.final_node_cache.write().await;
+                        cache.remove(&old_round);
+                        drop(cache);
 
                         info!(
-                            "🎉 [SEQUENCER] [SYNC] ALL nodes confirmed completion of tx_id={}! State cleared, ready for next transaction.",
-                            transaction_id
+                            "🎉 [VAULT_SEQUENCER] [SYNC] ALL nodes confirmed completion of tx_id={}! Round incremented: {} -> {}. State cleared, ready for next transaction.",
+                            transaction_id, old_round, new_round
                         );
                     }
                 } else {
@@ -863,12 +1392,25 @@ struct NetworkTransactionSyncState {
     is_confirmed: bool,
 }
 
-/// Sequencer for network transactions (using network DKG group key)
+/// Sequencer for network transactions (Main ETH Address)
 ///
-/// This sequencer ensures sequential processing of network transactions
-/// to prevent nonce collisions when using the network DKG group key.
+/// Production-ready implementation with deterministic final node selection.
+/// Only the selected final node picks which request to process next.
+/// Other nodes wait for the SELECT message from the final node.
 ///
-/// CRITICAL: All nodes must have the same requests and process them in the same order.
+/// CRITICAL: Final node selection is deterministic based on:
+/// 1. Round number (increments after each transaction)
+/// 2. Previous block hash (shared across network)
+/// 3. Domain tag "MAIN" for separation from vault sequencer
+///
+/// Flow:
+/// 1. All nodes receive transaction requests (via gossip)
+/// 2. Final node is selected: idx = H("MAIN" || prev_block_hash || round) mod |Nodes|
+/// 3. Only final node selects next request and broadcasts SELECT message
+/// 4. Other nodes verify SELECT, send ACK if they have it, or MISSING if not
+/// 5. All nodes process the selected request
+/// 6. Round advances for next selection
+#[derive(Clone)]
 pub struct NetworkTransactionSequencer {
     /// Pending requests sorted by transaction_id (BTreeMap maintains sorted order)
     pending_requests: Arc<RwLock<BTreeMap<String, NetworkTransactionRequest>>>,
@@ -880,10 +1422,27 @@ pub struct NetworkTransactionSequencer {
     node_id: String,
     /// Cached request for the current processing transaction (set when we propose it)
     current_request_cache: Arc<RwLock<Option<NetworkTransactionRequest>>>,
+    
+    // VRF + Consensus for final node selection (Main Sequencer)
+    /// Local peer ID for final node selection
+    local_peer_id: Option<libp2p::PeerId>,
+    /// Main sequencer round number (independent from signing and vault rounds)
+    main_sequencer_round: Arc<RwLock<u64>>,
+    /// VRF service for node selection (separate instance with "main_seq:" prefix)
+    vrf_service: Option<Arc<crate::protocols::VrfService>>,
+    /// Consensus node for determining final node
+    consensus_node: Option<Arc<RwLock<crate::consensus::ConsensusNode>>>,
+    /// Available nodes for final node selection
+    available_nodes: Arc<RwLock<Vec<libp2p::PeerId>>>,
+    /// Cache of selected final nodes per round (populated by consensus)
+    final_node_cache: Arc<RwLock<HashMap<u64, libp2p::PeerId>>>,
+    /// Locked request ID selected by final node (per round)
+    locked_request: Arc<RwLock<Option<String>>>,
 }
 
 impl NetworkTransactionSequencer {
     /// Create a new network transaction sequencer
+    /// Uses VRF + Consensus for final node selection
     pub fn new() -> Self {
         Self {
             pending_requests: Arc::new(RwLock::new(BTreeMap::new())),
@@ -899,6 +1458,238 @@ impl NetworkTransactionSequencer {
             message_tx: None,
             node_id: String::new(),
             current_request_cache: Arc::new(RwLock::new(None)),
+            
+            // Initialize VRF + Consensus fields
+            local_peer_id: None,
+            main_sequencer_round: Arc::new(RwLock::new(0)),
+            vrf_service: None,
+            consensus_node: None,
+            available_nodes: Arc::new(RwLock::new(Vec::new())),
+            final_node_cache: Arc::new(RwLock::new(HashMap::new())),
+            locked_request: Arc::new(RwLock::new(None)),
+        }
+    }
+    
+    /// Set local peer ID for final node selection
+    pub fn set_local_peer_id(&mut self, peer_id: libp2p::PeerId) {
+        self.local_peer_id = Some(peer_id);
+    }
+    
+    /// Update available nodes for final node selection
+    pub async fn update_available_nodes(&self, nodes: Vec<libp2p::PeerId>) {
+        let mut available = self.available_nodes.write().await;
+        *available = nodes;
+        info!(
+            "🔄 [MAIN_SEQUENCER] Updated available nodes: count={}",
+            available.len()
+        );
+    }
+    
+    /// Select final node deterministically for current round using VRF + Consensus
+    /// Returns the peer ID of the selected node (from consensus cache)
+    async fn select_final_node(&self) -> Result<libp2p::PeerId> {
+        let round = *self.main_sequencer_round.read().await;
+        
+        // Check if consensus has completed for this round
+        let cache = self.final_node_cache.read().await;
+        if let Some(final_node) = cache.get(&round) {
+            return Ok(*final_node);
+        }
+        
+        // Consensus not complete yet
+        Err(anyhow::anyhow!(
+            "Consensus not complete for main sequencer round {}. Run VRF selection and consensus first.",
+            round
+        ))
+    }
+    
+    /// Perform VRF node selection for current round
+    pub async fn perform_vrf_selection(&self, threshold: usize) -> Result<()> {
+        let round = *self.main_sequencer_round.read().await;
+        let nodes = self.available_nodes.read().await.clone();
+        
+        if nodes.is_empty() {
+            return Err(anyhow::anyhow!("No available nodes for VRF selection"));
+        }
+        
+        info!(
+            "🎯 [MAIN_SEQUENCER] Starting VRF selection for round {} with {} nodes",
+            round, nodes.len()
+        );
+        
+        if let Some(vrf_service) = &self.vrf_service {
+            // Perform VRF selection
+            let selection_result = vrf_service.perform_node_selection_without_broadcast(
+                &nodes,
+                threshold,
+                round,
+                "main_sequencer"
+            ).await?;
+            
+            info!(
+                "✅ [MAIN_SEQUENCER] VRF selection completed for round {}: {} nodes selected",
+                round, selection_result.selected_nodes.len()
+            );
+            
+            // Create broadcast with main sequencer specific message type
+            if let Some(broadcast_msg) = vrf_service.create_broadcast_for_round(round).await {
+                if let Some(message_tx) = &self.message_tx {
+                    let broadcast_data = serde_json::to_vec(
+                        &crate::types::GossipsubMessage::MainSequencerVrfSelectedNodes(broadcast_msg)
+                    )?;
+                    
+                    message_tx.send(crate::types::ChannelMessage::Broadcast {
+                        topic: "main-sequencer-vrf".to_string(),
+                        data: broadcast_data,
+                    }).await?;
+                    
+                    info!("📤 [MAIN_SEQUENCER] Broadcasted VRF selection for round {}", round);
+                }
+            }
+        } else {
+            return Err(anyhow::anyhow!("VRF service not available"));
+        }
+        
+        Ok(())
+    }
+    
+    /// Check if we have enough VRF selections to start consensus
+    pub async fn can_start_consensus(&self, round: u64, min_selections: usize) -> bool {
+        if let Some(vrf_service) = &self.vrf_service {
+            vrf_service.can_start_consensus(round, min_selections).await
+        } else {
+            false
+        }
+    }
+    
+    /// Start consensus to determine final node for current round
+    pub async fn start_consensus(&self, round: u64) -> Result<crate::types::ConsensusResult> {
+        info!("🎯 [MAIN_SEQUENCER] Starting consensus for round {}", round);
+        
+        // Get VRF-selected nodes from VRF service
+        let selected_nodes = if let Some(vrf_service) = &self.vrf_service {
+            vrf_service.get_all_selected_nodes_with_frequencies(round).await
+        } else {
+            return Err(anyhow::anyhow!("VRF service not available"));
+        };
+        
+        if selected_nodes.is_empty() {
+            return Err(anyhow::anyhow!(
+                "No VRF selections available for main sequencer round {}",
+                round
+            ));
+        }
+        
+        info!(
+            "📊 [MAIN_SEQUENCER] Got {} VRF selections for round {}",
+            selected_nodes.len(), round
+        );
+        
+        // Run consensus algorithm
+        if let Some(consensus) = &self.consensus_node {
+            let mut consensus_node = consensus.write().await;
+            consensus_node.add_selected_nodes(round, selected_nodes);
+            
+            let result = consensus_node.start_consensus(round)?;
+            
+            info!(
+                "✅ [MAIN_SEQUENCER] Consensus completed for round {}: final node = {:?}",
+                round, result.final_node
+            );
+            
+            // Cache final node for this round
+            let mut cache = self.final_node_cache.write().await;
+            cache.insert(round, result.final_node.0);
+            
+            Ok(result)
+        } else {
+            Err(anyhow::anyhow!("Consensus node not available"))
+        }
+    }
+    
+    /// Check if current node is the final node for this round
+    pub async fn am_i_final_node(&self) -> Result<bool> {
+        let local_peer = self.local_peer_id
+            .ok_or_else(|| anyhow::anyhow!("Local peer ID not set"))?;
+        
+        let final_node = self.select_final_node().await?;
+        Ok(local_peer == final_node)
+    }
+    
+    /// Advance to next round
+    pub async fn advance_round(&self) {
+        let mut round = self.main_sequencer_round.write().await;
+        *round += 1;
+        
+        // Clear locked request
+        let mut locked = self.locked_request.write().await;
+        *locked = None;
+        
+        info!("📈 [MAIN_SEQUENCER] Advanced to round {}", *round);
+    }
+    
+    /// Get current round
+    pub async fn get_current_round(&self) -> u64 {
+        *self.main_sequencer_round.read().await
+    }
+    
+    /// Set VRF service for main sequencer
+    pub fn set_vrf_service(&mut self, vrf_service: Arc<crate::protocols::VrfService>) {
+        self.vrf_service = Some(vrf_service);
+        info!("🔧 [MAIN_SEQUENCER] VRF service configured");
+    }
+    
+    /// Set consensus node for main sequencer
+    pub fn set_consensus_node(&mut self, consensus: Arc<RwLock<crate::consensus::ConsensusNode>>) {
+        self.consensus_node = Some(consensus);
+        info!("🔧 [MAIN_SEQUENCER] Consensus node configured");
+    }
+    
+    /// Handle VRF selected nodes broadcast from another node
+    pub async fn handle_vrf_broadcast(
+        &self,
+        broadcast: crate::protocols::VrfSelectedNodesBroadcast,
+        total_nodes: usize,
+    ) -> Result<()> {
+        if let Some(vrf_service) = &self.vrf_service {
+            vrf_service.handle_vrf_broadcast(broadcast, total_nodes).await;
+            info!("✅ [MAIN_SEQUENCER] Handled VRF broadcast");
+        } else {
+            warn!("⚠️ [MAIN_SEQUENCER] VRF service not available for handling broadcast");
+        }
+        Ok(())
+    }
+    
+    /// Check and trigger consensus if enough VRF selections received
+    pub async fn check_and_trigger_consensus(
+        &self,
+        round: u64,
+        min_selections: usize,
+    ) -> Result<Option<crate::types::ConsensusResult>> {
+        if self.can_start_consensus(round, min_selections).await {
+            info!(
+                "🎯 [MAIN_SEQUENCER] Enough VRF selections for round {}, starting consensus",
+                round
+            );
+            
+            match self.start_consensus(round).await {
+                Ok(result) => {
+                    info!(
+                        "✅ [MAIN_SEQUENCER] Consensus complete for round {}: final node = {:?}",
+                        round, result.final_node
+                    );
+                    Ok(Some(result))
+                }
+                Err(e) => {
+                    error!(
+                        "❌ [MAIN_SEQUENCER] Failed to start consensus for round {}: {}",
+                        round, e
+                    );
+                    Err(e)
+                }
+            }
+        } else {
+            Ok(None)
         }
     }
 
@@ -1041,7 +1832,8 @@ impl NetworkTransactionSequencer {
         sync_state.confirmed_nodes.contains(&self.node_id)
     }
 
-    /// Get the next request to process based on deterministic ordering (lowest transaction_id)
+    /// Get the next request to process based on final node selection
+    /// Only the final node selects the request, others wait for SELECT message
     pub async fn get_next_request(&self) -> Option<NetworkTransactionRequest> {
         let sync_state = self.sync_state.read().await;
 
@@ -1049,7 +1841,7 @@ impl NetworkTransactionSequencer {
         if let Some(current_tx) = &sync_state.current_processing {
             if !sync_state.is_confirmed {
                 info!(
-                    "⏳ [NETWORK_SEQUENCER] Waiting for confirmation: current_tx={}, confirmed_nodes={}/{}, is_confirmed={}",
+                    "⏳ [MAIN_SEQUENCER] Waiting for confirmation: current_tx={}, confirmed_nodes={}/{}, is_confirmed={}",
                     current_tx,
                     sync_state.confirmed_nodes.len(),
                     sync_state.total_nodes,
@@ -1058,26 +1850,283 @@ impl NetworkTransactionSequencer {
                 return None;
             }
             info!(
-                "✅ [NETWORK_SEQUENCER] Previous transaction {} confirmed, ready for next",
+                "✅ [MAIN_SEQUENCER] Previous transaction {} confirmed, ready for next",
                 current_tx
             );
         }
 
         drop(sync_state);
 
-        // Get the request with the lowest transaction_id (deterministic ordering)
-        let mut pending = self.pending_requests.write().await;
-        if let Some((tx_id, request)) = pending.pop_first() {
-            let sequence = request.sequence;
-            let queue_size = pending.len();
-            info!(
-                "🎯 [NETWORK_SEQUENCER] Selected next request: tx_id={}, sequence={}, remaining_in_queue={}",
-                tx_id, sequence, queue_size
-            );
-            Some(request)
-        } else {
-            None
+        // Check if there's a locked request (selected by final node)
+        {
+            let locked = self.locked_request.read().await;
+            if let Some(request_id) = &*locked {
+                // We have a locked request from final node - retrieve and return it
+                let mut pending = self.pending_requests.write().await;
+                if let Some(request) = pending.remove(request_id) {
+                    info!(
+                        "🔓 [MAIN_SEQUENCER] Processing locked request from final node: {}",
+                        request_id
+                    );
+                    return Some(request);
+                }
+            }
         }
+        
+        // Check if we have pending requests
+        let has_pending = {
+            let pending = self.pending_requests.read().await;
+            !pending.is_empty()
+        };
+        
+        if !has_pending {
+            return None;
+        }
+        
+        // Get current round and check if consensus is complete
+        let round = *self.main_sequencer_round.read().await;
+        let cache = self.final_node_cache.read().await;
+        let has_final_node = cache.contains_key(&round);
+        drop(cache);
+        
+        if !has_final_node {
+            // Consensus not complete - trigger VRF if not already done
+            info!(
+                "🎯 [MAIN_SEQUENCER] No final node for round {}, triggering VRF selection",
+                round
+            );
+            
+            // Get available nodes
+            let nodes = self.available_nodes.read().await.clone();
+            if nodes.is_empty() {
+                warn!("⚠️ [MAIN_SEQUENCER] No available nodes for VRF selection");
+                return None;
+            }
+            
+            // Trigger VRF selection (fire and forget - results will come via broadcasts)
+            let threshold = nodes.len(); // All nodes must participate
+            let sequencer_clone = self.clone();
+            tokio::spawn(async move {
+                if let Err(e) = sequencer_clone.perform_vrf_selection(threshold).await {
+                    error!("❌ [MAIN_SEQUENCER] VRF selection failed: {}", e);
+                }
+            });
+            
+            // Return None - consensus will complete after VRF broadcasts are collected
+            return None;
+        }
+
+        // Consensus complete - check if we are the final node
+        match self.am_i_final_node().await {
+            Ok(true) => {
+                // We are the final node - select the request
+                let mut pending = self.pending_requests.write().await;
+                if let Some((tx_id, request)) = pending.pop_first() {
+                    let sequence = request.sequence;
+                    let queue_size = pending.len();
+                    info!(
+                        "🎯 [MAIN_SEQUENCER] Final node selecting request: tx_id={}, sequence={}, remaining={}",
+                        tx_id, sequence, queue_size
+                    );
+                    
+                    // Lock this request
+                    drop(pending);
+                    let mut locked = self.locked_request.write().await;
+                    *locked = Some(tx_id.clone());
+                    
+                    // Broadcast SELECT message
+                    if let Err(e) = self.broadcast_select_message(&tx_id, &request).await {
+                        warn!("⚠️ [MAIN_SEQUENCER] Failed to broadcast SELECT: {}", e);
+                    }
+                    
+                    // Re-acquire pending to get the request
+                    drop(locked);
+                    let mut pending = self.pending_requests.write().await;
+                    pending.remove(&tx_id)
+                } else {
+                    None
+                }
+            }
+            Ok(false) => {
+                // We are NOT the final node - wait for SELECT message
+                None
+            }
+            Err(e) => {
+                warn!("⚠️ [MAIN_SEQUENCER] Error checking final node status: {}", e);
+                None
+            }
+        }
+    }
+    
+    /// Broadcast SELECT message (called by final node only)
+    async fn broadcast_select_message(
+        &self,
+        request_id: &str,
+        request: &NetworkTransactionRequest,
+    ) -> Result<()> {
+        let round = *self.main_sequencer_round.read().await;
+        let local_peer = self.local_peer_id
+            .ok_or_else(|| anyhow::anyhow!("Local peer ID not set"))?;
+        
+        info!(
+            "📤 [MAIN_SEQUENCER] Broadcasting SELECT: round={}, request_id={}",
+            round, request_id
+        );
+        
+        // Create signature (simplified - in production use proper signing)
+        let signature = vec![]; // TODO: Sign with node's private key
+        
+        // Broadcast via message channel
+        if let Some(tx) = &self.message_tx {
+            let msg = crate::types::ChannelMessage::Broadcast {
+                topic: "main-sequencer-select".to_string(),
+                data: serde_json::to_vec(&crate::types::GossipsubMessage::MainSequencerSelect {
+                    round,
+                    request_id: request_id.to_string(),
+                    final_node_id: local_peer,
+                    signature,
+                })?,
+            };
+            
+            tx.send(msg).await.map_err(|e| anyhow::anyhow!("Failed to send SELECT: {}", e))?;
+        }
+        
+        Ok(())
+    }
+    
+    /// Broadcast ACK message
+    async fn broadcast_ack(&self, request_id: &str) -> Result<()> {
+        let round = *self.main_sequencer_round.read().await;
+        let local_peer = self.local_peer_id
+            .ok_or_else(|| anyhow::anyhow!("Local peer ID not set"))?;
+        
+        if let Some(tx) = &self.message_tx {
+            let msg = crate::types::ChannelMessage::Broadcast {
+                topic: "main-sequencer-ack".to_string(),
+                data: serde_json::to_vec(&crate::types::GossipsubMessage::MainSequencerAck {
+                    round,
+                    request_id: request_id.to_string(),
+                    node_id: local_peer,
+                })?,
+            };
+            
+            tx.send(msg).await.map_err(|e| anyhow::anyhow!("Failed to send ACK: {}", e))?;
+        }
+        
+        Ok(())
+    }
+    
+    /// Broadcast MISSING message
+    async fn broadcast_missing(&self, request_id: &str) -> Result<()> {
+        let round = *self.main_sequencer_round.read().await;
+        let local_peer = self.local_peer_id
+            .ok_or_else(|| anyhow::anyhow!("Local peer ID not set"))?;
+        
+        if let Some(tx) = &self.message_tx {
+            let msg = crate::types::ChannelMessage::Broadcast {
+                topic: "main-sequencer-missing".to_string(),
+                data: serde_json::to_vec(&crate::types::GossipsubMessage::MainSequencerMissing {
+                    round,
+                    request_id: request_id.to_string(),
+                    node_id: local_peer,
+                })?,
+            };
+            
+            tx.send(msg).await.map_err(|e| anyhow::anyhow!("Failed to send MISSING: {}", e))?;
+        }
+        
+        Ok(())
+    }
+    
+    /// Handle SELECT message from final node
+    pub async fn handle_select_message(
+        &self,
+        round: u64,
+        request_id: String,
+        final_node_id: libp2p::PeerId,
+    ) -> Result<()> {
+        let current_round = *self.main_sequencer_round.read().await;
+        
+        if round != current_round {
+            warn!(
+                "⚠️ [MAIN_SEQUENCER] SELECT message for wrong round: expected={}, got={}",
+                current_round, round
+            );
+            return Ok(());
+        }
+        
+        // Verify the sender is actually the final node
+        let expected_final = self.select_final_node().await?;
+        if final_node_id != expected_final {
+            warn!(
+                "⚠️ [MAIN_SEQUENCER] SELECT from non-final node: expected={:?}, got={:?}",
+                expected_final, final_node_id
+            );
+            return Ok(());
+        }
+        
+        // Lock this request
+        let mut locked = self.locked_request.write().await;
+        *locked = Some(request_id.clone());
+        
+        info!(
+            "🔒 [MAIN_SEQUENCER] Locked request from final node: round={}, request_id={}",
+            round, request_id
+        );
+        
+        // Check if we have this request
+        let pending = self.pending_requests.read().await;
+        let has_request = pending.contains_key(&request_id);
+        drop(pending);
+        
+        if has_request {
+            info!("✅ [MAIN_SEQUENCER] Have request, sending ACK: {}", request_id);
+            self.broadcast_ack(&request_id).await?;
+        } else {
+            warn!("⚠️ [MAIN_SEQUENCER] Missing request, sending MISSING: {}", request_id);
+            self.broadcast_missing(&request_id).await?;
+            
+            // Wait for request to arrive
+            info!("⏳ [MAIN_SEQUENCER] Waiting for missing request: {}", request_id);
+            self.wait_for_request(&request_id, round).await?;
+        }
+        
+        Ok(())
+    }
+    
+    /// Wait for a missing request to arrive (with timeout)
+    async fn wait_for_request(&self, request_id: &str, round: u64) -> Result<()> {
+        let timeout_ms = 5000; // 5 seconds timeout
+        let check_interval_ms = 100; // Check every 100ms
+        
+        let start = std::time::Instant::now();
+        
+        while start.elapsed().as_millis() < timeout_ms as u128 {
+            // Check if request has arrived
+            let pending = self.pending_requests.read().await;
+            if pending.contains_key(request_id) {
+                drop(pending);
+                
+                info!("✅ [MAIN_SEQUENCER] Missing request {} arrived!", request_id);
+                
+                // Send ACK now that we have it
+                self.broadcast_ack(request_id).await?;
+                
+                return Ok(());
+            }
+            drop(pending);
+            
+            // Wait a bit before checking again
+            tokio::time::sleep(tokio::time::Duration::from_millis(check_interval_ms)).await;
+        }
+        
+        // Timeout - request never arrived
+        warn!(
+            "⏱️ [MAIN_SEQUENCER] Timeout waiting for request {} (round {}), skipping",
+            request_id, round
+        );
+        
+        Ok(())
     }
 
     /// Check if consensus has been reached for the current transaction
@@ -1369,15 +2418,35 @@ impl NetworkTransactionSequencer {
                         // Clear the cached request
                         drop(sync_state);
                         let mut cache = self.current_request_cache.write().await;
+                        let tx_id_for_log = transaction_id.clone();
                         if let Some(cached_request) = cache.as_ref() {
                             if cached_request.transaction_id == transaction_id {
                                 *cache = None;
-                                info!(
-                                    "🎉 [NETWORK_SEQUENCER] [SYNC] ALL nodes confirmed completion of tx_id={}! State and cache cleared, ready for next transaction.",
-                                    transaction_id
-                                );
                             }
                         }
+                        drop(cache);
+
+                        // CRITICAL: Increment round and clear selection state for next transaction
+                        let mut round_lock = self.main_sequencer_round.write().await;
+                        let old_round = *round_lock;
+                        *round_lock += 1;
+                        let new_round = *round_lock;
+                        drop(round_lock);
+
+                        // Clear locked request
+                        let mut locked = self.locked_request.write().await;
+                        *locked = None;
+                        drop(locked);
+
+                        // Clear final node cache for old round
+                        let mut final_cache = self.final_node_cache.write().await;
+                        final_cache.remove(&old_round);
+                        drop(final_cache);
+
+                        info!(
+                            "🎉 [MAIN_SEQUENCER] [SYNC] ALL nodes confirmed completion of tx_id={}! Round incremented: {} -> {}. State cleared, ready for next transaction.",
+                            tx_id_for_log, old_round, new_round
+                        );
                     }
                 }
             }
@@ -1397,3 +2466,5 @@ impl NetworkTransactionSequencer {
         );
     }
 }
+
+

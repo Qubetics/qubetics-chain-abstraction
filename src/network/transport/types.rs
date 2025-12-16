@@ -78,6 +78,15 @@ pub const TOPIC_TRANSACTION_ERROR_SYNC: &str = "transaction-error-sync";
 pub const TOPIC_LEGACY_DKG: &str = "dkg";
 pub const TOPIC_SEQUENCER_SYNC: &str = "sequencer-sync";
 pub const TOPIC_NETWORK_TRANSACTION_SEQUENCER_SYNC: &str = "network-transaction-sequencer-sync";
+pub const TOPIC_DETERMINISTIC_SELECTION: &str = "deterministic-selection";
+pub const TOPIC_VAULT_SEQUENCER_VRF: &str = "vault-sequencer-vrf";
+pub const TOPIC_MAIN_SEQUENCER_VRF: &str = "main-sequencer-vrf";
+pub const TOPIC_VAULT_SEQUENCER_SELECT: &str = "vault-sequencer-select";
+pub const TOPIC_VAULT_SEQUENCER_ACK: &str = "vault-sequencer-ack";
+pub const TOPIC_VAULT_SEQUENCER_MISSING: &str = "vault-sequencer-missing";
+pub const TOPIC_MAIN_SEQUENCER_SELECT: &str = "main-sequencer-select";
+pub const TOPIC_MAIN_SEQUENCER_ACK: &str = "main-sequencer-ack";
+pub const TOPIC_MAIN_SEQUENCER_MISSING: &str = "main-sequencer-missing";
 
 /// Typed view of the gossipsub topics this MPC node participates in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -104,6 +113,14 @@ pub enum GossipTopic {
     LegacyDkg,
     SequencerSync,
     NetworkTransactionSequencerSync,
+    VaultSequencerVrf,
+    MainSequencerVrf,
+    VaultSequencerSelect,
+    VaultSequencerAck,
+    VaultSequencerMissing,
+    MainSequencerSelect,
+    MainSequencerAck,
+    MainSequencerMissing,
 }
 
 impl GossipTopic {
@@ -130,6 +147,14 @@ impl GossipTopic {
         GossipTopic::LegacyDkg,
         GossipTopic::SequencerSync,
         GossipTopic::NetworkTransactionSequencerSync,
+        GossipTopic::VaultSequencerVrf,
+        GossipTopic::MainSequencerVrf,
+        GossipTopic::VaultSequencerSelect,
+        GossipTopic::VaultSequencerAck,
+        GossipTopic::VaultSequencerMissing,
+        GossipTopic::MainSequencerSelect,
+        GossipTopic::MainSequencerAck,
+        GossipTopic::MainSequencerMissing,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -156,6 +181,14 @@ impl GossipTopic {
             GossipTopic::LegacyDkg => TOPIC_LEGACY_DKG,
             GossipTopic::SequencerSync => TOPIC_SEQUENCER_SYNC,
             GossipTopic::NetworkTransactionSequencerSync => TOPIC_NETWORK_TRANSACTION_SEQUENCER_SYNC,
+            GossipTopic::VaultSequencerVrf => TOPIC_VAULT_SEQUENCER_VRF,
+            GossipTopic::MainSequencerVrf => TOPIC_MAIN_SEQUENCER_VRF,
+            GossipTopic::VaultSequencerSelect => TOPIC_VAULT_SEQUENCER_SELECT,
+            GossipTopic::VaultSequencerAck => TOPIC_VAULT_SEQUENCER_ACK,
+            GossipTopic::VaultSequencerMissing => TOPIC_VAULT_SEQUENCER_MISSING,
+            GossipTopic::MainSequencerSelect => TOPIC_MAIN_SEQUENCER_SELECT,
+            GossipTopic::MainSequencerAck => TOPIC_MAIN_SEQUENCER_ACK,
+            GossipTopic::MainSequencerMissing => TOPIC_MAIN_SEQUENCER_MISSING,
         }
     }
 }
@@ -196,6 +229,9 @@ pub struct MpcNetworkLayer {
     pub(crate) network_transaction_sequencer: Option<NetworkTransactionSequencer>,
     /// Mutex to ensure only one network transaction is processed at a time
     pub(crate) network_transaction_processing_lock: Arc<Mutex<()>>,
+    
+    // Removed: deterministic_selection field
+    // Final node selection is now integrated into ContractTransactionSequencer and NetworkTransactionSequencer
 }
 
 impl MpcNetworkLayer {

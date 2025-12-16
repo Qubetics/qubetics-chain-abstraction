@@ -160,6 +160,48 @@ impl VrfService {
         let selector = self.selector.read().await;
         selector.get_all_selected_nodes_for_round(round)
     }
+    
+    /// Perform VRF node selection without broadcasting (for custom broadcast handling)
+    pub async fn perform_node_selection_without_broadcast(
+        &self,
+        available_nodes: &[PeerId],
+        threshold: usize,
+        round: u64,
+        operation_type: &str,
+    ) -> Result<NodeSelectionResult> {
+        info!(
+            "🎯 [VRF] Starting {} operation node selection for round {} with {} available nodes (no auto-broadcast)",
+            operation_type,
+            round,
+            available_nodes.len()
+        );
+
+        let mut selector = self.selector.write().await;
+        selector.ensure_local_submission(round);
+        let selection_result = selector.select_mpc_nodes(
+            available_nodes,
+            threshold,
+            round,
+            self.config.allow_synthetic_submissions,
+        )?;
+
+        info!(
+            "✅ [VRF] Node {} selected {} nodes for {} operation round {}: {:?}",
+            self.node_id,
+            selection_result.selected_nodes.len(),
+            operation_type,
+            round,
+            selection_result.selected_nodes
+        );
+
+        Ok(selection_result)
+    }
+    
+    /// Create a broadcast message for a specific round
+    pub async fn create_broadcast_for_round(&self, round: u64) -> Option<VrfSelectedNodesBroadcast> {
+        let selector = self.selector.read().await;
+        selector.create_selected_nodes_broadcast(round)
+    }
 
     pub async fn handle_vrf_broadcast(
         &self,

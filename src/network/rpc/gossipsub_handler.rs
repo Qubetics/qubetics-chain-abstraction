@@ -1324,7 +1324,130 @@ impl MpcNetworkLayer {
                     warn!("⚠️ [NETWORK_SEQUENCER] Failed to initialize sequencer");
                 }
             }
+            GossipsubMessage::VaultSequencerSelect {
+                round,
+                request_id,
+                final_node_id,
+                signature,
+            } => {
+                info!(
+                    "📨 [VAULT_SEQUENCER] Received SELECT: round={}, request_id={}, from={:?}",
+                    round, request_id, final_node_id
+                );
+                
+                if let Some(sequencer) = &self.contract_sequencer {
+                    if let Err(e) = sequencer.handle_select_message(round, request_id, final_node_id).await {
+                        error!("❌ [VAULT_SEQUENCER] Failed to handle SELECT: {}", e);
+                    }
+                }
+            }
+            GossipsubMessage::VaultSequencerAck {
+                round,
+                request_id,
+                node_id,
+            } => {
+                info!(
+                    "✅ [VAULT_SEQUENCER] Received ACK: round={}, request_id={}, from={:?}",
+                    round, request_id, node_id
+                );
+            }
+            GossipsubMessage::VaultSequencerMissing {
+                round,
+                request_id,
+                node_id,
+            } => {
+                warn!(
+                    "⚠️ [VAULT_SEQUENCER] Received MISSING: round={}, request_id={}, from={:?}",
+                    round, request_id, node_id
+                );
+            }
+            GossipsubMessage::MainSequencerSelect {
+                round,
+                request_id,
+                final_node_id,
+                signature,
+            } => {
+                info!(
+                    "📨 [MAIN_SEQUENCER] Received SELECT: round={}, request_id={}, from={:?}",
+                    round, request_id, final_node_id
+                );
+                
+                if let Some(sequencer) = &self.network_transaction_sequencer {
+                    if let Err(e) = sequencer.handle_select_message(round, request_id, final_node_id).await {
+                        error!("❌ [MAIN_SEQUENCER] Failed to handle SELECT: {}", e);
+                    }
+                }
+            }
+            GossipsubMessage::MainSequencerAck {
+                round,
+                request_id,
+                node_id,
+            } => {
+                info!(
+                    "✅ [MAIN_SEQUENCER] Received ACK: round={}, request_id={}, from={:?}",
+                    round, request_id, node_id
+                );
+            }
+            GossipsubMessage::MainSequencerMissing {
+                round,
+                request_id,
+                node_id,
+            } => {
+                warn!(
+                    "⚠️ [MAIN_SEQUENCER] Received MISSING: round={}, request_id={}, from={:?}",
+                    round, request_id, node_id
+                );
+            }
+            GossipsubMessage::VaultSequencerVrfSelectedNodes(broadcast_msg) => {
+                info!(
+                    "📥 [VAULT_SEQUENCER] Received VRF broadcast: round={}, from={:?}",
+                    broadcast_msg.round, broadcast_msg.selector_node_id
+                );
+                
+                if let Some(sequencer) = &self.contract_sequencer {
+                    let round = broadcast_msg.round;
+                    let total_nodes = self.node_manager.get_total_nodes();
+                    
+                    // Handle VRF broadcast
+                    if let Err(e) = sequencer.handle_vrf_broadcast(broadcast_msg, total_nodes).await {
+                        error!("❌ [VAULT_SEQUENCER] Failed to handle VRF broadcast: {}", e);
+                    } else {
+                        // Check if we can start consensus
+                        let min_selections = total_nodes;
+                        if let Err(e) = sequencer.check_and_trigger_consensus(round, min_selections).await {
+                            error!("❌ [VAULT_SEQUENCER] Failed to trigger consensus: {}", e);
+                        }
+                    }
+                } else {
+                    warn!("⚠️ [VAULT_SEQUENCER] Received VRF broadcast but sequencer not initialized");
+                }
+            }
+            GossipsubMessage::MainSequencerVrfSelectedNodes(broadcast_msg) => {
+                info!(
+                    "📥 [MAIN_SEQUENCER] Received VRF broadcast: round={}, from={:?}",
+                    broadcast_msg.round, broadcast_msg.selector_node_id
+                );
+                
+                if let Some(sequencer) = &self.network_transaction_sequencer {
+                    let round = broadcast_msg.round;
+                    let total_nodes = self.node_manager.get_total_nodes();
+                    
+                    // Handle VRF broadcast
+                    if let Err(e) = sequencer.handle_vrf_broadcast(broadcast_msg, total_nodes).await {
+                        error!("❌ [MAIN_SEQUENCER] Failed to handle VRF broadcast: {}", e);
+                    } else {
+                        // Check if we can start consensus
+                        let min_selections = total_nodes;
+                        if let Err(e) = sequencer.check_and_trigger_consensus(round, min_selections).await {
+                            error!("❌ [MAIN_SEQUENCER] Failed to trigger consensus: {}", e);
+                        }
+                    }
+                } else {
+                    warn!("⚠️ [MAIN_SEQUENCER] Received VRF broadcast but sequencer not initialized");
+                }
+            }
         }
         Ok(())
     }
+
 }

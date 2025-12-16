@@ -209,4 +209,46 @@ pub enum GossipsubMessage {
         /// State: "proposed", "processing", "completed"
         state: String,
     },
+    /// Vault sequencer SELECT message (final node picks request)
+    VaultSequencerSelect {
+        round: u64,
+        request_id: String,
+        final_node_id: PeerId,
+        signature: Vec<u8>,
+    },
+    /// Vault sequencer ACK message (node has the request)
+    VaultSequencerAck {
+        round: u64,
+        request_id: String,
+        node_id: PeerId,
+    },
+    /// Vault sequencer MISSING message (node doesn't have the request)
+    VaultSequencerMissing {
+        round: u64,
+        request_id: String,
+        node_id: PeerId,
+    },
+    /// VRF selected nodes broadcast for vault sequencer (independent rounds)
+    VaultSequencerVrfSelectedNodes(VrfSelectedNodesBroadcast),
+    /// Main sequencer SELECT message (final node picks request)
+    MainSequencerSelect {
+        round: u64,
+        request_id: String,
+        final_node_id: PeerId,
+        signature: Vec<u8>,
+    },
+    /// Main sequencer ACK message (node has the request)
+    MainSequencerAck {
+        round: u64,
+        request_id: String,
+        node_id: PeerId,
+    },
+    /// Main sequencer MISSING message (node doesn't have the request)
+    MainSequencerMissing {
+        round: u64,
+        request_id: String,
+        node_id: PeerId,
+    },
+    /// VRF selected nodes broadcast for main sequencer (independent rounds)
+    MainSequencerVrfSelectedNodes(VrfSelectedNodesBroadcast),
 }

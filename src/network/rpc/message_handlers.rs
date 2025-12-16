@@ -167,12 +167,12 @@ impl MpcNetworkLayer {
                                         .await
                                     {
                                         warn!(
-                                            "❌ [CONTRACT] Failed to execute contract call for transaction ID {}: {}",
+                                            "❌ [CONTRACT] Failed to submitted contract call for transaction ID {}: {}",
                                             transaction_id, e
                                         );
                                     } else {
                                         info!(
-                                            "✅ [CONTRACT] Successfully executed contract call for transaction ID {}",
+                                            "✅ [CONTRACT] Successfully submitted contract call for transaction ID {}",
                                             transaction_id
                                         );
                                     }

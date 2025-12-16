@@ -3,6 +3,8 @@ pub mod commands;
 pub mod consensus;
 pub mod contract;
 pub mod database;
+// Deterministic selection is now integrated into ContractTransactionSequencer and NetworkTransactionSequencer
+// pub mod deterministic_selection;
 pub mod dkg;
 pub mod intent_manager;
 pub mod network;
@@ -21,6 +23,8 @@ pub use database::{
     ConsensusStorage, Database, DatabaseConfig, DkgStorage, IntentStorage, RewardStorage,
     SigningStorage, TransactionStatusStorage, UserStorage,
 };
+// Removed deterministic_selection module - functionality integrated into sequencers
+// pub use deterministic_selection::{...};
 pub use intent_manager::prepare_unsigned_eip1559_tx;
 pub use network::transport::types::MpcNetworkLayer;
 pub use node_selection::{
