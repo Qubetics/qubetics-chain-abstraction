@@ -1673,6 +1673,57 @@ impl ContractTransactionSequencer {
         Ok(())
     }
 
+    /// Force-clear current processing state so the queue can advance after errors
+    pub async fn force_clear_processing(&self, transaction_id: &str, reason: &str) {
+        let mut sync_state = self.sync_state.write().await;
+
+        if sync_state.current_processing.is_some()
+            && sync_state.current_processing.as_deref() != Some(transaction_id)
+        {
+            warn!(
+                "⚠️ [SEQUENCER] [RECOVERY] Requested clear for tx_id={} but currently processing {:?}",
+                transaction_id, sync_state.current_processing
+            );
+        }
+
+        if let Some(current_tx) = sync_state.current_processing.take() {
+            let sequence = sync_state.current_sequence;
+            sync_state.agreed_nodes.clear();
+            sync_state.confirmed_nodes.clear();
+            sync_state.is_confirmed = false;
+            drop(sync_state);
+
+            {
+                let mut cache = self.current_request_cache.write().await;
+                *cache = None;
+            }
+
+            // Advance vault round and clear any stale selection data to unblock the next dequeue
+            let mut round_lock = self.vault_sequencer_round.write().await;
+            let old_round = *round_lock;
+            *round_lock += 1;
+            let new_round = *round_lock;
+            drop(round_lock);
+
+            let mut locked = self.locked_request.write().await;
+            *locked = None;
+            drop(locked);
+
+            let mut cache = self.final_node_cache.write().await;
+            cache.remove(&old_round);
+
+            warn!(
+                "🧹 [SEQUENCER] [RECOVERY] Cleared processing state for tx_id={} (seq={}, round {}->{}). Reason: {}",
+                current_tx, sequence, old_round, new_round, reason
+            );
+        } else {
+            warn!(
+                "⚠️ [SEQUENCER] [RECOVERY] No current processing transaction to clear (requested for tx_id={}, reason={})",
+                transaction_id, reason
+            );
+        }
+    }
+
     /// Update total nodes count (for consensus threshold)
     pub async fn update_total_nodes(&self, total_nodes: usize) {
         let mut sync_state = self.sync_state.write().await;
@@ -2878,6 +2929,57 @@ impl NetworkTransactionSequencer {
         }
 
         Ok(())
+    }
+
+    /// Force-clear current processing state so the queue can advance after errors
+    pub async fn force_clear_processing(&self, transaction_id: &str, reason: &str) {
+        let mut sync_state = self.sync_state.write().await;
+
+        if sync_state.current_processing.is_some()
+            && sync_state.current_processing.as_deref() != Some(transaction_id)
+        {
+            warn!(
+                "⚠️ [NETWORK_SEQUENCER] [RECOVERY] Requested clear for tx_id={} but currently processing {:?}",
+                transaction_id, sync_state.current_processing
+            );
+        }
+
+        if let Some(current_tx) = sync_state.current_processing.take() {
+            let sequence = sync_state.current_sequence;
+            sync_state.agreed_nodes.clear();
+            sync_state.confirmed_nodes.clear();
+            sync_state.is_confirmed = false;
+            drop(sync_state);
+
+            {
+                let mut cache = self.current_request_cache.write().await;
+                *cache = None;
+            }
+
+            // Advance main round and clear any stale selection data to unblock the next dequeue
+            let mut round_lock = self.main_sequencer_round.write().await;
+            let old_round = *round_lock;
+            *round_lock += 1;
+            let new_round = *round_lock;
+            drop(round_lock);
+
+            let mut locked = self.locked_request.write().await;
+            *locked = None;
+            drop(locked);
+
+            let mut cache = self.final_node_cache.write().await;
+            cache.remove(&old_round);
+
+            warn!(
+                "🧹 [NETWORK_SEQUENCER] [RECOVERY] Cleared processing state for tx_id={} (seq={}, round {}->{}). Reason: {}",
+                current_tx, sequence, old_round, new_round, reason
+            );
+        } else {
+            warn!(
+                "⚠️ [NETWORK_SEQUENCER] [RECOVERY] No current processing transaction to clear (requested for tx_id={}, reason={})",
+                transaction_id, reason
+            );
+        }
     }
 
     /// Cache the request for the current processing transaction
