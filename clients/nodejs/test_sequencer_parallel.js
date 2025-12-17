@@ -18,7 +18,7 @@ import fs from 'fs';
 import path from 'path';
 
 // Configuration
-const RPC_BASE_URL = 'http://172.16.14.223:8082';
+const RPC_BASE_URL = 'http://127.0.0.1:8083';
 const API_KEY = "2919cd546f2c4338bccb4794a3d6afba2282e5729653fc2c2ff6c5e0e194ar45";
 
 // ============================================

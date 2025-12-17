@@ -783,7 +783,10 @@ impl ContractTransactionSequencer {
             info!(
                 "🔍 [VAULT_SEQUENCER] Available nodes for VRF: count={}, nodes={:?}",
                 nodes.len(),
-                nodes.iter().map(|p| p.to_base58()).collect::<Vec<_>>()
+                nodes
+                    .iter()
+                    .map(|p| p.to_string())
+                    .collect::<Vec<_>>()
             );
 
             // Check if VRF service is available
@@ -1097,7 +1100,7 @@ impl ContractTransactionSequencer {
             return;
         }
 
-        let node_id_str = node_id.to_base58();
+        let node_id_str = node_id.to_string();
         if sync_state.agreed_nodes.insert(node_id_str.clone()) {
             info!(
                 "✅ [VAULT_SEQUENCER] ACK recorded: request_id={}, from={}, agreed: {}/{} (threshold: {})",
@@ -2292,7 +2295,10 @@ impl NetworkTransactionSequencer {
             info!(
                 "🔍 [MAIN_SEQUENCER] Available nodes for VRF: count={}, nodes={:?}",
                 nodes.len(),
-                nodes.iter().map(|p| p.to_base58()).collect::<Vec<_>>()
+                nodes
+                    .iter()
+                    .map(|p| p.to_string())
+                    .collect::<Vec<_>>()
             );
 
             // Check if VRF service is available
@@ -2593,7 +2599,7 @@ impl NetworkTransactionSequencer {
             return;
         }
 
-        let node_id_str = node_id.to_base58();
+        let node_id_str = node_id.to_string();
         if sync_state.agreed_nodes.insert(node_id_str.clone()) {
             info!(
                 "✅ [MAIN_SEQUENCER] ACK recorded: request_id={}, from={}, agreed: {}/{} (threshold: {})",
