@@ -1061,6 +1061,60 @@ impl ContractTransactionSequencer {
         Ok(())
     }
 
+    /// Handle ACK for a SELECT message to track agreement progress
+    pub async fn handle_select_ack(&self, round: u64, request_id: &str, node_id: libp2p::PeerId) {
+        let current_round = *self.vault_sequencer_round.read().await;
+
+        if round != current_round {
+            warn!(
+                "⚠️ [VAULT_SEQUENCER] ACK for wrong round: expected={}, got={}",
+                current_round, round
+            );
+            return;
+        }
+
+        let mut sync_state = self.sync_state.write().await;
+
+        // Only track ACKs for the currently processing or locked request
+        let is_for_current = sync_state
+            .current_processing
+            .as_ref()
+            .map(|tx| tx == request_id)
+            .unwrap_or(false);
+
+        let is_locked = {
+            let locked = self.locked_request.read().await;
+            locked.as_deref() == Some(request_id)
+        };
+
+        if !is_for_current && !is_locked {
+            info!(
+                "ℹ️ [VAULT_SEQUENCER] Ignoring ACK for unrelated request: {} (current={:?}, locked={})",
+                request_id,
+                sync_state.current_processing,
+                is_locked
+            );
+            return;
+        }
+
+        let node_id_str = node_id.to_base58();
+        if sync_state.agreed_nodes.insert(node_id_str.clone()) {
+            info!(
+                "✅ [VAULT_SEQUENCER] ACK recorded: request_id={}, from={}, agreed: {}/{} (threshold: {})",
+                request_id,
+                node_id_str,
+                sync_state.agreed_nodes.len(),
+                sync_state.total_nodes,
+                (sync_state.total_nodes / 2) + 1
+            );
+        } else {
+            info!(
+                "🔄 [VAULT_SEQUENCER] Duplicate ACK ignored for request_id={} from {}",
+                request_id, node_id_str
+            );
+        }
+    }
+
     /// Wait for a missing request to arrive (with timeout)
     async fn wait_for_request(&self, request_id: &str, round: u64) -> Result<()> {
         let timeout_ms = 5000; // 5 seconds timeout
@@ -1337,14 +1391,13 @@ impl ContractTransactionSequencer {
 
                     // Broadcast our agreement
                     if let Some(message_tx) = &self.message_tx {
-                        let broadcast_data = serde_json::to_vec(
-                            &crate::types::GossipsubMessage::SequencerSync {
+                        let broadcast_data =
+                            serde_json::to_vec(&crate::types::GossipsubMessage::SequencerSync {
                                 transaction_id: transaction_id.clone(),
                                 sequence,
                                 node_id: self.node_id.clone(),
                                 state: "proposed".to_string(),
-                            },
-                        );
+                            });
                         if let Ok(data) = broadcast_data {
                             let _ = message_tx
                                 .send(crate::types::ChannelMessage::Broadcast {
@@ -2502,6 +2555,60 @@ impl NetworkTransactionSequencer {
         }
 
         Ok(())
+    }
+
+    /// Handle ACK for a SELECT message to track agreement progress
+    pub async fn handle_select_ack(&self, round: u64, request_id: &str, node_id: libp2p::PeerId) {
+        let current_round = *self.main_sequencer_round.read().await;
+
+        if round != current_round {
+            warn!(
+                "⚠️ [MAIN_SEQUENCER] ACK for wrong round: expected={}, got={}",
+                current_round, round
+            );
+            return;
+        }
+
+        let mut sync_state = self.sync_state.write().await;
+
+        // Only track ACKs for the currently processing or locked request
+        let is_for_current = sync_state
+            .current_processing
+            .as_ref()
+            .map(|tx| tx == request_id)
+            .unwrap_or(false);
+
+        let is_locked = {
+            let locked = self.locked_request.read().await;
+            locked.as_deref() == Some(request_id)
+        };
+
+        if !is_for_current && !is_locked {
+            info!(
+                "ℹ️ [MAIN_SEQUENCER] Ignoring ACK for unrelated request: {} (current={:?}, locked={})",
+                request_id,
+                sync_state.current_processing,
+                is_locked
+            );
+            return;
+        }
+
+        let node_id_str = node_id.to_base58();
+        if sync_state.agreed_nodes.insert(node_id_str.clone()) {
+            info!(
+                "✅ [MAIN_SEQUENCER] ACK recorded: request_id={}, from={}, agreed: {}/{} (threshold: {})",
+                request_id,
+                node_id_str,
+                sync_state.agreed_nodes.len(),
+                sync_state.total_nodes,
+                (sync_state.total_nodes / 2) + 1
+            );
+        } else {
+            info!(
+                "🔄 [MAIN_SEQUENCER] Duplicate ACK ignored for request_id={} from {}",
+                request_id, node_id_str
+            );
+        }
     }
 
     /// Wait for a missing request to arrive (with timeout)
