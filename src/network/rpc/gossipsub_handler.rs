@@ -1617,6 +1617,12 @@ impl MpcNetworkLayer {
                     "✅ [VAULT_SEQUENCER] Received ACK: round={}, request_id={}, from={:?}",
                     round, request_id, node_id
                 );
+
+                if let Some(sequencer) = &self.contract_sequencer {
+                    sequencer
+                        .handle_select_ack(round, &request_id, node_id)
+                        .await;
+                }
             }
             GossipsubMessage::VaultSequencerMissing {
                 round,
@@ -1657,6 +1663,12 @@ impl MpcNetworkLayer {
                     "✅ [MAIN_SEQUENCER] Received ACK: round={}, request_id={}, from={:?}",
                     round, request_id, node_id
                 );
+
+                if let Some(sequencer) = &self.network_transaction_sequencer {
+                    sequencer
+                        .handle_select_ack(round, &request_id, node_id)
+                        .await;
+                }
             }
             GossipsubMessage::MainSequencerMissing {
                 round,
