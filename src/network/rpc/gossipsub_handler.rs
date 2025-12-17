@@ -1319,11 +1319,13 @@ impl MpcNetworkLayer {
                         self.db.clone(),
                         "main_seq:",
                     );
-                    let main_vrf_service = crate::protocols::VrfService::new_with_storage(
-                        self.local_peer_id,
-                        self.message_tx.clone(),
-                        main_vrf_storage,
-                    );
+                    let main_vrf_service =
+                        crate::protocols::VrfService::new_with_storage_and_context(
+                            self.local_peer_id,
+                            self.message_tx.clone(),
+                            main_vrf_storage,
+                            "network",
+                        );
                     sequencer.set_vrf_service(Arc::new(main_vrf_service));
 
                     // Dedicated consensus node for network sequencer final node agreement
