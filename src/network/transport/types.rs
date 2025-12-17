@@ -58,6 +58,13 @@ impl From<ReqRespEvent<RPCRequest, RPCResponse>> for NetworkEvent {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum VrfDomain {
+    Signing,
+    MainSequencer,
+    VaultSequencer,
+}
+
 pub const TOPIC_SIGNING: &str = "signing";
 pub const TOPIC_CONSENSUS: &str = "consensus";
 pub const TOPIC_COMMANDS: &str = "commands";
@@ -180,7 +187,9 @@ impl GossipTopic {
             GossipTopic::TransactionErrorSync => TOPIC_TRANSACTION_ERROR_SYNC,
             GossipTopic::LegacyDkg => TOPIC_LEGACY_DKG,
             GossipTopic::SequencerSync => TOPIC_SEQUENCER_SYNC,
-            GossipTopic::NetworkTransactionSequencerSync => TOPIC_NETWORK_TRANSACTION_SEQUENCER_SYNC,
+            GossipTopic::NetworkTransactionSequencerSync => {
+                TOPIC_NETWORK_TRANSACTION_SEQUENCER_SYNC
+            }
             GossipTopic::VaultSequencerVrf => TOPIC_VAULT_SEQUENCER_VRF,
             GossipTopic::MainSequencerVrf => TOPIC_MAIN_SEQUENCER_VRF,
             GossipTopic::VaultSequencerSelect => TOPIC_VAULT_SEQUENCER_SELECT,
@@ -211,7 +220,7 @@ pub struct MpcNetworkLayer {
     pub(crate) node_manager: Box<dyn NodeMembership>,
     pub(crate) scheduled_dkg_task: Option<JoinHandle<()>>,
     pub(crate) vrf_round_requested: bool,
-    pub(crate) peer_rounds: HashMap<PeerId, u64>,
+    pub(crate) peer_rounds: HashMap<VrfDomain, HashMap<PeerId, u64>>,
     pub(crate) peer_discovery: PeerDiscoveryState,
     pub(crate) db: Database,
     pub(crate) db_sync_state: DatabaseSyncState,
@@ -229,7 +238,6 @@ pub struct MpcNetworkLayer {
     pub(crate) network_transaction_sequencer: Option<NetworkTransactionSequencer>,
     /// Mutex to ensure only one network transaction is processed at a time
     pub(crate) network_transaction_processing_lock: Arc<Mutex<()>>,
-    
     // Removed: deterministic_selection field
     // Final node selection is now integrated into ContractTransactionSequencer and NetworkTransactionSequencer
 }

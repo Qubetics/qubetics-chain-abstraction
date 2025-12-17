@@ -123,6 +123,10 @@ pub enum GossipsubMessage {
     VrfSelectedNodes(VrfSelectedNodesBroadcast),
     VrfRoundSyncRequest(VrfRoundSyncRequest),
     VrfRoundSyncResponse(VrfRoundSyncResponse),
+    MainSequencerVrfRoundSyncRequest(VrfRoundSyncRequest),
+    MainSequencerVrfRoundSyncResponse(VrfRoundSyncResponse),
+    VaultSequencerVrfRoundSyncRequest(VrfRoundSyncRequest),
+    VaultSequencerVrfRoundSyncResponse(VrfRoundSyncResponse),
     PeerDiscovered {
         peer: PeerId,
         sequence: Option<u64>,

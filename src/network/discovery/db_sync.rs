@@ -6,7 +6,7 @@ use crate::types::p2p::SerializablePeerId;
 use crate::types::rpc::RPCRequest;
 use crate::types::vrf::VrfRoundSyncRequest;
 
-use crate::network::transport::types::{MpcNetworkBehaviour, MpcNetworkLayer};
+use crate::network::transport::types::{MpcNetworkBehaviour, MpcNetworkLayer, VrfDomain};
 
 impl MpcNetworkLayer {
     /// Sync database from an existing peer when joining the network
@@ -146,7 +146,9 @@ impl MpcNetworkLayer {
                     "🔄 [VRF_SYNC] Requesting current VRF round from peer {}",
                     peer_id
                 );
-                let current_round = self.get_local_vrf_round().await;
+                let current_round = self
+                    .get_local_vrf_round_for_domain(VrfDomain::Signing)
+                    .await;
                 swarm.behaviour_mut().request_response.send_request(
                     &peer_id,
                     RPCRequest::VrfRoundSync(VrfRoundSyncRequest {
