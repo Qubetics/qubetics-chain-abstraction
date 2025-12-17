@@ -267,7 +267,16 @@ impl MpcNetworkLayer {
                                 "✅ [SEQUENCER] [FCFS] Marking tx_id={} (sequence={}) as completed, waiting for all nodes to confirm...",
                                 tx_id, sequence
                             );
-                            sequencer.mark_completed(&tx_id).await.ok();
+
+                            if let Err(e) = sequencer.mark_completed(&tx_id).await {
+                                error!(
+                                    "⚠️ [SEQUENCER] [FCFS] Failed to mark tx_id={} as completed: {}. Clearing state to avoid deadlock.",
+                                    tx_id, e
+                                );
+                                sequencer
+                                    .force_clear_processing(&tx_id, "mark_completed failure")
+                                    .await;
+                            }
                         }
 
                         info!(
@@ -385,7 +394,7 @@ impl MpcNetworkLayer {
                         } else {
                             let duration = start_time.elapsed();
                             info!("⏱️ [NETWORK_SEQUENCER] Transaction tx_id={} (sequence={}) processed in {:?}", tx_id, sequence, duration);
-                            
+
                             // For WithdrawLiquidity, record pending liquidity contract update (same as original flow after signing)
                             if let crate::network::sequencer::NetworkTransactionFlow::WithdrawLiquidity { solver_address, amount, .. } = &request.flow {
                                 self.record_pending_liquidity_contract_update(
@@ -399,7 +408,16 @@ impl MpcNetworkLayer {
 
                         if let Some(sequencer) = &self.network_transaction_sequencer {
                             info!("✅ [NETWORK_SEQUENCER] Marking tx_id={} (sequence={}) as completed, waiting for all nodes to confirm...", tx_id, sequence);
-                            sequencer.mark_completed(&tx_id).await.ok();
+
+                            if let Err(e) = sequencer.mark_completed(&tx_id).await {
+                                error!(
+                                    "⚠️ [NETWORK_SEQUENCER] Failed to mark tx_id={} as completed: {}. Clearing state to avoid deadlock.",
+                                    tx_id, e
+                                );
+                                sequencer
+                                    .force_clear_processing(&tx_id, "mark_completed failure")
+                                    .await;
+                            }
                         }
 
                         info!("🏁 [NETWORK_SEQUENCER] Completed synchronized processing (lock released): flow={}, tx_id={}, sequence={}", flow_desc, tx_id, sequence);
