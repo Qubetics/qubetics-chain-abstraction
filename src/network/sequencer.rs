@@ -584,7 +584,7 @@ impl ContractTransactionSequencer {
         // This prevents race conditions where:
         // 1. Multiple requests could get the same sequence (prevented by sync_state lock)
         // 2. Requests could be added to queue out of sequence order (prevented by holding both locks)
-        let (inserted_request, _sequence, _queue_size) = {
+        let (was_waiting, final_transaction_id) = {
             // First, acquire both locks to ensure atomicity
             let mut sync_state = self.sync_state.write().await;
             let mut pending = self.pending_requests.write().await;
@@ -613,10 +613,9 @@ impl ContractTransactionSequencer {
             // Add to pending requests (BTreeMap maintains sorted order by transaction_id)
             // This happens atomically with sequence assignment
             let final_tx_id_for_log = final_transaction_id.clone();
+            let was_waiting = sync_state.missing_requests.contains(&final_transaction_id);
             pending.insert(final_transaction_id.clone(), request);
             let queue_size = pending.len();
-
-            let inserted_request = pending.get(&final_transaction_id).cloned();
 
             info!(
                 "📥 [SEQUENCER] [DETERMINISTIC] Queued transaction: tx_id={}, flow={}, sequence={}, queue_size={}",
@@ -630,20 +629,16 @@ impl ContractTransactionSequencer {
                     .collect::<Vec<_>>()
             );
 
-            (inserted_request, sequence, queue_size)
+            (was_waiting, final_transaction_id)
         }; // Both locks released here
 
-        if let Some(request) = inserted_request {
-            // If this transaction was proposed before the request arrived, re-evaluate agreement now.
-            if let Err(err) = self
-                .handle_request_arrival_for_pending_proposal(request)
-                .await
-            {
-                warn!(
-                    "⚠️ [SEQUENCER] Failed to process late-arriving request agreement: {}",
-                    err
-                );
-            }
+        // If we were waiting for this request, trigger the re-agreement logic
+        if was_waiting {
+            // The wait_for_missing_request_and_reagree task will pick it up
+            info!(
+                "✅ [SEQUENCER] [SYNC] Request {} arrived, wait task will handle agreement",
+                final_transaction_id
+            );
         }
 
         Ok(())
@@ -1104,111 +1099,6 @@ impl ContractTransactionSequencer {
         Ok(())
     }
 
-    /// Handle a request that arrived after we previously only saw a proposal
-    async fn handle_request_arrival_for_pending_proposal(
-        &self,
-        request: ContractTransactionRequest,
-    ) -> Result<()> {
-        let transaction_id = request.transaction_id.clone();
-        let sequence = request.sequence;
-        let mut sync_state = self.sync_state.write().await;
-
-        // Only act if we were explicitly waiting for this request
-        let was_waiting = sync_state.missing_requests.remove(&transaction_id);
-        let should_agree = if sync_state.current_processing.as_ref() == Some(&transaction_id) {
-            true
-        } else if sync_state.current_processing.is_none() && was_waiting {
-            // Late arrival for a proposal we couldn't evaluate earlier
-            sync_state.current_processing = Some(transaction_id.clone());
-            sync_state.current_sequence = sequence;
-            sync_state.confirmed_nodes.clear();
-            sync_state.is_confirmed = false;
-            true
-        } else {
-            false
-        };
-
-        if should_agree {
-            let node_id_clone = self.node_id.clone();
-            let was_new = sync_state.agreed_nodes.insert(self.node_id.clone());
-            let agreed_count = sync_state.agreed_nodes.len();
-            drop(sync_state);
-
-            info!(
-                "✅ [SEQUENCER] [SYNC] Request arrived later, agreement reevaluated: tx_id={}, added_self={}, agreed_nodes={}",
-                transaction_id, was_new, agreed_count
-            );
-
-            self.broadcast_ack(&transaction_id).await?;
-        } else if was_waiting {
-            info!(
-                "ℹ️ [SEQUENCER] [SYNC] Request {} arrived but current processing is {:?}; not agreeing",
-                transaction_id, sync_state.current_processing
-            );
-        }
-
-        Ok(())
-    }
-
-    /// Spawn a fetch/wait loop for proposals where we don't yet have the request
-    async fn trigger_missing_request_fetch(&self, transaction_id: String, sequence: u64) {
-        {
-            let mut sync_state = self.sync_state.write().await;
-            sync_state.missing_requests.insert(transaction_id.clone());
-        }
-
-        info!(
-            "📡 [SEQUENCER] [SYNC] Proposal received before request, awaiting fetch: tx_id={}, sequence={}",
-            transaction_id, sequence
-        );
-
-        let sequencer_clone = self.clone();
-        tokio::spawn(async move {
-            sequencer_clone
-                .wait_for_missing_request_and_reagree(transaction_id, sequence)
-                .await;
-        });
-    }
-
-    async fn wait_for_missing_request_and_reagree(&self, transaction_id: String, sequence: u64) {
-        let timeout_ms = 5000; // 5 seconds timeout for the on-demand fetch
-        let check_interval_ms = 100;
-
-        let start = std::time::Instant::now();
-        while start.elapsed().as_millis() < timeout_ms {
-            let maybe_request = {
-                let pending = self.pending_requests.read().await;
-                pending.get(&transaction_id).cloned()
-            };
-
-            if let Some(request) = maybe_request {
-                info!(
-                    "📥 [SEQUENCER] [SYNC] Request arrived after fetch, re-evaluating agreement: tx_id={}, sequence={}",
-                    transaction_id, sequence
-                );
-
-                if let Err(err) = self
-                    .handle_request_arrival_for_pending_proposal(request)
-                    .await
-                {
-                    warn!(
-                        "⚠️ [SEQUENCER] Failed to re-evaluate agreement for late request {}: {}",
-                        transaction_id, err
-                    );
-                }
-
-                return;
-            }
-
-            tokio::time::sleep(tokio::time::Duration::from_millis(check_interval_ms)).await;
-        }
-
-        warn!(
-            "⏱️ [SEQUENCER] Timed out waiting for request {} after proposal; still missing",
-            transaction_id
-        );
-    }
-
     /// Handle sequencer sync message from another node
     pub async fn handle_sync_message(
         &self,
@@ -1270,9 +1160,9 @@ impl ContractTransactionSequencer {
                     true
                 } else {
                     drop(pending);
-                    missing_at_proposal = true;
                     // Re-acquire sync_state lock
                     sync_state = self.sync_state.write().await;
+                    missing_at_proposal = true;
                     false
                 }
             } else {
@@ -1299,13 +1189,14 @@ impl ContractTransactionSequencer {
                     );
                 }
             } else if missing_at_proposal {
+                // Request is missing - trigger fetch/wait loop
                 drop(sync_state);
                 self.trigger_missing_request_fetch(transaction_id.clone(), sequence)
                     .await;
                 sync_state = self.sync_state.write().await;
             } else {
                 warn!(
-                    "⚠️ [SEQUENCER] [SYNC] Node {} proposed tx_id={} but we're processing {:?} or don't have it in queue",
+                    "⚠️ [SEQUENCER] [SYNC] Node {} proposed tx_id={} but we're processing {:?}",
                     node_id, transaction_id, sync_state.current_processing
                 );
             }
@@ -1372,6 +1263,121 @@ impl ContractTransactionSequencer {
                 );
             }
         }
+    }
+
+    /// Spawn a fetch/wait loop for proposals where we don't yet have the request
+    async fn trigger_missing_request_fetch(&self, transaction_id: String, sequence: u64) {
+        {
+            let mut sync_state = self.sync_state.write().await;
+            sync_state.missing_requests.insert(transaction_id.clone());
+        }
+
+        info!(
+            "📡 [SEQUENCER] [SYNC] Proposal received before request, awaiting fetch: tx_id={}, sequence={}",
+            transaction_id, sequence
+        );
+
+        let sequencer_clone = self.clone();
+        tokio::spawn(async move {
+            sequencer_clone
+                .wait_for_missing_request_and_reagree(transaction_id, sequence)
+                .await;
+        });
+    }
+
+    /// Wait for a missing request to arrive and then agree to the proposal
+    async fn wait_for_missing_request_and_reagree(&self, transaction_id: String, sequence: u64) {
+        let timeout_ms = 5000; // 5 seconds timeout
+        let check_interval_ms = 100; // Check every 100ms
+
+        let start = std::time::Instant::now();
+
+        while start.elapsed().as_millis() < timeout_ms as u128 {
+            // Check if request has arrived
+            let maybe_request = {
+                let pending = self.pending_requests.read().await;
+                pending.get(&transaction_id).cloned()
+            };
+
+            if let Some(request) = maybe_request {
+                // Request arrived! Now we can agree
+                let mut sync_state = self.sync_state.write().await;
+
+                // Only proceed if we're still waiting for this request and nothing else is processing
+                if sync_state.missing_requests.contains(&transaction_id)
+                    && sync_state.current_processing.is_none()
+                {
+                    // Remove from missing_requests
+                    sync_state.missing_requests.remove(&transaction_id);
+
+                    // Remove from pending_requests
+                    let mut pending = self.pending_requests.write().await;
+                    let request = pending.remove(&transaction_id).unwrap();
+                    drop(pending);
+
+                    // Cache the request
+                    let mut cache = self.current_request_cache.write().await;
+                    *cache = Some(request.clone());
+                    drop(cache);
+
+                    // Set as current processing and agree
+                    sync_state.current_processing = Some(transaction_id.clone());
+                    sync_state.current_sequence = sequence;
+                    sync_state.confirmed_nodes.clear();
+                    sync_state.is_confirmed = false;
+                    sync_state.agreed_nodes.insert(self.node_id.clone());
+
+                    info!(
+                        "✅ [SEQUENCER] [SYNC] Missing request {} arrived! Agreed to proposal (agreed: {}/{}, threshold: {})",
+                        transaction_id,
+                        sync_state.agreed_nodes.len(),
+                        sync_state.total_nodes,
+                        (sync_state.total_nodes / 2) + 1
+                    );
+
+                    // Broadcast our agreement
+                    if let Some(message_tx) = &self.message_tx {
+                        let broadcast_data = serde_json::to_vec(
+                            &crate::types::GossipsubMessage::SequencerSync {
+                                transaction_id: transaction_id.clone(),
+                                sequence,
+                                node_id: self.node_id.clone(),
+                                state: "proposed".to_string(),
+                            },
+                        );
+                        if let Ok(data) = broadcast_data {
+                            let _ = message_tx
+                                .send(crate::types::ChannelMessage::Broadcast {
+                                    topic: "sequencer-sync".to_string(),
+                                    data,
+                                })
+                                .await;
+                        }
+                    }
+
+                    return;
+                } else {
+                    // State changed - we're no longer waiting or something else is processing
+                    info!(
+                        "ℹ️ [SEQUENCER] [SYNC] Request {} arrived but state changed (current_processing: {:?})",
+                        transaction_id, sync_state.current_processing
+                    );
+                    sync_state.missing_requests.remove(&transaction_id);
+                    return;
+                }
+            }
+
+            // Wait a bit before checking again
+            tokio::time::sleep(tokio::time::Duration::from_millis(check_interval_ms)).await;
+        }
+
+        // Timeout - request never arrived
+        warn!(
+            "⏱️ [SEQUENCER] [SYNC] Timeout waiting for request {} (sequence {}), removing from missing_requests",
+            transaction_id, sequence
+        );
+        let mut sync_state = self.sync_state.write().await;
+        sync_state.missing_requests.remove(&transaction_id);
     }
 
     /// Cache the request for the current processing transaction
