@@ -189,9 +189,21 @@ impl ContractTransactionSequencer {
         let round = *self.vault_sequencer_round.read().await;
 
         // Check if consensus has completed for this round
-        let cache = self.final_node_cache.read().await;
-        if let Some(final_node) = cache.get(&round) {
-            return Ok(*final_node);
+        {
+            let cache = self.final_node_cache.read().await;
+            if let Some(final_node) = cache.get(&round) {
+                return Ok(*final_node);
+            }
+        }
+
+        // Fallback: pull the validated consensus result from the consensus node (mirrors signing flow)
+        if let Some(consensus) = &self.consensus_node {
+            let consensus_guard = consensus.read().await;
+            if let Some(result) = consensus_guard.get_consensus_result(round) {
+                let mut cache = self.final_node_cache.write().await;
+                cache.insert(round, result.final_node.0);
+                return Ok(result.final_node.0);
+            }
         }
 
         // Consensus not complete yet
@@ -426,12 +438,32 @@ impl ContractTransactionSequencer {
         &self,
         msg: crate::types::ConsensusMessage,
     ) -> Result<()> {
+        let final_round = match msg {
+            crate::types::ConsensusMessage::FinalNodeResult { round, .. } => Some(round),
+            _ => None,
+        };
+
         if let Some(consensus) = &self.consensus_node {
             let mut consensus_node = consensus.write().await;
             consensus_node.handle_message(msg).await?;
             info!("✅ [VAULT_SEQUENCER] Handled consensus message");
         } else {
             warn!("⚠️ [VAULT_SEQUENCER] Consensus node not available to handle message");
+        }
+
+        // Update the local final-node cache using the validated consensus result
+        if let Some(round) = final_round {
+            if let Some(consensus) = &self.consensus_node {
+                let consensus_guard = consensus.read().await;
+                if let Some(result) = consensus_guard.get_consensus_result(round) {
+                    let mut cache = self.final_node_cache.write().await;
+                    cache.insert(round, result.final_node.0);
+                    info!(
+                        "💾 [VAULT_SEQUENCER] Cached final node {:?} for round {} from consensus message",
+                        result.final_node.0, round
+                    );
+                }
+            }
         }
         Ok(())
     }
@@ -1990,9 +2022,21 @@ impl NetworkTransactionSequencer {
         let round = *self.main_sequencer_round.read().await;
 
         // Check if consensus has completed for this round
-        let cache = self.final_node_cache.read().await;
-        if let Some(final_node) = cache.get(&round) {
-            return Ok(*final_node);
+        {
+            let cache = self.final_node_cache.read().await;
+            if let Some(final_node) = cache.get(&round) {
+                return Ok(*final_node);
+            }
+        }
+
+        // Fallback: use the validated consensus result from the consensus node (mirrors signing flow)
+        if let Some(consensus) = &self.consensus_node {
+            let consensus_guard = consensus.read().await;
+            if let Some(result) = consensus_guard.get_consensus_result(round) {
+                let mut cache = self.final_node_cache.write().await;
+                cache.insert(round, result.final_node.0);
+                return Ok(result.final_node.0);
+            }
         }
 
         // Consensus not complete yet
@@ -2224,12 +2268,31 @@ impl NetworkTransactionSequencer {
         &self,
         msg: crate::types::ConsensusMessage,
     ) -> Result<()> {
+        let final_round = match msg {
+            crate::types::ConsensusMessage::FinalNodeResult { round, .. } => Some(round),
+            _ => None,
+        };
+
         if let Some(consensus) = &self.consensus_node {
             let mut consensus_node = consensus.write().await;
             consensus_node.handle_message(msg).await?;
             info!("✅ [MAIN_SEQUENCER] Handled consensus message");
         } else {
             warn!("⚠️ [MAIN_SEQUENCER] Consensus node not available to handle message");
+        }
+
+        if let Some(round) = final_round {
+            if let Some(consensus) = &self.consensus_node {
+                let consensus_guard = consensus.read().await;
+                if let Some(result) = consensus_guard.get_consensus_result(round) {
+                    let mut cache = self.final_node_cache.write().await;
+                    cache.insert(round, result.final_node.0);
+                    info!(
+                        "💾 [MAIN_SEQUENCER] Cached final node {:?} for round {} from consensus message",
+                        result.final_node.0, round
+                    );
+                }
+            }
         }
         Ok(())
     }
