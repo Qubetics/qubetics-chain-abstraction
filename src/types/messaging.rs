@@ -4,9 +4,10 @@ use crate::{
     types::{
         intent::{DepositIntent, TransactionType},
         rpc::RPCRequest,
-        secp::{SerializablePoint, SerializableScalar},
         rpc_server::NodeStatus,
+        secp::{SerializablePoint, SerializableScalar},
         signing::SigningMessage,
+        vrf::{VrfRoundSyncRequest, VrfRoundSyncResponse},
         ConsensusMessage,
     },
 };
@@ -109,7 +110,7 @@ pub enum ChannelMessage {
 
     StatusRequest {
         responder: oneshot::Sender<NodeStatus>,
-    }
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -120,6 +121,8 @@ pub enum GossipsubMessage {
     Consensus(ConsensusMessage),
     VrfSelection(VrfSelectionMessage),
     VrfSelectedNodes(VrfSelectedNodesBroadcast),
+    VrfRoundSyncRequest(VrfRoundSyncRequest),
+    VrfRoundSyncResponse(VrfRoundSyncResponse),
     PeerDiscovered {
         peer: PeerId,
         sequence: Option<u64>,

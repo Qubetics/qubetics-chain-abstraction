@@ -428,7 +428,8 @@ impl VrfService {
             from: SerializablePeerId(self.node_id),
             current_round: Some(local_round),
         };
-        let request_bytes = serde_json::to_vec(&sync_request)?;
+        let request_bytes =
+            serde_json::to_vec(&GossipsubMessage::VrfRoundSyncRequest(sync_request))?;
 
         if !peer_candidates.is_empty() {
             self.message_tx
