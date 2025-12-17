@@ -11,7 +11,7 @@ use k256::ProjectivePoint;
 use sha3::{Digest, Keccak256};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{mpsc, Notify, RwLock};
 use tracing::{error, info, warn};
 
 use crate::database::VrfStorage;
@@ -114,6 +114,8 @@ pub struct ContractTransactionSequencer {
     node_id: String,
     /// Cached request for the current processing transaction (set when we propose it)
     current_request_cache: Arc<RwLock<Option<ContractTransactionRequest>>>,
+    /// Notify waiting tasks when queue state changes
+    work_notify: Arc<Notify>,
 
     // VRF + Consensus for final node selection (Vault Sequencer)
     /// Local peer ID for VRF
@@ -153,6 +155,7 @@ impl ContractTransactionSequencer {
             message_tx: None,
             node_id: String::new(),
             current_request_cache: Arc::new(RwLock::new(None)),
+            work_notify: Arc::new(Notify::new()),
 
             // Initialize VRF + Consensus fields
             local_peer_id: None,
@@ -636,6 +639,9 @@ impl ContractTransactionSequencer {
 
             (was_waiting, final_transaction_id)
         }; // Both locks released here
+
+        // Wake any tasks waiting for new work to arrive
+        self.work_notify.notify_waiters();
 
         // If we were waiting for this request, trigger the re-agreement logic
         if was_waiting {
@@ -1310,6 +1316,9 @@ impl ContractTransactionSequencer {
                         cache.remove(&old_round);
                         drop(cache);
 
+                        // Notify waiters that the queue can advance
+                        self.work_notify.notify_waiters();
+
                         info!(
                             "🎉 [VAULT_SEQUENCER] [SYNC] ALL nodes confirmed completion of tx_id={}! Round incremented: {} -> {}. State cleared, ready for next transaction.",
                             transaction_id, old_round, new_round
@@ -1454,6 +1463,11 @@ impl ContractTransactionSequencer {
         let mut cache = self.current_request_cache.write().await;
         *cache = Some(request);
         info!("💾 [SEQUENCER] Cached request for current processing transaction");
+    }
+
+    /// Wait for a notification that new work is available or the queue state changed
+    pub async fn wait_for_work(&self) {
+        self.work_notify.notified().await;
     }
 
     /// Propose a transaction for processing and wait for consensus
@@ -1644,10 +1658,31 @@ impl ContractTransactionSequencer {
                 drop(sync_state);
                 let mut cache = self.current_request_cache.write().await;
                 *cache = None;
+                drop(cache);
+
+                // Advance round and clear selection state so the next dequeue can proceed
+                let mut round_lock = self.vault_sequencer_round.write().await;
+                let old_round = *round_lock;
+                *round_lock += 1;
+                let new_round = *round_lock;
+                drop(round_lock);
+
+                let mut locked = self.locked_request.write().await;
+                *locked = None;
+                drop(locked);
+
+                let mut cache = self.final_node_cache.write().await;
+                cache.remove(&old_round);
+                drop(cache);
+
+                // Notify waiters that the queue can advance
+                self.work_notify.notify_waiters();
 
                 info!(
-                    "🎉 [SEQUENCER] [COMPLETE] ALL nodes confirmed tx_id={}! State cleared, ready for next transaction.",
-                    completed_tx.as_ref().unwrap()
+                    "🎉 [SEQUENCER] [COMPLETE] ALL nodes confirmed tx_id={}! State cleared, ready for next transaction (round {} -> {}).",
+                    completed_tx.as_ref().unwrap(),
+                    old_round,
+                    new_round
                 );
                 if let Some(completed) = completed_tx {
                     info!(
@@ -1716,6 +1751,9 @@ impl ContractTransactionSequencer {
                 "🧹 [SEQUENCER] [RECOVERY] Cleared processing state for tx_id={} (seq={}, round {}->{}). Reason: {}",
                 current_tx, sequence, old_round, new_round, reason
             );
+
+            // Notify waiters that the queue state changed and can be retried
+            self.work_notify.notify_waiters();
         } else {
             warn!(
                 "⚠️ [SEQUENCER] [RECOVERY] No current processing transaction to clear (requested for tx_id={}, reason={})",
@@ -1837,6 +1875,8 @@ pub struct NetworkTransactionSequencer {
     node_id: String,
     /// Cached request for the current processing transaction (set when we propose it)
     current_request_cache: Arc<RwLock<Option<NetworkTransactionRequest>>>,
+    /// Notify waiting tasks when queue state changes
+    work_notify: Arc<Notify>,
 
     // VRF + Consensus for final node selection (Main Sequencer)
     /// Local peer ID for final node selection
@@ -1873,6 +1913,7 @@ impl NetworkTransactionSequencer {
             message_tx: None,
             node_id: String::new(),
             current_request_cache: Arc::new(RwLock::new(None)),
+            work_notify: Arc::new(Notify::new()),
 
             // Initialize VRF + Consensus fields
             local_peer_id: None,
@@ -2237,6 +2278,9 @@ impl NetworkTransactionSequencer {
 
             (sequence, queue_size)
         };
+
+        // Wake any tasks waiting for new work to arrive
+        self.work_notify.notify_waiters();
 
         Ok(())
     }
@@ -2925,6 +2969,31 @@ impl NetworkTransactionSequencer {
                         }
                     }
                 }
+
+                // Advance round and clear selection state so the next dequeue can proceed
+                let mut round_lock = self.main_sequencer_round.write().await;
+                let old_round = *round_lock;
+                *round_lock += 1;
+                let new_round = *round_lock;
+                drop(round_lock);
+
+                let mut locked = self.locked_request.write().await;
+                *locked = None;
+                drop(locked);
+
+                let mut cache = self.final_node_cache.write().await;
+                cache.remove(&old_round);
+                drop(cache);
+
+                // Notify waiters that the queue can advance
+                self.work_notify.notify_waiters();
+
+                info!(
+                    "🎉 [NETWORK_SEQUENCER] [COMPLETE] Round advanced for tx_id={} ({} -> {}), queue ready for next request",
+                    completed_tx.as_deref().unwrap_or_default(),
+                    old_round,
+                    new_round
+                );
             }
         }
 
@@ -2974,6 +3043,9 @@ impl NetworkTransactionSequencer {
                 "🧹 [NETWORK_SEQUENCER] [RECOVERY] Cleared processing state for tx_id={} (seq={}, round {}->{}). Reason: {}",
                 current_tx, sequence, old_round, new_round, reason
             );
+
+            // Notify waiters that the queue state changed and can be retried
+            self.work_notify.notify_waiters();
         } else {
             warn!(
                 "⚠️ [NETWORK_SEQUENCER] [RECOVERY] No current processing transaction to clear (requested for tx_id={}, reason={})",
@@ -2987,6 +3059,11 @@ impl NetworkTransactionSequencer {
         let mut cache = self.current_request_cache.write().await;
         *cache = Some(request);
         info!("💾 [NETWORK_SEQUENCER] Cached request for current processing transaction");
+    }
+
+    /// Wait for a notification that new work is available or the queue state changed
+    pub async fn wait_for_work(&self) {
+        self.work_notify.notified().await;
     }
 
     /// Handle sequencer sync message from another node
@@ -3114,6 +3191,9 @@ impl NetworkTransactionSequencer {
                         let mut final_cache = self.final_node_cache.write().await;
                         final_cache.remove(&old_round);
                         drop(final_cache);
+
+                        // Notify waiters that the queue can advance
+                        self.work_notify.notify_waiters();
 
                         info!(
                             "🎉 [MAIN_SEQUENCER] [SYNC] ALL nodes confirmed completion of tx_id={}! Round incremented: {} -> {}. State cleared, ready for next transaction.",
