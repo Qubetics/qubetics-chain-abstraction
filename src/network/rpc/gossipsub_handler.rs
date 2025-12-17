@@ -14,7 +14,7 @@ use crate::{
     signing::{BitcoinSigner, EthereumSigner},
     types::{
         network as network_cfg, p2p::SerializablePeerId, rpc::RPCRequest, signing::SigningMessage,
-        vrf::VrfRoundSyncResponse, ChannelMessage, GossipsubMessage,
+        vrf::VrfRoundSyncResponse, ChannelMessage, ConsensusMessage, GossipsubMessage,
     },
 };
 
@@ -187,10 +187,43 @@ impl MpcNetworkLayer {
                         .await?;
                 }
 
-                // Also handle in standalone consensus node if available
-                // if let Some(consensus_node) = &mut self.consensus_node {
-                //     consensus_node.handle_message(consensus_msg).await?;
-                // }
+                // Also handle in sequencer consensus nodes (vault and main sequencer)
+                // Check if this is for vault sequencer or main sequencer based on round
+                match &consensus_msg {
+                    ConsensusMessage::FinalNodeResult { round, .. } => {
+                        // Handle in vault sequencer if available
+                        if let Some(sequencer) = &self.contract_sequencer {
+                            if let Err(e) = sequencer.handle_consensus_message(consensus_msg.clone()).await {
+                                // Log error but don't fail - consensus might be for different domain
+                                warn!(
+                                    "⚠️ [VAULT_SEQUENCER] Failed to handle consensus message for round {}: {}",
+                                    round, e
+                                );
+                            } else {
+                                info!(
+                                    "✅ [VAULT_SEQUENCER] Handled consensus message for round {}",
+                                    round
+                                );
+                            }
+                        }
+
+                        // Handle in main sequencer if available
+                        if let Some(sequencer) = &self.network_transaction_sequencer {
+                            if let Err(e) = sequencer.handle_consensus_message(consensus_msg.clone()).await {
+                                // Log error but don't fail - consensus might be for different domain
+                                warn!(
+                                    "⚠️ [MAIN_SEQUENCER] Failed to handle consensus message for round {}: {}",
+                                    round, e
+                                );
+                            } else {
+                                info!(
+                                    "✅ [MAIN_SEQUENCER] Handled consensus message for round {}",
+                                    round
+                                );
+                            }
+                        }
+                    }
+                }
             }
             GossipsubMessage::VrfSelection(vrf_msg) => {
                 // Handle VRF selection messages

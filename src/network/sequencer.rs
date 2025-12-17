@@ -15,7 +15,7 @@ use tokio::sync::{mpsc, Notify, RwLock};
 use tracing::{error, info, warn};
 
 use crate::database::VrfStorage;
-use crate::types::{DepositIntent, TransactionType};
+use crate::types::{ConsensusMessage, DepositIntent, GossipsubMessage, TransactionType};
 use crate::vrf::service::VrfRoundSyncKind;
 
 /// Enum to distinguish between different contract transaction flows
@@ -333,6 +333,34 @@ impl ContractTransactionSequencer {
                 round, result.final_node
             );
 
+            // Broadcast the consensus result to other nodes
+            if let Some(message_tx) = &self.message_tx {
+                let consensus_msg = ConsensusMessage::FinalNodeResult {
+                    result: result.clone(),
+                    round,
+                };
+
+                // Wrap in GossipsubMessage::Consensus for proper deserialization
+                let gossipsub_msg = GossipsubMessage::Consensus(consensus_msg);
+                let broadcast_data = serde_json::to_vec(&gossipsub_msg)
+                    .map_err(|e| anyhow::anyhow!("Failed to serialize consensus message: {}", e))?;
+
+                message_tx
+                    .send(crate::types::ChannelMessage::Broadcast {
+                        topic: "consensus-result".to_string(),
+                        data: broadcast_data,
+                    })
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Failed to broadcast consensus result: {}", e))?;
+
+                info!(
+                    "📤 [VAULT_SEQUENCER] Broadcasted consensus result for round {}",
+                    round
+                );
+            } else {
+                warn!("⚠️ [VAULT_SEQUENCER] No message channel available to broadcast consensus result");
+            }
+
             // Cache final node for this round
             let mut cache = self.final_node_cache.write().await;
             cache.insert(round, result.final_node.0);
@@ -391,6 +419,21 @@ impl ContractTransactionSequencer {
     pub fn set_consensus_node(&mut self, consensus: Arc<RwLock<crate::consensus::ConsensusNode>>) {
         self.consensus_node = Some(consensus);
         info!("🔧 [VAULT_SEQUENCER] Consensus node configured");
+    }
+
+    /// Handle consensus message from another node
+    pub async fn handle_consensus_message(
+        &self,
+        msg: crate::types::ConsensusMessage,
+    ) -> Result<()> {
+        if let Some(consensus) = &self.consensus_node {
+            let mut consensus_node = consensus.write().await;
+            consensus_node.handle_message(msg).await?;
+            info!("✅ [VAULT_SEQUENCER] Handled consensus message");
+        } else {
+            warn!("⚠️ [VAULT_SEQUENCER] Consensus node not available to handle message");
+        }
+        Ok(())
     }
 
     /// Handle VRF selected nodes broadcast from another node
@@ -2093,6 +2136,34 @@ impl NetworkTransactionSequencer {
                 round, result.final_node
             );
 
+            // Broadcast the consensus result to other nodes
+            if let Some(message_tx) = &self.message_tx {
+                let consensus_msg = ConsensusMessage::FinalNodeResult {
+                    result: result.clone(),
+                    round,
+                };
+
+                // Wrap in GossipsubMessage::Consensus for proper deserialization
+                let gossipsub_msg = GossipsubMessage::Consensus(consensus_msg);
+                let broadcast_data = serde_json::to_vec(&gossipsub_msg)
+                    .map_err(|e| anyhow::anyhow!("Failed to serialize consensus message: {}", e))?;
+
+                message_tx
+                    .send(crate::types::ChannelMessage::Broadcast {
+                        topic: "consensus-result".to_string(),
+                        data: broadcast_data,
+                    })
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Failed to broadcast consensus result: {}", e))?;
+
+                info!(
+                    "📤 [MAIN_SEQUENCER] Broadcasted consensus result for round {}",
+                    round
+                );
+            } else {
+                warn!("⚠️ [MAIN_SEQUENCER] No message channel available to broadcast consensus result");
+            }
+
             // Cache final node for this round
             let mut cache = self.final_node_cache.write().await;
             cache.insert(round, result.final_node.0);
@@ -2146,6 +2217,21 @@ impl NetworkTransactionSequencer {
     pub fn set_consensus_node(&mut self, consensus: Arc<RwLock<crate::consensus::ConsensusNode>>) {
         self.consensus_node = Some(consensus);
         info!("🔧 [MAIN_SEQUENCER] Consensus node configured");
+    }
+
+    /// Handle consensus message from another node
+    pub async fn handle_consensus_message(
+        &self,
+        msg: crate::types::ConsensusMessage,
+    ) -> Result<()> {
+        if let Some(consensus) = &self.consensus_node {
+            let mut consensus_node = consensus.write().await;
+            consensus_node.handle_message(msg).await?;
+            info!("✅ [MAIN_SEQUENCER] Handled consensus message");
+        } else {
+            warn!("⚠️ [MAIN_SEQUENCER] Consensus node not available to handle message");
+        }
+        Ok(())
     }
 
     /// Handle VRF selected nodes broadcast from another node

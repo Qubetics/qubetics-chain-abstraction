@@ -1,7 +1,7 @@
 use crate::types::{ConsensusMessage, ConsensusResult, SerializablePeerId};
 use anyhow::Result;
 use std::collections::HashMap;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 pub mod db_consensus;
 pub use db_consensus::DatabaseConsensusNode;
@@ -91,6 +91,26 @@ impl ConsensusNode {
                     ));
                 }
 
+                // Check if we already have a consensus result for this round
+                // If we do and the final_node matches, accept it (likely our own broadcast)
+                if let Some(existing_result) = self.consensus_results.get(&round) {
+                    if existing_result.final_node == result.final_node {
+                        info!(
+                            "✅ [CONSENSUS] Already have consensus result for round {} with same final_node {:?}, accepting received result",
+                            round, result.final_node
+                        );
+                        // Update with the received result (might have different frequencies/selections but same final_node)
+                        self.consensus_results.insert(round, result);
+                        return Ok(());
+                    } else {
+                        warn!(
+                            "⚠️ [CONSENSUS] Already have different consensus result for round {}: existing={:?}, received={:?}",
+                            round, existing_result.final_node, result.final_node
+                        );
+                        // Continue with validation to see which one is correct
+                    }
+                }
+
                 // Get or reconstruct selected nodes for validation
                 let selected_nodes = if let Some(nodes) = self.selected_nodes_by_round.get(&round) {
                     // We have the selected nodes - use them for validation
@@ -148,13 +168,65 @@ impl ConsensusNode {
 
                 let expected_result = Self::calculate_consensus_result(&selected_nodes, round)?;
 
-                if expected_result != result {
-                    return Err(anyhow::anyhow!(
-                        "Invalid consensus result received for round {}: expected {:?}, got {:?}",
-                        round,
-                        expected_result.final_node,
-                        result.final_node
+                // The most important validation is that the final_node matches
+                // If final_node matches, accept it even if frequencies/selections differ slightly
+                // (this can happen when a node receives its own broadcast after receiving additional VRF selections)
+                if expected_result.final_node != result.final_node {
+                    // Provide detailed comparison to help debug
+                    let mut differences = Vec::new();
+                    differences.push(format!(
+                        "final_node: expected {:?}, got {:?}",
+                        expected_result.final_node, result.final_node
                     ));
+                    if expected_result.round != result.round {
+                        differences.push(format!(
+                            "round: expected {}, got {}",
+                            expected_result.round, result.round
+                        ));
+                    }
+                    if expected_result.total_selections != result.total_selections {
+                        differences.push(format!(
+                            "total_selections: expected {}, got {}",
+                            expected_result.total_selections, result.total_selections
+                        ));
+                    }
+                    if expected_result.node_frequencies != result.node_frequencies {
+                        differences.push(format!(
+                            "node_frequencies: expected {:?}, got {:?}",
+                            expected_result.node_frequencies, result.node_frequencies
+                        ));
+                    }
+                    
+                    return Err(anyhow::anyhow!(
+                        "Invalid consensus result received for round {}: {}. Expected result: final_node={:?}, total_selections={}, node_frequencies={:?}. Received result: final_node={:?}, total_selections={}, node_frequencies={:?}",
+                        round,
+                        differences.join(", "),
+                        expected_result.final_node,
+                        expected_result.total_selections,
+                        expected_result.node_frequencies,
+                        result.final_node,
+                        result.total_selections,
+                        result.node_frequencies
+                    ));
+                }
+
+                // Final node matches - validate that the received result would also produce the same final_node
+                // by recalculating from the received node_frequencies
+                let received_final_node = Self::calculate_final_node_from_frequencies(&result.node_frequencies)?;
+                if received_final_node != result.final_node {
+                    return Err(anyhow::anyhow!(
+                        "Consensus result inconsistency for round {}: final_node {:?} doesn't match calculation from node_frequencies {:?}",
+                        round, result.final_node, result.node_frequencies
+                    ));
+                }
+
+                // Final node matches and is consistent - accept the result
+                // (even if total_selections or exact frequencies differ, as long as final_node is correct)
+                if expected_result.total_selections != result.total_selections || expected_result.node_frequencies != result.node_frequencies {
+                    info!(
+                        "ℹ️ [CONSENSUS] Accepting consensus result for round {} with matching final_node {:?} but different frequencies/selections (expected: total={}, got: total={})",
+                        round, result.final_node, expected_result.total_selections, result.total_selections
+                    );
                 }
 
                 self.consensus_results.insert(round, result);
@@ -243,6 +315,45 @@ impl ConsensusNode {
             node_frequencies,
             total_selections: selected_nodes.len(),
         })
+    }
+
+    /// Calculate the final node from node frequencies (helper for validation)
+    fn calculate_final_node_from_frequencies(
+        node_frequencies: &HashMap<SerializablePeerId, usize>,
+    ) -> Result<SerializablePeerId> {
+        if node_frequencies.is_empty() {
+            return Err(anyhow::anyhow!("No node frequencies available"));
+        }
+
+        let mut max_frequency = 0;
+        let mut all_same_frequency = true;
+        let mut first_frequency = None;
+
+        for (_, frequency) in node_frequencies {
+            if first_frequency.is_none() {
+                first_frequency = Some(*frequency);
+            } else if first_frequency.unwrap() != *frequency {
+                all_same_frequency = false;
+            }
+
+            if *frequency > max_frequency {
+                max_frequency = *frequency;
+            }
+        }
+
+        let mut candidates: Vec<SerializablePeerId> = if all_same_frequency {
+            node_frequencies.keys().cloned().collect()
+        } else {
+            node_frequencies
+                .iter()
+                .filter(|(_, &freq)| freq == max_frequency)
+                .map(|(node, _)| node.clone())
+                .collect()
+        };
+
+        candidates.sort_by(|a, b| a.0.to_bytes().cmp(&b.0.to_bytes()));
+
+        Ok(candidates[0].clone())
     }
 
     /// Check if this node is the final selected node for a round
