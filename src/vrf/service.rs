@@ -64,6 +64,18 @@ impl VrfRoundSyncKind {
             }
         }
     }
+
+    fn topic(self) -> &'static str {
+        match self {
+            VrfRoundSyncKind::Signing => crate::network::transport::types::TOPIC_CONSENSUS,
+            VrfRoundSyncKind::MainSequencer => {
+                crate::network::transport::types::TOPIC_MAIN_SEQUENCER_VRF
+            }
+            VrfRoundSyncKind::VaultSequencer => {
+                crate::network::transport::types::TOPIC_VAULT_SEQUENCER_VRF
+            }
+        }
+    }
 }
 
 impl VrfService {
@@ -433,7 +445,7 @@ impl VrfService {
         round
     }
 
-    pub async fn sync_rounds(&self, sync_kind: VrfRoundSyncKind, topic: &str) -> Result<u64> {
+    pub async fn sync_rounds(&self, sync_kind: VrfRoundSyncKind) -> Result<u64> {
         let _guard = self.round_update_lock.lock().await;
 
         let local_round = {
@@ -451,13 +463,14 @@ impl VrfService {
         let sync_request = VrfRoundSyncRequest {
             from: SerializablePeerId(self.node_id),
             current_round: Some(local_round),
+            context: self.context.clone(),
         };
         let request_bytes = serde_json::to_vec(&sync_kind.to_message(sync_request))?;
 
         if !peer_candidates.is_empty() {
             self.message_tx
                 .send(ChannelMessage::Broadcast {
-                    topic: topic.to_string(),
+                    topic: sync_kind.topic().to_string(),
                     data: request_bytes,
                 })
                 .await?;
@@ -474,7 +487,7 @@ impl VrfService {
 
         // Read peer rounds from database (single source of truth)
         let peer_rounds: Vec<u64> = if let Some(storage) = &self.vrf_storage {
-            match storage.get_all_peer_rounds() {
+            match storage.get_all_peer_rounds_for_context(&self.context) {
                 Ok(peer_rounds_map) => {
                     let rounds: Vec<u64> = peer_rounds_map.values().copied().collect();
                     info!(
@@ -506,11 +519,7 @@ impl VrfService {
 
     /// Synchronize the VRF round with peers before producing a signing round.
     pub async fn sync_rounds_before_signing(&self) -> Result<u64> {
-        self.sync_rounds(
-            VrfRoundSyncKind::Signing,
-            crate::network::transport::types::TOPIC_CONSENSUS,
-        )
-        .await
+        self.sync_rounds(VrfRoundSyncKind::Signing).await
     }
 
     #[cfg(test)]
@@ -548,6 +557,10 @@ impl VrfService {
 
     pub(crate) fn round_update_lock(&self) -> Arc<Mutex<()>> {
         self.round_update_lock.clone()
+    }
+
+    pub fn context(&self) -> &str {
+        &self.context
     }
 
     pub async fn set_current_round(&mut self, round: u64) {

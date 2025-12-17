@@ -147,13 +147,14 @@ impl MpcNetworkLayer {
                     peer_id
                 );
                 let current_round = self
-                    .get_local_vrf_round_for_domain(VrfDomain::Signing)
+                    .get_local_vrf_round_for_domain(VrfDomain::Signing, None)
                     .await;
                 swarm.behaviour_mut().request_response.send_request(
                     &peer_id,
                     RPCRequest::VrfRoundSync(VrfRoundSyncRequest {
                         from: SerializablePeerId(self.local_peer_id),
                         current_round,
+                        context: String::new(),
                     }),
                 );
                 self.vrf_round_requested = true;
