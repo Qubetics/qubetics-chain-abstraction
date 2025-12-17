@@ -563,7 +563,7 @@ impl VrfService {
         &self.context
     }
 
-    pub async fn set_current_round(&mut self, round: u64) {
+    pub async fn set_current_round(&self, round: u64) {
         let mut current = self.current_round.write().await;
         *current = round;
         self.persist_current_round(round).await;

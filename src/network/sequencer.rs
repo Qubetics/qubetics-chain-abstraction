@@ -365,6 +365,11 @@ impl ContractTransactionSequencer {
         info!("🔧 [VAULT_SEQUENCER] VRF service configured");
     }
 
+    /// Access underlying VRF service (read-only) for vault sequencer
+    pub fn vrf_service(&self) -> Option<&crate::protocols::VrfService> {
+        self.vrf_service.as_deref()
+    }
+
     pub fn vrf_storage(&self) -> Option<VrfStorage> {
         self.vrf_service
             .as_ref()
@@ -1724,6 +1729,11 @@ impl NetworkTransactionSequencer {
         } else {
             false
         }
+    }
+
+    /// Access underlying VRF service (read-only) for main network sequencer
+    pub fn vrf_service(&self) -> Option<&crate::protocols::VrfService> {
+        self.vrf_service.as_deref()
     }
 
     /// Start consensus to determine final node for current round

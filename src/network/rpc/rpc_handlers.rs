@@ -130,12 +130,14 @@ impl MpcNetworkLayer {
                 .and_then(|node| node.vrf_service())
                 .map(|svc| svc.context().to_string())
                 .or_else(|| {
-                    self.db_signing_node.as_ref().and_then(|node| {
-                        node.try_lock()
-                            .ok()
-                            .and_then(|guard| guard.vrf_service.as_ref())
-                            .map(|svc| svc.context().to_string())
-                    })
+                    if let Some(db_signing_node) = &self.db_signing_node {
+                        if let Ok(guard) = db_signing_node.try_lock() {
+                            if let Some(vrf_service) = &guard.vrf_service {
+                                return Some(vrf_service.context().to_string());
+                            }
+                        }
+                    }
+                    None
                 })
                 .unwrap_or_default(),
             VrfDomain::MainSequencer => self
@@ -212,8 +214,10 @@ impl MpcNetworkLayer {
 
     fn get_vrf_storage_for_domain(&self, domain: VrfDomain, context: &str) -> Option<VrfStorage> {
         let context = self.resolve_context(domain, Some(context));
+
         match domain {
             VrfDomain::Signing => {
+                // Prefer in-memory signing node VRF service if context matches
                 if let Some(signing_node) = &self.signing_node {
                     if let Some(vrf_service) = signing_node.vrf_service() {
                         if vrf_service.context() == context {
@@ -222,6 +226,7 @@ impl MpcNetworkLayer {
                     }
                 }
 
+                // Fall back to db_signing_node VRF service
                 if let Some(db_signing_node) = &self.db_signing_node {
                     if let Ok(node) = db_signing_node.try_lock() {
                         if let Some(vrf_service) = &node.vrf_service {
@@ -231,6 +236,8 @@ impl MpcNetworkLayer {
                         }
                     }
                 }
+
+                None
             }
             VrfDomain::MainSequencer => self
                 .network_transaction_sequencer
@@ -241,8 +248,6 @@ impl MpcNetworkLayer {
                 .as_ref()
                 .and_then(|seq| seq.vrf_storage()),
         }
-
-        None
     }
 
     fn is_vrf_round_within_range(reference_round: Option<u64>, candidate_round: u64) -> bool {

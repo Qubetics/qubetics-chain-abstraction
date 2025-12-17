@@ -18,7 +18,7 @@ import fs from 'fs';
 import path from 'path';
 
 // Configuration
-const RPC_BASE_URL = 'http://127.0.0.1:8083';
+const RPC_BASE_URL = 'http://172.16.14.223:8082';
 const API_KEY = "2919cd546f2c4338bccb4794a3d6afba2282e5729653fc2c2ff6c5e0e194ar45";
 
 // ============================================
@@ -145,11 +145,11 @@ async function testUserMpcDeposit({ wallet, amount, userId }) {
     // Construct DepositIntent (EXACTLY like test_register_user.js)
     const depositIntent = {
       source_address: userInfo.data.derived_eth_address,  // ETH address
-      target_address: userInfo.data.derived_btc_address,  // BTC address
+      target_address: userInfo.data.derived_eth_address,  // ETH address
       source_chain: 'qubetics',
-      target_chain: 'bitcoin',
+      target_chain: 'qubetics',
       amount: amount,
-      source_token: 'BTC',
+      source_token: 'TICS',
       target_token: 'TICS',
       timestamp: 2323232,
     };
