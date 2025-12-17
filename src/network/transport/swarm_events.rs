@@ -17,7 +17,7 @@ use crate::types::rpc::{MPCProtocol, RPCRequest};
 use crate::types::vrf::VrfRoundSyncRequest;
 use crate::types::{ChannelMessage, GossipsubMessage};
 
-use super::types::{MpcNetworkBehaviour, MpcNetworkLayer, NetworkEvent};
+use super::types::{MpcNetworkBehaviour, MpcNetworkLayer, NetworkEvent, VrfDomain};
 
 impl MpcNetworkLayer {
     /// Main swarm event handler - delegates to specific handlers
@@ -106,7 +106,10 @@ impl MpcNetworkLayer {
         // Only persist the dialed address when we are the dialer; listener side remote_addr is ephemeral (caller source port).
         let is_dialer = matches!(endpoint, ConnectedPoint::Dialer { .. });
         if is_dialer {
-            info!("🔗 [CONNECTION_ESTABLISHED] Storing peer address {} => {} in peer_multiaddresses", peer_id, remote_addr);
+            info!(
+                "🔗 [CONNECTION_ESTABLISHED] Storing peer address {} => {} in peer_multiaddresses",
+                peer_id, remote_addr
+            );
             self.peer_discovery
                 .peer_multiaddresses
                 .insert(peer_id, remote_addr.clone());
@@ -226,7 +229,9 @@ impl MpcNetworkLayer {
                     &peer_id,
                     RPCRequest::VrfRoundSync(VrfRoundSyncRequest {
                         from: SerializablePeerId(self.local_peer_id),
-                        current_round: self.get_local_vrf_round().await,
+                        current_round: self
+                            .get_local_vrf_round_for_domain(VrfDomain::Signing)
+                            .await,
                     }),
                 );
                 self.vrf_round_requested = true;

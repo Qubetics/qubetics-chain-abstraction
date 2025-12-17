@@ -13,7 +13,7 @@ use crate::protocols::DKGStatus;
 use crate::types::rpc::{RPCRequest, RPCResponse};
 use crate::types::vrf::{VrfRoundSyncRequest, VrfRoundSyncResponse};
 
-use crate::network::transport::types::{MpcNetworkBehaviour, MpcNetworkLayer};
+use crate::network::transport::types::{MpcNetworkBehaviour, MpcNetworkLayer, VrfDomain};
 
 const MAX_VRF_ROUND_SKEW: u64 = 10;
 
@@ -117,20 +117,67 @@ impl MpcNetworkLayer {
         }
     }
 
-    pub(crate) async fn get_local_vrf_round(&self) -> Option<u64> {
-        // Check signing_node first
-        if let Some(signing_node) = &self.signing_node {
-            if let Some(vrf_service) = signing_node.vrf_service() {
-                return Some(vrf_service.get_current_round().await);
+    pub(crate) async fn get_local_vrf_round_for_domain(&self, domain: VrfDomain) -> Option<u64> {
+        match domain {
+            VrfDomain::Signing => {
+                if let Some(signing_node) = &self.signing_node {
+                    if let Some(vrf_service) = signing_node.vrf_service() {
+                        return Some(vrf_service.get_current_round().await);
+                    }
+                }
+
+                if let Some(db_signing_node) = &self.db_signing_node {
+                    let node = db_signing_node.lock().await;
+                    if let Some(vrf_service) = &node.vrf_service {
+                        return Some(vrf_service.get_current_round().await);
+                    }
+                }
+            }
+            VrfDomain::MainSequencer => {
+                if let Some(sequencer) = &self.network_transaction_sequencer {
+                    return Some(sequencer.get_current_round().await);
+                }
+            }
+            VrfDomain::VaultSequencer => {
+                if let Some(sequencer) = &self.contract_sequencer {
+                    return Some(sequencer.get_current_round().await);
+                }
             }
         }
 
-        // If no round from signing_node, check db_signing_node
-        if let Some(db_signing_node) = &self.db_signing_node {
-            let node = db_signing_node.lock().await;
-            if let Some(vrf_service) = &node.vrf_service {
-                return Some(vrf_service.get_current_round().await);
+        None
+    }
+
+    pub(crate) async fn get_local_vrf_round(&self) -> Option<u64> {
+        self.get_local_vrf_round_for_domain(VrfDomain::Signing)
+            .await
+    }
+
+    fn get_vrf_storage_for_domain(&self, domain: VrfDomain) -> Option<VrfStorage> {
+        match domain {
+            VrfDomain::Signing => {
+                if let Some(signing_node) = &self.signing_node {
+                    if let Some(vrf_service) = signing_node.vrf_service() {
+                        return vrf_service.storage();
+                    }
+                }
+
+                if let Some(db_signing_node) = &self.db_signing_node {
+                    if let Ok(node) = db_signing_node.try_lock() {
+                        if let Some(vrf_service) = &node.vrf_service {
+                            return vrf_service.storage();
+                        }
+                    }
+                }
             }
+            VrfDomain::MainSequencer => self
+                .network_transaction_sequencer
+                .as_ref()
+                .and_then(|seq| seq.vrf_storage()),
+            VrfDomain::VaultSequencer => self
+                .contract_sequencer
+                .as_ref()
+                .and_then(|seq| seq.vrf_storage()),
         }
 
         None
@@ -147,6 +194,7 @@ impl MpcNetworkLayer {
 
     pub(crate) fn store_peer_round_if_valid(
         &mut self,
+        domain: VrfDomain,
         peer: PeerId,
         reference_round: Option<u64>,
         reported_round: Option<u64>,
@@ -161,17 +209,22 @@ impl MpcNetworkLayer {
 
         if Self::is_vrf_round_within_range(reference_round, round) {
             // Store in memory (for backward compatibility)
-            self.peer_rounds.insert(peer, round);
-            
+            let entry = self.peer_rounds.entry(domain).or_default();
+            entry.insert(peer, round);
+
             // Persist to database as single source of truth
-            let vrf_storage = VrfStorage::new(self.db.clone());
-            if let Err(e) = vrf_storage.set_peer_round(&peer.to_string(), round) {
-                warn!(
-                    "⚠️ [VRF_SYNC] Failed to persist peer round {} for {} to DB: {}",
-                    round, peer, e
-                );
-            } else {
-                info!("💾 [VRF_SYNC] Stored VRF round {} for peer {} (DB)", round, peer);
+            if let Some(vrf_storage) = self.get_vrf_storage_for_domain(domain) {
+                if let Err(e) = vrf_storage.set_peer_round(&peer.to_string(), round) {
+                    warn!(
+                        "⚠️ [VRF_SYNC] Failed to persist peer round {} for {} to DB: {}",
+                        round, peer, e
+                    );
+                } else {
+                    info!(
+                        "💾 [VRF_SYNC] Stored VRF round {} for peer {} (DB, domain: {:?})",
+                        round, peer, domain
+                    );
+                }
             }
             true
         } else {
@@ -417,15 +470,17 @@ impl MpcNetworkLayer {
 
         let receiver_node_id = dkg_node.get_id().to_string();
 
-        
         // Use the public method to process the share
-        match dkg_node.process_incoming_share(
-            from_node_id.clone(),
-            share_index,
-            share_value,
-            commitments,
-            self.node_manager.clone(),
-        ).await {
+        match dkg_node
+            .process_incoming_share(
+                from_node_id.clone(),
+                share_index,
+                share_value,
+                commitments,
+                self.node_manager.clone(),
+            )
+            .await
+        {
             Ok(true) => {
                 info!(
                     "✅ [DKG-SECURE] Share index {} from {} processed incoming share successfully ",
@@ -484,13 +539,16 @@ impl MpcNetworkLayer {
         let receiver_node_id = dkg_node.get_id().to_string();
 
         // Use the public method to process the refresh share
-        match dkg_node.handle_unicast_refresh_share(
-            from_node_id.clone(),
-            share_index,
-            share_value,
-            commitments,
-            self.node_manager.clone(),
-        ).await {
+        match dkg_node
+            .handle_unicast_refresh_share(
+                from_node_id.clone(),
+                share_index,
+                share_value,
+                commitments,
+                self.node_manager.clone(),
+            )
+            .await
+        {
             Ok(true) => {
                 info!(
                     "✅ [REFRESH-SECURE] Refresh share index {} from {} processed successfully",
@@ -531,7 +589,9 @@ impl MpcNetworkLayer {
             "🔄 Received request for current VRF round from peer {}",
             peer
         );
-        let current_round = self.get_local_vrf_round().await;
+        let current_round = self
+            .get_local_vrf_round_for_domain(VrfDomain::Signing)
+            .await;
 
         RPCResponse::CurrentVrfRoundResponse { current_round }
     }
@@ -548,8 +608,15 @@ impl MpcNetworkLayer {
             );
         }
 
-        let local_round = self.get_local_vrf_round().await;
-        self.store_peer_round_if_valid(peer, local_round, request.current_round);
+        let local_round = self
+            .get_local_vrf_round_for_domain(VrfDomain::Signing)
+            .await;
+        self.store_peer_round_if_valid(
+            VrfDomain::Signing,
+            peer,
+            local_round,
+            request.current_round,
+        );
 
         RPCResponse::VrfRoundSync(VrfRoundSyncResponse {
             from: SerializablePeerId(self.local_peer_id),
@@ -671,7 +738,10 @@ impl MpcNetworkLayer {
                             .insert(peer_id, addr.clone());
                         let key = peer_addr_key(&peer_id.to_string());
                         if let Err(e) = self.db.put_string(&key, &addr.to_string()) {
-                            warn!("⚠️ [PEER_INFO] Failed to persist addr for {}: {}", peer_id, e);
+                            warn!(
+                                "⚠️ [PEER_INFO] Failed to persist addr for {}: {}",
+                                peer_id, e
+                            );
                         }
                     }
                 }
@@ -689,8 +759,15 @@ impl MpcNetworkLayer {
             }
             RPCResponse::ShareAccepted => {}
             RPCResponse::CurrentVrfRoundResponse { current_round } => {
-                let reference_round = self.get_local_vrf_round().await;
-                self.store_peer_round_if_valid(peer, reference_round, current_round);
+                let reference_round = self
+                    .get_local_vrf_round_for_domain(VrfDomain::Signing)
+                    .await;
+                self.store_peer_round_if_valid(
+                    VrfDomain::Signing,
+                    peer,
+                    reference_round,
+                    current_round,
+                );
                 self.handle_current_vrf_round_response(current_round).await;
             }
             RPCResponse::VrfRoundSync(sync_response) => {
@@ -836,8 +913,13 @@ impl MpcNetworkLayer {
                 };
 
                 if let Ok(addr) = addr_with_p2p.parse::<libp2p::Multiaddr>() {
-                    info!("🔐 [PEER_LIST] Inserting advertised address into map/db for peer {}: {}", p, addr);
-                    self.peer_discovery.peer_multiaddresses.insert(p, addr.clone());
+                    info!(
+                        "🔐 [PEER_LIST] Inserting advertised address into map/db for peer {}: {}",
+                        p, addr
+                    );
+                    self.peer_discovery
+                        .peer_multiaddresses
+                        .insert(p, addr.clone());
                     let key = peer_addr_key(&p.to_string());
                     if let Err(e) = self.db.put_string(&key, &addr.to_string()) {
                         warn!("⚠️ [PEER_LIST] Failed to persist addr for {}: {}", p, e);
@@ -1034,8 +1116,15 @@ impl MpcNetworkLayer {
             );
         }
 
-        let reference_round = self.get_local_vrf_round().await;
-        if self.store_peer_round_if_valid(peer, reference_round, response.current_round) {
+        let reference_round = self
+            .get_local_vrf_round_for_domain(VrfDomain::Signing)
+            .await;
+        if self.store_peer_round_if_valid(
+            VrfDomain::Signing,
+            peer,
+            reference_round,
+            response.current_round,
+        ) {
             info!("✅ [VRF_SYNC] Applied VRF round sync from peer {}", peer);
         }
     }
@@ -1072,10 +1161,16 @@ mod tests {
         let mut layer = build_network_layer().await;
         let peer = PeerId::random();
 
-        let stored = layer.store_peer_round_if_valid(peer, Some(5), Some(6));
+        let stored = layer.store_peer_round_if_valid(VrfDomain::Signing, peer, Some(5), Some(6));
 
         assert!(stored, "valid rounds should be stored");
-        assert_eq!(layer.peer_rounds.get(&peer), Some(&6));
+        assert_eq!(
+            layer
+                .peer_rounds
+                .get(&VrfDomain::Signing)
+                .and_then(|rounds| rounds.get(&peer)),
+            Some(&6)
+        );
     }
 
     #[tokio::test]
@@ -1084,12 +1179,17 @@ mod tests {
         let peer = PeerId::random();
 
         let stored = layer.store_peer_round_if_valid(
+            VrfDomain::Signing,
             peer,
             Some(1),
             Some(1 + super::MAX_VRF_ROUND_SKEW + 10),
         );
 
-        assert!(layer.peer_rounds.get(&peer).is_none());
+        assert!(layer
+            .peer_rounds
+            .get(&VrfDomain::Signing)
+            .and_then(|rounds| rounds.get(&peer))
+            .is_none());
         assert!(!stored, "out-of-range rounds should be rejected");
     }
 }

@@ -14,7 +14,9 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 use tracing::{error, info, warn};
 
+use crate::database::VrfStorage;
 use crate::types::{DepositIntent, TransactionType};
+use crate::vrf::service::VrfRoundSyncKind;
 
 /// Enum to distinguish between different contract transaction flows
 #[derive(Clone, Debug)]
@@ -195,7 +197,7 @@ impl ContractTransactionSequencer {
 
     /// Perform VRF node selection for current round
     pub async fn perform_vrf_selection(&self, threshold: usize) -> Result<()> {
-        let round = *self.vault_sequencer_round.read().await;
+        let round = self.sync_round_with_peers().await?;
         let nodes = self.available_nodes.read().await.clone();
 
         if nodes.is_empty() {
@@ -252,6 +254,25 @@ impl ContractTransactionSequencer {
         }
 
         Ok(())
+    }
+
+    pub async fn sync_round_with_peers(&self) -> Result<u64> {
+        if let Some(vrf_service) = &self.vrf_service {
+            let round = *self.vault_sequencer_round.read().await;
+            vrf_service.set_current_round(round).await;
+            let synced_round = vrf_service
+                .sync_rounds(
+                    VrfRoundSyncKind::VaultSequencer,
+                    crate::network::transport::types::TOPIC_VAULT_SEQUENCER_VRF,
+                )
+                .await?;
+
+            let mut local_round = self.vault_sequencer_round.write().await;
+            *local_round = synced_round;
+            Ok(synced_round)
+        } else {
+            Ok(*self.vault_sequencer_round.read().await)
+        }
     }
 
     /// Check if we have enough VRF selections to start consensus
@@ -345,6 +366,12 @@ impl ContractTransactionSequencer {
     pub fn set_vrf_service(&mut self, vrf_service: Arc<crate::protocols::VrfService>) {
         self.vrf_service = Some(vrf_service);
         info!("🔧 [VAULT_SEQUENCER] VRF service configured");
+    }
+
+    pub fn vrf_storage(&self) -> Option<VrfStorage> {
+        self.vrf_service
+            .as_ref()
+            .and_then(|service| service.storage())
     }
 
     /// Set consensus node for vault sequencer
@@ -825,22 +852,45 @@ impl ContractTransactionSequencer {
 
         // Helpful context for debugging which flow is being selected
         let flow_label = match &request.flow {
-            ContractTransactionFlow::DepositIntent { intent_hash, transaction_type, amount, .. } => {
-                format!("DepositIntent(intent_hash={}, type={:?}, amount={})", intent_hash, transaction_type, amount)
+            ContractTransactionFlow::DepositIntent {
+                intent_hash,
+                transaction_type,
+                amount,
+                ..
+            } => {
+                format!(
+                    "DepositIntent(intent_hash={}, type={:?}, amount={})",
+                    intent_hash, transaction_type, amount
+                )
             }
-            ContractTransactionFlow::SolverAddLiquidity { solver_address, solver_id, asset_chain_name, amount } => {
+            ContractTransactionFlow::SolverAddLiquidity {
+                solver_address,
+                solver_id,
+                asset_chain_name,
+                amount,
+            } => {
                 format!(
                     "SolverAddLiquidity(solver={}, solver_id={}, chain={}, amount={})",
                     solver_address, solver_id, asset_chain_name, amount
                 )
             }
-            ContractTransactionFlow::SolverWithdrawLiquidity { solver_address, asset_chain_name, amount, payout_transaction_hash } => {
+            ContractTransactionFlow::SolverWithdrawLiquidity {
+                solver_address,
+                asset_chain_name,
+                amount,
+                payout_transaction_hash,
+            } => {
                 format!(
                     "SolverWithdrawLiquidity(solver={}, chain={}, amount={}, payout_tx={})",
                     solver_address, asset_chain_name, amount, payout_transaction_hash
                 )
             }
-            ContractTransactionFlow::SolverClaimReward { solver_address, reward_btc, reward_tics, payout_transaction_hash } => {
+            ContractTransactionFlow::SolverClaimReward {
+                solver_address,
+                reward_btc,
+                reward_tics,
+                payout_transaction_hash,
+            } => {
                 format!(
                     "SolverClaimReward(solver={}, btc={:?}, tics={:?}, payout_tx={})",
                     solver_address, reward_btc, reward_tics, payout_transaction_hash
@@ -1595,7 +1645,7 @@ impl NetworkTransactionSequencer {
 
     /// Perform VRF node selection for current round
     pub async fn perform_vrf_selection(&self, threshold: usize) -> Result<()> {
-        let round = *self.main_sequencer_round.read().await;
+        let round = self.sync_round_with_peers().await?;
         let nodes = self.available_nodes.read().await.clone();
 
         if nodes.is_empty() {
@@ -1652,6 +1702,25 @@ impl NetworkTransactionSequencer {
         }
 
         Ok(())
+    }
+
+    pub async fn sync_round_with_peers(&self) -> Result<u64> {
+        if let Some(vrf_service) = &self.vrf_service {
+            let round = *self.main_sequencer_round.read().await;
+            vrf_service.set_current_round(round).await;
+            let synced_round = vrf_service
+                .sync_rounds(
+                    VrfRoundSyncKind::MainSequencer,
+                    crate::network::transport::types::TOPIC_MAIN_SEQUENCER_VRF,
+                )
+                .await?;
+
+            let mut local_round = self.main_sequencer_round.write().await;
+            *local_round = synced_round;
+            Ok(synced_round)
+        } else {
+            Ok(*self.main_sequencer_round.read().await)
+        }
     }
 
     /// Check if we have enough VRF selections to start consensus
@@ -1742,6 +1811,12 @@ impl NetworkTransactionSequencer {
     pub fn set_vrf_service(&mut self, vrf_service: Arc<crate::protocols::VrfService>) {
         self.vrf_service = Some(vrf_service);
         info!("🔧 [MAIN_SEQUENCER] VRF service configured");
+    }
+
+    pub fn vrf_storage(&self) -> Option<VrfStorage> {
+        self.vrf_service
+            .as_ref()
+            .and_then(|service| service.storage())
     }
 
     /// Set consensus node for main sequencer
@@ -2101,19 +2176,34 @@ impl NetworkTransactionSequencer {
 
         // Helpful context for debugging which network flow is being selected
         let flow_label = match &request.flow {
-            NetworkTransactionFlow::NetworkToTarget { intent_hash, transaction_type, amount, .. } => {
+            NetworkTransactionFlow::NetworkToTarget {
+                intent_hash,
+                transaction_type,
+                amount,
+                ..
+            } => {
                 format!(
                     "NetworkToTarget(intent_hash={}, type={:?}, amount={})",
                     intent_hash, transaction_type, amount
                 )
             }
-            NetworkTransactionFlow::WithdrawLiquidity { solver_address, eth_address, amount, .. } => {
+            NetworkTransactionFlow::WithdrawLiquidity {
+                solver_address,
+                eth_address,
+                amount,
+                ..
+            } => {
                 format!(
                     "WithdrawLiquidity(solver={}, eth_address={}, amount={})",
                     solver_address, eth_address, amount
                 )
             }
-            NetworkTransactionFlow::RewardPayout { solver_address, eth_address, amount, .. } => {
+            NetworkTransactionFlow::RewardPayout {
+                solver_address,
+                eth_address,
+                amount,
+                ..
+            } => {
                 format!(
                     "RewardPayout(solver={}, eth_address={}, amount={})",
                     solver_address, eth_address, amount

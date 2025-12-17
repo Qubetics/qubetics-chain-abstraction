@@ -45,6 +45,27 @@ pub struct VrfService {
     config: VrfServiceConfig,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub enum VrfRoundSyncKind {
+    Signing,
+    MainSequencer,
+    VaultSequencer,
+}
+
+impl VrfRoundSyncKind {
+    fn to_message(self, request: VrfRoundSyncRequest) -> GossipsubMessage {
+        match self {
+            VrfRoundSyncKind::Signing => GossipsubMessage::VrfRoundSyncRequest(request),
+            VrfRoundSyncKind::MainSequencer => {
+                GossipsubMessage::MainSequencerVrfRoundSyncRequest(request)
+            }
+            VrfRoundSyncKind::VaultSequencer => {
+                GossipsubMessage::VaultSequencerVrfRoundSyncRequest(request)
+            }
+        }
+    }
+}
+
 impl VrfService {
     /// Create a new VRF service
     pub fn new(node_id: PeerId, message_tx: mpsc::Sender<ChannelMessage>) -> Self {
@@ -135,6 +156,10 @@ impl VrfService {
             context,
             config,
         }
+    }
+
+    pub fn storage(&self) -> Option<VrfStorage> {
+        self.vrf_storage.clone()
     }
 
     /// Perform VRF node selection for any chain operation
@@ -408,8 +433,7 @@ impl VrfService {
         round
     }
 
-    /// Synchronize the VRF round with peers before producing a signing round.
-    pub async fn sync_rounds_before_signing(&self) -> Result<u64> {
+    pub async fn sync_rounds(&self, sync_kind: VrfRoundSyncKind, topic: &str) -> Result<u64> {
         let _guard = self.round_update_lock.lock().await;
 
         let local_round = {
@@ -428,13 +452,12 @@ impl VrfService {
             from: SerializablePeerId(self.node_id),
             current_round: Some(local_round),
         };
-        let request_bytes =
-            serde_json::to_vec(&GossipsubMessage::VrfRoundSyncRequest(sync_request))?;
+        let request_bytes = serde_json::to_vec(&sync_kind.to_message(sync_request))?;
 
         if !peer_candidates.is_empty() {
             self.message_tx
                 .send(ChannelMessage::Broadcast {
-                    topic: crate::network::transport::types::TOPIC_CONSENSUS.to_string(),
+                    topic: topic.to_string(),
                     data: request_bytes,
                 })
                 .await?;
@@ -479,6 +502,15 @@ impl VrfService {
             .await;
 
         Ok(synchronized_round)
+    }
+
+    /// Synchronize the VRF round with peers before producing a signing round.
+    pub async fn sync_rounds_before_signing(&self) -> Result<u64> {
+        self.sync_rounds(
+            VrfRoundSyncKind::Signing,
+            crate::network::transport::types::TOPIC_CONSENSUS,
+        )
+        .await
     }
 
     #[cfg(test)]

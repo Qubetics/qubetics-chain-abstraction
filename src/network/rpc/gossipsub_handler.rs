@@ -13,16 +13,15 @@ use crate::{
     database::key_utils,
     signing::{BitcoinSigner, EthereumSigner},
     types::{
-        network as network_cfg,
-        p2p::SerializablePeerId,
-        rpc::RPCRequest,
-        signing::SigningMessage,
-        vrf::VrfRoundSyncResponse,
-        ChannelMessage, GossipsubMessage,
+        network as network_cfg, p2p::SerializablePeerId, rpc::RPCRequest, signing::SigningMessage,
+        vrf::VrfRoundSyncResponse, ChannelMessage, GossipsubMessage,
     },
 };
 
-use crate::network::transport::types::{MpcNetworkLayer, TOPIC_CONSENSUS};
+use crate::network::transport::types::{
+    MpcNetworkLayer, VrfDomain, TOPIC_CONSENSUS, TOPIC_MAIN_SEQUENCER_VRF,
+    TOPIC_VAULT_SEQUENCER_VRF,
+};
 
 impl MpcNetworkLayer {
     /// Main gossipsub message handler - delegates to specific message type handlers
@@ -232,17 +231,25 @@ impl MpcNetworkLayer {
             }
             GossipsubMessage::VrfRoundSyncRequest(sync_request) => {
                 let peer = sync_request.from.0;
-                let reference_round = self.get_local_vrf_round().await;
+                let reference_round = self
+                    .get_local_vrf_round_for_domain(VrfDomain::Signing)
+                    .await;
 
-                if self.store_peer_round_if_valid(peer, reference_round, sync_request.current_round)
-                {
+                if self.store_peer_round_if_valid(
+                    VrfDomain::Signing,
+                    peer,
+                    reference_round,
+                    sync_request.current_round,
+                ) {
                     info!(
                         "💾 [VRF_SYNC] Stored round {:?} for peer {} from gossipsub request",
                         sync_request.current_round, peer
                     );
                 }
 
-                let response_round = self.get_local_vrf_round().await;
+                let response_round = self
+                    .get_local_vrf_round_for_domain(VrfDomain::Signing)
+                    .await;
                 let response = GossipsubMessage::VrfRoundSyncResponse(VrfRoundSyncResponse {
                     from: SerializablePeerId(self.local_peer_id),
                     current_round: response_round,
@@ -272,15 +279,152 @@ impl MpcNetworkLayer {
             }
             GossipsubMessage::VrfRoundSyncResponse(sync_response) => {
                 let peer = sync_response.from.0;
-                let reference_round = self.get_local_vrf_round().await;
+                let reference_round = self
+                    .get_local_vrf_round_for_domain(VrfDomain::Signing)
+                    .await;
 
                 if self.store_peer_round_if_valid(
+                    VrfDomain::Signing,
                     peer,
                     reference_round,
                     sync_response.current_round,
                 ) {
                     info!(
                         "💾 [VRF_SYNC] Stored round {:?} for peer {} from gossipsub response",
+                        sync_response.current_round, peer
+                    );
+                }
+            }
+            GossipsubMessage::MainSequencerVrfRoundSyncRequest(sync_request) => {
+                let peer = sync_request.from.0;
+                let reference_round = self
+                    .get_local_vrf_round_for_domain(VrfDomain::MainSequencer)
+                    .await;
+
+                if self.store_peer_round_if_valid(
+                    VrfDomain::MainSequencer,
+                    peer,
+                    reference_round,
+                    sync_request.current_round,
+                ) {
+                    info!(
+                        "💾 [MAIN_VRF_SYNC] Stored round {:?} for peer {} from request",
+                        sync_request.current_round, peer
+                    );
+                }
+
+                let response_round = self
+                    .get_local_vrf_round_for_domain(VrfDomain::MainSequencer)
+                    .await;
+                let response =
+                    GossipsubMessage::MainSequencerVrfRoundSyncResponse(VrfRoundSyncResponse {
+                        from: SerializablePeerId(self.local_peer_id),
+                        current_round: response_round,
+                    });
+
+                match serde_json::to_vec(&response) {
+                    Ok(data) => {
+                        if let Err(e) = self
+                            .message_tx
+                            .send(ChannelMessage::Broadcast {
+                                topic: TOPIC_MAIN_SEQUENCER_VRF.to_string(),
+                                data,
+                            })
+                            .await
+                        {
+                            warn!(
+                                "⚠️ [MAIN_VRF_SYNC] Failed to send round sync response to {}: {}",
+                                peer, e
+                            );
+                        }
+                    }
+                    Err(e) => warn!(
+                        "⚠️ [MAIN_VRF_SYNC] Failed to serialize VRF round sync response: {}",
+                        e
+                    ),
+                }
+            }
+            GossipsubMessage::MainSequencerVrfRoundSyncResponse(sync_response) => {
+                let peer = sync_response.from.0;
+                let reference_round = self
+                    .get_local_vrf_round_for_domain(VrfDomain::MainSequencer)
+                    .await;
+
+                if self.store_peer_round_if_valid(
+                    VrfDomain::MainSequencer,
+                    peer,
+                    reference_round,
+                    sync_response.current_round,
+                ) {
+                    info!(
+                        "💾 [MAIN_VRF_SYNC] Stored round {:?} for peer {} from response",
+                        sync_response.current_round, peer
+                    );
+                }
+            }
+            GossipsubMessage::VaultSequencerVrfRoundSyncRequest(sync_request) => {
+                let peer = sync_request.from.0;
+                let reference_round = self
+                    .get_local_vrf_round_for_domain(VrfDomain::VaultSequencer)
+                    .await;
+
+                if self.store_peer_round_if_valid(
+                    VrfDomain::VaultSequencer,
+                    peer,
+                    reference_round,
+                    sync_request.current_round,
+                ) {
+                    info!(
+                        "💾 [VAULT_VRF_SYNC] Stored round {:?} for peer {} from request",
+                        sync_request.current_round, peer
+                    );
+                }
+
+                let response_round = self
+                    .get_local_vrf_round_for_domain(VrfDomain::VaultSequencer)
+                    .await;
+                let response =
+                    GossipsubMessage::VaultSequencerVrfRoundSyncResponse(VrfRoundSyncResponse {
+                        from: SerializablePeerId(self.local_peer_id),
+                        current_round: response_round,
+                    });
+
+                match serde_json::to_vec(&response) {
+                    Ok(data) => {
+                        if let Err(e) = self
+                            .message_tx
+                            .send(ChannelMessage::Broadcast {
+                                topic: TOPIC_VAULT_SEQUENCER_VRF.to_string(),
+                                data,
+                            })
+                            .await
+                        {
+                            warn!(
+                                "⚠️ [VAULT_VRF_SYNC] Failed to send round sync response to {}: {}",
+                                peer, e
+                            );
+                        }
+                    }
+                    Err(e) => warn!(
+                        "⚠️ [VAULT_VRF_SYNC] Failed to serialize VRF round sync response: {}",
+                        e
+                    ),
+                }
+            }
+            GossipsubMessage::VaultSequencerVrfRoundSyncResponse(sync_response) => {
+                let peer = sync_response.from.0;
+                let reference_round = self
+                    .get_local_vrf_round_for_domain(VrfDomain::VaultSequencer)
+                    .await;
+
+                if self.store_peer_round_if_valid(
+                    VrfDomain::VaultSequencer,
+                    peer,
+                    reference_round,
+                    sync_response.current_round,
+                ) {
+                    info!(
+                        "💾 [VAULT_VRF_SYNC] Stored round {:?} for peer {} from response",
                         sync_response.current_round, peer
                     );
                 }
