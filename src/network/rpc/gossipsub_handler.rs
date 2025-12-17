@@ -232,11 +232,12 @@ impl MpcNetworkLayer {
             GossipsubMessage::VrfRoundSyncRequest(sync_request) => {
                 let peer = sync_request.from.0;
                 let reference_round = self
-                    .get_local_vrf_round_for_domain(VrfDomain::Signing)
+                    .get_local_vrf_round_for_domain(VrfDomain::Signing, Some(&sync_request.context))
                     .await;
 
                 if self.store_peer_round_if_valid(
                     VrfDomain::Signing,
+                    &sync_request.context,
                     peer,
                     reference_round,
                     sync_request.current_round,
@@ -248,11 +249,12 @@ impl MpcNetworkLayer {
                 }
 
                 let response_round = self
-                    .get_local_vrf_round_for_domain(VrfDomain::Signing)
+                    .get_local_vrf_round_for_domain(VrfDomain::Signing, Some(&sync_request.context))
                     .await;
                 let response = GossipsubMessage::VrfRoundSyncResponse(VrfRoundSyncResponse {
                     from: SerializablePeerId(self.local_peer_id),
                     current_round: response_round,
+                    context: sync_request.context.clone(),
                 });
 
                 match serde_json::to_vec(&response) {
@@ -280,11 +282,15 @@ impl MpcNetworkLayer {
             GossipsubMessage::VrfRoundSyncResponse(sync_response) => {
                 let peer = sync_response.from.0;
                 let reference_round = self
-                    .get_local_vrf_round_for_domain(VrfDomain::Signing)
+                    .get_local_vrf_round_for_domain(
+                        VrfDomain::Signing,
+                        Some(&sync_response.context),
+                    )
                     .await;
 
                 if self.store_peer_round_if_valid(
                     VrfDomain::Signing,
+                    &sync_response.context,
                     peer,
                     reference_round,
                     sync_response.current_round,
@@ -298,11 +304,15 @@ impl MpcNetworkLayer {
             GossipsubMessage::MainSequencerVrfRoundSyncRequest(sync_request) => {
                 let peer = sync_request.from.0;
                 let reference_round = self
-                    .get_local_vrf_round_for_domain(VrfDomain::MainSequencer)
+                    .get_local_vrf_round_for_domain(
+                        VrfDomain::MainSequencer,
+                        Some(&sync_request.context),
+                    )
                     .await;
 
                 if self.store_peer_round_if_valid(
                     VrfDomain::MainSequencer,
+                    &sync_request.context,
                     peer,
                     reference_round,
                     sync_request.current_round,
@@ -314,12 +324,16 @@ impl MpcNetworkLayer {
                 }
 
                 let response_round = self
-                    .get_local_vrf_round_for_domain(VrfDomain::MainSequencer)
+                    .get_local_vrf_round_for_domain(
+                        VrfDomain::MainSequencer,
+                        Some(&sync_request.context),
+                    )
                     .await;
                 let response =
                     GossipsubMessage::MainSequencerVrfRoundSyncResponse(VrfRoundSyncResponse {
                         from: SerializablePeerId(self.local_peer_id),
                         current_round: response_round,
+                        context: sync_request.context.clone(),
                     });
 
                 match serde_json::to_vec(&response) {
@@ -347,11 +361,15 @@ impl MpcNetworkLayer {
             GossipsubMessage::MainSequencerVrfRoundSyncResponse(sync_response) => {
                 let peer = sync_response.from.0;
                 let reference_round = self
-                    .get_local_vrf_round_for_domain(VrfDomain::MainSequencer)
+                    .get_local_vrf_round_for_domain(
+                        VrfDomain::MainSequencer,
+                        Some(&sync_response.context),
+                    )
                     .await;
 
                 if self.store_peer_round_if_valid(
                     VrfDomain::MainSequencer,
+                    &sync_response.context,
                     peer,
                     reference_round,
                     sync_response.current_round,
@@ -365,11 +383,15 @@ impl MpcNetworkLayer {
             GossipsubMessage::VaultSequencerVrfRoundSyncRequest(sync_request) => {
                 let peer = sync_request.from.0;
                 let reference_round = self
-                    .get_local_vrf_round_for_domain(VrfDomain::VaultSequencer)
+                    .get_local_vrf_round_for_domain(
+                        VrfDomain::VaultSequencer,
+                        Some(&sync_request.context),
+                    )
                     .await;
 
                 if self.store_peer_round_if_valid(
                     VrfDomain::VaultSequencer,
+                    &sync_request.context,
                     peer,
                     reference_round,
                     sync_request.current_round,
@@ -381,12 +403,16 @@ impl MpcNetworkLayer {
                 }
 
                 let response_round = self
-                    .get_local_vrf_round_for_domain(VrfDomain::VaultSequencer)
+                    .get_local_vrf_round_for_domain(
+                        VrfDomain::VaultSequencer,
+                        Some(&sync_request.context),
+                    )
                     .await;
                 let response =
                     GossipsubMessage::VaultSequencerVrfRoundSyncResponse(VrfRoundSyncResponse {
                         from: SerializablePeerId(self.local_peer_id),
                         current_round: response_round,
+                        context: sync_request.context.clone(),
                     });
 
                 match serde_json::to_vec(&response) {
@@ -414,11 +440,15 @@ impl MpcNetworkLayer {
             GossipsubMessage::VaultSequencerVrfRoundSyncResponse(sync_response) => {
                 let peer = sync_response.from.0;
                 let reference_round = self
-                    .get_local_vrf_round_for_domain(VrfDomain::VaultSequencer)
+                    .get_local_vrf_round_for_domain(
+                        VrfDomain::VaultSequencer,
+                        Some(&sync_response.context),
+                    )
                     .await;
 
                 if self.store_peer_round_if_valid(
                     VrfDomain::VaultSequencer,
+                    &sync_response.context,
                     peer,
                     reference_round,
                     sync_response.current_round,

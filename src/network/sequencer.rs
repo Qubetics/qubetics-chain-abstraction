@@ -261,10 +261,7 @@ impl ContractTransactionSequencer {
             let round = *self.vault_sequencer_round.read().await;
             vrf_service.set_current_round(round).await;
             let synced_round = vrf_service
-                .sync_rounds(
-                    VrfRoundSyncKind::VaultSequencer,
-                    crate::network::transport::types::TOPIC_VAULT_SEQUENCER_VRF,
-                )
+                .sync_rounds(VrfRoundSyncKind::VaultSequencer)
                 .await?;
 
             let mut local_round = self.vault_sequencer_round.write().await;
@@ -1709,10 +1706,7 @@ impl NetworkTransactionSequencer {
             let round = *self.main_sequencer_round.read().await;
             vrf_service.set_current_round(round).await;
             let synced_round = vrf_service
-                .sync_rounds(
-                    VrfRoundSyncKind::MainSequencer,
-                    crate::network::transport::types::TOPIC_MAIN_SEQUENCER_VRF,
-                )
+                .sync_rounds(VrfRoundSyncKind::MainSequencer)
                 .await?;
 
             let mut local_round = self.main_sequencer_round.write().await;

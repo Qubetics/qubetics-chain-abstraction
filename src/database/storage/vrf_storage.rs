@@ -50,6 +50,21 @@ impl VrfStorage {
         )
     }
 
+    fn namespaced_peer_round_key(&self, namespace: &str, peer_id: &str) -> String {
+        let namespace_prefix = if namespace.is_empty() {
+            String::new()
+        } else {
+            format!("{}:", namespace)
+        };
+
+        format!(
+            "{}{}{}",
+            self.prefix,
+            namespace_prefix,
+            key_utils::vrf_peer_round_key(peer_id)
+        )
+    }
+
     /// Fetch the current VRF round from storage, initializing to 0 if absent.
     pub fn get_current_round(&self) -> Result<u64> {
         self.get_current_round_for_context("")
@@ -94,25 +109,52 @@ impl VrfStorage {
 
     /// Store a peer's VRF round in the database.
     pub fn set_peer_round(&self, peer_id: &str, round: u64) -> Result<()> {
-        let key = format!("{}{}", self.prefix, key_utils::vrf_peer_round_key(peer_id));
+        self.set_peer_round_for_context("", peer_id, round)
+    }
+
+    pub fn set_peer_round_for_context(
+        &self,
+        namespace: &str,
+        peer_id: &str,
+        round: u64,
+    ) -> Result<()> {
+        let key = self.namespaced_peer_round_key(namespace, peer_id);
         self.db.put_string(&key, &round)?;
         debug!(
-            "💾 [VRF_STORAGE:{}] Stored peer {} round {}",
-            self.prefix, peer_id, round
+            "💾 [VRF_STORAGE:{}{}] Stored peer {} round {}",
+            self.prefix, namespace, peer_id, round
         );
         Ok(())
     }
 
     /// Get a peer's VRF round from the database.
     pub fn get_peer_round(&self, peer_id: &str) -> Result<Option<u64>> {
-        let key = format!("{}{}", self.prefix, key_utils::vrf_peer_round_key(peer_id));
+        self.get_peer_round_for_context("", peer_id)
+    }
+
+    pub fn get_peer_round_for_context(
+        &self,
+        namespace: &str,
+        peer_id: &str,
+    ) -> Result<Option<u64>> {
+        let key = self.namespaced_peer_round_key(namespace, peer_id);
         self.db.get_string::<u64>(&key)
     }
 
     /// Get all peer rounds from the database.
     pub fn get_all_peer_rounds(&self) -> Result<HashMap<String, u64>> {
+        self.get_all_peer_rounds_for_context("")
+    }
+
+    pub fn get_all_peer_rounds_for_context(&self, namespace: &str) -> Result<HashMap<String, u64>> {
+        let namespace_prefix = if namespace.is_empty() {
+            String::new()
+        } else {
+            format!("{}:", namespace)
+        };
+
         let base_prefix = crate::database::primitives::keys::VRF_PEER_ROUND;
-        let full_prefix = format!("{}{}", self.prefix, base_prefix);
+        let full_prefix = format!("{}{}{}", self.prefix, namespace_prefix, base_prefix);
         let results: Vec<(String, u64)> = self.db.get_values_with_prefix(&full_prefix)?;
 
         let mut peer_rounds = HashMap::new();
@@ -124,8 +166,9 @@ impl VrfStorage {
         }
 
         debug!(
-            "🔍 [VRF_STORAGE:{}] Retrieved {} peer rounds from database",
+            "🔍 [VRF_STORAGE:{}{}] Retrieved {} peer rounds from database",
             self.prefix,
+            namespace,
             peer_rounds.len()
         );
         Ok(peer_rounds)

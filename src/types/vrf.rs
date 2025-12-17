@@ -91,6 +91,7 @@ impl VrfSelectedNodesBroadcast {
 pub struct VrfRoundSyncRequest {
     pub from: SerializablePeerId,
     pub current_round: Option<u64>,
+    pub context: String,
 }
 
 /// VRF round synchronization response including the sender's current round.
@@ -98,6 +99,7 @@ pub struct VrfRoundSyncRequest {
 pub struct VrfRoundSyncResponse {
     pub from: SerializablePeerId,
     pub current_round: Option<u64>,
+    pub context: String,
 }
 
 #[cfg(test)]
@@ -111,6 +113,7 @@ mod tests {
         let request = VrfRoundSyncRequest {
             from: SerializablePeerId(PeerId::random()),
             current_round: Some(7),
+            context: "ctx".to_string(),
         };
 
         let encoded = serde_cbor::to_vec(&request).expect("request should serialize");
@@ -126,6 +129,7 @@ mod tests {
         let response = VrfRoundSyncResponse {
             from: SerializablePeerId(PeerId::random()),
             current_round: None,
+            context: "ctx".to_string(),
         };
 
         let encoded = serde_cbor::to_vec(&response).expect("response should serialize");
@@ -134,5 +138,6 @@ mod tests {
 
         assert_eq!(decoded.from, response.from);
         assert_eq!(decoded.current_round, None);
+        assert_eq!(decoded.context, "ctx");
     }
 }
