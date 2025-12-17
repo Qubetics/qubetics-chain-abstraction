@@ -823,9 +823,34 @@ impl ContractTransactionSequencer {
             .local_peer_id
             .ok_or_else(|| anyhow::anyhow!("Local peer ID not set"))?;
 
+        // Helpful context for debugging which flow is being selected
+        let flow_label = match &request.flow {
+            ContractTransactionFlow::DepositIntent { intent_hash, transaction_type, amount, .. } => {
+                format!("DepositIntent(intent_hash={}, type={:?}, amount={})", intent_hash, transaction_type, amount)
+            }
+            ContractTransactionFlow::SolverAddLiquidity { solver_address, solver_id, asset_chain_name, amount } => {
+                format!(
+                    "SolverAddLiquidity(solver={}, solver_id={}, chain={}, amount={})",
+                    solver_address, solver_id, asset_chain_name, amount
+                )
+            }
+            ContractTransactionFlow::SolverWithdrawLiquidity { solver_address, asset_chain_name, amount, payout_transaction_hash } => {
+                format!(
+                    "SolverWithdrawLiquidity(solver={}, chain={}, amount={}, payout_tx={})",
+                    solver_address, asset_chain_name, amount, payout_transaction_hash
+                )
+            }
+            ContractTransactionFlow::SolverClaimReward { solver_address, reward_btc, reward_tics, payout_transaction_hash } => {
+                format!(
+                    "SolverClaimReward(solver={}, btc={:?}, tics={:?}, payout_tx={})",
+                    solver_address, reward_btc, reward_tics, payout_transaction_hash
+                )
+            }
+        };
+
         info!(
-            "📤 [VAULT_SEQUENCER] Broadcasting SELECT: round={}, request_id={}",
-            round, request_id
+            "📤 [VAULT_SEQUENCER] Broadcasting SELECT: round={}, request_id={}, flow={}",
+            round, request_id, flow_label
         );
 
         // Create signature (simplified - in production use proper signing)
@@ -2074,9 +2099,31 @@ impl NetworkTransactionSequencer {
             .local_peer_id
             .ok_or_else(|| anyhow::anyhow!("Local peer ID not set"))?;
 
+        // Helpful context for debugging which network flow is being selected
+        let flow_label = match &request.flow {
+            NetworkTransactionFlow::NetworkToTarget { intent_hash, transaction_type, amount, .. } => {
+                format!(
+                    "NetworkToTarget(intent_hash={}, type={:?}, amount={})",
+                    intent_hash, transaction_type, amount
+                )
+            }
+            NetworkTransactionFlow::WithdrawLiquidity { solver_address, eth_address, amount, .. } => {
+                format!(
+                    "WithdrawLiquidity(solver={}, eth_address={}, amount={})",
+                    solver_address, eth_address, amount
+                )
+            }
+            NetworkTransactionFlow::RewardPayout { solver_address, eth_address, amount, .. } => {
+                format!(
+                    "RewardPayout(solver={}, eth_address={}, amount={})",
+                    solver_address, eth_address, amount
+                )
+            }
+        };
+
         info!(
-            "📤 [MAIN_SEQUENCER] Broadcasting SELECT: round={}, request_id={}",
-            round, request_id
+            "📤 [MAIN_SEQUENCER] Broadcasting SELECT: round={}, request_id={}, flow={}",
+            round, request_id, flow_label
         );
 
         // Create signature (simplified - in production use proper signing)

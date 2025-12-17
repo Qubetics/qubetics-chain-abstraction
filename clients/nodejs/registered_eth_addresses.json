@@ -2,106 +2,15 @@
   {
     "userId": 1,
     "walletAddress": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
-    "derivedEthAddress": "0x0ca92d102ee7d436cdf524a1c05ad9eb0c34acee",
-    "derivedBtcAddress": "mgETKqjCxjtqFdPmPGzpck5qimK2Xgb3TX",
+    "derivedEthAddress": "0x23b80a246cfa12d1165f25ae45ade418d93636e3",
+    "derivedBtcAddress": "msYyU5GTRAwREw2nHffhEG56Y6vqyTnEBM",
     "hasUserGroupKey": true
   },
   {
     "userId": 2,
     "walletAddress": "0xfF747859A6730D5c75131abf18aAF0Bc690569dd",
-    "derivedEthAddress": "0x26878bb40dff9c12ac96ab3d328047203e0a8d3e",
-    "derivedBtcAddress": "mzZaJgeeLpdY31fYupVwZPozC8A7Xkn6Zd",
-    "hasUserGroupKey": true
-  },
-  {
-    "userId": 3,
-    "walletAddress": "0x055811F4B1D39742184c3471E8fc1D73f48B0e0B",
-    "derivedEthAddress": "0x647f274aa880caf2f76d95782010e80116dc0789",
-    "derivedBtcAddress": "myXk5f91ZRnk1uDqtCvgPBBXjDZKmfaEPU",
-    "hasUserGroupKey": true
-  },
-  {
-    "userId": 4,
-    "walletAddress": "0x94C8F147767702EC8020E5c616964c72a837C88d",
-    "derivedEthAddress": null,
-    "derivedBtcAddress": null,
-    "hasUserGroupKey": false
-  },
-  {
-    "userId": 5,
-    "walletAddress": "0x211411f095F3cf5951a5C408bc87EaeB1167d514",
-    "derivedEthAddress": "0x5716d019691ccd05f8c953d64a08fb8ed304fb13",
-    "derivedBtcAddress": "mnJS6LXqN2eAZcsdCtJm33sMp5oTKcwSc4",
-    "hasUserGroupKey": true
-  },
-  {
-    "userId": 6,
-    "walletAddress": "0xfB33a1A7E2A3a268d00F0C2a2e97acB3fdC9bCD3",
-    "derivedEthAddress": "0xcd578368c582cfed43f8f7a170a762bb87641e72",
-    "derivedBtcAddress": "mye9jZHHVncDpSnEbk1MCWnod5WjTn42FK",
-    "hasUserGroupKey": true
-  },
-  {
-    "userId": 7,
-    "walletAddress": "0x7802fc8e83f3b3Ca8900dFc51615Ee9499f859c8",
-    "derivedEthAddress": "0x925ade2f1c01e382dadb5cf7f553b9edc8604578",
-    "derivedBtcAddress": "mz41oXTXepWipTEryNadiqv3fia47u2RGp",
-    "hasUserGroupKey": true
-  },
-  {
-    "userId": 8,
-    "walletAddress": "0xbc0f2af84E32ffcF6fF7Ef92C2E99D34eFba06F8",
-    "derivedEthAddress": "0xd500312a4a88d1ee6d7f5c6ee312aab5a8da1239",
-    "derivedBtcAddress": "myHE9faiz9c7Hbz3Ar2G2bb2V9DJ7Eh6by",
-    "hasUserGroupKey": true
-  },
-  {
-    "userId": 9,
-    "walletAddress": "0xDe9BC9C11B6498dbB294bD61AB02231A041602f9",
-    "derivedEthAddress": "0x07b9483075a9c8302d1a255003628da60cf8bb1a",
-    "derivedBtcAddress": "mxhyDo8MqdwF8i2m4aMq6kp32vqfDkkhkd",
-    "hasUserGroupKey": true
-  },
-  {
-    "userId": 10,
-    "walletAddress": "0x210dB8E133E146F28DEdE34B344de07Ce37A2EB9",
-    "derivedEthAddress": "0x599250a582f8b01b6516d2e1ebbfe9dafb9977ce",
-    "derivedBtcAddress": "mh9BnG4afKUgUHULKSCKnPgevRWawdHyh8",
-    "hasUserGroupKey": true
-  },
-  {
-    "userId": 11,
-    "walletAddress": "0x90ACC3Ee89E2497F1D09E7Fc1316810D423cb310",
-    "derivedEthAddress": "0xc6575c468475c5bd6c8c83f44e572bfe6505d742",
-    "derivedBtcAddress": "mqUXRR2jicN29y1Qddm5ZScgVf8wPjywao",
-    "hasUserGroupKey": true
-  },
-  {
-    "userId": 12,
-    "walletAddress": "0x916F971626A99a67Eb79E1FD7Bf98F245d46d439",
-    "derivedEthAddress": "0xbf903836f84b98462dd16159ad8d312fb206df2b",
-    "derivedBtcAddress": "msmJSXnrUypR2vNuVjzkYnUgQ72Pj4XiPh",
-    "hasUserGroupKey": true
-  },
-  {
-    "userId": 13,
-    "walletAddress": "0x39ed903Db91D6965c6bbcfeE9eC7eeE7007d7648",
-    "derivedEthAddress": "0xf2b6ecd6a1ce992681e9cf56e97ffbc6d9991b32",
-    "derivedBtcAddress": "n1LedF5iYxbNyyMnt9P6odhC3eaxsX8EhG",
-    "hasUserGroupKey": true
-  },
-  {
-    "userId": 14,
-    "walletAddress": "0x8795b27079e41f628c41b4AdD8a6140F1bEd6Ad4",
-    "derivedEthAddress": "0x0eb42da2ac5f19e6b5cf92162d521b6173fe5e09",
-    "derivedBtcAddress": "mhQ1VgBBmej9hfHba93qYq9pstfvYiK8C2",
-    "hasUserGroupKey": true
-  },
-  {
-    "userId": 15,
-    "walletAddress": "0x0b1476Ba20e693274379AE52bb5c0f690A26f32f",
-    "derivedEthAddress": "0xe2608a1b54a1037429a21a6d63c5853bcfc3aaf2",
-    "derivedBtcAddress": "mmY1uXxFoTDyvsZKJf2acKZbrvRLR24QHC",
+    "derivedEthAddress": "0x44c7730239617501f2d7fa16a2b01f2964e7a828",
+    "derivedBtcAddress": "mteyt2N231aYynyZE6CZoTJoGnJvwSqMPN",
     "hasUserGroupKey": true
   }
 ]

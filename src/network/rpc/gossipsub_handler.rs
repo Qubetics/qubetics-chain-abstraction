@@ -17,12 +17,12 @@ use crate::{
         p2p::SerializablePeerId,
         rpc::RPCRequest,
         signing::SigningMessage,
-        vrf::{VrfRoundSyncRequest, VrfRoundSyncResponse},
+        vrf::VrfRoundSyncResponse,
         ChannelMessage, GossipsubMessage,
     },
 };
 
-use crate::network::transport::types::MpcNetworkLayer;
+use crate::network::transport::types::{MpcNetworkLayer, TOPIC_CONSENSUS};
 
 impl MpcNetworkLayer {
     /// Main gossipsub message handler - delegates to specific message type handlers
@@ -253,7 +253,7 @@ impl MpcNetworkLayer {
                         if let Err(e) = self
                             .message_tx
                             .send(ChannelMessage::Broadcast {
-                                topic: network_cfg::TOPIC_CONSENSUS.to_string(),
+                                topic: TOPIC_CONSENSUS.to_string(),
                                 data,
                             })
                             .await

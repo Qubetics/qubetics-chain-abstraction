@@ -145,7 +145,7 @@ impl MpcNetworkLayer {
             .unwrap_or(true)
     }
 
-    fn store_peer_round_if_valid(
+    pub(crate) fn store_peer_round_if_valid(
         &mut self,
         peer: PeerId,
         reference_round: Option<u64>,
