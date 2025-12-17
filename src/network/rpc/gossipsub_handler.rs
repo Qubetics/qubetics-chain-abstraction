@@ -12,7 +12,14 @@ use tracing::{debug, error, info, warn};
 use crate::{
     database::key_utils,
     signing::{BitcoinSigner, EthereumSigner},
-    types::{network as network_cfg, rpc::RPCRequest, signing::SigningMessage, GossipsubMessage},
+    types::{
+        network as network_cfg,
+        p2p::SerializablePeerId,
+        rpc::RPCRequest,
+        signing::SigningMessage,
+        vrf::{VrfRoundSyncRequest, VrfRoundSyncResponse},
+        ChannelMessage, GossipsubMessage,
+    },
 };
 
 use crate::network::transport::types::MpcNetworkLayer;
@@ -220,6 +227,61 @@ impl MpcNetworkLayer {
                     info!(
                         "💾 [VRF] Stored VRF selected nodes from node {} for round {}",
                         selector_node_id.0, round
+                    );
+                }
+            }
+            GossipsubMessage::VrfRoundSyncRequest(sync_request) => {
+                let peer = sync_request.from.0;
+                let reference_round = self.get_local_vrf_round().await;
+
+                if self.store_peer_round_if_valid(peer, reference_round, sync_request.current_round)
+                {
+                    info!(
+                        "💾 [VRF_SYNC] Stored round {:?} for peer {} from gossipsub request",
+                        sync_request.current_round, peer
+                    );
+                }
+
+                let response_round = self.get_local_vrf_round().await;
+                let response = GossipsubMessage::VrfRoundSyncResponse(VrfRoundSyncResponse {
+                    from: SerializablePeerId(self.local_peer_id),
+                    current_round: response_round,
+                });
+
+                match serde_json::to_vec(&response) {
+                    Ok(data) => {
+                        if let Err(e) = self
+                            .message_tx
+                            .send(ChannelMessage::Broadcast {
+                                topic: network_cfg::TOPIC_CONSENSUS.to_string(),
+                                data,
+                            })
+                            .await
+                        {
+                            warn!(
+                                "⚠️ [VRF_SYNC] Failed to send round sync response to {}: {}",
+                                peer, e
+                            );
+                        }
+                    }
+                    Err(e) => warn!(
+                        "⚠️ [VRF_SYNC] Failed to serialize VRF round sync response: {}",
+                        e
+                    ),
+                }
+            }
+            GossipsubMessage::VrfRoundSyncResponse(sync_response) => {
+                let peer = sync_response.from.0;
+                let reference_round = self.get_local_vrf_round().await;
+
+                if self.store_peer_round_if_valid(
+                    peer,
+                    reference_round,
+                    sync_response.current_round,
+                ) {
+                    info!(
+                        "💾 [VRF_SYNC] Stored round {:?} for peer {} from gossipsub response",
+                        sync_response.current_round, peer
                     );
                 }
             }
