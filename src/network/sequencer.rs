@@ -715,6 +715,11 @@ impl ContractTransactionSequencer {
 
         drop(sync_state);
 
+        // Small delay to allow VRF round sync and broadcasts to propagate
+        // before selecting the next request. This helps keep sequencer rounds
+        // aligned across nodes in parallel transaction scenarios.
+        tokio::time::sleep(tokio::time::Duration::from_millis(3000)).await;
+
         // Check if there's a locked request (selected by final node)
         {
             let locked = self.locked_request.read().await;
@@ -2042,6 +2047,11 @@ impl NetworkTransactionSequencer {
         }
 
         drop(sync_state);
+
+        // Small delay to allow VRF round sync and broadcasts to propagate
+        // before selecting the next request. This helps keep sequencer rounds
+        // aligned across nodes in parallel transaction scenarios.
+        tokio::time::sleep(tokio::time::Duration::from_millis(3000)).await;
 
         // Check if there's a locked request (selected by final node)
         {
