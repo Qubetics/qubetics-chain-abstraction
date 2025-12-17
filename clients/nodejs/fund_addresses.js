@@ -9,20 +9,19 @@ const AMOUNT = "300";
 
 // Addresses to fund (derived from test_sequencer_parallel.js private keys)
 const ADDRESSES = [
-  "0x0ca92d102ee7d436cdf524a1c05ad9eb0c34acee",
-  "0x26878bb40dff9c12ac96ab3d328047203e0a8d3e",
-  "0x647f274aa880caf2f76d95782010e80116dc0789",
-  "0x5716d019691ccd05f8c953d64a08fb8ed304fb13",
-  "0xcd578368c582cfed43f8f7a170a762bb87641e72",
-  "0x925ade2f1c01e382dadb5cf7f553b9edc8604578",
-  "0xd500312a4a88d1ee6d7f5c6ee312aab5a8da1239",
-  "0x07b9483075a9c8302d1a255003628da60cf8bb1a",
-  "0x599250a582f8b01b6516d2e1ebbfe9dafb9977ce",
-  "0xc6575c468475c5bd6c8c83f44e572bfe6505d742",
-  "0xbf903836f84b98462dd16159ad8d312fb206df2b",
-  "0xf2b6ecd6a1ce992681e9cf56e97ffbc6d9991b32",
-  "0x0eb42da2ac5f19e6b5cf92162d521b6173fe5e09",
-  "0xe2608a1b54a1037429a21a6d63c5853bcfc3aaf2",
+  "0xfa2e8f79851c665e3fe58d0026240036660b3701",
+  "0xd9a03691e4a4e7733017674b32fb8822147d3e89",
+  "0x8dd282fde5406ff773b1f6e88ba3bf669ade2492",
+  "0xf80fd520a0e81299e3ada8bfa044a35da3c275e1",
+  "0xea007faa94ecac62fc7a525244b681ec4d0068c3",
+  "0x15284b2e0483216cb8369b95979dfa97f589ea0a",
+  "0x15284b2e0483216cb8369b95979dfa97f589ea0a",
+  "0x32abb710d4a1e0eeee0a7396443eeb6dd40ced7c",
+  "0xac9e081d9268772cf30de51ec42502fb78f2f0a5",
+  "0x89d1e87585dfbe4a3ecf491c08d439be538674c7",
+  "0xe55123db5d1694abe2f658f1e30e360dde9c2a0a",
+  "0xccfdc1db85aeb02164fd4e35673d2e7371c064d8",
+  "0x9d3ba4822e66036389c6be74385363031e200357",
 ];
 
 const colors = {
@@ -52,7 +51,8 @@ async function main() {
   log('');
 
   try {
-    const provider = new ethers.JsonRpcProvider(RPC_URL);
+    // Ethers v5 syntax
+    const provider = new ethers.providers.JsonRpcProvider(RPC_URL);
     const wallet = new ethers.Wallet(
       FUNDING_KEY.startsWith('0x') ? FUNDING_KEY : `0x${FUNDING_KEY}`,
       provider
@@ -64,11 +64,11 @@ async function main() {
     log('');
 
     const balance = await provider.getBalance(wallet.address);
-    const balanceTics = ethers.formatEther(balance);
+    const balanceTics = ethers.utils.formatEther(balance);
     log(`📊 Balance: ${balanceTics} TICS`, 'cyan');
 
-    const totalRequired = ethers.parseEther(AMOUNT) * BigInt(ADDRESSES.length);
-    const totalTics = ethers.formatEther(totalRequired);
+    const totalRequired = ethers.utils.parseEther(AMOUNT).mul(ADDRESSES.length);
+    const totalTics = ethers.utils.formatEther(totalRequired);
     log(`📊 Required: ${totalTics} TICS`, 'cyan');
     log('');
 
@@ -88,7 +88,7 @@ async function main() {
         
         const tx = await wallet.sendTransaction({
           to: addr,
-          value: ethers.parseEther(AMOUNT),
+          value: ethers.utils.parseEther(AMOUNT),
           gasLimit: 21000,
         });
 

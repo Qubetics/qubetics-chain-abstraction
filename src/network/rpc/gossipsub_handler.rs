@@ -1407,17 +1407,32 @@ impl MpcNetworkLayer {
                 if let Some(sequencer) = &self.contract_sequencer {
                     let round = broadcast_msg.round;
                     let total_nodes = self.node_manager.get_total_nodes();
+                    let min_selections = total_nodes;
                     
-                    // Handle VRF broadcast
-                    if let Err(e) = sequencer.handle_vrf_broadcast(broadcast_msg, total_nodes).await {
-                        error!("❌ [VAULT_SEQUENCER] Failed to handle VRF broadcast: {}", e);
-                    } else {
-                        // Check if we can start consensus
-                        let min_selections = total_nodes;
-                        if let Err(e) = sequencer.check_and_trigger_consensus(round, min_selections).await {
-                            error!("❌ [VAULT_SEQUENCER] Failed to trigger consensus: {}", e);
+                    // Clone for async task (matches signing module pattern)
+                    let sequencer_clone = sequencer.clone();
+                    
+                    // Spawn async task to handle VRF broadcast and check consensus
+                    // This avoids blocking and matches signing module's approach
+                    tokio::spawn(async move {
+                        // Handle VRF broadcast
+                        if let Err(e) = sequencer_clone.handle_vrf_broadcast(broadcast_msg, total_nodes).await {
+                            error!("❌ [VAULT_SEQUENCER] Failed to handle VRF broadcast: {}", e);
+                            return;
                         }
-                    }
+                        
+                        // Check if we can start consensus
+                        if sequencer_clone.can_start_consensus(round, min_selections).await {
+                            info!(
+                                "🎯 [VAULT_SEQUENCER] Enough VRF selections for round {}, triggering consensus",
+                                round
+                            );
+                            
+                            if let Err(e) = sequencer_clone.check_and_trigger_consensus(round, min_selections).await {
+                                error!("❌ [VAULT_SEQUENCER] Failed to trigger consensus: {}", e);
+                            }
+                        }
+                    });
                 } else {
                     warn!("⚠️ [VAULT_SEQUENCER] Received VRF broadcast but sequencer not initialized");
                 }
@@ -1431,17 +1446,32 @@ impl MpcNetworkLayer {
                 if let Some(sequencer) = &self.network_transaction_sequencer {
                     let round = broadcast_msg.round;
                     let total_nodes = self.node_manager.get_total_nodes();
+                    let min_selections = total_nodes;
                     
-                    // Handle VRF broadcast
-                    if let Err(e) = sequencer.handle_vrf_broadcast(broadcast_msg, total_nodes).await {
-                        error!("❌ [MAIN_SEQUENCER] Failed to handle VRF broadcast: {}", e);
-                    } else {
-                        // Check if we can start consensus
-                        let min_selections = total_nodes;
-                        if let Err(e) = sequencer.check_and_trigger_consensus(round, min_selections).await {
-                            error!("❌ [MAIN_SEQUENCER] Failed to trigger consensus: {}", e);
+                    // Clone for async task (matches signing module pattern)
+                    let sequencer_clone = sequencer.clone();
+                    
+                    // Spawn async task to handle VRF broadcast and check consensus
+                    // This avoids blocking and matches signing module's approach
+                    tokio::spawn(async move {
+                        // Handle VRF broadcast
+                        if let Err(e) = sequencer_clone.handle_vrf_broadcast(broadcast_msg, total_nodes).await {
+                            error!("❌ [MAIN_SEQUENCER] Failed to handle VRF broadcast: {}", e);
+                            return;
                         }
-                    }
+                        
+                        // Check if we can start consensus
+                        if sequencer_clone.can_start_consensus(round, min_selections).await {
+                            info!(
+                                "🎯 [MAIN_SEQUENCER] Enough VRF selections for round {}, triggering consensus",
+                                round
+                            );
+                            
+                            if let Err(e) = sequencer_clone.check_and_trigger_consensus(round, min_selections).await {
+                                error!("❌ [MAIN_SEQUENCER] Failed to trigger consensus: {}", e);
+                            }
+                        }
+                    });
                 } else {
                     warn!("⚠️ [MAIN_SEQUENCER] Received VRF broadcast but sequencer not initialized");
                 }

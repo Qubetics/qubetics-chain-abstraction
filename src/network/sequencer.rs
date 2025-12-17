@@ -700,6 +700,7 @@ impl ContractTransactionSequencer {
         
         if !has_final_node {
             // Consensus not complete - trigger VRF if not already done
+            // This matches signing module pattern: perform VRF when starting to process
             info!(
                 "🎯 [VAULT_SEQUENCER] No final node for round {}, triggering VRF selection",
                 round
@@ -712,12 +713,27 @@ impl ContractTransactionSequencer {
                 return None;
             }
             
-            // Trigger VRF selection (fire and forget - results will come via broadcasts)
+            info!(
+                "🔍 [VAULT_SEQUENCER] Available nodes for VRF: count={}, nodes={:?}",
+                nodes.len(),
+                nodes.iter().map(|p| p.to_base58()).collect::<Vec<_>>()
+            );
+            
+            // Check if VRF service is available
+            if self.vrf_service.is_none() {
+                error!("❌ [VAULT_SEQUENCER] VRF service not configured! Cannot perform selection.");
+                return None;
+            }
+            
+            // Trigger VRF selection (matches signing module: spawn async to avoid blocking)
             let threshold = nodes.len(); // All nodes must participate
             let sequencer_clone = self.clone();
             tokio::spawn(async move {
+                info!("🚀 [VAULT_SEQUENCER] Starting VRF selection task for round {}", round);
                 if let Err(e) = sequencer_clone.perform_vrf_selection(threshold).await {
                     error!("❌ [VAULT_SEQUENCER] VRF selection failed: {}", e);
+                } else {
+                    info!("✅ [VAULT_SEQUENCER] VRF selection task completed for round {}", round);
                 }
             });
             
@@ -1891,6 +1907,7 @@ impl NetworkTransactionSequencer {
         
         if !has_final_node {
             // Consensus not complete - trigger VRF if not already done
+            // This matches signing module pattern: perform VRF when starting to process
             info!(
                 "🎯 [MAIN_SEQUENCER] No final node for round {}, triggering VRF selection",
                 round
@@ -1903,12 +1920,27 @@ impl NetworkTransactionSequencer {
                 return None;
             }
             
-            // Trigger VRF selection (fire and forget - results will come via broadcasts)
+            info!(
+                "🔍 [MAIN_SEQUENCER] Available nodes for VRF: count={}, nodes={:?}",
+                nodes.len(),
+                nodes.iter().map(|p| p.to_base58()).collect::<Vec<_>>()
+            );
+            
+            // Check if VRF service is available
+            if self.vrf_service.is_none() {
+                error!("❌ [MAIN_SEQUENCER] VRF service not configured! Cannot perform selection.");
+                return None;
+            }
+            
+            // Trigger VRF selection (matches signing module: spawn async to avoid blocking)
             let threshold = nodes.len(); // All nodes must participate
             let sequencer_clone = self.clone();
             tokio::spawn(async move {
+                info!("🚀 [MAIN_SEQUENCER] Starting VRF selection task for round {}", round);
                 if let Err(e) = sequencer_clone.perform_vrf_selection(threshold).await {
                     error!("❌ [MAIN_SEQUENCER] VRF selection failed: {}", e);
+                } else {
+                    info!("✅ [MAIN_SEQUENCER] VRF selection task completed for round {}", round);
                 }
             });
             
