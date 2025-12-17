@@ -200,7 +200,12 @@ impl ContractTransactionSequencer {
 
     /// Perform VRF node selection for current round
     pub async fn perform_vrf_selection(&self, threshold: usize) -> Result<()> {
+        info!("🚦 [VAULT_SEQUENCER] Starting VRF round sync before selection");
         let round = self.sync_round_with_peers().await?;
+        info!(
+            "🔁 [VAULT_SEQUENCER] VRF round sync completed, proceeding with selection: round={}",
+            round
+        );
         let nodes = self.available_nodes.read().await.clone();
 
         if nodes.is_empty() {
@@ -750,14 +755,20 @@ impl ContractTransactionSequencer {
         }
 
         // Check if we have pending requests
-        let has_pending = {
+        let queue_len = {
             let pending = self.pending_requests.read().await;
-            !pending.is_empty()
+            pending.len()
         };
 
-        if !has_pending {
+        if queue_len == 0 {
             return None;
         }
+
+        info!(
+            "📤 [VAULT_SEQUENCER] Dequeue next transaction attempt: queue_len={}, round={}",
+            queue_len,
+            *self.vault_sequencer_round.read().await
+        );
 
         // Get current round and check if consensus is complete
         let round = *self.vault_sequencer_round.read().await;
@@ -783,10 +794,7 @@ impl ContractTransactionSequencer {
             info!(
                 "🔍 [VAULT_SEQUENCER] Available nodes for VRF: count={}, nodes={:?}",
                 nodes.len(),
-                nodes
-                    .iter()
-                    .map(|p| p.to_string())
-                    .collect::<Vec<_>>()
+                nodes.iter().map(|p| p.to_string()).collect::<Vec<_>>()
             );
 
             // Check if VRF service is available
@@ -1306,6 +1314,10 @@ impl ContractTransactionSequencer {
                             "🎉 [VAULT_SEQUENCER] [SYNC] ALL nodes confirmed completion of tx_id={}! Round incremented: {} -> {}. State cleared, ready for next transaction.",
                             transaction_id, old_round, new_round
                         );
+                        info!(
+                            "🔓 [VAULT_SEQUENCER] Released queue token and advanced cursor (round {} -> {})",
+                            old_round, new_round
+                        );
                     }
                 } else {
                     info!(
@@ -1547,6 +1559,13 @@ impl ContractTransactionSequencer {
             let sequence = sync_state.current_sequence;
             drop(sync_state);
 
+            if sequence == 1 {
+                info!(
+                    "🧭 [VAULT_SEQUENCER] Processing first transaction in queue: tx_id={}",
+                    transaction_id
+                );
+            }
+
             let broadcast_data =
                 serde_json::to_vec(&crate::types::GossipsubMessage::SequencerSync {
                     transaction_id: transaction_id.to_string(),
@@ -1630,6 +1649,12 @@ impl ContractTransactionSequencer {
                     "🎉 [SEQUENCER] [COMPLETE] ALL nodes confirmed tx_id={}! State cleared, ready for next transaction.",
                     completed_tx.as_ref().unwrap()
                 );
+                if let Some(completed) = completed_tx {
+                    info!(
+                        "🔓 [SEQUENCER] Released queue token for tx_id={}, allowing dequeue of next request",
+                        completed
+                    );
+                }
             } else {
                 info!(
                     "⏳ [SEQUENCER] [COMPLETE] Waiting for more confirmations: {}/{} nodes confirmed tx_id={}",
@@ -1844,7 +1869,12 @@ impl NetworkTransactionSequencer {
 
     /// Perform VRF node selection for current round
     pub async fn perform_vrf_selection(&self, threshold: usize) -> Result<()> {
+        info!("🚦 [MAIN_SEQUENCER] Starting VRF round sync before selection");
         let round = self.sync_round_with_peers().await?;
+        info!(
+            "🔁 [MAIN_SEQUENCER] VRF round sync completed, proceeding with selection: round={}",
+            round
+        );
         let nodes = self.available_nodes.read().await.clone();
 
         if nodes.is_empty() {
@@ -2262,14 +2292,20 @@ impl NetworkTransactionSequencer {
         }
 
         // Check if we have pending requests
-        let has_pending = {
+        let queue_len = {
             let pending = self.pending_requests.read().await;
-            !pending.is_empty()
+            pending.len()
         };
 
-        if !has_pending {
+        if queue_len == 0 {
             return None;
         }
+
+        info!(
+            "📤 [MAIN_SEQUENCER] Dequeue next transaction attempt: queue_len={}, round={}",
+            queue_len,
+            *self.main_sequencer_round.read().await
+        );
 
         // Get current round and check if consensus is complete
         let round = *self.main_sequencer_round.read().await;
@@ -2295,10 +2331,7 @@ impl NetworkTransactionSequencer {
             info!(
                 "🔍 [MAIN_SEQUENCER] Available nodes for VRF: count={}, nodes={:?}",
                 nodes.len(),
-                nodes
-                    .iter()
-                    .map(|p| p.to_string())
-                    .collect::<Vec<_>>()
+                nodes.iter().map(|p| p.to_string()).collect::<Vec<_>>()
             );
 
             // Check if VRF service is available
@@ -2743,6 +2776,13 @@ impl NetworkTransactionSequencer {
             let sequence = sync_state.current_sequence;
             drop(sync_state);
 
+            if sequence == 1 {
+                info!(
+                    "🧭 [MAIN_SEQUENCER] Processing first transaction in queue: tx_id={}",
+                    transaction_id
+                );
+            }
+
             let broadcast_data = serde_json::to_vec(
                 &crate::types::GossipsubMessage::NetworkTransactionSequencerSync {
                     transaction_id: transaction_id.to_string(),
@@ -2825,6 +2865,10 @@ impl NetworkTransactionSequencer {
                             *cache = None;
                             info!(
                                 "🎉 [NETWORK_SEQUENCER] [COMPLETE] ALL nodes confirmed tx_id={}! State and cache cleared, ready for next transaction.",
+                                completed_tx_id
+                            );
+                            info!(
+                                "🔓 [NETWORK_SEQUENCER] Released queue token for tx_id={}, allowing dequeue of next request",
                                 completed_tx_id
                             );
                         }
@@ -2972,6 +3016,10 @@ impl NetworkTransactionSequencer {
                         info!(
                             "🎉 [MAIN_SEQUENCER] [SYNC] ALL nodes confirmed completion of tx_id={}! Round incremented: {} -> {}. State cleared, ready for next transaction.",
                             tx_id_for_log, old_round, new_round
+                        );
+                        info!(
+                            "🔓 [MAIN_SEQUENCER] Released queue token and advanced cursor (round {} -> {})",
+                            old_round, new_round
                         );
                     }
                 }
