@@ -16,12 +16,12 @@ pub struct VrfStorage {
 impl VrfStorage {
     /// Create a new VrfStorage with no prefix (for signing/default context)
     pub fn new(db: Database) -> Self {
-        Self { 
+        Self {
             db,
             prefix: String::new(),
         }
     }
-    
+
     /// Create a new VrfStorage with a custom prefix for isolated storage
     pub fn new_with_prefix(db: Database, prefix: impl Into<String>) -> Self {
         Self {
@@ -35,18 +35,43 @@ impl VrfStorage {
         &self.db
     }
 
+    fn namespaced_round_key(&self, namespace: &str) -> String {
+        let namespace_prefix = if namespace.is_empty() {
+            String::new()
+        } else {
+            format!("{}:", namespace)
+        };
+
+        format!(
+            "{}{}{}",
+            self.prefix,
+            namespace_prefix,
+            key_utils::vrf_current_round_key()
+        )
+    }
+
     /// Fetch the current VRF round from storage, initializing to 0 if absent.
     pub fn get_current_round(&self) -> Result<u64> {
-        let key = format!("{}{}", self.prefix, key_utils::vrf_current_round_key());
+        self.get_current_round_for_context("")
+    }
+
+    pub fn get_current_round_for_context(&self, namespace: &str) -> Result<u64> {
+        let key = self.namespaced_round_key(namespace);
         match self.db.get_string::<u64>(&key)? {
             Some(round) => {
-                debug!("🔍 [VRF_STORAGE:{}] Retrieved current round: {}", self.prefix, round);
+                debug!(
+                    "🔍 [VRF_STORAGE:{}{}] Retrieved current round: {}",
+                    self.prefix, namespace, round
+                );
                 Ok(round)
             }
             None => {
                 // Initialize to 0 if missing to keep behavior deterministic.
-                self.set_current_round(0)?;
-                warn!("ℹ️ [VRF_STORAGE:{}] current round not found; defaulting to 0", self.prefix);
+                self.set_current_round_for_context(namespace, 0)?;
+                warn!(
+                    "ℹ️ [VRF_STORAGE:{}{}] current round not found; defaulting to 0",
+                    self.prefix, namespace
+                );
                 Ok(0)
             }
         }
@@ -54,9 +79,16 @@ impl VrfStorage {
 
     /// Persist the provided round as the current VRF round.
     pub fn set_current_round(&self, round: u64) -> Result<()> {
-        let key = format!("{}{}", self.prefix, key_utils::vrf_current_round_key());
+        self.set_current_round_for_context("", round)
+    }
+
+    pub fn set_current_round_for_context(&self, namespace: &str, round: u64) -> Result<()> {
+        let key = self.namespaced_round_key(namespace);
         self.db.put_string(&key, &round)?;
-        info!("✅ [VRF_STORAGE:{}] Set current round to {}", self.prefix, round);
+        info!(
+            "✅ [VRF_STORAGE:{}{}] Set current round to {}",
+            self.prefix, namespace, round
+        );
         Ok(())
     }
 
@@ -64,7 +96,10 @@ impl VrfStorage {
     pub fn set_peer_round(&self, peer_id: &str, round: u64) -> Result<()> {
         let key = format!("{}{}", self.prefix, key_utils::vrf_peer_round_key(peer_id));
         self.db.put_string(&key, &round)?;
-        debug!("💾 [VRF_STORAGE:{}] Stored peer {} round {}", self.prefix, peer_id, round);
+        debug!(
+            "💾 [VRF_STORAGE:{}] Stored peer {} round {}",
+            self.prefix, peer_id, round
+        );
         Ok(())
     }
 
@@ -90,7 +125,8 @@ impl VrfStorage {
 
         debug!(
             "🔍 [VRF_STORAGE:{}] Retrieved {} peer rounds from database",
-            self.prefix, peer_rounds.len()
+            self.prefix,
+            peer_rounds.len()
         );
         Ok(peer_rounds)
     }
@@ -99,7 +135,10 @@ impl VrfStorage {
     pub fn remove_peer_round(&self, peer_id: &str) -> Result<()> {
         let key = format!("{}{}", self.prefix, key_utils::vrf_peer_round_key(peer_id));
         self.db.delete(&key)?;
-        debug!("🗑️ [VRF_STORAGE:{}] Removed peer {} round", self.prefix, peer_id);
+        debug!(
+            "🗑️ [VRF_STORAGE:{}] Removed peer {} round",
+            self.prefix, peer_id
+        );
         Ok(())
     }
 }

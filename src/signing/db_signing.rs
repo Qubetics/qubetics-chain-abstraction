@@ -64,10 +64,11 @@ impl DatabaseSigningNode {
             vrf_storage: vrf_storage.clone(),
             aggregated_rounds: Arc::new(RwLock::new(std::collections::HashSet::new())),
             message_tx: message_tx.clone(),
-            vrf_service: Some(VrfService::new_with_storage(
+            vrf_service: Some(VrfService::new_with_storage_and_context(
                 peer_id,
                 message_tx,
                 vrf_storage,
+                "signing_contract",
             )),
             chain_handler,
             consensus_node: Some(ConsensusNode::new()),
@@ -278,10 +279,11 @@ impl DatabaseSigningNode {
         let peer_id = PeerId::from_str(&self.id).unwrap_or_else(|_| PeerId::random());
 
         // Create VrfService with proper initial round
-        let mut vrf_service = VrfService::new_with_storage(
+        let mut vrf_service = VrfService::new_with_storage_and_context(
             peer_id,
             self.message_tx.clone(),
             self.vrf_storage.clone(),
+            "signing_contract",
         );
 
         // Set the current round to match the network

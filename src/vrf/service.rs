@@ -11,12 +11,7 @@ use tracing::{info, warn};
 
 use crate::{
     database::VrfStorage,
-    types::{
-        p2p::SerializablePeerId,
-        vrf::VrfRoundSyncRequest,
-        ChannelMessage,
-        GossipsubMessage,
-    },
+    types::{p2p::SerializablePeerId, vrf::VrfRoundSyncRequest, ChannelMessage, GossipsubMessage},
 };
 
 use super::{
@@ -46,13 +41,28 @@ pub struct VrfService {
     current_round: Arc<RwLock<u64>>,
     round_update_lock: Arc<Mutex<()>>,
     vrf_storage: Option<VrfStorage>,
+    context: String,
     config: VrfServiceConfig,
 }
 
 impl VrfService {
     /// Create a new VRF service
     pub fn new(node_id: PeerId, message_tx: mpsc::Sender<ChannelMessage>) -> Self {
-        Self::with_config(node_id, message_tx, VrfServiceConfig::default())
+        Self::with_config_and_storage(node_id, message_tx, VrfServiceConfig::default(), None, "")
+    }
+
+    pub fn new_with_context(
+        node_id: PeerId,
+        message_tx: mpsc::Sender<ChannelMessage>,
+        context: impl Into<String>,
+    ) -> Self {
+        Self::with_config_and_storage(
+            node_id,
+            message_tx,
+            VrfServiceConfig::default(),
+            None,
+            context,
+        )
     }
 
     pub fn new_with_storage(
@@ -65,6 +75,22 @@ impl VrfService {
             message_tx,
             VrfServiceConfig::default(),
             Some(vrf_storage),
+            "",
+        )
+    }
+
+    pub fn new_with_storage_and_context(
+        node_id: PeerId,
+        message_tx: mpsc::Sender<ChannelMessage>,
+        vrf_storage: VrfStorage,
+        context: impl Into<String>,
+    ) -> Self {
+        Self::with_config_and_storage(
+            node_id,
+            message_tx,
+            VrfServiceConfig::default(),
+            Some(vrf_storage),
+            context,
         )
     }
 
@@ -73,7 +99,16 @@ impl VrfService {
         message_tx: mpsc::Sender<ChannelMessage>,
         config: VrfServiceConfig,
     ) -> Self {
-        Self::with_config_and_storage(node_id, message_tx, config, None)
+        Self::with_config_and_storage(node_id, message_tx, config, None, "")
+    }
+
+    pub fn with_config_and_context(
+        node_id: PeerId,
+        message_tx: mpsc::Sender<ChannelMessage>,
+        config: VrfServiceConfig,
+        context: impl Into<String>,
+    ) -> Self {
+        Self::with_config_and_storage(node_id, message_tx, config, None, context)
     }
 
     pub fn with_config_and_storage(
@@ -81,11 +116,13 @@ impl VrfService {
         message_tx: mpsc::Sender<ChannelMessage>,
         config: VrfServiceConfig,
         vrf_storage: Option<VrfStorage>,
+        context: impl Into<String>,
     ) -> Self {
+        let context = context.into();
         let selector = VrfNodeSelector::new(node_id);
         let initial_round = vrf_storage
             .as_ref()
-            .and_then(|storage| storage.get_current_round().ok())
+            .and_then(|storage| storage.get_current_round_for_context(&context).ok())
             .unwrap_or(0);
 
         Self {
@@ -95,6 +132,7 @@ impl VrfService {
             current_round: Arc::new(RwLock::new(initial_round)),
             round_update_lock: Arc::new(Mutex::new(())),
             vrf_storage,
+            context,
             config,
         }
     }
@@ -160,7 +198,7 @@ impl VrfService {
         let selector = self.selector.read().await;
         selector.get_all_selected_nodes_for_round(round)
     }
-    
+
     /// Perform VRF node selection without broadcasting (for custom broadcast handling)
     pub async fn perform_node_selection_without_broadcast(
         &self,
@@ -196,9 +234,12 @@ impl VrfService {
 
         Ok(selection_result)
     }
-    
+
     /// Create a broadcast message for a specific round
-    pub async fn create_broadcast_for_round(&self, round: u64) -> Option<VrfSelectedNodesBroadcast> {
+    pub async fn create_broadcast_for_round(
+        &self,
+        round: u64,
+    ) -> Option<VrfSelectedNodesBroadcast> {
         let selector = self.selector.read().await;
         selector.create_selected_nodes_broadcast(round)
     }
@@ -254,7 +295,7 @@ impl VrfService {
                 // Use a reasonable threshold (typically 3 for 4 nodes, or 2/3 of available)
                 let threshold = std::cmp::min(
                     std::cmp::max(3, (available_nodes.len() * 2) / 3),
-                    available_nodes.len()
+                    available_nodes.len(),
                 );
 
                 info!(
@@ -263,7 +304,10 @@ impl VrfService {
                 );
 
                 // Trigger selection for this specific round
-                if let Err(e) = self.trigger_selection_for_round(&available_nodes, threshold, round).await {
+                if let Err(e) = self
+                    .trigger_selection_for_round(&available_nodes, threshold, round)
+                    .await
+                {
                     warn!(
                         "⚠️ [VRF] Failed to trigger selection for round {}: {}",
                         round, e
@@ -297,10 +341,10 @@ impl VrfService {
         round: u64,
     ) -> Result<()> {
         let mut selector = self.selector.write().await;
-        
+
         // Ensure local submission for this round
         selector.ensure_local_submission(round);
-        
+
         // Perform selection for this specific round
         let selection_result = selector.select_mpc_nodes(
             available_nodes,
@@ -350,12 +394,18 @@ impl VrfService {
 
         self.persist_current_round(*current).await;
 
+        info!(
+            "[VRF][{}] advanced round to {} (next {})",
+            self.context, round, *current
+        );
         round
     }
 
     pub async fn get_current_round(&self) -> u64 {
         let current = self.current_round.read().await;
-        *current
+        let round = *current;
+        info!("[VRF][{}] current round: {}", self.context, round);
+        round
     }
 
     /// Synchronize the VRF round with peers before producing a signing round.
@@ -472,16 +522,17 @@ impl VrfService {
         *current = round;
         self.persist_current_round(round).await;
         info!(
-            "🔄 [VRF] Node {} set current round to: {}",
-            self.node_id, round
+            "🔄 [VRF][{}] Node {} set current round to: {}",
+            self.context, self.node_id, round
         );
     }
 
     async fn persist_current_round(&self, round: u64) {
         if let Some(storage) = &self.vrf_storage {
-            if let Err(error) = storage.set_current_round(round) {
+            if let Err(error) = storage.set_current_round_for_context(&self.context, round) {
                 tracing::warn!(
-                    "⚠️ [VRF] Failed to persist current round {} to storage: {:?}",
+                    "⚠️ [VRF][{}] Failed to persist current round {} to storage: {:?}",
+                    self.context,
                     round,
                     error
                 );

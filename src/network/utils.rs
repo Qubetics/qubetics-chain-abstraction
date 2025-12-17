@@ -246,41 +246,40 @@ impl MpcNetworkLayer {
             let node_id = self.local_peer_id.to_string();
             let message_tx = self.message_tx.clone();
             sequencer.initialize(message_tx, node_id, total_nodes).await;
-            
+
             // Configure VRF + Consensus for final node selection
             sequencer.set_local_peer_id(self.local_peer_id);
-            
+
             // Create SEPARATE VRF service for main sequencer with "main_seq:" storage prefix
             // This ensures main sequencer VRF data doesn't collide with signing or vault sequencer
-            let main_vrf_storage = crate::database::storage::VrfStorage::new_with_prefix(
-                self.db.clone(),
-                "main_seq:"
-            );
-            let main_vrf_service = crate::protocols::VrfService::new_with_storage(
+            let main_vrf_storage =
+                crate::database::storage::VrfStorage::new_with_prefix(self.db.clone(), "main_seq:");
+            let main_vrf_service = crate::protocols::VrfService::new_with_storage_and_context(
                 self.local_peer_id,
                 self.message_tx.clone(),
-                main_vrf_storage
+                main_vrf_storage,
+                "network",
             );
             sequencer.set_vrf_service(Arc::new(main_vrf_service));
             info!("✅ [MAIN_SEQUENCER] Separate VRF service configured with storage prefix 'main_seq:'");
-            
+
             // Create a new consensus node for main sequencer (independent from signing)
             sequencer.set_consensus_node(Arc::new(tokio::sync::RwLock::new(
-                crate::consensus::ConsensusNode::new()
+                crate::consensus::ConsensusNode::new(),
             )));
             info!("✅ [MAIN_SEQUENCER] Consensus node configured");
-            
+
             // Get available nodes from node manager
-            let available_nodes: Vec<libp2p::PeerId> = self.node_manager
-                .get_active_nodes()
-                .into_iter()
-                .collect();
-            sequencer.update_available_nodes(available_nodes.clone()).await;
+            let available_nodes: Vec<libp2p::PeerId> =
+                self.node_manager.get_active_nodes().into_iter().collect();
+            sequencer
+                .update_available_nodes(available_nodes.clone())
+                .await;
             info!(
                 "✅ [MAIN_SEQUENCER] Available nodes configured: count={}",
                 available_nodes.len()
             );
-            
+
             self.network_transaction_sequencer = Some(sequencer);
             info!(
                 "✅ [NETWORK] Network transaction sequencer fully initialized with {} total nodes",
@@ -741,41 +740,42 @@ impl MpcNetworkLayer {
         let node_id = self.local_peer_id.to_string();
         let message_tx = self.message_tx.clone();
         sequencer.initialize(message_tx, node_id, total_nodes).await;
-        
+
         // Configure VRF + Consensus for final node selection
         sequencer.set_local_peer_id(self.local_peer_id);
-        
+
         // Create SEPARATE VRF service for vault sequencer with "vault_seq:" storage prefix
         // This ensures vault sequencer VRF data doesn't collide with signing or main sequencer
-        let vault_vrf_storage = crate::database::storage::VrfStorage::new_with_prefix(
-            self.db.clone(),
-            "vault_seq:"
-        );
-        let vault_vrf_service = crate::protocols::VrfService::new_with_storage(
+        let vault_vrf_storage =
+            crate::database::storage::VrfStorage::new_with_prefix(self.db.clone(), "vault_seq:");
+        let vault_vrf_service = crate::protocols::VrfService::new_with_storage_and_context(
             self.local_peer_id,
             self.message_tx.clone(),
-            vault_vrf_storage
+            vault_vrf_storage,
+            "signing_funds",
         );
         sequencer.set_vrf_service(Arc::new(vault_vrf_service));
-        info!("✅ [VAULT_SEQUENCER] Separate VRF service configured with storage prefix 'vault_seq:'");
-        
+        info!(
+            "✅ [VAULT_SEQUENCER] Separate VRF service configured with storage prefix 'vault_seq:'"
+        );
+
         // Create a new consensus node for vault sequencer (independent from signing)
         sequencer.set_consensus_node(Arc::new(tokio::sync::RwLock::new(
-            crate::consensus::ConsensusNode::new()
+            crate::consensus::ConsensusNode::new(),
         )));
         info!("✅ [VAULT_SEQUENCER] Consensus node configured");
-        
+
         // Get available nodes from node manager
-        let available_nodes: Vec<libp2p::PeerId> = self.node_manager
-            .get_active_nodes()
-            .into_iter()
-            .collect();
-        sequencer.update_available_nodes(available_nodes.clone()).await;
+        let available_nodes: Vec<libp2p::PeerId> =
+            self.node_manager.get_active_nodes().into_iter().collect();
+        sequencer
+            .update_available_nodes(available_nodes.clone())
+            .await;
         info!(
             "✅ [VAULT_SEQUENCER] Available nodes configured: count={}",
             available_nodes.len()
         );
-        
+
         self.contract_sequencer = Some(sequencer);
         info!(
             "✅ [NETWORK] Contract transaction sequencer fully initialized with {} total nodes",

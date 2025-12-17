@@ -38,7 +38,11 @@ pub struct Coordination {
 impl Coordination {
     pub fn new(peer_id: PeerId, message_tx: mpsc::Sender<ChannelMessage>) -> Self {
         Self {
-            vrf_service: Some(VrfSelectionFacade::new_service(peer_id, message_tx.clone())),
+            vrf_service: Some(VrfSelectionFacade::new_service_with_context(
+                peer_id,
+                message_tx.clone(),
+                "signing_contract",
+            )),
             consensus_node: Some(ConsensusNode::new()),
             available_nodes: None,
             vrf_storage: None,
@@ -53,7 +57,12 @@ impl Coordination {
         database: Arc<crate::database::Database>,
     ) -> Self {
         let vrf_storage = VrfStorage::new(database.as_ref().clone());
-        let vrf_service = VrfService::new_with_storage(peer_id, message_tx.clone(), vrf_storage.clone());
+        let vrf_service = VrfService::new_with_storage_and_context(
+            peer_id,
+            message_tx.clone(),
+            vrf_storage.clone(),
+            "signing_contract",
+        );
         Self {
             vrf_service: Some(vrf_service),
             consensus_node: Some(ConsensusNode::new()),
@@ -67,13 +76,18 @@ impl Coordination {
     pub fn set_database(&mut self, database: Arc<crate::database::Database>) {
         let vrf_storage = VrfStorage::new(database.as_ref().clone());
         self.vrf_storage = Some(vrf_storage.clone());
-        
+
         // Recreate VrfService with storage if we have the necessary info
         // The VrfService will automatically load the current round from storage on initialization
         if let (Some(node_id), Some(message_tx)) = (self.node_id, self.message_tx.clone()) {
             // Create new VrfService with storage - it will load round from storage automatically
-            let new_vrf_service = VrfService::new_with_storage(node_id, message_tx, vrf_storage);
-            
+            let new_vrf_service = VrfService::new_with_storage_and_context(
+                node_id,
+                message_tx,
+                vrf_storage,
+                "signing_contract",
+            );
+
             self.vrf_service = Some(new_vrf_service);
             info!("✅ [COORDINATION] Updated VrfService with database storage");
         }
@@ -129,11 +143,16 @@ impl Coordination {
 
         // Create VrfService with storage if available, otherwise without
         let mut vrf_service = if let Some(ref storage) = self.vrf_storage {
-            VrfService::new_with_storage(peer_id, message_tx, storage.clone())
+            VrfService::new_with_storage_and_context(
+                peer_id,
+                message_tx,
+                storage.clone(),
+                "signing_contract",
+            )
         } else {
-            VrfSelectionFacade::new_service(peer_id, message_tx)
+            VrfSelectionFacade::new_service_with_context(peer_id, message_tx, "signing_contract")
         };
-        
+
         if let Some(round) = network_round {
             info!(
                 "🔄 [VRF] Synchronizing VRF round from network state: {}",
