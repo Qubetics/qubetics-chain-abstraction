@@ -433,7 +433,7 @@ impl MpcNetworkLayer {
                 tx_bytes,
                 eth_tx,
                 user_tweaked_share,
-                user_eth_address,
+                user_eth_address: _user_eth_address,
                 transaction_type,
                 ..
             } => {
@@ -444,16 +444,24 @@ impl MpcNetworkLayer {
 
                 if let Some(signing_node) = &mut self.signing_node {
                     let mut eth_signer = EthereumSigner::new(signing_node);
+                    // IMPORTANT:
+                    // For NetworkToTarget, we must sign with the NETWORK's DKG share so the
+                    // recovered "from" address is the network main address (derived from group key),
+                    // not a user-derived address.
+                    //
+                    // `EthereumSigner` treats `user_tweaked_share: Some(_)` as "user signing", so we
+                    // pass the share via `signing_key_override` and force `user_eth_address=None`.
+                    let network_signing_share = *user_tweaked_share;
                     eth_signer
                         .sign_transaction(
                             tx_bytes.clone(),
                             eth_tx,
-                            *user_tweaked_share,
-                            user_eth_address.clone(),
+                            None,
+                            None,
                             Some(intent_hash.clone()),
                             Some(transaction_type.clone()),
                             None,
-                            None,
+                            network_signing_share,
                         )
                         .await?;
 
@@ -479,17 +487,24 @@ impl MpcNetworkLayer {
                 );
 
                 if let Some(signing_node) = &mut self.signing_node {
+                    // IMPORTANT:
+                    // Do not rely on `SigningNode.key_store.private_key` being pre-populated.
+                    // Instead, explicitly pass the network's DKG secret share as an override.
+                    let network_signing_share = match &self.dkg_node {
+                        Some(dkg_node) => dkg_node.get_final_secret_share().await,
+                        None => None,
+                    };
                     let mut eth_signer = EthereumSigner::new(signing_node);
                     eth_signer
                         .sign_transaction(
                             tx_bytes.clone(),
                             eth_tx,
-                            None, // Network DKG share (already set in signing_node)
+                            None, // never treat this as "user signing"
                             None, // No user address for network transactions
                             None, // No intent_hash for withdraw liquidity
                             Some(crate::types::TransactionType::WithdrawLiquidity),
                             Some(solver_address.clone()),
-                            None,
+                            network_signing_share,
                         )
                         .await?;
 
@@ -515,17 +530,24 @@ impl MpcNetworkLayer {
                 );
 
                 if let Some(signing_node) = &mut self.signing_node {
+                    // IMPORTANT:
+                    // Do not rely on `SigningNode.key_store.private_key` being pre-populated.
+                    // Instead, explicitly pass the network's DKG secret share as an override.
+                    let network_signing_share = match &self.dkg_node {
+                        Some(dkg_node) => dkg_node.get_final_secret_share().await,
+                        None => None,
+                    };
                     let mut eth_signer = EthereumSigner::new(signing_node);
                     eth_signer
                         .sign_transaction(
                             tx_bytes.clone(),
                             eth_tx,
-                            None, // Network DKG share (already set in signing_node)
+                            None, // never treat this as "user signing"
                             None, // No user address for network transactions
                             None, // No intent_hash for reward payout
                             Some(crate::types::TransactionType::RewardTxn),
                             Some(solver_address.clone()),
-                            None,
+                            network_signing_share,
                         )
                         .await?;
 
