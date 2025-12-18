@@ -114,6 +114,21 @@ pub struct GetRewardSolverResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SolverLiquidityRequest {
+    pub solver_address: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SolverLiquidityResponse {
+    pub status: String,
+    pub solver_address: String,
+    pub liquidity_btc: Option<String>,
+    pub liquidity_tics: Option<String>,
+    pub message: String,
+    pub error_message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClaimRewardRequest {
     pub signature: String,
     pub message: String,
