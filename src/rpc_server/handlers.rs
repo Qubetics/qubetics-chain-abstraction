@@ -14,16 +14,17 @@ use crate::{
     database::{DkgStorage, RewardStorage},
     types::{
         intent::{DepositIntent, DepositIntentResponse, TransactionResponse, TransactionType},
-        TransactionNetwork,
         messaging::ChannelMessage,
         rpc::RPCRequest,
         rpc_server::{
             AddLiquidityRequest, AddLiquidityResponse, ClaimRewardRequest, ClaimRewardResponse,
             DKGStatusResponse, EnhancedUserRegistrationResponse, GetRewardSolverRequest,
             GetRewardSolverResponse, HeartbeatResponse, NodeIdResponse, RequestContext,
-            UptimeResponse, UserInfoResponse, UserMpcDepositRequest, UserMpcDepositVerifyResponse,
-            UserRegistrationRequest, WithdrawLiquidityRequest, WithdrawLiquidityResponse,
+            SolverLiquidityRequest, SolverLiquidityResponse, UptimeResponse, UserInfoResponse,
+            UserMpcDepositRequest, UserMpcDepositVerifyResponse, UserRegistrationRequest,
+            WithdrawLiquidityRequest, WithdrawLiquidityResponse,
         },
+        TransactionNetwork,
     },
     user_intent_manager::{checksum_from_any, UserIntentManager},
     utils::transaction::DUST_LIMIT_SATS,
@@ -248,18 +249,22 @@ async fn maybe_initiate_withdrawal(
     build_channel_msg: impl Fn(String, String, String) -> ChannelMessage,
     missing_address_msg: &str,
 ) -> Result<bool, WithdrawLiquidityResponse> {
-    let withdraw_amount =
-        select_withdraw_amount(requested_amount, available_liquidity, asset_label, min_required)
-            .map_err(|msg| {
-                withdraw_error_response(
-                    solver_address.to_string(),
-                    liquidity_btc,
-                    liquidity_tics,
-                    req,
-                    msg.clone(),
-                    Some(msg),
-                )
-            })?;
+    let withdraw_amount = select_withdraw_amount(
+        requested_amount,
+        available_liquidity,
+        asset_label,
+        min_required,
+    )
+    .map_err(|msg| {
+        withdraw_error_response(
+            solver_address.to_string(),
+            liquidity_btc,
+            liquidity_tics,
+            req,
+            msg.clone(),
+            Some(msg),
+        )
+    })?;
 
     let Some(amount_str) = withdraw_amount else {
         return Ok(false);
@@ -1215,6 +1220,121 @@ pub(crate) async fn handle_get_reward_solver(
         reward_btc: reward_btc_str,
         reward_tics: reward_tics_str,
         message: "Solver rewards retrieved successfully".to_string(),
+        error_message: None,
+    }))
+}
+
+pub(crate) async fn handle_get_solver_liquidity(
+    req: SolverLiquidityRequest,
+    user_intent_manager: Arc<UserIntentManager>,
+) -> Result<impl warp::Reply, warp::Rejection> {
+    info!(
+        "🔍 HTTP: get_solver_liquidity request for solver: {}",
+        req.solver_address
+    );
+
+    if req.solver_address.trim().is_empty() {
+        return Ok(warp::reply::json(&SolverLiquidityResponse {
+            status: "error".to_string(),
+            solver_address: req.solver_address,
+            liquidity_btc: None,
+            liquidity_tics: None,
+            message: "Solver address cannot be empty".to_string(),
+            error_message: Some("Solver address is required".to_string()),
+        }));
+    }
+
+    let normalized_address = match checksum_from_any(&req.solver_address) {
+        Ok(addr) => addr,
+        Err(e) => {
+            warn!("❌ Invalid solver address format: {}", e);
+            return Ok(warp::reply::json(&SolverLiquidityResponse {
+                status: "error".to_string(),
+                solver_address: req.solver_address,
+                liquidity_btc: None,
+                liquidity_tics: None,
+                message: "Invalid solver address format".to_string(),
+                error_message: Some(format!("Invalid address format: {e}")),
+            }));
+        }
+    };
+
+    let database = user_intent_manager.get_database();
+    let solver_liquidity_key = format!("solver_liquidity:{}", normalized_address.to_lowercase());
+
+    let liquidity_amounts: Option<Vec<String>> =
+        match database.get_string::<Vec<String>>(&solver_liquidity_key) {
+            Ok(amounts) => amounts,
+            Err(e) => {
+                warn!("❌ Failed to get solver liquidity from database: {}", e);
+                return Ok(warp::reply::json(&SolverLiquidityResponse {
+                    status: "error".to_string(),
+                    solver_address: normalized_address,
+                    liquidity_btc: None,
+                    liquidity_tics: None,
+                    message: "Failed to fetch solver liquidity".to_string(),
+                    error_message: Some(format!("Database error: {e}")),
+                }));
+            }
+        };
+
+    if liquidity_amounts.is_none() {
+        warn!(
+            "❌ Address {} is not a valid solver (no liquidity entry found)",
+            normalized_address
+        );
+        return Ok(warp::reply::json(&SolverLiquidityResponse {
+            status: "error".to_string(),
+            solver_address: normalized_address,
+            liquidity_btc: None,
+            liquidity_tics: None,
+            message: "Address is not a valid solver".to_string(),
+            error_message: Some("No liquidity entry found for this address".to_string()),
+        }));
+    }
+
+    let amounts = liquidity_amounts.unwrap();
+    let liquidity_btc = amounts.first().and_then(|s| {
+        if s.trim().is_empty() || s == "0" {
+            None
+        } else {
+            Some(s.clone())
+        }
+    });
+    let liquidity_tics = amounts.get(1).and_then(|s| {
+        if s.trim().is_empty() || s == "0" {
+            None
+        } else {
+            Some(s.clone())
+        }
+    });
+
+    if liquidity_btc.is_none() && liquidity_tics.is_none() {
+        warn!(
+            "❌ No liquidity available for solver address: {}",
+            normalized_address
+        );
+        return Ok(warp::reply::json(&SolverLiquidityResponse {
+            status: "error".to_string(),
+            solver_address: normalized_address,
+            liquidity_btc,
+            liquidity_tics,
+            message: "No liquidity available for solver".to_string(),
+            error_message: Some("No liquidity available for solver".to_string()),
+        }));
+    }
+
+    info!(
+        "✅ Stored liquidity for solver {} - BTC: {:?}, TICS: {:?}",
+        normalized_address, liquidity_btc, liquidity_tics
+    );
+
+    Ok(warp::reply::json(&SolverLiquidityResponse {
+        status: "success".to_string(),
+        solver_address: normalized_address,
+        liquidity_btc,
+        liquidity_tics,
+        message: "Solver liquidity retrieved successfully".to_string(),
         error_message: None,
     }))
 }
@@ -2450,7 +2570,7 @@ pub(crate) async fn handle_add_liquidity(
             .as_secs();
         format!("{}_{}", timestamp, normalized_solver_id)
     };
-    
+
     let channel_msg = ChannelMessage::AddLiquidity {
         solver_address: normalized_address.clone(),
         solver_id: normalized_solver_id.clone(),

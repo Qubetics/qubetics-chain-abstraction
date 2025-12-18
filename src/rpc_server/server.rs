@@ -16,14 +16,14 @@ use crate::{
 
 use super::handlers::{
     handle_add_liquidity, handle_claim_reward, handle_get_dkg_status, handle_get_node_id,
-    handle_get_reward_solver, handle_get_status, handle_get_uptime, handle_get_user_info,
-    handle_heartbeat, handle_register_user, handle_start_dkg, handle_user_mpc_deposit,
-    handle_withdraw_liquidity,
+    handle_get_reward_solver, handle_get_solver_liquidity, handle_get_status, handle_get_uptime,
+    handle_get_user_info, handle_heartbeat, handle_register_user, handle_start_dkg,
+    handle_user_mpc_deposit, handle_withdraw_liquidity,
 };
 use crate::types::rpc_server::{
     AddLiquidityRequest, ClaimRewardRequest, GetRewardSolverRequest, RequestContext,
-    UserMpcDepositRequest, UserMpcDepositVerifyResponse, UserRegistrationRequest,
-    WithdrawLiquidityRequest,
+    SolverLiquidityRequest, UserMpcDepositRequest, UserMpcDepositVerifyResponse,
+    UserRegistrationRequest, WithdrawLiquidityRequest,
 };
 
 const MAX_REQUEST_BODY_BYTES: u64 = 256 * 1024; // 256 KiB
@@ -107,6 +107,12 @@ pub async fn start_http_server(
         .and(with_user_intent_manager(user_intent_manager.clone()))
         .and_then(handle_get_reward_solver);
 
+    let get_solver_liquidity = warp::path("solver_liquidity")
+        .and(warp::get())
+        .and(warp::query::<SolverLiquidityRequest>())
+        .and(with_user_intent_manager(user_intent_manager.clone()))
+        .and_then(handle_get_solver_liquidity);
+
     let claim_reward = warp::path("claim_reward")
         .and(warp::post())
         .and(limited_json_body::<ClaimRewardRequest>())
@@ -179,6 +185,7 @@ pub async fn start_http_server(
         .or(start_dkg)
         .or(user_mpc_deposit)
         .or(get_reward_solver)
+        .or(get_solver_liquidity)
         .or(claim_reward)
         .or(withdraw_liquidity)
         .or(add_liquidity)
