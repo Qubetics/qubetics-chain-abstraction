@@ -193,7 +193,10 @@ impl MpcNetworkLayer {
                     ConsensusMessage::FinalNodeResult { round, .. } => {
                         // Handle in vault sequencer if available
                         if let Some(sequencer) = &self.contract_sequencer {
-                            if let Err(e) = sequencer.handle_consensus_message(consensus_msg.clone()).await {
+                            if let Err(e) = sequencer
+                                .handle_consensus_message(consensus_msg.clone())
+                                .await
+                            {
                                 // Log error but don't fail - consensus might be for different domain
                                 warn!(
                                     "⚠️ [VAULT_SEQUENCER] Failed to handle consensus message for round {}: {}",
@@ -209,7 +212,10 @@ impl MpcNetworkLayer {
 
                         // Handle in main sequencer if available
                         if let Some(sequencer) = &self.network_transaction_sequencer {
-                            if let Err(e) = sequencer.handle_consensus_message(consensus_msg.clone()).await {
+                            if let Err(e) = sequencer
+                                .handle_consensus_message(consensus_msg.clone())
+                                .await
+                            {
                                 // Log error but don't fail - consensus might be for different domain
                                 warn!(
                                     "⚠️ [MAIN_SEQUENCER] Failed to handle consensus message for round {}: {}",
@@ -1338,15 +1344,16 @@ impl MpcNetworkLayer {
                 );
                 info!("🏷️ [GOSSIPSUB] Transaction type: {}", transaction_type);
 
-                self.process_payout(
-                    "claim_reward",
-                    &solver_address,
-                    &btc_address,
-                    &eth_address,
-                    &reward_btc,
-                    &reward_tics,
-                )
-                .await?;
+                let _ = self
+                    .process_payout(
+                        "claim_reward",
+                        &solver_address,
+                        &btc_address,
+                        &eth_address,
+                        &reward_btc,
+                        &reward_tics,
+                    )
+                    .await?;
             }
             GossipsubMessage::WithdrawLiquidity {
                 solver_address,
@@ -1370,40 +1377,63 @@ impl MpcNetworkLayer {
                 );
                 info!("💧 [GOSSIPSUB] Transaction type: {}", transaction_type);
 
-                self.process_payout(
-                    "withdraw_liquidity",
-                    &solver_address,
-                    &btc_address,
-                    &eth_address,
-                    &amount_btc,
-                    &amount_tics,
-                )
-                .await?;
+                let (tics_payout_initiated, btc_payout_initiated) = self
+                    .process_payout(
+                        "withdraw_liquidity",
+                        &solver_address,
+                        &btc_address,
+                        &eth_address,
+                        &amount_btc,
+                        &amount_tics,
+                    )
+                    .await?;
 
-                // Apply the liquidity decrease locally based on the requested amount.
+                // Apply the liquidity decrease locally only when the payout was actually initiated
                 if let Some(signing_node) = &self.signing_node {
-                    let delta_btc = amount_btc
-                        .as_ref()
-                        .and_then(|v| ethers::types::U256::from_dec_str(v).ok());
-                    let delta_tics = amount_tics
-                        .as_ref()
-                        .and_then(|v| ethers::types::U256::from_dec_str(v).ok());
-                    match signing_node
-                        .apply_liquidity_delta(&solver_address, None, delta_btc, delta_tics, false)
-                        .await
-                    {
-                        Ok(()) => {
-                            info!(
-                                "✅ [GOSSIPSUB] Applied local liquidity withdraw for {}",
-                                solver_address
-                            );
+                    let delta_btc = if btc_payout_initiated {
+                        amount_btc
+                            .as_ref()
+                            .and_then(|v| ethers::types::U256::from_dec_str(v).ok())
+                    } else {
+                        None
+                    };
+                    let delta_tics = if tics_payout_initiated {
+                        amount_tics
+                            .as_ref()
+                            .and_then(|v| ethers::types::U256::from_dec_str(v).ok())
+                    } else {
+                        None
+                    };
+
+                    if delta_btc.is_some() || delta_tics.is_some() {
+                        match signing_node
+                            .apply_liquidity_delta(
+                                &solver_address,
+                                None,
+                                delta_btc,
+                                delta_tics,
+                                false,
+                            )
+                            .await
+                        {
+                            Ok(()) => {
+                                info!(
+                                    "✅ [GOSSIPSUB] Applied local liquidity withdraw for {}",
+                                    solver_address
+                                );
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "⚠️ [GOSSIPSUB] Failed to apply local liquidity withdraw for {}: {}",
+                                    solver_address, e
+                                );
+                            }
                         }
-                        Err(e) => {
-                            warn!(
-                                "⚠️ [GOSSIPSUB] Failed to apply local liquidity withdraw for {}: {}",
-                                solver_address, e
-                            );
-                        }
+                    } else {
+                        info!(
+                            "⏭️ [GOSSIPSUB] Skipping local liquidity withdraw for {} because payout was not initiated",
+                            solver_address
+                        );
                     }
                 } else {
                     warn!(
