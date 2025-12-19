@@ -1216,6 +1216,7 @@ impl MpcNetworkLayer {
 #[cfg(test)]
 mod tests {
     use super::MpcNetworkLayer;
+    use crate::network::transport::types::VrfDomain;
     use crate::database::{Database, DatabaseConfig};
     use crate::node_selection::{BasicNodeManager, DefaultThresholdCalculator};
     use libp2p::PeerId;

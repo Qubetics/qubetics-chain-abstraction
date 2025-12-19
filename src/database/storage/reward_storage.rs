@@ -22,7 +22,19 @@ impl RewardStorage {
 
     /// Get total liquidity in tics (legacy u64)
     pub async fn get_total_liquidity_tics(&self) -> Result<Option<u64>> {
-        self.db.get_string(keys::TOTAL_LIQUIDITY_TICS)
+        // Backward/forward compatible:
+        // - historically stored as a bincode-serialized u64
+        // - newer code may store a stringified integer (U256) in the same key
+        match self.db.get_string::<u64>(keys::TOTAL_LIQUIDITY_TICS) {
+            Ok(v) => Ok(v),
+            Err(_) => {
+                if let Some(s) = self.db.get_string::<String>(keys::TOTAL_LIQUIDITY_TICS)? {
+                    Ok(s.parse::<u64>().ok())
+                } else {
+                    Ok(None)
+                }
+            }
+        }
     }
 
     /// Store total liquidity in TICS as U256 (string)
@@ -52,7 +64,19 @@ impl RewardStorage {
 
     /// Get total liquidity in BTC (legacy f64)
     pub async fn get_total_liquidity_btc(&self) -> Result<Option<f64>> {
-        self.db.get_string(keys::TOTAL_LIQUIDITY_BTC)
+        // Backward/forward compatible:
+        // - historically stored as a bincode-serialized f64
+        // - newer code stores a stringified integer (U256 satoshis) in the same key
+        match self.db.get_string::<f64>(keys::TOTAL_LIQUIDITY_BTC) {
+            Ok(v) => Ok(v),
+            Err(_) => {
+                if let Some(s) = self.db.get_string::<String>(keys::TOTAL_LIQUIDITY_BTC)? {
+                    Ok(s.parse::<f64>().ok())
+                } else {
+                    Ok(None)
+                }
+            }
+        }
     }
 
     /// Store total liquidity in BTC as U256 satoshis (string)
