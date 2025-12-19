@@ -149,7 +149,7 @@ impl MpcNetworkLayer {
         solver_address: &str,
         eth_address: &str,
         amount: u128,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let tx_type = Self::get_transaction_type_from_context(context);
 
         info!(
@@ -161,7 +161,7 @@ impl MpcNetworkLayer {
             Some(node) => node,
             None => {
                 warn!("❌ [{}] DKG node not available for TICS payout", context);
-                return Ok(());
+                return Ok(false);
             }
         };
 
@@ -169,7 +169,7 @@ impl MpcNetworkLayer {
             Some(key) => key,
             None => {
                 warn!("❌ [{}] No group key available for TICS payout", context);
-                return Ok(());
+                return Ok(false);
             }
         };
 
@@ -188,7 +188,7 @@ impl MpcNetworkLayer {
                     "❌ [{}] Failed to create TICS payout transaction: {}",
                     context, e
                 );
-                return Ok(());
+                return Ok(false);
             }
         };
 
@@ -201,7 +201,7 @@ impl MpcNetworkLayer {
             Some(node) => node,
             None => {
                 warn!("❌ [{}] Signing node unavailable for TICS payout", context);
-                return Ok(());
+                return Ok(false);
             }
         };
 
@@ -220,7 +220,7 @@ impl MpcNetworkLayer {
                     "⏳ [{}] DKG not completed yet, no secret share for TICS payout",
                     context
                 );
-                return Ok(());
+                return Ok(false);
             }
         };
 
@@ -259,7 +259,7 @@ impl MpcNetworkLayer {
                 context
             );
             // Note: record_pending_liquidity_contract_update will be called after transaction is signed
-            Ok(())
+            Ok(true)
         } else if context == "reward_txn" || context == "claim_reward" {
             if let Err(e) = self
                 .submit_reward_payout_to_sequencer(
@@ -282,7 +282,7 @@ impl MpcNetworkLayer {
                 "✅ [{}] Submitted reward payout to network sequencer",
                 context
             );
-            Ok(())
+            Ok(true)
         } else {
             // For other contexts, sign directly
             let mut eth_signer = EthereumSigner::new(signing_node);
@@ -300,7 +300,7 @@ impl MpcNetworkLayer {
                 .await?;
 
             info!("✅ [{}] TICS payout signing completed", context);
-            Ok(())
+            Ok(true)
         }
     }
 
@@ -310,7 +310,7 @@ impl MpcNetworkLayer {
         solver_address: &str,
         btc_address: &str,
         amount: u128,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let tx_type = Self::get_transaction_type_from_context(context);
 
         info!(
@@ -322,7 +322,7 @@ impl MpcNetworkLayer {
             Some(node) => node,
             None => {
                 warn!("❌ [{}] DKG node not available for BTC payout", context);
-                return Ok(());
+                return Ok(false);
             }
         };
 
@@ -330,7 +330,7 @@ impl MpcNetworkLayer {
             Some(key) => key,
             None => {
                 warn!("❌ [{}] No group key available for BTC payout", context);
-                return Ok(());
+                return Ok(false);
             }
         };
 
@@ -348,7 +348,7 @@ impl MpcNetworkLayer {
                     "❌ [{}] Failed to create BTC payout transaction: {}",
                     context, e
                 );
-                return Ok(());
+                return Ok(false);
             }
         };
 
@@ -361,7 +361,7 @@ impl MpcNetworkLayer {
             Some(node) => node,
             None => {
                 warn!("❌ [{}] Signing node unavailable for BTC payout", context);
-                return Ok(());
+                return Ok(false);
             }
         };
 
@@ -384,7 +384,7 @@ impl MpcNetworkLayer {
                     "⏳ [{}] DKG not completed yet, no secret share for BTC payout",
                     context
                 );
-                return Ok(());
+                return Ok(false);
             }
         };
 
@@ -427,7 +427,7 @@ impl MpcNetworkLayer {
             )
             .await;
         }
-        Ok(())
+        Ok(true)
     }
 
     pub(crate) async fn process_payout(
@@ -438,20 +438,23 @@ impl MpcNetworkLayer {
         eth_address: &Option<String>,
         amount_btc: &Option<String>,
         amount_tics: &Option<String>,
-    ) -> Result<()> {
+    ) -> Result<(bool, bool)> {
+        let mut tics_payout_initiated = false;
+        let mut btc_payout_initiated = false;
         if amount_btc.is_none() && amount_tics.is_none() {
             warn!(
                 "❌ [{}] No BTC or TICS amount specified for solver {}",
                 context, solver_address
             );
-            return Ok(());
+            return Ok((tics_payout_initiated, btc_payout_initiated));
         }
 
         if let Some(amount_str) = amount_tics {
             if let Some(eth_addr) = eth_address {
                 match amount_str.parse::<u128>() {
                     Ok(tics_amount) => {
-                        self.process_eth_payout(context, solver_address, eth_addr, tics_amount)
+                        tics_payout_initiated = self
+                            .process_eth_payout(context, solver_address, eth_addr, tics_amount)
                             .await?;
                     }
                     Err(_) => {
@@ -473,7 +476,8 @@ impl MpcNetworkLayer {
             if let Some(btc_addr) = btc_address {
                 match amount_str.parse::<u128>() {
                     Ok(btc_amount) => {
-                        self.process_btc_payout(context, solver_address, btc_addr, btc_amount)
+                        btc_payout_initiated = self
+                            .process_btc_payout(context, solver_address, btc_addr, btc_amount)
                             .await?;
                     }
                     Err(_) => {
@@ -492,7 +496,7 @@ impl MpcNetworkLayer {
             "✅ [{}] Payout processing complete for solver {}",
             context, solver_address
         );
-        Ok(())
+        Ok((tics_payout_initiated, btc_payout_initiated))
     }
 
     pub(crate) async fn submit_solver_reward_contract_update(
@@ -2604,15 +2608,16 @@ impl MpcNetworkLayer {
                     solver_address
                 );
 
-                self.process_payout(
-                    "claim_reward",
-                    &solver_address,
-                    &btc_address,
-                    &eth_address,
-                    &reward_btc,
-                    &reward_tics,
-                )
-                .await?;
+                let _ = self
+                    .process_payout(
+                        "claim_reward",
+                        &solver_address,
+                        &btc_address,
+                        &eth_address,
+                        &reward_btc,
+                        &reward_tics,
+                    )
+                    .await?;
             }
             ChannelMessage::AddLiquidity {
                 solver_address,
@@ -2718,38 +2723,62 @@ impl MpcNetworkLayer {
                     solver_address
                 );
 
-                self.process_payout(
-                    "withdraw_liquidity",
-                    &solver_address,
-                    &btc_address,
-                    &eth_address,
-                    &amount_btc,
-                    &amount_tics,
-                )
-                .await?;
+                let (tics_payout_initiated, btc_payout_initiated) = self
+                    .process_payout(
+                        "withdraw_liquidity",
+                        &solver_address,
+                        &btc_address,
+                        &eth_address,
+                        &amount_btc,
+                        &amount_tics,
+                    )
+                    .await?;
 
-                // Apply the liquidity decrease locally based on requested amount (avoid waiting for chain).
+                // Apply the liquidity decrease locally only when the payout was actually initiated
+                // to avoid reducing liquidity for transactions that never reach storage (e.g., BTC dust).
                 if let Some(signing_node) = &self.signing_node {
-                    let delta_btc = amount_btc.as_ref().and_then(|v| U256::from_dec_str(v).ok());
-                    let delta_tics = amount_tics
-                        .as_ref()
-                        .and_then(|v| U256::from_dec_str(v).ok());
-                    match signing_node
-                        .apply_liquidity_delta(&solver_address, None, delta_btc, delta_tics, false)
-                        .await
-                    {
-                        Ok(()) => {
-                            info!(
-                                "✅ [NETWORK] Applied local liquidity withdraw for {}",
-                                solver_address
-                            );
+                    let delta_btc = if btc_payout_initiated {
+                        amount_btc.as_ref().and_then(|v| U256::from_dec_str(v).ok())
+                    } else {
+                        None
+                    };
+                    let delta_tics = if tics_payout_initiated {
+                        amount_tics
+                            .as_ref()
+                            .and_then(|v| U256::from_dec_str(v).ok())
+                    } else {
+                        None
+                    };
+
+                    if delta_btc.is_some() || delta_tics.is_some() {
+                        match signing_node
+                            .apply_liquidity_delta(
+                                &solver_address,
+                                None,
+                                delta_btc,
+                                delta_tics,
+                                false,
+                            )
+                            .await
+                        {
+                            Ok(()) => {
+                                info!(
+                                    "✅ [NETWORK] Applied local liquidity withdraw for {}",
+                                    solver_address
+                                );
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "⚠️ [NETWORK] Failed to apply local liquidity withdraw for {}: {}",
+                                    solver_address, e
+                                );
+                            }
                         }
-                        Err(e) => {
-                            warn!(
-                                "⚠️ [NETWORK] Failed to apply local liquidity withdraw for {}: {}",
-                                solver_address, e
-                            );
-                        }
+                    } else {
+                        info!(
+                            "⏭️ [NETWORK] Skipping local liquidity withdraw for {} because payout was not initiated",
+                            solver_address
+                        );
                     }
                 } else {
                     warn!(
