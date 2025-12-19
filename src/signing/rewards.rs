@@ -341,7 +341,129 @@ impl SigningNode {
             .get_string("solver_liquidity:all")?
             .unwrap_or_default();
 
+        // Get active solvers from the contract to ensure we only update rewards for active solvers
+        let active_solver_addresses = {
+            let rpc_url = std::env::var("SOLVER_CONTRACT_RPC_URL")
+                .unwrap_or_else(|_| "http://localhost:8545".to_string());
+            let contract_address = std::env::var("SOLVER_CONTRACT_ADDRESS")
+                .unwrap_or_else(|_| "0x0000000000000000000000000000000000000000".to_string());
+            let chain_id = std::env::var("SOLVER_CONTRACT_CHAIN_ID")
+                .unwrap_or_else(|_| "1".to_string())
+                .parse::<u64>()
+                .unwrap_or(1);
+
+            if contract_address == "0x0000000000000000000000000000000000000000" {
+                warn!(
+                    "⚠️ [SOLVER] Solver contract address not configured, skipping active solver check. Rewards will be calculated for all solvers in liquidity map."
+                );
+                // If contract is not configured, include all solvers (backward compatibility)
+                solver_liquidity_map.keys().cloned().collect::<std::collections::HashSet<String>>()
+            } else {
+                let contract_addr = contract_address
+                    .parse::<ethers::types::Address>()
+                    .map_err(|e| anyhow!("Invalid contract address: {}", e))?;
+
+                let config = crate::contract::ContractConfig {
+                    rpc_url: rpc_url.clone(),
+                    contract_address: contract_addr,
+                    chain_id,
+                };
+
+                let client = ContractClient::new(config.clone())
+                    .map_err(|e| anyhow!("Failed to create contract client: {}", e))?;
+
+                let solver_contract = SolverManagerContract::new(&config, client.provider())
+                    .map_err(|e| anyhow!("Failed to create solver contract interface: {}", e))?;
+
+                // Get active solver IDs
+                let solver_contract_for_ids = solver_contract.clone();
+                let active_solver_ids = self
+                    .contract_call_with_retry("get_active_solvers", move || {
+                        let contract = solver_contract_for_ids.clone();
+                        async move { contract.get_active_solvers().await }
+                    })
+                    .await
+                    .map_err(|e| anyhow!("Failed to get active solvers: {}", e))?;
+
+                info!(
+                    "✅ [SOLVER] Retrieved {} active solver IDs from contract",
+                    active_solver_ids.len()
+                );
+
+                // Map active solver IDs to their EVM addresses
+                let mut active_addresses = std::collections::HashSet::new();
+                for solver_id in active_solver_ids {
+                    let contract_for_address = solver_contract.clone();
+                    let solver_id_clone = solver_id.clone();
+                    match self
+                        .contract_call_with_retry("get_solver_evm_address", move || {
+                            let contract = contract_for_address.clone();
+                            let solver_id = solver_id_clone.clone();
+                            async move { contract.get_solver_evm_address(&solver_id).await }
+                        })
+                        .await
+                    {
+                        Ok(evm_address) => {
+                            // Convert Address to hex string (lowercase, with 0x prefix)
+                            let address_hex = format!("{:?}", evm_address);
+                            let address_lower = address_hex.to_lowercase();
+                            let address_lower_for_log = address_lower.clone();
+                            // Store both with and without 0x prefix for flexible matching
+                            if address_lower.starts_with("0x") {
+                                active_addresses.insert(address_lower.clone());
+                                active_addresses.insert(address_lower[2..].to_string());
+                            } else {
+                                active_addresses.insert(format!("0x{}", address_lower.clone()));
+                                active_addresses.insert(address_lower);
+                            }
+                            info!(
+                                "✅ [SOLVER] Mapped active solver ID {} to EVM address {}",
+                                solver_id, address_lower_for_log
+                            );
+                        }
+                        Err(e) => {
+                            warn!(
+                                "⚠️ [SOLVER] Failed to get EVM address for active solver ID {}: {}",
+                                solver_id, e
+                            );
+                        }
+                    }
+                }
+
+                info!(
+                    "✅ [SOLVER] Mapped {} active solvers to EVM addresses",
+                    active_addresses.len()
+                );
+                active_addresses
+            }
+        };
+
+        // Filter to only process active solvers
+        let mut active_solver_count = 0;
         for (solver, amounts) in solver_liquidity_map.iter() {
+            // Normalize solver address for comparison (handle both with and without 0x prefix)
+            let solver_normalized = solver.to_lowercase();
+            let solver_with_prefix = if solver_normalized.starts_with("0x") {
+                solver_normalized.clone()
+            } else {
+                format!("0x{}", solver_normalized)
+            };
+            let solver_without_prefix = solver_with_prefix.trim_start_matches("0x").to_string();
+
+            // Check if this solver is in the active solvers list
+            let is_active = active_solver_addresses.contains(&solver_normalized)
+                || active_solver_addresses.contains(&solver_with_prefix)
+                || active_solver_addresses.contains(&solver_without_prefix);
+
+            if !is_active {
+                info!(
+                    "⏭️ [SOLVER] Skipping reward calculation for inactive solver: {}",
+                    solver
+                );
+                continue;
+            }
+
+            active_solver_count += 1;
             let reward = if source_chain == "btc" || source_chain == "bitcoin" {
                 let solver_btc = amounts
                     .first()
@@ -412,7 +534,8 @@ impl SigningNode {
         }
 
         info!(
-            "✅ [SOLVER] Calculated rewards for {} solvers",
+            "✅ [SOLVER] Calculated rewards for {} active solvers (out of {} total solvers in liquidity map)",
+            active_solver_count,
             solver_liquidity_map.len()
         );
 
