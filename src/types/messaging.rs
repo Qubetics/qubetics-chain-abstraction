@@ -107,6 +107,23 @@ pub enum ChannelMessage {
         commitments: Vec<SerializablePoint>,
         retry_count: u8,
     },
+    /// Send ECDSA signature to final node via P2P RPC unicast
+    UnicastECDSASignature {
+        target_peer_id: String,
+        from_node_id: String,
+        signature_data: Vec<u8>,
+        round: u64,
+        retry_count: u8,
+    },
+
+    /// Send BTC signatures to final node via P2P RPC unicast
+    UnicastBtcSignatures {
+        target_peer_id: String,
+        from_node_id: String,
+        signature_data: Vec<u8>,
+        round: u64,
+        retry_count: u8,
+    },
 
     StatusRequest {
         responder: oneshot::Sender<NodeStatus>,

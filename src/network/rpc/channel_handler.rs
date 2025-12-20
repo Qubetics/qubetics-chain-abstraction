@@ -605,7 +605,7 @@ impl MpcNetworkLayer {
 
             let vault_tweaked_share = dkg_node.get_vault_tweaked_secret_share().await;
 
-            if let Some(ref secret_share) = vault_tweaked_share {
+            if let Some(ref _secret_share) = vault_tweaked_share {
                 signing_node.set_group_public_key(group_public_key);
                 signing_node.set_vault_group_key(group_public_key);
 
@@ -789,7 +789,7 @@ impl MpcNetworkLayer {
 
             let vault_tweaked_share = dkg_node.get_vault_tweaked_secret_share().await;
 
-            if let Some(ref secret_share) = vault_tweaked_share {
+            if let Some(ref _secret_share) = vault_tweaked_share {
                 signing_node.set_group_public_key(group_public_key);
                 signing_node.set_vault_group_key(group_public_key);
 
@@ -953,7 +953,7 @@ impl MpcNetworkLayer {
 
             let vault_tweaked_share = dkg_node.get_vault_tweaked_secret_share().await;
 
-            if let Some(ref secret_share) = vault_tweaked_share {
+            if let Some(ref _secret_share) = vault_tweaked_share {
                 signing_node.set_group_public_key(group_public_key);
                 signing_node.set_vault_group_key(group_public_key);
 
@@ -1533,6 +1533,269 @@ impl MpcNetworkLayer {
                     share_index, target_peer_id, request_id, is_connected
                 );
             }
+            // SECURE SIGNATURE DISTRIBUTION - sends ECDSA signature to final node via P2P RPC
+            ChannelMessage::UnicastECDSASignature {
+                target_peer_id,
+                from_node_id,
+                signature_data,
+                round,
+                retry_count,
+            } => {
+                const MAX_RETRIES: u8 = 10;
+
+                info!(
+                    "🔐 [SIGNING-SECURE] Sending ECDSA signature for round {} via UNICAST to peer {} (attempt {})",
+                    round,
+                    target_peer_id,
+                    retry_count + 1
+                );
+
+                let peer_id = match target_peer_id.parse::<PeerId>() {
+                    Ok(pid) => pid,
+                    Err(e) => {
+                        warn!(
+                            "❌ [SIGNING-SECURE] Invalid peer ID '{}': {}",
+                            target_peer_id, e
+                        );
+                        return Err(anyhow!("Invalid peer ID: {}", e));
+                    }
+                };
+
+                let mut is_connected = swarm.is_connected(&peer_id);
+                info!(
+                    "🔐 [SIGNING-SECURE] Target Peer {} connected: {}",
+                    target_peer_id, is_connected
+                );
+
+                if !is_connected {
+                    if let Some(addr) = self
+                        .peer_discovery
+                        .peer_multiaddresses
+                        .get(&peer_id)
+                        .cloned()
+                    {
+                        info!(
+                            "📞 [SIGNING-SECURE] Not connected to {}, dialing before send: {}",
+                            target_peer_id, addr
+                        );
+                        let address: Multiaddr = if addr
+                            .to_string()
+                            .contains(&format!("/p2p/{}", target_peer_id))
+                        {
+                            addr.clone()
+                        } else {
+                            format!("{}/p2p/{}", addr, target_peer_id)
+                                .parse()
+                                .expect("valid multiaddr")
+                        };
+                        if let Err(e) = swarm.dial(address.clone()) {
+                            warn!(
+                                "⚠️ [SIGNING-SECURE] Dial to {} failed: {}",
+                                target_peer_id, e
+                            );
+                        } else {
+                            tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+                            is_connected = swarm.is_connected(&peer_id);
+                            info!(
+                                "🔐 [SIGNING-SECURE] Dial to connect to {} successful {}",
+                                target_peer_id, is_connected
+                            );
+                        }
+                    } else {
+                        warn!(
+                            "⚠️ [SIGNING-SECURE] No known address to dial peer {}; will rely on retries",
+                            target_peer_id
+                        );
+                    }
+                }
+
+                if !is_connected && retry_count < MAX_RETRIES {
+                    let delay_ms = 1000 * (1 << retry_count.min(5));
+                    info!(
+                        "🔄 [SIGNING-SECURE] Peer {} not connected - scheduling retry {} in {}ms",
+                        target_peer_id,
+                        retry_count + 1,
+                        delay_ms
+                    );
+
+                    let tx = self.message_tx.clone();
+                    let retry_msg = ChannelMessage::UnicastECDSASignature {
+                        target_peer_id: target_peer_id.clone(),
+                        from_node_id,
+                        signature_data,
+                        round,
+                        retry_count: retry_count + 1,
+                    };
+
+                    tokio::spawn(async move {
+                        tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
+                        if let Err(e) = tx.send(retry_msg).await {
+                            tracing::warn!(
+                                "❌ [SIGNING-SECURE] Failed to schedule retry for round {} signature: {}",
+                                round,
+                                e
+                            );
+                        }
+                    });
+
+                    return Ok(());
+                }
+
+                if !is_connected {
+                    warn!(
+                        "❌ [SIGNING-SECURE] Peer {} still not connected after {} retries - giving up",
+                        target_peer_id, MAX_RETRIES
+                    );
+                }
+
+                let request = RPCRequest::SendECDSASignature {
+                    from_node_id,
+                    signature_data,
+                    round,
+                };
+
+                let request_id = swarm
+                    .behaviour_mut()
+                    .request_response
+                    .send_request(&peer_id, request);
+
+                info!(
+                    "✅ [SIGNING-SECURE] ECDSA signature for round {} sent via P2P RPC to {} (request_id: {:?}, connected: {})",
+                    round, target_peer_id, request_id, is_connected
+                );
+            }
+
+            // SECURE SIGNATURE DISTRIBUTION - sends BTC signatures to final node via P2P RPC
+            ChannelMessage::UnicastBtcSignatures {
+                target_peer_id,
+                from_node_id,
+                signature_data,
+                round,
+                retry_count,
+            } => {
+                const MAX_RETRIES: u8 = 10;
+
+                info!(
+                    "🔐 [SIGNING-SECURE] Sending BTC signatures for round {} via UNICAST to peer {} (attempt {})",
+                    round,
+                    target_peer_id,
+                    retry_count + 1
+                );
+
+                let peer_id = match target_peer_id.parse::<PeerId>() {
+                    Ok(pid) => pid,
+                    Err(e) => {
+                        warn!(
+                            "❌ [SIGNING-SECURE] Invalid peer ID '{}': {}",
+                            target_peer_id, e
+                        );
+                        return Err(anyhow!("Invalid peer ID: {}", e));
+                    }
+                };
+
+                let mut is_connected = swarm.is_connected(&peer_id);
+                info!(
+                    "🔐 [SIGNING-SECURE] Target Peer {} connected: {}",
+                    target_peer_id, is_connected
+                );
+
+                if !is_connected {
+                    if let Some(addr) = self
+                        .peer_discovery
+                        .peer_multiaddresses
+                        .get(&peer_id)
+                        .cloned()
+                    {
+                        info!(
+                            "📞 [SIGNING-SECURE] Not connected to {}, dialing before send: {}",
+                            target_peer_id, addr
+                        );
+                        let address: Multiaddr = if addr
+                            .to_string()
+                            .contains(&format!("/p2p/{}", target_peer_id))
+                        {
+                            addr.clone()
+                        } else {
+                            format!("{}/p2p/{}", addr, target_peer_id)
+                                .parse()
+                                .expect("valid multiaddr")
+                        };
+                        if let Err(e) = swarm.dial(address.clone()) {
+                            warn!(
+                                "⚠️ [SIGNING-SECURE] Dial to {} failed: {}",
+                                target_peer_id, e
+                            );
+                        } else {
+                            tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+                            is_connected = swarm.is_connected(&peer_id);
+                            info!(
+                                "🔐 [SIGNING-SECURE] Dial to connect to {} successful {}",
+                                target_peer_id, is_connected
+                            );
+                        }
+                    } else {
+                        warn!(
+                            "⚠️ [SIGNING-SECURE] No known address to dial peer {}; will rely on retries",
+                            target_peer_id
+                        );
+                    }
+                }
+
+                if !is_connected && retry_count < MAX_RETRIES {
+                    let delay_ms = 1000 * (1 << retry_count.min(5));
+                    info!(
+                        "🔄 [SIGNING-SECURE] Peer {} not connected - scheduling retry {} in {}ms",
+                        target_peer_id,
+                        retry_count + 1,
+                        delay_ms
+                    );
+
+                    let tx = self.message_tx.clone();
+                    let retry_msg = ChannelMessage::UnicastBtcSignatures {
+                        target_peer_id: target_peer_id.clone(),
+                        from_node_id,
+                        signature_data,
+                        round,
+                        retry_count: retry_count + 1,
+                    };
+
+                    tokio::spawn(async move {
+                        tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
+                        if let Err(e) = tx.send(retry_msg).await {
+                            tracing::warn!(
+                                "❌ [SIGNING-SECURE] Failed to schedule retry for round {} BTC signatures: {}",
+                                round,
+                                e
+                            );
+                        }
+                    });
+
+                    return Ok(());
+                }
+
+                if !is_connected {
+                    warn!(
+                        "❌ [SIGNING-SECURE] Peer {} still not connected after {} retries - giving up",
+                        target_peer_id, MAX_RETRIES
+                    );
+                }
+
+                let request = RPCRequest::SendBtcSignatures {
+                    from_node_id,
+                    signature_data,
+                    round,
+                };
+
+                let request_id = swarm
+                    .behaviour_mut()
+                    .request_response
+                    .send_request(&peer_id, request);
+
+                info!(
+                    "✅ [SIGNING-SECURE] BTC signatures for round {} sent via P2P RPC to {} (request_id: {:?}, connected: {})",
+                    round, target_peer_id, request_id, is_connected
+                );
+            }
             ChannelMessage::IntentHash {
                 intent_hash,
                 signer,
@@ -1901,7 +2164,7 @@ impl MpcNetworkLayer {
                             signing_node.set_available_nodes(available_nodes);
 
                             // Use the signing key we got earlier
-                            if let Some(key) = signing_key {
+                            if let Some(_key) = signing_key {
                                 info!("🔐 [LOCAL] Got signing key for deposit intent");
 
                                 // Set the appropriate group public key based on transaction type

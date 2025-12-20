@@ -88,75 +88,35 @@ impl MpcNetworkLayer {
 
                 if let Some(signing_node) = &mut self.signing_node {
                     // 🛡️ Error recovery for signing message processing - prevent node crashes
-                    let signing_result = if message.topic.to_string() == "signatures-to-final-node"
-                    {
-                        info!("🎯 [NETWORK] Processing signature for final node topic");
-                        match signing_msg {
-                            SigningMessage::ECDSASignature {
-                                from,
-                                signature,
-                                round,
-                                timestamp: _timestamp,
-                                user_eth_address,
-                            } => {
-                                info!("📤 [NETWORK] Routing ECDSA signature to final node handler from: {} for round: {} (user_eth_address: {:?})", from, round, user_eth_address);
-                                signing_node
-                                    .handle_signature_to_final_node(from, signature, round)
-                                    .await
-                            }
-                            SigningMessage::BtcSignaturesMessage {
-                                from,
-                                signatures,
-                                round,
-                                timestamp: _timestamp,
-                                user_eth_address,
-                            } => {
-                                info!("📤 [NETWORK] Routing BTC signatures to final node handler from: {} for round: {} (user_eth_address: {:?})", from, round, user_eth_address);
-                                // You may want to implement a similar handler for BTC signatures in signing_node
-                                // For now, just call the generic handler
-                                signing_node
-                                    .handle_btc_signatures_to_final_node(from, signatures, round)
-                                    .await
-                            }
-                            _ => {
-                                info!(
-                                    "📤 [NETWORK] Routing other signing message to normal handler"
-                                );
-                                // Handle other signing messages normally
-                                signing_node.handle_message(signing_msg).await
-                            }
+                    info!(
+                        "📤 [NETWORK] Processing signing message on topic: {}",
+                        message.topic
+                    );
+                    // Handle signing messages
+                    match &signing_msg {
+                        SigningMessage::ECDSASignature {
+                            from,
+                            signature,
+                            round,
+                            timestamp: _timestamp,
+                            user_eth_address,
+                        } => {
+                            let tx_type = if user_eth_address.is_some() {
+                                "user-to-network"
+                            } else {
+                                "network-to-target"
+                            };
+                            info!("📥 [NETWORK] Received {} ECDSA signature from {} for round {} on topic {} (user_eth_address: {:?})", tx_type, from, round, message.topic, user_eth_address);
+                            info!(
+                                "🔍 [NETWORK] Signature details - signer_id: {}",
+                                signature.signer_id
+                            );
                         }
-                    } else {
-                        info!(
-                            "📤 [NETWORK] Processing normal signing message on topic: {}",
-                            message.topic
-                        );
-                        // Handle normal signing messages
-                        match &signing_msg {
-                            SigningMessage::ECDSASignature {
-                                from,
-                                signature,
-                                round,
-                                timestamp: _timestamp,
-                                user_eth_address,
-                            } => {
-                                let tx_type = if user_eth_address.is_some() {
-                                    "user-to-network"
-                                } else {
-                                    "network-to-target"
-                                };
-                                info!("📥 [NETWORK] Received {} ECDSA signature from {} for round {} on topic {} (user_eth_address: {:?})", tx_type, from, round, message.topic, user_eth_address);
-                                info!(
-                                    "🔍 [NETWORK] Signature details - signer_id: {}",
-                                    signature.signer_id
-                                );
-                            }
-                            _ => {
-                                info!("📥 [NETWORK] Received other signing message type");
-                            }
+                        _ => {
+                            info!("📥 [NETWORK] Received other signing message type");
                         }
-                        signing_node.handle_message(signing_msg).await
-                    };
+                    }
+                    let signing_result = signing_node.handle_message(signing_msg).await;
 
                     // Handle signing errors gracefully
                     if let Err(e) = signing_result {

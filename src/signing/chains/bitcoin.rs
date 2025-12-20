@@ -847,23 +847,8 @@ impl SigningNode {
             let gossipsub_msg = GossipsubMessage::Signing(signature_msg);
             let signature_data = serde_json::to_vec(&gossipsub_msg)?;
 
-            // Broadcast to a specific topic that the final node subscribes to
-            let res: std::result::Result<(), anyhow::Error> = self
-                .broadcast("signatures-to-final-node", &signature_data)
-                .await;
-            match res {
-                Ok(_) => info!(
-                    "📤 [SIGNING] Successfully sent BTC signatures for round {} to final node {}",
-                    round, final_node_id
-                ),
-                Err(e) => {
-                    error!(
-                    "❌ [SIGNING] Failed to send BTC signatures for round {} to final node {}: {}",
-                    round, final_node_id, e
-                );
-                    return Err(e);
-                }
-            }
+            self.send_btc_signatures_direct(final_node_id, &signature_data, round)
+                .await?;
         } else {
             info!(
                 "⚠️ [SIGNING] No BTC per-input signatures found for round {} for this node",
@@ -898,7 +883,7 @@ impl SigningNode {
         Ok(())
     }
 
-    /// Handle BTC signatures received on the signatures-to-final-node topic
+    /// Handle BTC signatures received via unicast P2P RPC
     pub async fn handle_btc_signatures_to_final_node(
         &mut self,
         from: String,
@@ -906,7 +891,7 @@ impl SigningNode {
         round: u64,
     ) -> Result<()> {
         info!(
-            "📥 [SIGNING] Final node {} received {} BTC signatures from {} on signatures-to-final-node topic",
+            "📥 [SIGNING] Final node {} received {} BTC signatures from {} via unicast P2P RPC",
             self.id, signatures.len(), from
         );
 

@@ -1,6 +1,7 @@
 use crate::types::signing::{
     BtcIndexedSignature, ECDSASignature, SignedMessage, SigningMessage, ThresholdSignatureShare,
 };
+use crate::types::SpendKind;
 use anyhow::{anyhow, Result};
 use hex;
 use k256::Scalar;
@@ -14,7 +15,6 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 use tracing::{error, info, warn};
-use crate::types::SpendKind;
 
 pub mod chains;
 mod config;
@@ -241,6 +241,54 @@ impl SigningNode {
         info!(
             "✅ [SIGNING] Node {} successfully queued broadcast message for topic: {}",
             self.id, topic
+        );
+        Ok(())
+    }
+
+    /// Send ECDSA signature directly to a specific peer via unicast
+    pub async fn send_ecdsa_signature_direct(
+        &self,
+        final_node_id: &str,
+        signature_data: &[u8],
+        round: u64,
+    ) -> Result<()> {
+        self.message_tx
+            .send(ChannelMessage::UnicastECDSASignature {
+                target_peer_id: final_node_id.to_string(),
+                from_node_id: self.id.clone(),
+                signature_data: signature_data.to_vec(),
+                round,
+                retry_count: 0,
+            })
+            .await?;
+
+        info!(
+            "📤 [SIGNING-SECURE] Queued unicast ECDSA signature for round {} to final node {}",
+            round, final_node_id
+        );
+        Ok(())
+    }
+
+    /// Send BTC signatures directly to a specific peer via unicast
+    pub async fn send_btc_signatures_direct(
+        &self,
+        final_node_id: &str,
+        signature_data: &[u8],
+        round: u64,
+    ) -> Result<()> {
+        self.message_tx
+            .send(ChannelMessage::UnicastBtcSignatures {
+                target_peer_id: final_node_id.to_string(),
+                from_node_id: self.id.clone(),
+                signature_data: signature_data.to_vec(),
+                round,
+                retry_count: 0,
+            })
+            .await?;
+
+        info!(
+            "📤 [SIGNING-SECURE] Queued unicast BTC signatures for round {} to final node {}",
+            round, final_node_id
         );
         Ok(())
     }
@@ -821,11 +869,14 @@ impl SigningNode {
 
     pub fn set_database(&mut self, database: Arc<crate::database::Database>) {
         self.database = Some(database.clone());
-        
+
         // Update Coordination with database so VrfService can use it
         self.coordination.set_database(database);
-        
-        info!("🗄️ [SIGNING] Node {} database set with VRF storage", self.id);
+
+        info!(
+            "🗄️ [SIGNING] Node {} database set with VRF storage",
+            self.id
+        );
     }
 
     /// Get peer index directly from database
@@ -1148,23 +1199,8 @@ impl SigningNode {
                 let gossipsub_msg = crate::types::GossipsubMessage::Signing(signature_msg);
                 let signature_data = serde_json::to_vec(&gossipsub_msg)?;
 
-                // Broadcast to a specific topic that the final node subscribes to
-                let res: std::result::Result<(), anyhow::Error> = self
-                    .broadcast("signatures-to-final-node", &signature_data)
-                    .await;
-                match res {
-                    Ok(_) => info!(
-                        "📤 [SIGNING] Successfully sent signature for round {} to final node {}",
-                        round, final_node_id
-                    ),
-                    Err(e) => {
-                        error!(
-                        "❌ [SIGNING] Failed to send signature for round {} to final node {}: {}",
-                        round, final_node_id, e
-                    );
-                        return Err(e);
-                    }
-                }
+                self.send_ecdsa_signature_direct(final_node_id, &signature_data, round)
+                    .await?;
 
                 info!(
                     "✅ [SIGNING] Sent signature for round {} to final node {}",
@@ -1687,7 +1723,7 @@ impl SigningNode {
             let prev_round = round - 1;
             let by_round = self.btc_state.btc_sigs_by_round.read().await;
             let prev_rmap = by_round.get(&prev_round);
-            
+
             items.iter()
                 .filter(|it| {
                     let is_duplicate = if let Some(prev_rmap) = prev_rmap {
@@ -1730,7 +1766,7 @@ impl SigningNode {
             }
             count
         };
-        
+
         if stored_count < items.len() {
             info!(
                 "💾 [BTC] stored {} sigs for round {} from {} (batch, {} duplicates filtered from previous round)",
@@ -1742,9 +1778,7 @@ impl SigningNode {
         } else {
             info!(
                 "💾 [BTC] stored {} sigs for round {} from {} (batch)",
-                stored_count,
-                round,
-                from
+                stored_count, round, from
             );
         }
         // ---- 2) Pull unsigned tx + BTC extras from the correct pending store ----
@@ -1818,7 +1852,7 @@ impl SigningNode {
         let from_kind_hint = extras.from_kind; // used only for finalization wire form
         let is_testnet = extras.is_testnet;
 
-        let secp: Secp256k1<secp256k1::All> = Secp256k1::new();
+        let _secp: Secp256k1<secp256k1::All> = Secp256k1::new();
 
         // ---- 3) SWEEP: aggregate *every* input that hit threshold ----
         for idx in 0..total_inputs {
@@ -2031,11 +2065,11 @@ impl SigningNode {
 
             // POST-AGGREGATION VERIFY under the **group** pubkey
             {
-                let msg = Message::from_digest_slice(&digest)?;
+                let _msg = Message::from_digest_slice(&digest)?;
                 let (_recid, compact) = agg.serialize_compact();
                 let mut sig_std = secp256k1::ecdsa::Signature::from_compact(&compact)?;
                 sig_std.normalize_s(); // low-s normalization
-                let group_pk = secp256k1::PublicKey::from_slice(&group_pubkey33)?;
+                let _group_pk = secp256k1::PublicKey::from_slice(&group_pubkey33)?;
                 // if let Err(e) = secp.verify_ecdsa(&msg, &sig_std, &group_pk) {
                 //     error!(
                 //     "[btc] round {} input {}: aggregated signature does not verify under group key: {}",
@@ -2216,7 +2250,7 @@ impl SigningNode {
         Ok(())
     }
     /// Broadcast transaction to Bitcoin network
-    /// Handle signature received on the signatures-to-final-node topic
+    /// Handle signature received via unicast P2P RPC
     pub async fn handle_signature_to_final_node(
         &mut self,
         from: String,
@@ -2224,7 +2258,7 @@ impl SigningNode {
         round: u64,
     ) -> Result<()> {
         info!(
-        "📥 [SIGNING] Final node {} received signature from {} on signatures-to-final-node topic",
+        "📥 [SIGNING] Final node {} received signature from {} via unicast P2P RPC",
         self.id, from
     );
 
