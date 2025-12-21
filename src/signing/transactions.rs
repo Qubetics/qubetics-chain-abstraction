@@ -1,9 +1,7 @@
 use super::SigningNode;
 use crate::{
     chain_abstraction::ChainTransaction,
-    types::{
-        intent::DepositIntent, ChannelMessage, TransactionNetwork, TransactionType,
-    },
+    types::{intent::DepositIntent, ChannelMessage, TransactionNetwork, TransactionType},
 };
 use anyhow::{anyhow, Result};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -487,6 +485,18 @@ impl SigningNode {
                 // Storage will be handled by handle_transaction_id_storage when the broadcast message is received
                 let transaction_type_str = match transaction_type {
                     Some(crate::types::TransactionType::UserToVault) => {
+                        if let Some(user_intent_manager) = &self.user_intent_manager {
+                            if let Err(e) = user_intent_manager
+                                .store_final_solver(intent_hash, self.id.as_str())
+                                .await
+                            {
+                                warn!(
+                                    "⚠️ [SIGNING] Failed to store final solver locally for intent {}: {}",
+                                    intent_hash, e
+                                );
+                            }
+                        }
+
                         info!(
                             "📡 [SIGNING] Broadcasting user-to-network transaction ID {} for intent {} (round {}) - storage will be handled by message handler",
                             tx_id, intent_hash, round
@@ -501,6 +511,18 @@ impl SigningNode {
                         "network_to_target"
                     }
                     Some(crate::types::TransactionType::VaultToNetwork) => {
+                        if let Some(user_intent_manager) = &self.user_intent_manager {
+                            if let Err(e) = user_intent_manager
+                                .store_final_solver(intent_hash, self.id.as_str())
+                                .await
+                            {
+                                warn!(
+                                    "⚠️ [SIGNING] Failed to store final solver locally for intent {}: {}",
+                                    intent_hash, e
+                                );
+                            }
+                        }
+
                         info!(
                             "📡 [SIGNING] Broadcasting vault-to-network transaction ID {} for intent {} (round {}) - storage will be handled by message handler",
                             tx_id, intent_hash, round
@@ -542,13 +564,8 @@ impl SigningNode {
                     tx_id, intent_hash, transaction_type_str
                 );
 
-                self.broadcast_transaction_id(
-                    Some(intent_hash),
-                    tx_id,
-                    transaction_type_str,
-                    None,
-                )
-                .await;
+                self.broadcast_transaction_id(Some(intent_hash), tx_id, transaction_type_str, None)
+                    .await;
             }
             (None, Some(_)) => {
                 // Handle reward transactions (RewardTxn) - they should always have None for intent_hash
@@ -572,13 +589,8 @@ impl SigningNode {
                             tx_id, solver_addr, round
                         );
 
-                        self.broadcast_transaction_id(
-                            None,
-                            tx_id,
-                            "reward_txn",
-                            Some(solver_addr),
-                        )
-                        .await;
+                        self.broadcast_transaction_id(None, tx_id, "reward_txn", Some(solver_addr))
+                            .await;
                     } else if matches!(
                         transaction_type,
                         Some(crate::types::TransactionType::RewardTxn)
