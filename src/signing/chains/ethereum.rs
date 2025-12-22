@@ -134,6 +134,119 @@ impl SigningNode {
         }
     }
 
+    /// Wait for transaction receipt with timeout
+    async fn wait_for_transaction_receipt(
+        tx_hash: &str,
+        chain_id: u64,
+        timeout_secs: u64,
+    ) -> Result<serde_json::Value> {
+        let rpc_url = get_evm_rpc_url(chain_id)?;
+        let client = Client::new();
+        let start = std::time::Instant::now();
+        let timeout_duration = std::time::Duration::from_secs(timeout_secs);
+        let poll_interval = std::time::Duration::from_secs(2);
+
+        info!(
+            "⏳ Waiting for transaction receipt: {} (timeout: {}s)",
+            tx_hash, timeout_secs
+        );
+
+        loop {
+            let payload = serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "eth_getTransactionReceipt",
+                "params": [tx_hash],
+                "id": 1
+            });
+
+            let response = client
+                .post(&rpc_url)
+                .header("Content-Type", "application/json")
+                .json(&payload)
+                .send()
+                .await?;
+
+            if response.status().is_success() {
+                let result: serde_json::Value = response.json().await?;
+                if let Some(error) = result.get("error") {
+                    error!("❌ Failed to get transaction receipt: {}", error);
+                    return Err(anyhow!("Receipt fetch failed: {}", error));
+                }
+                if let Some(receipt) = result.get("result") {
+                    if !receipt.is_null() {
+                        info!("✅ Transaction receipt received for {}", tx_hash);
+                        return Ok(receipt.clone());
+                    }
+                }
+            }
+
+            // Check timeout
+            if start.elapsed() >= timeout_duration {
+                error!(
+                    "❌ Timeout waiting for transaction receipt: {} (waited {}s)",
+                    tx_hash, timeout_secs
+                );
+                return Err(anyhow!(
+                    "Transaction confirmation timeout after {}s. TX may still be pending: {}",
+                    timeout_secs,
+                    tx_hash
+                ));
+            }
+
+            // Wait before next poll
+            tokio::time::sleep(poll_interval).await;
+        }
+    }
+
+    /// Check transaction receipt status
+    fn check_receipt_status(receipt: &serde_json::Value, tx_hash: &str) -> Result<()> {
+        // Check status field (0x0 = failure, 0x1 = success)
+        let status = receipt
+            .get("status")
+            .and_then(|s| s.as_str())
+            .unwrap_or("0x0");
+
+        // Check gas used
+        let gas_used = receipt
+            .get("gasUsed")
+            .and_then(|g| g.as_str())
+            .unwrap_or("0x0");
+
+        info!("📊 Transaction receipt for {}:", tx_hash);
+        info!("   Status: {}", status);
+        info!("   Gas Used: {}", gas_used);
+
+        // If status is 0x0, transaction failed
+        if status == "0x0" {
+            // Try to get more error details from the receipt
+            let mut error_details = String::from("Transaction execution failed");
+
+            // Check if there's an error field
+            if let Some(error) = receipt.get("error") {
+                error_details = format!("Transaction failed: {}", error);
+            }
+
+            // Check if gas used is 0x0 (out of gas scenario)
+            if gas_used == "0x0" {
+                error_details = format!(
+                    "{} (gas used: 0x0 - likely out of gas or immediate revert)",
+                    error_details
+                );
+            }
+
+            error!("❌ {}", error_details);
+            return Err(anyhow!("{}", error_details));
+        }
+
+        // Additional check: if gas used is 0x0 but status is 0x1, something is wrong
+        if gas_used == "0x0" && status == "0x1" {
+            warn!("⚠️ Transaction shows success but no gas used - this is unusual");
+        }
+
+        info!("✅ Transaction executed successfully: {}", tx_hash);
+        Ok(())
+    }
+
     pub(crate) async fn broadcast_ethereum_transaction(
         raw_tx_hex: &str,
         chain_id: u64,
@@ -167,10 +280,23 @@ impl SigningNode {
                 return Err(anyhow!("Broadcast failed: {}", error));
             }
             if let Some(tx_hash) = result.get("result") {
-                info!("✅ Qubetics transaction broadcasted successfully!");
+                info!("✅ Qubetics transaction broadcasted to mempool!");
                 info!("TX Hash: {}", tx_hash);
                 if let Some(tx_hash_str) = tx_hash.as_str() {
-                    return Ok(Some(tx_hash_str.to_string()));
+                    // Wait for transaction receipt and verify execution status
+                    info!("⏳ Waiting for transaction confirmation...");
+                    match Self::wait_for_transaction_receipt(tx_hash_str, chain_id, 60).await {
+                        Ok(receipt) => {
+                            // Check if transaction execution was successful
+                            Self::check_receipt_status(&receipt, tx_hash_str)?;
+                            info!("✅ Transaction confirmed and executed successfully!");
+                            return Ok(Some(tx_hash_str.to_string()));
+                        }
+                        Err(e) => {
+                            error!("❌ Transaction confirmation failed: {}", e);
+                            return Err(anyhow!("Transaction confirmation failed: {}", e));
+                        }
+                    }
                 }
             }
         } else {
