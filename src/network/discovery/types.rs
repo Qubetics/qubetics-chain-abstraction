@@ -68,6 +68,8 @@ pub struct PeerDiscoveryState {
     pub pending_peer_discovery_retry: bool,
     pub processed_disconnects: HashMap<PeerId, Instant>,
     pub peer_multiaddresses: HashMap<PeerId, Multiaddr>,
+    /// Track if we've already processed a PeerList response to prevent duplicate new node joining checks
+    pub peer_list_processed: bool,
 }
 
 impl PeerDiscoveryState {

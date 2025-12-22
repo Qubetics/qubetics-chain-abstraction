@@ -1310,6 +1310,30 @@ impl MpcNetworkLayer {
             self.peer_discovery.peer_indices.len()
         );
 
+        // CRITICAL: Only use the peer_list_processed flag if DKG is NOT completed
+        // This prevents duplicate processing ONLY during initial joining
+        // After DKG completes, we can process PeerList responses again if needed
+        let dkg_completed = self
+            .dkg_node
+            .as_ref()
+            .map(|dkg| matches!(dkg.get_status(), DKGStatus::Completed))
+            .unwrap_or(false);
+
+        if !dkg_completed {
+            // New node joining - check if we've already processed a PeerList
+            if self.peer_discovery.peer_list_processed {
+                info!("⏭️ [PEER_LIST] Already processed PeerList response during joining, skipping duplicate new node check");
+                info!("⏭️ [PEER_LIST] This prevents duplicate refresh triggers from multiple GetPeerList responses");
+                return Ok(());
+            }
+
+            // Mark as processed for this joining session
+            self.peer_discovery.peer_list_processed = true;
+            info!("🔒 [PEER_LIST] Set peer_list_processed=true (will be used only until DKG completes)");
+        } else {
+            info!("✅ [PEER_LIST] DKG already completed, peer_list_processed flag not used");
+        }
+
         // After learning about all peers, check if this is a new node joining existing network
         self.handle_new_node_joining_check(swarm).await?;
 
