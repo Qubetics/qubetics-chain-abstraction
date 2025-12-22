@@ -1,4 +1,5 @@
 use libp2p::Multiaddr;
+use std::sync::Arc;
 
 impl MpcNetworkLayer {
     pub(crate) async fn record_pending_liquidity_contract_update(
@@ -285,10 +286,16 @@ impl MpcNetworkLayer {
             Ok(true)
         } else {
             // For other contexts, sign directly
+            let chain_handler: Arc<dyn crate::chain_abstraction::ChainHandler> =
+                crate::chain_abstraction::ChainHandlerFactory::create_ethereum_handler(
+                    eth_tx.chain_id,
+                )
+                .into();
             let mut eth_signer = EthereumSigner::new(signing_node);
             eth_signer
                 .sign_transaction(
                     tx_bytes,
+                    &chain_handler,
                     &eth_tx,
                     None,
                     None,
@@ -392,11 +399,15 @@ impl MpcNetworkLayer {
             signing_node.set_group_public_key(group_key);
         }
 
+        let chain_handler: Arc<dyn crate::chain_abstraction::ChainHandler> =
+            crate::chain_abstraction::ChainHandlerFactory::create_bitcoin_handler(
+                crate::types::network::network_type()
+                    .bitcoin_network_label()
+                    .to_string(),
+            )
+            .into();
         let chain_tx = crate::chain_abstraction::ChainTransaction::Bitcoin(btc_tx.clone());
-        let tx_bytes = signing_node
-            .get_chain_handler()
-            .create_transaction_bytes(&chain_tx)
-            .unwrap();
+        let tx_bytes = chain_handler.create_transaction_bytes(&chain_tx).unwrap();
 
         info!(
             "🔐 [{}] Starting BTC payout signing: 0x{}",
@@ -408,6 +419,7 @@ impl MpcNetworkLayer {
         btc_signer
             .sign_transaction(
                 tx_bytes,
+                &chain_handler,
                 Some(btc_tx),
                 None,
                 None,
@@ -650,10 +662,12 @@ impl MpcNetworkLayer {
                     hex::encode(&contract_tx_bytes)
                 );
 
+                let contract_chain_handler = signing_node.get_contract_chain_handler().clone();
                 let mut eth_signer = EthereumSigner::new(signing_node);
                 eth_signer
                     .sign_contract_message(
                         contract_tx_bytes,
+                        &contract_chain_handler,
                         &contract_tx,
                         vault_tweaked_share,
                         None,
@@ -815,10 +829,12 @@ impl MpcNetworkLayer {
                     solver_address,
                     hex::encode(&tx_bytes)
                 );
+                let contract_chain_handler = signing_node.get_contract_chain_handler().clone();
                 let mut eth_signer = EthereumSigner::new(signing_node);
                 eth_signer
                     .sign_contract_message(
                         tx_bytes,
+                        &contract_chain_handler,
                         &contract_tx,
                         vault_tweaked_share,
                         None,
@@ -978,10 +994,12 @@ impl MpcNetworkLayer {
                     "🔐 [SOLVER] Starting contract add-liquidity signing for {} on {} (amount: {})",
                     solver_address, asset_chain_name, amount
                 );
+                let contract_chain_handler = signing_node.get_contract_chain_handler().clone();
                 let mut eth_signer = EthereumSigner::new(signing_node);
                 eth_signer
                     .sign_contract_message(
                         tx_bytes,
+                        &contract_chain_handler,
                         &contract_tx,
                         vault_tweaked_share,
                         None,
@@ -1093,6 +1111,42 @@ impl MpcNetworkLayer {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::chain_abstraction::{ChainHandler, ChainHandlerFactory};
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn parallel_deposit_chain_handlers_remain_isolated() {
+        let evm_handler = tokio::spawn(async {
+            let chain_id =
+                crate::utils::transaction::get_chain_id_from_name("ethereum").expect("chain id");
+            let handler: Arc<dyn ChainHandler> =
+                ChainHandlerFactory::create_ethereum_handler(chain_id).into();
+            handler
+        });
+
+        let btc_handler = tokio::spawn(async {
+            let handler: Arc<dyn ChainHandler> = ChainHandlerFactory::create_bitcoin_handler(
+                crate::types::network::network_type()
+                    .bitcoin_network_label()
+                    .to_string(),
+            )
+            .into();
+            handler
+        });
+
+        let (evm_handler, btc_handler) = tokio::join!(evm_handler, btc_handler);
+        let evm_handler = evm_handler.expect("evm task");
+        let btc_handler = btc_handler.expect("btc task");
+
+        assert_eq!(evm_handler.chain_type(), "ethereum");
+        assert_eq!(btc_handler.chain_type(), "bitcoin");
+        assert!(!Arc::ptr_eq(&evm_handler, &btc_handler));
     }
 }
 /// Channel message handler
@@ -1944,126 +1998,150 @@ impl MpcNetworkLayer {
 
                 // Process locally first (this node will sign it)
                 if let Some(signing_node) = &mut self.signing_node {
-                    // Set appropriate chain handler based on the determined chain
-                    if crate::utils::transaction::is_evm_chain(chain_to_use) {
-                        if let Some(chain_id) =
+                    let chain_handler: Option<Arc<dyn crate::chain_abstraction::ChainHandler>> =
+                        if crate::utils::transaction::is_evm_chain(chain_to_use) {
                             crate::utils::transaction::get_chain_id_from_name(chain_to_use)
-                        {
-                            let chain_handler =
-                                crate::chain_abstraction::ChainHandlerFactory::create_ethereum_handler(
-                                    chain_id,
+                                .map(|chain_id| {
+                                    info!(
+                                        "🔗 [LOCAL] Using Ethereum chain handler for chain: {} (ID: {})",
+                                        chain_to_use, chain_id
+                                    );
+                                    let handler =
+                                        crate::chain_abstraction::ChainHandlerFactory::create_ethereum_handler(
+                                            chain_id,
+                                        );
+                                    Arc::from(handler)
+                                        as Arc<dyn crate::chain_abstraction::ChainHandler>
+                                })
+                        } else if chain_to_use == "bitcoin" || chain_to_use == "btc" {
+                            let mut handler =
+                                crate::chain_abstraction::ChainHandlerFactory::create_bitcoin_handler(
+                                    crate::types::network::network_type()
+                                        .bitcoin_network_label()
+                                        .to_string(),
                                 );
-                            signing_node.set_chain_handler(chain_handler.into());
-                            info!(
-                                "🔗 [LOCAL] Set Ethereum chain handler for chain: {} (ID: {})",
-                                chain_to_use, chain_id
-                            );
-                        }
-                    } else if chain_to_use == "bitcoin" || chain_to_use == "btc" {
-                        let mut chain_handler =
-                            crate::chain_abstraction::ChainHandlerFactory::create_bitcoin_handler(
-                                crate::types::network::network_type()
-                                    .bitcoin_network_label()
-                                    .to_string(),
-                            );
 
-                        // Set appropriate group public key in Bitcoin chain handler based on transaction type
-                        match transaction_type {
-                            crate::types::TransactionType::UserToVault => {
-                                // For user deposits, use user's specific group key
-                                if let Some(eth_addr) = &user_eth_address {
-                                    if let Some(user_intent_manager) = &self.user_intent_manager {
-                                        if let Some(user) =
-                                            user_intent_manager.get_user_by_address(eth_addr).await
+                            // Set appropriate group public key in Bitcoin chain handler based on transaction type
+                            match transaction_type {
+                                crate::types::TransactionType::UserToVault => {
+                                    // For user deposits, use user's specific group key
+                                    if let Some(eth_addr) = &user_eth_address {
+                                        if let Some(user_intent_manager) = &self.user_intent_manager
                                         {
-                                            if let Some(user_group_key) = &user.user_group_key {
-                                                let affine_point = user_group_key.0; // user_group_key is SerializablePoint(AffinePoint)
-                                                let encoded_point =
-                                                    k256::EncodedPoint::from(affine_point);
-                                                let compressed_bytes =
-                                                    encoded_point.compress().to_bytes().to_vec();
+                                            if let Some(user) = user_intent_manager
+                                                .get_user_by_address(eth_addr)
+                                                .await
+                                            {
+                                                if let Some(user_group_key) = &user.user_group_key {
+                                                    let affine_point = user_group_key.0; // user_group_key is SerializablePoint(AffinePoint)
+                                                    let encoded_point =
+                                                        k256::EncodedPoint::from(affine_point);
+                                                    let compressed_bytes = encoded_point
+                                                        .compress()
+                                                        .to_bytes()
+                                                        .to_vec();
 
-                                                if let Some(btc_handler) = chain_handler.as_any_mut().downcast_mut::<crate::chain_abstraction::BitcoinChainHandler>() {
-                                                    btc_handler.set_group_public_key(compressed_bytes);
-                                                    info!("🔑 [LOCAL] Set user-specific group public key in Bitcoin chain handler for user: {}", eth_addr);
+                                                    if let Some(btc_handler) = handler
+                                                        .as_any_mut()
+                                                        .downcast_mut::<crate::chain_abstraction::BitcoinChainHandler>()
+                                                    {
+                                                        btc_handler
+                                                            .set_group_public_key(compressed_bytes);
+                                                        info!("🔑 [LOCAL] Set user-specific group public key in Bitcoin chain handler for user: {}", eth_addr);
+                                                    }
+                                                } else {
+                                                    warn!(
+                                                        "❌ [LOCAL] User {} has no group key for Bitcoin transaction",
+                                                        eth_addr
+                                                    );
                                                 }
                                             } else {
-                                                warn!("❌ [LOCAL] User {} has no group key for Bitcoin transaction", eth_addr);
+                                                warn!(
+                                                    "❌ [LOCAL] User {} not found for Bitcoin transaction",
+                                                    eth_addr
+                                                );
                                             }
                                         } else {
-                                            warn!("❌ [LOCAL] User {} not found for Bitcoin transaction", eth_addr);
+                                            warn!(
+                                                "❌ [LOCAL] User registry not available for Bitcoin transaction"
+                                            );
                                         }
                                     } else {
-                                        warn!("❌ [LOCAL] User registry not available for Bitcoin transaction");
+                                        warn!("❌ [LOCAL] UserToVault transaction requires user_eth_address");
                                     }
-                                } else {
-                                    warn!("❌ [LOCAL] UserToVault transaction requires user_eth_address");
                                 }
-                            }
-                            crate::types::TransactionType::NetworkToTarget => {
-                                // For network withdrawals, use network's DKG group key
-                                if let Some(dkg_node) = &self.dkg_node {
-                                    if let Some(group_key) = dkg_node.get_final_public_key().await {
-                                        let affine_point = group_key.to_affine();
-                                        let encoded_point = k256::EncodedPoint::from(affine_point);
-                                        let compressed_bytes =
-                                            encoded_point.compress().to_bytes().to_vec();
+                                crate::types::TransactionType::NetworkToTarget => {
+                                    // For network withdrawals, use network's DKG group key
+                                    if let Some(dkg_node) = &self.dkg_node {
+                                        if let Some(group_key) =
+                                            dkg_node.get_final_public_key().await
+                                        {
+                                            let affine_point = group_key.to_affine();
+                                            let encoded_point =
+                                                k256::EncodedPoint::from(affine_point);
+                                            let compressed_bytes =
+                                                encoded_point.compress().to_bytes().to_vec();
 
-                                        if let Some(btc_handler) = chain_handler
-                                            .as_any_mut()
-                                            .downcast_mut::<crate::chain_abstraction::BitcoinChainHandler>(
-                                        ) {
-                                            btc_handler.set_group_public_key(compressed_bytes);
-                                            info!("🔑 [LOCAL] Set network DKG group public key in Bitcoin chain handler");
+                                            if let Some(btc_handler) = handler
+                                                .as_any_mut()
+                                                .downcast_mut::<crate::chain_abstraction::BitcoinChainHandler>()
+                                            {
+                                                btc_handler.set_group_public_key(compressed_bytes);
+                                                info!("🔑 [LOCAL] Set network DKG group public key in Bitcoin chain handler");
+                                            }
                                         }
                                     }
                                 }
-                            }
-                            crate::types::TransactionType::VaultToNetwork => {
-                                // For vault-to-network, use vault's group key
-                                if let Some(dkg_node) = &self.dkg_node {
-                                    if let Some(vault_group_key) =
-                                        dkg_node.get_vault_group_key().await
-                                    {
-                                        let affine_point = vault_group_key.to_affine();
-                                        let encoded_point = k256::EncodedPoint::from(affine_point);
-                                        let compressed_bytes =
-                                            encoded_point.compress().to_bytes().to_vec();
+                                crate::types::TransactionType::VaultToNetwork => {
+                                    // For vault-to-network, use vault's group key
+                                    if let Some(dkg_node) = &self.dkg_node {
+                                        if let Some(vault_group_key) =
+                                            dkg_node.get_vault_group_key().await
+                                        {
+                                            let affine_point = vault_group_key.to_affine();
+                                            let encoded_point =
+                                                k256::EncodedPoint::from(affine_point);
+                                            let compressed_bytes =
+                                                encoded_point.compress().to_bytes().to_vec();
 
-                                        if let Some(btc_handler) = chain_handler
-                                            .as_any_mut()
-                                            .downcast_mut::<crate::chain_abstraction::BitcoinChainHandler>(
-                                        ) {
-                                            btc_handler.set_group_public_key(compressed_bytes);
-                                            info!("🔑 [LOCAL] Set vault group public key in Bitcoin chain handler");
+                                            if let Some(btc_handler) = handler
+                                                .as_any_mut()
+                                                .downcast_mut::<crate::chain_abstraction::BitcoinChainHandler>()
+                                            {
+                                                btc_handler.set_group_public_key(compressed_bytes);
+                                                info!("🔑 [LOCAL] Set vault group public key in Bitcoin chain handler");
+                                            }
                                         }
                                     }
                                 }
+                                crate::types::TransactionType::RewardTxn => {
+                                    // RewardTxn is not valid for intent flow
+                                }
+                                crate::types::TransactionType::WithdrawLiquidity => {
+                                    warn!(
+                                        "❌ [LOCAL] WithdrawLiquidity is not supported for Bitcoin group key selection"
+                                    );
+                                }
+                                crate::types::TransactionType::AddLiquidity => {
+                                    warn!(
+                                        "❌ [LOCAL] AddLiquidity is not supported for Bitcoin group key selection"
+                                    );
+                                }
                             }
-                            crate::types::TransactionType::RewardTxn => {
-                                // RewardTxn is not valid for intent flow
-                            }
-                            crate::types::TransactionType::WithdrawLiquidity => {
-                                warn!(
-                                    "❌ [LOCAL] WithdrawLiquidity is not supported for Bitcoin group key selection"
-                                );
-                            }
-                            crate::types::TransactionType::AddLiquidity => {
-                                warn!(
-                                    "❌ [LOCAL] AddLiquidity is not supported for Bitcoin group key selection"
-                                );
-                            }
-                        }
 
-                        signing_node.set_chain_handler(chain_handler.into());
-                        info!("🔗 [LOCAL] Set Bitcoin chain handler");
-                    } else {
-                        warn!(
-                            "❌ [LOCAL] Unsupported chain: {}, using default Ethereum handler",
-                            chain_to_use
-                        );
-                    }
+                            Some(Arc::from(handler)
+                                as Arc<dyn crate::chain_abstraction::ChainHandler>)
+                        } else {
+                            warn!(
+                                "❌ [LOCAL] Unsupported chain: {}, using default Ethereum handler",
+                                chain_to_use
+                            );
+                            None
+                        };
 
+                    let Some(chain_handler) = chain_handler else {
+                        return Ok(());
+                    };
                     // Get derived addresses based on transaction type
                     let (derived_eth_addr, derived_btc_addr) = match transaction_type {
                         crate::types::TransactionType::UserToVault => {
@@ -2155,7 +2233,7 @@ impl MpcNetworkLayer {
                         Ok(chain_transaction) => {
                             info!(
                                 "📝 [LOCAL] Created {} transaction from deposit intent",
-                                signing_node.get_chain_type()
+                                chain_handler.chain_type()
                             );
 
                             // Set available nodes from node manager before signing
@@ -2172,8 +2250,7 @@ impl MpcNetworkLayer {
                             }
 
                             // Create transaction bytes using the chain handler
-                            let tx_bytes = signing_node
-                                .get_chain_handler()
+                            let tx_bytes = chain_handler
                                 .create_transaction_bytes(&chain_transaction)
                                 .unwrap_or_else(|e| {
                                     warn!("Failed to create transaction bytes: {}", e);
@@ -2181,7 +2258,7 @@ impl MpcNetworkLayer {
                                 });
                             info!(
                                 "🔐 [LOCAL] Starting {} signing process for deposit intent: 0x{}",
-                                signing_node.get_chain_type(),
+                                chain_handler.chain_type(),
                                 hex::encode(tx_bytes.clone())
                             );
 
@@ -2194,6 +2271,7 @@ impl MpcNetworkLayer {
                                         btc_signer
                                             .sign_transaction(
                                                 tx_bytes.clone(),
+                                                &chain_handler,
                                                 Some(btc_tx.clone()),
                                                 user_eth_address.clone(),
                                                 Some(intent_hash.clone()),
@@ -2298,6 +2376,7 @@ impl MpcNetworkLayer {
                                         eth_signer
                                             .sign_transaction(
                                                 tx_bytes.clone(),
+                                                &chain_handler,
                                                 eth_tx,
                                                 user_tweaked_share,
                                                 user_eth_address.clone(),

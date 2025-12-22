@@ -1668,7 +1668,7 @@ impl SigningNode {
                             withdraw_rounds.contains(&round)
                         };
 
-                        let is_contract_tx = if is_reward_round {
+                        let (is_contract_tx, maybe_chain_id) = if is_reward_round {
                             // This is a reward transaction - check reward pending transactions for TICS (Ethereum)
                             let reward_pending_transactions =
                                 self.pending.reward_pending_transactions_tics.read().await;
@@ -1677,13 +1677,14 @@ impl SigningNode {
                             {
                                 match chain_tx {
                                     ChainTransaction::Ethereum(eth_tx) => {
-                                        eth_tx.data.is_some()
-                                            && !eth_tx.data.as_ref().unwrap().is_empty()
+                                        let is_contract = eth_tx.data.is_some()
+                                            && !eth_tx.data.as_ref().unwrap().is_empty();
+                                        (is_contract, Some(eth_tx.chain_id))
                                     }
-                                    _ => false, // Only handle Ethereum transactions in this function
+                                    _ => (false, None), // Only handle Ethereum transactions in this function
                                 }
                             } else {
-                                false
+                                (false, None)
                             }
                         } else if is_withdraw_round {
                             let withdraw_pending_transactions =
@@ -1693,13 +1694,14 @@ impl SigningNode {
                             {
                                 match chain_tx {
                                     ChainTransaction::Ethereum(eth_tx) => {
-                                        eth_tx.data.is_some()
-                                            && !eth_tx.data.as_ref().unwrap().is_empty()
+                                        let is_contract = eth_tx.data.is_some()
+                                            && !eth_tx.data.as_ref().unwrap().is_empty();
+                                        (is_contract, Some(eth_tx.chain_id))
                                     }
-                                    _ => false,
+                                    _ => (false, None),
                                 }
                             } else {
-                                false
+                                (false, None)
                             }
                         } else {
                             // This is a regular transaction - check regular pending transactions for Ethereum
@@ -1710,13 +1712,14 @@ impl SigningNode {
                             {
                                 match chain_tx {
                                     ChainTransaction::Ethereum(eth_tx) => {
-                                        eth_tx.data.is_some()
-                                            && !eth_tx.data.as_ref().unwrap().is_empty()
+                                        let is_contract = eth_tx.data.is_some()
+                                            && !eth_tx.data.as_ref().unwrap().is_empty();
+                                        (is_contract, Some(eth_tx.chain_id))
                                     }
-                                    _ => false, // Only handle Ethereum transactions in this function
+                                    _ => (false, None), // Only handle Ethereum transactions in this function
                                 }
                             } else {
-                                false
+                                (false, None)
                             }
                         };
 
@@ -1741,17 +1744,17 @@ impl SigningNode {
                             info!("🎉 [SIGNING] 🔗 SIGNED ETHEREUM TRANSACTION READY! 🔗");
                             info!("📄 Raw signed transaction: {}", signed_tx_hex);
 
-                            // Get chain ID for broadcasting - use contract chain handler for contract transactions
-                            let chain_handler = if is_contract_tx {
-                                &self.contract_chain_handler
-                            } else {
-                                &self.chain_handler
+                            // Get chain ID for broadcasting from the stored original transaction
+                            let chain_id = match maybe_chain_id {
+                                Some(id) => id,
+                                None => {
+                                    warn!(
+                                        "⚠️ [SIGNING] Unable to determine chain_id for round {}, defaulting to 9029",
+                                        round
+                                    );
+                                    9029
+                                }
                             };
-                            let chain_id = chain_handler
-                                .get_chain_params()
-                                .get("chain_id")
-                                .and_then(|id| id.parse::<u64>().ok())
-                                .unwrap_or(9029); // Default to Qubetics
 
                             info!(
                                 "Broadcasting transaction to chain {} (Qubetics)...",

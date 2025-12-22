@@ -14,6 +14,7 @@ use reqwest::Client;
 use secp256k1::ecdsa::RecoverableSignature;
 use std::{
     collections::HashMap,
+    sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
 use tracing::{error, info, warn};
@@ -39,6 +40,7 @@ impl<'a> BitcoinSigner<'a> {
     pub async fn sign_transaction(
         &mut self,
         tx_bytes: Vec<u8>,
+        chain_handler: &Arc<dyn crate::chain_abstraction::ChainHandler>,
         original_tx: Option<BitcoinTransaction>,
         user_eth_address: Option<String>,
         intent_hash: Option<String>,
@@ -50,6 +52,7 @@ impl<'a> BitcoinSigner<'a> {
         self.node
             .sign_bitcoin_transaction(
                 tx_bytes,
+                chain_handler,
                 original_tx,
                 user_eth_address,
                 intent_hash,
@@ -98,6 +101,7 @@ impl SigningNode {
     pub async fn sign_bitcoin_transaction(
         &mut self,
         tx_bytes: Vec<u8>,
+        _chain_handler: &Arc<dyn crate::chain_abstraction::ChainHandler>,
         original_tx: Option<BitcoinTransaction>,
         user_eth_address: Option<String>,
         intent_hash: Option<String>,
@@ -892,7 +896,9 @@ impl SigningNode {
     ) -> Result<()> {
         info!(
             "📥 [SIGNING] Final node {} received {} BTC signatures from {} via unicast P2P RPC",
-            self.id, signatures.len(), from
+            self.id,
+            signatures.len(),
+            from
         );
 
         // Check if this node is the final node for the specific round

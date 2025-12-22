@@ -98,11 +98,14 @@ impl MpcChainExecutor {
                         };
 
                         // Execute the signing operation
+                        let contract_chain_handler =
+                            signing_node.get_contract_chain_handler().clone();
                         {
                             let mut eth_signer = EthereumSigner::new(signing_node);
                             eth_signer
                                 .sign_contract_message(
                                     contract_tx_bytes,
+                                    &contract_chain_handler,
                                     &contract_tx,
                                     vault_tweaked_share,
                                     None,
