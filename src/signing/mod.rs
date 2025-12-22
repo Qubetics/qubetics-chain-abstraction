@@ -215,13 +215,101 @@ impl SigningNode {
         transaction_type: Option<crate::types::TransactionType>,
         user_eth_address: Option<String>,
     ) -> Result<Vec<u8>> {
-        self.key_store
-            .get_group_public_key_bytes(
-                transaction_type,
-                user_eth_address,
-                self.user_intent_manager.as_ref(),
-            )
-            .await
+        use crate::database::keys;
+        use crate::types::{SerializablePoint, TransactionType};
+
+        match transaction_type {
+            Some(TransactionType::UserToVault) => {
+                if let Some(user_addr) = &user_eth_address {
+                    if let Some(user_intent_manager) = &self.user_intent_manager {
+                        if let Some(user) = user_intent_manager.get_user_by_address(user_addr).await
+                        {
+                            if let Some(user_group_key) = &user.user_group_key {
+                                let affine_point = user_group_key.0;
+                                let encoded_point = k256::EncodedPoint::from(affine_point);
+                                return Ok(encoded_point.compress().to_bytes().to_vec());
+                            }
+                        }
+                    }
+
+                    Err(anyhow!(
+                        "User {} has no group key available - ensure user registration and key derivation is completed",
+                        user_addr
+                    ))
+                } else {
+                    Err(anyhow!("UserToVault transaction requires user_eth_address"))
+                }
+            }
+            Some(TransactionType::NetworkToTarget) => {
+                let group_key = if let Some(key) = self.key_store.get_group_public_key() {
+                    Some(key)
+                } else if let Some(database) = &self.database {
+                    match database.get_string::<SerializablePoint>(keys::DKG_FINAL_PUBLIC) {
+                        Ok(Some(serialized)) => Some(serialized.0.into()),
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+
+                if let Some(group_key) = group_key {
+                    let encoded_point = k256::EncodedPoint::from(group_key.to_affine());
+                    Ok(encoded_point.compress().to_bytes().to_vec())
+                } else {
+                    Err(anyhow!(
+                        "DKG group public key not available for NetworkToTarget transaction - ensure DKG process is completed"
+                    ))
+                }
+            }
+            Some(TransactionType::VaultToNetwork) => {
+                let vault_key = if let Some(vault_key) = self.key_store.get_vault_group_key() {
+                    Some(vault_key)
+                } else if let Some(database) = &self.database {
+                    match database.get_string::<SerializablePoint>(keys::DKG_VAULT_GROUP_KEY) {
+                        Ok(Some(serialized)) => Some(serialized.0.into()),
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+
+                if let Some(vault_key) = vault_key {
+                    let encoded_point = k256::EncodedPoint::from(vault_key.to_affine());
+                    Ok(encoded_point.compress().to_bytes().to_vec())
+                } else {
+                    Err(anyhow!(
+                        "Vault group public key not available for VaultToNetwork transaction - ensure vault key is set"
+                    ))
+                }
+            }
+            Some(TransactionType::RewardTxn) => {
+                let group_key = if let Some(key) = self.key_store.get_group_public_key() {
+                    Some(key)
+                } else if let Some(database) = &self.database {
+                    match database.get_string::<SerializablePoint>(keys::DKG_FINAL_PUBLIC) {
+                        Ok(Some(serialized)) => Some(serialized.0.into()),
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+
+                if let Some(group_key) = group_key {
+                    let encoded_point = k256::EncodedPoint::from(group_key.to_affine());
+                    Ok(encoded_point.compress().to_bytes().to_vec())
+                } else {
+                    Err(anyhow!(
+                        "DKG group public key not available for RewardTxn - ensure DKG process is completed"
+                    ))
+                }
+            }
+            Some(TransactionType::WithdrawLiquidity) | Some(TransactionType::AddLiquidity) => Err(
+                anyhow!("Unsupported transaction type for group public key retrieval"),
+            ),
+            None => Err(anyhow!(
+                "Transaction type is required for group public key retrieval"
+            )),
+        }
     }
 
     pub async fn broadcast(&self, topic: &str, data: &[u8]) -> Result<()> {
@@ -850,6 +938,48 @@ impl SigningNode {
     pub fn set_vault_group_key(&mut self, vault_group_key: k256::ProjectivePoint) {
         self.key_store
             .set_vault_group_key(vault_group_key, &self.id);
+    }
+
+    pub async fn get_network_group_public_key(&self) -> Result<k256::ProjectivePoint> {
+        use crate::database::keys;
+        use crate::types::SerializablePoint;
+
+        if let Some(group_key) = self.key_store.get_group_public_key() {
+            return Ok(group_key);
+        }
+
+        if let Some(database) = &self.database {
+            if let Ok(Some(serialized)) =
+                database.get_string::<SerializablePoint>(keys::DKG_FINAL_PUBLIC)
+            {
+                return Ok(serialized.0.into());
+            }
+        }
+
+        Err(anyhow!(
+            "DKG group public key not available - ensure DKG process is completed",
+        ))
+    }
+
+    pub async fn get_vault_group_public_key(&self) -> Result<k256::ProjectivePoint> {
+        use crate::database::keys;
+        use crate::types::SerializablePoint;
+
+        if let Some(vault_key) = self.key_store.get_vault_group_key() {
+            return Ok(vault_key);
+        }
+
+        if let Some(database) = &self.database {
+            if let Ok(Some(serialized)) =
+                database.get_string::<SerializablePoint>(keys::DKG_VAULT_GROUP_KEY)
+            {
+                return Ok(serialized.0.into());
+            }
+        }
+
+        Err(anyhow!(
+            "Vault group public key not available - ensure vault key is initialized",
+        ))
     }
 
     /// Get the DKG group public key
@@ -2258,9 +2388,9 @@ impl SigningNode {
         round: u64,
     ) -> Result<()> {
         info!(
-        "📥 [SIGNING] Final node {} received signature from {} via unicast P2P RPC",
-        self.id, from
-    );
+            "📥 [SIGNING] Final node {} received signature from {} via unicast P2P RPC",
+            self.id, from
+        );
 
         // Check if this node is the final node for the specific round
         let is_final_node = {

@@ -360,7 +360,7 @@ impl SigningNode {
                 "💰 [REWARD] Storing TICS reward transaction for round {} (solver: {})",
                 round, solver_addr
             );
-            
+
             self.store_reward_transaction_tics(
                 round,
                 chain_tx,
@@ -775,14 +775,8 @@ impl SigningNode {
                         }
                     }
                     Some(crate::types::TransactionType::NetworkToTarget) => {
-                        let group_address =
-                            if let Some(group_key) = self.key_store.get_group_public_key() {
-                                get_eth_address_from_group_key(group_key)
-                            } else {
-                                return Err(anyhow!(
-                                    "No group public key available for network transaction"
-                                ));
-                            };
+                        let group_key = self.get_network_group_public_key().await?;
+                        let group_address = get_eth_address_from_group_key(group_key);
 
                         let nonce = Self::fetch_ethereum_nonce(&group_address, chain_id).await?;
                         info!("🔢 [SIGNING] NetworkToTarget transaction: fetching nonce {} from network group address {}", nonce, group_address);
@@ -811,28 +805,18 @@ impl SigningNode {
                     }
                     Some(crate::types::TransactionType::RewardTxn) => {
                         // For reward transactions, use network group address
-                        let group_address =
-                            if let Some(group_key) = self.key_store.get_group_public_key() {
-                                get_eth_address_from_group_key(group_key)
-                            } else {
-                                return Err(anyhow!(
-                                    "No group public key available for reward transaction"
-                                ));
-                            };
+                        let group_address = get_eth_address_from_group_key(
+                            self.get_network_group_public_key().await?,
+                        );
                         let nonce = Self::fetch_ethereum_nonce(&group_address, chain_id).await?;
                         info!("🔢 [SIGNING] RewardTxn transaction: fetching nonce {} from network group address {}", nonce, group_address);
                         group_address
                     }
                     Some(crate::types::TransactionType::WithdrawLiquidity) => {
                         // Withdraw liquidity payouts reuse the network group key path (same as rewards)
-                        let group_address =
-                            if let Some(group_key) = self.key_store.get_group_public_key() {
-                                get_eth_address_from_group_key(group_key)
-                            } else {
-                                return Err(anyhow!(
-                                "No group public key available for withdraw-liquidity transaction"
-                            ));
-                            };
+                        let group_address = get_eth_address_from_group_key(
+                            self.get_network_group_public_key().await?,
+                        );
                         let nonce = Self::fetch_ethereum_nonce(&group_address, chain_id).await?;
                         info!("🔢 [SIGNING] WithdrawLiquidity transaction: fetching nonce {} from network group address {}", nonce, group_address);
                         group_address
@@ -872,14 +856,9 @@ impl SigningNode {
                                 ));
                             }
                         } else {
-                            let group_address =
-                                if let Some(group_key) = self.key_store.get_group_public_key() {
-                                    get_eth_address_from_group_key(group_key)
-                                } else {
-                                    return Err(anyhow!(
-                                        "No group public key available for nonce fetching"
-                                    ));
-                                };
+                            let group_address = get_eth_address_from_group_key(
+                                self.get_network_group_public_key().await?,
+                            );
 
                             let nonce =
                                 Self::fetch_ethereum_nonce(&group_address, chain_id).await?;
