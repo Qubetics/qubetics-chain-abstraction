@@ -29,8 +29,9 @@ impl SigningNode {
         };
 
         // Current amounts
-        let current_amounts: Vec<String> =
-            database.get_string(&solver_liquidity_key)?.unwrap_or_default();
+        let current_amounts: Vec<String> = database
+            .get_string(&solver_liquidity_key)?
+            .unwrap_or_default();
         let current_btc = current_amounts
             .get(0)
             .and_then(|v| U256::from_dec_str(v).ok())
@@ -137,10 +138,7 @@ impl SigningNode {
         Ok(())
     }
 
-    pub async fn update_solver_liquidity(
-        &self,
-        solver_evm_address: &str,
-    ) -> Result<()> {
+    pub async fn update_solver_liquidity(&self, solver_evm_address: &str) -> Result<()> {
         let rpc_url = std::env::var("SOLVER_CONTRACT_RPC_URL")
             .unwrap_or_else(|_| "http://localhost:8545".to_string());
         let contract_address = std::env::var("SOLVER_CONTRACT_ADDRESS")
@@ -190,7 +188,13 @@ impl SigningNode {
                 async move { contract.get_solver_id(solver_addr).await }
             })
             .await
-            .map_err(|e| anyhow!("Failed to get solver ID for address {}: {}", solver_evm_address, e))?;
+            .map_err(|e| {
+                anyhow!(
+                    "Failed to get solver ID for address {}: {}",
+                    solver_evm_address,
+                    e
+                )
+            })?;
 
         info!(
             "🔍 [SOLVER] Resolved solver ID {} for EVM address {}",
@@ -305,21 +309,27 @@ impl SigningNode {
             .as_ref()
             .ok_or_else(|| anyhow!("User registry not available"))?;
 
-        if let Some(true) = user_intent_manager
-            .get_intent_reward_status(intent_hash)
-            .await
-        {
-            info!(
-                "⏭️ [SOLVER] Rewards already calculated for intent {}",
-                intent_hash
-            );
-            return Ok(());
-        }
+        let intent_lock = user_intent_manager
+            .acquire_intent_reward_lock(intent_hash)
+            .await;
+        let lock_guard = intent_lock.lock().await;
 
-        let intent = user_intent_manager
-            .get_intent(intent_hash)
-            .await
-            .ok_or_else(|| anyhow!("Intent not found: {}", intent_hash))?;
+        let calculation_result = async {
+            if let Some(true) = user_intent_manager
+                .get_intent_reward_status(intent_hash)
+                .await
+            {
+                info!(
+                    "⏭️ [SOLVER] Rewards already calculated for intent {}",
+                    intent_hash
+                );
+                return Ok(());
+            }
+
+            let intent = user_intent_manager
+                .get_intent(intent_hash)
+                .await
+                .ok_or_else(|| anyhow!("Intent not found: {}", intent_hash))?;
 
         let source_chain = intent.source_chain.to_lowercase();
         let intent_amount = EthereumU256::from(intent.amount);
@@ -545,6 +555,15 @@ impl SigningNode {
             .map_err(|e| anyhow!("Failed to set intent reward status: {}", e))?;
 
         Ok(())
+        }
+        .await;
+
+        drop(lock_guard);
+        user_intent_manager
+            .release_intent_reward_lock(intent_hash)
+            .await;
+
+        calculation_result
     }
 
     async fn contract_call_with_retry<F, Fut, T>(
