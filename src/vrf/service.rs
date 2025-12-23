@@ -19,6 +19,11 @@ use super::{
     types::{NodeSelectionResult, VrfSelectedNodesBroadcast, VrfSelectionMessage},
 };
 
+/// Number of nodes to select for VRF-based signing operations.
+/// This constant determines how many nodes are selected for each signing round.
+/// Can be adjusted for redundancy, threshold signing, security improvement, or decentralization.
+pub const VRF_NODE_SELECTION_COUNT: usize = 1;
+
 #[derive(Debug, Clone)]
 pub struct VrfServiceConfig {
     pub allow_synthetic_submissions: bool,
