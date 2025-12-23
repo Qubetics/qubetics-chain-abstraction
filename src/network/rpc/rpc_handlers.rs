@@ -1199,22 +1199,15 @@ impl MpcNetworkLayer {
 
         let mut batch_updates: Vec<(String, usize)> = Vec::new();
 
+        // 1️⃣ First, merge all peers (no threshold updates yet)
+        let mut new_peers_added = false;
         for (i, SerializablePeerId(p)) in peers.into_iter().enumerate() {
             // Add peer to node_manager if not already present
             if !self.node_manager.get_active_nodes().contains(&p) {
                 self.node_manager
                     .add_node(p)
                     .map_err(|e| anyhow::anyhow!(e))?;
-
-                // Update signing node threshold after adding peer
-                if let Some(signing_node) = &mut self.signing_node {
-                    let new_threshold = self.node_manager.get_threshold();
-                    signing_node.set_threshold(new_threshold);
-                    info!(
-                        "🔄 [THRESHOLD] Updated signing node threshold to {} after peer list merge",
-                        new_threshold
-                    );
-                }
+                new_peers_added = true; // Mark if any new peer was added
             }
 
             // 🔧 FIX: Update peer_indices mapping for ALL peers in the peer list
@@ -1284,6 +1277,18 @@ impl MpcNetworkLayer {
                 } else {
                     warn!("⚠️ [PEER_LIST] Invalid multiaddr for {}: {}", p, addr_str);
                 }
+            }
+        }
+
+        // 2️⃣ Update threshold **only if new peers were added**
+        if new_peers_added {
+            let new_threshold = self.node_manager.get_threshold(); // Compute once
+            if let Some(signing_node) = &mut self.signing_node {
+                signing_node.set_threshold(new_threshold);
+                info!(
+                    "✅ [THRESHOLD] Updated to {} after merging peers",
+                    new_threshold
+                );
             }
         }
 
