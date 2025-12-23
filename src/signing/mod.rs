@@ -1603,6 +1603,12 @@ impl SigningNode {
                     info!("🔢 [INDEX-PEER-DEBUG]   Index {} => {}", dkg_index, peer_id);
                 }
 
+                // Get chain_id from environment variable for v calculation
+                let chain_id_for_v = std::env::var("MPC_ETHEREUM_CHAIN_ID")
+                    .ok()
+                    .and_then(|id| id.parse::<u64>().ok())
+                    .unwrap_or(9029); // Default: Qubetics chain ID
+
                 // Perform aggregation
                 match self
                     .aggregate_signatures(threshold_signatures, peer_to_dkg_index)
@@ -1617,7 +1623,12 @@ impl SigningNode {
                         // Log the aggregated signature details
                         let (recovery_id, signature_bytes) =
                             aggregated_signature.serialize_compact();
-                        let v: u64 = recovery_id.to_i32() as u64 + 35 + 1043 * 2;
+                        let v: u64 = recovery_id.to_i32() as u64 + 35 + chain_id_for_v * 2;
+                        
+                        info!(
+                            "🔗 [SIGNING] Using chain_id {} for v calculation (EIP-155 compliant)",
+                            chain_id_for_v
+                        );
 
                         // Normalize signature components to remove leading zeros (canonical form)
                         let r_bytes = &signature_bytes[0..32];
