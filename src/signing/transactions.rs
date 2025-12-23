@@ -160,24 +160,77 @@ impl SigningNode {
             }
         };
 
-        // Reward transactions should never have an intent hash. If we see one, drop it and
-        // handle as a reward transaction using the solver address instead.
-        let intent_hash = if matches!(
+        // Reward transactions should never have an intent_hash
+        // If transaction_type is RewardTxn but we have an intent_hash, log a warning
+        if matches!(
             transaction_type,
             Some(crate::types::TransactionType::RewardTxn)
         ) && intent_hash.is_some()
         {
             warn!(
-                "⚠️ [SIGNING] RewardTxn transaction type found with intent hash; \
-                 ignoring intent hash and treating as reward transaction"
+                "⚠️ [SIGNING] RewardTxn transaction type found with intent_hash (round={}); clearing intent hash path is expected",
+                round
             );
-            None
-        } else {
-            intent_hash
-        };
+        }
 
         match (intent_hash, &self.user_intent_manager) {
             (Some(ref intent_hash), Some(user_intent_manager)) => {
+                // Handle reward transactions first (transaction_type is None but we have solver_address)
+                // These should not have an intent_hash, but if they do, handle them here
+                if transaction_type.is_none() && retrieved_solver_address.is_some() {
+                    info!(
+                        "💥 [SIGNING] Broadcasting reward transaction error for solver {:?} (round {}) - storage will be handled by message handler",
+                        retrieved_solver_address, round
+                    );
+
+                    self.broadcast_transaction_error(
+                        None,
+                        error_message,
+                        "reward_txn",
+                        retrieved_solver_address.as_deref(),
+                    )
+                    .await;
+                    return;
+                }
+
+                // For UserToVault, NetworkToTarget, and VaultToNetwork, store and broadcast
+                let transaction_type_str = match transaction_type {
+                    Some(crate::types::TransactionType::UserToVault) => "user_to_vault",
+                    Some(crate::types::TransactionType::NetworkToTarget) => {
+                        "network_to_target"
+                    }
+                    Some(crate::types::TransactionType::VaultToNetwork) => {
+                        "vault_to_network"
+                    }
+                    Some(crate::types::TransactionType::WithdrawLiquidity) => {
+                        // Withdraw liquidity transactions should never have an intent_hash
+                        error!(
+                            "❌ [SIGNING] WithdrawLiquidity transaction type found with intent_hash - this is invalid."
+                        );
+                        return;
+                    }
+                    Some(crate::types::TransactionType::AddLiquidity) => {
+                        error!(
+                            "❌ [SIGNING] AddLiquidity transaction type found with intent_hash - this flow is not supported."
+                        );
+                        return;
+                    }
+                    Some(crate::types::TransactionType::RewardTxn) => {
+                        // Reward transactions should never have an intent_hash
+                        error!(
+                            "❌ [SIGNING] RewardTxn transaction type found with intent_hash - this is invalid."
+                        );
+                        return;
+                    }
+                    None => {
+                        // This shouldn't happen if we already handled reward transactions above
+                        error!(
+                            "❌ [SIGNING] Transaction type is None but no solver address available"
+                        );
+                        return;
+                    }
+                };
+
                 match user_intent_manager
                     .store_transaction_error(intent_hash, error_message, None)
                     .await
@@ -187,32 +240,6 @@ impl SigningNode {
                             "💥 [SIGNING] Stored transaction error for intent {} (round {}): {}",
                             intent_hash, round, error_message
                         );
-
-                        let transaction_type_str = match transaction_type {
-                            Some(crate::types::TransactionType::UserToVault) => "user_to_vault",
-                            Some(crate::types::TransactionType::NetworkToTarget) => {
-                                "network_to_target"
-                            }
-                            Some(crate::types::TransactionType::VaultToNetwork) => {
-                                "vault_to_network"
-                            }
-                            Some(crate::types::TransactionType::RewardTxn) => "reward_txn",
-                            Some(crate::types::TransactionType::WithdrawLiquidity) => {
-                                warn!(
-                                    "⚠️ [SIGNING] WithdrawLiquidity transaction type encountered while storing errors for intent {}; unsupported",
-                                    intent_hash
-                                );
-                                "withdraw_liquidity"
-                            }
-                            Some(crate::types::TransactionType::AddLiquidity) => {
-                                warn!(
-                                    "⚠️ [SIGNING] AddLiquidity transaction type encountered while storing errors for intent {}; unsupported",
-                                    intent_hash
-                                );
-                                "add_liquidity"
-                            }
-                            None => "user_to_network",
-                        };
 
                         self.broadcast_transaction_error(
                             Some(intent_hash),
@@ -244,33 +271,68 @@ impl SigningNode {
                 }
             }
             (None, Some(_)) => {
-                if let Some(solver_addr) = retrieved_solver_address.as_ref() {
-                    let transaction_type_str = "reward_txn";
+                // Handle reward transactions (RewardTxn) - they should always have None for intent_hash
+                // Also handle cases where transaction_type is None but we have a solver_address (legacy reward transactions)
+                if matches!(
+                    transaction_type,
+                    Some(crate::types::TransactionType::RewardTxn)
+                ) || (transaction_type.is_none() && retrieved_solver_address.is_some())
+                {
+                    if let Some(solver_addr) = retrieved_solver_address.as_ref() {
+                        info!(
+                            "💥 [SIGNING] Reward transaction error for solver {} (round {}): {}",
+                            solver_addr, round, error_message
+                        );
 
-                    info!(
-                        "💥 [SIGNING] Reward transaction error for solver {} (round {}): {}",
-                        solver_addr, round, error_message
-                    );
+                        self.broadcast_transaction_error(
+                            None,
+                            error_message,
+                            "reward_txn",
+                            Some(solver_addr),
+                        )
+                        .await;
+                    } else if matches!(
+                        transaction_type,
+                        Some(crate::types::TransactionType::RewardTxn)
+                    ) {
+                        error!(
+                            "❌ [SIGNING] RewardTxn transaction type requires solver_address, but none was found in round {}",
+                            round
+                        );
+                    } else {
+                        info!(
+                            "ℹ️ [SIGNING] No solver address available for reward transaction error in round {}",
+                            round
+                        );
+                    }
+                } else if matches!(
+                    transaction_type,
+                    Some(crate::types::TransactionType::WithdrawLiquidity)
+                ) {
+                    // Handle withdraw liquidity transactions similar to rewards
+                    if let Some(solver_addr) = retrieved_solver_address.as_ref() {
+                        info!(
+                            "💥 [SIGNING] Withdraw liquidity transaction error for solver {} (round {}): {}",
+                            solver_addr, round, error_message
+                        );
 
-                    self.broadcast_transaction_error(
-                        None,
-                        error_message,
-                        transaction_type_str,
-                        Some(solver_addr),
-                    )
-                    .await;
-                } else {
-                    info!(
-                        "ℹ️ [SIGNING] No solver address available for reward transaction error in round {}",
-                        round
-                    );
+                        self.broadcast_transaction_error(
+                            None,
+                            error_message,
+                            "withdraw_liquidity",
+                            Some(solver_addr),
+                        )
+                        .await;
+                    } else {
+                        warn!(
+                            "⚠️ [SIGNING] WithdrawLiquidity transaction type requires solver_address, but none was found in round {}",
+                            round
+                        );
+                    }
                 }
             }
-            _ => {
-                warn!(
-                    "⚠️ [SIGNING] No user registry available, cannot store transaction error for round {}",
-                    round
-                );
+            (_, None) => {
+                info!("ℹ️ [NETWORK] No user registry available, skipping transaction error storage");
             }
         }
     }
