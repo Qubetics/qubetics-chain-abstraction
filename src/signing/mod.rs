@@ -1520,14 +1520,6 @@ impl SigningNode {
 
         if let Some(signatures_result) = signatures_to_aggregate {
             let signatures_vec = signatures_result?;
-            // Check if this round has already been aggregated
-            {
-                let aggregated_rounds = self.signatures.aggregated_rounds.read().await;
-                if aggregated_rounds.contains(&round) {
-                    info!("⏭️ [SIGNING] Round {} already aggregated, skipping", round);
-                    return Ok(());
-                }
-            }
 
             if signatures_vec.len() >= self.threshold {
                 // Mark this round as aggregated BEFORE processing to prevent race conditions
