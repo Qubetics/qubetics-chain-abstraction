@@ -13,12 +13,33 @@ use tracing::info;
 use crate::database::{keys, Database, KeyStore};
 use crate::node_selection::NodeMembership;
 
+use crate::network::config::NetworkConfig;
 use crate::network::discovery::types::{DatabaseSyncState, PeerDiscoveryState};
 use crate::network::transport::types::{MpcNetworkBehaviour, MpcNetworkLayer, MPC_TOPICS};
 
 impl MpcNetworkLayer {
     /// Create a new MpcNetworkLayer instance
     pub async fn new(node_manager: Box<dyn NodeMembership>, db: Database) -> Result<Self> {
+        // Load network configuration from config.rs (hardcoded bootstrap nodes)
+        let network_config = NetworkConfig::default();
+        
+        // Log bootstrap node configuration
+        info!(
+            "🌐 [NETWORK_CONFIG] Loaded {} bootstrap peers and {} discovery seeds",
+            network_config.bootstrap_peers.len(),
+            network_config.discovery_seeds.len()
+        );
+        if !network_config.bootstrap_peers.is_empty() {
+            for (i, addr) in network_config.bootstrap_peers.iter().enumerate() {
+                info!("   Bootstrap peer {}: {}", i + 1, addr);
+            }
+        }
+        if !network_config.discovery_seeds.is_empty() {
+            for (i, addr) in network_config.discovery_seeds.iter().enumerate() {
+                info!("   Discovery seed {}: {}", i + 1, addr);
+            }
+        }
+        
         // Load or create persistent keypair using the injected database
         // Wrap in Arc to satisfy KeyStore trait object requirements
         // Clone the database since we need to move it into the struct later
@@ -47,9 +68,9 @@ impl MpcNetworkLayer {
             db,
             db_sync_state: DatabaseSyncState::new(),
             needs_database_sync: false,
-            bootstrap_addresses: Self::load_multiaddrs_from_env("BOOTSTRAP_PEERS"),
+            bootstrap_addresses: network_config.bootstrap_peers,
             bootstrap_peer_ids: Vec::new(),
-            discovery_seeds: Self::load_multiaddrs_from_env("DISCOVERY_SEEDS"),
+            discovery_seeds: network_config.discovery_seeds,
             connected_peers_cache: std::collections::HashSet::new(),
             contract_sequencer: None,
             network_transaction_sequencer: None,
@@ -101,36 +122,6 @@ impl MpcNetworkLayer {
         this.ensure_local_index();
 
         Ok(this)
-    }
-
-    fn load_multiaddrs_from_env(env_key: &str) -> Vec<Multiaddr> {
-        use tracing::warn;
-
-        std::env::var(env_key)
-            .ok()
-            .map(|value| {
-                value
-                    .split(',')
-                    .filter_map(|raw| {
-                        let trimmed = raw.trim();
-                        if trimmed.is_empty() {
-                            return None;
-                        }
-
-                        match trimmed.parse::<Multiaddr>() {
-                            Ok(addr) => Some(addr),
-                            Err(err) => {
-                                warn!(
-                                    "Ignoring invalid multiaddr from {}: {} ({})",
-                                    env_key, trimmed, err
-                                );
-                                None
-                            }
-                        }
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
     }
 
     fn extract_peer_id(addr: &Multiaddr) -> Option<PeerId> {
@@ -232,11 +223,18 @@ impl MpcNetworkLayer {
                 let mut kademlia =
                     kad::Behaviour::with_config(key.public().to_peer_id(), store, kademlia_config);
 
+                // Add bootstrap nodes and discovery seeds to Kademlia
+                let mut added_count = 0;
                 for addr in bootstrap_nodes.iter().chain(discovery_seeds.iter()) {
                     if let Some(peer_id) = Self::extract_peer_id(addr) {
                         kademlia.add_address(&peer_id, addr.clone());
+                        added_count += 1;
                     }
                 }
+                info!(
+                    "🌐 [KADEMLIA] Added {} bootstrap/discovery addresses to Kademlia DHT",
+                    added_count
+                );
 
                 let request_response = build_mpc_behaviour();
 
