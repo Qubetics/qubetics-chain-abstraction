@@ -1542,13 +1542,8 @@ impl SigningNode {
             );
 
                 // Take only threshold number of signatures for aggregation
-                let threshold_signatures = if signatures_vec.len() > self.threshold {
-                    let mut sigs = signatures_vec;
-                    sigs.truncate(self.threshold);
-                    sigs
-                } else {
-                    signatures_vec
-                };
+                let mut threshold_signatures = signatures_vec;
+                threshold_signatures.truncate(self.threshold);
 
                 info!(
                     "🔢 [SIGNING] Using {} signatures for aggregation (threshold: {})",
