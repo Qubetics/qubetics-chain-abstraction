@@ -35,6 +35,7 @@ pub struct UserIntentManager {
     liquidity_storage: LiquidityStorage,
     chain_code: [u8; 32],
     idempotency_index: Arc<Mutex<HashMap<String, String>>>,
+    intent_reward_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
 }
 
 impl UserIntentManager {
@@ -62,6 +63,7 @@ impl UserIntentManager {
             liquidity_storage: database_module.liquidity_storage(),
             chain_code,
             idempotency_index: Arc::new(Mutex::new(HashMap::new())),
+            intent_reward_locks: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -83,5 +85,18 @@ impl UserIntentManager {
 
         guard.insert(idempotency_key.to_string(), intent_hash.to_string());
         Ok(false)
+    }
+
+    pub async fn acquire_intent_reward_lock(&self, intent_hash: &str) -> Arc<Mutex<()>> {
+        let mut locks = self.intent_reward_locks.lock().await;
+        locks
+            .entry(intent_hash.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    }
+
+    pub async fn release_intent_reward_lock(&self, intent_hash: &str) {
+        let mut locks = self.intent_reward_locks.lock().await;
+        locks.remove(intent_hash);
     }
 }

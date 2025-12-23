@@ -73,7 +73,6 @@ pub const TOPIC_TRANSACTIONS: &str = "transactions";
 pub const TOPIC_DEPOSIT_INTENTS: &str = "deposit-intents";
 pub const TOPIC_INTENT_HASHES: &str = "intent-hashes";
 pub const TOPIC_DKG_COMMANDS: &str = "dkg-commands";
-pub const TOPIC_SIGNATURES_TO_FINAL_NODE: &str = "signatures-to-final-node";
 pub const TOPIC_USER_REGISTRATIONS: &str = "user-registrations";
 pub const TOPIC_SOLVER_REWARDS: &str = "solver-rewards";
 pub const TOPIC_CLAIM_REWARDS: &str = "claim-rewards";
@@ -108,7 +107,6 @@ pub enum GossipTopic {
     DepositIntents,
     IntentHashes,
     DkgCommands,
-    SignaturesToFinalNode,
     UserRegistrations,
     SolverRewards,
     ClaimRewards,
@@ -142,7 +140,6 @@ impl GossipTopic {
         GossipTopic::DepositIntents,
         GossipTopic::IntentHashes,
         GossipTopic::DkgCommands,
-        GossipTopic::SignaturesToFinalNode,
         GossipTopic::UserRegistrations,
         GossipTopic::SolverRewards,
         GossipTopic::ClaimRewards,
@@ -176,7 +173,6 @@ impl GossipTopic {
             GossipTopic::DepositIntents => TOPIC_DEPOSIT_INTENTS,
             GossipTopic::IntentHashes => TOPIC_INTENT_HASHES,
             GossipTopic::DkgCommands => TOPIC_DKG_COMMANDS,
-            GossipTopic::SignaturesToFinalNode => TOPIC_SIGNATURES_TO_FINAL_NODE,
             GossipTopic::UserRegistrations => TOPIC_USER_REGISTRATIONS,
             GossipTopic::SolverRewards => TOPIC_SOLVER_REWARDS,
             GossipTopic::ClaimRewards => TOPIC_CLAIM_REWARDS,

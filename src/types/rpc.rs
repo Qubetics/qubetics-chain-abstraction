@@ -104,6 +104,20 @@ pub enum RPCRequest {
         share_value: SerializableScalar,
         commitments: Vec<SerializablePoint>,
     },
+
+    /// Unicast an ECDSA signature to the final node (P2P, not broadcast)
+    SendECDSASignature {
+        from_node_id: String,
+        signature_data: Vec<u8>,
+        round: u64,
+    },
+
+    /// Unicast BTC signatures to the final node (P2P, not broadcast)
+    SendBtcSignatures {
+        from_node_id: String,
+        signature_data: Vec<u8>,
+        round: u64,
+    },
 }
 
 /// RPC response variants.
@@ -111,8 +125,8 @@ pub enum RPCRequest {
 pub enum RPCResponse {
     PeerList {
         peers: Vec<SerializablePeerId>,
-        indices: Vec<Option<usize>>,        // index per peer, None if unknown
-        addresses: Vec<Option<String>>,     // multiaddr per peer, None if unknown
+        indices: Vec<Option<usize>>,    // index per peer, None if unknown
+        addresses: Vec<Option<String>>, // multiaddr per peer, None if unknown
     },
     Custom {
         id: String,
@@ -176,6 +190,22 @@ pub enum RPCResponse {
         from_node_id: String,
         receiver_node_id: String,
         share_index: usize,
+        success: bool,
+    },
+
+    /// Acknowledge receipt of an ECDSA signature via unicast
+    ECDSASignatureReceived {
+        from_node_id: String,
+        receiver_node_id: String,
+        round: u64,
+        success: bool,
+    },
+
+    /// Acknowledge receipt of BTC signatures via unicast
+    BtcSignaturesReceived {
+        from_node_id: String,
+        receiver_node_id: String,
+        round: u64,
         success: bool,
     },
 }

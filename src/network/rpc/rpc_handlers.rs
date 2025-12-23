@@ -6,7 +6,8 @@ use tracing::{error, info, warn};
 
 use crate::database::key_utils::{self, peer_addr_key};
 use crate::types::p2p::SerializablePeerId;
-use crate::types::{PeerInfo, SerializablePoint, SerializableScalar};
+use crate::types::signing::SigningMessage;
+use crate::types::{GossipsubMessage, PeerInfo, SerializablePoint, SerializableScalar};
 
 use crate::database::VrfStorage;
 use crate::protocols::DKGStatus;
@@ -112,6 +113,30 @@ impl MpcNetworkLayer {
                     commitments,
                 )
                 .await
+            }
+            RPCRequest::SendECDSASignature {
+                from_node_id,
+                signature_data,
+                round,
+            } => {
+                info!(
+                    "🔐 [SIGNING-SECURE] Received UNICAST ECDSA signature for round {} from {}",
+                    round, from_node_id
+                );
+                self.handle_incoming_ecdsa_signature(from_node_id, signature_data, round)
+                    .await
+            }
+            RPCRequest::SendBtcSignatures {
+                from_node_id,
+                signature_data,
+                round,
+            } => {
+                info!(
+                    "🔐 [SIGNING-SECURE] Received UNICAST BTC signatures for round {} from {}",
+                    round, from_node_id
+                );
+                self.handle_incoming_btc_signatures(from_node_id, signature_data, round)
+                    .await
             }
             _ => RPCResponse::Ack,
         }
@@ -662,6 +687,228 @@ impl MpcNetworkLayer {
         }
     }
 
+    /// Handle incoming ECDSA signature from unicast P2P RPC
+    async fn handle_incoming_ecdsa_signature(
+        &mut self,
+        from_node_id: String,
+        signature_data: Vec<u8>,
+        round: u64,
+    ) -> RPCResponse {
+        info!(
+            "🔐 [SIGNING-SECURE] Processing unicast ECDSA signature for round {} from {}",
+            round, from_node_id
+        );
+
+        let signing_message = match serde_json::from_slice::<GossipsubMessage>(&signature_data) {
+            Ok(GossipsubMessage::Signing(msg)) => msg,
+            Ok(other) => {
+                warn!(
+                    "❌ [SIGNING-SECURE] Unexpected gossipsub message type for ECDSA signature: {:?}",
+                    other
+                );
+                return RPCResponse::ECDSASignatureReceived {
+                    from_node_id,
+                    receiver_node_id: self.get_local_peer_id().to_string(),
+                    round,
+                    success: false,
+                };
+            }
+            Err(e) => {
+                warn!(
+                    "❌ [SIGNING-SECURE] Failed to deserialize ECDSA signature payload: {}",
+                    e
+                );
+                return RPCResponse::ECDSASignatureReceived {
+                    from_node_id,
+                    receiver_node_id: self.get_local_peer_id().to_string(),
+                    round,
+                    success: false,
+                };
+            }
+        };
+
+        let (from, signature, msg_round) = match signing_message {
+            SigningMessage::ECDSASignature {
+                from,
+                signature,
+                round,
+                ..
+            } => (from, signature, round),
+            _ => {
+                warn!(
+                    "❌ [SIGNING-SECURE] Received signing message that is not an ECDSA signature"
+                );
+                return RPCResponse::ECDSASignatureReceived {
+                    from_node_id,
+                    receiver_node_id: self.get_local_peer_id().to_string(),
+                    round,
+                    success: false,
+                };
+            }
+        };
+
+        if msg_round != round {
+            warn!(
+                "⚠️ [SIGNING-SECURE] Round mismatch for ECDSA signature: request round {}, message round {}",
+                round, msg_round
+            );
+        }
+
+        let mut receiver_node_id = self.get_local_peer_id().to_string();
+        let result = if let Some(signing_node) = &mut self.signing_node {
+            receiver_node_id = signing_node.get_node_id().to_string();
+            signing_node
+                .handle_signature_to_final_node(from.clone(), signature.clone(), round)
+                .await
+        } else {
+            warn!("❌ [SIGNING-SECURE] Signing node not initialized to process ECDSA signature");
+            return RPCResponse::ECDSASignatureReceived {
+                from_node_id,
+                receiver_node_id,
+                round,
+                success: false,
+            };
+        };
+
+        match result {
+            Ok(_) => {
+                info!(
+                    "✅ [SIGNING-SECURE] Processed ECDSA signature for round {} from {}",
+                    round, from
+                );
+                RPCResponse::ECDSASignatureReceived {
+                    from_node_id,
+                    receiver_node_id,
+                    round,
+                    success: true,
+                }
+            }
+            Err(e) => {
+                warn!(
+                    "❌ [SIGNING-SECURE] Failed to process ECDSA signature for round {}: {}",
+                    round, e
+                );
+                RPCResponse::ECDSASignatureReceived {
+                    from_node_id,
+                    receiver_node_id,
+                    round,
+                    success: false,
+                }
+            }
+        }
+    }
+
+    /// Handle incoming BTC signatures from unicast P2P RPC
+    async fn handle_incoming_btc_signatures(
+        &mut self,
+        from_node_id: String,
+        signature_data: Vec<u8>,
+        round: u64,
+    ) -> RPCResponse {
+        info!(
+            "🔐 [SIGNING-SECURE] Processing unicast BTC signatures for round {} from {}",
+            round, from_node_id
+        );
+
+        let signing_message = match serde_json::from_slice::<GossipsubMessage>(&signature_data) {
+            Ok(GossipsubMessage::Signing(msg)) => msg,
+            Ok(other) => {
+                warn!(
+                    "❌ [SIGNING-SECURE] Unexpected gossipsub message type for BTC signatures: {:?}",
+                    other
+                );
+                return RPCResponse::BtcSignaturesReceived {
+                    from_node_id,
+                    receiver_node_id: self.get_local_peer_id().to_string(),
+                    round,
+                    success: false,
+                };
+            }
+            Err(e) => {
+                warn!(
+                    "❌ [SIGNING-SECURE] Failed to deserialize BTC signatures payload: {}",
+                    e
+                );
+                return RPCResponse::BtcSignaturesReceived {
+                    from_node_id,
+                    receiver_node_id: self.get_local_peer_id().to_string(),
+                    round,
+                    success: false,
+                };
+            }
+        };
+
+        let (from, signatures, msg_round) = match signing_message {
+            SigningMessage::BtcSignaturesMessage {
+                from,
+                signatures,
+                round,
+                ..
+            } => (from, signatures, round),
+            _ => {
+                warn!(
+                    "❌ [SIGNING-SECURE] Received signing message that is not a BTC signatures payload"
+                );
+                return RPCResponse::BtcSignaturesReceived {
+                    from_node_id,
+                    receiver_node_id: self.get_local_peer_id().to_string(),
+                    round,
+                    success: false,
+                };
+            }
+        };
+
+        if msg_round != round {
+            warn!(
+                "⚠️ [SIGNING-SECURE] Round mismatch for BTC signatures: request round {}, message round {}",
+                round, msg_round
+            );
+        }
+
+        let mut receiver_node_id = self.get_local_peer_id().to_string();
+        let result = if let Some(signing_node) = &mut self.signing_node {
+            receiver_node_id = signing_node.get_node_id().to_string();
+            signing_node
+                .handle_btc_signatures_to_final_node(from.clone(), signatures.clone(), round)
+                .await
+        } else {
+            warn!("❌ [SIGNING-SECURE] Signing node not initialized to process BTC signatures");
+            return RPCResponse::BtcSignaturesReceived {
+                from_node_id,
+                receiver_node_id,
+                round,
+                success: false,
+            };
+        };
+
+        match result {
+            Ok(_) => {
+                info!(
+                    "✅ [SIGNING-SECURE] Processed BTC signatures for round {} from {}",
+                    round, from
+                );
+                RPCResponse::BtcSignaturesReceived {
+                    from_node_id,
+                    receiver_node_id,
+                    round,
+                    success: true,
+                }
+            }
+            Err(e) => {
+                warn!(
+                    "❌ [SIGNING-SECURE] Failed to process BTC signatures for round {}: {}",
+                    round, e
+                );
+                RPCResponse::BtcSignaturesReceived {
+                    from_node_id,
+                    receiver_node_id,
+                    round,
+                    success: false,
+                }
+            }
+        }
+    }
+
     /// Handle RequestCurrentVrfRound RPC request
     async fn handle_request_current_vrf_round(&self, peer: PeerId) -> RPCResponse {
         info!(
@@ -905,6 +1152,28 @@ impl MpcNetworkLayer {
                     error!("❌ [DB_SYNC] Failed to handle batch: {}", e);
                 }
             }
+            RPCResponse::ECDSASignatureReceived {
+                from_node_id,
+                receiver_node_id,
+                round,
+                success,
+            } => {
+                info!(
+                    "📩 [SIGNING-SECURE] ACK ECDSA signature from {} to {} for round {} (success: {})",
+                    from_node_id, receiver_node_id, round, success
+                );
+            }
+            RPCResponse::BtcSignaturesReceived {
+                from_node_id,
+                receiver_node_id,
+                round,
+                success,
+            } => {
+                info!(
+                    "📩 [SIGNING-SECURE] ACK BTC signatures from {} to {} for round {} (success: {})",
+                    from_node_id, receiver_node_id, round, success
+                );
+            }
             other => {
                 info!("ℹ️  RPCResponse::{:?} from {} (no action)", other, peer);
             }
@@ -1040,6 +1309,30 @@ impl MpcNetworkLayer {
             "📊 [PEER_LIST] Updated peer_indices mapping: {} entries",
             self.peer_discovery.peer_indices.len()
         );
+
+        // CRITICAL: Only use the peer_list_processed flag if DKG is NOT completed
+        // This prevents duplicate processing ONLY during initial joining
+        // After DKG completes, we can process PeerList responses again if needed
+        let dkg_completed = self
+            .dkg_node
+            .as_ref()
+            .map(|dkg| matches!(dkg.get_status(), DKGStatus::Completed))
+            .unwrap_or(false);
+
+        if !dkg_completed {
+            // New node joining - check if we've already processed a PeerList
+            if self.peer_discovery.peer_list_processed {
+                info!("⏭️ [PEER_LIST] Already processed PeerList response during joining, skipping duplicate new node check");
+                info!("⏭️ [PEER_LIST] This prevents duplicate refresh triggers from multiple GetPeerList responses");
+                return Ok(());
+            }
+
+            // Mark as processed for this joining session
+            self.peer_discovery.peer_list_processed = true;
+            info!("🔒 [PEER_LIST] Set peer_list_processed=true (will be used only until DKG completes)");
+        } else {
+            info!("✅ [PEER_LIST] DKG already completed, peer_list_processed flag not used");
+        }
 
         // After learning about all peers, check if this is a new node joining existing network
         self.handle_new_node_joining_check(swarm).await?;
@@ -1216,15 +1509,15 @@ impl MpcNetworkLayer {
 #[cfg(test)]
 mod tests {
     use super::MpcNetworkLayer;
-    use crate::network::transport::types::VrfDomain;
     use crate::database::{Database, DatabaseConfig};
+    use crate::network::transport::types::VrfDomain;
     use crate::node_selection::{BasicNodeManager, DefaultThresholdCalculator};
     use libp2p::PeerId;
     use tempfile::tempdir;
 
     async fn build_network_layer() -> MpcNetworkLayer {
         let temp_dir = tempdir().expect("tempdir to create");
-        let db_root = temp_dir.into_path();
+        let db_root = temp_dir.keep().expect("tempdir keep to succeed");
         let db_path = db_root.join("db");
         let db = Database::new(DatabaseConfig {
             path: db_path.to_string_lossy().to_string(),

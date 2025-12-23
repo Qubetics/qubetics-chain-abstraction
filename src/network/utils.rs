@@ -443,6 +443,11 @@ impl MpcNetworkLayer {
                 );
 
                 if let Some(signing_node) = &mut self.signing_node {
+                    let chain_handler: Arc<dyn crate::chain_abstraction::ChainHandler> =
+                        crate::chain_abstraction::ChainHandlerFactory::create_ethereum_handler(
+                            eth_tx.chain_id,
+                        )
+                        .into();
                     let mut eth_signer = EthereumSigner::new(signing_node);
                     // IMPORTANT:
                     // For NetworkToTarget, we must sign with the NETWORK's DKG share so the
@@ -455,6 +460,7 @@ impl MpcNetworkLayer {
                     eth_signer
                         .sign_transaction(
                             tx_bytes.clone(),
+                            &chain_handler,
                             eth_tx,
                             None,
                             None,
@@ -487,6 +493,11 @@ impl MpcNetworkLayer {
                 );
 
                 if let Some(signing_node) = &mut self.signing_node {
+                    let chain_handler: Arc<dyn crate::chain_abstraction::ChainHandler> =
+                        crate::chain_abstraction::ChainHandlerFactory::create_ethereum_handler(
+                            eth_tx.chain_id,
+                        )
+                        .into();
                     // IMPORTANT:
                     // Do not rely on `SigningNode.key_store.private_key` being pre-populated.
                     // Instead, explicitly pass the network's DKG secret share as an override.
@@ -498,6 +509,7 @@ impl MpcNetworkLayer {
                     eth_signer
                         .sign_transaction(
                             tx_bytes.clone(),
+                            &chain_handler,
                             eth_tx,
                             None, // never treat this as "user signing"
                             None, // No user address for network transactions
@@ -530,6 +542,11 @@ impl MpcNetworkLayer {
                 );
 
                 if let Some(signing_node) = &mut self.signing_node {
+                    let chain_handler: Arc<dyn crate::chain_abstraction::ChainHandler> =
+                        crate::chain_abstraction::ChainHandlerFactory::create_ethereum_handler(
+                            eth_tx.chain_id,
+                        )
+                        .into();
                     // IMPORTANT:
                     // Do not rely on `SigningNode.key_store.private_key` being pre-populated.
                     // Instead, explicitly pass the network's DKG secret share as an override.
@@ -541,6 +558,7 @@ impl MpcNetworkLayer {
                     eth_signer
                         .sign_transaction(
                             tx_bytes.clone(),
+                            &chain_handler,
                             eth_tx,
                             None, // never treat this as "user signing"
                             None, // No user address for network transactions

@@ -18,6 +18,7 @@ use reqwest::Client;
 use secp256k1::{ecdsa::RecoverableSignature, Message, SecretKey};
 use sha3::Digest;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use tracing::{error, info, warn};
 
 /// Convenience wrapper for Ethereum-focused signing flows.
@@ -41,6 +42,7 @@ impl<'a> EthereumSigner<'a> {
     pub async fn sign_transaction(
         &mut self,
         message: Vec<u8>,
+        chain_handler: &Arc<dyn crate::chain_abstraction::ChainHandler>,
         transaction: &EthereumTransaction,
         user_tweaked_share: Option<Scalar>,
         user_eth_address: Option<String>,
@@ -52,6 +54,7 @@ impl<'a> EthereumSigner<'a> {
         self.node
             .sign_message(
                 message,
+                chain_handler,
                 transaction,
                 user_tweaked_share,
                 user_eth_address,
@@ -66,6 +69,7 @@ impl<'a> EthereumSigner<'a> {
     pub async fn sign_contract_message(
         &mut self,
         message: Vec<u8>,
+        chain_handler: &Arc<dyn crate::chain_abstraction::ChainHandler>,
         contract_tx: &ContractTransaction,
         user_tweaked_share: Option<Scalar>,
         user_eth_address: Option<String>,
@@ -74,6 +78,7 @@ impl<'a> EthereumSigner<'a> {
         self.node
             .sign_contract_message(
                 message,
+                chain_handler,
                 contract_tx,
                 user_tweaked_share,
                 user_eth_address,
@@ -178,6 +183,7 @@ impl SigningNode {
     pub async fn sign_message(
         &mut self,
         _message: Vec<u8>,
+        chain_handler: &Arc<dyn crate::chain_abstraction::ChainHandler>,
         transaction: &EthereumTransaction,
         user_tweaked_share: Option<Scalar>,
         user_eth_address: Option<String>,
@@ -195,6 +201,11 @@ impl SigningNode {
                 ));
             }
         }
+
+        info!(
+            "🔗 [SIGNING] Using {} chain handler for EVM signing",
+            chain_handler.chain_type()
+        );
 
         // Determine which key to use for signing
         // Redacted user_tweaked_share from logs
@@ -360,7 +371,7 @@ impl SigningNode {
                 "💰 [REWARD] Storing TICS reward transaction for round {} (solver: {})",
                 round, solver_addr
             );
-            
+
             self.store_reward_transaction_tics(
                 round,
                 chain_tx,
@@ -454,6 +465,7 @@ impl SigningNode {
     pub async fn sign_contract_message(
         &mut self,
         _message: Vec<u8>,
+        chain_handler: &Arc<dyn crate::chain_abstraction::ChainHandler>,
         transaction: &ContractTransaction,
         user_tweaked_share: Option<Scalar>,
         user_eth_address: Option<String>,
@@ -486,8 +498,10 @@ impl SigningNode {
         // Log signing key for testing/debugging
         let signing_key_hex = hex::encode(signing_key.secret_bytes());
         info!(
-            "🔐 [SIGNING-DEBUG] Node {} signing key (hex): 0x{}",
-            self.id, signing_key_hex
+            "🔐 [SIGNING-DEBUG] Node {} signing key (hex): 0x{} (chain: {})",
+            self.id,
+            signing_key_hex,
+            chain_handler.chain_type()
         );
 
         // Calculate and log DKG index for this node
@@ -725,16 +739,7 @@ impl SigningNode {
                 let r = &aggregated_signature[0..32];
                 let s = &aggregated_signature[32..64];
 
-                let chain_handler = if is_contract_tx {
-                    &self.contract_chain_handler
-                } else {
-                    &self.chain_handler
-                };
-                let chain_id = chain_handler
-                    .get_chain_params()
-                    .get("chain_id")
-                    .and_then(|id| id.parse::<u64>().ok())
-                    .unwrap_or(9029);
+                let chain_id = original_tx.chain_id;
 
                 let v = recovery_id as u64 + 35 + chain_id * 2;
 
@@ -775,14 +780,8 @@ impl SigningNode {
                         }
                     }
                     Some(crate::types::TransactionType::NetworkToTarget) => {
-                        let group_address =
-                            if let Some(group_key) = self.key_store.get_group_public_key() {
-                                get_eth_address_from_group_key(group_key)
-                            } else {
-                                return Err(anyhow!(
-                                    "No group public key available for network transaction"
-                                ));
-                            };
+                        let group_key = self.get_network_group_public_key().await?;
+                        let group_address = get_eth_address_from_group_key(group_key);
 
                         let nonce = Self::fetch_ethereum_nonce(&group_address, chain_id).await?;
                         info!("🔢 [SIGNING] NetworkToTarget transaction: fetching nonce {} from network group address {}", nonce, group_address);
@@ -811,28 +810,18 @@ impl SigningNode {
                     }
                     Some(crate::types::TransactionType::RewardTxn) => {
                         // For reward transactions, use network group address
-                        let group_address =
-                            if let Some(group_key) = self.key_store.get_group_public_key() {
-                                get_eth_address_from_group_key(group_key)
-                            } else {
-                                return Err(anyhow!(
-                                    "No group public key available for reward transaction"
-                                ));
-                            };
+                        let group_address = get_eth_address_from_group_key(
+                            self.get_network_group_public_key().await?,
+                        );
                         let nonce = Self::fetch_ethereum_nonce(&group_address, chain_id).await?;
                         info!("🔢 [SIGNING] RewardTxn transaction: fetching nonce {} from network group address {}", nonce, group_address);
                         group_address
                     }
                     Some(crate::types::TransactionType::WithdrawLiquidity) => {
                         // Withdraw liquidity payouts reuse the network group key path (same as rewards)
-                        let group_address =
-                            if let Some(group_key) = self.key_store.get_group_public_key() {
-                                get_eth_address_from_group_key(group_key)
-                            } else {
-                                return Err(anyhow!(
-                                "No group public key available for withdraw-liquidity transaction"
-                            ));
-                            };
+                        let group_address = get_eth_address_from_group_key(
+                            self.get_network_group_public_key().await?,
+                        );
                         let nonce = Self::fetch_ethereum_nonce(&group_address, chain_id).await?;
                         info!("🔢 [SIGNING] WithdrawLiquidity transaction: fetching nonce {} from network group address {}", nonce, group_address);
                         group_address
@@ -872,14 +861,9 @@ impl SigningNode {
                                 ));
                             }
                         } else {
-                            let group_address =
-                                if let Some(group_key) = self.key_store.get_group_public_key() {
-                                    get_eth_address_from_group_key(group_key)
-                                } else {
-                                    return Err(anyhow!(
-                                        "No group public key available for nonce fetching"
-                                    ));
-                                };
+                            let group_address = get_eth_address_from_group_key(
+                                self.get_network_group_public_key().await?,
+                            );
 
                             let nonce =
                                 Self::fetch_ethereum_nonce(&group_address, chain_id).await?;
