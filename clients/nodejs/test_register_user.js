@@ -52,13 +52,26 @@ function log(message, color = 'reset') {
 // =========================
 // HTTP helpers
 // =========================
-async function testRegisterUser(ethereumAddress) {
+async function testRegisterUser(ethereumAddress, wallet) {
   try {
     log(`\n🔵 Registering address: ${ethereumAddress}`, 'blue');
 
+    // Create registration message: "register:{ethereum_address}:{timestamp}"
+    const timestamp = Math.floor(Date.now() / 1000);
+    const message = `register:${ethereumAddress}:${timestamp}`;
+    log(`📝 Registration message: ${message}`, 'cyan');
+
+    // Sign the message using the wallet
+    const signature = await wallet.signMessage(message);
+    log(`✍️  Signature: ${signature}`, 'cyan');
+
     const response = await axios.post(
       `${RPC_BASE_URL}/register_user`,
-      { ethereum_address: ethereumAddress },
+      { 
+        ethereum_address: ethereumAddress,
+        signature: signature,
+        message: message
+      },
       { headers: { 'Content-Type': 'application/json', 'X-API-KEY': "2919cd546f2c4338bccb4794a3d6afba2282e5729653fc2c2ff6c5e0e194ar45" }, timeout: 10000 }
     );
 
@@ -313,7 +326,7 @@ async function runTests() {
   await testDKGStatus();
 
   // // // 2) Register ONLY the derived address 
-  // const reg = await testRegisterUser(signerAddr);
+  // const reg = await testRegisterUser(signerAddr, wallet);
 
   // if (reg.success) {
   //   log(`\n⏳ Waiting 2 seconds before checking user info...`, 'yellow');
