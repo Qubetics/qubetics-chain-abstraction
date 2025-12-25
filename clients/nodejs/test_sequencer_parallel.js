@@ -27,8 +27,8 @@ const API_KEY = "2919cd546f2c4338bccb4794a3d6afba2282e5729653fc2c2ff6c5e0e194ar4
 const PRIVATE_KEYS = [
   '11d281397918948a90ce5ce2a72945ee7929a5a932e5bb3d22664ba98f86755e',
   'e41af1d4f1413ed18e0200d225fa810287c5d90d3d11d6fc9723f93538718fc1',
-  // "b61b1415e8b5e5a3144c0d7b8c556b23baed0366586931011c9d858ecf39bd37",
-  // "005c880d2bc9c6f560eef60faa20991b68ee25b3b24f3a037c4af5e078cda77a",
+  "b61b1415e8b5e5a3144c0d7b8c556b23baed0366586931011c9d858ecf39bd37",
+  "005c880d2bc9c6f560eef60faa20991b68ee25b3b24f3a037c4af5e078cda77a",
   // "03c2a0cbaf3a88ddbca8aec76259ff01c9165816794dbcda330ecda5c6008c80",
   // "f44356ec40eea5d9f21c7bd2f29bbedb0269d11168bce2ac38f12b4ef5949156",
   // "ab71a0afb1ffe76973336a105e14573255863dd4ac5692fac9e5b887ef050555",
@@ -357,7 +357,7 @@ async function step2_SubmitTransactions() {
   
   // Submit all transactions in parallel
   const depositPromises = wallets.map(({ wallet, userId }) => {
-    const amount = 10000000000000000000;  // Use same amount as test_register_user.js
+    const amount = 4000000000000000000;  // Use same amount as test_register_user.js
     return testUserMpcDeposit({ wallet, amount, userId });
   });
 
