@@ -1080,6 +1080,7 @@ impl SigningNode {
         &mut self,
         total_nodes: usize,
         broadcast: VrfSelectedNodesBroadcast,
+        sender_peer_id: libp2p::PeerId,
     ) {
         if let Some(vrf_service) = self.coordination.vrf_service() {
             let round = broadcast.round;
@@ -1091,9 +1092,13 @@ impl SigningNode {
 
             tokio::spawn(async move {
                 // Handle VRF broadcast via service
-                vrf_service_clone
-                    .handle_vrf_broadcast(broadcast, total_nodes)
-                    .await; ///////////////////////
+                if let Err(e) = vrf_service_clone
+                    .handle_vrf_broadcast(broadcast, sender_peer_id, total_nodes)
+                    .await
+                {
+                    error!("❌ [SIGNING] Failed to handle VRF broadcast: {}", e);
+                    return;
+                }
 
                 // Check if consensus should be triggered after receiving this broadcast
                 if vrf_service_clone
@@ -1611,7 +1616,7 @@ impl SigningNode {
                         let (recovery_id, signature_bytes) =
                             aggregated_signature.serialize_compact();
                         let v: u64 = recovery_id.to_i32() as u64 + 35 + chain_id_for_v * 2;
-                        
+
                         info!(
                             "🔗 [SIGNING] Using chain_id {} for v calculation (EIP-155 compliant)",
                             chain_id_for_v

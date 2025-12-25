@@ -472,12 +472,13 @@ impl ContractTransactionSequencer {
     pub async fn handle_vrf_broadcast(
         &self,
         broadcast: crate::protocols::VrfSelectedNodesBroadcast,
+        sender_peer_id: libp2p::PeerId,
         total_nodes: usize,
     ) -> Result<()> {
         if let Some(vrf_service) = &self.vrf_service {
             vrf_service
-                .handle_vrf_broadcast(broadcast, total_nodes)
-                .await;
+                .handle_vrf_broadcast(broadcast, sender_peer_id, total_nodes)
+                .await?;
             info!("✅ [VAULT_SEQUENCER] Handled VRF broadcast");
         } else {
             warn!("⚠️ [VAULT_SEQUENCER] VRF service not available for handling broadcast");
@@ -2301,12 +2302,13 @@ impl NetworkTransactionSequencer {
     pub async fn handle_vrf_broadcast(
         &self,
         broadcast: crate::protocols::VrfSelectedNodesBroadcast,
+        sender_peer_id: libp2p::PeerId,
         total_nodes: usize,
     ) -> Result<()> {
         if let Some(vrf_service) = &self.vrf_service {
             vrf_service
-                .handle_vrf_broadcast(broadcast, total_nodes)
-                .await;
+                .handle_vrf_broadcast(broadcast, sender_peer_id, total_nodes)
+                .await?;
             info!("✅ [MAIN_SEQUENCER] Handled VRF broadcast");
         } else {
             warn!("⚠️ [MAIN_SEQUENCER] VRF service not available for handling broadcast");

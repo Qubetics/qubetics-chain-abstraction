@@ -289,8 +289,28 @@ impl VrfService {
     pub async fn handle_vrf_broadcast(
         &self,
         broadcast: VrfSelectedNodesBroadcast,
+        sender_peer_id: PeerId,
         total_nodes: usize,
-    ) {
+    ) -> Result<()> {
+        // SECURITY FIX 1: Verify that selector_node_id matches the actual sender
+        // This prevents spoofing where an attacker claims to be a different node
+        if broadcast.selector_node_id.0 != sender_peer_id {
+            warn!(
+                "🚫 [SECURITY] Rejecting VRF broadcast: selector_node_id ({}) does not match sender ({})",
+                broadcast.selector_node_id.0, sender_peer_id
+            );
+            return Err(anyhow::anyhow!(
+                "selector_node_id mismatch: claimed {}, actual sender {}",
+                broadcast.selector_node_id.0,
+                sender_peer_id
+            ));
+        }
+
+        info!(
+            "✅ [SECURITY] VRF broadcast authenticated: sender {} matches selector_node_id",
+            sender_peer_id
+        );
+
         let round = broadcast.round;
 
         // Check if we have our own selection for this round
@@ -364,7 +384,7 @@ impl VrfService {
         }
 
         let mut selector = self.selector.write().await;
-        selector.handle_selected_nodes_broadcast(broadcast, total_nodes);
+        selector.handle_selected_nodes_broadcast(broadcast, sender_peer_id, total_nodes);
 
         let min_selections = total_nodes;
         if selector.can_start_consensus(round, min_selections) {
@@ -373,6 +393,8 @@ impl VrfService {
                 round
             );
         }
+
+        Ok(())
     }
 
     /// Trigger VRF selection for a specific round
@@ -634,7 +656,8 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let mut config = DatabaseConfig::default();
         config.path = temp_dir.path().to_string_lossy().to_string();
-        config.encryption_key = Some("0000000000000000000000000000000000000000000000000000000000000000".to_string());
+        config.encryption_key =
+            Some("0000000000000000000000000000000000000000000000000000000000000000".to_string());
         let db = Database::new(config).unwrap();
         (db, temp_dir)
     }
