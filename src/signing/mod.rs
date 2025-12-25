@@ -1887,71 +1887,7 @@ impl SigningNode {
             return Ok(());
         }
 
-        // ---- 1) BULK STORE THE WHOLE BATCH (no await per item) ----
-        // First check for duplicates from previous round and filter them out
-        let items_to_store: Vec<&BtcIndexedSignature> = if round > 0 {
-            let prev_round = round - 1;
-            let by_round = self.btc_state.btc_sigs_by_round.read().await;
-            let prev_rmap = by_round.get(&prev_round);
-
-            items.iter()
-                .filter(|it| {
-                    let is_duplicate = if let Some(prev_rmap) = prev_rmap {
-                        if let Some(prev_imap) = prev_rmap.get(&it.input_index) {
-                            if let Some(prev_sig) = prev_imap.get(&from) {
-                                // Compare signature bytes to detect duplicates
-                                prev_sig.signature == it.signature.signature
-                            } else {
-                                false
-                            }
-                        } else {
-                            false
-                        }
-                    } else {
-                        false
-                    };
-
-                    if is_duplicate {
-                        warn!(
-                            "🚫 [BTC] Duplicate signature detected: signature from {} for round {} input {} was already stored in round {} - skipping",
-                            from, round, it.input_index, prev_round
-                        );
-                    }
-                    !is_duplicate
-                })
-                .collect()
-        } else {
-            items.iter().collect()
-        };
-
-        let stored_count = {
-            let mut by_round = self.btc_state.btc_sigs_by_round.write().await;
-            let rmap = by_round.entry(round).or_insert_with(HashMap::new);
-            let mut count = 0;
-            for it in items_to_store {
-                let imap = rmap.entry(it.input_index).or_insert_with(HashMap::new);
-                // last write wins for (round,input,peer)
-                imap.insert(from.clone(), it.signature.clone());
-                count += 1;
-            }
-            count
-        };
-
-        if stored_count < items.len() {
-            info!(
-                "💾 [BTC] stored {} sigs for round {} from {} (batch, {} duplicates filtered from previous round)",
-                stored_count,
-                round,
-                from,
-                items.len() - stored_count
-            );
-        } else {
-            info!(
-                "💾 [BTC] stored {} sigs for round {} from {} (batch)",
-                stored_count, round, from
-            );
-        }
-        // ---- 2) Pull unsigned tx + BTC extras from the correct pending store ----
+        // ---- 1) Pull unsigned tx + BTC extras from the correct pending store (needed for verification) ----
         let is_reward_round = {
             let reward_rounds = self.pending.reward_rounds.read().await;
             reward_rounds.contains(&round)
@@ -2023,6 +1959,121 @@ impl SigningNode {
         let is_testnet = extras.is_testnet;
 
         let _secp: Secp256k1<secp256k1::All> = Secp256k1::new();
+
+        // ---- 2) VERIFY AND STORE THE WHOLE BATCH ----
+        // First check for duplicates from previous round and filter them out
+        let items_to_verify: Vec<&BtcIndexedSignature> = if round > 0 {
+            let prev_round = round - 1;
+            let by_round = self.btc_state.btc_sigs_by_round.read().await;
+            let prev_rmap = by_round.get(&prev_round);
+
+            items.iter()
+                .filter(|it| {
+                    let is_duplicate = if let Some(prev_rmap) = prev_rmap {
+                        if let Some(prev_imap) = prev_rmap.get(&it.input_index) {
+                            if let Some(prev_sig) = prev_imap.get(&from) {
+                                // Compare signature bytes to detect duplicates
+                                prev_sig.signature == it.signature.signature
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    };
+
+                    if is_duplicate {
+                        warn!(
+                            "🚫 [BTC] Duplicate signature detected: signature from {} for round {} input {} was already stored in round {} - skipping",
+                            from, round, it.input_index, prev_round
+                        );
+                    }
+                    !is_duplicate
+                })
+                .collect()
+        } else {
+            items.iter().collect()
+        };
+
+        // Verify each signature before storing
+        let items_to_verify_count = items_to_verify.len();
+        let mut verified_items = Vec::new();
+        let mut verification_errors = Vec::new();
+
+        for item in items_to_verify {
+            match self
+                .verify_btc_signature_for_round(
+                    &from,
+                    &item.signature,
+                    round,
+                    item.input_index,
+                )
+                .await
+            {
+                Ok(_) => {
+                    info!(
+                        "✅ [BTC] Signature verification passed for peer {} in round {} input {}",
+                        from, round, item.input_index
+                    );
+                    verified_items.push(item);
+                }
+                Err(e) => {
+                    error!(
+                        "❌ [BTC] Signature verification failed for peer {} in round {} input {}: {}",
+                        from, round, item.input_index, e
+                    );
+                    verification_errors.push((item.input_index, e));
+                }
+            }
+        }
+
+        // If any verifications failed, return error (but log all failures first)
+        if !verification_errors.is_empty() {
+            let error_msg = verification_errors
+                .iter()
+                .map(|(idx, e)| format!("input {}: {}", idx, e))
+                .collect::<Vec<_>>()
+                .join("; ");
+            return Err(anyhow!(
+                "BTC signature verification failed for {} out of {} signatures from peer {} in round {}: {}",
+                verification_errors.len(),
+                items_to_verify_count,
+                from,
+                round,
+                error_msg
+            ));
+        }
+
+        // Store only verified signatures
+        let stored_count = {
+            let mut by_round = self.btc_state.btc_sigs_by_round.write().await;
+            let rmap = by_round.entry(round).or_insert_with(HashMap::new);
+            let mut count = 0;
+            for it in verified_items {
+                let imap = rmap.entry(it.input_index).or_insert_with(HashMap::new);
+                // last write wins for (round,input,peer)
+                imap.insert(from.clone(), it.signature.clone());
+                count += 1;
+            }
+            count
+        };
+
+        if stored_count < items.len() {
+            info!(
+                "💾 [BTC] stored {} verified sigs for round {} from {} (batch, {} duplicates filtered from previous round)",
+                stored_count,
+                round,
+                from,
+                items.len() - stored_count
+            );
+        } else {
+            info!(
+                "💾 [BTC] stored {} verified sigs for round {} from {} (batch)",
+                stored_count, round, from
+            );
+        }
 
         // ---- 3) SWEEP: aggregate *every* input that hit threshold ----
         for idx in 0..total_inputs {
@@ -2842,6 +2893,427 @@ impl SigningNode {
         );
         info!(
             "✅ [SIGNING] Partial signature verified against peer {}'s {} partial pubkey (not group pubkey)",
+            peer_id, share_type
+        );
+
+        Ok(())
+    }
+
+    /// Verify PARTIAL Bitcoin signature for a round and input index
+    /// This verifies that the partial signature (threshold signature share) from a peer
+    /// is valid for the specific Bitcoin transaction input.
+    /// The signature is a partial signature signed with the peer's share of the private key,
+    /// and must verify against the peer's corresponding share public key (not the group public key).
+    async fn verify_btc_signature_for_round(
+        &self,
+        peer_id: &str,
+        signature: &ECDSASignature,
+        round: u64,
+        input_index: usize,
+    ) -> Result<()> {
+        use k256::elliptic_curve::sec1::ToEncodedPoint;
+        use secp256k1::ecdsa::RecoverableSignature;
+        use secp256k1::{Message, PublicKey, Secp256k1};
+
+        info!(
+            "🔍 [BTC-SIGNING] Verifying PARTIAL signature from peer {} for round {} input {}",
+            peer_id, round, input_index
+        );
+
+        // Get transaction type and user_eth_address for this round
+        let (transaction_type, user_eth_address) = {
+            let is_reward_round = {
+                let reward_rounds = self.pending.reward_rounds.read().await;
+                reward_rounds.contains(&round)
+            };
+            let is_withdraw_round = {
+                let withdraw_rounds = self.pending.withdraw_rounds.read().await;
+                withdraw_rounds.contains(&round)
+            };
+
+            if is_reward_round {
+                let reward_pt = self.pending.reward_pending_transactions_btc.read().await;
+                if let Some((_tx, _raw, _solver_address, tx_type, _extras)) = reward_pt.get(&round) {
+                    (tx_type.clone(), None)
+                } else {
+                    return Err(anyhow!("No reward pending tx for round {}", round));
+                }
+            } else if is_withdraw_round {
+                let withdraw_pt = self.pending.withdraw_pending_transactions_btc.read().await;
+                if let Some((_tx, _raw, _solver_address, tx_type, _extras)) =
+                    withdraw_pt.get(&round)
+                {
+                    (tx_type.clone(), None)
+                } else {
+                    return Err(anyhow!("No withdraw pending tx for round {}", round));
+                }
+            } else {
+                let pt = self.pending.pending_transactions_btc.read().await;
+                if let Some((_tx, _raw, intent_hash, tx_type, _extras)) = pt.get(&round) {
+                    // For UserToVault transactions, retrieve user_eth_address from intent_hash
+                    let user_addr = if matches!(
+                        tx_type,
+                        Some(crate::types::TransactionType::UserToVault)
+                    ) {
+                        if let Some(intent_hash) = intent_hash {
+                            if let Some(database) = &self.database {
+                                use crate::database::storage::UserStorage;
+                                let user_storage = UserStorage::new(database.as_ref().clone());
+                                match user_storage.get_user_by_intent_hash(intent_hash).await {
+                                    Ok(Some(user)) => {
+                                        info!(
+                                            "🔍 [BTC-SIGNING] Retrieved user_eth_address {} from intent_hash {} for UserToVault BTC transaction (round {})",
+                                            user.ethereum_address, intent_hash, round
+                                        );
+                                        Some(user.ethereum_address)
+                                    }
+                                    _ => None,
+                                }
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+                    (tx_type.clone(), user_addr)
+                } else {
+                    return Err(anyhow!("No pending tx for round {}", round));
+                }
+            }
+        };
+
+        // Get Bitcoin transaction and compute digest for this input
+        let unsigned_tx = {
+            let is_reward_round = {
+                let reward_rounds = self.pending.reward_rounds.read().await;
+                reward_rounds.contains(&round)
+            };
+            let is_withdraw_round = {
+                let withdraw_rounds = self.pending.withdraw_rounds.read().await;
+                withdraw_rounds.contains(&round)
+            };
+
+            let (chain_tx, extras_opt) = if is_reward_round {
+                let reward_pt = self.pending.reward_pending_transactions_btc.read().await;
+                let (chain_tx, _raw, _solver_address, _tx_type_opt, extras_opt) =
+                    reward_pt.get(&round).ok_or_else(|| {
+                        anyhow!("no reward pending tx for round {}", round)
+                    })?;
+                (chain_tx.clone(), extras_opt.clone())
+            } else if is_withdraw_round {
+                let withdraw_pt = self.pending.withdraw_pending_transactions_btc.read().await;
+                let (chain_tx, _raw, _solver_address, _tx_type_opt, extras_opt) =
+                    withdraw_pt.get(&round).ok_or_else(|| {
+                        anyhow!("no withdraw pending tx for round {}", round)
+                    })?;
+                (chain_tx.clone(), extras_opt.clone())
+            } else {
+                let pt = self.pending.pending_transactions_btc.read().await;
+                let (chain_tx, _raw, _intent_hash, _tx_type_opt, extras_opt) =
+                    pt.get(&round).ok_or_else(|| {
+                        anyhow!("no pending tx for round {}", round)
+                    })?;
+                (chain_tx.clone(), extras_opt.clone())
+            };
+
+            let btc_tx = match chain_tx {
+                crate::chain_abstraction::ChainTransaction::Bitcoin(t) => t.clone(),
+                _ => {
+                    return Err(anyhow!("round {} is not a Bitcoin round", round));
+                }
+            };
+            btc_tx
+        };
+
+        // Get the prevout script for this input to compute the digest
+        let maybe_prev = unsigned_tx.inputs.get(input_index)
+            .and_then(|inp| inp.witness_utxo.as_ref());
+        
+        let prev_spk = maybe_prev.ok_or_else(|| {
+            anyhow!("round {} input {} missing witness_utxo data", round, input_index)
+        })?;
+
+        // Validate P2PKH script
+        if prev_spk.script_pubkey.len() != 25
+            || !(prev_spk.script_pubkey[0] == 0x76
+                && prev_spk.script_pubkey[1] == 0xA9
+                && prev_spk.script_pubkey[2] == 0x14
+                && prev_spk.script_pubkey[23] == 0x88
+                && prev_spk.script_pubkey[24] == 0xAC)
+        {
+            return Err(anyhow!(
+                "round {} input {} prev script not canonical P2PKH",
+                round, input_index
+            ));
+        }
+
+        // Compute the digest for this input
+        let expected_digest = self.compute_legacy_sighash_all_p2pkh(
+            &unsigned_tx,
+            input_index,
+            &prev_spk.script_pubkey,
+        )?;
+
+        info!(
+            "🔍 [BTC-SIGNING] Expected digest for round {} input {}: 0x{}",
+            round,
+            input_index,
+            hex::encode(&expected_digest)
+        );
+
+        // Get appropriate PARTIAL share pubkey based on transaction type
+        // For Bitcoin, typically vault-share (transaction_type = None)
+        let share_pubkey = self
+            .get_share_pubkey_for_verification(
+                peer_id,
+                &transaction_type,
+                user_eth_address.as_deref(),
+            )
+            .await?;
+
+        // Log the expected pubkey for verification
+        let share_pubkey_affine = share_pubkey.to_affine();
+        let share_pubkey_bytes = share_pubkey_affine.to_encoded_point(true);
+        let expected_pubkey_hex = hex::encode(share_pubkey_bytes.as_bytes());
+
+        info!(
+            "🔑 [BTC-SIGNING] Retrieved PARTIAL share pubkey for peer {} (tx_type: {:?})",
+            peer_id, transaction_type
+        );
+        info!(
+            "🔑 [BTC-SIGNING] Peer {} - Expected pubkey (partial share): 0x{}",
+            peer_id, expected_pubkey_hex
+        );
+
+        // Convert k256 ProjectivePoint to secp256k1 PublicKey
+        let secp_pubkey = PublicKey::from_slice(share_pubkey_bytes.as_bytes())
+            .map_err(|e| anyhow!("Failed to convert share pubkey: {}", e))?;
+
+        // Log the found pubkey (what we're actually using for verification)
+        let found_pubkey_hex = hex::encode(secp_pubkey.serialize());
+        info!(
+            "🔑 [BTC-SIGNING] Peer {} - Found pubkey (for verification): 0x{}",
+            peer_id, found_pubkey_hex
+        );
+
+        // Verify PARTIAL signature against PARTIAL pubkey
+        // This is a threshold signature share, so it must verify against the peer's share pubkey
+        let msg = Message::from_digest_slice(&expected_digest)?;
+        let recovery_id = RecoveryId::from_i32(signature.recovery_id as i32)?;
+        let recov_sig = RecoverableSignature::from_compact(&signature.signature, recovery_id)?;
+        let (_, compact) = recov_sig.serialize_compact();
+        let mut std_sig = secp256k1::ecdsa::Signature::from_compact(&compact)?;
+        std_sig.normalize_s();
+
+        // Log signature details for debugging
+        info!(
+            "🔍 [BTC-SIGNING] Peer {} - Signature details: r=0x{}, s=0x{}, recovery_id={}, digest=0x{}",
+            peer_id,
+            hex::encode(&signature.signature[0..32]),
+            hex::encode(&signature.signature[32..64]),
+            signature.recovery_id,
+            hex::encode(&expected_digest)
+        );
+
+        // Validate signature format
+        if signature.signature.len() != 64 {
+            return Err(anyhow!(
+                "Invalid signature length: expected 64 bytes, got {} bytes",
+                signature.signature.len()
+            ));
+        }
+
+        // Try to recover pubkey from signature using all recovery IDs (0-3)
+        // If ANY recovery_id recovers to the expected pubkey, the signature is valid
+        let secp = Secp256k1::new();
+        let mut correct_recovery_id = None;
+
+        // Always try all recovery IDs to find the correct one
+        info!(
+            "🔍 [BTC-SIGNING] Peer {} - Trying all recovery IDs (0-3) to verify signature against expected pubkey 0x{}",
+            peer_id, expected_pubkey_hex
+        );
+        
+        for rid in 0..4 {
+            if let Ok(test_rid) = RecoveryId::from_i32(rid) {
+                if let Ok(test_recov_sig) =
+                    RecoverableSignature::from_compact(&signature.signature, test_rid)
+                {
+                    if let Ok(test_recovered) = secp.recover_ecdsa(&msg, &test_recov_sig) {
+                        let test_recovered_hex = hex::encode(test_recovered.serialize());
+                        info!(
+                            "🔍 [BTC-SIGNING] Peer {} - Trying recovery_id {}: recovered pubkey 0x{}",
+                            peer_id, rid, test_recovered_hex
+                        );
+                        if test_recovered_hex == expected_pubkey_hex {
+                            info!(
+                                "✅ [BTC-SIGNING] Peer {} - Found matching recovery_id {} (provided was {})!",
+                                peer_id, rid, signature.recovery_id
+                            );
+                            correct_recovery_id = Some(rid as u8);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        
+        if correct_recovery_id.is_none() {
+            warn!(
+                "⚠️ [BTC-SIGNING] Peer {} - No recovery_id (0-3) recovered to expected share pubkey 0x{}",
+                peer_id, expected_pubkey_hex
+            );
+        }
+
+        // If we found a matching recovery_id, the signature is valid - return success immediately
+        if let Some(valid_rid) = correct_recovery_id {
+            info!(
+                "✅ [BTC-SIGNING] Peer {} - Signature verification PASSED via recovery_id {} (recovered pubkey matches expected share pubkey)",
+                peer_id, valid_rid
+            );
+            info!(
+                "🔍 [BTC-SIGNING] Peer {} - Expected pubkey: 0x{}, Recovered pubkey: 0x{}",
+                peer_id, expected_pubkey_hex, expected_pubkey_hex
+            );
+            
+            // Log the signature bytes for debugging
+            info!(
+                "🔍 [BTC-SIGNING] Peer {} - Signature bytes: r=0x{}, s=0x{}",
+                peer_id,
+                hex::encode(&signature.signature[0..32]),
+                hex::encode(&signature.signature[32..64])
+            );
+            
+            // Signature verified successfully via recovery - skip to success
+        } else {
+            // If we couldn't match the recovery_id, try direct verification as fallback
+            warn!(
+                "⚠️ [BTC-SIGNING] Peer {} - Recovered pubkey did not match expected share pubkey for any recovery_id (0-3); proceeding with direct verification against partial pubkey",
+                peer_id
+            );
+
+            // Build a standard (non-recoverable) signature directly from the provided bytes
+            let std_sig_original = secp256k1::ecdsa::Signature::from_compact(&signature.signature)?;
+            
+            // Try verification with non-normalized signature first
+            let verification_result_non_norm = secp.verify_ecdsa(&msg, &std_sig_original, &secp_pubkey);
+            
+            // Normalize and try again
+            let mut std_sig_normalized = std_sig_original;
+            std_sig_normalized.normalize_s();
+            let verification_result_norm = secp.verify_ecdsa(&msg, &std_sig_normalized, &secp_pubkey);
+            
+            // Check if normalization changed the signature
+            let original_bytes = std_sig_original.serialize_compact();
+            let normalized_bytes = std_sig_normalized.serialize_compact();
+            let sig_changed = original_bytes != normalized_bytes;
+            
+            if sig_changed {
+                info!(
+                    "⚠️ [BTC-SIGNING] Peer {} - Signature was normalized (s value changed from high to low)",
+                    peer_id
+                );
+            }
+            
+            // Use the first successful verification
+            let verification_result = if verification_result_non_norm.is_ok() {
+                info!(
+                    "✅ [BTC-SIGNING] Peer {} - Signature verification PASSED with non-normalized signature",
+                    peer_id
+                );
+                verification_result_non_norm
+            } else if verification_result_norm.is_ok() {
+                info!(
+                    "✅ [BTC-SIGNING] Peer {} - Signature verification PASSED with normalized signature",
+                    peer_id
+                );
+                verification_result_norm
+            } else {
+                info!(
+                    "❌ [BTC-SIGNING] Peer {} - Signature verification FAILED with both normalized and non-normalized signatures",
+                    peer_id
+                );
+                verification_result_norm // Use normalized result for error message
+            };
+            
+            // Use normalized signature for logging
+            let std_sig = std_sig_normalized;
+
+            // Log verification attempt
+            info!(
+                "🔍 [BTC-SIGNING] Peer {} - Signature verification: {}",
+                peer_id,
+                if verification_result.is_ok() {
+                    "PASSED"
+                } else {
+                    "FAILED"
+                }
+            );
+            info!(
+                "🔍 [BTC-SIGNING] Peer {} - Expected pubkey: 0x{}, Found pubkey: 0x{}",
+                peer_id, expected_pubkey_hex, found_pubkey_hex
+            );
+            
+            // Log the normalized signature bytes for debugging
+            let normalized_sig_bytes = std_sig.serialize_compact();
+            info!(
+                "🔍 [BTC-SIGNING] Peer {} - Normalized signature bytes: r=0x{}, s=0x{}",
+                peer_id,
+                hex::encode(&normalized_sig_bytes[0..32]),
+                hex::encode(&normalized_sig_bytes[32..64])
+            );
+            
+            // Log the original signature bytes for comparison
+            info!(
+                "🔍 [BTC-SIGNING] Peer {} - Original signature bytes: r=0x{}, s=0x{}",
+                peer_id,
+                hex::encode(&signature.signature[0..32]),
+                hex::encode(&signature.signature[32..64])
+            );
+
+            verification_result
+                .map_err(|e| {
+                    anyhow!(
+                        "PARTIAL BTC signature verification failed for peer {} round {} input {}: {} (verified against peer's share pubkey, not group pubkey). Digest used: 0x{}, Expected pubkey: 0x{}, Found pubkey: 0x{}. Original sig: r=0x{} s=0x{}, Normalized sig: r=0x{} s=0x{}",
+                        peer_id, 
+                        round,
+                        input_index,
+                        e, 
+                        hex::encode(&expected_digest),
+                        expected_pubkey_hex, 
+                        found_pubkey_hex,
+                        hex::encode(&signature.signature[0..32]),
+                        hex::encode(&signature.signature[32..64]),
+                        hex::encode(&normalized_sig_bytes[0..32]),
+                        hex::encode(&normalized_sig_bytes[32..64])
+                    )
+                })?;
+        }
+
+        let share_type = match transaction_type {
+            Some(crate::types::TransactionType::UserToVault) => "user-share",
+            Some(crate::types::TransactionType::NetworkToTarget) => "network-share",
+            Some(crate::types::TransactionType::VaultToNetwork) => "vault-share",
+            Some(crate::types::TransactionType::AddLiquidity) => "vault-share",
+            Some(crate::types::TransactionType::RewardTxn) => "network-share",
+            Some(crate::types::TransactionType::WithdrawLiquidity) => "network-share",
+            None => "vault-share",
+        };
+
+        info!(
+            "✅ [BTC-SIGNING] Verified PARTIAL signature from peer {} for round {} input {} (tx_type: {:?}, user: {:?}, share_type: {})",
+            peer_id,
+            round,
+            input_index,
+            transaction_type,
+            user_eth_address,
+            share_type
+        );
+        info!(
+            "✅ [BTC-SIGNING] Partial signature verified against peer {}'s {} partial pubkey (not group pubkey)",
             peer_id, share_type
         );
 
