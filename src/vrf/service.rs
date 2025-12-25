@@ -629,6 +629,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let mut config = DatabaseConfig::default();
         config.path = temp_dir.path().to_string_lossy().to_string();
+        config.encryption_key = Some("0000000000000000000000000000000000000000000000000000000000000000".to_string());
         let db = Database::new(config).unwrap();
         (db, temp_dir)
     }
