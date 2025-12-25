@@ -278,7 +278,7 @@ impl SigningNode {
         if let Some(vrf_service) = self.coordination.vrf_service() {
             let round = vrf_service.get_current_round().await;
             let _selection_result = vrf_service
-                .perform_node_selection(&available_nodes, 1, round, self.chain_handler.chain_type())
+                .perform_node_selection(&available_nodes, crate::vrf::VRF_NODE_SELECTION_COUNT, round, self.chain_handler.chain_type())
                 .await?;
 
             info!(
@@ -569,7 +569,7 @@ impl SigningNode {
         if let Some(vrf_service) = self.coordination.vrf_service() {
             let round = vrf_service.get_current_round().await;
             let _selection_result = vrf_service
-                .perform_node_selection(&available_nodes, 1, round, "ethereum")
+                .perform_node_selection(&available_nodes, crate::vrf::VRF_NODE_SELECTION_COUNT, round, "ethereum")
                 .await?;
 
             info!(

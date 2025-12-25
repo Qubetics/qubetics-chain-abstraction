@@ -247,10 +247,11 @@ impl DatabaseSigningNode {
 
     /// Set available nodes from node manager
     pub fn set_available_nodes(&mut self, nodes: Vec<PeerId>) {
+        let count = nodes.len();
         self.available_nodes = Some(nodes);
         info!(
             "📋 [DB_SIGNING] Updated available nodes count: {}",
-            self.available_nodes.as_ref().unwrap().len()
+            count
         );
     }
 

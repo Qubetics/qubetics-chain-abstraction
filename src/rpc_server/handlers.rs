@@ -360,6 +360,224 @@ pub(crate) async fn handle_register_user(
         }
     };
 
+    // Signature verification - verify that the user controls the Ethereum address
+    // This is required to prevent address squatting attacks
+    let (signature, message) = match (&request.signature, &request.message) {
+        (Some(sig), Some(msg)) => (sig, msg),
+        _ => {
+            error!("❌ Signature and message are required for user registration");
+            let error_response = EnhancedUserRegistrationResponse {
+                status: "error".to_string(),
+                message: "Signature and message are required for user registration".to_string(),
+                derived_eth_address: None,
+                derived_btc_address: None,
+                error: Some(
+                    RpcError::InvalidRequest(
+                        "Signature and message are required for user registration to prove ownership of the Ethereum address".to_string()
+                    )
+                    .to_error_response(),
+                ),
+            };
+            return Ok(warp::reply::json(&error_response));
+        }
+    };
+
+    info!("🔐 Verifying signature for user registration");
+    
+    // Normalize signature
+    let (compact, v) = match normalize_eth_signature(signature) {
+        Ok(t) => t,
+        Err(e) => {
+            warn!("❌ Failed to normalize signature: {}", e);
+            let error_response = EnhancedUserRegistrationResponse {
+                status: "error".to_string(),
+                message: "Invalid signature format".to_string(),
+                derived_eth_address: None,
+                derived_btc_address: None,
+                error: Some(
+                    RpcError::InvalidRequest(format!("Invalid signature format: {e}"))
+                        .to_error_response(),
+                ),
+            };
+            return Ok(warp::reply::json(&error_response));
+        }
+    };
+
+    // Recover address from signature
+    let msg_bytes = message.as_bytes();
+    let recovered_address = match recover_eth_address_secp(msg_bytes, &compact, v, true) {
+        Ok(addr) => addr,
+        Err(e1) => {
+            warn!("⚠️ personal_sign recovery failed: {}", e1);
+            match recover_eth_address_secp(msg_bytes, &compact, v, false) {
+                Ok(addr) => addr,
+                Err(e2) => {
+                    error!(
+                        "❌ Both signature recovery methods failed: personal_sign={}, raw={}",
+                        e1, e2
+                    );
+                    let error_response = EnhancedUserRegistrationResponse {
+                        status: "error".to_string(),
+                        message: "Failed to recover signature".to_string(),
+                        derived_eth_address: None,
+                        derived_btc_address: None,
+                        error: Some(
+                            RpcError::InvalidRequest(format!(
+                                "Failed to recover signature: personal_sign={e1}, raw={e2}"
+                            ))
+                            .to_error_response(),
+                        ),
+                    };
+                    return Ok(warp::reply::json(&error_response));
+                }
+            }
+        }
+    };
+
+    // Normalize recovered address for comparison
+    let recovered_addr_cs = match checksum_from_any(&recovered_address) {
+        Ok(addr) => addr,
+        Err(e) => {
+            error!("❌ Failed to normalize recovered address: {}", e);
+            let error_response = EnhancedUserRegistrationResponse {
+                status: "error".to_string(),
+                message: "Invalid recovered address".to_string(),
+                derived_eth_address: None,
+                derived_btc_address: None,
+                error: Some(
+                    RpcError::InvalidRequest(format!("Invalid recovered address: {e}"))
+                        .to_error_response(),
+                ),
+            };
+            return Ok(warp::reply::json(&error_response));
+        }
+    };
+
+    // Verify that recovered address matches the provided ethereum_address
+    if recovered_addr_cs.to_lowercase() != addr_cs.to_lowercase() {
+        error!(
+            "❌ Signature verification failed: recovered address {} does not match provided address {}",
+            recovered_addr_cs, addr_cs
+        );
+        let error_response = EnhancedUserRegistrationResponse {
+            status: "error".to_string(),
+            message: "Signature verification failed: address mismatch".to_string(),
+            derived_eth_address: None,
+            derived_btc_address: None,
+            error: Some(
+                RpcError::InvalidRequest(
+                    "Signature verification failed: recovered address does not match provided address".to_string()
+                )
+                .to_error_response(),
+            ),
+        };
+        return Ok(warp::reply::json(&error_response));
+    }
+
+    // Validate message format and timestamp to prevent replay attacks
+    // Expected format: "register:{ethereum_address}:{timestamp}"
+    let parts: Vec<&str> = message.split(':').collect();
+    if parts.len() != 3 || parts[0] != "register" {
+        warn!("⚠️ Invalid message format, expected: register:{{address}}:{{timestamp}}");
+        let error_response = EnhancedUserRegistrationResponse {
+            status: "error".to_string(),
+            message: "Invalid message format".to_string(),
+            derived_eth_address: None,
+            derived_btc_address: None,
+            error: Some(
+                RpcError::InvalidRequest(
+                    "Invalid message format. Expected: register:{address}:{timestamp}".to_string()
+                )
+                .to_error_response(),
+            ),
+        };
+        return Ok(warp::reply::json(&error_response));
+    }
+
+    // Verify the address in the message matches
+    let message_addr = match checksum_from_any(parts[1]) {
+        Ok(addr) => addr,
+        Err(e) => {
+            error!("❌ Invalid address in message: {}", e);
+            let error_response = EnhancedUserRegistrationResponse {
+                status: "error".to_string(),
+                message: "Invalid address in message".to_string(),
+                derived_eth_address: None,
+                derived_btc_address: None,
+                error: Some(
+                    RpcError::InvalidRequest(format!("Invalid address in message: {e}"))
+                        .to_error_response(),
+                ),
+            };
+            return Ok(warp::reply::json(&error_response));
+        }
+    };
+
+    if message_addr.to_lowercase() != addr_cs.to_lowercase() {
+        error!(
+            "❌ Address in message {} does not match provided address {}",
+            message_addr, addr_cs
+        );
+        let error_response = EnhancedUserRegistrationResponse {
+            status: "error".to_string(),
+            message: "Address in message does not match provided address".to_string(),
+            derived_eth_address: None,
+            derived_btc_address: None,
+            error: Some(
+                RpcError::InvalidRequest(
+                    "Address in message does not match provided address".to_string()
+                )
+                .to_error_response(),
+            ),
+        };
+        return Ok(warp::reply::json(&error_response));
+    }
+
+    // Validate timestamp to prevent replay attacks (allow 5 minute window)
+    if let Ok(timestamp) = parts[2].parse::<i64>() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let time_diff = (now - timestamp).abs();
+        const MAX_TIME_DIFF: i64 = 300; // 5 minutes
+
+        if time_diff > MAX_TIME_DIFF {
+            warn!(
+                "⚠️ Timestamp validation failed: time difference {} seconds exceeds maximum {} seconds",
+                time_diff, MAX_TIME_DIFF
+            );
+            let error_response = EnhancedUserRegistrationResponse {
+                status: "error".to_string(),
+                message: "Timestamp validation failed: message expired or invalid".to_string(),
+                derived_eth_address: None,
+                derived_btc_address: None,
+                error: Some(
+                    RpcError::InvalidRequest(
+                        format!("Timestamp validation failed: time difference {} seconds exceeds maximum {} seconds", time_diff, MAX_TIME_DIFF)
+                    )
+                    .to_error_response(),
+                ),
+            };
+            return Ok(warp::reply::json(&error_response));
+        }
+    } else {
+        warn!("⚠️ Invalid timestamp format in message");
+        let error_response = EnhancedUserRegistrationResponse {
+            status: "error".to_string(),
+            message: "Invalid timestamp format in message".to_string(),
+            derived_eth_address: None,
+            derived_btc_address: None,
+            error: Some(
+                RpcError::InvalidRequest("Invalid timestamp format in message".to_string())
+                    .to_error_response(),
+            ),
+        };
+        return Ok(warp::reply::json(&error_response));
+    }
+
+    info!("✅ Signature verification successful for address: {}", addr_cs);
+
     // Check if user is already registered
     if let Some(_existing_user) = user_intent_manager.get_user_by_address(&addr_cs).await {
         info!("⚠️ HTTP: User already registered: {}", addr_cs);
