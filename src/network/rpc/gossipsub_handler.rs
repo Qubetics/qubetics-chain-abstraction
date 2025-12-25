@@ -26,6 +26,8 @@ use crate::network::transport::types::{
 impl MpcNetworkLayer {
     /// Main gossipsub message handler - delegates to specific message type handlers
     pub(crate) async fn handle_gossipsub_message(&mut self, message: &Message) -> Result<()> {
+        // Extract sender peer ID from message for security checks
+        let sender_peer_id_from_message = message.source;
         info!(
             "i am at handle_gossipsub_message ---------- {:?}",
             message.topic
@@ -580,6 +582,35 @@ impl MpcNetworkLayer {
                     "📡 [NETWORK] Received transaction ID broadcast from node {}",
                     node_id
                 );
+
+                // SECURITY FIX 1: Authenticate sender - verify node_id is a trusted/active node
+                let sender_peer_id = match node_id.parse::<libp2p::PeerId>() {
+                    Ok(pid) => pid,
+                    Err(e) => {
+                        warn!(
+                            "🚫 [SECURITY] Rejecting TransactionIdBroadcast: invalid node_id format '{}': {}",
+                            node_id, e
+                        );
+                        return Ok(());
+                    }
+                };
+
+                let is_trusted_node = self
+                    .node_manager
+                    .get_active_nodes()
+                    .contains(&sender_peer_id);
+                if !is_trusted_node {
+                    warn!(
+                        "🚫 [SECURITY] Rejecting TransactionIdBroadcast: sender {} is not a trusted/active node",
+                        node_id
+                    );
+                    return Ok(());
+                }
+
+                info!(
+                    "✅ [SECURITY] TransactionIdBroadcast authenticated from trusted node {}",
+                    node_id
+                );
                 info!("💳 [NETWORK] Transaction ID: {}", transaction_id);
                 info!("🔄 [NETWORK] Transaction type: {}", transaction_type);
                 if let Some(hash) = &intent_hash {
@@ -599,6 +630,7 @@ impl MpcNetworkLayer {
                                 &transaction_id,
                                 &transaction_type,
                                 &node_id,
+                                &sender_peer_id,
                             )
                             .await
                         {
