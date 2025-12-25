@@ -19,6 +19,11 @@ use super::{
     types::{NodeSelectionResult, VrfSelectedNodesBroadcast, VrfSelectionMessage},
 };
 
+/// Number of nodes to select for VRF-based signing operations.
+/// This constant determines how many nodes are selected for each signing round.
+/// Can be adjusted for redundancy, threshold signing, security improvement, or decentralization.
+pub const VRF_NODE_SELECTION_COUNT: usize = 1;
+
 #[derive(Debug, Clone)]
 pub struct VrfServiceConfig {
     pub allow_synthetic_submissions: bool,
@@ -629,6 +634,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let mut config = DatabaseConfig::default();
         config.path = temp_dir.path().to_string_lossy().to_string();
+        config.encryption_key = Some("0000000000000000000000000000000000000000000000000000000000000000".to_string());
         let db = Database::new(config).unwrap();
         (db, temp_dir)
     }

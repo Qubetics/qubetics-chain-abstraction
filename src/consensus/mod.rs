@@ -1,5 +1,6 @@
 use crate::types::{ConsensusMessage, ConsensusResult, SerializablePeerId};
 use anyhow::Result;
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use tracing::{debug, info, warn};
 
@@ -83,6 +84,8 @@ impl ConsensusNode {
                     "📥 [CONSENSUS] Received final node result for round {}: {:?}",
                     round, result.final_node
                 );
+
+                // SECURITY CHECK 1: Validate round parameter matches result.round
                 if result.round != round {
                     return Err(anyhow::anyhow!(
                         "Consensus round mismatch: payload={} wrapper={}",
@@ -91,144 +94,122 @@ impl ConsensusNode {
                     ));
                 }
 
-                // Check if we already have a consensus result for this round
-                // If we do and the final_node matches, accept it (likely our own broadcast)
-                if let Some(existing_result) = self.consensus_results.get(&round) {
-                    if existing_result.final_node == result.final_node {
-                        info!(
-                            "✅ [CONSENSUS] Already have consensus result for round {} with same final_node {:?}, accepting received result",
-                            round, result.final_node
-                        );
-                        // Update with the received result (might have different frequencies/selections but same final_node)
-                        self.consensus_results.insert(round, result);
-                        return Ok(());
-                    } else {
-                        warn!(
-                            "⚠️ [CONSENSUS] Already have different consensus result for round {}: existing={:?}, received={:?}",
-                            round, existing_result.final_node, result.final_node
-                        );
-                        // Continue with validation to see which one is correct
-                    }
+                // SECURITY CHECK 2: Validate round is reasonable (not too far in future/past)
+                // Allow rounds up to 1000 in the future (for network delays) and any past round
+                const MAX_FUTURE_ROUND_OFFSET: u64 = 1000;
+                if round > self.current_round.saturating_add(MAX_FUTURE_ROUND_OFFSET) {
+                    return Err(anyhow::anyhow!(
+                        "Invalid consensus round {}: too far in future (current_round={}, max_offset={})",
+                        round,
+                        self.current_round,
+                        MAX_FUTURE_ROUND_OFFSET
+                    ));
                 }
 
-                // Get or reconstruct selected nodes for validation
-                let selected_nodes = if let Some(nodes) = self.selected_nodes_by_round.get(&round) {
-                    // We have the selected nodes - use them for validation
-                    info!(
-                        "✅ [CONSENSUS] Using existing selected nodes for round {}: {} nodes",
-                        round,
-                        nodes.len()
-                    );
-                    nodes.clone()
-                } else {
-                    // We don't have selected nodes (maybe we missed VRF broadcasts)
-                    // Reconstruct them from the consensus result's node_frequencies
-                    info!(
-                        "⚠️ [CONSENSUS] No selected nodes recorded for round {}, reconstructing from consensus result node_frequencies: {:?}",
-                        round,
-                        result.node_frequencies
-                    );
-                    
-                    if result.node_frequencies.is_empty() {
-                        return Err(anyhow::anyhow!(
-                            "Cannot reconstruct selected nodes for round {}: node_frequencies is empty in consensus result",
-                            round
-                        ));
-                    }
-                    
-                    let mut reconstructed_nodes = Vec::new();
-                    for (node, frequency) in &result.node_frequencies {
-                        info!(
-                            "🔧 [CONSENSUS] Reconstructing: adding node {:?} {} times",
-                            node, frequency
-                        );
-                        // Add each node 'frequency' times to match the original selection
-                        for _ in 0..*frequency {
-                            reconstructed_nodes.push(node.clone());
+                // SECURITY CHECK 3: Require that we have selected_nodes for this round
+                // This ensures we participated in the round and can validate the result
+                // DO NOT reconstruct from untrusted node_frequencies - this is a security vulnerability
+                let selected_nodes = match self.selected_nodes_by_round.get(&round) {
+                    Some(nodes) => {
+                        if nodes.is_empty() {
+                            return Err(anyhow::anyhow!(
+                                "Selected nodes list for round {} is empty",
+                                round
+                            ));
                         }
+                        info!(
+                            "✅ [CONSENSUS] Using existing selected nodes for round {}: {} nodes",
+                            round,
+                            nodes.len()
+                        );
+                        nodes.clone()
                     }
-                    
-                    info!(
-                        "✅ [CONSENSUS] Reconstructed {} selected nodes for round {}",
-                        reconstructed_nodes.len(),
-                        round
-                    );
-                    
-                    if reconstructed_nodes.is_empty() {
+                    None => {
                         return Err(anyhow::anyhow!(
-                            "Reconstruction failed for round {}: reconstructed list is empty",
+                            "Cannot validate consensus result for round {}: no selected nodes available. This node must have participated in the round to validate results.",
                             round
                         ));
                     }
-                    
-                    // Store the reconstructed nodes for future reference
-                    self.selected_nodes_by_round.insert(round, reconstructed_nodes.clone());
-                    reconstructed_nodes
                 };
 
-                let expected_result = Self::calculate_consensus_result(&selected_nodes, round)?;
-
-                // The most important validation is that the final_node matches
-                // If final_node matches, accept it even if frequencies/selections differ slightly
-                // (this can happen when a node receives its own broadcast after receiving additional VRF selections)
-                if expected_result.final_node != result.final_node {
-                    // Provide detailed comparison to help debug
-                    let mut differences = Vec::new();
-                    differences.push(format!(
-                        "final_node: expected {:?}, got {:?}",
-                        expected_result.final_node, result.final_node
-                    ));
-                    if expected_result.round != result.round {
-                        differences.push(format!(
-                            "round: expected {}, got {}",
-                            expected_result.round, result.round
-                        ));
-                    }
-                    if expected_result.total_selections != result.total_selections {
-                        differences.push(format!(
-                            "total_selections: expected {}, got {}",
-                            expected_result.total_selections, result.total_selections
-                        ));
-                    }
-                    if expected_result.node_frequencies != result.node_frequencies {
-                        differences.push(format!(
-                            "node_frequencies: expected {:?}, got {:?}",
-                            expected_result.node_frequencies, result.node_frequencies
-                        ));
-                    }
-                    
+                // SECURITY CHECK 4: Verify final_node is actually in the selected_nodes
+                let final_node_in_selected =
+                    selected_nodes.iter().any(|node| *node == result.final_node);
+                if !final_node_in_selected {
                     return Err(anyhow::anyhow!(
-                        "Invalid consensus result received for round {}: {}. Expected result: final_node={:?}, total_selections={}, node_frequencies={:?}. Received result: final_node={:?}, total_selections={}, node_frequencies={:?}",
+                        "Invalid consensus result for round {}: final_node {:?} is not in selected_nodes {:?}",
                         round,
-                        differences.join(", "),
-                        expected_result.final_node,
-                        expected_result.total_selections,
-                        expected_result.node_frequencies,
                         result.final_node,
-                        result.total_selections,
-                        result.node_frequencies
+                        selected_nodes
                     ));
                 }
 
-                // Final node matches - validate that the received result would also produce the same final_node
-                // by recalculating from the received node_frequencies
-                let received_final_node = Self::calculate_final_node_from_frequencies(&result.node_frequencies)?;
+                // SECURITY CHECK 5: If we already have a result, validate the new one before overwriting
+                if let Some(existing_result) = self.consensus_results.get(&round) {
+                    // Even if final_node matches, we must validate the new result is correct
+                    // Don't trust - verify!
+                    warn!(
+                        "⚠️ [CONSENSUS] Already have consensus result for round {}: existing={:?}, received={:?}. Validating before overwriting...",
+                        round, existing_result.final_node, result.final_node
+                    );
+                    // Continue with full validation below
+                }
+
+                // SECURITY CHECK 6: Compute expected result from our selected_nodes
+                // This is the ground truth - we trust our own selected_nodes
+                let expected_result = Self::calculate_consensus_result(&selected_nodes, round)?;
+
+                // SECURITY CHECK 7: Verify final_node matches our calculation
+                if expected_result.final_node != result.final_node {
+                    return Err(anyhow::anyhow!(
+                        "Invalid consensus result for round {}: final_node mismatch. Expected {:?} (calculated from our selected_nodes), got {:?}",
+                        round,
+                        expected_result.final_node,
+                        result.final_node
+                    ));
+                }
+
+                // SECURITY CHECK 8: Verify node_frequencies are consistent
+                // The received node_frequencies should match what we calculate from selected_nodes
+                // Allow minor differences due to timing (node might have received additional VRF selections)
+                // but the final_node calculation must be consistent
+                let received_final_node =
+                    Self::calculate_final_node_from_frequencies(&result.node_frequencies, round)?;
                 if received_final_node != result.final_node {
                     return Err(anyhow::anyhow!(
-                        "Consensus result inconsistency for round {}: final_node {:?} doesn't match calculation from node_frequencies {:?}",
+                        "Consensus result inconsistency for round {}: final_node {:?} doesn't match calculation from received node_frequencies {:?}",
                         round, result.final_node, result.node_frequencies
                     ));
                 }
 
-                // Final node matches and is consistent - accept the result
-                // (even if total_selections or exact frequencies differ, as long as final_node is correct)
-                if expected_result.total_selections != result.total_selections || expected_result.node_frequencies != result.node_frequencies {
+                // SECURITY CHECK 9: Verify all nodes in node_frequencies are in selected_nodes
+                // This prevents an attacker from adding fake nodes to node_frequencies
+                for (node, _) in &result.node_frequencies {
+                    if !selected_nodes.iter().any(|n| n == node) {
+                        return Err(anyhow::anyhow!(
+                            "Invalid consensus result for round {}: node_frequencies contains node {:?} that is not in selected_nodes",
+                            round, node
+                        ));
+                    }
+                }
+
+                // All security checks passed - accept the result
+                // Log if there are minor differences (acceptable due to timing)
+                if expected_result.total_selections != result.total_selections
+                    || expected_result.node_frequencies != result.node_frequencies
+                {
                     info!(
-                        "ℹ️ [CONSENSUS] Accepting consensus result for round {} with matching final_node {:?} but different frequencies/selections (expected: total={}, got: total={})",
+                        "ℹ️ [CONSENSUS] Accepting validated consensus result for round {} with matching final_node {:?} but minor differences in frequencies/selections (expected: total={}, got: total={})",
                         round, result.final_node, expected_result.total_selections, result.total_selections
+                    );
+                } else {
+                    info!(
+                        "✅ [CONSENSUS] Accepting fully validated consensus result for round {}: final_node={:?}",
+                        round, result.final_node
                     );
                 }
 
+                // Store the validated result
                 self.consensus_results.insert(round, result);
                 self.current_round = self.current_round.max(round);
             }
@@ -279,8 +260,10 @@ impl ConsensusNode {
         );
 
         let mut candidates: Vec<SerializablePeerId> = if all_same_frequency {
-            selected_nodes.to_vec()
+            // All nodes have the same frequency - use all unique nodes as candidates
+            node_frequencies.keys().cloned().collect()
         } else {
+            // Only nodes with max_frequency are candidates
             node_frequencies
                 .iter()
                 .filter(|(_, &freq)| freq == max_frequency)
@@ -288,7 +271,13 @@ impl ConsensusNode {
                 .collect()
         };
 
-        candidates.sort_by(|a, b| a.0.to_bytes().cmp(&b.0.to_bytes()));
+        // Use cryptographic hash-based tie-breaking to prevent PeerId grinding attacks
+        // Hash: SHA256(round_bytes || peer_id_bytes) - deterministic but fair per round
+        candidates.sort_by(|a, b| {
+            let hash_a = Self::tie_breaker_hash(round, &a.0);
+            let hash_b = Self::tie_breaker_hash(round, &b.0);
+            hash_a.cmp(&hash_b)
+        });
         info!(
             "📋 [CONSENSUS] Candidates with max frequency {}: {:?}",
             max_frequency, candidates
@@ -298,13 +287,13 @@ impl ConsensusNode {
 
         if all_same_frequency {
             info!(
-                "⚖️ [CONSENSUS] All nodes tied ({} each), picking lexicographically first: {:?}",
+                "⚖️ [CONSENSUS] All nodes tied ({} each), picking by hash-based tie-breaker: {:?}",
                 first_frequency.unwrap_or(0),
                 final_node
             );
         } else {
             info!(
-                "🏆 [CONSENSUS] Picking from freq‐{} candidates, lexicographically first: {:?}",
+                "🏆 [CONSENSUS] Picking from freq‐{} candidates by hash-based tie-breaker: {:?}",
                 max_frequency, final_node
             );
         }
@@ -320,6 +309,7 @@ impl ConsensusNode {
     /// Calculate the final node from node frequencies (helper for validation)
     fn calculate_final_node_from_frequencies(
         node_frequencies: &HashMap<SerializablePeerId, usize>,
+        round: u64,
     ) -> Result<SerializablePeerId> {
         if node_frequencies.is_empty() {
             return Err(anyhow::anyhow!("No node frequencies available"));
@@ -351,9 +341,25 @@ impl ConsensusNode {
                 .collect()
         };
 
-        candidates.sort_by(|a, b| a.0.to_bytes().cmp(&b.0.to_bytes()));
+        // Use the same cryptographic hash-based tie-breaking as calculate_consensus_result
+        candidates.sort_by(|a, b| {
+            let hash_a = Self::tie_breaker_hash(round, &a.0);
+            let hash_b = Self::tie_breaker_hash(round, &b.0);
+            hash_a.cmp(&hash_b)
+        });
 
         Ok(candidates[0].clone())
+    }
+
+    /// Compute a deterministic tie-breaker hash for leader selection
+    /// Uses SHA256(round_bytes || peer_id_bytes) to prevent PeerId grinding attacks
+    /// This ensures fairness: an attacker cannot precompute a PeerId that always wins
+    /// because the hash depends on the round number, which changes each round.
+    fn tie_breaker_hash(round: u64, peer_id: &libp2p::PeerId) -> [u8; 32] {
+        let mut hasher = Sha256::new();
+        hasher.update(round.to_be_bytes());
+        hasher.update(peer_id.to_bytes());
+        hasher.finalize().into()
     }
 
     /// Check if this node is the final selected node for a round
@@ -426,8 +432,11 @@ mod tests {
         consensus.add_selected_nodes(1, selected_nodes);
         let result = consensus.start_consensus(1).unwrap();
 
-        // Should select the first node when all have same frequency
-        assert_eq!(result.final_node, nodes[0]);
+        // Should select one of the nodes when all have same frequency (hash-based tie-breaker)
+        assert!(
+            nodes.contains(&result.final_node),
+            "Selected node should be one of the candidates"
+        );
         assert_eq!(result.node_frequencies.get(&nodes[0]), Some(&1));
         assert_eq!(result.node_frequencies.get(&nodes[1]), Some(&1));
         assert_eq!(result.node_frequencies.get(&nodes[2]), Some(&1));

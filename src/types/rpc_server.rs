@@ -44,6 +44,10 @@ pub struct UptimeResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserRegistrationRequest {
     pub ethereum_address: String,
+    /// Signature of the registration message (required for security)
+    pub signature: Option<String>,
+    /// The message that was signed (should be in format: "register:{ethereum_address}:{timestamp}")
+    pub message: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

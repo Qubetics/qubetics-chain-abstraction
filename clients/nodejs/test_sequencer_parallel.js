@@ -60,13 +60,26 @@ function log(message, color = 'reset') {
 }
 
 // Register a user (like test_register_user.js)
-async function testRegisterUser(ethereumAddress, userId) {
+async function testRegisterUser(ethereumAddress, userId, wallet) {
   try {
     log(`[User ${userId}] Registering address: ${ethereumAddress}`, 'blue');
 
+    // Create registration message: "register:{ethereum_address}:{timestamp}"
+    const timestamp = Math.floor(Date.now() / 1000);
+    const message = `register:${ethereumAddress}:${timestamp}`;
+    log(`[User ${userId}] 📝 Registration message: ${message}`, 'cyan');
+
+    // Sign the message using the wallet
+    const signature = await wallet.signMessage(message);
+    log(`[User ${userId}] ✍️  Signature: ${signature}`, 'cyan');
+
     const response = await axios.post(
       `${RPC_BASE_URL}/register_user`,
-      { ethereum_address: ethereumAddress },
+      { 
+        ethereum_address: ethereumAddress,
+        signature: signature,
+        message: message
+      },
       { 
         headers: { 
           'Content-Type': 'application/json', 
@@ -263,8 +276,8 @@ async function step1_RegisterUsers() {
     
     log(`📦 Batch ${batchNum}/${totalBatches}: Registering users ${batch[0].userId} to ${batch[batch.length - 1].userId}`, 'blue');
     
-    const batchPromises = batch.map(({ address, userId }) => 
-      testRegisterUser(address, userId)
+    const batchPromises = batch.map(({ address, userId, wallet }) => 
+      testRegisterUser(address, userId, wallet)
     );
     const batchResults = await Promise.all(batchPromises);
     registrationResults.push(...batchResults);

@@ -2292,62 +2292,8 @@ impl MpcNetworkLayer {
                                         );
                                     debug!("→ RLP payload: 0x{}", hex::encode(&tx_bytes));
 
-                                    // Get signing key based on transaction type
-                                    let user_tweaked_share = match transaction_type {
-                                        crate::types::TransactionType::UserToVault => {
-                                            // For user deposits, use user's tweaked secret share
-                                            if let Some(eth_addr) = &user_eth_address {
-                                                if let Some(user_intent_manager) =
-                                                    &self.user_intent_manager
-                                                {
-                                                    if let Some(user) = user_intent_manager
-                                                        .get_user_by_address(eth_addr)
-                                                        .await
-                                                    {
-                                                        user.tweaked_secret_share.map(|s| s.0)
-                                                    } else {
-                                                        None
-                                                    }
-                                                } else {
-                                                    None
-                                                }
-                                            } else {
-                                                None
-                                            }
-                                        }
-                                        crate::types::TransactionType::NetworkToTarget => {
-                                            // For network withdrawals, use network's DKG secret share
-                                            if let Some(dkg_node) = &self.dkg_node {
-                                                dkg_node.get_final_secret_share().await
-                                            } else {
-                                                None
-                                            }
-                                        }
-                                        crate::types::TransactionType::VaultToNetwork => {
-                                            // For vault-to-network, use vault's tweaked secret share
-                                            if let Some(dkg_node) = &self.dkg_node {
-                                                dkg_node.get_vault_tweaked_secret_share().await
-                                            } else {
-                                                None
-                                            }
-                                        }
-                                        crate::types::TransactionType::RewardTxn => {
-                                            // RewardTxn is not valid for intent flow
-                                            None
-                                        }
-                                        crate::types::TransactionType::WithdrawLiquidity => {
-                                            warn!(
-                                                "❌ [LOCAL] WithdrawLiquidity transaction type not supported for deposit signing"
-                                            );
-                                            None
-                                        }
-                                        crate::types::TransactionType::AddLiquidity => {
-                                            warn!(
-                                                "❌ [LOCAL] AddLiquidity transaction type not supported for deposit signing"
-                                            );
-                                            None
-                                        }
-                                    };
+                                    // Use the signing_key that was already fetched earlier to avoid redundant fetching
+                                    let user_tweaked_share = signing_key;
 
                                     // For NetworkToTarget, queue to sequencer for coordinated signing
                                     if matches!(
@@ -2567,12 +2513,18 @@ impl MpcNetworkLayer {
                 // Now process locally using shared handler
                 match (intent_hash.as_ref(), solver_address.as_ref()) {
                     (Some(intent_hash), _) => {
+                        // Parse node_id to get PeerId for security check
+                        let sender_peer_id = node_id
+                            .parse::<libp2p::PeerId>()
+                            .unwrap_or_else(|_| libp2p::PeerId::random());
+
                         if let Err(e) = self
                             .handle_transaction_id_storage(
                                 intent_hash,
                                 &transaction_id,
                                 &transaction_type,
                                 &node_id,
+                                &sender_peer_id,
                             )
                             .await
                         {

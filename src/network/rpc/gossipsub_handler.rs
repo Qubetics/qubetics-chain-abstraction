@@ -26,6 +26,8 @@ use crate::network::transport::types::{
 impl MpcNetworkLayer {
     /// Main gossipsub message handler - delegates to specific message type handlers
     pub(crate) async fn handle_gossipsub_message(&mut self, message: &Message) -> Result<()> {
+        // Extract sender peer ID from message for security checks
+        let sender_peer_id_from_message = message.source;
         info!(
             "i am at handle_gossipsub_message ---------- {:?}",
             message.topic
@@ -580,6 +582,35 @@ impl MpcNetworkLayer {
                     "📡 [NETWORK] Received transaction ID broadcast from node {}",
                     node_id
                 );
+
+                // SECURITY FIX 1: Authenticate sender - verify node_id is a trusted/active node
+                let sender_peer_id = match node_id.parse::<libp2p::PeerId>() {
+                    Ok(pid) => pid,
+                    Err(e) => {
+                        warn!(
+                            "🚫 [SECURITY] Rejecting TransactionIdBroadcast: invalid node_id format '{}': {}",
+                            node_id, e
+                        );
+                        return Ok(());
+                    }
+                };
+
+                let is_trusted_node = self
+                    .node_manager
+                    .get_active_nodes()
+                    .contains(&sender_peer_id);
+                if !is_trusted_node {
+                    warn!(
+                        "🚫 [SECURITY] Rejecting TransactionIdBroadcast: sender {} is not a trusted/active node",
+                        node_id
+                    );
+                    return Ok(());
+                }
+
+                info!(
+                    "✅ [SECURITY] TransactionIdBroadcast authenticated from trusted node {}",
+                    node_id
+                );
                 info!("💳 [NETWORK] Transaction ID: {}", transaction_id);
                 info!("🔄 [NETWORK] Transaction type: {}", transaction_type);
                 if let Some(hash) = &intent_hash {
@@ -599,6 +630,7 @@ impl MpcNetworkLayer {
                                 &transaction_id,
                                 &transaction_type,
                                 &node_id,
+                                &sender_peer_id,
                             )
                             .await
                         {
@@ -1098,61 +1130,8 @@ impl MpcNetworkLayer {
                                         );
                                     debug!("→ RLP payload: 0x{}", hex::encode(&tx_bytes));
 
-                                    let user_tweaked_share = match transaction_type {
-                                        crate::types::TransactionType::UserToVault => {
-                                            // For user deposits, use user's tweaked secret share
-                                            if let Some(eth_addr) = &user_eth_address {
-                                                if let Some(user_intent_manager) =
-                                                    &self.user_intent_manager
-                                                {
-                                                    if let Some(user) = user_intent_manager
-                                                        .get_user_by_address(eth_addr)
-                                                        .await
-                                                    {
-                                                        user.tweaked_secret_share.map(|s| s.0)
-                                                    } else {
-                                                        None
-                                                    }
-                                                } else {
-                                                    None
-                                                }
-                                            } else {
-                                                None
-                                            }
-                                        }
-                                        crate::types::TransactionType::NetworkToTarget => {
-                                            // For network withdrawals, use network's DKG secret share
-                                            if let Some(dkg_node) = &self.dkg_node {
-                                                dkg_node.get_final_secret_share().await
-                                            } else {
-                                                None
-                                            }
-                                        }
-                                        crate::types::TransactionType::VaultToNetwork => {
-                                            // For vault-to-network, use vault's tweaked secret share
-                                            if let Some(dkg_node) = &self.dkg_node {
-                                                dkg_node.get_vault_tweaked_secret_share().await
-                                            } else {
-                                                None
-                                            }
-                                        }
-                                        crate::types::TransactionType::RewardTxn => {
-                                            // RewardTxn is not valid for intent flow
-                                            None
-                                        }
-                                        crate::types::TransactionType::WithdrawLiquidity => {
-                                            warn!(
-                                                "❌ [GOSSIPSUB] WithdrawLiquidity transaction type not supported for deposit signing"
-                                            );
-                                            None
-                                        }
-                                        crate::types::TransactionType::AddLiquidity => {
-                                            warn!(
-                                                "❌ [GOSSIPSUB] AddLiquidity transaction type not supported for deposit signing"
-                                            );
-                                            None
-                                        }
-                                    };
+                                    // Use the signing_key that was already fetched earlier to avoid redundant fetching
+                                    let user_tweaked_share = signing_key;
 
                                     // For NetworkToTarget, queue to sequencer for coordinated signing
                                     if matches!(

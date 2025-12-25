@@ -52,13 +52,26 @@ function log(message, color = 'reset') {
 // =========================
 // HTTP helpers
 // =========================
-async function testRegisterUser(ethereumAddress) {
+async function testRegisterUser(ethereumAddress, wallet) {
   try {
     log(`\n🔵 Registering address: ${ethereumAddress}`, 'blue');
 
+    // Create registration message: "register:{ethereum_address}:{timestamp}"
+    const timestamp = Math.floor(Date.now() / 1000);
+    const message = `register:${ethereumAddress}:${timestamp}`;
+    log(`📝 Registration message: ${message}`, 'cyan');
+
+    // Sign the message using the wallet
+    const signature = await wallet.signMessage(message);
+    log(`✍️  Signature: ${signature}`, 'cyan');
+
     const response = await axios.post(
       `${RPC_BASE_URL}/register_user`,
-      { ethereum_address: ethereumAddress },
+      { 
+        ethereum_address: ethereumAddress,
+        signature: signature,
+        message: message
+      },
       { headers: { 'Content-Type': 'application/json', 'X-API-KEY': "2919cd546f2c4338bccb4794a3d6afba2282e5729653fc2c2ff6c5e0e194ar45" }, timeout: 10000 }
     );
 
@@ -312,7 +325,7 @@ async function runTests() {
   // 1) DKG status
   await testDKGStatus();
 
-  // // // 2) Register ONLY the derived address 
+  // // 2) Register ONLY the derived address 
   // const reg = await testRegisterUser(signerAddr);
 
   // if (reg.success) {
@@ -324,12 +337,12 @@ async function runTests() {
   // }
 
   // 3) MPC deposit test WITHOUT tx_id (should pass Some(signer) to handle_deposit_intent)
-  // log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
-  // const amount = 900
-  // await testUserMpcDeposit({ wallet, amount });
   log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
-  const amount = 25000000000000000000
+  const amount = 2000000000000000000
   await testUserMpcDeposit({ wallet, amount });
+  // log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
+  // const amount = 25000000000000000000
+  // await testUserMpcDeposit({ wallet, amount });
 
   // const address = '0xbac113cebd9CB2fBD2a01B5CBC43D0fC0EBed5e9';
   // await testGetRewardSolver(address);

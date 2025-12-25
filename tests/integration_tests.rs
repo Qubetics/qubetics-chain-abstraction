@@ -26,7 +26,7 @@ async fn main() -> anyhow::Result<()> {
         run_nodes(&client, RPC_PORT, &["node1", "node2", "node3"]).await?;
 
     println!("Executing user_mpc_deposit from Qubetics to Bitcoin");
-    user_deposit_intent_eth_to_btc(test_private_key, node1_peer_id.clone(), client.clone()).await?;
+    user_deposit_intent_eth_to_btc(test_private_key.clone(), node1_peer_id.clone(), client.clone()).await?;
     println!("User mpc deposit from Qubetics to Bitcoin executed successfully");
 
     let (vault_eth_address_before, vault_btc_address_before) = get_vault_addresses(&node1_peer_id)?;
