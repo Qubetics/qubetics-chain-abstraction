@@ -623,8 +623,18 @@ pub async fn create_ethereum_transaction(
     let nonce = fetch_ethereum_nonce(from_address, chain_id).await?;
 
     info!(
-        "🎁 [ETH_TX] Transaction details - Chain: {}, Chain ID: {}, Gas Price: {}, Nonce: {}",
-        chain_name, chain_id, gas_price, nonce
+        "🎁 [ETH_TX] Constructed Payload: \n\
+         \tTo: {}\n\
+         \tValue: {}\n\
+         \tGas Price: {}\n\
+         \tNonce: {}\n\
+         \tGas Limit: 21000\n\
+         \tChain ID: {}",
+        to_address,
+        amount_to_hex_string(amount),
+        gas_price,
+        nonce,
+        chain_id
     );
 
     let ethereum_tx = EthereumTransaction {
@@ -1049,7 +1059,10 @@ async fn create_chain_transaction_from_deposit_intent_internal(
         }
     };
 
-    info!("amount::::: {}", amount);
+    info!(
+        "🎁 [CHAIN_TX] Processing DepositIntent - IntentID: {}, Type: {:?}, Amount: {}, Chain: {}",
+        intent.source_address, transaction_type, amount, chain_to_use
+    );
 
     if is_evm_chain(chain_to_use) {
         // Get vault address from parameter
@@ -1948,41 +1961,27 @@ pub async fn get_gas_price_for_chain(chain_name: &str, chain_id: u64) -> Result<
         "qubetics" => {
             // Reduced noisy stdout logging in production path
             // Try to fetch dynamic gas price for Qubetics
-            match fetch_qubetics_gas_price(chain_id).await {
-                Ok(gas_price) => {
-                    info!("Using dynamic gas price for Qubetics: {}", gas_price);
-                    // Convert to decimal to show the actual value
-                    if let Some(hex_part) = gas_price.strip_prefix("0x") {
-                        if let Ok(price_decimal) = u64::from_str_radix(hex_part, 16) {
-                            info!(
-                                "Dynamic gas price in decimal: {} wei ({} Gwei)",
-                                price_decimal,
-                                price_decimal / 1_000_000_000
-                            );
-                        }
-                    }
-                    Ok(gas_price)
-                }
-                Err(e) => {
-                    warn!(
-                        "Failed to fetch dynamic gas price for Qubetics: {}, using fallback",
-                        e
+            // ALWAYS use the fallback/static gas price for Qubetics to ensure deterministic transaction construction
+            // across all MPC nodes. If we allow dynamic fetching here, different nodes might see different
+            // gas prices (e.g. if the RPC updates between calls), leading to different transaction hashes
+            // and signature verification failures.
+            //
+            // See: https://github.com/qubetics/qubetics-chain-abstraction/issues/123 (hypothetical link, but referencing the fix)
+            let fixed_price = get_default_gas_price_for_chain(chain_name);
+            info!("USING FIXED GAS PRICE for Qubetics: {}", fixed_price);
+
+            // Convert formatted hex to decimal for display
+            if let Some(hex_part) = fixed_price.strip_prefix("0x") {
+                if let Ok(price_decimal) = u64::from_str_radix(hex_part, 16) {
+                    info!(
+                        "Fixed gas price in decimal: {} wei ({} Gwei)",
+                        price_decimal,
+                        price_decimal / 1_000_000_000
                     );
-                    let fallback_price = get_default_gas_price_for_chain(chain_name);
-                    info!("Using fallback gas price for Qubetics: {}", fallback_price);
-                    // Convert fallback to decimal to show the actual value
-                    if let Some(hex_part) = fallback_price.strip_prefix("0x") {
-                        if let Ok(price_decimal) = u64::from_str_radix(hex_part, 16) {
-                            info!(
-                                "Fallback gas price in decimal: {} wei ({} Gwei)",
-                                price_decimal,
-                                price_decimal / 1_000_000_000
-                            );
-                        }
-                    }
-                    Ok(fallback_price)
                 }
             }
+
+            Ok(fixed_price)
         }
         _ => {
             // Only Qubetics is supported as an EVM chain
@@ -2302,7 +2301,12 @@ pub fn create_transaction_for_signing(tx: &EthereumTransaction) -> Vec<u8> {
     final_encoder.encode_list_header(content.len());
     final_encoder.data.extend_from_slice(&content);
 
-    final_encoder.finalize()
+    let final_bytes = final_encoder.finalize();
+    info!(
+        "🎁 [RLP_DUMP] Transaction RLP Bytes: {}",
+        hex::encode(&final_bytes)
+    );
+    final_bytes
 }
 
 #[test]

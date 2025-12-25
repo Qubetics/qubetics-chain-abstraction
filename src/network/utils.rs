@@ -110,11 +110,23 @@ impl MpcNetworkLayer {
                 match user_intent_manager.get_user_by_address(eth_address).await {
                     Some(user) => {
                         if let Some(tweaked_share) = &user.tweaked_secret_share {
+                            let share_scalar = tweaked_share.0;
+                            // Derive pubkey from this scalar for debug
+                            let secp = secp256k1::Secp256k1::new();
+                            let sk = secp256k1::SecretKey::from_slice(&share_scalar.to_bytes())
+                                .unwrap_or_else(|_| {
+                                    secp256k1::SecretKey::from_slice(&[1u8; 32]).unwrap()
+                                });
+                            let pk = secp256k1::PublicKey::from_secret_key(&secp, &sk);
+
                             info!(
-                                "✅ [NETWORK] Found user's tweaked share for: {}",
-                                eth_address
+                                "✅ [NETWORK] Found user's tweaked share for: {}\n\
+                                 \tTweaked Share PubKey (Self-Calc): 0x{}",
+                                eth_address,
+                                hex::encode(pk.serialize())
                             );
-                            Some(tweaked_share.0) // Convert SerializableScalar to Scalar
+
+                            Some(share_scalar)
                         } else {
                             warn!(
                                 "❌ [NETWORK] User {} has no tweaked share available",

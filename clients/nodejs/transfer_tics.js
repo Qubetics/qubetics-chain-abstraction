@@ -18,7 +18,7 @@ const { JsonRpcProvider } = providers;
 const { parseUnits, formatUnits } = utils;
 
 // Configuration
-const QUBETICS_RPC_URL = 'http://114.119.184.52:8545';
+const QUBETICS_RPC_URL = 'https://rpc-testnet.qubetics.work';
 const QUBETICS_CHAIN_ID = 9029;
 const TICS_AMOUNT = 1000; // Amount in TICS (whole units)
 // TICS uses 10 decimals on this chain; adjust if your deployment differs.

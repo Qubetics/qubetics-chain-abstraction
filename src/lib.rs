@@ -1,3 +1,5 @@
+#![recursion_limit = "4096"]
+
 pub mod chain_abstraction;
 pub mod commands;
 pub mod consensus;

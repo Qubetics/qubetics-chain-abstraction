@@ -1,3 +1,5 @@
+#![recursion_limit = "4096"]
+
 use anyhow::{anyhow, Context, Result};
 use dotenv::dotenv;
 use hex::FromHex;

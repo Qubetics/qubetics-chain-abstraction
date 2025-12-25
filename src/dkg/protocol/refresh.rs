@@ -833,6 +833,19 @@ impl DKGNode {
             info!("✅ [REFRESH] Successfully stored vault group key in database");
         }
 
+        // Recompute all partial public keys (network and vault share pubkeys) for all peers
+        // This is necessary because the shares have been refreshed, so the pubkeys must be recomputed
+        // We do this after vault tweaked secret is stored to ensure everything is up to date
+        info!("🔑 [REFRESH] Recomputing all partial public keys (network and vault share pubkeys) for all peers...");
+        if let Err(e) = self.compute_and_store_all_share_pubkeys().await {
+            warn!(
+                "⚠️ [REFRESH] Failed to recompute share pubkeys after refresh: {}",
+                e
+            );
+        } else {
+            info!("✅ [REFRESH] Successfully recomputed and stored all network and vault share pubkeys for all peers");
+        }
+
         info!("🎉 [REFRESH] Polynomial refresh complete with updated vault secret!");
 
         if let Some(registry) = &self.user_intent_manager {
@@ -846,6 +859,41 @@ impl DKGNode {
                 info!("✅ [REFRESH] Successfully stored refreshed USER polynomial shares for all users");
                 info!("✅ [REFRESH] Refreshed tweaked secret shares for all users");
             }
+
+            // Recompute user share pubkeys for all users after refreshing their tweaked shares
+            info!("🔑 [REFRESH] Recomputing user share pubkeys for all users...");
+            let dkg_storage = self.storage.clone();
+            let users = registry.get_all_users().await;
+            let mut success_count = 0;
+            let mut failure_count = 0;
+
+            for user in users {
+                let user_addr = &user.ethereum_address;
+                match dkg_storage
+                    .compute_and_store_user_share_pubkeys_for_user(user_addr, &user.hmac_constant)
+                    .await
+                {
+                    Ok(_) => {
+                        info!(
+                            "✅ [REFRESH] Recomputed user share pubkeys for user: {}",
+                            user_addr
+                        );
+                        success_count += 1;
+                    }
+                    Err(e) => {
+                        warn!(
+                            "⚠️ [REFRESH] Failed to recompute user share pubkeys for user {}: {}",
+                            user_addr, e
+                        );
+                        failure_count += 1;
+                    }
+                }
+            }
+
+            info!(
+                "🎉 [REFRESH] Completed recomputing user share pubkeys: {} success, {} failed",
+                success_count, failure_count
+            );
         } else {
             warn!("⚠️ [REFRESH] No user registry attached; cannot refresh user tweaked shares");
         }

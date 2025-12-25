@@ -172,5 +172,16 @@ pub fn vrf_current_round_key() -> String {
 
 pub fn vrf_peer_round_key(peer_id: &str) -> String {
     format!("{}{}", keys::VRF_PEER_ROUND, peer_id)
+}
 
+pub fn node_share_pubkey_network_key(peer_id: &str) -> String {
+    format!("{}{}", keys::NODE_SHARE_PUBKEY_NETWORK, peer_id)
+}
+
+pub fn node_share_pubkey_vault_key(peer_id: &str) -> String {
+    format!("{}{}", keys::NODE_SHARE_PUBKEY_VAULT, peer_id)
+}
+
+pub fn node_share_pubkey_user_key(peer_id: &str, user_eth_address: &str) -> String {
+    format!("{}{}:{}", keys::NODE_SHARE_PUBKEY_USER, peer_id, user_eth_address.to_lowercase())
 }

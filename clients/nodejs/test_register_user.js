@@ -326,7 +326,7 @@ async function runTests() {
   await testDKGStatus();
 
   // // 2) Register ONLY the derived address 
-  // const reg = await testRegisterUser(signerAddr);
+  // const reg = await testRegisterUser(signerAddr, wallet);
 
   // if (reg.success) {
   //   log(`\n⏳ Waiting 2 seconds before checking user info...`, 'yellow');
@@ -337,12 +337,12 @@ async function runTests() {
   // }
 
   // 3) MPC deposit test WITHOUT tx_id (should pass Some(signer) to handle_deposit_intent)
-  log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
-  const amount = 2000000000000000000
-  await testUserMpcDeposit({ wallet, amount });
   // log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
-  // const amount = 25000000000000000000
+  // const amount = 2000000000000000000
   // await testUserMpcDeposit({ wallet, amount });
+  log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
+  const amount = 25000000000000000000
+  await testUserMpcDeposit({ wallet, amount });
 
   // const address = '0xbac113cebd9CB2fBD2a01B5CBC43D0fC0EBed5e9';
   // await testGetRewardSolver(address);

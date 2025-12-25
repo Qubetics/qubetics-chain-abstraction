@@ -226,3 +226,46 @@ pub struct AddLiquidityResponse {
     pub message: String,
     pub error_message: Option<String>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LogPartialPubkeysRequest {
+    pub peer_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LogPartialPubkeysResponse {
+    pub status: String,
+    pub peer_id: String,
+    pub network_share_pubkey: Option<String>,
+    pub vault_share_pubkey: Option<String>,
+    pub user_share_pubkeys: Vec<UserSharePubkeyInfo>,
+    pub message: String,
+    pub error_message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserSharePubkeyInfo {
+    pub user_eth_address: String,
+    pub share_pubkey: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetPeerAddressesRequest {
+    pub peer_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetPeerAddressesResponse {
+    pub status: String,
+    pub peer_id: String,
+    pub network_addresses: Option<AddressInfo>,
+    pub vault_addresses: Option<AddressInfo>,
+    pub message: String,
+    pub error_message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AddressInfo {
+    pub eth_address: String,
+    pub btc_address: String,
+}

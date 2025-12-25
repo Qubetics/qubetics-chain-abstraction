@@ -47,3 +47,6 @@ pub const PEER_KEYPAIR: &str = "peer_keypair";
 pub const PEER_ADDR: &str = "peer_addr:";
 pub const VRF_CURRENT_ROUND: &str = "vrf_current_round";
 pub const VRF_PEER_ROUND: &str = "vrf_peer_round:";
+pub const NODE_SHARE_PUBKEY_NETWORK: &str = "node_share_pubkey_network:";
+pub const NODE_SHARE_PUBKEY_VAULT: &str = "node_share_pubkey_vault:";
+pub const NODE_SHARE_PUBKEY_USER: &str = "node_share_pubkey_user:";

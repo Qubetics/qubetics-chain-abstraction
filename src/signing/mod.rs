@@ -9,6 +9,7 @@ use libp2p::PeerId;
 use num_bigint::BigUint;
 use num_traits::identities::One;
 use secp256k1::{self, ecdsa::RecoverableSignature, Message, PublicKey, Secp256k1, SecretKey};
+use sha3::{Digest, Keccak256};
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -41,6 +42,7 @@ use crate::chain_abstraction::{ChainHandler, ChainTransaction};
 use crate::protocols::{VrfSelectedNodesBroadcast, VrfService};
 use crate::types::{
     p2p::SerializablePeerId, ChannelMessage, ConsensusMessage, ConsensusResult, GossipsubMessage,
+    TransactionType,
 };
 use crate::user_intent_manager::UserIntentManager;
 use anyhow::bail;
@@ -1317,6 +1319,21 @@ impl SigningNode {
 
         if let Some(round_signatures) = signatures_by_round.get(&round) {
             if let Some(our_signature) = round_signatures.get(&self.id) {
+                info!(
+                    "📤 [SIGNING] Unicasting signature to final node {}: \n\
+                     \tFrom: {}\n\
+                     \tRound: {}\n\
+                     \tSig(r): 0x{}\n\
+                     \tSig(s): 0x{}\n\
+                     \tRecovID: {}",
+                    final_node_id,
+                    self.id,
+                    round,
+                    hex::encode(&our_signature.signature[0..32]),
+                    hex::encode(&our_signature.signature[32..64]),
+                    our_signature.recovery_id
+                );
+
                 let signature_msg = SigningMessage::ECDSASignature {
                     from: self.id.clone(),
                     signature: our_signature.clone(),
@@ -1424,6 +1441,28 @@ impl SigningNode {
                 return Ok(());
             }
         }
+
+        // Always verify signature before storing
+        // For contract transactions (transaction_type = None), use vault share pubkey
+        if let Err(e) = self
+            .verify_signature_for_round(&from, &signature, round)
+            .await
+        {
+            error!(
+                "❌ [SIGNING] Signature verification failed for peer {} in round {}: {}",
+                from, round, e
+            );
+            return Err(anyhow!(
+                "Signature verification failed for peer {} in round {}: {}",
+                from,
+                round,
+                e
+            ));
+        }
+        info!(
+            "✅ [SIGNING] Signature verification passed for peer {} in round {}",
+            from, round
+        );
 
         // Store signature by round
         {
@@ -1611,7 +1650,7 @@ impl SigningNode {
                         let (recovery_id, signature_bytes) =
                             aggregated_signature.serialize_compact();
                         let v: u64 = recovery_id.to_i32() as u64 + 35 + chain_id_for_v * 2;
-                        
+
                         info!(
                             "🔗 [SIGNING] Using chain_id {} for v calculation (EIP-155 compliant)",
                             chain_id_for_v
@@ -2521,6 +2560,629 @@ impl SigningNode {
             Some(format!("0x{}", hex::encode(secret_key_bytes)))
         } else {
             None
+        }
+    }
+
+    /// Verify PARTIAL signature for a round based on transaction type and peer-id
+    ///
+    /// This verifies that the partial signature (threshold signature share) from a peer
+    /// is valid against that peer's PARTIAL public key (share pubkey) for the given transaction type.
+    ///
+    /// The signature is a partial signature signed with the peer's share of the private key,
+    /// and must verify against the peer's corresponding share public key (not the group public key).
+    async fn verify_signature_for_round(
+        &self,
+        peer_id: &str,
+        signature: &ECDSASignature,
+        round: u64,
+    ) -> Result<()> {
+        use crate::database::DkgStorage;
+        use k256::elliptic_curve::sec1::ToEncodedPoint;
+        use k256::ProjectivePoint;
+
+        info!(
+            "🔍 [SIGNING] Verifying PARTIAL signature from peer {} for round {}",
+            peer_id, round
+        );
+
+        // Get message/digest and transaction type for this round
+        let (expected_digest, transaction_type, user_eth_address) =
+            self.get_message_and_type_for_round(round).await?;
+
+        info!(
+            "🔍 [SIGNING] Expected digest for round {}: 0x{}",
+            round,
+            hex::encode(&expected_digest)
+        );
+
+        // Get appropriate PARTIAL share pubkey based on transaction type
+        // This is the peer's share public key, not the group public key
+        let share_pubkey = self
+            .get_share_pubkey_for_verification(
+                peer_id,
+                &transaction_type,
+                user_eth_address.as_deref(),
+            )
+            .await?;
+
+        // Log the expected pubkey for verification
+        let share_pubkey_affine = share_pubkey.to_affine();
+        let share_pubkey_bytes = share_pubkey_affine.to_encoded_point(true);
+        let expected_pubkey_hex = hex::encode(share_pubkey_bytes.as_bytes());
+
+        info!(
+            "🔑 [SIGNING] Retrieved PARTIAL share pubkey for peer {} (tx_type: {:?})",
+            peer_id, transaction_type
+        );
+        info!(
+            "🔑 [SIGNING] Peer {} - Expected pubkey (partial share): 0x{}",
+            peer_id, expected_pubkey_hex
+        );
+
+        // Convert k256 ProjectivePoint to secp256k1 PublicKey
+        let secp_pubkey = PublicKey::from_slice(share_pubkey_bytes.as_bytes())
+            .map_err(|e| anyhow!("Failed to convert share pubkey: {}", e))?;
+
+        // Log the found pubkey (what we're actually using for verification)
+        let found_pubkey_hex = hex::encode(secp_pubkey.serialize());
+        info!(
+            "🔑 [SIGNING] Peer {} - Found pubkey (for verification): 0x{}",
+            peer_id, found_pubkey_hex
+        );
+
+        // Verify PARTIAL signature against PARTIAL pubkey
+        // This is a threshold signature share, so it must verify against the peer's share pubkey
+        let msg = Message::from_digest_slice(&expected_digest)?;
+        let recovery_id = RecoveryId::from_i32(signature.recovery_id as i32)?;
+        let recov_sig = RecoverableSignature::from_compact(&signature.signature, recovery_id)?;
+        let (_, compact) = recov_sig.serialize_compact();
+        let mut std_sig = secp256k1::ecdsa::Signature::from_compact(&compact)?;
+        std_sig.normalize_s();
+
+        // Log signature details for debugging
+        info!(
+            "🔍 [SIGNING] Peer {} - Signature details: r=0x{}, s=0x{}, recovery_id={}, digest=0x{}",
+            peer_id,
+            hex::encode(&signature.signature[0..32]),
+            hex::encode(&signature.signature[32..64]),
+            signature.recovery_id,
+            hex::encode(&expected_digest)
+        );
+
+        // Validate signature format
+        if signature.signature.len() != 64 {
+            return Err(anyhow!(
+                "Invalid signature length: expected 64 bytes, got {} bytes",
+                signature.signature.len()
+            ));
+        }
+
+        // Try to recover pubkey from signature using all recovery IDs (0-3)
+        // If ANY recovery_id recovers to the expected pubkey, the signature is valid
+        let secp = Secp256k1::new();
+        let mut correct_recovery_id = None;
+
+        // Always try all recovery IDs to find the correct one
+        info!(
+            "🔍 [SIGNING] Peer {} - Trying all recovery IDs (0-3) to verify signature against expected pubkey 0x{}",
+            peer_id, expected_pubkey_hex
+        );
+        
+        for rid in 0..4 {
+            if let Ok(test_rid) = RecoveryId::from_i32(rid) {
+                if let Ok(test_recov_sig) =
+                    RecoverableSignature::from_compact(&signature.signature, test_rid)
+                {
+                    if let Ok(test_recovered) = secp.recover_ecdsa(&msg, &test_recov_sig) {
+                        let test_recovered_hex = hex::encode(test_recovered.serialize());
+                        info!(
+                            "🔍 [SIGNING] Peer {} - Trying recovery_id {}: recovered pubkey 0x{}",
+                            peer_id, rid, test_recovered_hex
+                        );
+                        if test_recovered_hex == expected_pubkey_hex {
+                            info!(
+                                "✅ [SIGNING] Peer {} - Found matching recovery_id {} (provided was {})!",
+                                peer_id, rid, signature.recovery_id
+                            );
+                            correct_recovery_id = Some(rid as u8);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        
+        if correct_recovery_id.is_none() {
+            warn!(
+                "⚠️ [SIGNING] Peer {} - No recovery_id (0-3) recovered to expected share pubkey 0x{}",
+                peer_id, expected_pubkey_hex
+            );
+        }
+
+        // If we found a matching recovery_id, the signature is valid - return success immediately
+        if let Some(valid_rid) = correct_recovery_id {
+            info!(
+                "✅ [SIGNING] Peer {} - Signature verification PASSED via recovery_id {} (recovered pubkey matches expected share pubkey)",
+                peer_id, valid_rid
+            );
+            info!(
+                "🔍 [SIGNING] Peer {} - Expected pubkey: 0x{}, Recovered pubkey: 0x{}",
+                peer_id, expected_pubkey_hex, expected_pubkey_hex
+            );
+            
+            // Log the signature bytes for debugging
+            info!(
+                "🔍 [SIGNING] Peer {} - Signature bytes: r=0x{}, s=0x{}",
+                peer_id,
+                hex::encode(&signature.signature[0..32]),
+                hex::encode(&signature.signature[32..64])
+            );
+            
+            // Signature verified successfully via recovery - skip to success
+        } else {
+            // If we couldn't match the recovery_id, try direct verification as fallback
+            warn!(
+                "⚠️ [SIGNING] Peer {} - Recovered pubkey did not match expected share pubkey for any recovery_id (0-3); proceeding with direct verification against partial pubkey",
+                peer_id
+            );
+
+            // Build a standard (non-recoverable) signature directly from the provided bytes
+            let std_sig_original = secp256k1::ecdsa::Signature::from_compact(&signature.signature)?;
+            
+            // Try verification with non-normalized signature first
+            let verification_result_non_norm = secp.verify_ecdsa(&msg, &std_sig_original, &secp_pubkey);
+            
+            // Normalize and try again
+            let mut std_sig_normalized = std_sig_original;
+            std_sig_normalized.normalize_s();
+            let verification_result_norm = secp.verify_ecdsa(&msg, &std_sig_normalized, &secp_pubkey);
+            
+            // Check if normalization changed the signature
+            let original_bytes = std_sig_original.serialize_compact();
+            let normalized_bytes = std_sig_normalized.serialize_compact();
+            let sig_changed = original_bytes != normalized_bytes;
+            
+            if sig_changed {
+                info!(
+                    "⚠️ [SIGNING] Peer {} - Signature was normalized (s value changed from high to low)",
+                    peer_id
+                );
+            }
+            
+            // Use the first successful verification
+            let verification_result = if verification_result_non_norm.is_ok() {
+                info!(
+                    "✅ [SIGNING] Peer {} - Signature verification PASSED with non-normalized signature",
+                    peer_id
+                );
+                verification_result_non_norm
+            } else if verification_result_norm.is_ok() {
+                info!(
+                    "✅ [SIGNING] Peer {} - Signature verification PASSED with normalized signature",
+                    peer_id
+                );
+                verification_result_norm
+            } else {
+                info!(
+                    "❌ [SIGNING] Peer {} - Signature verification FAILED with both normalized and non-normalized signatures",
+                    peer_id
+                );
+                verification_result_norm // Use normalized result for error message
+            };
+            
+            // Use normalized signature for logging
+            let std_sig = std_sig_normalized;
+
+            // Log verification attempt
+            info!(
+                "🔍 [SIGNING] Peer {} - Signature verification: {}",
+                peer_id,
+                if verification_result.is_ok() {
+                    "PASSED"
+                } else {
+                    "FAILED"
+                }
+            );
+            info!(
+                "🔍 [SIGNING] Peer {} - Expected pubkey: 0x{}, Found pubkey: 0x{}",
+                peer_id, expected_pubkey_hex, found_pubkey_hex
+            );
+            
+            // Log the normalized signature bytes for debugging
+            let normalized_sig_bytes = std_sig.serialize_compact();
+            info!(
+                "🔍 [SIGNING] Peer {} - Normalized signature bytes: r=0x{}, s=0x{}",
+                peer_id,
+                hex::encode(&normalized_sig_bytes[0..32]),
+                hex::encode(&normalized_sig_bytes[32..64])
+            );
+            
+            // Log the original signature bytes for comparison
+            info!(
+                "🔍 [SIGNING] Peer {} - Original signature bytes: r=0x{}, s=0x{}",
+                peer_id,
+                hex::encode(&signature.signature[0..32]),
+                hex::encode(&signature.signature[32..64])
+            );
+
+            verification_result
+                .map_err(|e| {
+                    anyhow!(
+                        "PARTIAL signature verification failed for peer {}: {} (verified against peer's share pubkey, not group pubkey). Digest used: 0x{}, Expected pubkey: 0x{}, Found pubkey: 0x{}. Original sig: r=0x{} s=0x{}, Normalized sig: r=0x{} s=0x{}",
+                        peer_id, 
+                        e, 
+                        hex::encode(&expected_digest),
+                        expected_pubkey_hex, 
+                        found_pubkey_hex,
+                        hex::encode(&signature.signature[0..32]),
+                        hex::encode(&signature.signature[32..64]),
+                        hex::encode(&normalized_sig_bytes[0..32]),
+                        hex::encode(&normalized_sig_bytes[32..64])
+                    )
+                })?;
+        }
+
+        let share_type = match transaction_type {
+            Some(crate::types::TransactionType::UserToVault) => "user-share",
+            Some(crate::types::TransactionType::NetworkToTarget) => "network-share",
+            Some(crate::types::TransactionType::VaultToNetwork) => "vault-share",
+            Some(crate::types::TransactionType::AddLiquidity) => "vault-share",
+            Some(crate::types::TransactionType::RewardTxn) => "network-share",
+            Some(crate::types::TransactionType::WithdrawLiquidity) => "network-share",
+            None => "vault-share",
+        };
+
+        info!(
+            "✅ [SIGNING] Verified PARTIAL signature from peer {} for round {} (tx_type: {:?}, user: {:?}, share_type: {})",
+            peer_id,
+            round,
+            transaction_type,
+            user_eth_address,
+            share_type
+        );
+        info!(
+            "✅ [SIGNING] Partial signature verified against peer {}'s {} partial pubkey (not group pubkey)",
+            peer_id, share_type
+        );
+
+        Ok(())
+    }
+
+    /// Get message/digest and transaction type for a round
+    async fn get_message_and_type_for_round(
+        &self,
+        round: u64,
+    ) -> Result<(Vec<u8>, Option<TransactionType>, Option<String>)> {
+        use crate::types::TransactionNetwork;
+
+        // Check if it's a reward or withdraw round
+        let is_reward_round = {
+            let reward_rounds = self.pending.reward_rounds.read().await;
+            reward_rounds.contains(&round)
+        };
+
+        let is_withdraw_round = {
+            let withdraw_rounds = self.pending.withdraw_rounds.read().await;
+            withdraw_rounds.contains(&round)
+        };
+
+        // Try TICS (Ethereum) transactions first
+        let (tx_bytes, transaction_type, user_eth_address) = if is_reward_round {
+            let reward_pt = self.pending.reward_pending_transactions_tics.read().await;
+            if let Some((_tx, tx_bytes, _solver_address, tx_type)) = reward_pt.get(&round) {
+                (tx_bytes.clone(), tx_type.clone(), None)
+            } else {
+                // Try BTC reward
+                let reward_pt_btc = self.pending.reward_pending_transactions_btc.read().await;
+                if let Some((_tx, tx_bytes, _solver_address, tx_type, _extras)) =
+                    reward_pt_btc.get(&round)
+                {
+                    (tx_bytes.clone(), tx_type.clone(), None)
+                } else {
+                    return Err(anyhow!(
+                        "No pending transaction found for reward round {}",
+                        round
+                    ));
+                }
+            }
+        } else if is_withdraw_round {
+            let withdraw_pt = self.pending.withdraw_pending_transactions_tics.read().await;
+            if let Some((_tx, tx_bytes, _solver_address, tx_type)) = withdraw_pt.get(&round) {
+                (tx_bytes.clone(), tx_type.clone(), None)
+            } else {
+                // Try BTC withdraw
+                let withdraw_pt_btc = self.pending.withdraw_pending_transactions_btc.read().await;
+                if let Some((_tx, tx_bytes, _solver_address, tx_type, _extras)) =
+                    withdraw_pt_btc.get(&round)
+                {
+                    (tx_bytes.clone(), tx_type.clone(), None)
+                } else {
+                    return Err(anyhow!(
+                        "No pending transaction found for withdraw round {}",
+                        round
+                    ));
+                }
+            }
+        } else {
+            // Regular transaction - try TICS first
+            let pending = self.pending.pending_transactions.read().await;
+            if let Some((_tx, tx_bytes, intent_hash, tx_type)) = pending.get(&round) {
+                // For UserToVault transactions, retrieve user_eth_address from intent_hash
+                // This ensures the final node retrieves the address on its own, not relying on the unicasting peer
+                let user_addr = if matches!(
+                    tx_type,
+                    Some(crate::types::TransactionType::UserToVault)
+                ) {
+                    if let Some(intent_hash) = intent_hash {
+                        // Retrieve user's ethereum address from intent hash using database
+                        if let Some(database) = &self.database {
+                            use crate::database::storage::UserStorage;
+                            let user_storage = UserStorage::new(database.as_ref().clone());
+                            match user_storage.get_user_by_intent_hash(intent_hash).await {
+                                Ok(Some(user)) => {
+                                    info!(
+                                        "🔍 [SIGNING] Retrieved user_eth_address {} from intent_hash {} for UserToVault transaction (round {})",
+                                        user.ethereum_address, intent_hash, round
+                                    );
+                                    Some(user.ethereum_address)
+                                }
+                                Ok(None) => {
+                                    warn!(
+                                        "⚠️ [SIGNING] No user found for intent_hash {} in UserToVault transaction (round {})",
+                                        intent_hash, round
+                                    );
+                                    None
+                                }
+                                Err(e) => {
+                                    warn!(
+                                        "⚠️ [SIGNING] Failed to retrieve user from intent_hash {}: {} (round {})",
+                                        intent_hash, e, round
+                                    );
+                                    None
+                                }
+                            }
+                        } else {
+                            warn!(
+                                "⚠️ [SIGNING] Database not available to retrieve user_eth_address from intent_hash {} (round {})",
+                                intent_hash, round
+                            );
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                (tx_bytes.clone(), tx_type.clone(), user_addr)
+            } else {
+                // Try BTC
+                let pending_btc = self.pending.pending_transactions_btc.read().await;
+                if let Some((_tx, tx_bytes, intent_hash, tx_type, _extras)) =
+                    pending_btc.get(&round)
+                {
+                    // For UserToVault transactions, retrieve user_eth_address from intent_hash
+                    // This ensures the final node retrieves the address on its own, not relying on the unicasting peer
+                    let user_addr = if matches!(
+                        tx_type,
+                        Some(crate::types::TransactionType::UserToVault)
+                    ) {
+                        if let Some(intent_hash) = intent_hash {
+                            // Retrieve user's ethereum address from intent hash using database
+                            if let Some(database) = &self.database {
+                                use crate::database::storage::UserStorage;
+                                let user_storage = UserStorage::new(database.as_ref().clone());
+                                match user_storage.get_user_by_intent_hash(intent_hash).await {
+                                    Ok(Some(user)) => {
+                                        info!(
+                                            "🔍 [SIGNING] Retrieved user_eth_address {} from intent_hash {} for UserToVault BTC transaction (round {})",
+                                            user.ethereum_address, intent_hash, round
+                                        );
+                                        Some(user.ethereum_address)
+                                    }
+                                    Ok(None) => {
+                                        warn!(
+                                            "⚠️ [SIGNING] No user found for intent_hash {} in UserToVault BTC transaction (round {})",
+                                            intent_hash, round
+                                        );
+                                        None
+                                    }
+                                    Err(e) => {
+                                        warn!(
+                                            "⚠️ [SIGNING] Failed to retrieve user from intent_hash {}: {} (round {})",
+                                            intent_hash, e, round
+                                        );
+                                        None
+                                    }
+                                }
+                            } else {
+                                warn!(
+                                    "⚠️ [SIGNING] Database not available to retrieve user_eth_address from intent_hash {} (round {})",
+                                    intent_hash, round
+                                );
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+                    (tx_bytes.clone(), tx_type.clone(), user_addr)
+                } else {
+                    return Err(anyhow!("No pending transaction found for round {}", round));
+                }
+            }
+        };
+
+        // Hash the transaction bytes to get the digest
+        let mut hasher = sha3::Keccak256::new();
+        hasher.update(&tx_bytes);
+        let digest = hasher.finalize().to_vec();
+        
+        info!(
+            "🔍 [SIGNING] Computed digest for round {}: 0x{} (tx_bytes len: {}, tx_type: {:?})",
+            round,
+            hex::encode(&digest),
+            tx_bytes.len(),
+            transaction_type
+        );
+
+        Ok((digest, transaction_type, user_eth_address))
+    }
+
+    /// Get appropriate PARTIAL share pubkey for verification based on transaction type
+    ///
+    /// Returns the peer's partial public key (share pubkey) that corresponds to the transaction type.
+    /// This is used to verify the peer's partial signature (threshold signature share).
+    ///
+    /// IMPORTANT: This returns the PARTIAL share pubkey, not the group pubkey.
+    /// The partial signature must verify against this partial pubkey.
+    async fn get_share_pubkey_for_verification(
+        &self,
+        peer_id: &str,
+        transaction_type: &Option<TransactionType>,
+        user_eth_address: Option<&str>,
+    ) -> Result<k256::ProjectivePoint> {
+        use crate::database::DkgStorage;
+
+        let database = self
+            .database
+            .as_ref()
+            .ok_or_else(|| anyhow!("Database not available"))?
+            .as_ref();
+        let dkg_storage = DkgStorage::new(database.clone());
+
+        // Determine which PARTIAL share pubkey to use based on transaction type
+        // Mapping:
+        // - UserToVault → per-node-user-share PARTIAL pubkey verification
+        // - NetworkToTarget → per-node-network-share PARTIAL pubkey verification
+        // - VaultToNetwork → per-node-vault-share PARTIAL pubkey verification
+        // - AddLiquidity → per-node-vault-share PARTIAL pubkey verification
+        // - RewardTxn/WithdrawLiquidity → per-node-network-share PARTIAL pubkey verification
+        // Works for both ETH/TICS and BTC transactions
+        match transaction_type {
+            Some(crate::types::TransactionType::UserToVault) => {
+                // UserToVault → per-node-user-share pubkey
+                if let Some(user_addr) = user_eth_address {
+                    // Try to get the stored user share pubkey first
+                    match dkg_storage.get_user_share_pubkey(peer_id, user_addr).await {
+                        Ok(Some(pubkey)) => Ok(pubkey),
+                        Ok(None) => {
+                            // User share pubkey not found - compute it on-the-fly
+                            warn!(
+                                "⚠️ [SIGNING] User share pubkey not found for peer {} and user {} - computing on-the-fly",
+                                peer_id, user_addr
+                            );
+
+                            // Get user's HMAC constant from user storage
+                            use crate::database::storage::UserStorage;
+                            let user_storage = UserStorage::new(database.clone());
+                            let user = user_storage
+                                .get_user(user_addr)
+                                .await?
+                                .ok_or_else(|| {
+                                    anyhow!(
+                                        "User {} not found in database - cannot compute user share pubkey for peer {}",
+                                        user_addr, peer_id
+                                    )
+                                })?;
+
+                            // Compute user share pubkeys for this user (this will compute for all peers)
+                            dkg_storage
+                                .compute_and_store_user_share_pubkeys_for_user(
+                                    user_addr,
+                                    &user.hmac_constant,
+                                )
+                                .await?;
+
+                            // Now retrieve the pubkey
+                            dkg_storage
+                                .get_user_share_pubkey(peer_id, user_addr)
+                                .await?
+                                .ok_or_else(|| {
+                                    anyhow!(
+                                        "Failed to compute user share pubkey for peer {} and user {} (UserToVault transaction)",
+                                        peer_id,
+                                        user_addr
+                                    )
+                                })
+                        }
+                        Err(e) => Err(anyhow!(
+                            "Failed to retrieve user share pubkey for peer {} and user {}: {}",
+                            peer_id,
+                            user_addr,
+                            e
+                        )),
+                    }
+                } else {
+                    return Err(anyhow!(
+                        "UserToVault transaction requires user_eth_address for user share pubkey verification (peer: {})",
+                        peer_id
+                    ));
+                }
+            }
+            Some(crate::types::TransactionType::NetworkToTarget) => {
+                // NetworkToTarget → per-node-network-share pubkey
+                dkg_storage
+                    .get_network_share_pubkey(peer_id)
+                    .await?
+                    .ok_or_else(|| {
+                        anyhow!(
+                            "Network share pubkey not found for peer {} (NetworkToTarget transaction)",
+                            peer_id
+                        )
+                    })
+            }
+            Some(crate::types::TransactionType::VaultToNetwork) => {
+                // VaultToNetwork → per-node-vault-share pubkey
+                dkg_storage
+                    .get_vault_share_pubkey(peer_id)
+                    .await?
+                    .ok_or_else(|| {
+                        anyhow!(
+                            "Vault share pubkey not found for peer {} (VaultToNetwork transaction)",
+                            peer_id
+                        )
+                    })
+            }
+            Some(crate::types::TransactionType::AddLiquidity) => {
+                // AddLiquidity → per-node-vault-share pubkey
+                dkg_storage
+                    .get_vault_share_pubkey(peer_id)
+                    .await?
+                    .ok_or_else(|| {
+                        anyhow!(
+                            "Vault share pubkey not found for peer {} (AddLiquidity transaction)",
+                            peer_id
+                        )
+                    })
+            }
+            Some(crate::types::TransactionType::RewardTxn)
+            | Some(crate::types::TransactionType::WithdrawLiquidity) => {
+                // Claim/Withdraw → per-node-network-share pubkey
+                dkg_storage
+                    .get_network_share_pubkey(peer_id)
+                    .await?
+                    .ok_or_else(|| {
+                        anyhow!(
+                            "Network share pubkey not found for peer {} ({:?} transaction)",
+                            peer_id,
+                            transaction_type
+                        )
+                    })
+            }
+            None => {
+                // Contract transaction (transaction_type = None) → use vault share pubkey
+                info!(
+                    "🔑 [SIGNING] Contract transaction detected, using vault share pubkey for peer {}",
+                    peer_id
+                );
+                dkg_storage
+                    .get_vault_share_pubkey(peer_id)
+                    .await?
+                    .ok_or_else(|| anyhow!("Vault share pubkey not found for peer {} (contract transaction)", peer_id))
+            }
         }
     }
 

@@ -371,6 +371,24 @@ impl DKGNode {
         );
         info!("🔑 [DKG] Final public key: {:?}", final_public_key);
 
+        // Compute and store all share public keys for all peers
+        if let Err(e) = self.compute_and_store_all_share_pubkeys().await {
+            warn!(
+                "⚠️ [DKG] Failed to compute and store share pubkeys: {}",
+                e
+            );
+        } else {
+            info!("✅ [DKG] Successfully computed and stored all share pubkeys");
+            
+            // Log all stored share pubkeys for verification
+            if let Err(e) = self.storage.log_all_stored_share_pubkeys().await {
+                warn!(
+                    "⚠️ [DKG] Failed to log stored share pubkeys: {}",
+                    e
+                );
+            }
+        }
+
         if let Some(callback) = self.completion_callback.take() {
             callback(final_secret_share, final_public_key);
         }
