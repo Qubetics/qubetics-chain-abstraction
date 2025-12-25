@@ -7,6 +7,7 @@ use tokio::task;
 use tracing::{debug, error, info};
 
 use super::config::{ConfigError, DatabaseConfig};
+use crate::database::crypto::Cipher;
 use crate::database::keystore::KeyStore;
 
 /// Main database wrapper around RocksDB.
@@ -18,6 +19,7 @@ use crate::database::keystore::KeyStore;
 #[derive(Clone)]
 pub struct Database {
     db: Arc<DB>,
+    cipher: Arc<Cipher>,
 }
 
 impl Database {
@@ -42,7 +44,15 @@ impl Database {
 
         info!("🗄️ [DATABASE] Opened RocksDB at: {}", config.path);
 
-        Ok(Self { db: Arc::new(db) })
+        let key_hex = config.encryption_key.as_ref().ok_or_else(|| anyhow!("Encryption key missing from config"))?;
+        let key_bytes = hex::decode(key_hex).map_err(|e| anyhow!("Invalid key hex: {}", e))?;
+        let cipher = Arc::new(Cipher::new(&key_bytes)?);
+        info!("🔒 [DATABASE] Encryption initialized");
+
+        Ok(Self {
+            db: Arc::new(db),
+            cipher,
+        })
     }
 
     /// Store a key-value pair where both key and value are serializable
@@ -159,8 +169,10 @@ impl Database {
 
     /// Store keypair bytes
     pub fn put_keypair(&self, key: &str, keypair_bytes: &[u8]) -> Result<()> {
+        let final_bytes = self.cipher.encrypt(keypair_bytes)?;
+
         self.db
-            .put(key.as_bytes(), keypair_bytes)
+            .put(key.as_bytes(), &final_bytes)
             .map_err(|e| anyhow!("Failed to store keypair: {}", e))?;
         debug!("🔑 [DATABASE] Stored keypair with key: {}", key);
         Ok(())
@@ -170,8 +182,9 @@ impl Database {
     pub fn get_keypair(&self, key: &str) -> Result<Option<Vec<u8>>> {
         match self.db.get(key.as_bytes()) {
             Ok(Some(bytes)) => {
+                let final_bytes = self.cipher.decrypt(&bytes)?;
                 debug!("🔑 [DATABASE] Retrieved keypair with key: {}", key);
-                Ok(Some(bytes))
+                Ok(Some(final_bytes))
             }
             Ok(None) => {
                 debug!("🔑 [DATABASE] Keypair not found with key: {}", key);

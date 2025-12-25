@@ -438,6 +438,7 @@ mod tests {
             path: temp_dir.path().to_str().unwrap().to_string(),
             create_if_missing: true,
             max_open_files: 100,
+            encryption_key: Some("0000000000000000000000000000000000000000000000000000000000000000".to_string()),
         };
         let db = Database::new(config).unwrap();
         (db, temp_dir)

@@ -2513,12 +2513,18 @@ impl MpcNetworkLayer {
                 // Now process locally using shared handler
                 match (intent_hash.as_ref(), solver_address.as_ref()) {
                     (Some(intent_hash), _) => {
+                        // Parse node_id to get PeerId for security check
+                        let sender_peer_id = node_id
+                            .parse::<libp2p::PeerId>()
+                            .unwrap_or_else(|_| libp2p::PeerId::random());
+
                         if let Err(e) = self
                             .handle_transaction_id_storage(
                                 intent_hash,
                                 &transaction_id,
                                 &transaction_type,
                                 &node_id,
+                                &sender_peer_id,
                             )
                             .await
                         {

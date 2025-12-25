@@ -10,6 +10,7 @@ pub struct DatabaseConfig {
     pub path: String,
     pub create_if_missing: bool,
     pub max_open_files: i32,
+    pub encryption_key: Option<String>, // Hex string from env
 }
 
 /// Errors returned when configuration is invalid.
@@ -45,6 +46,7 @@ impl Default for DatabaseConfig {
             path: "./data/rocksdb".to_string(),
             create_if_missing: true,
             max_open_files: 1000,
+            encryption_key: None,
         }
     }
 }
@@ -78,6 +80,20 @@ impl DatabaseConfig {
                     })?;
         }
 
+        let key = env::var("QUBETICS_DB_ENCRYPTION_KEY")
+            .map_err(|_| ConfigError::ParseEnv { 
+                var: "QUBETICS_DB_ENCRYPTION_KEY".to_string(), 
+                reason: "Encryption key is mandatory".to_string() 
+            })?;
+            
+        if key.trim().is_empty() {
+             return Err(ConfigError::ParseEnv { 
+                var: "QUBETICS_DB_ENCRYPTION_KEY".to_string(), 
+                reason: "Encryption key cannot be empty".to_string() 
+            });
+        }
+        config.encryption_key = Some(key);
+
         config.validate()
     }
 
@@ -98,6 +114,24 @@ impl DatabaseConfig {
             .canonicalize()
             .unwrap_or_else(|_| Path::new(&path).to_path_buf());
 
+        if let Some(key_str) = &self.encryption_key {
+            let key_bytes = hex::decode(key_str).map_err(|e| ConfigError::ParseEnv {
+                var: "QUBETICS_DB_ENCRYPTION_KEY".to_string(),
+                reason: format!("Invalid hex string: {}", e),
+            })?;
+            if key_bytes.len() != 32 {
+                return Err(ConfigError::ParseEnv {
+                    var: "QUBETICS_DB_ENCRYPTION_KEY".to_string(),
+                    reason: format!("Encryption key must be 32 bytes (got {})", key_bytes.len()),
+                });
+            }
+        } else {
+             return Err(ConfigError::ParseEnv {
+                var: "QUBETICS_DB_ENCRYPTION_KEY".to_string(),
+                reason: "Encryption key is missing in config".to_string(),
+            });
+        }
+
         Ok(Self {
             path: normalized_path
                 .to_str()
@@ -105,6 +139,7 @@ impl DatabaseConfig {
                 .unwrap_or_else(|| path.to_string_lossy().to_string()),
             create_if_missing: self.create_if_missing,
             max_open_files: self.max_open_files,
+            encryption_key: self.encryption_key,
         })
     }
 }
