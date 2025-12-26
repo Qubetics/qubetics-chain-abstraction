@@ -1996,6 +1996,18 @@ impl MpcNetworkLayer {
                     }
                 };
 
+                if signing_key.is_some() {
+                    info!(
+                        "🔐 [LOCAL] Successfully retrieved signing key for transaction type: {:?}",
+                        transaction_type
+                    );
+                } else {
+                    warn!(
+                        "❌ [LOCAL] Failed to retrieve signing key for transaction type: {:?}",
+                        transaction_type
+                    );
+                }
+
                 // Process locally first (this node will sign it)
                 if let Some(signing_node) = &mut self.signing_node {
                     let chain_handler: Option<Arc<dyn crate::chain_abstraction::ChainHandler>> =

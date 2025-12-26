@@ -18,17 +18,19 @@ use crate::{
         rpc::RPCRequest,
         rpc_server::{
             AddLiquidityRequest, AddLiquidityResponse, ClaimRewardRequest, ClaimRewardResponse,
-            DKGStatusResponse, EnhancedUserRegistrationResponse, GetRewardSolverRequest,
-            GetRewardSolverResponse, HeartbeatResponse, NodeIdResponse, RequestContext,
-            SolverLiquidityRequest, SolverLiquidityResponse, UptimeResponse, UserInfoResponse,
-            UserMpcDepositRequest, UserMpcDepositVerifyResponse, UserRegistrationRequest,
-            WithdrawLiquidityRequest, WithdrawLiquidityResponse,
+            DKGStatusResponse, EnhancedUserRegistrationResponse, GetPeerAddressesRequest,
+            GetRewardSolverRequest, GetRewardSolverResponse, HeartbeatResponse,
+            LogPartialPubkeysRequest, NodeIdResponse, RequestContext, SolverLiquidityRequest,
+            SolverLiquidityResponse, UptimeResponse, UserInfoResponse, UserMpcDepositRequest,
+            UserMpcDepositVerifyResponse, UserRegistrationRequest, WithdrawLiquidityRequest,
+            WithdrawLiquidityResponse,
         },
         TransactionNetwork,
     },
     user_intent_manager::{checksum_from_any, UserIntentManager},
     utils::transaction::DUST_LIMIT_SATS,
 };
+use k256::elliptic_curve::sec1::ToEncodedPoint;
 
 use super::{
     errors::{RpcError, TransactionError},
@@ -2792,3 +2794,189 @@ pub(crate) async fn handle_add_liquidity(
         error_message: None,
     }))
 }
+
+/// Log partial public keys for all users for a specific peer
+pub(crate) async fn handle_log_partial_pubkeys(
+    request: crate::types::rpc_server::LogPartialPubkeysRequest,
+    dkg_storage: Arc<DkgStorage>,
+) -> Result<impl warp::Reply, warp::Rejection> {
+    info!(
+        "🔑 [RPC] Logging partial pubkeys for peer: {}",
+        request.peer_id
+    );
+
+    // Get network share pubkey
+    let network_share_pubkey = match dkg_storage
+        .get_network_share_pubkey(&request.peer_id)
+        .await
+    {
+        Ok(Some(pubkey)) => {
+            let pubkey_bytes = pubkey.to_affine().to_encoded_point(true);
+            Some(hex::encode(pubkey_bytes.as_bytes()))
+        }
+        Ok(None) => {
+            warn!("⚠️ [RPC] Network share pubkey not found for peer: {}", request.peer_id);
+            None
+        }
+        Err(e) => {
+            error!("❌ [RPC] Failed to get network share pubkey: {}", e);
+            None
+        }
+    };
+
+    // Get vault share pubkey
+    let vault_share_pubkey = match dkg_storage
+        .get_vault_share_pubkey(&request.peer_id)
+        .await
+    {
+        Ok(Some(pubkey)) => {
+            let pubkey_bytes = pubkey.to_affine().to_encoded_point(true);
+            Some(hex::encode(pubkey_bytes.as_bytes()))
+        }
+        Ok(None) => {
+            warn!("⚠️ [RPC] Vault share pubkey not found for peer: {}", request.peer_id);
+            None
+        }
+        Err(e) => {
+            error!("❌ [RPC] Failed to get vault share pubkey: {}", e);
+            None
+        }
+    };
+
+    // Get all user share pubkeys
+    let user_share_pubkeys = match dkg_storage
+        .get_all_user_share_pubkeys_for_peer(&request.peer_id)
+        .await
+    {
+        Ok(user_pubkeys) => {
+            user_pubkeys
+                .into_iter()
+                .map(|(user_addr, pubkey)| {
+                    let pubkey_bytes = pubkey.to_affine().to_encoded_point(true);
+                    crate::types::rpc_server::UserSharePubkeyInfo {
+                        user_eth_address: user_addr,
+                        share_pubkey: hex::encode(pubkey_bytes.as_bytes()),
+                    }
+                })
+                .collect()
+        }
+        Err(e) => {
+            error!("❌ [RPC] Failed to get user share pubkeys: {}", e);
+            Vec::new()
+        }
+    };
+
+    // Log all the information
+    info!("🔑 [RPC] === Partial Pubkeys for Peer: {} ===", request.peer_id);
+    if let Some(ref network_pubkey) = network_share_pubkey {
+        info!("  📍 Network Share Pubkey: 0x{}", network_pubkey);
+    }
+    if let Some(ref vault_pubkey) = vault_share_pubkey {
+        info!("  📍 Vault Share Pubkey: 0x{}", vault_pubkey);
+    }
+    info!("  📍 User Share Pubkeys ({} users):", user_share_pubkeys.len());
+    for user_info in &user_share_pubkeys {
+        info!(
+            "     User: {} -> Pubkey: 0x{}",
+            user_info.user_eth_address, user_info.share_pubkey
+        );
+    }
+    info!("✅ [RPC] === Finished logging partial pubkeys ===");
+
+    let peer_id = request.peer_id.clone();
+    let user_count = user_share_pubkeys.len();
+    Ok(warp::reply::json(&crate::types::rpc_server::LogPartialPubkeysResponse {
+        status: "success".to_string(),
+        peer_id: peer_id.clone(),
+        network_share_pubkey,
+        vault_share_pubkey,
+        user_share_pubkeys: user_share_pubkeys.clone(),
+        message: format!(
+            "Logged partial pubkeys for peer {} ({} user share pubkeys)",
+            peer_id, user_count
+        ),
+        error_message: None,
+    }))
+}
+
+/// Get network and vault addresses (TICS/ETH and BTC) for a specific peer
+pub(crate) async fn handle_get_peer_addresses(
+    request: crate::types::rpc_server::GetPeerAddressesRequest,
+    dkg_storage: Arc<DkgStorage>,
+) -> Result<impl warp::Reply, warp::Rejection> {
+    info!(
+        "📍 [RPC] Getting addresses for peer: {}",
+        request.peer_id
+    );
+
+    // Get network share pubkey and derive addresses
+    let network_addresses = match dkg_storage
+        .get_network_share_pubkey(&request.peer_id)
+        .await
+    {
+        Ok(Some(pubkey)) => {
+            let eth_addr = crate::utils::get_eth_address_from_group_key(pubkey);
+            let btc_addr = crate::utils::get_btc_address_from_group_key(pubkey);
+            Some(crate::types::rpc_server::AddressInfo {
+                eth_address: eth_addr,
+                btc_address: btc_addr,
+            })
+        }
+        Ok(None) => {
+            warn!("⚠️ [RPC] Network share pubkey not found for peer: {}", request.peer_id);
+            None
+        }
+        Err(e) => {
+            error!("❌ [RPC] Failed to get network share pubkey: {}", e);
+            None
+        }
+    };
+
+    // Get vault share pubkey and derive addresses
+    let vault_addresses = match dkg_storage
+        .get_vault_share_pubkey(&request.peer_id)
+        .await
+    {
+        Ok(Some(pubkey)) => {
+            let eth_addr = crate::utils::get_eth_address_from_group_key(pubkey);
+            let btc_addr = crate::utils::get_btc_address_from_group_key(pubkey);
+            Some(crate::types::rpc_server::AddressInfo {
+                eth_address: eth_addr,
+                btc_address: btc_addr,
+            })
+        }
+        Ok(None) => {
+            warn!("⚠️ [RPC] Vault share pubkey not found for peer: {}", request.peer_id);
+            None
+        }
+        Err(e) => {
+            error!("❌ [RPC] Failed to get vault share pubkey: {}", e);
+            None
+        }
+    };
+
+    // Log the addresses
+    if let Some(ref net_addrs) = network_addresses {
+        info!(
+            "📍 [RPC] Peer {} - Network Addresses: ETH={}, BTC={}",
+            request.peer_id, net_addrs.eth_address, net_addrs.btc_address
+        );
+    }
+    if let Some(ref vault_addrs) = vault_addresses {
+        info!(
+            "📍 [RPC] Peer {} - Vault Addresses: ETH={}, BTC={}",
+            request.peer_id, vault_addrs.eth_address, vault_addrs.btc_address
+        );
+    }
+
+    let peer_id = request.peer_id.clone();
+    Ok(warp::reply::json(&crate::types::rpc_server::GetPeerAddressesResponse {
+        status: "success".to_string(),
+        peer_id: peer_id.clone(),
+        network_addresses,
+        vault_addresses,
+        message: format!("Retrieved addresses for peer {}", peer_id),
+        error_message: None,
+    }))
+}
+

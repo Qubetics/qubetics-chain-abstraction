@@ -1,6 +1,6 @@
 use super::*;
 use crate::utils::hmac_helper::{bytes_to_scalar_mod_n, hmac_scalar_mod_n};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 impl UserIntentManager {
     /// Recompute and update tweaked secret shares for all users using the latest final secret
@@ -136,6 +136,32 @@ impl UserIntentManager {
                 info!("  📧 Final address: {}", addr_cs);
                 info!("  🆔 Final user ID: {}", user_id);
                 info!("  📅 Registration timestamp: {}", registration.created_at);
+                
+                // Compute and store user share pubkeys for all peers
+                let dkg_storage = self.database_module.dkg_storage();
+                if let Err(e) = dkg_storage
+                    .compute_and_store_user_share_pubkeys_for_user(&addr_cs, &registration.hmac_constant)
+                    .await
+                {
+                    warn!(
+                        "⚠️ [DB_USER_REGISTRY] Failed to compute user share pubkeys for {}: {}",
+                        addr_cs, e
+                    );
+                } else {
+                    info!(
+                        "✅ [DB_USER_REGISTRY] Successfully computed and stored user share pubkeys for {}",
+                        addr_cs
+                    );
+                    
+                    // Log stored share pubkeys for this user for verification
+                    if let Err(e) = dkg_storage.log_all_stored_share_pubkeys().await {
+                        warn!(
+                            "⚠️ [DB_USER_REGISTRY] Failed to log stored share pubkeys: {}",
+                            e
+                        );
+                    }
+                }
+                
                 info!("✅ User registration process COMPLETED for: {}", addr_cs);
                 Ok(registration)
             }

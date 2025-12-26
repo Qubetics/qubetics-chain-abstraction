@@ -15,7 +15,7 @@ use anyhow::{anyhow, Result};
 use hex;
 use k256::Scalar;
 use reqwest::Client;
-use secp256k1::{ecdsa::RecoverableSignature, Message, SecretKey};
+use secp256k1::{ecdsa::RecoverableSignature, Message, PublicKey, Secp256k1, SecretKey};
 use sha3::Digest;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -404,7 +404,12 @@ impl SigningNode {
         if let Some(vrf_service) = self.coordination.vrf_service() {
             let round = vrf_service.get_current_round().await;
             let _selection_result = vrf_service
-                .perform_node_selection(&available_nodes, crate::vrf::VRF_NODE_SELECTION_COUNT, round, self.chain_handler.chain_type())
+                .perform_node_selection(
+                    &available_nodes,
+                    crate::vrf::VRF_NODE_SELECTION_COUNT,
+                    round,
+                    self.chain_handler.chain_type(),
+                )
                 .await?;
 
             info!(
@@ -425,6 +430,55 @@ impl SigningNode {
             self.id,
             self.chain_handler.chain_type()
         );
+
+        // --- SELF-VERIFICATION ---
+        // Verify the signature against our own public key before sending
+        {
+            let secp = Secp256k1::new();
+            let public_key = PublicKey::from_secret_key(&secp, &signing_key);
+            let public_key_hex = hex::encode(public_key.serialize());
+            let digest_hex = hex::encode(tx_hash);
+
+            info!("🔍 [SELF-VERIFY] Verifying generated signature...");
+            info!("    - Digest: 0x{}", digest_hex);
+            info!(
+                "    - Expected PubKey (Derived from Secret): 0x{}",
+                public_key_hex
+            );
+
+            // Attempt to recover public key from signature to show 'Found PubKey'
+            let rec_sig_result = RecoverableSignature::from_compact(&signature_bytes, recovery_id);
+            match rec_sig_result {
+                Ok(rec_sig) => match secp.recover_ecdsa(&msg, &rec_sig) {
+                    Ok(recovered_pk) => {
+                        let recovered_pk_hex = hex::encode(recovered_pk.serialize());
+                        info!(
+                            "    - Found PubKey (Recovered from Sig): 0x{}",
+                            recovered_pk_hex
+                        );
+
+                        if recovered_pk == public_key {
+                            info!("✅ [SELF-VERIFY] Signature verified successfully! Found PubKey matches Expected PubKey.");
+                        } else {
+                            error!(
+                                "❌ [SELF-VERIFY] PubKey Mismatch! Found 0x{} != Expected 0x{}",
+                                recovered_pk_hex, public_key_hex
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        error!("❌ [SELF-VERIFY] Failed to recover ECDSA public key: {}", e);
+                    }
+                },
+                Err(e) => {
+                    error!(
+                        "❌ [SELF-VERIFY] Failed to construct recoverable signature: {}",
+                        e
+                    );
+                }
+            }
+        }
+        // --- END SELF-VERIFICATION ---
 
         // Convert to legacy ECDSASignature for compatibility
         let ecdsa_signature = ECDSASignature {
@@ -695,7 +749,12 @@ impl SigningNode {
         if let Some(vrf_service) = self.coordination.vrf_service() {
             let round = vrf_service.get_current_round().await;
             let _selection_result = vrf_service
-                .perform_node_selection(&available_nodes, crate::vrf::VRF_NODE_SELECTION_COUNT, round, "ethereum")
+                .perform_node_selection(
+                    &available_nodes,
+                    crate::vrf::VRF_NODE_SELECTION_COUNT,
+                    round,
+                    "ethereum",
+                )
                 .await?;
 
             info!(

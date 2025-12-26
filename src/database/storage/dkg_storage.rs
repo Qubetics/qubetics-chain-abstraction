@@ -3,7 +3,7 @@ use crate::types::{KeyShare, SerializablePoint, SerializableScalar};
 use anyhow::Result;
 use k256::{AffinePoint, ProjectivePoint, Scalar};
 use std::collections::HashMap;
-use tracing::info;
+use tracing::{info, warn};
 
 #[derive(Clone)]
 pub struct DkgStorage {
@@ -532,5 +532,348 @@ impl DkgStorage {
             .get_string::<Vec<SerializablePoint>>(&key)?
             .map(|ser_vec| ser_vec.into_iter().map(|p| p.0).collect());
         Ok(result)
+    }
+
+    /// Store network share public key for a peer (base DKG share)
+    pub async fn store_network_share_pubkey(
+        &self,
+        peer_id: &str,
+        pubkey: &ProjectivePoint,
+    ) -> Result<()> {
+        use crate::database::key_utils;
+        let key = key_utils::node_share_pubkey_network_key(peer_id);
+        let affine = pubkey.to_affine();
+        let serial = SerializablePoint(affine);
+        self.db.put_string(&key, &serial)?;
+        
+        // Derive and log ETH/BTC addresses
+        let eth_addr = crate::utils::get_eth_address_from_group_key(*pubkey);
+        let btc_addr = crate::utils::get_btc_address_from_group_key(*pubkey);
+        
+        info!(
+            "✅ [DKG_STORAGE] Stored network share pubkey for peer: {}",
+            peer_id
+        );
+        info!(
+            "   📍 Network Share ETH Address: {}",
+            eth_addr
+        );
+        info!(
+            "   📍 Network Share BTC Address: {}",
+            btc_addr
+        );
+        Ok(())
+    }
+
+    /// Get network share public key for a peer
+    pub async fn get_network_share_pubkey(
+        &self,
+        peer_id: &str,
+    ) -> Result<Option<ProjectivePoint>> {
+        use crate::database::key_utils;
+        let key = key_utils::node_share_pubkey_network_key(peer_id);
+        let result = self.db.get_string::<SerializablePoint>(&key)?;
+        Ok(result.map(|sp| ProjectivePoint::from(sp.0)))
+    }
+
+    /// Store vault share public key for a peer (vault tweaked share)
+    pub async fn store_vault_share_pubkey(
+        &self,
+        peer_id: &str,
+        pubkey: &ProjectivePoint,
+    ) -> Result<()> {
+        use crate::database::key_utils;
+        let key = key_utils::node_share_pubkey_vault_key(peer_id);
+        let affine = pubkey.to_affine();
+        let serial = SerializablePoint(affine);
+        self.db.put_string(&key, &serial)?;
+        
+        // Derive and log ETH/BTC addresses
+        let eth_addr = crate::utils::get_eth_address_from_group_key(*pubkey);
+        let btc_addr = crate::utils::get_btc_address_from_group_key(*pubkey);
+        
+        info!(
+            "✅ [DKG_STORAGE] Stored vault share pubkey for peer: {}",
+            peer_id
+        );
+        info!(
+            "   📍 Vault Share ETH Address: {}",
+            eth_addr
+        );
+        info!(
+            "   📍 Vault Share BTC Address: {}",
+            btc_addr
+        );
+        Ok(())
+    }
+
+    /// Get vault share public key for a peer
+    pub async fn get_vault_share_pubkey(
+        &self,
+        peer_id: &str,
+    ) -> Result<Option<ProjectivePoint>> {
+        use crate::database::key_utils;
+        let key = key_utils::node_share_pubkey_vault_key(peer_id);
+        let result = self.db.get_string::<SerializablePoint>(&key)?;
+        Ok(result.map(|sp| ProjectivePoint::from(sp.0)))
+    }
+
+    /// Store user share public key for a peer (user tweaked share)
+    pub async fn store_user_share_pubkey(
+        &self,
+        peer_id: &str,
+        user_eth_address: &str,
+        pubkey: &ProjectivePoint,
+    ) -> Result<()> {
+        use crate::database::key_utils;
+        let key = key_utils::node_share_pubkey_user_key(peer_id, user_eth_address);
+        let affine = pubkey.to_affine();
+        let serial = SerializablePoint(affine);
+        self.db.put_string(&key, &serial)?;
+        
+        // Derive and log ETH/BTC addresses
+        let eth_addr = crate::utils::get_eth_address_from_group_key(*pubkey);
+        let btc_addr = crate::utils::get_btc_address_from_group_key(*pubkey);
+        
+        info!(
+            "✅ [DKG_STORAGE] Stored user share pubkey for peer: {} user: {}",
+            peer_id, user_eth_address
+        );
+        info!(
+            "   📍 User Share ETH Address: {}",
+            eth_addr
+        );
+        info!(
+            "   📍 User Share BTC Address: {}",
+            btc_addr
+        );
+        Ok(())
+    }
+
+    /// Get user share public key for a peer
+    pub async fn get_user_share_pubkey(
+        &self,
+        peer_id: &str,
+        user_eth_address: &str,
+    ) -> Result<Option<ProjectivePoint>> {
+        use crate::database::key_utils;
+        let key = key_utils::node_share_pubkey_user_key(peer_id, user_eth_address);
+        let result = self.db.get_string::<SerializablePoint>(&key)?;
+        Ok(result.map(|sp| ProjectivePoint::from(sp.0)))
+    }
+
+    /// Get all user share public keys for a peer
+    pub async fn get_all_user_share_pubkeys_for_peer(
+        &self,
+        peer_id: &str,
+    ) -> Result<HashMap<String, ProjectivePoint>> {
+        let prefix = format!("{}{}:", keys::NODE_SHARE_PUBKEY_USER, peer_id);
+        let results: Vec<(String, SerializablePoint)> = self.db.get_values_with_prefix(&prefix)?;
+        let mut map = HashMap::new();
+        for (key, sp) in results {
+            // Extract user address from key: "node_share_pubkey_user:peer_id:user_address"
+            if let Some(user_addr) = key.strip_prefix(&prefix) {
+                map.insert(user_addr.to_string(), ProjectivePoint::from(sp.0));
+            }
+        }
+        Ok(map)
+    }
+
+    /// Compute and store user share pubkeys for all peers for a specific user
+    /// This should be called when a user registers
+    pub async fn compute_and_store_user_share_pubkeys_for_user(
+        &self,
+        user_eth_address: &str,
+        user_hmac_constant: &[u8; 32],
+    ) -> Result<()> {
+        use crate::utils::hmac_helper::bytes_to_scalar_mod_n;
+        use k256::Scalar;
+
+        info!(
+            "🔑 [DKG_STORAGE] Computing user share pubkeys for user: {}",
+            user_eth_address
+        );
+
+        let commitments = self.get_all_commitments().await?;
+        let peer_indices = self.get_peer_indices().await?;
+
+        if commitments.is_empty() {
+            return Err(anyhow::anyhow!(
+                "No commitments available - DKG may not be complete"
+            ));
+        }
+
+        // Compute user tweak scalar
+        use ff::PrimeField;
+        let user_tweak_scalar = bytes_to_scalar_mod_n(user_hmac_constant);
+        let user_tweak_scalar_k256 = Scalar::from_repr(user_tweak_scalar.into())
+            .into_option()
+            .ok_or_else(|| anyhow::anyhow!("Failed to create scalar from user HMAC"))?;
+        let user_tweak_point = ProjectivePoint::GENERATOR * user_tweak_scalar_k256;
+
+        info!(
+            "🔑 [DKG_STORAGE] Processing {} peers for user: {}",
+            commitments.len(),
+            user_eth_address
+        );
+
+        // Step 1: Aggregate all commitments coefficient-wise
+        // Find the maximum degree (max length of commitment arrays)
+        let max_degree = commitments
+            .values()
+            .map(|comms| comms.len())
+            .max()
+            .unwrap_or(0);
+
+        if max_degree == 0 {
+            return Err(anyhow::anyhow!("No commitments found in any peer"));
+        }
+
+        info!(
+            "🔑 [DKG_STORAGE] Aggregating commitments (max degree: {}) for user: {}",
+            max_degree, user_eth_address
+        );
+
+        // Aggregate commitments: aggregated_C[k] = sum over all peers i of C_i[k]
+        let mut aggregated_commitments: Vec<ProjectivePoint> = vec![ProjectivePoint::IDENTITY; max_degree];
+        for (_peer_id, peer_commitments) in commitments.iter() {
+            for (k, commitment) in peer_commitments.iter().enumerate() {
+                if k < max_degree {
+                    aggregated_commitments[k] += ProjectivePoint::from(*commitment);
+                }
+            }
+        }
+
+        info!(
+            "🔑 [DKG_STORAGE] Aggregated {} commitment coefficients for user: {}",
+            max_degree, user_eth_address
+        );
+
+        // Step 2: Evaluate aggregated polynomial at each peer's index
+        for (peer_id, _) in commitments.iter() {
+            let dkg_index = peer_indices
+                .get(peer_id)
+                .copied()
+                .ok_or_else(|| anyhow::anyhow!("No DKG index found for peer {}", peer_id))?;
+
+            // Evaluate aggregated polynomial: aggregated_C[0] + aggregated_C[1]*j + aggregated_C[2]*j^2 + ...
+            let network_share_pubkey = self.evaluate_aggregated_polynomial(
+                &aggregated_commitments,
+                dkg_index as u32,
+            )?;
+
+            // Compute user share pubkey: network_share + user_tweak_point
+            let user_share_pubkey = network_share_pubkey + user_tweak_point;
+
+            // Store user share pubkey
+            self.store_user_share_pubkey(peer_id, user_eth_address, &user_share_pubkey)
+                .await?;
+        }
+
+        info!(
+            "✅ [DKG_STORAGE] Completed computing user share pubkeys for user: {}",
+            user_eth_address
+        );
+        Ok(())
+    }
+
+    /// Evaluate aggregated polynomial at a given index
+    /// This computes: aggregated_C[0] + aggregated_C[1]*x + aggregated_C[2]*x^2 + ...
+    fn evaluate_aggregated_polynomial(
+        &self,
+        aggregated_commitments: &[ProjectivePoint],
+        dkg_index: u32,
+    ) -> Result<ProjectivePoint> {
+        use k256::Scalar;
+        let x = Scalar::from(dkg_index as u64);
+        let mut share_pubkey = ProjectivePoint::IDENTITY;
+
+        for (j, commitment) in aggregated_commitments.iter().enumerate() {
+            let mut x_pow = Scalar::ONE;
+            for _ in 0..j {
+                x_pow *= x;
+            }
+            share_pubkey += *commitment * x_pow;
+        }
+
+        Ok(share_pubkey)
+    }
+
+    /// Derive share public key from commitments using polynomial evaluation
+    /// NOTE: This method is deprecated in favor of evaluate_aggregated_polynomial
+    /// which correctly aggregates all commitments first. This is kept for backward compatibility.
+    fn derive_share_pubkey_from_commitments(
+        &self,
+        commitments: &[AffinePoint],
+        dkg_index: u32,
+    ) -> Result<ProjectivePoint> {
+        use k256::Scalar;
+        let x = Scalar::from(dkg_index as u64);
+        let mut share_pubkey = ProjectivePoint::IDENTITY;
+
+        for (j, commitment) in commitments.iter().enumerate() {
+            let mut x_pow = Scalar::ONE;
+            for _ in 0..j {
+                x_pow *= x;
+            }
+            share_pubkey += ProjectivePoint::from(*commitment) * x_pow;
+        }
+
+        Ok(share_pubkey)
+    }
+
+    /// Retrieve and log all stored share pubkeys for verification
+    /// This is useful for debugging and verification
+    pub async fn log_all_stored_share_pubkeys(&self) -> Result<()> {
+        use crate::utils::{get_btc_address_from_group_key, get_eth_address_from_group_key};
+        
+        info!("🔍 [DKG_STORAGE] === Logging all stored share public keys ===");
+        
+        let commitments = self.get_all_commitments().await?;
+        
+        for (peer_id, _) in commitments.iter() {
+            info!("🔍 [DKG_STORAGE] === Share Pubkeys for Peer: {} ===", peer_id);
+            
+            // Network share pubkey
+            if let Ok(Some(network_pubkey)) = self.get_network_share_pubkey(peer_id).await {
+                let eth_addr = get_eth_address_from_group_key(network_pubkey);
+                let btc_addr = get_btc_address_from_group_key(network_pubkey);
+                info!("  🔑 Network Share Pubkey:");
+                info!("     ETH Address: {}", eth_addr);
+                info!("     BTC Address: {}", btc_addr);
+            } else {
+                warn!("  ⚠️ Network share pubkey not found for peer: {}", peer_id);
+            }
+            
+            // Vault share pubkey
+            if let Ok(Some(vault_pubkey)) = self.get_vault_share_pubkey(peer_id).await {
+                let eth_addr = get_eth_address_from_group_key(vault_pubkey);
+                let btc_addr = get_btc_address_from_group_key(vault_pubkey);
+                info!("  🔑 Vault Share Pubkey:");
+                info!("     ETH Address: {}", eth_addr);
+                info!("     BTC Address: {}", btc_addr);
+            } else {
+                warn!("  ⚠️ Vault share pubkey not found for peer: {}", peer_id);
+            }
+            
+            // User share pubkeys
+            if let Ok(user_pubkeys) = self.get_all_user_share_pubkeys_for_peer(peer_id).await {
+                if !user_pubkeys.is_empty() {
+                    info!("  🔑 User Share Pubkeys ({} users):", user_pubkeys.len());
+                    for (user_addr, user_pubkey) in user_pubkeys.iter() {
+                        let eth_addr = get_eth_address_from_group_key(*user_pubkey);
+                        let btc_addr = get_btc_address_from_group_key(*user_pubkey);
+                        info!("     User: {} -> ETH: {}, BTC: {}", user_addr, eth_addr, btc_addr);
+                    }
+                } else {
+                    info!("  ℹ️ No user share pubkeys stored for peer: {}", peer_id);
+                }
+            } else {
+                warn!("  ⚠️ Failed to retrieve user share pubkeys for peer: {}", peer_id);
+            }
+        }
+        
+        info!("✅ [DKG_STORAGE] === Finished logging all stored share public keys ===");
+        Ok(())
     }
 }
