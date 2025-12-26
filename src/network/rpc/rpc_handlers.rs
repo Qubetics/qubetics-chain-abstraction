@@ -525,25 +525,45 @@ impl MpcNetworkLayer {
             return RPCResponse::Error("DKG not initialized".to_string());
         }
 
-        // Extract share index from receiver_id
-        let share_index = if let Ok(index) = receiver_id.0.to_string().parse::<usize>() {
-            index
-        } else {
-            // Fallback to hash-based index
-            use std::collections::hash_map::DefaultHasher;
-            use std::hash::{Hash, Hasher};
-            let mut hasher = DefaultHasher::new();
-            receiver_id.0.to_string().hash(&mut hasher);
-            let hash = hasher.finish();
-            ((hash % 100) + 1) as usize // Use a reasonable default range
+        let dkg_node = self.dkg_node.as_ref().unwrap();
+
+        // SECURITY FIX: Get our own actual index from storage instead of using hash-based fallback
+        // The hash-based fallback would almost never match the actual index used during share generation,
+        // causing valid shares to be rejected. Shares are generated with indices 1..=total_nodes based on
+        // the dealer's view of node indices (stored in database), so we must use the same source.
+        // When we receive SendAVSSShare, we are the receiver, so we use our own node ID to get our index.
+        let our_node_id = dkg_node.get_id();
+        let share_index = match dkg_node.get_peer_index_for(our_node_id) {
+            Ok(Some(idx)) => {
+                info!(
+                    "🔢 [DKG] Using stored peer index {} for our node {} (from SendAVSSShare, receiver_id: {})",
+                    idx, our_node_id, receiver_id.0
+                );
+                idx
+            }
+            Ok(None) => {
+                warn!(
+                    "❌ [DKG] No stored peer index found for our node {}; cannot verify share (receiver_id: {})",
+                    our_node_id, receiver_id.0
+                );
+                return RPCResponse::Error(format!(
+                    "Cannot determine share index for our node {}: no peer index in storage",
+                    our_node_id
+                ));
+            }
+            Err(e) => {
+                warn!(
+                    "❌ [DKG] Failed to get peer index for our node {}: {} (receiver_id: {})",
+                    our_node_id, e, receiver_id.0
+                );
+                return RPCResponse::Error(format!(
+                    "Failed to get peer index for our node {}: {}",
+                    our_node_id, e
+                ));
+            }
         };
 
-        if self
-            .dkg_node
-            .as_ref()
-            .unwrap()
-            .verify_share(&share, share_index, &commitments)
-        {
+        if dkg_node.verify_share(&share, share_index, &commitments) {
             RPCResponse::ShareAccepted
         } else {
             RPCResponse::Error("Invalid share".into())
@@ -1528,7 +1548,9 @@ mod tests {
             path: db_path.to_string_lossy().to_string(),
             create_if_missing: true,
             max_open_files: 32,
-            encryption_key: Some("0000000000000000000000000000000000000000000000000000000000000000".to_string()),
+            encryption_key: Some(
+                "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+            ),
         })
         .expect("db to start");
 
