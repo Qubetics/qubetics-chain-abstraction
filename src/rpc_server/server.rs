@@ -16,9 +16,9 @@ use crate::{
 
 use super::handlers::{
     handle_add_liquidity, handle_claim_reward, handle_get_dkg_status, handle_get_node_id,
-    handle_get_peer_addresses, handle_get_reward_solver, handle_get_solver_liquidity,
+    handle_get_network_addresses, handle_get_reward_solver, handle_get_solver_liquidity,
     handle_get_status, handle_get_uptime, handle_get_user_info, handle_heartbeat,
-    handle_log_partial_pubkeys, handle_register_user, handle_start_dkg, handle_user_mpc_deposit,
+    handle_log_partial_pubkeys, handle_register_user, handle_user_mpc_deposit,
     handle_withdraw_liquidity,
 };
 use crate::types::rpc_server::{
@@ -172,11 +172,6 @@ pub async fn start_http_server(
         .and(with_start_time(start_time.clone()))
         .and_then(handle_get_uptime);
 
-    let start_dkg = warp::path("start_dkg")
-        .and(warp::post())
-        .and(with_message_tx(message_tx.clone()))
-        .and(with_dkg_storage(dkg_storage.clone()))
-        .and_then(handle_start_dkg);
 
     let log_partial_pubkeys = warp::path("log_partial_pubkeys")
         .and(warp::post())
@@ -184,11 +179,10 @@ pub async fn start_http_server(
         .and(with_dkg_storage(dkg_storage.clone()))
         .and_then(handle_log_partial_pubkeys);
 
-    let get_peer_addresses = warp::path("get_peer_addresses")
+    let get_network_addresses = warp::path("get_network_addresses")
         .and(warp::get())
-        .and(warp::query::<crate::types::rpc_server::GetPeerAddressesRequest>())
         .and(with_dkg_storage(dkg_storage.clone()))
-        .and_then(handle_get_peer_addresses);
+        .and_then(handle_get_network_addresses);
 
     let routes = register_user
         .or(get_user_info)
@@ -204,7 +198,7 @@ pub async fn start_http_server(
         .or(heartbeat)
         .or(uptime)
         .or(log_partial_pubkeys)
-        .or(get_peer_addresses);
+        .or(get_network_addresses);
 
     info!("🌐 Starting HTTP RPC server on port {}", port);
     let cors = warp::cors()

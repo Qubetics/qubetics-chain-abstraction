@@ -18,7 +18,7 @@ use crate::{
         rpc::RPCRequest,
         rpc_server::{
             AddLiquidityRequest, AddLiquidityResponse, ClaimRewardRequest, ClaimRewardResponse,
-            DKGStatusResponse, EnhancedUserRegistrationResponse, GetPeerAddressesRequest,
+            DKGStatusResponse, EnhancedUserRegistrationResponse, GetNetworkAddressesResponse,
             GetRewardSolverRequest, GetRewardSolverResponse, HeartbeatResponse,
             LogPartialPubkeysRequest, NodeIdResponse, RequestContext, SolverLiquidityRequest,
             SolverLiquidityResponse, UptimeResponse, UserInfoResponse, UserMpcDepositRequest,
@@ -2899,19 +2899,41 @@ pub(crate) async fn handle_log_partial_pubkeys(
     }))
 }
 
-/// Get network and vault addresses (TICS/ETH and BTC) for a specific peer
-pub(crate) async fn handle_get_peer_addresses(
-    request: crate::types::rpc_server::GetPeerAddressesRequest,
+/// Get network and vault addresses (TICS/ETH and BTC)
+/// These addresses are the same across all nodes in the network
+pub(crate) async fn handle_get_network_addresses(
     dkg_storage: Arc<DkgStorage>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
-    info!(
-        "📍 [RPC] Getting addresses for peer: {}",
-        request.peer_id
-    );
+    info!("📍 [RPC] Getting network addresses (same across all nodes)");
+
+    // Get any peer_id from the network (addresses are the same for all peers)
+    let peer_id = match dkg_storage.get_peer_indices().await {
+        Ok(peer_indices) if !peer_indices.is_empty() => {
+            // Use the first available peer_id
+            peer_indices.keys().next().cloned()
+        }
+        _ => {
+            warn!("⚠️ [RPC] No peer indices found in storage");
+            None
+        }
+    };
+
+    let peer_id = match peer_id {
+        Some(pid) => pid,
+        None => {
+            return Ok(warp::reply::json(&crate::types::rpc_server::GetNetworkAddressesResponse {
+                status: "error".to_string(),
+                network_addresses: None,
+                vault_addresses: None,
+                message: "No peers found in network".to_string(),
+                error_message: Some("No peer indices available in storage".to_string()),
+            }));
+        }
+    };
 
     // Get network share pubkey and derive addresses
     let network_addresses = match dkg_storage
-        .get_network_share_pubkey(&request.peer_id)
+        .get_network_share_pubkey(&peer_id)
         .await
     {
         Ok(Some(pubkey)) => {
@@ -2923,7 +2945,7 @@ pub(crate) async fn handle_get_peer_addresses(
             })
         }
         Ok(None) => {
-            warn!("⚠️ [RPC] Network share pubkey not found for peer: {}", request.peer_id);
+            warn!("⚠️ [RPC] Network share pubkey not found");
             None
         }
         Err(e) => {
@@ -2934,7 +2956,7 @@ pub(crate) async fn handle_get_peer_addresses(
 
     // Get vault share pubkey and derive addresses
     let vault_addresses = match dkg_storage
-        .get_vault_share_pubkey(&request.peer_id)
+        .get_vault_share_pubkey(&peer_id)
         .await
     {
         Ok(Some(pubkey)) => {
@@ -2946,7 +2968,7 @@ pub(crate) async fn handle_get_peer_addresses(
             })
         }
         Ok(None) => {
-            warn!("⚠️ [RPC] Vault share pubkey not found for peer: {}", request.peer_id);
+            warn!("⚠️ [RPC] Vault share pubkey not found");
             None
         }
         Err(e) => {
@@ -2958,24 +2980,22 @@ pub(crate) async fn handle_get_peer_addresses(
     // Log the addresses
     if let Some(ref net_addrs) = network_addresses {
         info!(
-            "📍 [RPC] Peer {} - Network Addresses: ETH={}, BTC={}",
-            request.peer_id, net_addrs.eth_address, net_addrs.btc_address
+            "📍 [RPC] Network Addresses: ETH={}, BTC={}",
+            net_addrs.eth_address, net_addrs.btc_address
         );
     }
     if let Some(ref vault_addrs) = vault_addresses {
         info!(
-            "📍 [RPC] Peer {} - Vault Addresses: ETH={}, BTC={}",
-            request.peer_id, vault_addrs.eth_address, vault_addrs.btc_address
+            "📍 [RPC] Vault Addresses: ETH={}, BTC={}",
+            vault_addrs.eth_address, vault_addrs.btc_address
         );
     }
 
-    let peer_id = request.peer_id.clone();
-    Ok(warp::reply::json(&crate::types::rpc_server::GetPeerAddressesResponse {
+    Ok(warp::reply::json(&crate::types::rpc_server::GetNetworkAddressesResponse {
         status: "success".to_string(),
-        peer_id: peer_id.clone(),
         network_addresses,
         vault_addresses,
-        message: format!("Retrieved addresses for peer {}", peer_id),
+        message: "Retrieved network addresses (same across all nodes)".to_string(),
         error_message: None,
     }))
 }
