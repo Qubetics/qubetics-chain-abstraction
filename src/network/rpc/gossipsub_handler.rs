@@ -486,24 +486,6 @@ impl MpcNetworkLayer {
                     );
                 }
             }
-            GossipsubMessage::DKGCommand(dkg_cmd) => {
-                info!("🚀 Received DKG command via gossipsub: {:?}", dkg_cmd);
-                match dkg_cmd {
-                    RPCRequest::StartADKG => {
-                        if let Some(dkg_node) = &mut self.dkg_node {
-                            info!("🚀 Starting DKG in response to gossipsub command");
-                            if let Err(e) = dkg_node.start_dkg(self.node_manager.clone()).await {
-                                warn!("❌ Failed to start DKG from gossipsub command: {:?}", e);
-                            }
-                        } else {
-                            warn!("❌ DKG node not initialized for gossipsub command");
-                        }
-                    }
-                    _ => {
-                        info!("📋 Received other DKG command: {:?}", dkg_cmd);
-                    }
-                }
-            }
             GossipsubMessage::UserRegistration {
                 ethereum_address,
                 timestamp,

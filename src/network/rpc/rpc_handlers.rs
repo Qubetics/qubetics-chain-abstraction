@@ -44,7 +44,6 @@ impl MpcNetworkLayer {
                 })
             }
             RPCRequest::Custom { id, data } => RPCResponse::Custom { id, data },
-            RPCRequest::StartADKG => self.handle_start_adkg_request(peer).await,
             RPCRequest::GetDKGStatus => self.handle_get_dkg_status_request().await,
             RPCRequest::SendAVSSShare {
                 share,
@@ -449,57 +448,6 @@ impl MpcNetworkLayer {
             peers,
             indices,
             addresses,
-        }
-    }
-
-    /// Handle StartADKG RPC request
-    async fn handle_start_adkg_request(&mut self, peer: PeerId) -> RPCResponse {
-        match self.dkg_node.as_mut() {
-            Some(dkg) => {
-                info!("🚀 Received DKG start request from peer {}", peer);
-
-                // Update DKG parameters with current network state
-                let total = self.node_manager.get_total_nodes();
-                let threshold = self.node_manager.get_threshold();
-                if let Err(e) = dkg.update_node_params(total, threshold) {
-                    warn!("❌ Invalid DKG params: {}", e);
-                    return RPCResponse::DKGError(format!("Invalid DKG params: {e}"));
-                }
-                if let Err(e) = dkg.reset().await {
-                    warn!("❌ Failed to reset DKG state: {}", e);
-                    return RPCResponse::DKGError(format!("Failed to reset DKG: {e}"));
-                }
-                if let Some(signing_node) = &mut self.signing_node {
-                    // Keep signing threshold consistent with the node manager's threshold
-                    let new_threshold = self.node_manager.get_threshold();
-                    signing_node.set_threshold(new_threshold);
-                    info!(
-                        "🔄 [THRESHOLD] Updated signing node threshold to {} (total nodes: {})",
-                        new_threshold, total
-                    );
-                }
-                info!(
-                    "🔄 DKG parameters updated: total_nodes={}, threshold={}",
-                    total, threshold
-                );
-
-                match dkg.start_dkg(self.node_manager.clone()).await {
-                    Ok(_) => {
-                        info!("✅ Successfully started DKG in response to peer request");
-                        RPCResponse::DKGStarted {
-                            peer_id: SerializablePeerId(peer),
-                        }
-                    }
-                    Err(e) => {
-                        warn!("❌ Failed to start DKG: {:?}", e);
-                        RPCResponse::DKGError(format!("Failed to start DKG: {e:?}"))
-                    }
-                }
-            }
-            None => {
-                warn!("❌ DKG node not initialized");
-                RPCResponse::DKGError("DKG is not initialized.".to_string())
-            }
         }
     }
 

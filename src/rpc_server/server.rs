@@ -17,8 +17,8 @@ use crate::{
 use super::handlers::{
     handle_add_liquidity, handle_claim_reward, handle_get_dkg_status, handle_get_node_id,
     handle_get_reward_solver, handle_get_solver_liquidity, handle_get_status, handle_get_uptime,
-    handle_get_user_info, handle_heartbeat, handle_register_user, handle_start_dkg,
-    handle_user_mpc_deposit, handle_withdraw_liquidity,
+    handle_get_user_info, handle_heartbeat, handle_register_user, handle_user_mpc_deposit,
+    handle_withdraw_liquidity,
 };
 use crate::types::rpc_server::{
     AddLiquidityRequest, ClaimRewardRequest, GetRewardSolverRequest, RequestContext,
@@ -171,18 +171,11 @@ pub async fn start_http_server(
         .and(with_start_time(start_time.clone()))
         .and_then(handle_get_uptime);
 
-    let start_dkg = warp::path("start_dkg")
-        .and(warp::post())
-        .and(with_message_tx(message_tx.clone()))
-        .and(with_dkg_storage(dkg_storage.clone()))
-        .and_then(handle_start_dkg);
-
     let routes = register_user
         .or(get_user_info)
         .or(get_node_id)
         .or(get_status)
         .or(get_dkg_status)
-        .or(start_dkg)
         .or(user_mpc_deposit)
         .or(get_reward_solver)
         .or(get_solver_liquidity)

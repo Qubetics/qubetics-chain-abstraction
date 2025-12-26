@@ -185,7 +185,6 @@ pub enum GossipsubMessage {
         amount_tics: Option<String>,
         transaction_type: String,
     },
-    DKGCommand(RPCRequest),
     UserRegistration {
         ethereum_address: String,
         timestamp: i64,
