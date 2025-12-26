@@ -67,7 +67,7 @@ async function testRegisterUser(ethereumAddress, wallet) {
 
     const response = await axios.post(
       `${RPC_BASE_URL}/register_user`,
-      { 
+      {
         ethereum_address: ethereumAddress,
         signature: signature,
         message: message
@@ -323,7 +323,7 @@ async function runTests() {
   log(`\n🔑 Derived signer address from TEST_PRIVKEY: ${signerAddr}`, 'blue');
 
   // 1) DKG status
-  await testDKGStatus();
+  // await testDKGStatus();
 
   // // 2) Register ONLY the derived address 
   // const reg = await testRegisterUser(signerAddr, wallet);

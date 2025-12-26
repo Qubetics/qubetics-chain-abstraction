@@ -27,7 +27,7 @@ impl MpcNetworkLayer {
     /// Main gossipsub message handler - delegates to specific message type handlers
     pub(crate) async fn handle_gossipsub_message(&mut self, message: &Message) -> Result<()> {
         // Extract sender peer ID from message for security checks
-        let sender_peer_id_from_message = message.source;
+        // Note: message.source is Option<PeerId> - we'll handle it in each match arm that needs it
         info!(
             "i am at handle_gossipsub_message ---------- {:?}",
             message.topic
@@ -216,6 +216,31 @@ impl MpcNetworkLayer {
                     broadcast_msg
                 );
 
+                // SECURITY FIX: Authenticate sender - verify sender is a trusted/active node
+                let sender_peer_id = match message.source {
+                    Some(pid) => pid,
+                    None => {
+                        warn!("🚫 [SECURITY] Rejecting VrfSelectedNodes broadcast: message has no source");
+                        return Ok(());
+                    }
+                };
+                let is_trusted_node = self
+                    .node_manager
+                    .get_active_nodes()
+                    .contains(&sender_peer_id);
+                if !is_trusted_node {
+                    warn!(
+                        "🚫 [SECURITY] Rejecting VrfSelectedNodes broadcast: sender {} is not a trusted/active node",
+                        sender_peer_id
+                    );
+                    return Ok(());
+                }
+
+                info!(
+                    "✅ [SECURITY] VrfSelectedNodes broadcast authenticated from trusted node {}",
+                    sender_peer_id
+                );
+
                 // Store the received VRF selection in the signing node's VRF selector
                 if let Some(signing_node) = &mut self.signing_node {
                     let selector_node_id = broadcast_msg.selector_node_id.clone();
@@ -223,6 +248,7 @@ impl MpcNetworkLayer {
                     signing_node.handle_vrf_selected_nodes_broadcast(
                         self.node_manager.get_total_nodes(),
                         broadcast_msg,
+                        sender_peer_id,
                     );
                     info!(
                         "💾 [VRF] Stored VRF selected nodes from node {} for round {}",
@@ -458,24 +484,6 @@ impl MpcNetworkLayer {
                         "💾 [VAULT_VRF_SYNC] Stored round {:?} for peer {} from response",
                         sync_response.current_round, peer
                     );
-                }
-            }
-            GossipsubMessage::DKGCommand(dkg_cmd) => {
-                info!("🚀 Received DKG command via gossipsub: {:?}", dkg_cmd);
-                match dkg_cmd {
-                    RPCRequest::StartADKG => {
-                        if let Some(dkg_node) = &mut self.dkg_node {
-                            info!("🚀 Starting DKG in response to gossipsub command");
-                            if let Err(e) = dkg_node.start_dkg(self.node_manager.clone()).await {
-                                warn!("❌ Failed to start DKG from gossipsub command: {:?}", e);
-                            }
-                        } else {
-                            warn!("❌ DKG node not initialized for gossipsub command");
-                        }
-                    }
-                    _ => {
-                        info!("📋 Received other DKG command: {:?}", dkg_cmd);
-                    }
                 }
             }
             GossipsubMessage::UserRegistration {
@@ -1616,6 +1624,31 @@ impl MpcNetworkLayer {
                     broadcast_msg.round, broadcast_msg.selector_node_id
                 );
 
+                // SECURITY FIX: Authenticate sender - verify sender is a trusted/active node
+                let sender_peer_id = match message.source {
+                    Some(pid) => pid,
+                    None => {
+                        warn!("🚫 [SECURITY] Rejecting VaultSequencerVrfSelectedNodes broadcast: message has no source");
+                        return Ok(());
+                    }
+                };
+                let is_trusted_node = self
+                    .node_manager
+                    .get_active_nodes()
+                    .contains(&sender_peer_id);
+                if !is_trusted_node {
+                    warn!(
+                        "🚫 [SECURITY] Rejecting VaultSequencerVrfSelectedNodes broadcast: sender {} is not a trusted/active node",
+                        sender_peer_id
+                    );
+                    return Ok(());
+                }
+
+                info!(
+                    "✅ [SECURITY] VaultSequencerVrfSelectedNodes broadcast authenticated from trusted node {}",
+                    sender_peer_id
+                );
+
                 if let Some(sequencer) = &self.contract_sequencer {
                     let round = broadcast_msg.round;
                     let total_nodes = self.node_manager.get_total_nodes();
@@ -1623,13 +1656,14 @@ impl MpcNetworkLayer {
 
                     // Clone for async task (matches signing module pattern)
                     let sequencer_clone = sequencer.clone();
+                    let broadcast_msg_clone = broadcast_msg.clone();
 
                     // Spawn async task to handle VRF broadcast and check consensus
                     // This avoids blocking and matches signing module's approach
                     tokio::spawn(async move {
                         // Handle VRF broadcast
                         if let Err(e) = sequencer_clone
-                            .handle_vrf_broadcast(broadcast_msg, total_nodes)
+                            .handle_vrf_broadcast(broadcast_msg_clone, sender_peer_id, total_nodes)
                             .await
                         {
                             error!("❌ [VAULT_SEQUENCER] Failed to handle VRF broadcast: {}", e);
@@ -1666,6 +1700,31 @@ impl MpcNetworkLayer {
                     broadcast_msg.round, broadcast_msg.selector_node_id
                 );
 
+                // SECURITY FIX: Authenticate sender - verify sender is a trusted/active node
+                let sender_peer_id = match message.source {
+                    Some(pid) => pid,
+                    None => {
+                        warn!("🚫 [SECURITY] Rejecting MainSequencerVrfSelectedNodes broadcast: message has no source");
+                        return Ok(());
+                    }
+                };
+                let is_trusted_node = self
+                    .node_manager
+                    .get_active_nodes()
+                    .contains(&sender_peer_id);
+                if !is_trusted_node {
+                    warn!(
+                        "🚫 [SECURITY] Rejecting MainSequencerVrfSelectedNodes broadcast: sender {} is not a trusted/active node",
+                        sender_peer_id
+                    );
+                    return Ok(());
+                }
+
+                info!(
+                    "✅ [SECURITY] MainSequencerVrfSelectedNodes broadcast authenticated from trusted node {}",
+                    sender_peer_id
+                );
+
                 if let Some(sequencer) = &self.network_transaction_sequencer {
                     let round = broadcast_msg.round;
                     let total_nodes = self.node_manager.get_total_nodes();
@@ -1673,13 +1732,14 @@ impl MpcNetworkLayer {
 
                     // Clone for async task (matches signing module pattern)
                     let sequencer_clone = sequencer.clone();
+                    let broadcast_msg_clone = broadcast_msg.clone();
 
                     // Spawn async task to handle VRF broadcast and check consensus
                     // This avoids blocking and matches signing module's approach
                     tokio::spawn(async move {
                         // Handle VRF broadcast
                         if let Err(e) = sequencer_clone
-                            .handle_vrf_broadcast(broadcast_msg, total_nodes)
+                            .handle_vrf_broadcast(broadcast_msg_clone, sender_peer_id, total_nodes)
                             .await
                         {
                             error!("❌ [MAIN_SEQUENCER] Failed to handle VRF broadcast: {}", e);

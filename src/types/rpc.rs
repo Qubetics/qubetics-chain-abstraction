@@ -46,8 +46,6 @@ pub enum RPCRequest {
     GetDKGStatus,
     GetPeerInfo,
     Ping,
-    StartDKG,
-    StartADKG,
     RequestFirstNodeStartTime,
     ShareFirstNodeStartTime {
         first_node_start_time: u64,

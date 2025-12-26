@@ -12,7 +12,7 @@ use sha3::{Digest, Keccak256};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::{mpsc, Notify, RwLock};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::database::VrfStorage;
 use crate::types::{ConsensusMessage, DepositIntent, GossipsubMessage, TransactionType};
@@ -105,7 +105,7 @@ struct SequencerSyncState {
 #[derive(Clone)]
 pub struct ContractTransactionSequencer {
     /// Pending requests sorted by transaction_id (BTreeMap maintains sorted order)
-    pending_requests: Arc<RwLock<BTreeMap<String, ContractTransactionRequest>>>,
+    pub(crate) pending_requests: Arc<RwLock<BTreeMap<String, ContractTransactionRequest>>>,
     /// Synchronization state
     sync_state: Arc<RwLock<SequencerSyncState>>,
     /// Message channel for broadcasting sequencer sync messages
@@ -132,6 +132,9 @@ pub struct ContractTransactionSequencer {
     final_node_cache: Arc<RwLock<HashMap<u64, libp2p::PeerId>>>,
     /// Locked request ID selected by final node (per round)
     locked_request: Arc<RwLock<Option<String>>>,
+    /// Tracks rounds for which THIS node has performed VRF selection
+    /// This prevents skipping VRF when consensus results arrive from other nodes first
+    vault_vrf_performed_rounds: Arc<RwLock<HashSet<u64>>>,
 }
 
 impl ContractTransactionSequencer {
@@ -165,6 +168,7 @@ impl ContractTransactionSequencer {
             available_nodes: Arc::new(RwLock::new(Vec::new())),
             final_node_cache: Arc::new(RwLock::new(HashMap::new())),
             locked_request: Arc::new(RwLock::new(None)),
+            vault_vrf_performed_rounds: Arc::new(RwLock::new(HashSet::new())),
         }
     }
 
@@ -272,6 +276,13 @@ impl ContractTransactionSequencer {
                     );
                 }
             }
+            
+            // Mark this round as VRF-performed to prevent re-triggering
+            self.vault_vrf_performed_rounds.write().await.insert(round);
+            info!(
+                "🎯 [VAULT_SEQUENCER] Round {} VRF COMPLETE: This node has performed and broadcasted its VRF selection",
+                round
+            );
         } else {
             return Err(anyhow::anyhow!("VRF service not available"));
         }
@@ -452,16 +463,30 @@ impl ContractTransactionSequencer {
         }
 
         // Update the local final-node cache using the validated consensus result
+        // CRITICAL FIX: Only cache consensus for rounds where THIS VAULT SEQUENCER performed VRF
+        // This prevents caching signing module rounds (which use different VRF rounds)
         if let Some(round) = final_round {
             if let Some(consensus) = &self.consensus_node {
                 let consensus_guard = consensus.read().await;
                 if let Some(result) = consensus_guard.get_consensus_result(round) {
-                    let mut cache = self.final_node_cache.write().await;
-                    cache.insert(round, result.final_node.0);
-                    info!(
-                        "💾 [VAULT_SEQUENCER] Cached final node {:?} for round {} from consensus message",
-                        result.final_node.0, round
-                    );
+                    // Check if THIS vault sequencer performed VRF for this round
+                    let has_performed_vrf = self.vault_vrf_performed_rounds.read().await.contains(&round);
+                    
+                    if has_performed_vrf {
+                        // This round belongs to vault sequencer - cache it
+                        let mut cache = self.final_node_cache.write().await;
+                        cache.insert(round, result.final_node.0);
+                        info!(
+                            "💾 [VAULT_SEQUENCER] Cached final node {:?} for round {} from consensus message",
+                            result.final_node.0, round
+                        );
+                    } else {
+                        // This round is from another module (signing/main) - ignore it
+                        debug!(
+                            "🔕 [VAULT_SEQUENCER] Ignoring consensus for round {} - vault sequencer never performed VRF for this round (likely from signing/main module)",
+                            round
+                        );
+                    }
                 }
             }
         }
@@ -472,12 +497,13 @@ impl ContractTransactionSequencer {
     pub async fn handle_vrf_broadcast(
         &self,
         broadcast: crate::protocols::VrfSelectedNodesBroadcast,
+        sender_peer_id: libp2p::PeerId,
         total_nodes: usize,
     ) -> Result<()> {
         if let Some(vrf_service) = &self.vrf_service {
             vrf_service
-                .handle_vrf_broadcast(broadcast, total_nodes)
-                .await;
+                .handle_vrf_broadcast(broadcast, sender_peer_id, total_nodes)
+                .await?;
             info!("✅ [VAULT_SEQUENCER] Handled VRF broadcast");
         } else {
             warn!("⚠️ [VAULT_SEQUENCER] VRF service not available for handling broadcast");
@@ -845,23 +871,23 @@ impl ContractTransactionSequencer {
             return None;
         }
 
-        info!(
-            "📤 [VAULT_SEQUENCER] Dequeue next transaction attempt: queue_len={}, round={}",
-            queue_len,
-            *self.vault_sequencer_round.read().await
-        );
-
-        // Get current round and check if consensus is complete
+        // Get current round
         let round = *self.vault_sequencer_round.read().await;
-        let cache = self.final_node_cache.read().await;
-        let has_final_node = cache.contains_key(&round);
-        drop(cache);
-
-        if !has_final_node {
-            // Consensus not complete - trigger VRF if not already done
-            // This matches signing module pattern: perform VRF when starting to process
+        
+        // CRITICAL FIX: Check if THIS node has performed VRF selection for this round
+        // This prevents skipping VRF when consensus results arrive from other nodes first
+        let has_performed_vrf = self.vault_vrf_performed_rounds.read().await.contains(&round);
+        let has_final_node = self.final_node_cache.read().await.contains_key(&round);
+        
+        info!(
+            "📤 [VAULT_SEQUENCER] Dequeue attempt: round={}, queue_len={}, vrf_performed={}, consensus_ready={}",
+            round, queue_len, has_performed_vrf, has_final_node
+        );
+        
+        if !has_performed_vrf {
+            // THIS node hasn't performed VRF yet - must do it regardless of consensus status
             info!(
-                "🎯 [VAULT_SEQUENCER] No final node for round {}, triggering VRF selection",
+                "🎯 [VAULT_SEQUENCER] Node hasn't performed VRF for round {}, triggering VRF selection",
                 round
             );
 
@@ -886,7 +912,7 @@ impl ContractTransactionSequencer {
                 return None;
             }
 
-            // Trigger VRF selection (matches signing module: spawn async to avoid blocking)
+            // Trigger VRF selection (spawn async to avoid blocking)
             let threshold = nodes.len(); // All nodes must participate
             let sequencer_clone = self.clone();
             tokio::spawn(async move {
@@ -904,11 +930,31 @@ impl ContractTransactionSequencer {
                 }
             });
 
-            // Return None - consensus will complete after VRF broadcasts are collected
+            // Return None - wait for VRF to complete and consensus to form
+            info!(
+                "⏸️ [VAULT_SEQUENCER] Waiting for VRF task to complete for round {}",
+                round
+            );
+            return None;
+        }
+        
+        // VRF completed - now check if consensus is complete
+        if !has_final_node {
+            // VRF done but consensus not yet complete - wait
+            info!(
+                "⏳ [VAULT_SEQUENCER] Round {}: VRF ✅ performed, but consensus ⏳ not ready yet (waiting for other nodes)",
+                round
+            );
             return None;
         }
 
-        // Consensus complete - check if we are the final node
+        // Both VRF and consensus complete - proceed
+        info!(
+            "✅ [VAULT_SEQUENCER] Round {}: VRF ✅ performed, consensus ✅ ready - proceeding to select transaction",
+            round
+        );
+        
+        // Check if we are the final node
         match self.am_i_final_node().await {
             Ok(true) => {
                 // We are the final node - select the request
@@ -1153,6 +1199,8 @@ impl ContractTransactionSequencer {
         Ok(())
     }
 
+    /// Queue a missing transaction using its intent_hash
+    /// Note: This is a placeholder - in practice, nodes should receive transaction via TransactionIdBroadcast
     /// Handle ACK for a SELECT message to track agreement progress
     pub async fn handle_select_ack(&self, round: u64, request_id: &str, node_id: libp2p::PeerId) {
         let current_round = *self.vault_sequencer_round.read().await;
@@ -1968,6 +2016,9 @@ pub struct NetworkTransactionSequencer {
     final_node_cache: Arc<RwLock<HashMap<u64, libp2p::PeerId>>>,
     /// Locked request ID selected by final node (per round)
     locked_request: Arc<RwLock<Option<String>>>,
+    /// Tracks rounds for which THIS node has performed VRF selection
+    /// This prevents skipping VRF when consensus results arrive from other nodes first
+    main_vrf_performed_rounds: Arc<RwLock<HashSet<u64>>>,
 }
 
 impl NetworkTransactionSequencer {
@@ -1998,6 +2049,7 @@ impl NetworkTransactionSequencer {
             available_nodes: Arc::new(RwLock::new(Vec::new())),
             final_node_cache: Arc::new(RwLock::new(HashMap::new())),
             locked_request: Arc::new(RwLock::new(None)),
+            main_vrf_performed_rounds: Arc::new(RwLock::new(HashSet::new())),
         }
     }
 
@@ -2105,6 +2157,13 @@ impl NetworkTransactionSequencer {
                     );
                 }
             }
+            
+            // Mark this round as VRF-performed to prevent re-triggering
+            self.main_vrf_performed_rounds.write().await.insert(round);
+            info!(
+                "🎯 [MAIN_SEQUENCER] Round {} VRF COMPLETE: This node has performed and broadcasted its VRF selection",
+                round
+            );
         } else {
             return Err(anyhow::anyhow!("VRF service not available"));
         }
@@ -2281,16 +2340,31 @@ impl NetworkTransactionSequencer {
             warn!("⚠️ [MAIN_SEQUENCER] Consensus node not available to handle message");
         }
 
+        // Update the local final-node cache using the validated consensus result
+        // CRITICAL FIX: Only cache consensus for rounds where THIS MAIN SEQUENCER performed VRF
+        // This prevents caching signing module rounds (which use different VRF rounds)
         if let Some(round) = final_round {
             if let Some(consensus) = &self.consensus_node {
                 let consensus_guard = consensus.read().await;
                 if let Some(result) = consensus_guard.get_consensus_result(round) {
-                    let mut cache = self.final_node_cache.write().await;
-                    cache.insert(round, result.final_node.0);
-                    info!(
-                        "💾 [MAIN_SEQUENCER] Cached final node {:?} for round {} from consensus message",
-                        result.final_node.0, round
-                    );
+                    // Check if THIS main sequencer performed VRF for this round
+                    let has_performed_vrf = self.main_vrf_performed_rounds.read().await.contains(&round);
+                    
+                    if has_performed_vrf {
+                        // This round belongs to main sequencer - cache it
+                        let mut cache = self.final_node_cache.write().await;
+                        cache.insert(round, result.final_node.0);
+                        info!(
+                            "💾 [MAIN_SEQUENCER] Cached final node {:?} for round {} from consensus message",
+                            result.final_node.0, round
+                        );
+                    } else {
+                        // This round is from another module (signing/vault) - ignore it
+                        debug!(
+                            "🔕 [MAIN_SEQUENCER] Ignoring consensus for round {} - main sequencer never performed VRF for this round (likely from signing/vault module)",
+                            round
+                        );
+                    }
                 }
             }
         }
@@ -2301,12 +2375,13 @@ impl NetworkTransactionSequencer {
     pub async fn handle_vrf_broadcast(
         &self,
         broadcast: crate::protocols::VrfSelectedNodesBroadcast,
+        sender_peer_id: libp2p::PeerId,
         total_nodes: usize,
     ) -> Result<()> {
         if let Some(vrf_service) = &self.vrf_service {
             vrf_service
-                .handle_vrf_broadcast(broadcast, total_nodes)
-                .await;
+                .handle_vrf_broadcast(broadcast, sender_peer_id, total_nodes)
+                .await?;
             info!("✅ [MAIN_SEQUENCER] Handled VRF broadcast");
         } else {
             warn!("⚠️ [MAIN_SEQUENCER] VRF service not available for handling broadcast");
@@ -2545,23 +2620,23 @@ impl NetworkTransactionSequencer {
             return None;
         }
 
-        info!(
-            "📤 [MAIN_SEQUENCER] Dequeue next transaction attempt: queue_len={}, round={}",
-            queue_len,
-            *self.main_sequencer_round.read().await
-        );
-
-        // Get current round and check if consensus is complete
+        // Get current round
         let round = *self.main_sequencer_round.read().await;
-        let cache = self.final_node_cache.read().await;
-        let has_final_node = cache.contains_key(&round);
-        drop(cache);
-
-        if !has_final_node {
-            // Consensus not complete - trigger VRF if not already done
-            // This matches signing module pattern: perform VRF when starting to process
+        
+        // CRITICAL FIX: Check if THIS node has performed VRF selection for this round
+        // This prevents skipping VRF when consensus results arrive from other nodes first
+        let has_performed_vrf = self.main_vrf_performed_rounds.read().await.contains(&round);
+        let has_final_node = self.final_node_cache.read().await.contains_key(&round);
+        
+        info!(
+            "📤 [MAIN_SEQUENCER] Dequeue attempt: round={}, queue_len={}, vrf_performed={}, consensus_ready={}",
+            round, queue_len, has_performed_vrf, has_final_node
+        );
+        
+        if !has_performed_vrf {
+            // THIS node hasn't performed VRF yet - must do it regardless of consensus status
             info!(
-                "🎯 [MAIN_SEQUENCER] No final node for round {}, triggering VRF selection",
+                "🎯 [MAIN_SEQUENCER] Node hasn't performed VRF for round {}, triggering VRF selection",
                 round
             );
 
@@ -2584,7 +2659,7 @@ impl NetworkTransactionSequencer {
                 return None;
             }
 
-            // Trigger VRF selection (matches signing module: spawn async to avoid blocking)
+            // Trigger VRF selection (spawn async to avoid blocking)
             let threshold = nodes.len(); // All nodes must participate
             let sequencer_clone = self.clone();
             tokio::spawn(async move {
@@ -2602,11 +2677,31 @@ impl NetworkTransactionSequencer {
                 }
             });
 
-            // Return None - consensus will complete after VRF broadcasts are collected
+            // Return None - wait for VRF to complete and consensus to form
+            info!(
+                "⏸️ [MAIN_SEQUENCER] Waiting for VRF task to complete for round {}",
+                round
+            );
+            return None;
+        }
+        
+        // VRF completed - now check if consensus is complete
+        if !has_final_node {
+            // VRF done but consensus not yet complete - wait
+            info!(
+                "⏳ [MAIN_SEQUENCER] Round {}: VRF ✅ performed, but consensus ⏳ not ready yet (waiting for other nodes)",
+                round
+            );
             return None;
         }
 
-        // Consensus complete - check if we are the final node
+        // Both VRF and consensus complete - proceed
+        info!(
+            "✅ [MAIN_SEQUENCER] Round {}: VRF ✅ performed, consensus ✅ ready - proceeding to select transaction",
+            round
+        );
+        
+        // Check if we are the final node
         match self.am_i_final_node().await {
             Ok(true) => {
                 // We are the final node - select the request

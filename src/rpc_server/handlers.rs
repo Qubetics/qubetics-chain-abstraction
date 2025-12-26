@@ -385,7 +385,7 @@ pub(crate) async fn handle_register_user(
     };
 
     info!("🔐 Verifying signature for user registration");
-    
+
     // Normalize signature
     let (compact, v) = match normalize_eth_signature(signature) {
         Ok(t) => t,
@@ -488,7 +488,7 @@ pub(crate) async fn handle_register_user(
             derived_btc_address: None,
             error: Some(
                 RpcError::InvalidRequest(
-                    "Invalid message format. Expected: register:{address}:{timestamp}".to_string()
+                    "Invalid message format. Expected: register:{address}:{timestamp}".to_string(),
                 )
                 .to_error_response(),
             ),
@@ -527,7 +527,7 @@ pub(crate) async fn handle_register_user(
             derived_btc_address: None,
             error: Some(
                 RpcError::InvalidRequest(
-                    "Address in message does not match provided address".to_string()
+                    "Address in message does not match provided address".to_string(),
                 )
                 .to_error_response(),
             ),
@@ -578,7 +578,10 @@ pub(crate) async fn handle_register_user(
         return Ok(warp::reply::json(&error_response));
     }
 
-    info!("✅ Signature verification successful for address: {}", addr_cs);
+    info!(
+        "✅ Signature verification successful for address: {}",
+        addr_cs
+    );
 
     // Check if user is already registered
     if let Some(_existing_user) = user_intent_manager.get_user_by_address(&addr_cs).await {
@@ -1331,49 +1334,6 @@ pub(crate) async fn handle_get_dkg_status(
         } else {
             "DKG not completed yet".to_string()
         },
-    }))
-}
-
-pub(crate) async fn handle_start_dkg(
-    message_tx: Arc<Mutex<mpsc::Sender<ChannelMessage>>>,
-    dkg_storage: Arc<DkgStorage>,
-) -> Result<impl warp::Reply, warp::Rejection> {
-    // Block manual DKG start while a refresh is in progress
-    if dkg_storage.is_refresh_in_progress().await.unwrap_or(false) {
-        warn!("⚠️ HTTP: Blocking start_dkg - shares are getting refreshed");
-        return Ok(warp::reply::json(&TransactionResponse {
-            tx_hash: "".to_string(),
-            status: "error".to_string(),
-            message: "shares are getting refreshed".to_string(),
-        }));
-    }
-
-    info!("🚀 HTTP: RPC request to start DKG");
-
-    let dkg_request = RPCRequest::StartADKG;
-    let gossipsub_msg = crate::types::GossipsubMessage::DKGCommand(dkg_request);
-    let dkg_data = serde_json::to_vec(&gossipsub_msg).map_err(|e| {
-        warn!("Failed to serialize DKG request: {}", e);
-        warp::reject::custom(TransactionError::SerializationError)
-    })?;
-
-    let tx_sender = message_tx.lock().await;
-    if let Err(e) = tx_sender
-        .send(ChannelMessage::Broadcast {
-            topic: "dkg-commands".to_string(),
-            data: dkg_data,
-        })
-        .await
-    {
-        warn!("Failed to send DKG request to network: {:?}", e);
-        return Err(warp::reject::custom(TransactionError::NetworkError));
-    }
-
-    info!("✅ HTTP: DKG start request sent to network");
-    Ok(warp::reply::json(&TransactionResponse {
-        tx_hash: "dkg-start-request".to_string(),
-        status: "initiated".to_string(),
-        message: "DKG start request sent to P2P network".to_string(),
     }))
 }
 

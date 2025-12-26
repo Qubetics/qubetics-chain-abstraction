@@ -372,20 +372,25 @@ impl VrfNodeSelector {
     pub fn handle_selected_nodes_broadcast(
         &mut self,
         broadcast: VrfSelectedNodesBroadcast,
+        sender_peer_id: PeerId,
         total_nodes: usize,
     ) {
         info!(
-            "📥 [VRF] Received VRF selected nodes broadcast from node {} for round {}: {} nodes selected",
+            "📥 [VRF] Received VRF selected nodes broadcast from node {} (claimed selector: {}) for round {}: {} nodes selected",
+            sender_peer_id,
             broadcast.selector_node_id.0,
             broadcast.round,
             broadcast.selected_nodes.len()
         );
 
+        // SECURITY FIX: Use authenticated sender_peer_id for deduplication instead of message-controlled selector_node_id
+        // This prevents spoofing attacks where an attacker sends multiple broadcasts with different selector_node_id values
         let round = broadcast.round;
+        let authenticated_sender = SerializablePeerId(sender_peer_id);
         self.received_selections
             .entry(round)
             .or_default()
-            .insert(broadcast.selector_node_id.clone(), broadcast);
+            .insert(authenticated_sender, broadcast);
 
         let all_selected = self.get_all_selected_nodes_for_round(round);
         info!("All selected nodes for round {}: {:?}", round, all_selected);

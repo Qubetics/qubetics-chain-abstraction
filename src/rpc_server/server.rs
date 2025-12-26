@@ -195,7 +195,6 @@ pub async fn start_http_server(
         .or(get_node_id)
         .or(get_status)
         .or(get_dkg_status)
-        .or(start_dkg)
         .or(user_mpc_deposit)
         .or(get_reward_solver)
         .or(get_solver_liquidity)

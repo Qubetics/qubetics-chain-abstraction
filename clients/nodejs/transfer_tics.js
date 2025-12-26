@@ -64,7 +64,7 @@ async function transferTics(recipientAddress) {
     log('🔗 Connecting to Qubetics network...', 'yellow');
     const provider = new JsonRpcProvider(QUBETICS_RPC_URL);
     const wallet = new Wallet(TEST_PRIVATE_KEY, provider);
-    
+
     const senderAddress = await wallet.getAddress();
     log(`👤 Sender address: ${senderAddress}`, 'cyan');
 
@@ -79,7 +79,7 @@ async function transferTics(recipientAddress) {
     // With 10 decimals: 1000 TICS = 1000 * 10^10 = 10000000000000
     const amountInSmallestUnits = parseUnits(TICS_AMOUNT.toString(), TICS_DECIMALS);
     log(`   Amount (raw units): ${amountInSmallestUnits.toString()}`, 'cyan');
-    
+
     if (balance < amountInSmallestUnits) {
       throw new Error(
         `Insufficient balance. Required: ${TICS_AMOUNT} TICS, Available: ${balanceInTics} TICS`
@@ -137,7 +137,7 @@ async function transferTics(recipientAddress) {
 
     log('⏳ Waiting for confirmation...', 'yellow');
     const receipt = await txResponse.wait();
-    
+
     if (receipt.status === 1) {
       log('✅ Transaction confirmed!', 'green');
       log(`   Block number: ${receipt.blockNumber}`, 'cyan');
