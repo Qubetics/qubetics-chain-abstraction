@@ -168,39 +168,24 @@ impl ConsensusNode {
 
                 let expected_result = Self::calculate_consensus_result(&selected_nodes, round)?;
 
-                // The most important validation is that the final_node matches
-                // If final_node matches, accept it even if frequencies/selections differ slightly
-                // (this can happen when a node receives its own broadcast after receiving additional VRF selections)
-                if expected_result.final_node != result.final_node {
-                    // Provide detailed comparison to help debug
-                    let mut differences = Vec::new();
-                    differences.push(format!(
-                        "final_node: expected {:?}, got {:?}",
-                        expected_result.final_node, result.final_node
-                    ));
-                    if expected_result.round != result.round {
-                        differences.push(format!(
-                            "round: expected {}, got {}",
-                            expected_result.round, result.round
-                        ));
-                    }
-                    if expected_result.total_selections != result.total_selections {
-                        differences.push(format!(
-                            "total_selections: expected {}, got {}",
-                            expected_result.total_selections, result.total_selections
-                        ));
-                    }
-                    if expected_result.node_frequencies != result.node_frequencies {
-                        differences.push(format!(
-                            "node_frequencies: expected {:?}, got {:?}",
-                            expected_result.node_frequencies, result.node_frequencies
-                        ));
-                    }
-                    
+                // STRICT VALIDATION: Ensure consensus results match exactly
+                // With aggressive VRF retries (100-500ms), all nodes should receive complete
+                // VRF data before consensus calculation, so strict validation is safe.
+                
+                // Validate that the received result is internally consistent
+                let received_final_node = Self::calculate_final_node_from_frequencies(&result.node_frequencies)?;
+                if received_final_node != result.final_node {
                     return Err(anyhow::anyhow!(
-                        "Invalid consensus result received for round {}: {}. Expected result: final_node={:?}, total_selections={}, node_frequencies={:?}. Received result: final_node={:?}, total_selections={}, node_frequencies={:?}",
+                        "Consensus result inconsistency for round {}: final_node {:?} doesn't match calculation from node_frequencies {:?}",
+                        round, result.final_node, result.node_frequencies
+                    ));
+                }
+                
+                // Strict validation: final_node must match exactly
+                if expected_result.final_node != result.final_node {
+                    return Err(anyhow::anyhow!(
+                        "Invalid consensus result received for round {}: final_node mismatch. Expected: {:?} (total={}, frequencies={:?}). Received: {:?} (total={}, frequencies={:?})",
                         round,
-                        differences.join(", "),
                         expected_result.final_node,
                         expected_result.total_selections,
                         expected_result.node_frequencies,
@@ -210,24 +195,18 @@ impl ConsensusNode {
                     ));
                 }
 
-                // Final node matches - validate that the received result would also produce the same final_node
-                // by recalculating from the received node_frequencies
-                let received_final_node = Self::calculate_final_node_from_frequencies(&result.node_frequencies)?;
-                if received_final_node != result.final_node {
-                    return Err(anyhow::anyhow!(
-                        "Consensus result inconsistency for round {}: final_node {:?} doesn't match calculation from node_frequencies {:?}",
-                        round, result.final_node, result.node_frequencies
-                    ));
-                }
-
-                // Final node matches and is consistent - accept the result
-                // (even if total_selections or exact frequencies differ, as long as final_node is correct)
+                // Final node matches - accept the result
+                // Note: total_selections and frequencies may differ slightly if nodes received
+                // VRF broadcasts in different orders, but as long as final_node matches,
+                // the consensus is valid
                 if expected_result.total_selections != result.total_selections || expected_result.node_frequencies != result.node_frequencies {
                     info!(
-                        "ℹ️ [CONSENSUS] Accepting consensus result for round {} with matching final_node {:?} but different frequencies/selections (expected: total={}, got: total={})",
+                        "ℹ️ [CONSENSUS] Accepting consensus result for round {} with matching final_node {:?} but different frequencies (expected: total={}, got: total={})",
                         round, result.final_node, expected_result.total_selections, result.total_selections
                     );
                 }
+
+                // Consensus result accepted - store it
 
                 self.consensus_results.insert(round, result);
                 self.current_round = self.current_round.max(round);

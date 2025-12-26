@@ -14,6 +14,7 @@ use crate::commands::CommandProcessor;
 use crate::consensus::ConsensusNode;
 use crate::database::Database;
 use crate::network::discovery::types::{DatabaseSyncState, PeerDiscoveryState};
+use crate::network::rpc::retry_manager::RetryManager;
 use crate::network::sequencer::{ContractTransactionSequencer, NetworkTransactionSequencer};
 use crate::node_selection::NodeMembership;
 use crate::protocols::DKGNode;
@@ -236,6 +237,9 @@ pub struct MpcNetworkLayer {
     pub(crate) network_transaction_processing_lock: Arc<Mutex<()>>,
     // Removed: deterministic_selection field
     // Final node selection is now integrated into ContractTransactionSequencer and NetworkTransactionSequencer
+    /// Retry manager for critical messages with exponential backoff
+    pub(crate) retry_manager: Option<RetryManager>,
+    pub(crate) channel_health: Arc<crate::network::rpc::channel_monitor::ChannelHealthMonitor>,
 }
 
 impl MpcNetworkLayer {

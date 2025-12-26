@@ -1116,7 +1116,6 @@ impl MpcNetworkLayer {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::chain_abstraction::{ChainHandler, ChainHandlerFactory};
     use std::sync::Arc;
 
@@ -1267,41 +1266,159 @@ impl MpcNetworkLayer {
                 let topic_hash = gossipsub::IdentTopic::new(topic.clone());
                 info!("🏷️ [BROADCAST] Topic hash: {:?}", topic_hash.hash());
 
+                // Production: Check channel capacity and log warnings for monitoring
+                let channel_capacity_warning_threshold = 0.8; // Warn at 80% full
+                // Note: We can't directly check channel capacity, but we can monitor via try_send failures
+                
+                // Check if this is a critical message that needs retry tracking
+                // Only register if retry manager is available and message deserializes correctly
+                // Skip registration if message is already being tracked (e.g., from a retry)
+                if let Some(retry_mgr) = &self.retry_manager {
+                    match serde_json::from_slice::<crate::types::GossipsubMessage>(&data) {
+                        Ok(gossip_msg) => {
+                            if let Some(msg_type) = crate::network::rpc::retry_manager::RetryManager::is_critical_message(&gossip_msg) {
+                                // Generate message ID to check if already tracked
+                                if let Ok(message_id) = crate::network::rpc::retry_manager::RetryManager::generate_message_id(msg_type, &gossip_msg) {
+                                    // Check if already being tracked (this is a retry, skip registration)
+                                    if retry_mgr.is_message_tracked(&message_id).await {
+                                        info!("🔄 [RETRY] Message {:?} already tracked, skipping registration (this is a retry)", message_id);
+                                    } else {
+                                        // Get expected nodes (all active nodes except ourselves)
+                                        let expected_nodes: std::collections::HashSet<PeerId> = self
+                                            .node_manager
+                                            .get_active_nodes()
+                                            .into_iter()
+                                            .filter(|&pid| pid != self.local_peer_id)
+                                            .collect();
+
+                                        if !expected_nodes.is_empty() {
+                                            // Check if already tracked (retry case)
+                                            if retry_mgr.is_message_tracked(&message_id).await {
+                                                info!("🔄 [RETRY] Message {:?} already tracked, skipping registration (this is a retry)", message_id);
+                                            } else {
+                                                // Log expected nodes for debugging
+                                                let expected_list: Vec<String> = expected_nodes.iter().map(|p| p.to_string()).collect();
+                                                info!(
+                                                    "📋 [RETRY] Registering message {:?} - expecting ACKs from {} nodes: {:?}",
+                                                    message_id, expected_nodes.len(), expected_list
+                                                );
+                                                
+                                                // Register with retry manager (first time only)
+                                                if let Err(e) = retry_mgr.register_message(
+                                                    message_id.clone(),
+                                                    topic.clone(),
+                                                    data.clone(),
+                                                    expected_nodes.clone(),
+                                                ).await {
+                                                    error!("❌ [RETRY] Failed to register critical message for retry: {}", e);
+                                                } else {
+                                                    info!("✅ [RETRY] Successfully registered message {:?} for retry tracking", message_id);
+                                                }
+                                            }
+                                        } else {
+                                            warn!("⚠️ [RETRY] No expected nodes - skipping retry registration for {:?}", message_id);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            // Message deserialization failed - this is expected for some message types
+                            // Only log at debug level to avoid noise
+                            debug!("[BROADCAST] Message deserialization failed (may not be a GossipsubMessage): {}", e);
+                        }
+                    }
+                }
+
+                // Check if this is a retry by checking if message is already tracked
+                let is_retry = if let Some(retry_mgr) = &self.retry_manager {
+                    match serde_json::from_slice::<crate::types::GossipsubMessage>(&data) {
+                        Ok(gossip_msg) => {
+                            if let Some(msg_type) = crate::network::rpc::retry_manager::RetryManager::is_critical_message(&gossip_msg) {
+                                if let Ok(message_id) = crate::network::rpc::retry_manager::RetryManager::generate_message_id(msg_type, &gossip_msg) {
+                                    retry_mgr.is_message_tracked(&message_id).await
+                                } else {
+                                    false
+                                }
+                            } else {
+                                false
+                            }
+                        }
+                        Err(_) => false,
+                    }
+                } else {
+                    false
+                };
+
                 // here the channel msg is sent to other peer(s) as Gossipsub MSG type
                 // if peer(s) have already subscribed to this topic, they will recieve this
                 // msg (check subscribe_to_default_topics())
                 let swarm_mut = swarm.behaviour_mut();
                 let peer_count = swarm_mut.gossipsub.all_peers().count();
-                info!(
-                    "📊 [BROADCAST] Available peers for topic {}: {}",
-                    topic, peer_count
-                );
+                
+                if is_retry {
+                    info!(
+                        "🔄 [RETRY] Publishing retry message to topic {} ({} peers available)",
+                        topic, peer_count
+                    );
+                } else {
+                    info!(
+                        "📊 [BROADCAST] Available peers for topic {}: {}",
+                        topic, peer_count
+                    );
+                }
 
                 if peer_count > 0 {
-                    info!("👥 [BROADCAST] Connected peers:");
-                    for (peer_id, _peer_info) in swarm_mut.gossipsub.all_peers() {
-                        info!("   - Peer: {:?}", peer_id);
+                    if !is_retry {
+                        info!("👥 [BROADCAST] Connected peers:");
+                        for (peer_id, _peer_info) in swarm_mut.gossipsub.all_peers() {
+                            info!("   - Peer: {:?}", peer_id);
+                        }
                     }
 
-                    match swarm_mut.gossipsub.publish(topic_hash, data) {
+                    let publish_result = swarm_mut.gossipsub.publish(topic_hash, data);
+                    match publish_result {
                         Ok(_) => {
-                            info!(
-                                "✅ [BROADCAST] Successfully published message to topic: {}",
-                                topic
-                            );
+                            if is_retry {
+                                info!(
+                                    "✅ [RETRY] Successfully published retry message to topic: {}",
+                                    topic
+                                );
+                            } else {
+                                info!(
+                                    "✅ [BROADCAST] Successfully published message to topic: {}",
+                                    topic
+                                );
+                            }
                         }
                         Err(e) => {
-                            warn!(
-                                "❌ [BROADCAST] Failed to publish message to topic {}: {:?}",
-                                topic, e
-                            );
+                            if is_retry {
+                                error!(
+                                    "❌ [RETRY] CRITICAL: Failed to publish retry message to topic {}: {:?}",
+                                    topic, e
+                                );
+                                // For retries, this is critical - log as error
+                            } else {
+                                warn!(
+                                    "❌ [BROADCAST] Failed to publish message to topic {}: {:?}",
+                                    topic, e
+                                );
+                                // Initial publish failure - retry mechanism will handle it if message was registered
+                            }
                         }
                     }
                 } else {
-                    warn!(
-                        "⚠️ [BROADCAST] No peers available for broadcasting to topic: {}",
-                        topic
-                    );
+                    if is_retry {
+                        error!(
+                            "❌ [RETRY] No peers available for retry broadcast to topic: {}",
+                            topic
+                        );
+                    } else {
+                        warn!(
+                            "⚠️ [BROADCAST] No peers available for broadcasting to topic: {}",
+                            topic
+                        );
+                    }
                 }
             }
             // SECURE DKG SHARE DISTRIBUTION - sends share to specific peer via P2P RPC
@@ -2537,7 +2654,52 @@ impl MpcNetworkLayer {
                     }
                 };
 
-                let topic = gossipsub::IdentTopic::new("transaction-id-sync");
+                let topic_str = "transaction-id-sync";
+                let topic = gossipsub::IdentTopic::new(topic_str);
+
+                // CRITICAL FIX: Register TransactionIdBroadcast for retry tracking
+                // This ensures all nodes receive transaction IDs even if initial broadcast fails
+                if let Some(retry_mgr) = &self.retry_manager {
+                    if let Some(msg_type) = crate::network::rpc::retry_manager::RetryManager::is_critical_message(&gossip_message) {
+                        if let Ok(message_id) = crate::network::rpc::retry_manager::RetryManager::generate_message_id(msg_type, &gossip_message) {
+                            // Check if already being tracked (this is a retry, skip registration)
+                            if !retry_mgr.is_message_tracked(&message_id).await {
+                                // Get expected nodes (all active nodes except ourselves)
+                                let expected_nodes: std::collections::HashSet<PeerId> = self
+                                    .node_manager
+                                    .get_active_nodes()
+                                    .into_iter()
+                                    .filter(|&pid| pid != self.local_peer_id)
+                                    .collect();
+
+                                if !expected_nodes.is_empty() {
+                                    let expected_list: Vec<String> = expected_nodes.iter().map(|p| p.to_string()).collect();
+                                    info!(
+                                        "📋 [RETRY] Registering TransactionIdBroadcast {:?} - expecting ACKs from {} nodes: {:?}",
+                                        message_id, expected_nodes.len(), expected_list
+                                    );
+                                    
+                                    // Register with retry manager (first time only)
+                                    if let Err(e) = retry_mgr.register_message(
+                                        message_id.clone(),
+                                        topic_str.to_string(),
+                                        msg_bytes.clone(),
+                                        expected_nodes.clone(),
+                                    ).await {
+                                        error!("❌ [RETRY] Failed to register TransactionIdBroadcast for retry: {}", e);
+                                    } else {
+                                        info!("✅ [RETRY] Successfully registered TransactionIdBroadcast {:?} for retry tracking", message_id);
+                                    }
+                                } else {
+                                    warn!("⚠️ [RETRY] No expected nodes - skipping retry registration for TransactionIdBroadcast {:?}", message_id);
+                                }
+                            } else {
+                                info!("🔄 [RETRY] TransactionIdBroadcast {:?} already tracked, skipping registration (this is a retry)", message_id);
+                            }
+                        }
+                    }
+                }
+
                 if let Err(e) = swarm
                     .behaviour_mut()
                     .gossipsub

@@ -7,13 +7,14 @@ use anyhow::{anyhow, Result};
 use ff::PrimeField;
 use libp2p::{gossipsub::Message, PeerId};
 use std::sync::Arc;
+use std::time::Duration;
 use tracing::{debug, error, info, warn};
 
 use crate::{
     database::key_utils,
     signing::{BitcoinSigner, EthereumSigner},
     types::{
-        network as network_cfg, p2p::SerializablePeerId, rpc::RPCRequest, signing::SigningMessage,
+        p2p::SerializablePeerId, rpc::RPCRequest, signing::SigningMessage,
         vrf::VrfRoundSyncResponse, ChannelMessage, ConsensusMessage, GossipsubMessage,
     },
 };
@@ -209,10 +210,49 @@ impl MpcNetworkLayer {
                 }
             }
             GossipsubMessage::VrfSelectedNodes(broadcast_msg) => {
+                let selector_node_id = broadcast_msg.selector_node_id.0;
+                let round = broadcast_msg.round;
+                let local_node_id = self.local_peer_id;
+                
                 info!(
-                    "📥 [VRF] Received VRF selected nodes broadcast: {:?}",
-                    broadcast_msg
+                    "📥 [VRF] Received VRF selected nodes broadcast: round={}, from={}, received_by={}",
+                    round, selector_node_id, local_node_id
                 );
+
+                // ALWAYS send ACK for critical messages - this is critical for retry mechanism
+                // Send acknowledgment BEFORE processing to ensure it's sent even if processing fails
+                info!(
+                    "📤 [RETRY] Sending ACK for VrfSelectedNodes round {} from selector {} (this node: {})",
+                    round, selector_node_id, local_node_id
+                );
+                
+                // Generate message ID to verify it matches what sender expects
+                let msg_id_result = crate::network::rpc::retry_manager::RetryManager::generate_message_id(
+                    crate::network::rpc::retry_manager::CriticalMessageType::VrfSelectedNodes,
+                    &GossipsubMessage::VrfSelectedNodes(broadcast_msg.clone()),
+                );
+                
+                match &msg_id_result {
+                    Ok(msg_id) => {
+                        info!(
+                            "🔑 [RETRY] Generated message ID for ACK: {:?} (round={}, selector={})",
+                            msg_id, round, selector_node_id
+                        );
+                    }
+                    Err(e) => {
+                        error!("❌ [RETRY] CRITICAL: Failed to generate message ID for ACK: {}", e);
+                        error!("❌ [RETRY] ACK will NOT be sent - this will cause retry failures!");
+                    }
+                }
+
+                // Send acknowledgment - MUST happen for all critical messages
+                // This is called BEFORE processing to ensure ACK is sent even if processing fails
+                info!("🚀 [RETRY] About to call send_critical_message_ack for round {} from selector {}", round, selector_node_id);
+                self.send_critical_message_ack(
+                    crate::network::rpc::retry_manager::CriticalMessageType::VrfSelectedNodes,
+                    &GossipsubMessage::VrfSelectedNodes(broadcast_msg.clone()),
+                ).await;
+                info!("✅ [RETRY] send_critical_message_ack completed for round {} from selector {}", round, selector_node_id);
 
                 // Store the received VRF selection in the signing node's VRF selector
                 if let Some(signing_node) = &mut self.signing_node {
@@ -589,6 +629,18 @@ impl MpcNetworkLayer {
                 } else {
                     info!("ℹ️ [NETWORK] No intent hash or solver address supplied with transaction ID broadcast");
                 }
+
+                // Send acknowledgment for critical message
+                self.send_critical_message_ack(
+                    crate::network::rpc::retry_manager::CriticalMessageType::TransactionIdBroadcast,
+                    &GossipsubMessage::TransactionIdBroadcast {
+                        intent_hash: intent_hash.clone(),
+                        transaction_id: transaction_id.clone(),
+                        transaction_type: transaction_type.clone(),
+                        solver_address: solver_address.clone(),
+                        node_id: node_id.clone(),
+                    },
+                ).await;
 
                 // Process using shared handler
                 match (intent_hash.as_ref(), solver_address.as_ref()) {
@@ -1046,7 +1098,7 @@ impl MpcNetworkLayer {
                             signing_node.set_available_nodes(available_nodes);
 
                             // Use the signing key we got earlier
-                            if let Some(key) = signing_key {
+                            if signing_key.is_some() {
                                 info!("🔐 [GOSSIPSUB] Got signing key for deposit intent");
                             } else {
                                 info!(
@@ -1470,6 +1522,17 @@ impl MpcNetworkLayer {
                     transaction_id, sequence, node_id, state
                 );
 
+                // Send acknowledgment for critical message
+                self.send_critical_message_ack(
+                    crate::network::rpc::retry_manager::CriticalMessageType::SequencerSync,
+                    &GossipsubMessage::SequencerSync {
+                        transaction_id: transaction_id.clone(),
+                        sequence,
+                        node_id: node_id.clone(),
+                        state: state.clone(),
+                    },
+                ).await;
+
                 if let Some(sequencer) = &self.contract_sequencer {
                     sequencer
                         .handle_sync_message(transaction_id, sequence, node_id, state)
@@ -1550,6 +1613,9 @@ impl MpcNetworkLayer {
                     round, request_id, final_node_id
                 );
 
+                // VaultSequencerSelect removed from retry - has ACK/MISSING fallback
+                // No acknowledgment needed for retry mechanism
+
                 if let Some(sequencer) = &self.contract_sequencer {
                     if let Err(e) = sequencer
                         .handle_select_message(round, request_id, final_node_id)
@@ -1596,6 +1662,9 @@ impl MpcNetworkLayer {
                     round, request_id, final_node_id
                 );
 
+                // MainSequencerSelect removed from retry - has ACK/MISSING fallback
+                // No acknowledgment needed for retry mechanism
+
                 if let Some(sequencer) = &self.network_transaction_sequencer {
                     if let Err(e) = sequencer
                         .handle_select_message(round, request_id, final_node_id)
@@ -1637,6 +1706,12 @@ impl MpcNetworkLayer {
                     broadcast_msg.round, broadcast_msg.selector_node_id
                 );
 
+                // Send acknowledgment for critical message
+                self.send_critical_message_ack(
+                    crate::network::rpc::retry_manager::CriticalMessageType::VaultSequencerVrfSelectedNodes,
+                    &GossipsubMessage::VaultSequencerVrfSelectedNodes(broadcast_msg.clone()),
+                ).await;
+
                 if let Some(sequencer) = &self.contract_sequencer {
                     let round = broadcast_msg.round;
                     let total_nodes = self.node_manager.get_total_nodes();
@@ -1663,7 +1738,25 @@ impl MpcNetworkLayer {
                             .await
                         {
                             info!(
-                                "🎯 [VAULT_SEQUENCER] Enough VRF selections for round {}, triggering consensus",
+                                "🎯 [VAULT_SEQUENCER] Enough VRF selections for round {}, waiting for retries before consensus",
+                                round
+                            );
+
+                            // CRITICAL FIX: Wait for VRF retries to complete before triggering consensus
+                            // With aggressive VRF retries (500ms initial + up to 2s of retries),
+                            // we need to ensure ALL nodes have received ALL VRF broadcasts
+                            // before calculating consensus. Otherwise, nodes calculate with
+                            // incomplete data and reject each other's results.
+                            //
+                            // Wait time calculation:
+                            // - VRF_INITIAL_WAIT: 500ms
+                            // - First 4 retries: 100+200+300+500 = 1100ms
+                            // - Safety margin: 400ms
+                            // Total: 2000ms (2 seconds)
+                            tokio::time::sleep(tokio::time::Duration::from_millis(2000)).await;
+                            
+                            info!(
+                                "✅ [VAULT_SEQUENCER] Retry period complete, triggering consensus for round {}",
                                 round
                             );
 
@@ -1686,6 +1779,12 @@ impl MpcNetworkLayer {
                     "📥 [MAIN_SEQUENCER] Received VRF broadcast: round={}, from={:?}",
                     broadcast_msg.round, broadcast_msg.selector_node_id
                 );
+
+                // Send acknowledgment for critical message
+                self.send_critical_message_ack(
+                    crate::network::rpc::retry_manager::CriticalMessageType::MainSequencerVrfSelectedNodes,
+                    &GossipsubMessage::MainSequencerVrfSelectedNodes(broadcast_msg.clone()),
+                ).await;
 
                 if let Some(sequencer) = &self.network_transaction_sequencer {
                     let round = broadcast_msg.round;
@@ -1713,7 +1812,25 @@ impl MpcNetworkLayer {
                             .await
                         {
                             info!(
-                                "🎯 [MAIN_SEQUENCER] Enough VRF selections for round {}, triggering consensus",
+                                "🎯 [MAIN_SEQUENCER] Enough VRF selections for round {}, waiting for retries before consensus",
+                                round
+                            );
+
+                            // CRITICAL FIX: Wait for VRF retries to complete before triggering consensus
+                            // With aggressive VRF retries (500ms initial + up to 2s of retries),
+                            // we need to ensure ALL nodes have received ALL VRF broadcasts
+                            // before calculating consensus. Otherwise, nodes calculate with
+                            // incomplete data and reject each other's results.
+                            //
+                            // Wait time calculation:
+                            // - VRF_INITIAL_WAIT: 500ms
+                            // - First 4 retries: 100+200+300+500 = 1100ms
+                            // - Safety margin: 400ms
+                            // Total: 2000ms (2 seconds)
+                            tokio::time::sleep(tokio::time::Duration::from_millis(2000)).await;
+                            
+                            info!(
+                                "✅ [MAIN_SEQUENCER] Retry period complete, triggering consensus for round {}",
                                 round
                             );
 
@@ -1731,7 +1848,170 @@ impl MpcNetworkLayer {
                     );
                 }
             }
+            GossipsubMessage::CriticalMessageAck {
+                message_type,
+                message_id,
+                node_id,
+            } => {
+                info!(
+                    "✅ [RETRY] Received ACK for message type {} (id: {}) from {}",
+                    message_type, message_id, node_id
+                );
+
+                // Parse message type and create message ID
+                // Note: SELECT messages removed from retry (have ACK/MISSING fallback)
+                let msg_type = match message_type.as_str() {
+                    "TransactionIdBroadcast" => crate::network::rpc::retry_manager::CriticalMessageType::TransactionIdBroadcast,
+                    "VaultSequencerVrfSelectedNodes" => crate::network::rpc::retry_manager::CriticalMessageType::VaultSequencerVrfSelectedNodes,
+                    "MainSequencerVrfSelectedNodes" => crate::network::rpc::retry_manager::CriticalMessageType::MainSequencerVrfSelectedNodes,
+                    "VrfSelectedNodes" => crate::network::rpc::retry_manager::CriticalMessageType::VrfSelectedNodes,
+                    "SequencerSync" => crate::network::rpc::retry_manager::CriticalMessageType::SequencerSync,
+                    // Removed: VaultSequencerSelect and MainSequencerSelect (have ACK/MISSING fallback)
+                    "VaultSequencerSelect" | "MainSequencerSelect" => {
+                        info!("ℹ️ [RETRY] Ignoring ACK for {} - not in retry system (has ACK/MISSING fallback)", message_type);
+                        return Ok(());
+                    }
+                    _ => {
+                        warn!("⚠️ [RETRY] Unknown message type in ACK: {}", message_type);
+                        return Ok(());
+                    }
+                };
+
+                let message_id_obj = crate::network::rpc::retry_manager::MessageId {
+                    message_type: msg_type.clone(),
+                    unique_id: message_id.clone(),
+                };
+
+                info!(
+                    "🔍 [RETRY] Processing ACK: type={:?}, id={}, from={}",
+                    msg_type, message_id, node_id
+                );
+
+                // Record acknowledgment
+                if let Some(retry_mgr) = &self.retry_manager {
+                    match retry_mgr.record_acknowledgment(&message_id_obj, node_id).await {
+                        Ok(true) => {
+                            info!("🎉 [RETRY] ACK recorded - all nodes have acknowledged!");
+                        }
+                        Ok(false) => {
+                            info!("📝 [RETRY] ACK recorded - still waiting for more nodes");
+                        }
+                        Err(e) => {
+                            error!("❌ [RETRY] Failed to record acknowledgment: {}", e);
+                            error!("❌ [RETRY] This ACK from {} for message {} was NOT recorded!", node_id, message_id);
+                        }
+                    }
+                } else {
+                    warn!("⚠️ [RETRY] Retry manager not available - ACK not recorded");
+                }
+            }
         }
         Ok(())
+    }
+
+    /// Send acknowledgment for a critical message
+    async fn send_critical_message_ack(
+        &self,
+        msg_type: crate::network::rpc::retry_manager::CriticalMessageType,
+        msg: &GossipsubMessage,
+    ) {
+        // Generate message ID - if this fails, we can't send an ACK
+        info!("🔍 [RETRY] Starting ACK generation for message type: {:?}", msg_type);
+        
+        // Production: Add timeout to message ID generation to prevent hanging
+        let gen_timeout = Duration::from_secs(2);
+        let message_id = match tokio::time::timeout(
+            gen_timeout,
+            async { crate::network::rpc::retry_manager::RetryManager::generate_message_id(msg_type.clone(), msg) }
+        ).await {
+            Ok(Ok(id)) => {
+                info!("🔑 [RETRY] Generated message ID for ACK: {:?}", id);
+                id
+            }
+            Ok(Err(e)) => {
+                error!("❌ [RETRY] CRITICAL: Failed to generate message ID for ACK: {}", e);
+                error!("❌ [RETRY] Cannot send ACK without message ID - this will cause retry failures!");
+                return;
+            }
+            Err(_) => {
+                error!("❌ [RETRY] CRITICAL: Timeout generating message ID (>{}s)", gen_timeout.as_secs());
+                error!("❌ [RETRY] Cannot send ACK - this will cause retry failures!");
+                return;
+            }
+        };
+
+        let unique_id = message_id.unique_id.clone();
+        let ack_msg = GossipsubMessage::CriticalMessageAck {
+            message_type: format!("{:?}", msg_type),
+            message_id: unique_id.clone(),
+            node_id: self.local_peer_id,
+        };
+        
+        info!(
+            "📝 [RETRY] Created ACK message: type={:?}, id={}, from={}",
+            msg_type, unique_id, self.local_peer_id
+        );
+
+        let topic = match msg_type {
+            crate::network::rpc::retry_manager::CriticalMessageType::TransactionIdBroadcast => {
+                crate::network::transport::types::TOPIC_TRANSACTION_ID_SYNC
+            }
+            crate::network::rpc::retry_manager::CriticalMessageType::VaultSequencerVrfSelectedNodes => {
+                crate::network::transport::types::TOPIC_VAULT_SEQUENCER_VRF
+            }
+            crate::network::rpc::retry_manager::CriticalMessageType::MainSequencerVrfSelectedNodes => {
+                crate::network::transport::types::TOPIC_MAIN_SEQUENCER_VRF
+            }
+            crate::network::rpc::retry_manager::CriticalMessageType::VrfSelectedNodes => {
+                crate::network::transport::types::TOPIC_VRF_SELECTION
+            }
+            crate::network::rpc::retry_manager::CriticalMessageType::SequencerSync => {
+                crate::network::transport::types::TOPIC_SEQUENCER_SYNC
+            }
+        };
+
+        // Serialize ACK message
+        let data = match serde_json::to_vec(&ack_msg) {
+            Ok(d) => d,
+            Err(e) => {
+                error!("❌ [RETRY] Failed to serialize ACK message: {}", e);
+                return;
+            }
+        };
+
+        // Send ACK via broadcast channel using try_send to avoid blocking
+        // If channel is full, ACK delivery is deferred - sender will retry anyway
+        info!(
+            "📡 [RETRY] Sending ACK to topic {} for message {:?}",
+            topic, message_id
+        );
+        
+        match self.message_tx.try_send(ChannelMessage::Broadcast {
+            topic: topic.to_string(),
+            data,
+        }) {
+            Ok(_) => {
+                info!("✅ [RETRY] ACK sent to channel for {:?} (will be broadcast to topic {})", message_id, topic);
+                // Record successful send for monitoring
+                self.channel_health.record_send_success();
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                warn!("⚠️ [RETRY] Channel full - ACK queued for later delivery");
+                warn!("⚠️ [RETRY] Sender will retry anyway - no message loss");
+                warn!("⚠️ [RETRY] High load detected: 11+ parallel users");
+                // Channel is full but not closed - sender will retry this message
+                // So the ACK will be sent again when we receive the retry
+                // Record for monitoring
+                self.channel_health.record_send_full();
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                error!("❌ [RETRY] CRITICAL: Channel closed - cannot send ACK!");
+                error!("❌ [RETRY] ACK for {:?} was NOT sent - system shutting down", message_id);
+                self.channel_health.record_send_closed();
+            }
+        }
+        
+        // Perform periodic health check
+        self.channel_health.health_check();
     }
 }

@@ -275,4 +275,13 @@ pub enum GossipsubMessage {
     },
     /// VRF selected nodes broadcast for main sequencer (independent rounds)
     MainSequencerVrfSelectedNodes(VrfSelectedNodesBroadcast),
+    /// Acknowledgment messages for critical message retry mechanism
+    CriticalMessageAck {
+        /// Type of message being acknowledged
+        message_type: String,
+        /// Unique identifier of the message
+        message_id: String,
+        /// Node that is acknowledging
+        node_id: PeerId,
+    },
 }

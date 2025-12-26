@@ -1517,8 +1517,7 @@ mod tests {
 
     async fn build_network_layer() -> MpcNetworkLayer {
         let temp_dir = tempdir().expect("tempdir to create");
-        let db_root = temp_dir.keep().expect("tempdir keep to succeed");
-        let db_path = db_root.join("db");
+        let db_path = temp_dir.path().join("db");
         let db = Database::new(DatabaseConfig {
             path: db_path.to_string_lossy().to_string(),
             create_if_missing: true,
