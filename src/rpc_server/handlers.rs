@@ -2901,78 +2901,48 @@ pub(crate) async fn handle_log_partial_pubkeys(
 
 /// Get network and vault addresses (TICS/ETH and BTC)
 /// These addresses are the same across all nodes in the network
+/// Uses aggregated group keys, not individual share pubkeys
 pub(crate) async fn handle_get_network_addresses(
     dkg_storage: Arc<DkgStorage>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
     info!("📍 [RPC] Getting network addresses (same across all nodes)");
 
-    // Get any peer_id from the network (addresses are the same for all peers)
-    let peer_id = match dkg_storage.get_peer_indices().await {
-        Ok(peer_indices) if !peer_indices.is_empty() => {
-            // Use the first available peer_id
-            peer_indices.keys().next().cloned()
-        }
-        _ => {
-            warn!("⚠️ [RPC] No peer indices found in storage");
-            None
-        }
-    };
-
-    let peer_id = match peer_id {
-        Some(pid) => pid,
-        None => {
-            return Ok(warp::reply::json(&crate::types::rpc_server::GetNetworkAddressesResponse {
-                status: "error".to_string(),
-                network_addresses: None,
-                vault_addresses: None,
-                message: "No peers found in network".to_string(),
-                error_message: Some("No peer indices available in storage".to_string()),
-            }));
-        }
-    };
-
-    // Get network share pubkey and derive addresses
-    let network_addresses = match dkg_storage
-        .get_network_share_pubkey(&peer_id)
-        .await
-    {
-        Ok(Some(pubkey)) => {
-            let eth_addr = crate::utils::get_eth_address_from_group_key(pubkey);
-            let btc_addr = crate::utils::get_btc_address_from_group_key(pubkey);
+    // Get final aggregated public key (network/main group key)
+    let network_addresses = match dkg_storage.get_final_public().await {
+        Ok(Some(final_public)) => {
+            let eth_addr = crate::utils::get_eth_address_from_group_key(final_public);
+            let btc_addr = crate::utils::get_btc_address_from_group_key(final_public);
             Some(crate::types::rpc_server::AddressInfo {
                 eth_address: eth_addr,
                 btc_address: btc_addr,
             })
         }
         Ok(None) => {
-            warn!("⚠️ [RPC] Network share pubkey not found");
+            warn!("⚠️ [RPC] Final public key (network group key) not found");
             None
         }
         Err(e) => {
-            error!("❌ [RPC] Failed to get network share pubkey: {}", e);
+            error!("❌ [RPC] Failed to get final public key: {}", e);
             None
         }
     };
 
-    // Get vault share pubkey and derive addresses
-    let vault_addresses = match dkg_storage
-        .get_vault_share_pubkey(&peer_id)
-        .await
-    {
-        Ok(Some(pubkey)) => {
-            let eth_addr = crate::utils::get_eth_address_from_group_key(pubkey);
-            let btc_addr = crate::utils::get_btc_address_from_group_key(pubkey);
+    // Get vault aggregated group key
+    let vault_addresses = match dkg_storage.get_vault_group_key().await {
+        Ok(Some(vault_group_key)) => {
+            let eth_addr = crate::utils::get_eth_address_from_group_key(vault_group_key);
+            let btc_addr = crate::utils::get_btc_address_from_group_key(vault_group_key);
             Some(crate::types::rpc_server::AddressInfo {
                 eth_address: eth_addr,
                 btc_address: btc_addr,
             })
         }
         Ok(None) => {
-            warn!("⚠️ [RPC] Vault share pubkey not found");
+            warn!("⚠️ [RPC] Vault group key not found");
             None
         }
         Err(e) => {
-            error!("❌ [RPC] Failed to get vault share pubkey: {}", e);
+            error!("❌ [RPC] Failed to get vault group key: {}", e);
             None
         }
     };
