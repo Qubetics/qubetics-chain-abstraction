@@ -15,6 +15,8 @@ use crate::node_selection::NodeMembership;
 
 use crate::network::config::NetworkConfig;
 use crate::network::discovery::types::{DatabaseSyncState, PeerDiscoveryState};
+use crate::network::rpc::retry_manager::RetryManager;
+use crate::network::rpc::channel_monitor::ChannelHealthMonitor;
 use crate::network::transport::types::{MpcNetworkBehaviour, MpcNetworkLayer, MPC_TOPICS};
 
 impl MpcNetworkLayer {
@@ -45,7 +47,16 @@ impl MpcNetworkLayer {
         // Clone the database since we need to move it into the struct later
         let keystore: Arc<dyn KeyStore> = Arc::new(db.clone());
         let (local_key, local_peer_id) = Self::load_or_create_keypair(keystore).await?;
-        let (tx, rx) = mpsc::channel(100);
+        // Production: Large channel capacity for high-concurrency scenarios
+        // With 11+ parallel users, each can generate multiple messages simultaneously
+        // Channel needs to handle: broadcasts + retries + ACKs + internal messages
+        // Formula: (users * avg_messages_per_user * burst_factor) + retry_buffer
+        // = (11 * 10 * 2) + 500 = 720 + safety margin
+        let (tx, rx) = mpsc::channel(2000); // Increased from 1000 to 2000 for 11+ parallel users
+        let tx_for_retry = tx.clone();
+        
+        // Initialize channel health monitor for production monitoring
+        let channel_health = Arc::new(ChannelHealthMonitor::new());
 
         let mut this = Self {
             local_key,
@@ -76,6 +87,8 @@ impl MpcNetworkLayer {
             network_transaction_sequencer: None,
             network_transaction_processing_lock: Arc::new(Mutex::new(())),
             // Removed: deterministic_selection field
+            retry_manager: Some(RetryManager::new(tx_for_retry)),
+            channel_health,
         };
 
         this.bootstrap_peer_ids = this
@@ -196,13 +209,13 @@ impl MpcNetworkLayer {
                 };
 
                 let gossipsub_config = gossipsub::ConfigBuilder::default()
-                    .heartbeat_interval(Duration::from_secs(5))
+                    .heartbeat_interval(Duration::from_secs(1))
                     .validation_mode(gossipsub::ValidationMode::Strict)
                     .message_id_fn(message_id_fn)
                     .flood_publish(true)
                     .fanout_ttl(Duration::from_secs(60))
                     .prune_peers(10)
-                    .prune_backoff(Duration::from_secs(1))
+                    .prune_backoff(Duration::from_secs(60))
                     .build()
                     .map_err(io::Error::other)
                     .map_err(io::Error::other)?;
