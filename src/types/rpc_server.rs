@@ -250,14 +250,8 @@ pub struct UserSharePubkeyInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GetPeerAddressesRequest {
-    pub peer_id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GetPeerAddressesResponse {
+pub struct GetNetworkAddressesResponse {
     pub status: String,
-    pub peer_id: String,
     pub network_addresses: Option<AddressInfo>,
     pub vault_addresses: Option<AddressInfo>,
     pub message: String,
