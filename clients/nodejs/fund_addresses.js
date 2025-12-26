@@ -1,27 +1,22 @@
 #!/usr/bin/env node
 
 import { ethers } from 'ethers';
+import https from 'https';
+
+// Disable SSL verification for testnet with self-signed certificate
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 
 // Configuration
-const RPC_URL = 'http://114.119.184.52:8545';
+const RPC_URL = 'https://rpc-testnet.qubetics.work';
 const FUNDING_KEY = '11d281397918948a90ce5ce2a72945ee7929a5a932e5bb3d22664ba98f86755e';
-const AMOUNT = "300";
+const AMOUNT = "100";
 
 // Addresses to fund (derived from test_sequencer_parallel.js private keys)
 const ADDRESSES = [
-  "0xfa2e8f79851c665e3fe58d0026240036660b3701",
-  "0xd9a03691e4a4e7733017674b32fb8822147d3e89",
-  "0x8dd282fde5406ff773b1f6e88ba3bf669ade2492",
-  "0xf80fd520a0e81299e3ada8bfa044a35da3c275e1",
-  "0xea007faa94ecac62fc7a525244b681ec4d0068c3",
-  "0x15284b2e0483216cb8369b95979dfa97f589ea0a",
-  "0x15284b2e0483216cb8369b95979dfa97f589ea0a",
-  "0x32abb710d4a1e0eeee0a7396443eeb6dd40ced7c",
-  "0xac9e081d9268772cf30de51ec42502fb78f2f0a5",
-  "0x89d1e87585dfbe4a3ecf491c08d439be538674c7",
-  "0xe55123db5d1694abe2f658f1e30e360dde9c2a0a",
-  "0xccfdc1db85aeb02164fd4e35673d2e7371c064d8",
-  "0x9d3ba4822e66036389c6be74385363031e200357",
+  "0x52a2c13f07e4af6978606497725135f242610f27",
+  "0x22501c1861330aabde7caa65ae708dc173f19ff1",
+  "0x0dc7ce7b765dd4eac38851962175caeb042e9592",
+  "0xaf05a51088f559a54ff29ca262b90f63e9fdab15"
 ];
 
 const colors = {
@@ -51,8 +46,16 @@ async function main() {
   log('');
 
   try {
-    // Ethers v5 syntax
-    const provider = new ethers.providers.JsonRpcProvider(RPC_URL);
+    // Create a temporary provider to fetch the actual chain ID
+    const tempProvider = new ethers.providers.JsonRpcProvider(RPC_URL);
+
+    log('🔍 Fetching chain ID from network...', 'cyan');
+    const network = await tempProvider.getNetwork();
+    log(`📡 Chain ID: ${network.chainId}`, 'cyan');
+    log('');
+
+    // Now create the proper provider with the correct chain ID
+    const provider = new ethers.providers.StaticJsonRpcProvider(RPC_URL, network);
     const wallet = new ethers.Wallet(
       FUNDING_KEY.startsWith('0x') ? FUNDING_KEY : `0x${FUNDING_KEY}`,
       provider
@@ -85,7 +88,7 @@ async function main() {
       const addr = ADDRESSES[i];
       try {
         log(`[${i + 1}/${ADDRESSES.length}] Sending to ${addr}...`, 'cyan');
-        
+
         const tx = await wallet.sendTransaction({
           to: addr,
           value: ethers.utils.parseEther(AMOUNT),
@@ -94,7 +97,7 @@ async function main() {
 
         log(`  TX: ${tx.hash}`, 'yellow');
         const receipt = await tx.wait();
-        
+
         if (receipt.status === 1) {
           log(`  ✅ Confirmed (block ${receipt.blockNumber})`, 'green');
           success++;
@@ -105,7 +108,7 @@ async function main() {
         log(`  ❌ Error: ${error.message}`, 'red');
       }
       log('');
-      
+
       if (i < ADDRESSES.length - 1) {
         await new Promise(r => setTimeout(r, 1000));
       }
