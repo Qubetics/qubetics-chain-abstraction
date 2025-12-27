@@ -77,4 +77,12 @@ pub enum SigningMessage {
         final_node_id: String,
         message: String,
     },
+    /// Send transaction data to final node (for nodes that weren't selected to sign but became final node)
+    TransactionDataForFinalNode {
+        from: String,
+        round: u64,
+        tx_bytes: Vec<u8>,
+        intent_hash: Option<String>,
+        transaction_type: Option<String>,
+    },
 }

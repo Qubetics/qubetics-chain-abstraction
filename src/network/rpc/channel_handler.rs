@@ -1967,6 +1967,135 @@ impl MpcNetworkLayer {
                     round, target_peer_id, request_id, is_connected
                 );
             }
+            ChannelMessage::UnicastTransactionData {
+                target_peer_id,
+                from_node_id,
+                transaction_data,
+                round,
+                retry_count,
+            } => {
+                const MAX_RETRIES: u8 = 10;
+
+                info!(
+                    "📦 [SIGNING-SECURE] Sending transaction data for round {} via UNICAST to peer {} (attempt {})",
+                    round,
+                    target_peer_id,
+                    retry_count + 1
+                );
+
+                let peer_id = match target_peer_id.parse::<PeerId>() {
+                    Ok(pid) => pid,
+                    Err(e) => {
+                        warn!(
+                            "❌ [SIGNING-SECURE] Invalid peer ID '{}': {}",
+                            target_peer_id, e
+                        );
+                        return Err(anyhow!("Invalid peer ID: {}", e));
+                    }
+                };
+
+                let mut is_connected = swarm.is_connected(&peer_id);
+                info!(
+                    "📦 [SIGNING-SECURE] Target Peer {} connected: {}",
+                    target_peer_id, is_connected
+                );
+
+                if !is_connected {
+                    if let Some(addr) = self
+                        .peer_discovery
+                        .peer_multiaddresses
+                        .get(&peer_id)
+                        .cloned()
+                    {
+                        info!(
+                            "📞 [SIGNING-SECURE] Not connected to {}, dialing before send: {}",
+                            target_peer_id, addr
+                        );
+                        let address: Multiaddr = if addr
+                            .to_string()
+                            .contains(&format!("/p2p/{}", target_peer_id))
+                        {
+                            addr.clone()
+                        } else {
+                            format!("{}/p2p/{}", addr, target_peer_id)
+                                .parse()
+                                .expect("valid multiaddr")
+                        };
+                        if let Err(e) = swarm.dial(address.clone()) {
+                            warn!(
+                                "❌ [SIGNING-SECURE] Failed to dial {}: {}",
+                                target_peer_id, e
+                            );
+                        } else {
+                            info!("✅ [SIGNING-SECURE] Dialing {}", target_peer_id);
+                            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                        }
+                        is_connected = swarm.is_connected(&peer_id);
+                    } else {
+                        warn!(
+                            "❌ [SIGNING-SECURE] No known address for peer {}",
+                            target_peer_id
+                        );
+                    }
+                }
+
+                if !is_connected && retry_count < MAX_RETRIES {
+                    let tx = self.message_tx.clone();
+                    let delay_ms = 2000 + (retry_count as u64 * 1000);
+                    warn!(
+                        "⏰ [SIGNING-SECURE] Peer {} not connected, will retry transaction data for round {} in {}ms (attempt {}/{})",
+                        target_peer_id,
+                        round,
+                        delay_ms,
+                        retry_count + 1,
+                        MAX_RETRIES
+                    );
+
+                    let retry_msg = ChannelMessage::UnicastTransactionData {
+                        target_peer_id: target_peer_id.clone(),
+                        from_node_id,
+                        transaction_data,
+                        round,
+                        retry_count: retry_count + 1,
+                    };
+
+                    tokio::spawn(async move {
+                        tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
+                        if let Err(e) = tx.send(retry_msg).await {
+                            tracing::warn!(
+                                "❌ [SIGNING-SECURE] Failed to schedule retry for round {} transaction data: {}",
+                                round,
+                                e
+                            );
+                        }
+                    });
+
+                    return Ok(());
+                }
+
+                if !is_connected {
+                    warn!(
+                        "❌ [SIGNING-SECURE] Peer {} still not connected after {} retries - giving up",
+                        target_peer_id, MAX_RETRIES
+                    );
+                }
+
+                let request = RPCRequest::SendTransactionData {
+                    from_node_id,
+                    transaction_data,
+                    round,
+                };
+
+                let request_id = swarm
+                    .behaviour_mut()
+                    .request_response
+                    .send_request(&peer_id, request);
+
+                info!(
+                    "✅ [SIGNING-SECURE] Transaction data for round {} sent via P2P RPC to {} (request_id: {:?}, connected: {})",
+                    round, target_peer_id, request_id, is_connected
+                );
+            }
             ChannelMessage::IntentHash {
                 intent_hash,
                 signer,

@@ -137,6 +137,18 @@ impl MpcNetworkLayer {
                 self.handle_incoming_btc_signatures(from_node_id, signature_data, round)
                     .await
             }
+            RPCRequest::SendTransactionData {
+                from_node_id,
+                transaction_data,
+                round,
+            } => {
+                info!(
+                    "📦 [SIGNING-SECURE] Received UNICAST transaction data for round {} from {}",
+                    round, from_node_id
+                );
+                self.handle_incoming_transaction_data(from_node_id, transaction_data, round)
+                    .await
+            }
             _ => RPCResponse::Ack,
         }
     }
@@ -873,6 +885,93 @@ impl MpcNetworkLayer {
                     round,
                     success: false,
                 }
+            }
+        }
+    }
+
+    /// Handle incoming transaction data from signing nodes to final node
+    async fn handle_incoming_transaction_data(
+        &mut self,
+        from_node_id: String,
+        transaction_data: Vec<u8>,
+        round: u64,
+    ) -> RPCResponse {
+        info!(
+            "📦 [SIGNING-SECURE] Processing unicast transaction data for round {} from {}",
+            round, from_node_id
+        );
+
+        let signing_message = match serde_json::from_slice::<GossipsubMessage>(&transaction_data) {
+            Ok(GossipsubMessage::Signing(msg)) => msg,
+            Ok(other) => {
+                warn!(
+                    "❌ [SIGNING-SECURE] Unexpected gossipsub message type for transaction data: {:?}",
+                    other
+                );
+                return RPCResponse::Ack;
+            }
+            Err(e) => {
+                warn!(
+                    "❌ [SIGNING-SECURE] Failed to deserialize transaction data payload: {}",
+                    e
+                );
+                return RPCResponse::Ack;
+            }
+        };
+
+        let (from, tx_bytes, intent_hash, transaction_type, msg_round) = match signing_message {
+            SigningMessage::TransactionDataForFinalNode {
+                from,
+                round,
+                tx_bytes,
+                intent_hash,
+                transaction_type,
+                ..
+            } => (from, tx_bytes, intent_hash, transaction_type, round),
+            _ => {
+                warn!(
+                    "❌ [SIGNING-SECURE] Received signing message that is not a transaction data payload"
+                );
+                return RPCResponse::Ack;
+            }
+        };
+
+        if msg_round != round {
+            warn!(
+                "⚠️ [SIGNING-SECURE] Round mismatch for transaction data: request round {}, message round {}",
+                round, msg_round
+            );
+        }
+
+        let result = if let Some(signing_node) = &mut self.signing_node {
+            signing_node
+                .handle_transaction_data_for_final_node(
+                    from.clone(),
+                    round,
+                    tx_bytes,
+                    intent_hash,
+                    transaction_type,
+                )
+                .await
+        } else {
+            warn!("❌ [SIGNING-SECURE] Signing node not initialized to process transaction data");
+            return RPCResponse::Ack;
+        };
+
+        match result {
+            Ok(_) => {
+                info!(
+                    "✅ [SIGNING-SECURE] Processed transaction data for round {} from {}",
+                    round, from
+                );
+                RPCResponse::Ack
+            }
+            Err(e) => {
+                warn!(
+                    "❌ [SIGNING-SECURE] Failed to process transaction data for round {}: {}",
+                    round, e
+                );
+                RPCResponse::Ack
             }
         }
     }

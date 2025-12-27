@@ -116,6 +116,13 @@ pub enum RPCRequest {
         signature_data: Vec<u8>,
         round: u64,
     },
+
+    /// Unicast transaction data to the final node (P2P, not broadcast)
+    SendTransactionData {
+        from_node_id: String,
+        transaction_data: Vec<u8>,
+        round: u64,
+    },
 }
 
 /// RPC response variants.

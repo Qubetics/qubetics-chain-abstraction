@@ -494,16 +494,19 @@ impl ContractTransactionSequencer {
                     let has_performed_vrf = self.vault_vrf_performed_rounds.read().await.contains(&round);
                     let current_round = *self.vault_sequencer_round.read().await;
                     
-                    // Cache if: (1) we performed VRF, OR (2) round matches current vault sequencer round
-                    // This ensures all nodes can identify the final node even if they didn't start VRF
-                    if has_performed_vrf || round == current_round {
-                        // This round belongs to vault sequencer - cache it (even if pending validation)
+                    // CRITICAL FIX: Only cache if THIS vault sequencer performed VRF for this round
+                    // Don't cache based on "round == current_round" because signing module
+                    // might be at the same round number, and we'd cache ITS consensus result!
+                    if has_performed_vrf {
+                        // Cache the result (both VALIDATED and PENDING)
+                        // Even PENDING results should be cached so the final node can identify itself
+                        // The pending_results mechanism in consensus ensures correctness
                         let mut cache = self.final_node_cache.write().await;
                         cache.insert(round, result.final_node.0);
                         let is_pending = consensus_guard.is_result_pending(round);
                         if is_pending {
                             info!(
-                                "💾 [VAULT_SEQUENCER] Cached final node {:?} for round {} from consensus message (PENDING validation, will validate when selected_nodes arrive) (performed_vrf={}, current_round={})",
+                                "💾 [VAULT_SEQUENCER] Cached final node {:?} for round {} from consensus message (PENDING - will validate when VRF data arrives) (performed_vrf={}, current_round={})",
                                 result.final_node.0, round, has_performed_vrf, current_round
                             );
                         } else {
@@ -515,7 +518,7 @@ impl ContractTransactionSequencer {
                     } else {
                         // This round is from another module (signing/main) - ignore it
                         debug!(
-                            "🔕 [VAULT_SEQUENCER] Ignoring consensus for round {} - not our vault sequencer round (current={}, performed_vrf={})",
+                            "🔕 [VAULT_SEQUENCER] Ignoring consensus for round {} - vault sequencer never performed VRF for this round (likely from signing/main module, current={}, performed_vrf={})",
                             round, current_round, has_performed_vrf
                         );
                     }
@@ -2551,13 +2554,14 @@ impl NetworkTransactionSequencer {
                     let has_performed_vrf = self.main_vrf_performed_rounds.read().await.contains(&round);
                     
                     if has_performed_vrf {
-                        // This round belongs to main sequencer - cache it (even if pending validation)
+                        // Cache the result (both VALIDATED and PENDING)
+                        // Even PENDING results should be cached so the final node can identify itself
                         let mut cache = self.final_node_cache.write().await;
                         cache.insert(round, result.final_node.0);
                         let is_pending = consensus_guard.is_result_pending(round);
                         if is_pending {
                             info!(
-                                "💾 [MAIN_SEQUENCER] Cached final node {:?} for round {} from consensus message (PENDING validation, will validate when selected_nodes arrive)",
+                                "💾 [MAIN_SEQUENCER] Cached final node {:?} for round {} from consensus message (PENDING - will validate when VRF data arrives)",
                                 result.final_node.0, round
                             );
                         } else {
