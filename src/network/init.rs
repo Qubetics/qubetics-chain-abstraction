@@ -51,8 +51,9 @@ impl MpcNetworkLayer {
         // With 11+ parallel users, each can generate multiple messages simultaneously
         // Channel needs to handle: broadcasts + retries + ACKs + internal messages
         // Formula: (users * avg_messages_per_user * burst_factor) + retry_buffer
-        // = (11 * 10 * 2) + 500 = 720 + safety margin
-        let (tx, rx) = mpsc::channel(2000); // Increased from 1000 to 2000 for 11+ parallel users
+        // For high load: (50 * 15 * 3) + 2000 = 2250 + large safety margin
+        // Increased significantly to handle parallel burst traffic without channel blocking
+        let (tx, rx) = mpsc::channel(10000); // Increased from 2000 to 10000 for high parallel user load
         let tx_for_retry = tx.clone();
         
         // Initialize channel health monitor for production monitoring

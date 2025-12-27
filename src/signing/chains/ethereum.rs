@@ -1069,11 +1069,19 @@ impl SigningNode {
                 );
                 info!("🔍 [SIGNING] Original Nonce: {}", original_tx.nonce);
 
+                // CRITICAL FIX: Fetch fresh nonce for this address before creating transaction
+                // to avoid nonce collisions when multiple transactions are reconstructed
+                let actual_nonce = Self::fetch_ethereum_nonce(&nonce_address, chain_id).await?;
+                info!(
+                    "✅ [SIGNING] Using FRESH nonce {} for transaction reconstruction (original stored nonce was {})",
+                    actual_nonce, original_tx.nonce
+                );
+
                 let signed_tx = create_signed_transaction(
                     &DummyTransaction {
                         to: original_tx.to.clone(),
                         value: original_tx.value.clone(),
-                        nonce: original_tx.nonce,
+                        nonce: actual_nonce,  // USE FRESH NONCE, not original_tx.nonce
                         gas_limit: original_tx.gas_limit,
                         gas_price: original_tx.gas_price.clone(),
                         chain_id: original_tx.chain_id,
