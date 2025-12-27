@@ -135,6 +135,8 @@ pub struct ContractTransactionSequencer {
     /// Tracks rounds for which THIS node has performed VRF selection
     /// This prevents skipping VRF when consensus results arrive from other nodes first
     vault_vrf_performed_rounds: Arc<RwLock<HashSet<u64>>>,
+    /// Track when we started waiting for SELECT message (to detect timeouts)
+    select_wait_start_time: Arc<RwLock<Option<std::time::SystemTime>>>,
 }
 
 impl ContractTransactionSequencer {
@@ -169,6 +171,7 @@ impl ContractTransactionSequencer {
             final_node_cache: Arc::new(RwLock::new(HashMap::new())),
             locked_request: Arc::new(RwLock::new(None)),
             vault_vrf_performed_rounds: Arc::new(RwLock::new(HashSet::new())),
+            select_wait_start_time: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -401,7 +404,21 @@ impl ContractTransactionSequencer {
             .ok_or_else(|| anyhow::anyhow!("Local peer ID not set"))?;
 
         let final_node = self.select_final_node().await?;
-        Ok(local_peer == final_node)
+        let is_final = local_peer == final_node;
+        
+        if is_final {
+            info!(
+                "✅ [VAULT_SEQUENCER] am_i_final_node() = true: local_peer={:?}, final_node={:?}",
+                local_peer, final_node
+            );
+        } else {
+            debug!(
+                "🔍 [VAULT_SEQUENCER] am_i_final_node() = false: local_peer={:?}, final_node={:?}",
+                local_peer, final_node
+            );
+        }
+        
+        Ok(is_final)
     }
 
     /// Advance to next round
@@ -462,31 +479,52 @@ impl ContractTransactionSequencer {
             warn!("⚠️ [VAULT_SEQUENCER] Consensus node not available to handle message");
         }
 
-        // Update the local final-node cache using the validated consensus result
-        // CRITICAL FIX: Only cache consensus for rounds where THIS VAULT SEQUENCER performed VRF
-        // This prevents caching signing module rounds (which use different VRF rounds)
+        // Update the local final-node cache using the consensus result (validated or pending)
+        // CRITICAL FIX: Cache consensus for ALL rounds where we have a result, but only if:
+        // 1. We performed VRF for this round (definitely ours), OR
+        // 2. The round matches our current vault sequencer round (likely ours)
+        // This prevents caching signing module rounds while ensuring all nodes can identify the final node
+        // NOTE: We cache even pending results - they will be validated when selected_nodes arrive
         if let Some(round) = final_round {
             if let Some(consensus) = &self.consensus_node {
                 let consensus_guard = consensus.read().await;
+                // get_consensus_result now checks both validated and pending results
                 if let Some(result) = consensus_guard.get_consensus_result(round) {
                     // Check if THIS vault sequencer performed VRF for this round
                     let has_performed_vrf = self.vault_vrf_performed_rounds.read().await.contains(&round);
+                    let current_round = *self.vault_sequencer_round.read().await;
                     
-                    if has_performed_vrf {
-                        // This round belongs to vault sequencer - cache it
+                    // Cache if: (1) we performed VRF, OR (2) round matches current vault sequencer round
+                    // This ensures all nodes can identify the final node even if they didn't start VRF
+                    if has_performed_vrf || round == current_round {
+                        // This round belongs to vault sequencer - cache it (even if pending validation)
                         let mut cache = self.final_node_cache.write().await;
                         cache.insert(round, result.final_node.0);
-                        info!(
-                            "💾 [VAULT_SEQUENCER] Cached final node {:?} for round {} from consensus message",
-                            result.final_node.0, round
-                        );
+                        let is_pending = consensus_guard.is_result_pending(round);
+                        if is_pending {
+                            info!(
+                                "💾 [VAULT_SEQUENCER] Cached final node {:?} for round {} from consensus message (PENDING validation, will validate when selected_nodes arrive) (performed_vrf={}, current_round={})",
+                                result.final_node.0, round, has_performed_vrf, current_round
+                            );
+                        } else {
+                            info!(
+                                "💾 [VAULT_SEQUENCER] Cached final node {:?} for round {} from consensus message (VALIDATED) (performed_vrf={}, current_round={})",
+                                result.final_node.0, round, has_performed_vrf, current_round
+                            );
+                        }
                     } else {
                         // This round is from another module (signing/main) - ignore it
                         debug!(
-                            "🔕 [VAULT_SEQUENCER] Ignoring consensus for round {} - vault sequencer never performed VRF for this round (likely from signing/main module)",
-                            round
+                            "🔕 [VAULT_SEQUENCER] Ignoring consensus for round {} - not our vault sequencer round (current={}, performed_vrf={})",
+                            round, current_round, has_performed_vrf
                         );
                     }
+                } else {
+                    // This should rarely happen now - get_consensus_result checks both validated and pending
+                    info!(
+                        "⏳ [VAULT_SEQUENCER] Consensus message received for round {} but no result found (neither validated nor pending) - will retry when selected_nodes arrive",
+                        round
+                    );
                 }
             }
         }
@@ -954,10 +992,32 @@ impl ContractTransactionSequencer {
             round
         );
         
+        // Get final node info for logging
+        let final_node_info = match self.select_final_node().await {
+            Ok(peer_id) => {
+                let local_peer = self.local_peer_id;
+                let is_final = local_peer.map(|p| p == peer_id).unwrap_or(false);
+                info!(
+                    "🔍 [VAULT_SEQUENCER] Round {}: Final node={:?}, Local peer={:?}, Am I final?={}",
+                    round, peer_id, local_peer, is_final
+                );
+                Some((peer_id, is_final))
+            }
+            Err(e) => {
+                error!(
+                    "❌ [VAULT_SEQUENCER] Failed to get final node for round {}: {}",
+                    round, e
+                );
+                None
+            }
+        };
+
         // Check if we are the final node
         match self.am_i_final_node().await {
             Ok(true) => {
                 // We are the final node - select the request
+                info!("🎯 [VAULT_SEQUENCER] I AM the final node for round {}, selecting transaction", round);
+                
                 let mut pending = self.pending_requests.write().await;
                 if let Some((tx_id, request)) = pending.pop_first() {
                     let sequence = request.sequence;
@@ -974,24 +1034,109 @@ impl ContractTransactionSequencer {
 
                     // Broadcast SELECT message
                     if let Err(e) = self.broadcast_select_message(&tx_id, &request).await {
-                        warn!("⚠️ [VAULT_SEQUENCER] Failed to broadcast SELECT: {}", e);
+                        error!("❌ [VAULT_SEQUENCER] Failed to broadcast SELECT: {}", e);
+                        // Clear locked request on failure
+                        *locked = None;
+                        drop(locked);
+                        return None;
                     }
+
+                    // Clear wait time since we successfully selected
+                    let mut wait_time = self.select_wait_start_time.write().await;
+                    *wait_time = None;
+                    drop(wait_time);
 
                     drop(locked);
                     Some(request)
                 } else {
+                    warn!("⚠️ [VAULT_SEQUENCER] Final node but no requests in queue!");
                     None
                 }
             }
             Ok(false) => {
-                // We are NOT the final node - wait for SELECT message
-                None
+                // We are NOT the final node - check if SELECT message already arrived
+                let locked = self.locked_request.read().await;
+                if locked.is_some() {
+                    info!(
+                        "✅ [VAULT_SEQUENCER] Not final node but SELECT message already received, will process on next call"
+                    );
+                    // Clear wait time since we got the SELECT
+                    drop(locked);
+                    let mut wait_time = self.select_wait_start_time.write().await;
+                    *wait_time = None;
+                    drop(wait_time);
+                    // Return None here - the locked request will be picked up on next iteration
+                    // (after the 3-second sleep)
+                    None
+                } else {
+                    // No SELECT message yet - wait for it
+                    // Track wait time and add timeout
+                    let mut wait_time = self.select_wait_start_time.write().await;
+                    let now = std::time::SystemTime::now();
+                    let should_warn = if let Some(start) = *wait_time {
+                        if let Ok(elapsed) = now.duration_since(start) {
+                            if elapsed.as_secs() > 30 {
+                                // Been waiting more than 30 seconds - something is wrong
+                                error!(
+                                    "❌ [VAULT_SEQUENCER] TIMEOUT: Waiting for SELECT message for {} seconds! Final node={:?} may have failed. Round={}",
+                                    elapsed.as_secs(),
+                                    final_node_info.map(|(p, _)| p),
+                                    round
+                                );
+                                // Reset wait time to avoid spam
+                                *wait_time = Some(now);
+                                true
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        }
+                    } else {
+                        // First time waiting - record start time
+                        *wait_time = Some(now);
+                        false
+                    };
+                    drop(wait_time);
+                    
+                    if !should_warn {
+                        info!(
+                            "⏳ [VAULT_SEQUENCER] Not final node (final={:?}), waiting for SELECT message...",
+                            final_node_info.map(|(p, _)| p)
+                        );
+                    }
+                    None
+                }
             }
             Err(e) => {
-                warn!(
-                    "⚠️ [VAULT_SEQUENCER] Error checking final node status: {}",
+                error!(
+                    "❌ [VAULT_SEQUENCER] Error checking final node status: {}",
                     e
                 );
+                // If we can't determine final node, try to use cached result
+                if let Some((final_peer, _)) = final_node_info {
+                    warn!(
+                        "🔄 [VAULT_SEQUENCER] Using fallback: final node from cache={:?}",
+                        final_peer
+                    );
+                    let local_peer = self.local_peer_id;
+                    if local_peer.map(|p| p == final_peer).unwrap_or(false) {
+                        // We might be the final node - try to proceed
+                        warn!("⚠️ [VAULT_SEQUENCER] Assuming we are final node based on cache");
+                        let mut pending = self.pending_requests.write().await;
+                        if let Some((tx_id, request)) = pending.pop_first() {
+                            let mut locked = self.locked_request.write().await;
+                            *locked = Some(tx_id.clone());
+                            drop(locked);
+                            drop(pending);
+                            if let Err(e) = self.broadcast_select_message(&tx_id, &request).await {
+                                error!("❌ [VAULT_SEQUENCER] Failed to broadcast SELECT (fallback): {}", e);
+                                return None;
+                            }
+                            return Some(request);
+                        }
+                    }
+                }
                 None
             }
         }
@@ -1164,6 +1309,11 @@ impl ContractTransactionSequencer {
         // Lock this request
         let mut locked = self.locked_request.write().await;
         *locked = Some(request_id.clone());
+
+        // Clear wait time since we received SELECT
+        let mut wait_time = self.select_wait_start_time.write().await;
+        *wait_time = None;
+        drop(wait_time);
 
         info!(
             "🔒 [VAULT_SEQUENCER] Locked request from final node: round={}, request_id={}",
@@ -1567,9 +1717,58 @@ impl ContractTransactionSequencer {
                 }
             }
 
+            // Check if transaction has already been completed or is no longer in missing_requests
+            let sync_state_check = self.sync_state.read().await;
+            if !sync_state_check.missing_requests.contains(&transaction_id) {
+                // Transaction is no longer in missing_requests - it was already processed
+                drop(sync_state_check);
+                info!(
+                    "ℹ️ [SEQUENCER] [SYNC] Request {} (sequence {}) was already processed, stopping wait",
+                    transaction_id, sequence
+                );
+                return;
+            }
+            
+            // Check if this transaction has been completed (is current_processing and confirmed)
+            if sync_state_check.current_processing.as_ref() == Some(&transaction_id) 
+                && sync_state_check.is_confirmed {
+                // Transaction completed while we were waiting
+                drop(sync_state_check);
+                info!(
+                    "ℹ️ [SEQUENCER] [SYNC] Request {} (sequence {}) completed while waiting, stopping wait",
+                    transaction_id, sequence
+                );
+                return;
+            }
+            drop(sync_state_check);
+
             // Wait a bit before checking again
             tokio::time::sleep(tokio::time::Duration::from_millis(check_interval_ms)).await;
         }
+
+        // Timeout - check one more time if transaction was completed
+        let sync_state_final = self.sync_state.read().await;
+        if !sync_state_final.missing_requests.contains(&transaction_id) {
+            // Transaction was processed during the timeout period
+            drop(sync_state_final);
+            info!(
+                "ℹ️ [SEQUENCER] [SYNC] Request {} (sequence {}) was processed during timeout period",
+                transaction_id, sequence
+            );
+            return;
+        }
+        
+        // Check if transaction completed
+        if sync_state_final.current_processing.as_ref() == Some(&transaction_id) 
+            && sync_state_final.is_confirmed {
+            drop(sync_state_final);
+            info!(
+                "ℹ️ [SEQUENCER] [SYNC] Request {} (sequence {}) completed during timeout period",
+                transaction_id, sequence
+            );
+            return;
+        }
+        drop(sync_state_final);
 
         // Timeout - request never arrived
         warn!(
@@ -2340,8 +2539,9 @@ impl NetworkTransactionSequencer {
             warn!("⚠️ [MAIN_SEQUENCER] Consensus node not available to handle message");
         }
 
-        // Update the local final-node cache using the validated consensus result
+        // Update the local final-node cache using the consensus result (validated or pending)
         // CRITICAL FIX: Only cache consensus for rounds where THIS MAIN SEQUENCER performed VRF
+        // NOTE: We cache even pending results - they will be validated when selected_nodes arrive
         // This prevents caching signing module rounds (which use different VRF rounds)
         if let Some(round) = final_round {
             if let Some(consensus) = &self.consensus_node {
@@ -2351,13 +2551,21 @@ impl NetworkTransactionSequencer {
                     let has_performed_vrf = self.main_vrf_performed_rounds.read().await.contains(&round);
                     
                     if has_performed_vrf {
-                        // This round belongs to main sequencer - cache it
+                        // This round belongs to main sequencer - cache it (even if pending validation)
                         let mut cache = self.final_node_cache.write().await;
                         cache.insert(round, result.final_node.0);
-                        info!(
-                            "💾 [MAIN_SEQUENCER] Cached final node {:?} for round {} from consensus message",
-                            result.final_node.0, round
-                        );
+                        let is_pending = consensus_guard.is_result_pending(round);
+                        if is_pending {
+                            info!(
+                                "💾 [MAIN_SEQUENCER] Cached final node {:?} for round {} from consensus message (PENDING validation, will validate when selected_nodes arrive)",
+                                result.final_node.0, round
+                            );
+                        } else {
+                            info!(
+                                "💾 [MAIN_SEQUENCER] Cached final node {:?} for round {} from consensus message (VALIDATED)",
+                                result.final_node.0, round
+                            );
+                        }
                     } else {
                         // This round is from another module (signing/vault) - ignore it
                         debug!(
@@ -2365,6 +2573,12 @@ impl NetworkTransactionSequencer {
                             round
                         );
                     }
+                } else {
+                    // This should rarely happen now - get_consensus_result checks both validated and pending
+                    info!(
+                        "⏳ [MAIN_SEQUENCER] Consensus message received for round {} but no result found (neither validated nor pending) - will retry when selected_nodes arrive",
+                        round
+                    );
                 }
             }
         }
