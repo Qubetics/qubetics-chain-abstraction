@@ -350,7 +350,10 @@ impl NodeContext {
     }
 }
 
-#[tokio::main]
+// Increase tokio worker threads from default (num_cpus) to 16
+// This allows more parallel processing of RPC requests, message handling, and consensus
+// Critical for handling 20+ parallel user transactions efficiently
+#[tokio::main(worker_threads = 16)]
 async fn main() -> Result<()> {
     dotenv().ok();
     init_network_type_from_env()?;
