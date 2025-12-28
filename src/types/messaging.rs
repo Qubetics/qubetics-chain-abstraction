@@ -125,6 +125,15 @@ pub enum ChannelMessage {
         retry_count: u8,
     },
 
+    /// Send transaction data to final node via P2P RPC unicast
+    UnicastTransactionData {
+        target_peer_id: String,
+        from_node_id: String,
+        transaction_data: Vec<u8>,
+        round: u64,
+        retry_count: u8,
+    },
+
     StatusRequest {
         responder: oneshot::Sender<NodeStatus>,
     },

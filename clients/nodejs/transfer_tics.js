@@ -11,16 +11,19 @@
  * DO NOT use this script in production or with real funds.
  */
 
+// Disable SSL verification for testnet with self-signed certificate
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+
 // ethers v5 is CommonJS; use default import for ESM compatibility
 import ethers from 'ethers';
 const { Wallet, providers, utils } = ethers;
-const { JsonRpcProvider } = providers;
+const { JsonRpcProvider, StaticJsonRpcProvider } = providers;
 const { parseUnits, formatUnits } = utils;
 
 // Configuration
 const QUBETICS_RPC_URL = 'https://rpc-testnet.qubetics.work';
 const QUBETICS_CHAIN_ID = 9029;
-const TICS_AMOUNT = 20000; // Amount in TICS (whole units)
+const TICS_AMOUNT = 100; // Amount in TICS (whole units)
 // TICS uses 10 decimals on this chain; adjust if your deployment differs.
 const TICS_DECIMALS = 18;
 
@@ -60,17 +63,41 @@ async function transferTics(recipientAddress) {
     // Validate inputs
     validateAddress(recipientAddress);
 
-    // Create provider and wallet
+    // Create provider and wallet with explicit network configuration
     log('🔗 Connecting to Qubetics network...', 'yellow');
-    const provider = new JsonRpcProvider(QUBETICS_RPC_URL);
+    // Use StaticJsonRpcProvider with explicit network to avoid auto-detection issues
+    const network = {
+      chainId: QUBETICS_CHAIN_ID,
+      name: 'Qubetics Testnet',
+    };
+    const provider = new StaticJsonRpcProvider(QUBETICS_RPC_URL, network);
     const wallet = new Wallet(TEST_PRIVATE_KEY, provider);
 
     const senderAddress = await wallet.getAddress();
     log(`👤 Sender address: ${senderAddress}`, 'cyan');
 
-    // Check balance
+    // Check balance with retry logic
     log('💵 Checking sender balance...', 'yellow');
-    const balance = await provider.getBalance(senderAddress);
+    let balance;
+    {
+      let retries = 3;
+      while (retries > 0) {
+        try {
+          balance = await provider.getBalance(senderAddress);
+          break;
+        } catch (error) {
+          retries--;
+          if (error.code === -32000 || error.message?.includes('cannot allocate memory')) {
+            log(`   ⚠️ RPC memory error, retrying... (${3 - retries}/3)`, 'yellow');
+            if (retries > 0) {
+              await new Promise(resolve => setTimeout(resolve, 2000 * (4 - retries))); // Exponential backoff
+              continue;
+            }
+          }
+          throw error;
+        }
+      }
+    }
     const balanceInTics = formatUnits(balance, TICS_DECIMALS);
     log(`   Balance: ${balanceInTics} TICS`, 'cyan');
 
@@ -86,9 +113,29 @@ async function transferTics(recipientAddress) {
       );
     }
 
-    // Get current gas price and nonce
+    // Get current gas price with retry logic
     log('⛽ Fetching gas price...', 'yellow');
-    const feeData = await provider.getFeeData();
+    let feeData;
+    {
+      let retries = 3;
+      while (retries > 0) {
+        try {
+          feeData = await provider.getFeeData();
+          break;
+        } catch (error) {
+          retries--;
+          if (error.code === -32000 || error.message?.includes('cannot allocate memory')) {
+            log(`   ⚠️ RPC memory error, retrying... (${3 - retries}/3)`, 'yellow');
+            if (retries > 0) {
+              await new Promise(resolve => setTimeout(resolve, 2000 * (4 - retries))); // Exponential backoff
+              continue;
+            }
+          }
+          throw error;
+        }
+      }
+    }
+    
     let gasPrice = feeData.gasPrice;
     // Fallback: if RPC returns null/0 or too low, use 1 gwei
     if (!gasPrice || gasPrice.lte(0) || gasPrice.lt(parseUnits('1', 'gwei'))) {
@@ -98,8 +145,29 @@ async function transferTics(recipientAddress) {
     log(`   Gas price: ${formatUnits(gasPrice, 'gwei')} Gwei`, 'cyan');
 
     log('🔢 Fetching nonce...', 'yellow');
-    const nonce = await provider.getTransactionCount(senderAddress, 'pending');
-    log(`   Nonce: ${nonce}`, 'cyan');
+    // Use 'latest' instead of 'pending' to reduce RPC node memory pressure
+    // 'pending' requires loading more state which can cause memory errors
+    let nonce;
+    {
+      let retries = 3;
+      while (retries > 0) {
+        try {
+          nonce = await provider.getTransactionCount(senderAddress, 'latest');
+          log(`   Nonce: ${nonce}`, 'cyan');
+          break;
+        } catch (error) {
+          retries--;
+          if (error.code === -32000 || error.message?.includes('cannot allocate memory')) {
+            log(`   ⚠️ RPC memory error, retrying... (${3 - retries}/3)`, 'yellow');
+            if (retries > 0) {
+              await new Promise(resolve => setTimeout(resolve, 2000 * (4 - retries))); // Exponential backoff
+              continue;
+            }
+          }
+          throw error;
+        }
+      }
+    }
 
     // Estimate gas
     log('📊 Estimating gas...', 'yellow');

@@ -2,6 +2,13 @@
 
 import { ethers } from 'ethers';
 import https from 'https';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+// Get current directory in ES module
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // Disable SSL verification for testnet with self-signed certificate
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
@@ -9,25 +16,22 @@ process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 // Configuration
 const RPC_URL = 'https://rpc-testnet.qubetics.work';
 const FUNDING_KEY = '11d281397918948a90ce5ce2a72945ee7929a5a932e5bb3d22664ba98f86755e';
-const AMOUNT = "100";
+const AMOUNT = "200";
 
-// Addresses to fund (derived from test_sequencer_parallel.js private keys)
-const ADDRESSES = [
-  // "0xf340a30f52e3a8311ed84186f630f7bc31aca5f0",
-  // "0x2a9cf33d6e4e223a5ae6404221ce327d3fb4daea",
-  // "0x9d691bb91030eaae963ba7394afa0f7f1d624da1",
-  // "0xf6c10b5bbce59796aca2a3224d0c55df3f769694",
-  // "0x8751a42339dc7d1bb8e6ac6e0305905cb6ce1ae5",
-  // "0xa3b0d4973bdb71e8336a0adb47253757152b5be8",
-  // "0xd40e4756b469ee08d3143f8b301f2c1a04c158ee",
-  "0x401fed70544b37f925b7ad0a4d0130e44d5815e4",
-  "0x00db561a10cca31d7acfc5409a3e9d156ea02ad6",
-  "0xc751734df86456d84a5141ff98228fb6de4b71d2",
-  "0xf4b1e3cc76be8fca605ff65f8195fdc4c6f32967",
-  "0x0ef506fd6b9f5576b8ac4591554d2fb2526e1780",
-  "0x15422ecc8d6b82eb7372419f78ef11c83e22791c",
-  "0x6d09084089cc2159b42d00fa227aa55024b9fbc2"
-];
+// Load addresses from registered_eth_addresses.json
+const REGISTERED_ADDRESSES_FILE = path.join(__dirname, 'registered_eth_addresses.json');
+let ADDRESSES = [];
+
+try {
+  const data = fs.readFileSync(REGISTERED_ADDRESSES_FILE, 'utf8');
+  const registered = JSON.parse(data);
+  ADDRESSES = registered.map(entry => entry.derivedEthAddress);
+  console.log(ADDRESSES)
+  console.log(`✅ Loaded ${ADDRESSES.length} derived Ethereum addresses from ${REGISTERED_ADDRESSES_FILE}`);
+} catch (error) {
+  console.error(`❌ Error loading addresses: ${error.message}`);
+  process.exit(1);
+}
 
 const colors = {
   reset: '\x1b[0m',

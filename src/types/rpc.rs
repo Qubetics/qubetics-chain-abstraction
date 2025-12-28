@@ -116,6 +116,13 @@ pub enum RPCRequest {
         signature_data: Vec<u8>,
         round: u64,
     },
+
+    /// Unicast transaction data to the final node (P2P, not broadcast)
+    SendTransactionData {
+        from_node_id: String,
+        transaction_data: Vec<u8>,
+        round: u64,
+    },
 }
 
 /// RPC response variants.
@@ -313,7 +320,10 @@ impl RequestResponseCodec for MPCCodec {
 /// Build a libp2p request‑response behaviour using our MPCCodec + CBOR.
 /// You can then add this to your Swarm.
 pub fn build_mpc_behaviour() -> CborReqRespBehaviour<MPCCodecRequest, MPCCodecResponse> {
-    let cfg = RequestResponseConfig::default();
+    let mut cfg = RequestResponseConfig::default();
+    // Increase timeout from default 60s to 180s for high-load scenarios
+    // This prevents timeouts when nodes are processing many parallel transactions
+    cfg.set_request_timeout(std::time::Duration::from_secs(180));
     let proto = StreamProtocol::new(MPCProtocol.as_ref());
     let protocols = std::iter::once((proto, ProtocolSupport::Full));
     CborReqRespBehaviour::new(protocols, cfg)

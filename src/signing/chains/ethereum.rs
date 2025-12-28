@@ -1073,7 +1073,7 @@ impl SigningNode {
                     &DummyTransaction {
                         to: original_tx.to.clone(),
                         value: original_tx.value.clone(),
-                        nonce: original_tx.nonce,
+                        nonce: original_tx.nonce,  // Use original nonce that was signed
                         gas_limit: original_tx.gas_limit,
                         gas_price: original_tx.gas_price.clone(),
                         chain_id: original_tx.chain_id,

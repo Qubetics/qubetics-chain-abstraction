@@ -15,7 +15,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 pub mod chains;
 mod config;
@@ -400,6 +400,30 @@ impl SigningNode {
         Ok(())
     }
 
+    /// Send transaction data directly to final node via unicast P2P RPC
+    pub async fn send_transaction_data_direct(
+        &self,
+        final_node_id: &str,
+        transaction_data: &[u8],
+        round: u64,
+    ) -> Result<()> {
+        self.message_tx
+            .send(ChannelMessage::UnicastTransactionData {
+                target_peer_id: final_node_id.to_string(),
+                from_node_id: self.id.clone(),
+                transaction_data: transaction_data.to_vec(),
+                round,
+                retry_count: 0,
+            })
+            .await?;
+
+        info!(
+            "📤 [SIGNING-SECURE] Queued unicast transaction data for round {} to final node {}",
+            round, final_node_id
+        );
+        Ok(())
+    }
+
     /// Send BTC signatures directly to a specific peer via unicast
     pub async fn send_btc_signatures_direct(
         &self,
@@ -554,6 +578,26 @@ impl SigningNode {
                 );
                 self.handle_btc_signature_request(round, final_node_id)
                     .await?;
+            }
+            SigningMessage::TransactionDataForFinalNode {
+                from,
+                round,
+                tx_bytes,
+                intent_hash,
+                transaction_type,
+            } => {
+                info!(
+                    "📥 [SIGNING] Node {} received transaction data for round {} from {}",
+                    self.id, round, from
+                );
+                self.handle_transaction_data_for_final_node(
+                    from,
+                    round,
+                    tx_bytes,
+                    intent_hash,
+                    transaction_type,
+                )
+                .await?;
             }
         }
         Ok(())
@@ -1412,6 +1456,51 @@ impl SigningNode {
         Ok(())
     }
 
+    /// Send transaction data to final node (for reconstruction)
+    async fn send_transaction_data_to_final_node(
+        &self,
+        final_node_id: &str,
+        round: u64,
+    ) -> Result<()> {
+        // Check if we have transaction data for this round
+        let pending_transactions = self.pending.pending_transactions.read().await;
+        
+        if let Some((_, tx_bytes, intent_hash, transaction_type)) = pending_transactions.get(&round) {
+            info!(
+                "📤 [SIGNING] Sending transaction data for round {} to final node {} (tx_bytes: {} bytes)",
+                round, final_node_id, tx_bytes.len()
+            );
+            
+            let tx_data_msg = SigningMessage::TransactionDataForFinalNode {
+                from: self.id.clone(),
+                round,
+                tx_bytes: tx_bytes.clone(),
+                intent_hash: intent_hash.clone(),
+                transaction_type: transaction_type.as_ref().map(|t| format!("{:?}", t)),
+            };
+            
+            // Wrap and send via unicast
+            let gossipsub_msg = crate::types::GossipsubMessage::Signing(tx_data_msg);
+            let data = serde_json::to_vec(&gossipsub_msg)?;
+            
+            self.send_transaction_data_direct(final_node_id, &data, round)
+                .await?;
+            
+            info!(
+                "✅ [SIGNING] Sent transaction data for round {} to final node {}",
+                round, final_node_id
+            );
+        } else {
+            // No transaction data - this is expected if we also weren't selected
+            debug!(
+                "⚠️ [SIGNING] No transaction data found for round {} to send to final node",
+                round
+            );
+        }
+        
+        Ok(())
+    }
+
     /// Handle signature request from final selected node
     async fn handle_signature_request(
         &mut self,
@@ -1428,6 +1517,11 @@ impl SigningNode {
         if final_node_id != self.id {
             // Send signature to the final node
             self.send_signature_to_final_node(&final_node_id, round)
+                .await?;
+            
+            // CRITICAL FIX: Also send transaction data to the final node
+            // This ensures the final node can reconstruct the transaction even if it wasn't selected to sign
+            self.send_transaction_data_to_final_node(&final_node_id, round)
                 .await?;
         } else {
             info!("🔄 [SIGNING] This node is the final node, no need to send signature to self");
@@ -2552,6 +2646,104 @@ impl SigningNode {
             "⚠️ [SIGNING] Received signature for round {} but this node is not the final node for that round",
             round
         );
+        Ok(())
+    }
+
+    /// Handle transaction data received for final node (to enable reconstruction even if not selected to sign)
+    pub async fn handle_transaction_data_for_final_node(
+        &mut self,
+        from: String,
+        round: u64,
+        tx_bytes: Vec<u8>,
+        intent_hash: Option<String>,
+        transaction_type: Option<String>,
+    ) -> Result<()> {
+        info!(
+            "📥 [SIGNING] Final node {} received transaction data from {} for round {} (tx_bytes: {} bytes)",
+            self.id, from, round, tx_bytes.len()
+        );
+
+        // Check if this node is the final node for the specific round
+        let is_final_node = {
+            let final_nodes = self.signatures.final_nodes_by_round.read().await;
+            final_nodes
+                .get(&round)
+                .map(|node_id| node_id == &self.id)
+                .unwrap_or(false)
+        };
+
+        if !is_final_node {
+            debug!(
+                "⚠️ [SIGNING] Received transaction data for round {} but this node is not the final node for that round",
+                round
+            );
+            return Ok(());
+        }
+
+        // Check if we already have transaction data for this round
+        let already_have_data = {
+            let pending = self.pending.pending_transactions.read().await;
+            pending.contains_key(&round)
+        };
+
+        if already_have_data {
+            debug!(
+                "ℹ️ [SIGNING] Already have transaction data for round {}, ignoring duplicate from {}",
+                round, from
+            );
+            return Ok(());
+        }
+
+        // CRITICAL FIX: Store the transaction data so we can reconstruct later
+        info!(
+            "💾 [SIGNING] Storing received transaction data for round {} from {} (was not selected to sign but is final node)",
+            round, from
+        );
+
+        // Parse transaction type if provided
+        let parsed_tx_type = transaction_type.as_ref().and_then(|t| {
+            // Try to parse the string back to TransactionType
+            // This is a simple mapping - you may need to adjust based on actual format
+            match t.as_str() {
+                "UserToVault" => Some(crate::types::TransactionType::UserToVault),
+                "NetworkToTarget" => Some(crate::types::TransactionType::NetworkToTarget),
+                "VaultToNetwork" => Some(crate::types::TransactionType::VaultToNetwork),
+                "WithdrawLiquidity" => Some(crate::types::TransactionType::WithdrawLiquidity),
+                "RewardTxn" => Some(crate::types::TransactionType::RewardTxn),
+                "AddLiquidity" => Some(crate::types::TransactionType::AddLiquidity),
+                _ => None,
+            }
+        });
+
+        // We need to reconstruct a ChainTransaction from the tx_bytes
+        // For now, we'll create a placeholder Ethereum transaction since we mainly need the tx_bytes for reconstruction
+        let eth_tx = crate::chain_abstraction::EthereumTransaction {
+            to: String::new(), // Will be populated during reconstruction
+            value: "0".to_string(),
+            gas_limit: 0,
+            gas_price: "0".to_string(),
+            nonce: 0,
+            data: Some(tx_bytes.clone()),
+            chain_id: 0,
+        };
+        let chain_tx = crate::chain_abstraction::ChainTransaction::Ethereum(eth_tx);
+
+        let mut pending = self.pending.pending_transactions.write().await;
+        pending.insert(
+            round,
+            (
+                chain_tx,
+                tx_bytes,
+                intent_hash.clone(),
+                parsed_tx_type,
+            ),
+        );
+
+        info!(
+            "✅ [SIGNING] Stored transaction data for round {} - final node can now reconstruct when signatures arrive",
+            round
+        );
+
         Ok(())
     }
 

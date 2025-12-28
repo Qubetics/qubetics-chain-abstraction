@@ -12,6 +12,8 @@ pub struct ConsensusNode {
     current_round: u64,
     selected_nodes_by_round: HashMap<u64, Vec<SerializablePeerId>>,
     consensus_results: HashMap<u64, ConsensusResult>,
+    /// Consensus results that arrived before we had selected_nodes for that round
+    pending_results: HashMap<u64, ConsensusResult>,
 }
 
 impl Default for ConsensusNode {
@@ -26,6 +28,7 @@ impl ConsensusNode {
             current_round: 0,
             selected_nodes_by_round: HashMap::new(),
             consensus_results: HashMap::new(),
+            pending_results: HashMap::new(),
         }
     }
 
@@ -37,6 +40,26 @@ impl ConsensusNode {
             round
         );
         self.selected_nodes_by_round.insert(round, selected_nodes);
+
+        // If a consensus result arrived before we had selected_nodes, validate and store it now.
+        if let Some(pending) = self.pending_results.remove(&round) {
+            match self.validate_consensus_result_with_selected(round, &pending) {
+                Ok(_) => {
+                    self.consensus_results.insert(round, pending.clone());
+                    self.current_round = self.current_round.max(round);
+                    info!(
+                        "✅ [CONSENSUS] Pending consensus result for round {} validated and stored after selected_nodes arrived (final_node={:?})",
+                        round, pending.final_node
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        "⚠️ [CONSENSUS] Pending consensus result for round {} failed validation after selected_nodes arrived: {}",
+                        round, e
+                    );
+                }
+            }
+        }
     }
 
     pub fn start_consensus(&mut self, round: u64) -> Result<ConsensusResult> {
@@ -61,8 +84,19 @@ impl ConsensusNode {
     }
 
     /// Get consensus result for a specific round
+    /// Checks both validated results and pending results (results that arrived before selected_nodes)
     pub fn get_consensus_result(&self, round: u64) -> Option<&ConsensusResult> {
-        self.consensus_results.get(&round)
+        // First check validated results
+        if let Some(result) = self.consensus_results.get(&round) {
+            return Some(result);
+        }
+        // If not found, check pending results (may not be validated yet)
+        self.pending_results.get(&round)
+    }
+
+    /// Check if a consensus result is pending validation (waiting for selected_nodes)
+    pub fn is_result_pending(&self, round: u64) -> bool {
+        self.pending_results.contains_key(&round)
     }
 
     /// Get the current round
@@ -106,108 +140,133 @@ impl ConsensusNode {
                     ));
                 }
 
-                // SECURITY CHECK 3: Require that we have selected_nodes for this round
-                // This ensures we participated in the round and can validate the result
-                // DO NOT reconstruct from untrusted node_frequencies - this is a security vulnerability
-                let selected_nodes = match self.selected_nodes_by_round.get(&round) {
-                    Some(nodes) => {
-                        if nodes.is_empty() {
-                            return Err(anyhow::anyhow!(
-                                "Selected nodes list for round {} is empty",
-                                round
-                            ));
-                        }
-                        info!(
-                            "✅ [CONSENSUS] Using existing selected nodes for round {}: {} nodes",
-                            round,
-                            nodes.len()
+                // Validate if we have selected_nodes; otherwise stash pending for later.
+                match self.validate_consensus_result_with_selected(round, &result) {
+                    Ok(_) => {
+                        self.consensus_results.insert(round, result);
+                        self.current_round = self.current_round.max(round);
+                    }
+                    Err(e) if e
+                        .to_string()
+                        .contains("no selected nodes available") =>
+                    {
+                        warn!(
+                            "⏳ [CONSENSUS] Missing selected_nodes for round {}, stashing consensus result to validate later. Error: {}",
+                            round, e
                         );
-                        nodes.clone()
+                        self.pending_results.insert(round, result);
+                        return Ok(());
                     }
-                    None => {
-                        return Err(anyhow::anyhow!(
-                            "Cannot validate consensus result for round {}: no selected nodes available. This node must have participated in the round to validate results.",
-                            round
-                        ));
-                    }
-                };
-
-                // SECURITY CHECK 4: Verify final_node is actually in the selected_nodes
-                let final_node_in_selected =
-                    selected_nodes.iter().any(|node| *node == result.final_node);
-                if !final_node_in_selected {
-                    return Err(anyhow::anyhow!(
-                        "Invalid consensus result for round {}: final_node {:?} is not in selected_nodes {:?}",
-                        round,
-                        result.final_node,
-                        selected_nodes
-                    ));
+                    Err(e) => return Err(e),
                 }
-
-                // SECURITY CHECK 5: If we already have a result, validate the new one before overwriting
-                if let Some(existing_result) = self.consensus_results.get(&round) {
-                    // Even if final_node matches, we must validate the new result is correct
-                    // Don't trust - verify!
-                    warn!(
-                        "⚠️ [CONSENSUS] Already have consensus result for round {}: existing={:?}, received={:?}. Validating before overwriting...",
-                        round, existing_result.final_node, result.final_node
-                    );
-                    // Continue with full validation below
-                }
-
-                // SECURITY CHECK 6: Compute expected result from our selected_nodes
-                // This is the ground truth - we trust our own selected_nodes
-                let expected_result = Self::calculate_consensus_result(&selected_nodes, round)?;
-
-                // STRICT VALIDATION: Ensure consensus results match exactly
-                // With aggressive VRF retries (100-500ms), all nodes should receive complete
-                // VRF data before consensus calculation, so strict validation is safe.
-                
-                // Validate that the received result is internally consistent
-                let received_final_node = Self::calculate_final_node_from_frequencies(&result.node_frequencies,round)?;
-                if received_final_node != result.final_node {
-                    return Err(anyhow::anyhow!(
-                        "Consensus result inconsistency for round {}: final_node {:?} doesn't match calculation from node_frequencies {:?}",
-                        round, result.final_node, result.node_frequencies
-                    ));
-                }
-                
-                // Strict validation: final_node must match exactly
-                if expected_result.final_node != result.final_node {
-                    return Err(anyhow::anyhow!(
-                        "Invalid consensus result received for round {}: final_node mismatch. Expected: {:?} (total={}, frequencies={:?}). Received: {:?} (total={}, frequencies={:?})",
-                        round,
-                        expected_result.final_node,
-                        expected_result.total_selections,
-                        expected_result.node_frequencies,
-                        result.final_node,
-                        result.total_selections,
-                        result.node_frequencies
-                    ));
-                }
-
-                // Final node matches - accept the result
-                // Note: total_selections and frequencies may differ slightly if nodes received
-                // VRF broadcasts in different orders, but as long as final_node matches,
-                // the consensus is valid
-                if expected_result.total_selections != result.total_selections || expected_result.node_frequencies != result.node_frequencies {
-                    info!(
-                        "ℹ️ [CONSENSUS] Accepting consensus result for round {} with matching final_node {:?} but different frequencies (expected: total={}, got: total={})",
-                        round, result.final_node, expected_result.total_selections, result.total_selections
-                    );
-                } else {
-                    info!(
-                        "✅ [CONSENSUS] Accepting fully validated consensus result for round {}: final_node={:?}",
-                        round, result.final_node
-                    );
-                }
-
-                // Consensus result accepted - store it
-
-                self.consensus_results.insert(round, result);
-                self.current_round = self.current_round.max(round);
             }
         }
+        Ok(())
+    }
+
+    /// Validate a consensus result using selected_nodes we already have for that round
+    fn validate_consensus_result_with_selected(
+        &self,
+        round: u64,
+        result: &ConsensusResult,
+    ) -> Result<()> {
+        // SECURITY CHECK 3: Require that we have selected_nodes for this round
+        // This ensures we participated in the round and can validate the result
+        // DO NOT reconstruct from untrusted node_frequencies - this is a security vulnerability
+        let selected_nodes = match self.selected_nodes_by_round.get(&round) {
+            Some(nodes) => {
+                if nodes.is_empty() {
+                    return Err(anyhow::anyhow!(
+                        "Selected nodes list for round {} is empty",
+                        round
+                    ));
+                }
+                info!(
+                    "✅ [CONSENSUS] Using existing selected nodes for round {}: {} nodes",
+                    round,
+                    nodes.len()
+                );
+                nodes.clone()
+            }
+            None => {
+                return Err(anyhow::anyhow!(
+                    "Cannot validate consensus result for round {}: no selected nodes available. This node must have participated in the round to validate results.",
+                    round
+                ));
+            }
+        };
+
+        // SECURITY CHECK 4: Verify final_node is actually in the selected_nodes
+        let final_node_in_selected =
+            selected_nodes.iter().any(|node| *node == result.final_node);
+        if !final_node_in_selected {
+            return Err(anyhow::anyhow!(
+                "Invalid consensus result for round {}: final_node {:?} is not in selected_nodes {:?}",
+                round,
+                result.final_node,
+                selected_nodes
+            ));
+        }
+
+        // SECURITY CHECK 5: If we already have a result, validate the new one before overwriting
+        if let Some(existing_result) = self.consensus_results.get(&round) {
+            warn!(
+                "⚠️ [CONSENSUS] Already have consensus result for round {}: existing={:?}, received={:?}. Validating before overwriting...",
+                round, existing_result.final_node, result.final_node
+            );
+            // Continue with full validation below
+        }
+
+        // SECURITY CHECK 6: Compute expected result from our selected_nodes
+        // This is the ground truth - we trust our own selected_nodes
+        let expected_result = Self::calculate_consensus_result(&selected_nodes, round)?;
+
+        // STRICT VALIDATION: Ensure consensus results match exactly
+        // With aggressive VRF retries (100-500ms), all nodes should receive complete
+        // VRF data before consensus calculation, so strict validation is safe.
+        
+        // Validate that the received result is internally consistent
+        let received_final_node =
+            Self::calculate_final_node_from_frequencies(&result.node_frequencies, round)?;
+        if received_final_node != result.final_node {
+            return Err(anyhow::anyhow!(
+                "Consensus result inconsistency for round {}: final_node {:?} doesn't match calculation from node_frequencies {:?}",
+                round, result.final_node, result.node_frequencies
+            ));
+        }
+        
+        // Strict validation: final_node must match exactly
+        if expected_result.final_node != result.final_node {
+            return Err(anyhow::anyhow!(
+                "Invalid consensus result received for round {}: final_node mismatch. Expected: {:?} (total={}, frequencies={:?}). Received: {:?} (total={}, frequencies={:?})",
+                round,
+                expected_result.final_node,
+                expected_result.total_selections,
+                expected_result.node_frequencies,
+                result.final_node,
+                result.total_selections,
+                result.node_frequencies
+            ));
+        }
+
+        // Final node matches - accept the result
+        // Note: total_selections and frequencies may differ slightly if nodes received
+        // VRF broadcasts in different orders, but as long as final_node matches,
+        // the consensus is valid
+        if expected_result.total_selections != result.total_selections
+            || expected_result.node_frequencies != result.node_frequencies
+        {
+            info!(
+                "ℹ️ [CONSENSUS] Accepting consensus result for round {} with matching final_node {:?} but different frequencies (expected: total={}, got: total={})",
+                round, result.final_node, expected_result.total_selections, result.total_selections
+            );
+        } else {
+            info!(
+                "✅ [CONSENSUS] Accepting fully validated consensus result for round {}: final_node={:?}",
+                round, result.final_node
+            );
+        }
+
         Ok(())
     }
 

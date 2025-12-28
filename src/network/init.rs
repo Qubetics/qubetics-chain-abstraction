@@ -51,8 +51,9 @@ impl MpcNetworkLayer {
         // With 11+ parallel users, each can generate multiple messages simultaneously
         // Channel needs to handle: broadcasts + retries + ACKs + internal messages
         // Formula: (users * avg_messages_per_user * burst_factor) + retry_buffer
-        // = (11 * 10 * 2) + 500 = 720 + safety margin
-        let (tx, rx) = mpsc::channel(2000); // Increased from 1000 to 2000 for 11+ parallel users
+        // For high load: (50 * 15 * 3) + 2000 = 2250 + large safety margin
+        // Increased significantly to handle parallel burst traffic without channel blocking
+        let (tx, rx) = mpsc::channel(10000); // Increased from 2000 to 10000 for high parallel user load
         let tx_for_retry = tx.clone();
         
         // Initialize channel health monitor for production monitoring
@@ -209,13 +210,22 @@ impl MpcNetworkLayer {
                 };
 
                 let gossipsub_config = gossipsub::ConfigBuilder::default()
-                    .heartbeat_interval(Duration::from_secs(1))
-                    .validation_mode(gossipsub::ValidationMode::Strict)
+                    .heartbeat_interval(Duration::from_millis(500))  // Faster heartbeat for lower latency (default: 1s)
+                    .validation_mode(gossipsub::ValidationMode::Permissive)  // Faster validation (changed from Strict)
                     .message_id_fn(message_id_fn)
-                    .flood_publish(true)
+                    .flood_publish(true)  // Publish to all peers immediately
                     .fanout_ttl(Duration::from_secs(60))
                     .prune_peers(10)
                     .prune_backoff(Duration::from_secs(60))
+                    // CRITICAL FIX: Increase limits for high parallel load (25+ transactions)
+                    .history_length(100)  // Keep much more message history (default: 5)
+                    .history_gossip(50)  // Send more historical messages in IHAVE (default: 3)
+                    .max_transmit_size(10_000_000)  // 10MB max message size (default: 65KB)
+                    .mesh_n_low(2)  // Min peers in mesh (default: 3) - keep it low for small network
+                    .mesh_n(3)  // Target peers in mesh (default: 6)
+                    .mesh_n_high(4)  // Max peers in mesh (default: 12)
+                    .mesh_outbound_min(1)  // Min outbound connections (default: 2)
+                    .validate_messages()  // Enable async validation to prevent blocking
                     .build()
                     .map_err(io::Error::other)
                     .map_err(io::Error::other)?;

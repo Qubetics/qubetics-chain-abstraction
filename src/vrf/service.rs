@@ -48,6 +48,9 @@ pub struct VrfService {
     vrf_storage: Option<VrfStorage>,
     context: String,
     config: VrfServiceConfig,
+    /// Shared sync state for parallel transactions
+    sync_in_progress: Arc<Mutex<Option<Arc<tokio::sync::Notify>>>>,
+    last_sync_result: Arc<RwLock<Option<(u64, std::time::Instant)>>>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -172,6 +175,8 @@ impl VrfService {
             vrf_storage,
             context,
             config,
+            sync_in_progress: Arc::new(Mutex::new(None)),
+            last_sync_result: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -204,8 +209,8 @@ impl VrfService {
         )?;
         info!("🧐 Selection result: {:?}", selection_result);
 
-        info!("⏳ Waiting 3 seconds before broadcasting selection...");
-        tokio::time::sleep(std::time::Duration::from_millis(3000)).await;
+        info!("⏳ Waiting 2 seconds before broadcasting selection...");
+        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
 
         info!(
             "🎯 [VRF] Node {} selected {} nodes for {} operation round {}: {:?}",
@@ -473,6 +478,80 @@ impl VrfService {
     }
 
     pub async fn sync_rounds(&self, sync_kind: VrfRoundSyncKind) -> Result<u64> {
+        // CRITICAL FIX: Acquire lock FIRST to prevent race conditions where multiple
+        // parallel transactions all see empty cache and start syncing simultaneously
+        let notify = {
+            let mut sync_guard = self.sync_in_progress.lock().await;
+            
+            // AFTER acquiring lock, check if there's a recent cached result
+            const SYNC_CACHE_DURATION_MS: u64 = 500;
+            {
+                let cached = self.last_sync_result.read().await;
+                if let Some((round, timestamp)) = *cached {
+                    let elapsed = timestamp.elapsed().as_millis() as u64;
+                    if elapsed < SYNC_CACHE_DURATION_MS {
+                        info!(
+                            "🚀 [VRF_SYNC][{}] Using cached sync result: round {} (age: {}ms) - PARALLEL OPTIMIZATION",
+                            self.context, round, elapsed
+                        );
+                        return Ok(round);
+                    }
+                }
+            }
+            
+            // Check if ANOTHER task is already syncing (after we checked cache)
+            if let Some(existing_notify) = sync_guard.as_ref() {
+                // Another sync is in progress, wait for it
+                let notify_clone = existing_notify.clone();
+                drop(sync_guard); // Release lock before waiting
+                
+                info!("⏳ [VRF_SYNC][{}] Another sync in progress, waiting - PARALLEL OPTIMIZATION", self.context);
+                notify_clone.notified().await;
+                
+                // After waiting, return the fresh result
+                let cached = self.last_sync_result.read().await;
+                if let Some((round, _)) = *cached {
+                    info!("✅ [VRF_SYNC][{}] Using result from shared sync: round {} - PARALLEL OPTIMIZATION", self.context, round);
+                    return Ok(round);
+                }
+                
+                // If no cached result after waiting, fall through to do our own sync
+                None
+            } else {
+                // No sync in progress, WE will start one
+                let notify = Arc::new(tokio::sync::Notify::new());
+                *sync_guard = Some(notify.clone());
+                info!("🔒 [VRF_SYNC][{}] Acquired sync lock, starting sync - PARALLEL OPTIMIZATION", self.context);
+                Some(notify)
+            }
+        };
+        
+        // Perform the actual sync (only one transaction will reach here)
+        let result = self.perform_sync_internal(sync_kind).await;
+        
+        // Update cache and notify waiters
+        if let Ok(round) = result {
+            let mut cached = self.last_sync_result.write().await;
+            *cached = Some((round, std::time::Instant::now()));
+            info!("💾 [VRF_SYNC] Cached sync result: round {} - will be shared with parallel transactions", round);
+        }
+        
+        // Clear sync-in-progress flag and notify all waiters
+        {
+            let mut sync_guard = self.sync_in_progress.lock().await;
+            *sync_guard = None;
+        }
+        
+        if let Some(notify) = notify {
+            notify.notify_waiters(); // Wake up all waiting transactions
+            info!("📢 [VRF_SYNC] Notified waiting parallel transactions");
+        }
+        
+        result
+    }
+    
+    /// Internal sync implementation (called by sync_rounds)
+    async fn perform_sync_internal(&self, sync_kind: VrfRoundSyncKind) -> Result<u64> {
         let _guard = self.round_update_lock.lock().await;
 
         let local_round = {
