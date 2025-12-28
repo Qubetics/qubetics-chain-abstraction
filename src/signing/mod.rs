@@ -305,9 +305,50 @@ impl SigningNode {
                     ))
                 }
             }
-            Some(TransactionType::WithdrawLiquidity) | Some(TransactionType::AddLiquidity) => Err(
-                anyhow!("Unsupported transaction type for group public key retrieval"),
-            ),
+            Some(TransactionType::WithdrawLiquidity) => {
+                // WithdrawLiquidity uses network group key (same as RewardTxn and NetworkToTarget)
+                let group_key = if let Some(key) = self.key_store.get_group_public_key() {
+                    Some(key)
+                } else if let Some(database) = &self.database {
+                    match database.get_string::<SerializablePoint>(keys::DKG_FINAL_PUBLIC) {
+                        Ok(Some(serialized)) => Some(serialized.0.into()),
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+
+                if let Some(group_key) = group_key {
+                    let encoded_point = k256::EncodedPoint::from(group_key.to_affine());
+                    Ok(encoded_point.compress().to_bytes().to_vec())
+                } else {
+                    Err(anyhow!(
+                        "DKG group public key not available for WithdrawLiquidity - ensure DKG process is completed"
+                    ))
+                }
+            }
+            Some(TransactionType::AddLiquidity) => {
+                // AddLiquidity uses vault group key (same as VaultToNetwork)
+                let vault_key = if let Some(vault_key) = self.key_store.get_vault_group_key() {
+                    Some(vault_key)
+                } else if let Some(database) = &self.database {
+                    match database.get_string::<SerializablePoint>(keys::DKG_VAULT_GROUP_KEY) {
+                        Ok(Some(serialized)) => Some(serialized.0.into()),
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+
+                if let Some(vault_key) = vault_key {
+                    let encoded_point = k256::EncodedPoint::from(vault_key.to_affine());
+                    Ok(encoded_point.compress().to_bytes().to_vec())
+                } else {
+                    Err(anyhow!(
+                        "Vault group public key not available for AddLiquidity - ensure vault key is set"
+                    ))
+                }
+            }
             None => Err(anyhow!(
                 "Transaction type is required for group public key retrieval"
             )),
