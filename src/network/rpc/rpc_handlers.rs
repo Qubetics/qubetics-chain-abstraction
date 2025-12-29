@@ -1433,8 +1433,8 @@ impl MpcNetworkLayer {
             let has_dkg_data = dkg_node.get_final_secret_share().await.is_some();
             info!("🔍 [NEW_NODE] Has DKG data: {}", has_dkg_data);
 
-            // If this node has no DKG data and network has > 4 nodes, it's a new node joining
-            if !has_dkg_data && total > 4 {
+            // If this node has no DKG data and network has > 3 nodes, it's a new node joining
+            if !has_dkg_data && total > 3 {
                 info!("🆕 [NEW_NODE] Learned about {} total nodes, triggering database sync and share request", total);
 
                 let connected_peers: Vec<PeerId> = swarm.connected_peers().cloned().collect();

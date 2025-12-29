@@ -1471,7 +1471,7 @@ impl MpcNetworkLayer {
                                 info!("🔄 [EXISTING_NODE] New peer {} joined network, will respond to share requests", peer);
                                 // Existing nodes will handle the NewNodeJoined DKG message when the new node broadcasts it
                             } else {
-                                info!("ℹ️ [NEW_NODE] Initial DKG not yet completed (waiting for 4 nodes)");
+                                info!("ℹ️ [NEW_NODE] Initial DKG not yet completed (waiting for 3 nodes)");
                             }
                         }
                     }
