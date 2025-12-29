@@ -178,11 +178,11 @@ impl MpcNetworkLayer {
             };
 
             if initial_dkg_complete {
-                info!("🔒 [DKG] Initial DKG already completed with 4 nodes");
+                info!("🔒 [DKG] Initial DKG already completed with 3 nodes");
                 info!("🆕 [NEW_NODE] Total nodes: {}, new node resharing will be triggered via PeerDiscovery gossipsub handler", total);
-            } else if total == 4 {
-                // First time we have 4 nodes, start initial DKG
-                info!("🎯 Initial 4 nodes connected, triggering first DKG!");
+            } else if total == 3 {
+                // First time we have 3 nodes, start initial DKG
+                info!("🎯 Initial 3 nodes connected, triggering first DKG!");
 
                 let now_secs = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
@@ -207,8 +207,8 @@ impl MpcNetworkLayer {
                     start_time
                 );
                 self.schedule_dkg_at(start_time);
-            } else if total < 4 {
-                info!("⏳ Waiting for initial 4 nodes: {}/4", total);
+            } else if total < 3 {
+                info!("⏳ Waiting for initial 3 nodes: {}/3", total);
             }
         }
 

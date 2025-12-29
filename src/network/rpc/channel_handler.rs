@@ -3057,7 +3057,7 @@ impl MpcNetworkLayer {
                 let threshold = self.node_manager.get_threshold();
 
                 if let Some(dkg) = &mut self.dkg_node {
-                    // This should only be called for initial DKG with 4 nodes
+                    // This should only be called for initial DKG with 3 nodes
                     let initial_dkg_complete = dkg.is_initial_dkg_complete().await;
 
                     if initial_dkg_complete {
@@ -3065,10 +3065,10 @@ impl MpcNetworkLayer {
                         return Ok(());
                     }
 
-                    // Start the initial DKG with 4 nodes
+                    // Start the initial DKG with 3 nodes
                     info!("🚀 [DKG] Starting initial DKG with {} nodes", total);
 
-                    if total != 4 {
+                    if total != 3 {
                         warn!(
                             "⚠️ [DKG] Expected 4 nodes for initial DKG, but have {}",
                             total
