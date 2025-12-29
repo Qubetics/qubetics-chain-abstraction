@@ -1,6 +1,6 @@
 # Qubetics Chain Abstraction - MPC Node
 
-A  ulti-Party Computation (MPC) node implementation for blockchain chain abstraction, enabling secure threshold signing across multiple blockchain networks including Qubetics and Bitcoin.
+A multi-Party Computation (MPC) node implementation for blockchain chain abstraction, enabling secure threshold signing across multiple blockchain networks including Qubetics and Bitcoin.
 
 ## Overview
 
