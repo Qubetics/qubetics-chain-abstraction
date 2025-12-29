@@ -1137,7 +1137,7 @@ impl SigningNode {
         solver_address: String,
     ) {
         let mut pending = self.pending.reward_pending_transactions_tics.write().await;
-        pending.insert(round, (chain_tx, tx_bytes, Some(solver_address), None));
+        pending.insert(round, (chain_tx, tx_bytes, Some(solver_address), Some(crate::types::TransactionType::RewardTxn)));
         info!(
             "🎁 [SIGNING] Stored TICS reward transaction for round {} with solver address",
             round

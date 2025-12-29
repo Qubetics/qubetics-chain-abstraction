@@ -19,7 +19,7 @@ impl SigningNode {
         let mut pending = self.pending.reward_pending_transactions_btc.write().await;
         pending.insert(
             round,
-            (chain_tx, tx_bytes, Some(solver_address), None, Some(extras)),
+            (chain_tx, tx_bytes, Some(solver_address), Some(TransactionType::RewardTxn), Some(extras)),
         );
         info!(
             "🎁 [SIGNING] Stored BTC reward transaction for round {} with solver address",
