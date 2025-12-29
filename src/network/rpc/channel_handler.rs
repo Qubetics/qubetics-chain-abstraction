@@ -618,7 +618,7 @@ impl MpcNetworkLayer {
             let vault_tweaked_share = dkg_node.get_vault_tweaked_secret_share().await;
 
             if let Some(ref _secret_share) = vault_tweaked_share {
-                signing_node.set_group_public_key(group_public_key);
+                // signing_node.set_group_public_key(group_public_key);
                 signing_node.set_vault_group_key(group_public_key);
 
                 let contract_tx = crate::types::intent::ContractTransaction {
@@ -804,7 +804,7 @@ impl MpcNetworkLayer {
             let vault_tweaked_share = dkg_node.get_vault_tweaked_secret_share().await;
 
             if let Some(ref _secret_share) = vault_tweaked_share {
-                signing_node.set_group_public_key(group_public_key);
+                // signing_node.set_group_public_key(group_public_key);
                 signing_node.set_vault_group_key(group_public_key);
 
                 let contract_tx = crate::types::intent::ContractTransaction {
@@ -970,7 +970,7 @@ impl MpcNetworkLayer {
             let vault_tweaked_share = dkg_node.get_vault_tweaked_secret_share().await;
 
             if let Some(ref _secret_share) = vault_tweaked_share {
-                signing_node.set_group_public_key(group_public_key);
+                // signing_node.set_group_public_key(group_public_key);
                 signing_node.set_vault_group_key(group_public_key);
 
                 let contract_tx = crate::types::intent::ContractTransaction {
