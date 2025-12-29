@@ -9,7 +9,7 @@ use libp2p::PeerId;
 use num_bigint::BigUint;
 use num_traits::identities::One;
 use secp256k1::{self, ecdsa::RecoverableSignature, Message, PublicKey, Secp256k1, SecretKey};
-use sha3::{Digest, Keccak256};
+use sha3::Digest;
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -2865,9 +2865,7 @@ impl SigningNode {
         signature: &ECDSASignature,
         round: u64,
     ) -> Result<()> {
-        use crate::database::DkgStorage;
         use k256::elliptic_curve::sec1::ToEncodedPoint;
-        use k256::ProjectivePoint;
 
         info!(
             "🔍 [SIGNING] Verifying PARTIAL signature from peer {} for round {}",
@@ -2957,6 +2955,7 @@ impl SigningNode {
             peer_id, expected_pubkey_hex
         );
         
+        let mut recovered_pubkeys = Vec::new();
         for rid in 0..4 {
             if let Ok(test_rid) = RecoveryId::from_i32(rid) {
                 if let Ok(test_recov_sig) =
@@ -2964,6 +2963,7 @@ impl SigningNode {
                 {
                     if let Ok(test_recovered) = secp.recover_ecdsa(&msg, &test_recov_sig) {
                         let test_recovered_hex = hex::encode(test_recovered.serialize());
+                        recovered_pubkeys.push((rid, test_recovered_hex.clone()));
                         info!(
                             "🔍 [SIGNING] Peer {} - Trying recovery_id {}: recovered pubkey 0x{}",
                             peer_id, rid, test_recovered_hex
@@ -2976,7 +2976,17 @@ impl SigningNode {
                             correct_recovery_id = Some(rid as u8);
                             break;
                         }
+                    } else {
+                        info!(
+                            "🔍 [SIGNING] Peer {} - Recovery_id {}: failed to recover pubkey from signature",
+                            peer_id, rid
+                        );
                     }
+                } else {
+                    info!(
+                        "🔍 [SIGNING] Peer {} - Recovery_id {}: failed to create recoverable signature",
+                        peer_id, rid
+                    );
                 }
             }
         }
@@ -2986,6 +2996,21 @@ impl SigningNode {
                 "⚠️ [SIGNING] Peer {} - No recovery_id (0-3) recovered to expected share pubkey 0x{}",
                 peer_id, expected_pubkey_hex
             );
+            if !recovered_pubkeys.is_empty() {
+                warn!(
+                    "⚠️ [SIGNING] Peer {} - Recovered pubkeys for each recovery_id: {:?}",
+                    peer_id, recovered_pubkeys
+                );
+                warn!(
+                    "⚠️ [SIGNING] Peer {} - This suggests the signature was created with a different digest or pubkey",
+                    peer_id
+                );
+            } else {
+                warn!(
+                    "⚠️ [SIGNING] Peer {} - Failed to recover any pubkey from signature with any recovery_id - signature may be invalid or corrupted",
+                    peer_id
+                );
+            }
         }
 
         // If we found a matching recovery_id, the signature is valid - return success immediately
@@ -3563,7 +3588,6 @@ impl SigningNode {
         &self,
         round: u64,
     ) -> Result<(Vec<u8>, Option<TransactionType>, Option<String>)> {
-        use crate::types::TransactionNetwork;
 
         // Check if it's a reward or withdraw round
         let is_reward_round = {
@@ -3737,6 +3761,24 @@ impl SigningNode {
             tx_bytes.len(),
             transaction_type
         );
+        
+        // Log first and last bytes of tx_bytes for debugging digest mismatches
+        if !tx_bytes.is_empty() {
+            let first_bytes = if tx_bytes.len() >= 32 {
+                hex::encode(&tx_bytes[0..32.min(tx_bytes.len())])
+            } else {
+                hex::encode(&tx_bytes)
+            };
+            let last_bytes = if tx_bytes.len() >= 32 {
+                hex::encode(&tx_bytes[tx_bytes.len().saturating_sub(32)..])
+            } else {
+                hex::encode(&tx_bytes)
+            };
+            info!(
+                "🔍 [SIGNING] Round {} tx_bytes preview: first 32 bytes: 0x{}, last 32 bytes: 0x{}",
+                round, first_bytes, last_bytes
+            );
+        }
 
         Ok((digest, transaction_type, user_eth_address))
     }
@@ -3870,7 +3912,10 @@ impl SigningNode {
             }
             Some(crate::types::TransactionType::RewardTxn)
             | Some(crate::types::TransactionType::WithdrawLiquidity) => {
-                // Claim/Withdraw → per-node-network-share pubkey
+                // IMPORTANT: RewardTxn and WithdrawLiquidity must be handled identically
+                // Both use per-node-network-share pubkey for verification (partial signature verification)
+                // Both use network group key for signing (via network DKG secret share)
+                // This ensures threshold signature shares from each node verify against their individual partial public keys
                 dkg_storage
                     .get_network_share_pubkey(peer_id)
                     .await?

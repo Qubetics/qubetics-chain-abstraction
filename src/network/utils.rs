@@ -511,6 +511,10 @@ impl MpcNetworkLayer {
                         )
                         .into();
                     // IMPORTANT:
+                    // RewardTxn and WithdrawLiquidity must be handled identically:
+                    // 1. Both use network's DKG secret share for signing (network group key)
+                    // 2. Both verify signatures against individual partial public keys (network share pubkeys)
+                    // 3. Both go through the same multi-node signature collection and verification process
                     // Do not rely on `SigningNode.key_store.private_key` being pre-populated.
                     // Instead, explicitly pass the network's DKG secret share as an override.
                     let network_signing_share = match &self.dkg_node {
@@ -560,6 +564,10 @@ impl MpcNetworkLayer {
                         )
                         .into();
                     // IMPORTANT:
+                    // RewardTxn and WithdrawLiquidity must be handled identically:
+                    // 1. Both use network's DKG secret share for signing (network group key)
+                    // 2. Both verify signatures against individual partial public keys (network share pubkeys)
+                    // 3. Both go through the same multi-node signature collection and verification process
                     // Do not rely on `SigningNode.key_store.private_key` being pre-populated.
                     // Instead, explicitly pass the network's DKG secret share as an override.
                     let network_signing_share = match &self.dkg_node {

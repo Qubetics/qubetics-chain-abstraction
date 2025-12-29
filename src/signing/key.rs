@@ -191,7 +191,9 @@ impl KeyStore {
                 }
             }
             Some(TransactionType::RewardTxn) => {
-                // Reward transactions use the DKG group public key (network's key)
+                // IMPORTANT: RewardTxn and WithdrawLiquidity must use the same network group public key
+                // Both transactions are signed by the network group key (via network DKG secret share)
+                // and verified against individual partial public keys (network share pubkeys)
                 if let Some(group_key) = self.group_public_key {
                     let affine_point = group_key.to_affine();
                     let encoded_point = EncodedPoint::from(affine_point);
@@ -206,6 +208,9 @@ impl KeyStore {
                 }
             }
             Some(TransactionType::WithdrawLiquidity) => {
+                // IMPORTANT: RewardTxn and WithdrawLiquidity must use the same network group public key
+                // Both transactions are signed by the network group key (via network DKG secret share)
+                // and verified against individual partial public keys (network share pubkeys)
                 if let Some(group_key) = self.group_public_key {
                     let affine_point = group_key.to_affine();
                     let encoded_point = EncodedPoint::from(affine_point);
