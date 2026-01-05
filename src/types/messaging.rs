@@ -292,4 +292,22 @@ pub enum GossipsubMessage {
         /// Node that is acknowledging
         node_id: PeerId,
     },
+    /// Maps sequencer request_id to blockchain tx_hash after broadcasting
+    TransactionBroadcast {
+        /// Sequencer request ID (None for non-sequencer transactions)
+        sequencer_request_id: Option<String>,
+        /// Blockchain transaction hash
+        blockchain_tx_hash: String,
+        /// Chain ID where the transaction was broadcasted
+        chain_id: u64,
+    },
+    /// Notification that a transaction failed (signature verification, broadcasting, etc.)
+    TransactionFailure {
+        /// Sequencer request ID
+        sequencer_request_id: String,
+        /// Blockchain transaction hash (or "N/A" if failed before broadcasting)
+        blockchain_tx_hash: String,
+        /// Error message
+        error: String,
+    },
 }
