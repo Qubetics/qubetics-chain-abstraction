@@ -41,6 +41,8 @@ use super::{
     },
 };
 
+const MIN_BTC_INTENT_SATS: u128 = 550;
+
 pub(crate) async fn handle_deposit_intent(
     intent: DepositIntent,
     user_eth_address: Option<String>,
@@ -52,19 +54,26 @@ pub(crate) async fn handle_deposit_intent(
     if let Some(addr) = &user_eth_address {
         info!("📝 HTTP: User eth address provided for signing: {}", addr);
     }
+    // Parse string amount into u128 for internal processing
+    let parsed_amount = intent.amount.parse::<u128>().map_err(|_| {
+        warp::reject::custom(RpcError::InvalidRequest(format!(
+            "Invalid deposit amount: {}",
+            intent.amount
+        )))
+    })?;
+
+    // Helper closure to map chain names to the price symbols returned by
+    // the price API. Any non-Bitcoin chain is treated as TICS (our EVM token).
+    let chain_to_symbol = |chain: &str| match chain.to_lowercase().as_str() {
+        "btc" | "bitcoin" => "BTC",
+        _ => "TICS",
+    };
+
     let required_amount_u128 = if matches!(transaction_type, TransactionType::NetworkToTarget) {
-        // Fetch current prices for BTC and TICS to determine the
-        // value equivalence between source and target chains.
+        // For NetworkToTarget transactions, perform price conversion
         let prices = fetch_crypto_prices()
             .await
             .map_err(|_| warp::reject::custom(TransactionError::NetworkError))?;
-
-        // Helper closure to map chain names to the price symbols returned by
-        // the price API. Any non-Bitcoin chain is treated as TICS (our EVM token).
-        let chain_to_symbol = |chain: &str| match chain.to_lowercase().as_str() {
-            "btc" | "bitcoin" => "BTC",
-            _ => "TICS",
-        };
 
         let source_symbol = chain_to_symbol(&intent.source_chain);
         let target_symbol = chain_to_symbol(&intent.target_chain);
@@ -76,25 +85,96 @@ pub(crate) async fn handle_deposit_intent(
             .get(target_symbol)
             .ok_or_else(|| warp::reject::custom(TransactionError::NetworkError))?;
 
-        info!("💱 Conversion: computed source->target equivalence using current prices");
+        info!("💱 [NetworkToTarget] Conversion: computed source->target equivalence using current prices");
         info!(
-            "💱 Prices - source: {}={}, target: {}={}",
+            "💱 [NetworkToTarget] Prices - source: {}={}, target: {}={}",
             source_symbol, source_price, target_symbol, target_price
         );
 
         let target_smallest = convert_src_smallest_to_dst_smallest(
-            intent.amount,
+            parsed_amount,
             &intent.source_chain,
             &intent.target_chain,
             &prices,
         )?;
 
-        info!("💱 Conversion: source amount converted to target smallest units");
+        info!("💱 [NetworkToTarget] Conversion: source amount converted to target smallest units");
         target_smallest
     } else {
-        // For UserToVault/VaultToNetwork and other types, add a 5% buffer
-        let base_amount = intent.amount + (intent.amount / 20);
-        info!("💱 No price conversion needed; using adjusted intent amount with 5% buffer");
+        // Check if this is a TICS -> BTC conversion - validate immediately when RPC is hit
+        // This applies to ALL transaction types (UserToVault, NetworkToTarget, VaultToNetwork)
+        let is_tics_to_btc = (intent.source_chain.eq_ignore_ascii_case("tics")
+            || intent.source_chain.eq_ignore_ascii_case("qubetics"))
+            && (intent.target_chain.eq_ignore_ascii_case("btc")
+                || intent.target_chain.eq_ignore_ascii_case("bitcoin"));
+
+        // For TICS -> BTC conversions, perform conversion and validation immediately
+        // This validation runs for ALL transaction types before any other processing
+        if is_tics_to_btc {
+            info!(
+            "💱 [VALIDATION] TICS->BTC conversion detected (transaction_type: {:?}), validating minimum amount...",
+            transaction_type
+        );
+
+            // Fetch current prices for BTC and TICS
+            let prices = fetch_crypto_prices()
+                .await
+                .map_err(|_| warp::reject::custom(TransactionError::NetworkError))?;
+
+            // Helper closure to map chain names to the price symbols
+            let chain_to_symbol = |chain: &str| match chain.to_lowercase().as_str() {
+                "btc" | "bitcoin" => "BTC",
+                _ => "TICS",
+            };
+
+            let source_symbol = chain_to_symbol(&intent.source_chain);
+            let target_symbol = chain_to_symbol(&intent.target_chain);
+
+            let source_price = *prices
+                .get(source_symbol)
+                .ok_or_else(|| warp::reject::custom(TransactionError::NetworkError))?;
+            let target_price = *prices
+                .get(target_symbol)
+                .ok_or_else(|| warp::reject::custom(TransactionError::NetworkError))?;
+
+            info!(
+                "💱 [VALIDATION] Prices - source: {}={}, target: {}={}",
+                source_symbol, source_price, target_symbol, target_price
+            );
+
+            // Convert TICS amount to BTC satoshis
+            let target_smallest = convert_src_smallest_to_dst_smallest(
+                parsed_amount,
+                &intent.source_chain,
+                &intent.target_chain,
+                &prices,
+            )?;
+
+            info!(
+                "💱 [VALIDATION] Converted {} TICS to {} satoshis",
+                parsed_amount, target_smallest
+            );
+
+            // Reject TICS -> BTC conversions that fall below the minimum BTC amount
+            // This applies to UserToVault, NetworkToTarget, and VaultToNetwork transactions
+            if target_smallest < MIN_BTC_INTENT_SATS {
+                let msg = format!(
+                "TICS to BTC conversion failed: converted amount {} satoshis is below the minimum required {} satoshis (original TICS amount: {}) [transaction_type: {:?}]",
+                target_smallest, MIN_BTC_INTENT_SATS, parsed_amount, transaction_type
+            );
+                warn!("❌ [INTENT] {}", msg);
+                return Err(warp::reject::custom(RpcError::InvalidRequest(msg)));
+            }
+
+            info!(
+            "✅ [VALIDATION] TICS->BTC conversion validated for {:?}: {} satoshis (minimum: {} satoshis)",
+            transaction_type, target_smallest, MIN_BTC_INTENT_SATS
+        );
+        }
+
+        // For VaultToNetwork and other types, use the intent amount plus 10%
+        let base_amount = parsed_amount + (parsed_amount / 10);
+        info!("💱 No price conversion needed; using adjusted intent amount");
         base_amount
     };
 
@@ -855,7 +935,7 @@ pub(crate) async fn handle_user_mpc_deposit(
             status: "error".to_string(),
             signer_address: "".to_string(),
             is_registered: false,
-            amount: 0,
+            amount: "0".to_string(),
             user_to_network_tx_id: tx_mapping
                 .as_ref()
                 .and_then(|tx| tx.user_to_network_tx_id.clone()),
@@ -904,7 +984,7 @@ pub(crate) async fn handle_user_mpc_deposit(
                                 status: "error".to_string(),
                                 signer_address: "".to_string(),
                                 is_registered: false,
-                                amount: 0,
+                                amount: "0".to_string(),
                                 user_to_network_tx_id: None,
                                 network_to_target_tx_id: None,
                                 vault_to_network_tx_id: None,
@@ -933,7 +1013,7 @@ pub(crate) async fn handle_user_mpc_deposit(
                                         status: "error".to_string(),
                                         signer_address: "".to_string(),
                                         is_registered: false,
-                                        amount: 0,
+                                        amount: "0".to_string(),
                                         user_to_network_tx_id: None,
                                         network_to_target_tx_id: None,
                                         vault_to_network_tx_id: None,
@@ -953,7 +1033,7 @@ pub(crate) async fn handle_user_mpc_deposit(
                                 status: "error".to_string(),
                                 signer_address: signer.clone(),
                                 is_registered: false,
-                                amount: 0,
+                                amount: "0".to_string(),
                                 user_to_network_tx_id: None,
                                 network_to_target_tx_id: None,
                                 vault_to_network_tx_id: None,
@@ -977,7 +1057,7 @@ pub(crate) async fn handle_user_mpc_deposit(
                             status: "error".to_string(),
                             signer_address: signer.clone(),
                             is_registered: true,
-                            amount: 0,
+                            amount: "0".to_string(),
                             user_to_network_tx_id: None,
                             network_to_target_tx_id: None,
                             vault_to_network_tx_id: None,
@@ -995,7 +1075,7 @@ pub(crate) async fn handle_user_mpc_deposit(
                         status: "error".to_string(),
                         signer_address: "".to_string(),
                         is_registered: false,
-                        amount: 0,
+                        amount: "0".to_string(),
                         user_to_network_tx_id: None,
                         network_to_target_tx_id: None,
                         vault_to_network_tx_id: None,
@@ -2806,16 +2886,16 @@ pub(crate) async fn handle_log_partial_pubkeys(
     );
 
     // Get network share pubkey
-    let network_share_pubkey = match dkg_storage
-        .get_network_share_pubkey(&request.peer_id)
-        .await
-    {
+    let network_share_pubkey = match dkg_storage.get_network_share_pubkey(&request.peer_id).await {
         Ok(Some(pubkey)) => {
             let pubkey_bytes = pubkey.to_affine().to_encoded_point(true);
             Some(hex::encode(pubkey_bytes.as_bytes()))
         }
         Ok(None) => {
-            warn!("⚠️ [RPC] Network share pubkey not found for peer: {}", request.peer_id);
+            warn!(
+                "⚠️ [RPC] Network share pubkey not found for peer: {}",
+                request.peer_id
+            );
             None
         }
         Err(e) => {
@@ -2825,16 +2905,16 @@ pub(crate) async fn handle_log_partial_pubkeys(
     };
 
     // Get vault share pubkey
-    let vault_share_pubkey = match dkg_storage
-        .get_vault_share_pubkey(&request.peer_id)
-        .await
-    {
+    let vault_share_pubkey = match dkg_storage.get_vault_share_pubkey(&request.peer_id).await {
         Ok(Some(pubkey)) => {
             let pubkey_bytes = pubkey.to_affine().to_encoded_point(true);
             Some(hex::encode(pubkey_bytes.as_bytes()))
         }
         Ok(None) => {
-            warn!("⚠️ [RPC] Vault share pubkey not found for peer: {}", request.peer_id);
+            warn!(
+                "⚠️ [RPC] Vault share pubkey not found for peer: {}",
+                request.peer_id
+            );
             None
         }
         Err(e) => {
@@ -2848,18 +2928,16 @@ pub(crate) async fn handle_log_partial_pubkeys(
         .get_all_user_share_pubkeys_for_peer(&request.peer_id)
         .await
     {
-        Ok(user_pubkeys) => {
-            user_pubkeys
-                .into_iter()
-                .map(|(user_addr, pubkey)| {
-                    let pubkey_bytes = pubkey.to_affine().to_encoded_point(true);
-                    crate::types::rpc_server::UserSharePubkeyInfo {
-                        user_eth_address: user_addr,
-                        share_pubkey: hex::encode(pubkey_bytes.as_bytes()),
-                    }
-                })
-                .collect()
-        }
+        Ok(user_pubkeys) => user_pubkeys
+            .into_iter()
+            .map(|(user_addr, pubkey)| {
+                let pubkey_bytes = pubkey.to_affine().to_encoded_point(true);
+                crate::types::rpc_server::UserSharePubkeyInfo {
+                    user_eth_address: user_addr,
+                    share_pubkey: hex::encode(pubkey_bytes.as_bytes()),
+                }
+            })
+            .collect(),
         Err(e) => {
             error!("❌ [RPC] Failed to get user share pubkeys: {}", e);
             Vec::new()
@@ -2867,14 +2945,20 @@ pub(crate) async fn handle_log_partial_pubkeys(
     };
 
     // Log all the information
-    info!("🔑 [RPC] === Partial Pubkeys for Peer: {} ===", request.peer_id);
+    info!(
+        "🔑 [RPC] === Partial Pubkeys for Peer: {} ===",
+        request.peer_id
+    );
     if let Some(ref network_pubkey) = network_share_pubkey {
         info!("  📍 Network Share Pubkey: 0x{}", network_pubkey);
     }
     if let Some(ref vault_pubkey) = vault_share_pubkey {
         info!("  📍 Vault Share Pubkey: 0x{}", vault_pubkey);
     }
-    info!("  📍 User Share Pubkeys ({} users):", user_share_pubkeys.len());
+    info!(
+        "  📍 User Share Pubkeys ({} users):",
+        user_share_pubkeys.len()
+    );
     for user_info in &user_share_pubkeys {
         info!(
             "     User: {} -> Pubkey: 0x{}",
@@ -2885,18 +2969,20 @@ pub(crate) async fn handle_log_partial_pubkeys(
 
     let peer_id = request.peer_id.clone();
     let user_count = user_share_pubkeys.len();
-    Ok(warp::reply::json(&crate::types::rpc_server::LogPartialPubkeysResponse {
-        status: "success".to_string(),
-        peer_id: peer_id.clone(),
-        network_share_pubkey,
-        vault_share_pubkey,
-        user_share_pubkeys: user_share_pubkeys.clone(),
-        message: format!(
-            "Logged partial pubkeys for peer {} ({} user share pubkeys)",
-            peer_id, user_count
-        ),
-        error_message: None,
-    }))
+    Ok(warp::reply::json(
+        &crate::types::rpc_server::LogPartialPubkeysResponse {
+            status: "success".to_string(),
+            peer_id: peer_id.clone(),
+            network_share_pubkey,
+            vault_share_pubkey,
+            user_share_pubkeys: user_share_pubkeys.clone(),
+            message: format!(
+                "Logged partial pubkeys for peer {} ({} user share pubkeys)",
+                peer_id, user_count
+            ),
+            error_message: None,
+        },
+    ))
 }
 
 /// Get network and vault addresses (TICS/ETH and BTC)
@@ -2961,12 +3047,13 @@ pub(crate) async fn handle_get_network_addresses(
         );
     }
 
-    Ok(warp::reply::json(&crate::types::rpc_server::GetNetworkAddressesResponse {
-        status: "success".to_string(),
-        network_addresses,
-        vault_addresses,
-        message: "Retrieved network addresses (same across all nodes)".to_string(),
-        error_message: None,
-    }))
+    Ok(warp::reply::json(
+        &crate::types::rpc_server::GetNetworkAddressesResponse {
+            status: "success".to_string(),
+            network_addresses,
+            vault_addresses,
+            message: "Retrieved network addresses (same across all nodes)".to_string(),
+            error_message: None,
+        },
+    ))
 }
-

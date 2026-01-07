@@ -202,6 +202,18 @@ impl MpcNetworkLayer {
                                 };
 
                                 if let Some(vault_group_key) = vault_group_key {
+                                    // Parse intent amount (stored as string) into u128
+                                    let intent_amount = match intent.amount.parse::<u128>() {
+                                        Ok(v) => v,
+                                        Err(e) => {
+                                            warn!(
+                                                "❌ [CONTRACT] Invalid intent amount '{}' for {}: {}. Skipping contract call.",
+                                                intent.amount, intent_hash, e
+                                            );
+                                            return Ok(());
+                                        }
+                                    };
+
                                     if let Err(e) = self
                                         .execute_contract_call_for_transaction(
                                             &intent,
@@ -209,7 +221,7 @@ impl MpcNetworkLayer {
                                             tx_type_enum,
                                             transaction_id,
                                             Some(vault_group_key),
-                                            intent.amount,
+                                            intent_amount,
                                         )
                                         .await
                                     {

@@ -3023,8 +3023,10 @@ impl MpcNetworkLayer {
                                 };
 
                                 info!("🔄 [NETWORK-REFUND] Creating refund transaction from network to user's source address");
-                                info!("💰 [NETWORK-REFUND] Refunding {} from network to source address: {} on {}", 
-                                      refund_amount, intent.source_address, intent.source_chain);
+                                info!(
+                                    "💰 [NETWORK-REFUND] Refunding {} from network to source address: {} on {}",
+                                    intent.amount, intent.source_address, intent.source_chain
+                                );
 
                                 // Modify the intent to create a refund transaction:
                                 // - From: Network address (DKG group key)
@@ -3047,6 +3049,18 @@ impl MpcNetworkLayer {
                                 // Create a refund transaction from network to user's source address
                                 // Use NetworkToTarget type since we're sending from network address to a target
                                 let refund_intent_id = format!("refund-{intent_hash}");
+                                // Parse amount for refund ChannelMessage
+                                let refund_amount = match intent.amount.parse::<u128>() {
+                                    Ok(v) => v,
+                                    Err(e) => {
+                                        warn!(
+                                            "❌ [NETWORK-REFUND] Invalid intent amount '{}' for refund {}: {}. Skipping refund.",
+                                            intent.amount, intent_hash, e
+                                        );
+                                        return Ok(());
+                                    }
+                                };
+
                                 let refund_message = ChannelMessage::DepositIntent {
                                     intent: intent.clone(),
                                     intent_id: refund_intent_id,

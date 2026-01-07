@@ -1,5 +1,6 @@
 mod errors;
 mod handlers;
+mod rate_limiter;
 mod server;
 mod service;
 mod utils;
