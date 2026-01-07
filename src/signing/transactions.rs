@@ -19,7 +19,13 @@ impl SigningNode {
         let mut pending = self.pending.reward_pending_transactions_btc.write().await;
         pending.insert(
             round,
-            (chain_tx, tx_bytes, Some(solver_address), Some(TransactionType::RewardTxn), Some(extras)),
+            (
+                chain_tx,
+                tx_bytes,
+                Some(solver_address),
+                Some(TransactionType::RewardTxn),
+                Some(extras),
+            ),
         );
         info!(
             "🎁 [SIGNING] Stored BTC reward transaction for round {} with solver address",
@@ -196,12 +202,8 @@ impl SigningNode {
                 // For UserToVault, NetworkToTarget, and VaultToNetwork, store and broadcast
                 let transaction_type_str = match transaction_type {
                     Some(crate::types::TransactionType::UserToVault) => "user_to_vault",
-                    Some(crate::types::TransactionType::NetworkToTarget) => {
-                        "network_to_target"
-                    }
-                    Some(crate::types::TransactionType::VaultToNetwork) => {
-                        "vault_to_network"
-                    }
+                    Some(crate::types::TransactionType::NetworkToTarget) => "network_to_target",
+                    Some(crate::types::TransactionType::VaultToNetwork) => "vault_to_network",
                     Some(crate::types::TransactionType::WithdrawLiquidity) => {
                         // Withdraw liquidity transactions should never have an intent_hash
                         error!(
@@ -332,7 +334,9 @@ impl SigningNode {
                 }
             }
             (_, None) => {
-                info!("ℹ️ [NETWORK] No user registry available, skipping transaction error storage");
+                info!(
+                    "ℹ️ [NETWORK] No user registry available, skipping transaction error storage"
+                );
             }
         }
     }
@@ -353,6 +357,9 @@ impl SigningNode {
             .await
             .ok_or_else(|| anyhow!("Intent not found: {}", intent_hash))?;
 
+        // Parse intent amount from string
+        let intent_amount = intent.amount.parse::<u128>().unwrap_or(0);
+
         // Calculate refund amount: if UserToVault transaction exists, include 5% extra
         let refund_amount = if let Some(tx_ids) = user_intent_manager
             .get_intent_transaction_ids(intent_hash)
@@ -360,27 +367,27 @@ impl SigningNode {
         {
             if tx_ids.user_to_network_tx_id.is_some() {
                 // UserToVault transaction exists, refund original amount + 5% extra
-                let full_amount = intent.amount + (intent.amount / 20);
+                let full_amount = intent_amount + (intent_amount / 20);
                 info!(
                     "💰 [SIGNING-REFUND] UserToVault transaction found, refunding full amount: {} (original: {} + 5% extra: {})",
-                    full_amount, intent.amount, intent.amount / 20
+                    full_amount, intent_amount, intent_amount / 20
                 );
                 full_amount
             } else {
                 // No UserToVault transaction, refund original amount
                 info!(
                     "💰 [SIGNING-REFUND] No UserToVault transaction found, refunding original amount: {}",
-                    intent.amount
+                    intent_amount
                 );
-                intent.amount
+                intent_amount
             }
         } else {
             // Couldn't check transaction IDs, refund original amount
             warn!(
                 "⚠️ [SIGNING-REFUND] Could not check transaction IDs, refunding original amount: {}",
-                intent.amount
+                intent_amount
             );
-            intent.amount
+            intent_amount
         };
 
         info!(
@@ -393,7 +400,10 @@ impl SigningNode {
             intent.target_chain
         );
 
-        if let Err(e) = self.broadcast_refund_initiation(intent_hash, &intent, refund_amount).await {
+        if let Err(e) = self
+            .broadcast_refund_initiation(intent_hash, &intent, refund_amount)
+            .await
+        {
             warn!(
                 "⚠️ [SIGNING-REFUND] Failed to broadcast refund initiation: {}",
                 e
@@ -439,7 +449,10 @@ impl SigningNode {
                 intent_hash
             );
             if let Err(e) = self.initiate_refund_transaction(intent_hash).await {
-                error!("❌ [SIGNING-REFUND] Failed to initiate refund transaction: {}", e);
+                error!(
+                    "❌ [SIGNING-REFUND] Failed to initiate refund transaction: {}",
+                    e
+                );
             }
         }
     }

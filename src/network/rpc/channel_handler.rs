@@ -3368,33 +3368,36 @@ impl MpcNetworkLayer {
         intent_hash: &str,
         intent: &crate::types::intent::DepositIntent,
     ) -> u128 {
+        // Parse intent amount from string
+        let intent_amount = intent.amount.parse::<u128>().unwrap_or(0);
+        
         if let Some(tx_ids) = user_intent_manager
             .get_intent_transaction_ids(intent_hash)
             .await
         {
             if tx_ids.user_to_network_tx_id.is_some() {
                 // UserToVault transaction exists, refund original amount + 5% extra
-                let full_amount = intent.amount + (intent.amount / 20);
+                let full_amount = intent_amount + (intent_amount / 20);
                 info!(
                     "💰 [NETWORK-REFUND] UserToVault transaction found, refunding full amount: {} (original: {} + 5% extra: {})",
-                    full_amount, intent.amount, intent.amount / 20
+                    full_amount, intent_amount, intent_amount / 20
                 );
                 full_amount
             } else {
                 // No UserToVault transaction, refund original amount
                 info!(
                     "💰 [NETWORK-REFUND] No UserToVault transaction found, refunding original amount: {}",
-                    intent.amount
+                    intent_amount
                 );
-                intent.amount
+                intent_amount
             }
         } else {
             // Couldn't check transaction IDs, refund original amount
             warn!(
                 "⚠️ [NETWORK-REFUND] Could not check transaction IDs, refunding original amount: {}",
-                intent.amount
+                intent_amount
             );
-            intent.amount
+            intent_amount
         }
     }
 }
