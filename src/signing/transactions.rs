@@ -353,17 +353,17 @@ impl SigningNode {
             .await
             .ok_or_else(|| anyhow!("Intent not found: {}", intent_hash))?;
 
-        // Calculate refund amount: if UserToVault transaction exists, include 10% extra
+        // Calculate refund amount: if UserToVault transaction exists, include 5% extra
         let refund_amount = if let Some(tx_ids) = user_intent_manager
             .get_intent_transaction_ids(intent_hash)
             .await
         {
             if tx_ids.user_to_network_tx_id.is_some() {
-                // UserToVault transaction exists, refund original amount + 10% extra
-                let full_amount = intent.amount + (intent.amount / 10);
+                // UserToVault transaction exists, refund original amount + 5% extra
+                let full_amount = intent.amount + (intent.amount / 20);
                 info!(
-                    "💰 [SIGNING-REFUND] UserToVault transaction found, refunding full amount: {} (original: {} + 10% extra: {})",
-                    full_amount, intent.amount, intent.amount / 10
+                    "💰 [SIGNING-REFUND] UserToVault transaction found, refunding full amount: {} (original: {} + 5% extra: {})",
+                    full_amount, intent.amount, intent.amount / 20
                 );
                 full_amount
             } else {

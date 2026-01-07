@@ -3002,7 +3002,7 @@ impl MpcNetworkLayer {
                                     .get("refund_amount")
                                     .and_then(|v| v.as_str())
                                 {
-                                    // Use refund amount from message (already includes 10% extra if applicable)
+                                    // Use refund amount from message (already includes 5% extra if applicable)
                                     if let Ok(amount) = refund_amount_str.parse::<u128>() {
                                         info!(
                                             "💰 [NETWORK-REFUND] Using refund amount from message: {}",
@@ -3347,7 +3347,7 @@ impl MpcNetworkLayer {
         Ok(())
     }
 
-    /// Calculate refund amount: if UserToVault transaction exists, include 10% extra
+    /// Calculate refund amount: if UserToVault transaction exists, include 5% extra
     async fn calculate_refund_amount(
         &self,
         user_intent_manager: &crate::user_intent_manager::UserIntentManager,
@@ -3359,11 +3359,11 @@ impl MpcNetworkLayer {
             .await
         {
             if tx_ids.user_to_network_tx_id.is_some() {
-                // UserToVault transaction exists, refund original amount + 10% extra
-                let full_amount = intent.amount + (intent.amount / 10);
+                // UserToVault transaction exists, refund original amount + 5% extra
+                let full_amount = intent.amount + (intent.amount / 20);
                 info!(
-                    "💰 [NETWORK-REFUND] UserToVault transaction found, refunding full amount: {} (original: {} + 10% extra: {})",
-                    full_amount, intent.amount, intent.amount / 10
+                    "💰 [NETWORK-REFUND] UserToVault transaction found, refunding full amount: {} (original: {} + 5% extra: {})",
+                    full_amount, intent.amount, intent.amount / 20
                 );
                 full_amount
             } else {

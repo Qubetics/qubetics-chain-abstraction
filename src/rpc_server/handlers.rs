@@ -92,9 +92,9 @@ pub(crate) async fn handle_deposit_intent(
         info!("💱 Conversion: source amount converted to target smallest units");
         target_smallest
     } else {
-        // For VaultToNetwork and other types, use the intent amount plus 10%
-        let base_amount = intent.amount + (intent.amount / 10);
-        info!("💱 No price conversion needed; using adjusted intent amount");
+        // For UserToVault/VaultToNetwork and other types, add a 5% buffer
+        let base_amount = intent.amount + (intent.amount / 20);
+        info!("💱 No price conversion needed; using adjusted intent amount with 5% buffer");
         base_amount
     };
 

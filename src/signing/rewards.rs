@@ -333,7 +333,8 @@ impl SigningNode {
 
         let source_chain = intent.source_chain.to_lowercase();
         let intent_amount = EthereumU256::from(intent.amount);
-        let base_reward = intent_amount / EthereumU256::from(10u8);
+        // Reward pool is 2.5% of the intent amount
+        let base_reward = intent_amount / EthereumU256::from(40u8);
 
         let total_tics = user_intent_manager
             .get_total_liquidity_tics_u256()
