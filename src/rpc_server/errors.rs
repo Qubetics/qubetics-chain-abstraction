@@ -21,6 +21,7 @@ pub enum RpcError {
     InternalError(String),
     SerializationError(String),
     Unauthorized(String),
+    RateLimitExceeded(String),
 }
 
 impl RpcError {
@@ -96,6 +97,12 @@ impl RpcError {
                 status: "error".to_string(),
                 error_code: "UNAUTHORIZED".to_string(),
                 message: "Unauthorized access".to_string(),
+                details: Some(msg.clone()),
+            },
+            RpcError::RateLimitExceeded(msg) => ErrorResponse {
+                status: "error".to_string(),
+                error_code: "RATE_LIMIT_EXCEEDED".to_string(),
+                message: "Rate limit exceeded".to_string(),
                 details: Some(msg.clone()),
             },
         }

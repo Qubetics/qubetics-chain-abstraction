@@ -49,7 +49,7 @@ impl MpcNetworkLayer {
 
         info!("Local Peer ID: {}", self.local_peer_id);
 
-        loop {
+        loop {                                        
             tokio::select! {
                 event = swarm.select_next_some() => {
                     info!("[SWARM] some");

@@ -79,7 +79,8 @@ pub struct UserMpcDepositVerifyResponse {
     pub status: String,
     pub signer_address: String,
     pub is_registered: bool,
-    pub amount: u128,
+    /// Deposit amount as a decimal string (matches DepositIntent.amount)
+    pub amount: String,
     pub user_to_network_tx_id: Option<String>,
     pub network_to_target_tx_id: Option<String>,
     pub vault_to_network_tx_id: Option<String>,
