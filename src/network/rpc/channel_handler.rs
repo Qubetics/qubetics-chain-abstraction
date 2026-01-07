@@ -355,7 +355,11 @@ impl MpcNetworkLayer {
                     "❌ [{}] Failed to create BTC payout transaction: {}",
                     context, e
                 );
-                return Ok(false);
+                // Return error to propagate insufficient UTXO and other transaction creation errors
+                return Err(anyhow::anyhow!(
+                    "Failed to create BTC transaction: {}",
+                    e
+                ));
             }
         };
 
