@@ -2997,6 +2997,31 @@ impl MpcNetworkLayer {
                             if let Some(mut intent) =
                                 user_intent_manager.get_intent(&intent_hash).await
                             {
+                                // Calculate refund amount: prefer refund_amount from message, otherwise calculate it
+                                let refund_amount = if let Some(refund_amount_str) = refund_data
+                                    .get("refund_amount")
+                                    .and_then(|v| v.as_str())
+                                {
+                                    // Use refund amount from message (already includes 5% extra if applicable)
+                                    if let Ok(amount) = refund_amount_str.parse::<u128>() {
+                                        info!(
+                                            "💰 [NETWORK-REFUND] Using refund amount from message: {}",
+                                            amount
+                                        );
+                                        amount
+                                    } else {
+                                        warn!(
+                                            "⚠️ [NETWORK-REFUND] Failed to parse refund_amount from message, calculating..."
+                                        );
+                                        // Fall back to calculation
+                                        self.calculate_refund_amount(user_intent_manager, &intent_hash, &intent).await
+                                    }
+                                } else {
+                                    // No refund_amount in message, calculate it
+                                    info!("💰 [NETWORK-REFUND] No refund_amount in message, calculating...");
+                                    self.calculate_refund_amount(user_intent_manager, &intent_hash, &intent).await
+                                };
+
                                 info!("🔄 [NETWORK-REFUND] Creating refund transaction from network to user's source address");
                                 info!(
                                     "💰 [NETWORK-REFUND] Refunding {} from network to source address: {} on {}",
@@ -3334,5 +3359,42 @@ impl MpcNetworkLayer {
             }
         }
         Ok(())
+    }
+
+    /// Calculate refund amount: if UserToVault transaction exists, include 5% extra
+    async fn calculate_refund_amount(
+        &self,
+        user_intent_manager: &crate::user_intent_manager::UserIntentManager,
+        intent_hash: &str,
+        intent: &crate::types::intent::DepositIntent,
+    ) -> u128 {
+        if let Some(tx_ids) = user_intent_manager
+            .get_intent_transaction_ids(intent_hash)
+            .await
+        {
+            if tx_ids.user_to_network_tx_id.is_some() {
+                // UserToVault transaction exists, refund original amount + 5% extra
+                let full_amount = intent.amount + (intent.amount / 20);
+                info!(
+                    "💰 [NETWORK-REFUND] UserToVault transaction found, refunding full amount: {} (original: {} + 5% extra: {})",
+                    full_amount, intent.amount, intent.amount / 20
+                );
+                full_amount
+            } else {
+                // No UserToVault transaction, refund original amount
+                info!(
+                    "💰 [NETWORK-REFUND] No UserToVault transaction found, refunding original amount: {}",
+                    intent.amount
+                );
+                intent.amount
+            }
+        } else {
+            // Couldn't check transaction IDs, refund original amount
+            warn!(
+                "⚠️ [NETWORK-REFUND] Could not check transaction IDs, refunding original amount: {}",
+                intent.amount
+            );
+            intent.amount
+        }
     }
 }

@@ -332,17 +332,9 @@ impl SigningNode {
                 .ok_or_else(|| anyhow!("Intent not found: {}", intent_hash))?;
 
         let source_chain = intent.source_chain.to_lowercase();
-        // Parse intent amount (string) into U256
-        let intent_amount_u128 = intent.amount.parse::<u128>().map_err(|e| {
-            anyhow!(
-                "Invalid intent amount '{}' for {}: {}",
-                intent.amount,
-                intent_hash,
-                e
-            )
-        })?;
-        let intent_amount = EthereumU256::from(intent_amount_u128);
-        let base_reward = intent_amount / EthereumU256::from(10u8);
+        let intent_amount = EthereumU256::from(intent.amount);
+        // Reward pool is 2.5% of the intent amount
+        let base_reward = intent_amount / EthereumU256::from(40u8);
 
         let total_tics = user_intent_manager
             .get_total_liquidity_tics_u256()

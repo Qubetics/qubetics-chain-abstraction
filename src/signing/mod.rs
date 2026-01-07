@@ -1979,6 +1979,22 @@ impl SigningNode {
                             "❌ [SIGNING] Failed to aggregate signatures for round {}: {}",
                             round, e
                         );
+                        
+                        // Check if aggregation failed due to insufficient signatures
+                        let error_msg = e.to_string();
+                        if error_msg.contains("Not enough signature shares") {
+                            info!(
+                                "💸 [SIGNING-REFUND] Insufficient valid signatures for aggregation in round {}, triggering refund",
+                                round
+                            );
+                            // Trigger refund for NetworkToTarget transactions
+                            self.check_and_trigger_refund_on_verification_failure(
+                                round,
+                                crate::types::TransactionNetwork::TICS,
+                            )
+                            .await;
+                        }
+                        
                         return Err(e);
                     }
                 }
@@ -2422,7 +2438,25 @@ impl SigningNode {
             }
 
             // aggregate this input
-            let agg = self.aggregate_signatures(sigs, peer_to_dkg_index).await?;
+            let agg = match self.aggregate_signatures(sigs, peer_to_dkg_index).await {
+                Ok(sig) => sig,
+                Err(e) => {
+                    let error_msg = e.to_string();
+                    if error_msg.contains("Not enough signature shares") {
+                        info!(
+                            "💸 [SIGNING-REFUND] Insufficient valid signatures for aggregation in round {} input {}, triggering refund",
+                            round, idx
+                        );
+                        // Trigger refund for NetworkToTarget transactions
+                        self.check_and_trigger_refund_on_verification_failure(
+                            round,
+                            crate::types::TransactionNetwork::BTC,
+                        )
+                        .await;
+                    }
+                    return Err(e);
+                }
+            };
 
             // POST-AGGREGATION VERIFY under the **group** pubkey
             {

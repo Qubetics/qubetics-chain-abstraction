@@ -37,7 +37,18 @@ impl MpcNetworkLayer {
     ) -> Result<()> {
         match transaction_type {
             "user_to_vault" => {
-                // Calculate rewards for UserToVault
+                user_intent_manager
+                    .store_user_to_vault_tx_id(intent_hash, transaction_id, node_id)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{}", e))
+            }
+            "network_to_target" => user_intent_manager
+                .store_network_to_target_tx_id(intent_hash, transaction_id, node_id)
+                .await
+                .map_err(|e| anyhow::anyhow!("{}", e)),
+            "vault_to_network" => 
+            {
+                // Calculate rewards for vault to network
                 if let Some(signing_node) = &self.signing_node {
                     if let Err(e) = signing_node.calculate_reward_per_solver(intent_hash).await {
                         warn!(
@@ -51,19 +62,11 @@ impl MpcNetworkLayer {
                         );
                     }
                 }
-                user_intent_manager
-                    .store_user_to_vault_tx_id(intent_hash, transaction_id, node_id)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("{}", e))
-            }
-            "network_to_target" => user_intent_manager
-                .store_network_to_target_tx_id(intent_hash, transaction_id, node_id)
-                .await
-                .map_err(|e| anyhow::anyhow!("{}", e)),
-            "vault_to_network" => user_intent_manager
+            user_intent_manager
                 .store_vault_to_network_tx_id(intent_hash, transaction_id, node_id)
                 .await
-                .map_err(|e| anyhow::anyhow!("{}", e)),
+                .map_err(|e| anyhow::anyhow!("{}", e))
+            }
             "withdraw_liquidity" | "withdrawLiquidity" => {
                 warn!(
                     "⚠️ [SIGNING] Received withdraw-liquidity transaction ID for intent {} but this flow is not implemented yet",
