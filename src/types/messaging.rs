@@ -113,6 +113,15 @@ pub enum ChannelMessage {
         commitments: Vec<SerializablePoint>,
         retry_count: u8,
     },
+    /// Unicast a critical gossip message via P2P RPC
+    UnicastCritical {
+        target_peer_id: String,
+        topic: String,
+        data: Vec<u8>,
+        message_type: String,
+        message_id: String,
+        retry_count: u8,
+    },
     /// Send ECDSA signature to final node via P2P RPC unicast
     UnicastECDSASignature {
         target_peer_id: String,

@@ -281,6 +281,17 @@ impl RetryManager {
         Ok(false)
     }
 
+    /// Mark a peer as unreachable for all active retries
+    pub async fn mark_peer_unreachable(&self, peer_id: PeerId) {
+        let removed_count = Self::remove_peer_from_retries(&self.active_retries, &peer_id).await;
+        if removed_count > 0 {
+            warn!(
+                "⚠️ [RETRY] Marked peer {} unreachable for {} active retries",
+                peer_id, removed_count
+            );
+        }
+    }
+
     /// Helper: Check if message type is VRF-related (needs aggressive retry)
     fn is_vrf_message(msg_type: &CriticalMessageType) -> bool {
         matches!(
@@ -289,6 +300,35 @@ impl RetryManager {
                 | CriticalMessageType::VaultSequencerVrfSelectedNodes
                 | CriticalMessageType::MainSequencerVrfSelectedNodes
         )
+    }
+
+    async fn remove_peer_from_retries(
+        retries: &Arc<RwLock<HashMap<MessageId, RetryState>>>,
+        peer_id: &PeerId,
+    ) -> usize {
+        let mut retries_guard = retries.write().await;
+        let mut completed_messages = Vec::new();
+        let mut removed_count = 0;
+
+        for (message_id, state) in retries_guard.iter_mut() {
+            if state.expected_nodes.remove(peer_id) {
+                removed_count += 1;
+                warn!(
+                    "⚠️ [RETRY] Removing unreachable peer {} from expected set for {:?}",
+                    peer_id, message_id
+                );
+
+                if state.acknowledged_nodes.len() >= state.expected_nodes.len() {
+                    completed_messages.push(message_id.clone());
+                }
+            }
+        }
+
+        for message_id in completed_messages {
+            retries_guard.remove(&message_id);
+        }
+
+        removed_count
     }
 
     /// Monitor a message and retry if needed
@@ -378,56 +418,66 @@ impl RetryManager {
                 );
 
                 // Update retry state
-                {
+                let retry_count = {
                     let mut retries_guard = retries.write().await;
                     if let Some(state_mut) = retries_guard.get_mut(&message_id) {
                         state_mut.retry_count += 1;
                         state_mut.last_retry_at = Some(Instant::now());
+                        state_mut.retry_count
                     } else {
                         // Message was removed
                         return;
                     }
-                }
-
-                // Retry the broadcast
-                let retry_msg = ChannelMessage::Broadcast {
-                    topic: state.topic.clone(),
-                    data: state.data.clone(),
                 };
 
+                let missing_peers: Vec<PeerId> = state
+                    .expected_nodes
+                    .difference(&state.acknowledged_nodes)
+                    .cloned()
+                    .collect();
+
                 info!(
-                    "🔄 [RETRY] Sending {} retry broadcast for {:?} (attempt {}/{}) to channel",
+                    "🔄 [RETRY] Sending {} retry unicast for {:?} (attempt {}/{}) to {} peers",
                     msg_type_str,
                     message_id,
                     retry_attempt + 1,
-                    max_retries
+                    max_retries,
+                    missing_peers.len()
                 );
 
-                // Production: Use try_send with fallback to avoid blocking
-                // If channel is full, we log and continue - the message will be retried in the next attempt
-                match message_tx.try_send(retry_msg) {
-                    Ok(_) => {
-                        info!(
-                            "✅ [RETRY] {} retry message sent to channel for {:?} (attempt {}/{})",
-                            msg_type_str,
-                            message_id,
-                            retry_attempt + 1,
-                            max_retries
-                        );
-                    }
-                    Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                        warn!("⚠️ [RETRY] Channel full - retry will be attempted in next cycle");
-                        warn!("⚠️ [RETRY] This indicates high message volume - consider increasing channel capacity");
-                        warn!("⚠️ [RETRY] Current load: 11+ parallel users generating burst traffic");
-                        // Channel is full but system is still functional
-                        // The next retry cycle will try again - no message loss
-                        // This is graceful degradation under high load
-                    }
-                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                        error!("❌ [RETRY] CRITICAL: Channel closed - cannot send retries!");
-                        error!("❌ [RETRY] System is shutting down or channel was dropped");
-                        // Channel is closed - no point in continuing
-                        return;
+                let message_type = format!("{:?}", state.message_id.message_type);
+                let message_id_str = state.message_id.unique_id.clone();
+
+                for peer_id in missing_peers {
+                    let retry_msg = ChannelMessage::UnicastCritical {
+                        target_peer_id: peer_id.to_string(),
+                        topic: state.topic.clone(),
+                        data: state.data.clone(),
+                        message_type: message_type.clone(),
+                        message_id: message_id_str.clone(),
+                        retry_count,
+                    };
+
+                    match message_tx.try_send(retry_msg) {
+                        Ok(_) => {
+                            info!(
+                                "✅ [RETRY] Unicast retry sent to {} for {:?} (attempt {}/{})",
+                                peer_id,
+                                message_id,
+                                retry_attempt + 1,
+                                max_retries
+                            );
+                        }
+                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                            warn!("⚠️ [RETRY] Channel full - retry will be attempted in next cycle");
+                            warn!("⚠️ [RETRY] This indicates high message volume - consider increasing channel capacity");
+                            warn!("⚠️ [RETRY] Current load: 11+ parallel users generating burst traffic");
+                        }
+                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                            error!("❌ [RETRY] CRITICAL: Channel closed - cannot send retries!");
+                            error!("❌ [RETRY] System is shutting down or channel was dropped");
+                            return;
+                        }
                     }
                 }
 
@@ -499,9 +549,10 @@ impl RetryManager {
                 );
 
                 // Log which nodes are missing with detailed information
-                let missing_nodes: Vec<_> = state
+                let missing_nodes: Vec<PeerId> = state
                     .expected_nodes
                     .difference(&state.acknowledged_nodes)
+                    .cloned()
                     .collect();
                 error!(
                     "❌ [RETRY] Missing ACKs from {} nodes: {:?}",
@@ -524,6 +575,10 @@ impl RetryManager {
                     acked_nodes.len(),
                     acked_nodes
                 );
+
+                for peer_id in &missing_nodes {
+                    Self::remove_peer_from_retries(&retries, peer_id).await;
+                }
             } else {
                 // All nodes acknowledged - success!
                 info!(
@@ -558,4 +613,3 @@ impl RetryManager {
         })
     }
 }
-

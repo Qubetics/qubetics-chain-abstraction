@@ -1,6 +1,7 @@
 /// RPC Request/Response handlers
 /// This module contains all the RPC request and response handling logic
 use anyhow::Result;
+use libp2p::gossipsub::{IdentTopic, Message};
 use libp2p::PeerId;
 use tracing::{error, info, warn};
 
@@ -148,6 +149,40 @@ impl MpcNetworkLayer {
                 );
                 self.handle_incoming_transaction_data(from_node_id, transaction_data, round)
                     .await
+            }
+            RPCRequest::DeliverCriticalGossip {
+                topic,
+                data,
+                message_type,
+                message_id,
+            } => {
+                info!(
+                    "📨 [CRITICAL-UNICAST] Received critical delivery {}:{} from {}",
+                    message_type, message_id, peer
+                );
+
+                let message = Message {
+                    source: Some(peer),
+                    data,
+                    sequence_number: None,
+                    topic: IdentTopic::new(topic).hash(),
+                };
+
+                match self.handle_gossipsub_message(&message).await {
+                    Ok(()) => RPCResponse::CriticalDeliveryAck {
+                        message_type,
+                        message_id,
+                    },
+                    Err(e) => {
+                        warn!(
+                            "❌ [CRITICAL-UNICAST] Failed to handle delivered message: {}",
+                            e
+                        );
+                        RPCResponse::Error(format!(
+                            "Failed to handle critical message: {e}"
+                        ))
+                    }
+                }
             }
             _ => RPCResponse::Ack,
         }
@@ -1249,6 +1284,76 @@ impl MpcNetworkLayer {
                     "📩 [SIGNING-SECURE] ACK BTC signatures from {} to {} for round {} (success: {})",
                     from_node_id, receiver_node_id, round, success
                 );
+            }
+            RPCResponse::CriticalDeliveryAck {
+                message_type,
+                message_id,
+            } => {
+                info!(
+                    "✅ [CRITICAL-UNICAST] Received ACK for {}:{} from {}",
+                    message_type, message_id, peer
+                );
+
+                let msg_type = match message_type.as_str() {
+                    "TransactionIdBroadcast" => {
+                        crate::network::rpc::retry_manager::CriticalMessageType::TransactionIdBroadcast
+                    }
+                    "VaultSequencerVrfSelectedNodes" => {
+                        crate::network::rpc::retry_manager::CriticalMessageType::VaultSequencerVrfSelectedNodes
+                    }
+                    "MainSequencerVrfSelectedNodes" => {
+                        crate::network::rpc::retry_manager::CriticalMessageType::MainSequencerVrfSelectedNodes
+                    }
+                    "VrfSelectedNodes" => {
+                        crate::network::rpc::retry_manager::CriticalMessageType::VrfSelectedNodes
+                    }
+                    "SequencerSync" => {
+                        crate::network::rpc::retry_manager::CriticalMessageType::SequencerSync
+                    }
+                    "VaultSequencerSelect" | "MainSequencerSelect" => {
+                        info!(
+                            "ℹ️ [CRITICAL-UNICAST] Ignoring ACK for {} - not in retry system",
+                            message_type
+                        );
+                        return Ok(());
+                    }
+                    _ => {
+                        warn!(
+                            "⚠️ [CRITICAL-UNICAST] Unknown message type in ACK: {}",
+                            message_type
+                        );
+                        return Ok(());
+                    }
+                };
+
+                let message_id_obj = crate::network::rpc::retry_manager::MessageId {
+                    message_type: msg_type.clone(),
+                    unique_id: message_id.clone(),
+                };
+
+                if let Some(retry_mgr) = &self.retry_manager {
+                    match retry_mgr
+                        .record_acknowledgment(&message_id_obj, peer)
+                        .await
+                    {
+                        Ok(true) => {
+                            info!(
+                                "🎉 [CRITICAL-UNICAST] ACK recorded - all nodes have acknowledged!"
+                            );
+                        }
+                        Ok(false) => {
+                            info!(
+                                "📝 [CRITICAL-UNICAST] ACK recorded - still waiting for more nodes"
+                            );
+                        }
+                        Err(e) => {
+                            error!(
+                                "❌ [CRITICAL-UNICAST] Failed to record acknowledgment: {}",
+                                e
+                            );
+                        }
+                    }
+                }
             }
             other => {
                 info!("ℹ️  RPCResponse::{:?} from {} (no action)", other, peer);
