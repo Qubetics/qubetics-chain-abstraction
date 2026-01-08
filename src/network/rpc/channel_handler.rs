@@ -517,6 +517,7 @@ impl MpcNetworkLayer {
         reward_btc: Option<u128>,
         reward_tics: Option<u128>,
         transaction_hash: &str,
+        request_id: Option<String>,
     ) -> Result<()> {
         let contract_address = std::env::var("SOLVER_CONTRACT_ADDRESS")
             .unwrap_or_else(|_| "0x0000000000000000000000000000000000000000".to_string());
@@ -672,6 +673,8 @@ impl MpcNetworkLayer {
                         vault_tweaked_share,
                         None,
                         vault_tweaked_share,
+                        request_id, // Pass request_id from sequencer
+                        None, // No original_request available in this context
                     )
                     .await?;
                 info!(
@@ -702,6 +705,7 @@ impl MpcNetworkLayer {
         asset_chain_name: &str,
         amount: u128,
         transaction_hash: &str,
+        request_id: Option<String>,
     ) -> Result<()> {
         if amount == 0 {
             return Ok(());
@@ -839,6 +843,8 @@ impl MpcNetworkLayer {
                         vault_tweaked_share,
                         None,
                         vault_tweaked_share,
+                        request_id, // Pass request_id from sequencer
+                        None, // No original_request available in this context
                     )
                     .await?;
                 info!(
@@ -869,6 +875,7 @@ impl MpcNetworkLayer {
         solver_id: &str,
         asset_chain_name: &str,
         amount: u128,
+        request_id: Option<String>,
     ) -> Result<()> {
         if amount == 0 {
             return Ok(());
@@ -1004,6 +1011,8 @@ impl MpcNetworkLayer {
                         vault_tweaked_share,
                         None,
                         vault_tweaked_share,
+                        request_id, // Pass request_id from sequencer
+                        None, // No original_request available in this context
                     )
                     .await?;
                 info!(
@@ -2701,6 +2710,97 @@ impl MpcNetworkLayer {
                 } else {
                     warn!("❌ [LOCAL] Signing node not available for deposit intent");
                 }
+            }
+            ChannelMessage::TransactionFailure {
+                sequencer_request_id,
+                blockchain_tx_hash,
+                error,
+                original_request,
+            } => {
+                info!(
+                    "📝 [NETWORK] Processing transaction failure locally: request_id={}, error={}",
+                    sequencer_request_id, error
+                );
+
+                // Check if error message indicates transaction is already in mempool
+                // If so, skip failure handling - transaction will succeed later
+                if error.contains("tx already in mempool") {
+                    info!(
+                        "✅ [TX_FAILURE] Transaction {} is already in mempool (error: {}). Will succeed later. Skipping failure handling.",
+                        sequencer_request_id, error
+                    );
+                    // Don't re-insert or broadcast failure - transaction is pending and will succeed
+                    return Ok(());
+                }
+
+                // Process locally first - re-insert to sequencer
+                if let Some(sequencer) = &self.contract_sequencer {
+                    if let Some(request) = original_request.clone() {
+                        // Check if already in queue to avoid duplicates
+                        let already_in_queue = {
+                            let pending = sequencer.pending_requests.read().await;
+                            pending.contains_key(&sequencer_request_id)
+                        };
+
+                        if !already_in_queue {
+                            // Use submit to properly add the request (handles sequence, notifies waiters, etc.)
+                            match sequencer.submit(request).await {
+                                Ok(()) => {
+                                    info!(
+                                        "✅ [TX_FAILURE] [LOCAL] Re-inserted failed transaction locally: {}",
+                                        sequencer_request_id
+                                    );
+                                }
+                                Err(e) => {
+                                    error!(
+                                        "❌ [TX_FAILURE] [LOCAL] Failed to re-insert transaction {} locally: {}",
+                                        sequencer_request_id, e
+                                    );
+                                }
+                            }
+                        } else {
+                            info!(
+                                "ℹ️ [TX_FAILURE] [LOCAL] Transaction {} already in queue, skipping re-insert",
+                                sequencer_request_id
+                            );
+                        }
+                    } else {
+                        // Fallback to reinsert (for backwards compatibility)
+                        match sequencer.reinsert(&sequencer_request_id).await {
+                            Ok(()) => {
+                                info!(
+                                    "✅ [TX_FAILURE] [LOCAL] Re-inserted via cache: {}",
+                                    sequencer_request_id
+                                );
+                            }
+                            Err(e) => {
+                                error!(
+                                    "❌ [TX_FAILURE] [LOCAL] Failed to re-insert transaction {} via cache: {}",
+                                    sequencer_request_id, e
+                                );
+                            }
+                        }
+                    }
+                } else {
+                    warn!(
+                        "⚠️ [TX_FAILURE] [LOCAL] Cannot retry transaction {} - sequencer not available",
+                        sequencer_request_id
+                    );
+                }
+
+                // Then broadcast to other nodes via gossipsub
+                let failure_msg = GossipsubMessage::TransactionFailure {
+                    sequencer_request_id: sequencer_request_id.clone(),
+                    blockchain_tx_hash: blockchain_tx_hash.clone(),
+                    error: error.clone(),
+                    original_request,
+                };
+                let msg_bytes = serde_json::to_vec(&failure_msg)
+                    .map_err(|e| anyhow::anyhow!("Failed to serialize transaction failure: {}", e))?;
+                
+                let topic = gossipsub::IdentTopic::new("transaction-failure");
+                swarm.behaviour_mut().gossipsub.publish(topic, msg_bytes)?;
+                info!("📡 [NETWORK] Broadcasted transaction failure to P2P network");
             }
 
             ChannelMessage::TransactionIdBroadcast {

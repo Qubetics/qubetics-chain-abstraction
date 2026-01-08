@@ -919,22 +919,30 @@ impl MpcNetworkLayer {
             }
         };
 
-        let (from, tx_bytes, intent_hash, transaction_type, msg_round) = match signing_message {
-            SigningMessage::TransactionDataForFinalNode {
-                from,
-                round,
-                tx_bytes,
-                intent_hash,
-                transaction_type,
-                ..
-            } => (from, tx_bytes, intent_hash, transaction_type, round),
-            _ => {
-                warn!(
+        let (from, tx_bytes, intent_hash, transaction_type, request_id, msg_round) =
+            match signing_message {
+                SigningMessage::TransactionDataForFinalNode {
+                    from,
+                    round,
+                    tx_bytes,
+                    intent_hash,
+                    transaction_type,
+                    request_id,
+                } => (
+                    from,
+                    tx_bytes,
+                    intent_hash,
+                    transaction_type,
+                    request_id,
+                    round,
+                ),
+                _ => {
+                    warn!(
                     "❌ [SIGNING-SECURE] Received signing message that is not a transaction data payload"
                 );
-                return RPCResponse::Ack;
-            }
-        };
+                    return RPCResponse::Ack;
+                }
+            };
 
         if msg_round != round {
             warn!(
@@ -951,6 +959,7 @@ impl MpcNetworkLayer {
                     tx_bytes,
                     intent_hash,
                     transaction_type,
+                    request_id,
                 )
                 .await
         } else {

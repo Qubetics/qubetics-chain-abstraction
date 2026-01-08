@@ -34,6 +34,8 @@ pub async fn execute_contract_call_for_transaction(
         vault_group_key,
         amount,
         &tx_hash_str,
+        None, // No request_id for non-sequencer call
+        None, // No original_request for non-sequencer call
     )
     .await
 }

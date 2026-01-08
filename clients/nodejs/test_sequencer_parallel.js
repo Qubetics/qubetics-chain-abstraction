@@ -95,17 +95,17 @@ async function testRegisterUser(ethereumAddress, userId, wallet) {
 
     const response = await axios.post(
       `${RPC_BASE_URL}/register_user`,
-      { 
+      {
         ethereum_address: ethereumAddress,
         signature: signature,
         message: message
       },
-      { 
-        headers: { 
-          'Content-Type': 'application/json', 
-          'X-API-KEY': API_KEY 
-        }, 
-        timeout: 15000 
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-KEY': API_KEY
+        },
+        timeout: 15000
       }
     );
 
@@ -188,7 +188,7 @@ async function testUserMpcDeposit({ wallet, amount, userId }) {
     };
 
     log(`[User ${userId}]   Deposit Intent: ${JSON.stringify(depositIntent)}`, 'cyan');
-    
+
     // Serialize DepositIntent for signing
     const msg = JSON.stringify(depositIntent);
 
@@ -200,9 +200,9 @@ async function testUserMpcDeposit({ wallet, amount, userId }) {
       `${RPC_BASE_URL}/user_mpc_deposit`,
       { signature, msg: depositIntent },
       {
-        headers: { 
-          'Content-Type': 'application/json', 
-          'X-API-KEY': API_KEY 
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-KEY': API_KEY
         },
         timeout: 120000
       }
@@ -285,26 +285,26 @@ async function step1_RegisterUsers() {
   log('📝 Registering users in batches of 5...', 'magenta');
   log('   Note: Derived addresses may take a few seconds to generate', 'yellow');
   log('', 'reset');
-  
+
   const BATCH_SIZE = 5;
   const registrationResults = [];
-  
+
   for (let i = 0; i < wallets.length; i += BATCH_SIZE) {
     const batch = wallets.slice(i, i + BATCH_SIZE);
     const batchNum = Math.floor(i / BATCH_SIZE) + 1;
     const totalBatches = Math.ceil(wallets.length / BATCH_SIZE);
-    
+
     log(`📦 Batch ${batchNum}/${totalBatches}: Registering users ${batch[0].userId} to ${batch[batch.length - 1].userId}`, 'blue');
-    
-    const batchPromises = batch.map(({ address, userId, wallet }) => 
+
+    const batchPromises = batch.map(({ address, userId, wallet }) =>
       testRegisterUser(address, userId, wallet)
     );
     const batchResults = await Promise.all(batchPromises);
     registrationResults.push(...batchResults);
-    
+
     const batchSuccess = batchResults.filter(r => r.success).length;
     log(`   ✅ Batch ${batchNum} complete: ${batchSuccess}/${batch.length} users registered`, 'green');
-    
+
     // Wait 5 seconds between batches (except after the last batch)
     if (i + BATCH_SIZE < wallets.length) {
       log(`   ⏳ Waiting 5 seconds before next batch...`, 'yellow');
@@ -312,7 +312,7 @@ async function step1_RegisterUsers() {
     }
     log('', 'reset');
   }
-  
+
   const successfulRegistrations = registrationResults.filter(r => r.success).length;
   log(`✅ Total registered: ${successfulRegistrations}/${wallets.length} users`, 'green');
   log('', 'reset');
@@ -325,12 +325,12 @@ async function step1_RegisterUsers() {
   // Get user info for all registered users
   log('🔍 Fetching user info for all registered users...', 'magenta');
   log('', 'reset');
-  
-  const userInfoPromises = wallets.map(({ address, userId }) => 
+
+  const userInfoPromises = wallets.map(({ address, userId }) =>
     testGetUserInfo(address, userId)
   );
   const userInfoResults = await Promise.all(userInfoPromises);
-  
+
   // Save all addresses (wallet + derived) to JSON file
   const addressData = wallets.map(({ address, userId }, index) => {
     const userInfoResult = userInfoResults[index];
@@ -342,10 +342,10 @@ async function step1_RegisterUsers() {
       hasUserGroupKey: userInfoResult.success ? userInfoResult.data.has_user_group_key : false
     };
   });
-  
+
   const outputFile = path.join(process.cwd(), 'registered_eth_addresses.json');
   fs.writeFileSync(outputFile, JSON.stringify(addressData, null, 2));
-  
+
   log('', 'reset');
   log(`💾 Saved ${addressData.length} users with derived addresses to: ${outputFile}`, 'green');
   log('', 'reset');
@@ -387,10 +387,10 @@ async function step2_SubmitTransactions() {
   log('', 'reset');
 
   const startTime = Date.now();
-  
+
   // Submit all transactions in parallel
   const depositPromises = wallets.map(({ wallet, userId }) => {
-    const amount = 6000000000000000000;  // Use same amount as test_register_user.js
+    const amount = 7000000000000000000;  // Use same amount as test_register_user.js
     return testUserMpcDeposit({ wallet, amount, userId });
   });
 
@@ -400,7 +400,7 @@ async function step2_SubmitTransactions() {
 
   // Wait for all to complete
   const results = await Promise.all(depositPromises);
-  
+
   const endTime = Date.now();
   const duration = ((endTime - startTime) / 1000).toFixed(2);
 
@@ -440,7 +440,7 @@ async function step2_SubmitTransactions() {
 // Main test function
 async function runSequencerTest() {
   const step = process.argv[2] || 'step1';
-  
+
   if (step === 'step1') {
     await step1_RegisterUsers();
   } else if (step === 'step2') {

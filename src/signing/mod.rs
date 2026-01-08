@@ -585,6 +585,7 @@ impl SigningNode {
                 tx_bytes,
                 intent_hash,
                 transaction_type,
+                request_id,
             } => {
                 info!(
                     "📥 [SIGNING] Node {} received transaction data for round {} from {}",
@@ -596,6 +597,7 @@ impl SigningNode {
                     tx_bytes,
                     intent_hash,
                     transaction_type,
+                    request_id,
                 )
                 .await?;
             }
@@ -1465,10 +1467,10 @@ impl SigningNode {
         // Check if we have transaction data for this round
         let pending_transactions = self.pending.pending_transactions.read().await;
         
-        if let Some((_, tx_bytes, intent_hash, transaction_type)) = pending_transactions.get(&round) {
+        if let Some((_, tx_bytes, intent_hash, transaction_type, request_id, _original_request)) = pending_transactions.get(&round) {
             info!(
-                "📤 [SIGNING] Sending transaction data for round {} to final node {} (tx_bytes: {} bytes)",
-                round, final_node_id, tx_bytes.len()
+                "📤 [SIGNING] Sending transaction data for round {} to final node {} (tx_bytes: {} bytes, request_id: {:?})",
+                round, final_node_id, tx_bytes.len(), request_id
             );
             
             let tx_data_msg = SigningMessage::TransactionDataForFinalNode {
@@ -1477,6 +1479,7 @@ impl SigningNode {
                 tx_bytes: tx_bytes.clone(),
                 intent_hash: intent_hash.clone(),
                 transaction_type: transaction_type.as_ref().map(|t| format!("{:?}", t)),
+                request_id: request_id.clone(),
             };
             
             // Wrap and send via unicast
@@ -1849,7 +1852,7 @@ impl SigningNode {
                             // This is a reward transaction - check reward pending transactions for TICS (Ethereum)
                             let reward_pending_transactions =
                                 self.pending.reward_pending_transactions_tics.read().await;
-                            if let Some((chain_tx, _tx_bytes, _solver_address, _transaction_type)) =
+                            if let Some((chain_tx, _tx_bytes, _solver_address, _transaction_type, _request_id, _original_request)) =
                                 reward_pending_transactions.get(&round)
                             {
                                 match chain_tx {
@@ -1866,7 +1869,7 @@ impl SigningNode {
                         } else if is_withdraw_round {
                             let withdraw_pending_transactions =
                                 self.pending.withdraw_pending_transactions_tics.read().await;
-                            if let Some((chain_tx, _tx_bytes, _solver_address, _transaction_type)) =
+                            if let Some((chain_tx, _tx_bytes, _solver_address, _transaction_type, _request_id, _original_request)) =
                                 withdraw_pending_transactions.get(&round)
                             {
                                 match chain_tx {
@@ -1884,7 +1887,7 @@ impl SigningNode {
                             // This is a regular transaction - check regular pending transactions for Ethereum
                             let pending_transactions =
                                 self.pending.pending_transactions.read().await;
-                            if let Some((chain_tx, _tx_bytes, _intent_hash, _transaction_type)) =
+                            if let Some((chain_tx, _tx_bytes, _intent_hash, _transaction_type, _request_id, _original_request)) =
                                 pending_transactions.get(&round)
                             {
                                 match chain_tx {
@@ -1937,6 +1940,13 @@ impl SigningNode {
                                 "Broadcasting transaction to chain {} (Qubetics)...",
                                 chain_id
                             );
+                            
+                            // Get request_id from pending transactions for sequencer tracking
+                            let request_id = {
+                                let pending = self.pending.pending_transactions.read().await;
+                                pending.get(&round).and_then(|(_, _, _, _, req_id, _)| req_id.clone())
+                            };
+                            
                             match Self::broadcast_ethereum_transaction(&signed_tx_hex, chain_id)
                                 .await
                             {
@@ -1949,9 +1959,24 @@ impl SigningNode {
                                         crate::types::TransactionNetwork::TICS,
                                     )
                                     .await;
+                                    
+                                    // Broadcast success with request_id for sequencer tracking
+                                    if let Some(ref req_id) = request_id {
+                                        self.broadcast_transaction_success(req_id, &tx_hash, chain_id).await;
+                                    }
                                 }
                                 Ok(None) => {
                                     warn!("⚠️ [SIGNING] Ethereum transaction broadcasted but no tx_hash returned");
+                                    
+                                    // Broadcast failure if from sequencer
+                                    if let Some(ref req_id) = request_id {
+                                        // Retrieve original_request from pending transactions
+                                        let original_request = {
+                                            let pending = self.pending.pending_transactions.read().await;
+                                            pending.get(&round).and_then(|(_, _, _, _, _, orig_req)| orig_req.clone())
+                                        };
+                                        self.broadcast_transaction_failure(req_id, "N/A", "No tx_hash returned", original_request).await;
+                                    }
                                 }
                                 Err(e) => {
                                     error!(
@@ -1965,6 +1990,16 @@ impl SigningNode {
                                         crate::types::TransactionNetwork::TICS,
                                     )
                                     .await;
+                                    
+                                    // Broadcast failure for sequencer retry
+                                    if let Some(ref req_id) = request_id {
+                                        // Retrieve original_request from pending transactions
+                                        let original_request = {
+                                            let pending = self.pending.pending_transactions.read().await;
+                                            pending.get(&round).and_then(|(_, _, _, _, _, orig_req)| orig_req.clone())
+                                        };
+                                        self.broadcast_transaction_failure(req_id, "N/A", &e.to_string(), original_request).await;
+                                    }
                                 }
                             }
                         } else {
@@ -1972,6 +2007,21 @@ impl SigningNode {
                             "❌ [SIGNING] Failed to reconstruct Ethereum transaction for round {}",
                             round
                         );
+                            
+                            // Get request_id and original_request from pending transactions for sequencer retry
+                            let (request_id, original_request) = {
+                                let pending = self.pending.pending_transactions.read().await;
+                                if let Some((_, _, _, _, req_id, orig_req)) = pending.get(&round) {
+                                    (req_id.clone(), orig_req.clone())
+                                } else {
+                                    (None, None)
+                                }
+                            };
+                            
+                            // Broadcast failure for sequencer retry
+                            if let Some(ref req_id) = request_id {
+                                self.broadcast_transaction_failure(req_id, "N/A", "Failed to reconstruct signed transaction", original_request).await;
+                            }
                         }
                     }
                     Err(e) => {
@@ -1979,6 +2029,22 @@ impl SigningNode {
                             "❌ [SIGNING] Failed to aggregate signatures for round {}: {}",
                             round, e
                         );
+                        
+                        // Get request_id and original_request from pending transactions for sequencer retry
+                        let (request_id, original_request) = {
+                            let pending = self.pending.pending_transactions.read().await;
+                            if let Some((_, _, _, _, req_id, orig_req)) = pending.get(&round) {
+                                (req_id.clone(), orig_req.clone())
+                            } else {
+                                (None, None)
+                            }
+                        };
+                        
+                        // Broadcast failure for sequencer retry
+                        if let Some(ref req_id) = request_id {
+                            self.broadcast_transaction_failure(req_id, "N/A", &format!("Signature aggregation failed: {}", e), original_request).await;
+                        }
+                        
                         return Err(e);
                     }
                 }
@@ -2580,6 +2646,10 @@ impl SigningNode {
             }
         };
 
+        // NOTE: Bitcoin transactions from the sequencer are not currently supported
+        // as all contract transactions use Ethereum. If BTC sequencer support is needed,
+        // BtcRoundExtras struct needs to be extended with request_id field.
+
         // Broadcast with proper error handling and transaction ID storage
         match Self::broadcast_transaction(&raw_hex, is_testnet).await {
             Ok(Some(txid)) => {
@@ -2657,6 +2727,7 @@ impl SigningNode {
         tx_bytes: Vec<u8>,
         intent_hash: Option<String>,
         transaction_type: Option<String>,
+        request_id: Option<String>,
     ) -> Result<()> {
         info!(
             "📥 [SIGNING] Final node {} received transaction data from {} for round {} (tx_bytes: {} bytes)",
@@ -2736,6 +2807,8 @@ impl SigningNode {
                 tx_bytes,
                 intent_hash.clone(),
                 parsed_tx_type,
+                request_id, // Store request_id from received data
+                None, // No original_request available in this context
             ),
         );
 
@@ -3603,7 +3676,7 @@ impl SigningNode {
         // Try TICS (Ethereum) transactions first
         let (tx_bytes, transaction_type, user_eth_address) = if is_reward_round {
             let reward_pt = self.pending.reward_pending_transactions_tics.read().await;
-            if let Some((_tx, tx_bytes, _solver_address, tx_type)) = reward_pt.get(&round) {
+            if let Some((_tx, tx_bytes, _solver_address, tx_type, _request_id, _original_request)) = reward_pt.get(&round) {
                 (tx_bytes.clone(), tx_type.clone(), None)
             } else {
                 // Try BTC reward
@@ -3621,12 +3694,13 @@ impl SigningNode {
             }
         } else if is_withdraw_round {
             let withdraw_pt = self.pending.withdraw_pending_transactions_tics.read().await;
-            if let Some((_tx, tx_bytes, _solver_address, tx_type)) = withdraw_pt.get(&round) {
+            if let Some((_tx, tx_bytes, _solver_address, tx_type, _request_id, _original_request)) =
+                withdraw_pt.get(&round) {
                 (tx_bytes.clone(), tx_type.clone(), None)
             } else {
                 // Try BTC withdraw
                 let withdraw_pt_btc = self.pending.withdraw_pending_transactions_btc.read().await;
-                if let Some((_tx, tx_bytes, _solver_address, tx_type, _extras)) =
+                if let Some((_tx, tx_bytes, _solver_address, tx_type, _request_id)) =
                     withdraw_pt_btc.get(&round)
                 {
                     (tx_bytes.clone(), tx_type.clone(), None)
@@ -3640,7 +3714,7 @@ impl SigningNode {
         } else {
             // Regular transaction - try TICS first
             let pending = self.pending.pending_transactions.read().await;
-            if let Some((_tx, tx_bytes, intent_hash, tx_type)) = pending.get(&round) {
+            if let Some((_tx, tx_bytes, intent_hash, tx_type, _request_id, _original_request)) = pending.get(&round) {
                 // For UserToVault transactions, retrieve user_eth_address from intent_hash
                 // This ensures the final node retrieves the address on its own, not relying on the unicasting peer
                 let user_addr = if matches!(

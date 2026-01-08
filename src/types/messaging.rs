@@ -65,6 +65,12 @@ pub enum ChannelMessage {
         /// "withdraw_liquidity"
         transaction_type: String,
     },
+    TransactionFailure {
+        sequencer_request_id: String,
+        blockchain_tx_hash: String,
+        error: String,
+        original_request: Option<crate::network::ContractTransactionRequest>,
+    },
     TransactionIdBroadcast {
         intent_hash: Option<String>,
         transaction_id: String,
@@ -309,5 +315,7 @@ pub enum GossipsubMessage {
         blockchain_tx_hash: String,
         /// Error message
         error: String,
+        /// Original request for guaranteed retry (even if cache is empty)
+        original_request: Option<crate::network::ContractTransactionRequest>,
     },
 }

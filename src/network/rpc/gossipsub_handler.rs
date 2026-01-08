@@ -14,8 +14,8 @@ use crate::{
     database::key_utils,
     signing::{BitcoinSigner, EthereumSigner},
     types::{
-        p2p::SerializablePeerId, rpc::RPCRequest, signing::SigningMessage,
-        vrf::VrfRoundSyncResponse, ChannelMessage, ConsensusMessage, GossipsubMessage,
+        p2p::SerializablePeerId, signing::SigningMessage, vrf::VrfRoundSyncResponse,
+        ChannelMessage, ConsensusMessage, GossipsubMessage,
     },
 };
 
@@ -212,7 +212,6 @@ impl MpcNetworkLayer {
                 }
             }
             GossipsubMessage::VrfSelectedNodes(broadcast_msg) => {
-
                 let selector_node_id = broadcast_msg.selector_node_id.0;
                 let round = broadcast_msg.round;
                 let local_node_id = self.local_peer_id;
@@ -234,13 +233,14 @@ impl MpcNetworkLayer {
                     "📤 [RETRY] Sending ACK for VrfSelectedNodes round {} from selector {} (this node: {})",
                     round, selector_node_id, local_node_id
                 );
-                
+
                 // Generate message ID to verify it matches what sender expects
-                let msg_id_result = crate::network::rpc::retry_manager::RetryManager::generate_message_id(
-                    crate::network::rpc::retry_manager::CriticalMessageType::VrfSelectedNodes,
-                    &GossipsubMessage::VrfSelectedNodes(broadcast_msg.clone()),
-                );
-                
+                let msg_id_result =
+                    crate::network::rpc::retry_manager::RetryManager::generate_message_id(
+                        crate::network::rpc::retry_manager::CriticalMessageType::VrfSelectedNodes,
+                        &GossipsubMessage::VrfSelectedNodes(broadcast_msg.clone()),
+                    );
+
                 match &msg_id_result {
                     Ok(msg_id) => {
                         info!(
@@ -249,7 +249,10 @@ impl MpcNetworkLayer {
                         );
                     }
                     Err(e) => {
-                        error!("❌ [RETRY] CRITICAL: Failed to generate message ID for ACK: {}", e);
+                        error!(
+                            "❌ [RETRY] CRITICAL: Failed to generate message ID for ACK: {}",
+                            e
+                        );
                         error!("❌ [RETRY] ACK will NOT be sent - this will cause retry failures!");
                     }
                 }
@@ -260,8 +263,12 @@ impl MpcNetworkLayer {
                 self.send_critical_message_ack(
                     crate::network::rpc::retry_manager::CriticalMessageType::VrfSelectedNodes,
                     &GossipsubMessage::VrfSelectedNodes(broadcast_msg.clone()),
-                ).await;
-                info!("✅ [RETRY] send_critical_message_ack completed for round {} from selector {}", round, selector_node_id);
+                )
+                .await;
+                info!(
+                    "✅ [RETRY] send_critical_message_ack completed for round {} from selector {}",
+                    round, selector_node_id
+                );
 
                 // Store the received VRF selection in the signing node's VRF selector
                 if let Some(signing_node) = &mut self.signing_node {
@@ -661,7 +668,8 @@ impl MpcNetworkLayer {
                         solver_address: solver_address.clone(),
                         node_id: node_id.clone(),
                     },
-                ).await;
+                )
+                .await;
 
                 // Process using shared handler
                 match (intent_hash.as_ref(), solver_address.as_ref()) {
@@ -1500,7 +1508,8 @@ impl MpcNetworkLayer {
                         node_id: node_id.clone(),
                         state: state.clone(),
                     },
-                ).await;
+                )
+                .await;
 
                 if let Some(sequencer) = &self.contract_sequencer {
                     sequencer
@@ -1575,7 +1584,7 @@ impl MpcNetworkLayer {
                 round,
                 request_id,
                 final_node_id,
-                signature,
+                signature: _signature,
             } => {
                 info!(
                     "📨 [VAULT_SEQUENCER] Received SELECT: round={}, request_id={}, from={:?}",
@@ -1624,7 +1633,7 @@ impl MpcNetworkLayer {
                 round,
                 request_id,
                 final_node_id,
-                signature,
+                signature: _signature,
             } => {
                 info!(
                     "📨 [MAIN_SEQUENCER] Received SELECT: round={}, request_id={}, from={:?}",
@@ -1703,7 +1712,7 @@ impl MpcNetworkLayer {
                     tokio::spawn(async move {
                         // Handle VRF broadcast
                         if let Err(e) = sequencer_clone
-                            .handle_vrf_broadcast(broadcast_msg_clone,  sender_peer_id, total_nodes)
+                            .handle_vrf_broadcast(broadcast_msg_clone, sender_peer_id, total_nodes)
                             .await
                         {
                             error!("❌ [VAULT_SEQUENCER] Failed to handle VRF broadcast: {}", e);
@@ -1732,7 +1741,7 @@ impl MpcNetworkLayer {
                             // - Safety margin: 400ms
                             // Total: 2000ms (2 seconds)
                             tokio::time::sleep(tokio::time::Duration::from_millis(2000)).await;
-                            
+
                             info!(
                                 "✅ [VAULT_SEQUENCER] Retry period complete, triggering consensus for round {}",
                                 round
@@ -1815,7 +1824,7 @@ impl MpcNetworkLayer {
                             // - Safety margin: 400ms
                             // Total: 2000ms (2 seconds)
                             tokio::time::sleep(tokio::time::Duration::from_millis(2000)).await;
-                            
+
                             info!(
                                 "✅ [MAIN_SEQUENCER] Retry period complete, triggering consensus for round {}",
                                 round
@@ -1876,7 +1885,10 @@ impl MpcNetworkLayer {
 
                 // Record acknowledgment
                 if let Some(retry_mgr) = &self.retry_manager {
-                    match retry_mgr.record_acknowledgment(&message_id_obj, node_id).await {
+                    match retry_mgr
+                        .record_acknowledgment(&message_id_obj, node_id)
+                        .await
+                    {
                         Ok(true) => {
                             info!("🎉 [RETRY] ACK recorded - all nodes have acknowledged!");
                         }
@@ -1885,11 +1897,105 @@ impl MpcNetworkLayer {
                         }
                         Err(e) => {
                             error!("❌ [RETRY] Failed to record acknowledgment: {}", e);
-                            error!("❌ [RETRY] This ACK from {} for message {} was NOT recorded!", node_id, message_id);
+                            error!(
+                                "❌ [RETRY] This ACK from {} for message {} was NOT recorded!",
+                                node_id, message_id
+                            );
                         }
                     }
                 } else {
                     warn!("⚠️ [RETRY] Retry manager not available - ACK not recorded");
+                }
+            }
+            GossipsubMessage::TransactionBroadcast {
+                sequencer_request_id,
+                blockchain_tx_hash,
+                chain_id,
+            } => {
+                info!(
+                    "📡 [TX_BROADCAST] Transaction broadcasted: chain_id={}, tx_hash={}",
+                    chain_id, blockchain_tx_hash
+                );
+                if let Some(request_id) = sequencer_request_id {
+                    info!("📝 [TX_BROADCAST] Request ID: {}", request_id);
+                }
+            }
+            GossipsubMessage::TransactionFailure {
+                sequencer_request_id,
+                blockchain_tx_hash,
+                error,
+                original_request,
+            } => {
+                warn!(
+                    "❌ [TX_FAILURE] Transaction failed: request_id={}, tx_hash={}, error={}",
+                    sequencer_request_id, blockchain_tx_hash, error
+                );
+
+                // Check if error message indicates transaction is already in mempool
+                // If so, skip failure handling - transaction will succeed later
+                if error.contains("tx already in mempool") {
+                    info!(
+                        "✅ [TX_FAILURE] Transaction {} is already in mempool (error: {}). Will succeed later. Skipping failure handling.",
+                        sequencer_request_id, error
+                    );
+                    // Don't re-insert - transaction is pending and will succeed
+                    return Ok(());
+                }
+
+                // Re-insert failed request back to ContractTransactionSequencer queue for retry
+                if let Some(sequencer) = &self.contract_sequencer {
+                    if let Some(request) = original_request {
+                        // Direct insert - guaranteed to work!
+                        // Check if already in queue to avoid duplicates
+                        let already_in_queue = {
+                            let pending = sequencer.pending_requests.read().await;
+                            pending.contains_key(&sequencer_request_id)
+                        };
+
+                        if !already_in_queue {
+                            // Use submit to properly add the request (handles sequence, notifies waiters, etc.)
+                            match sequencer.submit(request).await {
+                                Ok(()) => {
+                                    info!(
+                                        "✅ [TX_FAILURE] Re-inserted using original request from failure message: {}",
+                                        sequencer_request_id
+                                    );
+                                }
+                                Err(e) => {
+                                    error!(
+                                        "❌ [TX_FAILURE] Failed to submit original request for transaction {}: {}",
+                                        sequencer_request_id, e
+                                    );
+                                }
+                            }
+                        } else {
+                            info!(
+                                "ℹ️ [TX_FAILURE] Transaction {} already in queue, skipping re-insert",
+                                sequencer_request_id
+                            );
+                        }
+                    } else {
+                        // Fallback to reinsert (for backwards compatibility)
+                        match sequencer.reinsert(&sequencer_request_id).await {
+                            Ok(()) => {
+                                info!(
+                                    "✅ [TX_FAILURE] Re-inserted via cache: {}",
+                                    sequencer_request_id
+                                );
+                            }
+                            Err(e) => {
+                                error!(
+                                    "❌ [TX_FAILURE] Failed to re-insert transaction {}: {}",
+                                    sequencer_request_id, e
+                                );
+                            }
+                        }
+                    }
+                } else {
+                    warn!(
+                        "⚠️ [TX_FAILURE] Cannot retry transaction {} - sequencer not available",
+                        sequencer_request_id
+                    );
                 }
             }
         }
@@ -1903,25 +2009,38 @@ impl MpcNetworkLayer {
         msg: &GossipsubMessage,
     ) {
         // Generate message ID - if this fails, we can't send an ACK
-        info!("🔍 [RETRY] Starting ACK generation for message type: {:?}", msg_type);
-        
+        info!(
+            "🔍 [RETRY] Starting ACK generation for message type: {:?}",
+            msg_type
+        );
+
         // Production: Add timeout to message ID generation to prevent hanging
         let gen_timeout = Duration::from_secs(2);
-        let message_id = match tokio::time::timeout(
-            gen_timeout,
-            async { crate::network::rpc::retry_manager::RetryManager::generate_message_id(msg_type.clone(), msg) }
-        ).await {
+        let message_id = match tokio::time::timeout(gen_timeout, async {
+            crate::network::rpc::retry_manager::RetryManager::generate_message_id(
+                msg_type.clone(),
+                msg,
+            )
+        })
+        .await
+        {
             Ok(Ok(id)) => {
                 info!("🔑 [RETRY] Generated message ID for ACK: {:?}", id);
                 id
             }
             Ok(Err(e)) => {
-                error!("❌ [RETRY] CRITICAL: Failed to generate message ID for ACK: {}", e);
+                error!(
+                    "❌ [RETRY] CRITICAL: Failed to generate message ID for ACK: {}",
+                    e
+                );
                 error!("❌ [RETRY] Cannot send ACK without message ID - this will cause retry failures!");
                 return;
             }
             Err(_) => {
-                error!("❌ [RETRY] CRITICAL: Timeout generating message ID (>{}s)", gen_timeout.as_secs());
+                error!(
+                    "❌ [RETRY] CRITICAL: Timeout generating message ID (>{}s)",
+                    gen_timeout.as_secs()
+                );
                 error!("❌ [RETRY] Cannot send ACK - this will cause retry failures!");
                 return;
             }
@@ -1933,7 +2052,7 @@ impl MpcNetworkLayer {
             message_id: unique_id.clone(),
             node_id: self.local_peer_id,
         };
-        
+
         info!(
             "📝 [RETRY] Created ACK message: type={:?}, id={}, from={}",
             msg_type, unique_id, self.local_peer_id
@@ -1972,13 +2091,16 @@ impl MpcNetworkLayer {
             "📡 [RETRY] Sending ACK to topic {} for message {:?}",
             topic, message_id
         );
-        
+
         match self.message_tx.try_send(ChannelMessage::Broadcast {
             topic: topic.to_string(),
             data,
         }) {
             Ok(_) => {
-                info!("✅ [RETRY] ACK sent to channel for {:?} (will be broadcast to topic {})", message_id, topic);
+                info!(
+                    "✅ [RETRY] ACK sent to channel for {:?} (will be broadcast to topic {})",
+                    message_id, topic
+                );
                 // Record successful send for monitoring
                 self.channel_health.record_send_success();
             }
@@ -1993,11 +2115,14 @@ impl MpcNetworkLayer {
             }
             Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
                 error!("❌ [RETRY] CRITICAL: Channel closed - cannot send ACK!");
-                error!("❌ [RETRY] ACK for {:?} was NOT sent - system shutting down", message_id);
+                error!(
+                    "❌ [RETRY] ACK for {:?} was NOT sent - system shutting down",
+                    message_id
+                );
                 self.channel_health.record_send_closed();
             }
         }
-        
+
         // Perform periodic health check
         self.channel_health.health_check();
     }

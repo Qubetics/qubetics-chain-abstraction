@@ -111,6 +111,29 @@ impl MpcNetworkLayer {
                             if !is_confirmed {
                                 // Check if we already processed and confirmed locally
                                 if sequencer.is_locally_confirmed().await {
+                                    // CRITICAL FIX: Check for timeout to prevent infinite wait
+                                    if sequencer.check_confirmation_timeout(30).await {
+                                        // Timeout exceeded - force clear to unblock
+                                        warn!(
+                                            "⏰ [SEQUENCER] Confirmation wait timeout exceeded for tx_id={}, force clearing to unblock",
+                                            tx_id
+                                        );
+                                        sequencer.force_clear_processing(&tx_id, "Confirmation wait timeout (30s)").await;
+                                        // Sleep briefly and return to let other events process
+                                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                                        return None;
+                                    }
+
+                                    // Check confirmation status for logging
+                                    if let Some((confirmed, total)) = sequencer.get_confirmation_status().await {
+                                        if confirmed < total {
+                                            warn!(
+                                                "⏳ [SEQUENCER] Waiting for confirmations: tx_id={}, confirmed: {}/{}, will timeout after 30s",
+                                                tx_id, confirmed, total
+                                            );
+                                        }
+                                    }
+
                                     // Wait for other nodes to confirm
                                     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                                     return None;
@@ -140,6 +163,29 @@ impl MpcNetworkLayer {
                                     return None;
                                 }
                             } else {
+                                // Waiting for confirmation - check timeout first
+                                if sequencer.check_confirmation_timeout(30).await {
+                                    // Timeout exceeded - force clear to unblock
+                                    warn!(
+                                        "⏰ [SEQUENCER] Confirmation wait timeout exceeded for tx_id={}, force clearing to unblock",
+                                        tx_id
+                                    );
+                                    sequencer.force_clear_processing(&tx_id, "Confirmation wait timeout (30s)").await;
+                                    // Sleep briefly and return to let other events process
+                                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                                    return None;
+                                }
+
+                                // Check confirmation status for logging
+                                if let Some((confirmed, total)) = sequencer.get_confirmation_status().await {
+                                    if confirmed < total {
+                                        warn!(
+                                            "⏳ [SEQUENCER] Waiting for confirmations: tx_id={}, confirmed: {}/{}, will timeout after 30s",
+                                            tx_id, confirmed, total
+                                        );
+                                    }
+                                }
+
                                 // Waiting for confirmation - sleep and retry
                                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                                 return None;
