@@ -964,12 +964,14 @@ impl SigningNode {
                             ));
                         }
                     }
-                    Some(crate::types::TransactionType::NetworkToTarget) => {
+                    Some(crate::types::TransactionType::NetworkToTarget)
+                    | Some(crate::types::TransactionType::Refund) => {
+                        // Refund uses network group key (same as NetworkToTarget)
                         let group_key = self.get_network_group_public_key().await?;
                         let group_address = get_eth_address_from_group_key(group_key);
 
                         let nonce = Self::fetch_ethereum_nonce(&group_address, chain_id).await?;
-                        info!("🔢 [SIGNING] NetworkToTarget transaction: fetching nonce {} from network group address {}", nonce, group_address);
+                        info!("🔢 [SIGNING] NetworkToTarget/Refund transaction: fetching nonce {} from network group address {}", nonce, group_address);
                         group_address
                     }
                     Some(crate::types::TransactionType::VaultToNetwork) => {

@@ -233,6 +233,9 @@ impl MpcNetworkLayer {
                             crate::network::sequencer::ContractTransactionFlow::SolverClaimReward { solver_address, reward_btc, reward_tics, payout_transaction_hash, .. } => {
                                 format!("solver_claim_reward:{}:{}:{}:{}", solver_address, reward_btc.unwrap_or(0), reward_tics.unwrap_or(0), payout_transaction_hash)
                             }
+                            crate::network::sequencer::ContractTransactionFlow::RefundIntent { intent_id, transaction_hash, reason, .. } => {
+                                format!("refund_intent:{}:{}:{}", intent_id, transaction_hash, reason)
+                            }
                         };
 
                         // Clone the Arc to avoid borrowing self while holding the lock

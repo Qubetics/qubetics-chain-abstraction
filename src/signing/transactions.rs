@@ -199,11 +199,12 @@ impl SigningNode {
                     return;
                 }
 
-                // For UserToVault, NetworkToTarget, and VaultToNetwork, store and broadcast
+                // For UserToVault, NetworkToTarget, VaultToNetwork, and Refund, store and broadcast
                 let transaction_type_str = match transaction_type {
                     Some(crate::types::TransactionType::UserToVault) => "user_to_vault",
                     Some(crate::types::TransactionType::NetworkToTarget) => "network_to_target",
                     Some(crate::types::TransactionType::VaultToNetwork) => "vault_to_network",
+                    Some(crate::types::TransactionType::Refund) => "refund",
                     Some(crate::types::TransactionType::WithdrawLiquidity) => {
                         // Withdraw liquidity transactions should never have an intent_hash
                         error!(
@@ -630,7 +631,7 @@ impl SigningNode {
                     return;
                 }
 
-                // For UserToVault, NetworkToTarget, and VaultToNetwork, just broadcast without storing
+                // For UserToVault, NetworkToTarget, VaultToNetwork, and Refund, just broadcast without storing
                 // Storage will be handled by handle_transaction_id_storage when the broadcast message is received
                 let transaction_type_str = match transaction_type {
                     Some(crate::types::TransactionType::UserToVault) => {
@@ -677,6 +678,13 @@ impl SigningNode {
                             tx_id, intent_hash, round
                         );
                         "vault_to_network"
+                    }
+                    Some(crate::types::TransactionType::Refund) => {
+                        info!(
+                            "📡 [SIGNING] Broadcasting refund transaction ID {} for intent {} (round {}) - storage will be handled by message handler",
+                            tx_id, intent_hash, round
+                        );
+                        "refund"
                     }
                     Some(crate::types::TransactionType::WithdrawLiquidity) => {
                         // Withdraw liquidity transactions should never have an intent_hash

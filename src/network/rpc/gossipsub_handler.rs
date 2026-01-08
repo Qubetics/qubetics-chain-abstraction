@@ -838,10 +838,55 @@ impl MpcNetworkLayer {
             } => {
                 info!("📝 [GOSSIPSUB] Processing deposit intent received via gossipsub: {:?} (ID: {})", intent, intent_id);
 
-                // Calculate intent hash for transaction ID storage
-                let intent_hash = crate::utils::calculate_intent_hash(&intent)
-                    .map_err(|e| anyhow::anyhow!("Failed to calculate intent hash: {}", e))?;
-                info!("🔐 [GOSSIPSUB] Calculated intent hash: {}", intent_hash);
+                // CRITICAL FIX: For refund transactions, use the ORIGINAL intent_hash from intent_id
+                // Refund intents have modified target_address/target_chain, so calculating hash from
+                // the modified intent would produce a different hash than the original intent
+                let intent_hash = if matches!(transaction_type, crate::types::TransactionType::Refund) 
+                    && intent_id.starts_with("refund-") 
+                {
+                    // Extract original intent_hash from "refund-{original_intent_hash}"
+                    let original_intent_hash = intent_id.strip_prefix("refund-").unwrap_or(&intent_id);
+                    info!("🔐 [GOSSIPSUB] Refund transaction detected - using ORIGINAL intent hash: {} (from intent_id: {})", original_intent_hash, intent_id);
+                    original_intent_hash.to_string()
+                } else {
+                    // For non-refund transactions, calculate hash from the intent
+                    let calculated_hash = crate::utils::calculate_intent_hash(&intent)
+                        .map_err(|e| anyhow::anyhow!("Failed to calculate intent hash: {}", e))?;
+                    info!("🔐 [GOSSIPSUB] Calculated intent hash: {}", calculated_hash);
+                    calculated_hash
+                };
+
+                // CRITICAL: Store the intent in database if not already stored
+                // This ensures all nodes have the intent even if they missed the IntentHash broadcast
+                if let Some(user_intent_manager) = &self.user_intent_manager {
+                    // Check if intent already exists
+                    if user_intent_manager.get_intent(&intent_hash).await.is_none() {
+                        info!("💾 [GOSSIPSUB] Intent {} not found in database, storing it now", intent_hash);
+                        // Decode intent_hash from hex to bytes for store_intent_hash
+                        if let Ok(intent_hash_bytes) = hex::decode(&intent_hash) {
+                            // Use the user_eth_address if available, otherwise use a placeholder
+                            // The signer field is used for user identification
+                            let signer = user_eth_address.as_ref()
+                                .map(|addr| addr.clone())
+                                .unwrap_or_else(|| "network".to_string());
+                            
+                            if let Err(e) = user_intent_manager
+                                .store_intent_hash(intent_hash_bytes, &signer, &intent)
+                                .await
+                            {
+                                warn!("❌ [GOSSIPSUB] Failed to store intent hash {}: {}", intent_hash, e);
+                            } else {
+                                info!("✅ [GOSSIPSUB] Successfully stored intent {} in database", intent_hash);
+                            }
+                        } else {
+                            warn!("❌ [GOSSIPSUB] Invalid intent hash format: {}", intent_hash);
+                        }
+                    } else {
+                        debug!("✅ [GOSSIPSUB] Intent {} already exists in database", intent_hash);
+                    }
+                } else {
+                    warn!("❌ [GOSSIPSUB] User intent manager not available to store intent");
+                }
 
                 // Determine chain type based on transaction type:
                 // - UserToVault: use source_chain (user is depositing FROM this chain)
@@ -856,6 +901,9 @@ impl MpcNetworkLayer {
                     }
                     crate::types::TransactionType::VaultToNetwork => {
                         &intent.source_chain.to_lowercase()
+                    }
+                    crate::types::TransactionType::Refund => {
+                        &intent.source_chain.to_lowercase() // Refund goes back to source chain
                     }
                     crate::types::TransactionType::RewardTxn => {
                         // RewardTxn is not valid for intent flow
@@ -895,6 +943,14 @@ impl MpcNetworkLayer {
                         // For vault-to-network, use vault's tweaked secret share
                         if let Some(dkg_node) = &self.dkg_node {
                             dkg_node.get_vault_tweaked_secret_share().await
+                        } else {
+                            None
+                        }
+                    }
+                    crate::types::TransactionType::Refund => {
+                        // For refund transactions, use network's DKG secret share (same as NetworkToTarget)
+                        if let Some(dkg_node) = &self.dkg_node {
+                            dkg_node.get_final_secret_share().await
                         } else {
                             None
                         }
@@ -969,7 +1025,9 @@ impl MpcNetworkLayer {
                                         warn!("❌ [GOSSIPSUB] UserToVault transaction requires user_eth_address");
                                     }
                                 }
-                                crate::types::TransactionType::NetworkToTarget => {
+                                crate::types::TransactionType::NetworkToTarget
+                                | crate::types::TransactionType::Refund => {
+                                    // Refund uses network DKG group key (same as NetworkToTarget)
                                     if let Some(dkg_node) = &self.dkg_node {
                                         if let Some(group_key) =
                                             dkg_node.get_final_public_key().await
@@ -1057,8 +1115,9 @@ impl MpcNetworkLayer {
                             }
                         }
                         crate::types::TransactionType::NetworkToTarget
-                        | crate::types::TransactionType::VaultToNetwork => {
-                            // For network withdrawals and vault-to-network, no derived addresses needed
+                        | crate::types::TransactionType::VaultToNetwork
+                        | crate::types::TransactionType::Refund => {
+                            // For network withdrawals, vault-to-network, and refunds, no derived addresses needed
                             (None, None)
                         }
                         crate::types::TransactionType::RewardTxn => {

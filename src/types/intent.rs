@@ -8,6 +8,7 @@ pub enum TransactionType {
     RewardTxn,
     WithdrawLiquidity,
     AddLiquidity,
+    Refund,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]

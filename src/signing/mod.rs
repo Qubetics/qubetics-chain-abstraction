@@ -349,6 +349,28 @@ impl SigningNode {
                     ))
                 }
             }
+            Some(TransactionType::Refund) => {
+                // Refund uses network group key (same as NetworkToTarget)
+                let group_key = if let Some(key) = self.key_store.get_group_public_key() {
+                    Some(key)
+                } else if let Some(database) = &self.database {
+                    match database.get_string::<SerializablePoint>(keys::DKG_FINAL_PUBLIC) {
+                        Ok(Some(serialized)) => Some(serialized.0.into()),
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+
+                if let Some(group_key) = group_key {
+                    let encoded_point = k256::EncodedPoint::from(group_key.to_affine());
+                    Ok(encoded_point.compress().to_bytes().to_vec())
+                } else {
+                    Err(anyhow!(
+                        "DKG group public key not available for Refund transaction - ensure DKG process is completed"
+                    ))
+                }
+            }
             None => Err(anyhow!(
                 "Transaction type is required for group public key retrieval"
             )),
@@ -2742,6 +2764,7 @@ impl SigningNode {
                 "UserToVault" => Some(crate::types::TransactionType::UserToVault),
                 "NetworkToTarget" => Some(crate::types::TransactionType::NetworkToTarget),
                 "VaultToNetwork" => Some(crate::types::TransactionType::VaultToNetwork),
+                "Refund" => Some(crate::types::TransactionType::Refund),
                 "WithdrawLiquidity" => Some(crate::types::TransactionType::WithdrawLiquidity),
                 "RewardTxn" => Some(crate::types::TransactionType::RewardTxn),
                 "AddLiquidity" => Some(crate::types::TransactionType::AddLiquidity),
@@ -3174,6 +3197,7 @@ impl SigningNode {
             Some(crate::types::TransactionType::UserToVault) => "user-share",
             Some(crate::types::TransactionType::NetworkToTarget) => "network-share",
             Some(crate::types::TransactionType::VaultToNetwork) => "vault-share",
+            Some(crate::types::TransactionType::Refund) => "network-share", // Refund uses network share (same as NetworkToTarget)
             Some(crate::types::TransactionType::AddLiquidity) => "vault-share",
             Some(crate::types::TransactionType::RewardTxn) => "network-share",
             Some(crate::types::TransactionType::WithdrawLiquidity) => "network-share",
@@ -3594,6 +3618,7 @@ impl SigningNode {
             Some(crate::types::TransactionType::UserToVault) => "user-share",
             Some(crate::types::TransactionType::NetworkToTarget) => "network-share",
             Some(crate::types::TransactionType::VaultToNetwork) => "vault-share",
+            Some(crate::types::TransactionType::Refund) => "network-share", // Refund uses network share (same as NetworkToTarget)
             Some(crate::types::TransactionType::AddLiquidity) => "vault-share",
             Some(crate::types::TransactionType::RewardTxn) => "network-share",
             Some(crate::types::TransactionType::WithdrawLiquidity) => "network-share",
@@ -3908,14 +3933,15 @@ impl SigningNode {
                     ));
                 }
             }
-            Some(crate::types::TransactionType::NetworkToTarget) => {
-                // NetworkToTarget → per-node-network-share pubkey
+            Some(crate::types::TransactionType::NetworkToTarget)
+            | Some(crate::types::TransactionType::Refund) => {
+                // NetworkToTarget and Refund → per-node-network-share pubkey
                 dkg_storage
                     .get_network_share_pubkey(peer_id)
                     .await?
                     .ok_or_else(|| {
                         anyhow!(
-                            "Network share pubkey not found for peer {} (NetworkToTarget transaction)",
+                            "Network share pubkey not found for peer {} (NetworkToTarget/Refund transaction)",
                             peer_id
                         )
                     })
