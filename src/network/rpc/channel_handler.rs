@@ -516,8 +516,9 @@ impl MpcNetworkLayer {
         solver_address: &str,
         reward_btc: Option<u128>,
         reward_tics: Option<u128>,
-        transaction_hash: &str,
+        payout_tx_hash: &str,
         request_id: Option<String>,
+        original_request: Option<crate::network::ContractTransactionRequest>,
     ) -> Result<()> {
         let contract_address = std::env::var("SOLVER_CONTRACT_ADDRESS")
             .unwrap_or_else(|_| "0x0000000000000000000000000000000000000000".to_string());
@@ -587,7 +588,7 @@ impl MpcNetworkLayer {
             &vault_address,
             solver_address,
             &rewards_payload,
-            transaction_hash,
+            payout_tx_hash,
             &contract_address,
             chain_id,
             chain_name,
@@ -650,7 +651,6 @@ impl MpcNetworkLayer {
                 // info!("🔧 [CONTRACT] Contract transaction data length: {:?}", contract_tx.data.len());
                 // info!("🔧 [COONTRACT] Contract transaction data as ref: {:?}", contract_tx.data.as_ref());
                 // info!("🔧 [CNTRACT] Contract transaction data as ref hex: {:?}", hex::encode(contract_tx.data.as_ref()));
-                // info!("🔧 [CONTRACT] Contract transaction data as ref length: {:?}", contract_tx.data.as_ref().len());
                 // info!("🔧 [CONTRACT] Contract transaction data as ref as ref: {:?}", contract_tx.data.as_ref().as_ref());
                 // info!("🔧 [CONTRACT] Contract transaction data as ref as ref hex: {:?}", hex::encode(contract_tx.data.as_ref().as_ref()));
                 let contract_tx_bytes =
@@ -674,7 +674,7 @@ impl MpcNetworkLayer {
                         None,
                         vault_tweaked_share,
                         request_id, // Pass request_id from sequencer
-                        None, // No original_request available in this context
+                        original_request, // Pass original_request for retry support
                     )
                     .await?;
                 info!(
@@ -704,8 +704,9 @@ impl MpcNetworkLayer {
         solver_address: &str,
         asset_chain_name: &str,
         amount: u128,
-        transaction_hash: &str,
+        payout_tx_hash: &str,
         request_id: Option<String>,
+        original_request: Option<crate::network::ContractTransactionRequest>,
     ) -> Result<()> {
         if amount == 0 {
             return Ok(());
@@ -787,7 +788,7 @@ impl MpcNetworkLayer {
             &solver_id,
             asset_chain_id_u256,
             amount_u256,
-            transaction_hash,
+            payout_tx_hash,
             &contract_address,
             contract_chain_id,
             contract_chain_name,
@@ -876,6 +877,7 @@ impl MpcNetworkLayer {
         asset_chain_name: &str,
         amount: u128,
         request_id: Option<String>,
+        original_request: Option<crate::network::ContractTransactionRequest>,
     ) -> Result<()> {
         if amount == 0 {
             return Ok(());
@@ -1012,7 +1014,7 @@ impl MpcNetworkLayer {
                         None,
                         vault_tweaked_share,
                         request_id, // Pass request_id from sequencer
-                        None, // No original_request available in this context
+                        original_request, // Pass original_request for retry support
                     )
                     .await?;
                 info!(

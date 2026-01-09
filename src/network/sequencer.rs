@@ -42,9 +42,7 @@ where
 }
 
 /// Deserialize Option<ProjectivePoint> from SEC1 encoded bytes
-fn deserialize_vault_group_key<'de, D>(
-    deserializer: D,
-) -> Result<Option<ProjectivePoint>, D::Error>
+fn deserialize_vault_group_key<'de, D>(deserializer: D) -> Result<Option<ProjectivePoint>, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -88,8 +86,8 @@ where
         where
             E: Error,
         {
-            let ep = EncodedPoint::from_bytes(v)
-                .map_err(|_| E::custom("invalid SEC1 encoded point"))?;
+            let ep =
+                EncodedPoint::from_bytes(v).map_err(|_| E::custom("invalid SEC1 encoded point"))?;
             let affine: Option<AffinePoint> = AffinePoint::from_encoded_point(&ep).into();
             let affine = affine.ok_or_else(|| E::custom("invalid point on curve"))?;
             // Convert AffinePoint to ProjectivePoint
