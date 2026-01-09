@@ -849,7 +849,7 @@ impl MpcNetworkLayer {
                         None,
                         vault_tweaked_share,
                         request_id, // Pass request_id from sequencer
-                        None, // No original_request available in this context
+                        original_request, // No original_request available in this context
                     )
                     .await?;
                 info!(
@@ -1194,28 +1194,15 @@ impl MpcNetworkLayer {
         message: ChannelMessage,
         swarm: &mut libp2p::Swarm<MpcNetworkBehaviour>,
     ) -> Result<()> {
-        info!("[handle_channel_message()] {:?}", message);
         match message {
             ChannelMessage::PeerDiscoveryRetry { attempt } => {
-                info!(
-                    "Received peer discovery retry notification (attempt {})",
-                    attempt
-                );
                 if !self.peer_discovery.pending_peer_discovery_retry {
-                    info!(
-                        "Received stale peer discovery retry notification (attempt {}), ignoring",
-                        attempt
-                    );
                     return Ok(());
                 }
 
                 self.peer_discovery.pending_peer_discovery_retry = false;
 
                 if self.has_additional_peers() {
-                    info!(
-                        "✅ Additional peers detected (attempt {}); broadcasting local presence",
-                        attempt
-                    );
                     self.broadcast_local_presence().await?;
                 } else if attempt >= Self::MAX_PEER_DISCOVERY_RETRIES {
                     warn!(
@@ -1224,41 +1211,23 @@ impl MpcNetworkLayer {
                         Self::MAX_PEER_DISCOVERY_RETRIES
                     );
                 } else {
-                    info!(
-                        "⏳ Peer discovery retry attempt {} found no additional peers; rescheduling",
-                        attempt
-                    );
                     self.schedule_peer_discovery_retry(attempt + 1);
                 }
             }
             ChannelMessage::StatusRequest { responder } => {
-                info!("📊 [STATUS] Processing status request");
                 let peer_id = self.local_peer_id.to_string();
                 let connected_peers = swarm.connected_peers().count();
-                info!(
-                    "📊 [STATUS] Peer ID: {}, Connected peers: {}",
-                    peer_id, connected_peers
-                );
 
                 let (dkg_status, has_final_share) = if let Some(dkg_node) = &self.dkg_node {
                     let status = dkg_node.get_status();
                     let has_share = dkg_node.get_final_secret_share().await.is_some();
-                    info!(
-                        "📊 [STATUS] DKG node available - status: {:?}, has_share: {}",
-                        status, has_share
-                    );
                     (status, has_share)
                 } else {
-                    info!("📊 [STATUS] DKG node not available - using default status");
                     (DKGStatus::New, false)
                 };
 
                 let is_ready = has_final_share && matches!(dkg_status, DKGStatus::Completed);
                 let dkg_status_str = format!("{:?}", dkg_status);
-                info!(
-                    "📊 [STATUS] Final status - DKG: {}, Ready: {}",
-                    dkg_status_str, is_ready
-                );
 
                 let status = NodeStatus {
                     peer_id,
@@ -1267,19 +1236,14 @@ impl MpcNetworkLayer {
                     is_ready,
                 };
 
-                if responder.send(status.clone()).is_err() {
+                if responder.send(status).is_err() {
                     warn!("❌ [STATUS] Failed to send node status response to requester");
-                } else {
-                    info!("✅ [STATUS] Successfully sent status response: peer_id={}, connected_peers={}, dkg_status={}, is_ready={}", 
-                          status.peer_id, status.connected_peers, status.dkg_status, status.is_ready);
                 }
             }
             // this is used in the dkg code
             ChannelMessage::Broadcast { topic, data } => {
                 // dkg.s.1
-                info!("📢 [BROADCAST] Attempting to broadcast to topic: {}", topic);
                 let topic_hash = gossipsub::IdentTopic::new(topic.clone());
-                info!("🏷️ [BROADCAST] Topic hash: {:?}", topic_hash.hash());
 
                 // Production: Check channel capacity and log warnings for monitoring
                 let channel_capacity_warning_threshold = 0.8; // Warn at 80% full
@@ -1326,8 +1290,6 @@ impl MpcNetworkLayer {
                                                     expected_nodes.clone(),
                                                 ).await {
                                                     error!("❌ [RETRY] Failed to register critical message for retry: {}", e);
-                                                } else {
-                                                    info!("✅ [RETRY] Successfully registered message {:?} for retry tracking", message_id);
                                                 }
                                             }
                                         } else {
@@ -1370,42 +1332,11 @@ impl MpcNetworkLayer {
                 // msg (check subscribe_to_default_topics())
                 let swarm_mut = swarm.behaviour_mut();
                 let peer_count = swarm_mut.gossipsub.all_peers().count();
-                
-                if is_retry {
-                    info!(
-                        "🔄 [RETRY] Publishing retry message to topic {} ({} peers available)",
-                        topic, peer_count
-                    );
-                } else {
-                    info!(
-                        "📊 [BROADCAST] Available peers for topic {}: {}",
-                        topic, peer_count
-                    );
-                }
 
                 if peer_count > 0 {
-                    if !is_retry {
-                        info!("👥 [BROADCAST] Connected peers:");
-                        for (peer_id, _peer_info) in swarm_mut.gossipsub.all_peers() {
-                            info!("   - Peer: {:?}", peer_id);
-                        }
-                    }
-
                     let publish_result = swarm_mut.gossipsub.publish(topic_hash, data);
                     match publish_result {
-                        Ok(_) => {
-                            if is_retry {
-                                info!(
-                                    "✅ [RETRY] Successfully published retry message to topic: {}",
-                                    topic
-                                );
-                            } else {
-                                info!(
-                                    "✅ [BROADCAST] Successfully published message to topic: {}",
-                                    topic
-                                );
-                            }
-                        }
+                        Ok(_) => {}
                         Err(e) => {
                             if is_retry {
                                 error!(
@@ -1448,12 +1379,6 @@ impl MpcNetworkLayer {
             } => {
                 const MAX_RETRIES: u8 = 10;
 
-                info!(
-                    "🔐 [DKG-SECURE] Sending share index {} via UNICAST to peer {} (attempt {})",
-                    share_index,
-                    target_peer_id,
-                    retry_count + 1
-                );
 
                 // Parse the target peer ID
                 let peer_id = match target_peer_id.parse::<PeerId>() {
@@ -1469,10 +1394,6 @@ impl MpcNetworkLayer {
 
                 // Attempt to dial if not connected and we have a listen address
                 let mut is_connected = swarm.is_connected(&peer_id);
-                info!(
-                    "🔐 [DKG-SECURE]  Target Peer {} connected: {}",
-                    target_peer_id, is_connected
-                );
                 let connected_peers = swarm.connected_peers().collect::<Vec<_>>();
                 info!("🔐 [DKG-SECURE]  Connected peers: {:?}", connected_peers);
 

@@ -29,22 +29,15 @@ impl MpcNetworkLayer {
     pub(crate) async fn handle_gossipsub_message(&mut self, message: &Message) -> Result<()> {
         // Extract sender peer ID from message for security checks
         // Note: message.source is Option<PeerId> - we'll handle it in each match arm that needs it
-        info!(
-            "i am at handle_gossipsub_message ---------- {:?}",
-            message.topic
-        );
 
         // Better error handling for message deserialization
         let msg = match serde_json::from_slice::<GossipsubMessage>(&message.data) {
             Ok(msg) => msg,
             Err(e) => {
                 warn!("Failed to deserialize gossipsub message: {:?}", e);
-                warn!("Message data: {:?}", String::from_utf8_lossy(&message.data));
                 return Ok(()); // Continue processing other messages
             }
         };
-
-        info!("[GMSG] {:?}", msg);
         match msg {
             // this must be used by broadcast in dkg (sending end)
             // so, here it must match on the recieving end
@@ -83,18 +76,8 @@ impl MpcNetworkLayer {
                 }
             }
             GossipsubMessage::Signing(signing_msg) => {
-                info!(
-                    "📥 [NETWORK] Received signing message on topic: {}",
-                    message.topic
-                );
-                info!("📋 [NETWORK] Signing message type: {:?}", signing_msg);
-
                 if let Some(signing_node) = &mut self.signing_node {
                     // 🛡️ Error recovery for signing message processing - prevent node crashes
-                    info!(
-                        "📤 [NETWORK] Processing signing message on topic: {}",
-                        message.topic
-                    );
                     // Handle signing messages
                     match &signing_msg {
                         SigningMessage::ECDSASignature {
@@ -115,9 +98,7 @@ impl MpcNetworkLayer {
                                 signature.signer_id
                             );
                         }
-                        _ => {
-                            info!("📥 [NETWORK] Received other signing message type");
-                        }
+                        _ => {}
                     }
                     let signing_result = signing_node.handle_message(signing_msg).await;
 
@@ -138,11 +119,6 @@ impl MpcNetworkLayer {
                 }
             }
             GossipsubMessage::Consensus(consensus_msg) => {
-                info!(
-                    "📥 [CONSENSUS] Received consensus message: {:?}",
-                    consensus_msg
-                );
-
                 // Handle consensus message in signing node
                 if let Some(signing_node) = &mut self.signing_node {
                     signing_node
@@ -203,7 +179,6 @@ impl MpcNetworkLayer {
                 {
                     // We need to handle this differently since we can't mutate through a trait object
                     // For now, we'll log the message
-                    info!("Received VRF selection message: {:?}", vrf_msg);
                 } else {
                     info!(
                         "Received VRF selection message but node manager is not VRF-based: {:?}",
@@ -259,7 +234,6 @@ impl MpcNetworkLayer {
 
                 // Send acknowledgment - MUST happen for all critical messages
                 // This is called BEFORE processing to ensure ACK is sent even if processing fails
-                info!("🚀 [RETRY] About to call send_critical_message_ack for round {} from selector {}", round, selector_node_id);
                 self.send_critical_message_ack(
                     crate::network::rpc::retry_manager::CriticalMessageType::VrfSelectedNodes,
                     &GossipsubMessage::VrfSelectedNodes(broadcast_msg.clone()),
@@ -570,7 +544,6 @@ impl MpcNetworkLayer {
                                             {
                                                 warn!("❌ [GOSSIPSUB] Failed to store user group key for {}: {}", ethereum_address, e);
                                             } else {
-                                                info!("🔑 [GOSSIPSUB] Stored user-specific group key and derived addresses for {}", ethereum_address);
                                                 // Log the derived addresses
                                                 if let Some(user) = user_intent_manager
                                                     .get_user_by_address(&ethereum_address)
@@ -648,8 +621,6 @@ impl MpcNetworkLayer {
                     "✅ [SECURITY] TransactionIdBroadcast authenticated from trusted node {}",
                     node_id
                 );
-                info!("💳 [NETWORK] Transaction ID: {}", transaction_id);
-                info!("🔄 [NETWORK] Transaction type: {}", transaction_type);
                 if let Some(hash) = &intent_hash {
                     info!("🔗 [NETWORK] Intent hash: {}", hash);
                 } else if let Some(solver) = &solver_address {
@@ -743,8 +714,6 @@ impl MpcNetworkLayer {
                     "📡 [NETWORK] Received transaction error broadcast from node {}",
                     node_id
                 );
-                info!("💥 [NETWORK] Error message: {}", error_message);
-                info!("🔄 [NETWORK] Transaction type: {}", transaction_type);
                 if let Some(hash) = &intent_hash {
                     info!("🔗 [NETWORK] Intent hash: {}", hash);
                 } else if let Some(solver) = &solver_address {
@@ -767,7 +736,6 @@ impl MpcNetworkLayer {
                                 .await
                             {
                                 Ok(()) => {
-                                    info!("✅ [NETWORK] Successfully synchronized transaction error for intent {}: {}", intent_hash, error_message);
                                 }
                                 Err(e) => {
                                     error!(
@@ -780,7 +748,6 @@ impl MpcNetworkLayer {
                         (None, Some(solver_addr)) => {
                             // Reward transaction error - just log for now
                             // The user_intent_manager might need a method to store reward transaction errors
-                            info!("✅ [NETWORK] Successfully synchronized reward transaction error for solver {}: {}", solver_addr, error_message);
                         }
                         _ => {
                             warn!("⚠️ [NETWORK] Transaction error broadcast missing both intent hash and solver address");
@@ -818,7 +785,6 @@ impl MpcNetworkLayer {
                             {
                                 warn!("❌ [GOSSIPSUB] Failed to store intent hash: {}", e);
                             } else {
-                                info!("✅ [GOSSIPSUB] Stored intent hash from {}", signer);
                             }
                         }
                         Err(e) => {
@@ -836,7 +802,6 @@ impl MpcNetworkLayer {
                 transaction_type,
                 amount,
             } => {
-                info!("📝 [GOSSIPSUB] Processing deposit intent received via gossipsub: {:?} (ID: {})", intent, intent_id);
 
                 // CRITICAL FIX: For refund transactions, use the ORIGINAL intent_hash from intent_id
                 // Refund intents have modified target_address/target_chain, so calculating hash from
@@ -861,7 +826,6 @@ impl MpcNetworkLayer {
                 if let Some(user_intent_manager) = &self.user_intent_manager {
                     // Check if intent already exists
                     if user_intent_manager.get_intent(&intent_hash).await.is_none() {
-                        info!("💾 [GOSSIPSUB] Intent {} not found in database, storing it now", intent_hash);
                         // Decode intent_hash from hex to bytes for store_intent_hash
                         if let Ok(intent_hash_bytes) = hex::decode(&intent_hash) {
                             // Use the user_eth_address if available, otherwise use a placeholder
@@ -876,7 +840,6 @@ impl MpcNetworkLayer {
                             {
                                 warn!("❌ [GOSSIPSUB] Failed to store intent hash {}: {}", intent_hash, e);
                             } else {
-                                info!("✅ [GOSSIPSUB] Successfully stored intent {} in database", intent_hash);
                             }
                         } else {
                             warn!("❌ [GOSSIPSUB] Invalid intent hash format: {}", intent_hash);
@@ -921,8 +884,6 @@ impl MpcNetworkLayer {
                         return Ok(());
                     }
                 };
-                info!("🔗 [GOSSIPSUB] Processing deposit intent for chain: {} (transaction_type: {:?})",
-                      chain_to_use, transaction_type);
 
                 // Get the appropriate signing key based on transaction type
                 let signing_key: Option<k256::Scalar> = match transaction_type {
@@ -978,7 +939,6 @@ impl MpcNetworkLayer {
                         if crate::utils::transaction::is_evm_chain(chain_to_use) {
                             crate::utils::transaction::get_chain_id_from_name(chain_to_use)
                                 .map(|chain_id| {
-                                    info!("🔗 [GOSSIPSUB] Using Ethereum chain handler for chain: {} (ID: {})", chain_to_use, chain_id);
                                     let handler = crate::chain_abstraction::ChainHandlerFactory::create_ethereum_handler(chain_id);
                                     Arc::from(handler) as Arc<dyn crate::chain_abstraction::ChainHandler>
                                 })
@@ -1010,7 +970,6 @@ impl MpcNetworkLayer {
 
                                                     if let Some(btc_handler) = handler.as_any_mut().downcast_mut::<crate::chain_abstraction::BitcoinChainHandler>() {
                                                         btc_handler.set_group_public_key(compressed_bytes);
-                                                        info!("🔑 [GOSSIPSUB] Set user-specific group public key in Bitcoin chain handler for user: {}", eth_addr);
                                                     }
                                                 } else {
                                                     warn!("❌ [GOSSIPSUB] User {} has no group key for Bitcoin transaction", eth_addr);
@@ -1188,7 +1147,6 @@ impl MpcNetworkLayer {
 
                             // Use the signing key we got earlier
                             if signing_key.is_some() {
-                                info!("🔐 [GOSSIPSUB] Got signing key for deposit intent");
                             } else {
                                 info!(
                                     "❌ [GOSSIPSUB] Could not get signing key for deposit intent"
@@ -1318,7 +1276,6 @@ impl MpcNetworkLayer {
                     "📍 [GOSSIPSUB] Addresses - ETH: {:?}, BTC: {:?}",
                     eth_address, btc_address
                 );
-                info!("🏷️ [GOSSIPSUB] Transaction type: {}", transaction_type);
 
                 let _ = self
                     .process_payout(
@@ -1351,7 +1308,6 @@ impl MpcNetworkLayer {
                     "💧 [GOSSIPSUB] Amounts - BTC: {:?}, TICS: {:?}",
                     amount_btc, amount_tics
                 );
-                info!("💧 [GOSSIPSUB] Transaction type: {}", transaction_type);
 
                 let (tics_payout_initiated, btc_payout_initiated) = self
                     .process_payout(
@@ -1494,7 +1450,6 @@ impl MpcNetworkLayer {
                 // Check if we already have this peer to avoid duplicates
                 let current_nodes = self.node_manager.get_active_nodes();
                 if current_nodes.contains(&peer) {
-                    info!("ℹ️ Peer {} already exists in node manager, skipping", peer);
                     return Ok(());
                 }
 

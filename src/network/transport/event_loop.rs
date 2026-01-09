@@ -6,7 +6,6 @@ use libp2p::{Multiaddr, PeerId};
 use std::time::Duration;
 use tracing::{error, info, warn};
 
-use crate::protocols::DKGStatus;
 
 use super::types::{MpcNetworkBehaviour, MpcNetworkLayer};
 
@@ -52,7 +51,6 @@ impl MpcNetworkLayer {
         loop {                                        
             tokio::select! {
                 event = swarm.select_next_some() => {
-                    info!("[SWARM] some");
                     // 🛡️ Error recovery for swarm events - prevent node crashes
                     if let Err(e) = self.handle_swarm_event(event, &mut swarm).await {
                         error!("❌ [NETWORK] Swarm event handling failed: {}", e);
@@ -81,7 +79,6 @@ impl MpcNetworkLayer {
 
                 _ = bootstrap_timer.tick() => {
                     // Periodic bootstrap to discover new peers
-                    info!("Performing periodic bootstrap...");
                     if let Err(e) = swarm.behaviour_mut().kademlia.bootstrap() {
                         warn!("Periodic bootstrap failed: {:?}", e);
                     }
@@ -561,28 +558,6 @@ impl MpcNetworkLayer {
 
     /// Perform periodic peer discovery
     fn perform_periodic_peer_discovery(&mut self, swarm: &mut libp2p::Swarm<MpcNetworkBehaviour>) {
-        info!("🔄 Performing periodic peer discovery...");
-
-        // Debug: Show current state before discovery
-        let current_total = self.node_manager.get_total_nodes();
-        let active_nodes = self.node_manager.get_active_nodes();
-        info!(
-            "📊 Current node manager state - Total: {}, Active nodes: {:?}",
-            current_total, active_nodes
-        );
-
-        // Log gossipsub state
-        let gossipsub_peers = swarm.behaviour_mut().gossipsub.all_peers().count();
-        info!("📡 Gossipsub connected peers: {}", gossipsub_peers);
-
-        // Log Kademlia state
-        let kbucket_count: usize = swarm
-            .behaviour_mut()
-            .kademlia
-            .kbuckets()
-            .map(|bucket| bucket.num_entries())
-            .sum();
-        info!("🌐 Kademlia routing table entries: {}", kbucket_count);
 
         swarm
             .behaviour_mut()
@@ -604,7 +579,6 @@ impl MpcNetworkLayer {
                 self.db.get_string::<usize>(&key).ok().flatten().is_some()
             };
             if !known {
-                info!("🔎 Requesting PeerList from {} to learn indices", p);
                 swarm
                     .behaviour_mut()
                     .request_response
@@ -615,22 +589,6 @@ impl MpcNetworkLayer {
 
     /// Log periodic DKG status
     async fn log_periodic_dkg_status(&self) {
-        if let Some(dkg_node) = &self.dkg_node {
-            let status = dkg_node.get_status();
-            info!("📊 DKG Status Check - Current status: {:?}", status);
-
-            if let DKGStatus::Completed = status {
-                // DKG is completed, log final results
-                if dkg_node.get_final_secret_share().await.is_some() {
-                    info!("🎯 DKG COMPLETED - Final secret share stored");
-                }
-                if let Some(public_key) = dkg_node.get_final_public_key().await {
-                    info!("🔑 DKG COMPLETED - Final public key: {:?}", public_key);
-                }
-            } else if let DKGStatus::Started = status {
-                // DKG is in progress, check progress
-                info!("⏳ DKG in progress...");
-            }
-        }
+        // Periodic DKG status check (logging removed to reduce overhead)
     }
 }
