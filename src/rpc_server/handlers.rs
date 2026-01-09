@@ -172,8 +172,8 @@ pub(crate) async fn handle_deposit_intent(
         );
         }
 
-        // For VaultToNetwork and other types, use the intent amount plus 10%
-        let base_amount = parsed_amount + (parsed_amount / 10);
+        // For VaultToNetwork and other types, use the intent amount plus 5%
+        let base_amount = parsed_amount + (parsed_amount / 20);
         info!("💱 No price conversion needed; using adjusted intent amount");
         base_amount
     };
