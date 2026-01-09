@@ -177,11 +177,21 @@ impl MpcNetworkLayer {
                 false
             };
 
-            if initial_dkg_complete {
-                info!("🔒 [DKG] Initial DKG already completed with 3 nodes");
+            // Check if we have existing DKG shares (additional safety check)
+            let has_dkg_shares = if let Some(dkg) = &self.dkg_node {
+                dkg.get_final_secret_share().await.is_some()
+            } else {
+                false
+            };
+
+            if initial_dkg_complete || has_dkg_shares {
+                if has_dkg_shares {
+                    info!("🔒 [DKG] Existing DKG shares detected - preserving state");
+                }
+                info!("🔒 [DKG] Initial DKG already completed, skipping re-initialization");
                 info!("🆕 [NEW_NODE] Total nodes: {}, new node resharing will be triggered via PeerDiscovery gossipsub handler", total);
             } else if total == 3 {
-                // First time we have 3 nodes, start initial DKG
+                // First time we have 3 nodes AND no existing DKG, start initial DKG
                 info!("🎯 Initial 3 nodes connected, triggering first DKG!");
 
                 let now_secs = SystemTime::now()

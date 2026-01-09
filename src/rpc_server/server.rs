@@ -9,7 +9,7 @@ use tracing::{error, info};
 use warp::{Filter, Reply};
 
 use crate::{
-    database::{DkgStorage, RewardStorage},
+    database::{Database, DkgStorage, RewardStorage},
     types::ChannelMessage,
     user_intent_manager::UserIntentManager,
 };
@@ -18,12 +18,17 @@ use super::{
     errors::RpcError,
     handlers::{
         handle_add_liquidity, handle_claim_reward, handle_get_dkg_status,
-        handle_get_network_addresses, handle_get_node_id, handle_get_reward_solver,
-        handle_get_solver_liquidity, handle_get_status, handle_get_uptime, handle_get_user_info,
-        handle_heartbeat, handle_log_partial_pubkeys, handle_register_user,
-        handle_user_mpc_deposit, handle_withdraw_liquidity,
+        handle_get_network_addresses, handle_get_node_id, handle_get_node_info,
+        handle_get_reward_solver, handle_get_solver_liquidity, handle_get_status,
+        handle_get_uptime, handle_get_user_info, handle_heartbeat, handle_log_partial_pubkeys,
+        handle_register_user, handle_user_mpc_deposit, handle_withdraw_liquidity,
     },
     rate_limiter::RateLimiter,
+    upgrade_handlers::{
+        handle_cleanup_snapshots, handle_complete_upgrade, handle_rollback, handle_upgrade,
+        handle_upgrade_status, handle_validate_upgrade, CleanupSnapshotsRequest, RollbackRequest,
+        StartUpgradeRequest as UpgradeRequest, ValidateUpgradeRequest,
+    },
 };
 use crate::types::rpc_server::{
     AddLiquidityRequest, ClaimRewardRequest, GetRewardSolverRequest, RequestContext,
@@ -43,6 +48,7 @@ pub async fn start_http_server(
     user_intent_manager: Arc<UserIntentManager>,
     dkg_storage: DkgStorage,
     reward_storage: RewardStorage,
+    database: Database,
     node_id: String,
     start_time: Instant,
 ) -> Result<(), warp::Rejection> {
@@ -54,6 +60,7 @@ pub async fn start_http_server(
     let message_tx = Arc::new(Mutex::new(message_tx));
     let dkg_storage = Arc::new(dkg_storage);
     let reward_storage = Arc::new(reward_storage);
+    let database = Arc::new(database);
     let start_time = Arc::new(start_time);
 
     // Initialize rate limiter
@@ -186,6 +193,12 @@ pub async fn start_http_server(
         .and(with_node_id(node_id.clone()))
         .and_then(handle_get_node_id);
 
+    let get_node_info = warp::path("node-info")
+        .and(warp::get())
+        .and(with_dkg_storage(dkg_storage.clone()))
+        .and(with_node_id(node_id.clone()))
+        .and_then(handle_get_node_info);
+
     let get_status = warp::path("status")
         .and(warp::get())
         .and(with_message_tx(message_tx.clone()))
@@ -219,9 +232,52 @@ pub async fn start_http_server(
         .and(with_dkg_storage(dkg_storage.clone()))
         .and_then(handle_get_network_addresses);
 
+    // Upgrade endpoints
+    let validate_upgrade = warp::path("validate-upgrade")
+        .and(warp::post())
+        .and(limited_json_body::<ValidateUpgradeRequest>())
+        .and(with_database(database.clone()))
+        .and(with_node_id(node_id.clone()))
+        .and(with_auth())
+        .and_then(handle_validate_upgrade);
+
+    let upgrade = warp::path("upgrade")
+        .and(warp::post())
+        .and(limited_json_body::<UpgradeRequest>())
+        .and(with_database(database.clone()))
+        .and(with_node_id(node_id.clone()))
+        .and(with_auth())
+        .and_then(handle_upgrade);
+
+    let upgrade_status = warp::path("upgrade-status")
+        .and(warp::get())
+        .and(with_database(database.clone()))
+        .and_then(handle_upgrade_status);
+
+    let rollback = warp::path("rollback")
+        .and(warp::post())
+        .and(limited_json_body::<RollbackRequest>())
+        .and(with_database(database.clone()))
+        .and(with_auth())
+        .and_then(handle_rollback);
+
+    let cleanup_snapshots = warp::path("cleanup-snapshots")
+        .and(warp::post())
+        .and(limited_json_body::<CleanupSnapshotsRequest>())
+        .and(with_database(database.clone()))
+        .and(with_auth())
+        .and_then(handle_cleanup_snapshots);
+
+    let complete_upgrade = warp::path("complete-upgrade")
+        .and(warp::post())
+        .and(with_database(database.clone()))
+        .and(with_auth())
+        .and_then(handle_complete_upgrade);
+
     let routes = register_user
         .or(get_user_info)
         .or(get_node_id)
+        .or(get_node_info)
         .or(get_status)
         .or(get_dkg_status)
         .or(user_mpc_deposit)
@@ -233,7 +289,13 @@ pub async fn start_http_server(
         .or(heartbeat)
         .or(uptime)
         .or(log_partial_pubkeys)
-        .or(get_network_addresses);
+        .or(get_network_addresses)
+        .or(validate_upgrade)
+        .or(upgrade)
+        .or(upgrade_status)
+        .or(rollback)
+        .or(cleanup_snapshots)
+        .or(complete_upgrade);
 
     info!("🌐 Starting HTTP RPC server on port {}", port);
     let cors = warp::cors()
@@ -361,6 +423,12 @@ fn with_reward_storage(
     reward_storage: Arc<RewardStorage>,
 ) -> impl Filter<Extract = (Arc<RewardStorage>,), Error = Infallible> + Clone {
     warp::any().map(move || reward_storage.clone())
+}
+
+fn with_database(
+    database: Arc<Database>,
+) -> impl Filter<Extract = (Arc<Database>,), Error = Infallible> + Clone {
+    warp::any().map(move || database.clone())
 }
 
 fn with_node_id(node_id: String) -> impl Filter<Extract = (String,), Error = Infallible> + Clone {

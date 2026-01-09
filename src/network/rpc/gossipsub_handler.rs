@@ -1907,6 +1907,30 @@ impl MpcNetworkLayer {
                     warn!("⚠️ [RETRY] Retry manager not available - ACK not recorded");
                 }
             }
+            GossipsubMessage::VersionAnnouncement {
+                peer,
+                version,
+                features,
+                timestamp,
+            } => {
+                info!(
+                    "📍 [VERSION] Peer {} announced version {} with features: {:?} (timestamp: {})",
+                    peer, version, features, timestamp
+                );
+                // Version tracking will be handled when network upgrade module is integrated
+            }
+            GossipsubMessage::UpgradeAnnouncement {
+                peer,
+                target_version,
+                phase,
+                timestamp,
+            } => {
+                info!(
+                    "🔄 [UPGRADE] Peer {} upgrade announcement: {} to version {} (timestamp: {})",
+                    peer, phase, target_version, timestamp
+                );
+                // Upgrade coordination will be handled when orchestrator is integrated
+            }
         }
         Ok(())
     }
