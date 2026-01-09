@@ -108,8 +108,14 @@ impl SigningNode {
                 if is_reward_round {
                     let reward_pending_transactions =
                         self.pending.reward_pending_transactions_tics.read().await;
-                    if let Some((_tx, _tx_bytes, solver_address, transaction_type, _request_id, _original_request)) =
-                        reward_pending_transactions.get(&round)
+                    if let Some((
+                        _tx,
+                        _tx_bytes,
+                        solver_address,
+                        transaction_type,
+                        _request_id,
+                        _original_request,
+                    )) = reward_pending_transactions.get(&round)
                     {
                         (None, transaction_type.clone(), solver_address.clone())
                     } else {
@@ -118,8 +124,14 @@ impl SigningNode {
                 } else if is_withdraw_round {
                     let withdraw_pending_transactions =
                         self.pending.withdraw_pending_transactions_tics.read().await;
-                    if let Some((_tx, _tx_bytes, solver_address, transaction_type, _request_id, _original_request)) =
-                        withdraw_pending_transactions.get(&round)
+                    if let Some((
+                        _tx,
+                        _tx_bytes,
+                        solver_address,
+                        transaction_type,
+                        _request_id,
+                        _original_request,
+                    )) = withdraw_pending_transactions.get(&round)
                     {
                         (None, transaction_type.clone(), solver_address.clone())
                     } else {
@@ -127,8 +139,14 @@ impl SigningNode {
                     }
                 } else {
                     let pending = self.pending.pending_transactions.read().await;
-                    if let Some((_tx, _tx_bytes, intent_hash, tx_type, _request_id, _original_request)) =
-                        pending.get(&round)
+                    if let Some((
+                        _tx,
+                        _tx_bytes,
+                        intent_hash,
+                        tx_type,
+                        _request_id,
+                        _original_request,
+                    )) = pending.get(&round)
                     {
                         (intent_hash.clone(), tx_type.clone(), None)
                     } else {
@@ -427,7 +445,15 @@ impl SigningNode {
         let (intent_hash, transaction_type) = match txn_network {
             TransactionNetwork::TICS => {
                 let pending = self.pending.pending_transactions.read().await;
-                if let Some((_tx, _tx_bytes, intent_hash, tx_type)) = pending.get(&round) {
+                if let Some((
+                    _tx,
+                    _tx_bytes,
+                    intent_hash,
+                    tx_type,
+                    _request_id,
+                    _original_request,
+                )) = pending.get(&round)
+                {
                     (intent_hash.clone(), tx_type.clone())
                 } else {
                     (None, None)
@@ -446,8 +472,8 @@ impl SigningNode {
         };
 
         // Only trigger refund for NetworkToTarget transactions with an intent_hash
-        if let (Some(ref intent_hash), Some(TransactionType::NetworkToTarget)) =
-            (intent_hash, transaction_type)
+        if let (Some(intent_hash), Some(TransactionType::NetworkToTarget)) =
+            (intent_hash.as_ref(), transaction_type.as_ref())
         {
             info!(
                 "💸 [SIGNING-REFUND] Signature verification failed for NetworkToTarget transaction, initiating refund for intent: {}",
@@ -525,8 +551,14 @@ impl SigningNode {
                 if is_reward_round {
                     let reward_pending_transactions =
                         self.pending.reward_pending_transactions_tics.read().await;
-                    if let Some((_tx, _tx_bytes, solver_address, transaction_type, _request_id, _original_request)) =
-                        reward_pending_transactions.get(&round)
+                    if let Some((
+                        _tx,
+                        _tx_bytes,
+                        solver_address,
+                        transaction_type,
+                        _request_id,
+                        _original_request,
+                    )) = reward_pending_transactions.get(&round)
                     {
                         info!("[store_transaction_id_for_round] [TICS][Reward] Found reward_pending_transactions_tics entry for round {}: solver_address={:?}, transaction_type={:?}", round, solver_address, transaction_type);
                         (None, transaction_type.clone(), solver_address.clone())
@@ -537,8 +569,14 @@ impl SigningNode {
                 } else if is_withdraw_round {
                     let withdraw_pending_transactions =
                         self.pending.withdraw_pending_transactions_tics.read().await;
-                    if let Some((_tx, _tx_bytes, solver_address, transaction_type, _request_id, _original_request)) =
-                        withdraw_pending_transactions.get(&round)
+                    if let Some((
+                        _tx,
+                        _tx_bytes,
+                        solver_address,
+                        transaction_type,
+                        _request_id,
+                        _original_request,
+                    )) = withdraw_pending_transactions.get(&round)
                     {
                         info!("[store_transaction_id_for_round] [TICS][Withdraw] Found withdraw_pending_transactions_tics entry for round {}: solver_address={:?}, transaction_type={:?}", round, solver_address, transaction_type);
                         (None, transaction_type.clone(), solver_address.clone())
@@ -548,8 +586,14 @@ impl SigningNode {
                     }
                 } else {
                     let pending_transactions = self.pending.pending_transactions.read().await;
-                    if let Some((_tx, _tx_bytes, intent_hash, transaction_type, _request_id, _original_request)) =
-                        pending_transactions.get(&round)
+                    if let Some((
+                        _tx,
+                        _tx_bytes,
+                        intent_hash,
+                        transaction_type,
+                        _request_id,
+                        _original_request,
+                    )) = pending_transactions.get(&round)
                     {
                         info!("[store_transaction_id_for_round] [TICS][Non-Reward] Found pending_transactions entry for round {}: intent_hash={:?}, transaction_type={:?}", round, intent_hash, transaction_type);
                         (intent_hash.clone(), transaction_type.clone(), None)

@@ -1,14 +1,14 @@
-use anyhow::Result;
-use k256::ProjectivePoint;
-use crate::signing::SigningNode;
 use crate::node_selection::NodeMembership;
 use crate::protocols::DKGNode;
+use crate::signing::SigningNode;
 use crate::types::{DepositIntent, TransactionType};
+use anyhow::Result;
+use k256::ProjectivePoint;
 
 /// Global function to execute contract call for a given transaction type and intent
 /// This function delegates to MpcChainExecutor to keep contract execution
 /// logic separate from networking concerns.
-/// 
+///
 /// This is a convenience wrapper that can be accessed from anywhere in the codebase.
 pub async fn execute_contract_call_for_transaction(
     signing_node: &mut SigningNode,
@@ -23,7 +23,7 @@ pub async fn execute_contract_call_for_transaction(
 ) -> Result<()> {
     // Convert tx_hash from bytes to hex string for the executor
     let tx_hash_str = hex::encode(tx_hash);
-    
+
     crate::chain_abstraction::MpcChainExecutor::execute_contract_call(
         signing_node,
         node_manager,
@@ -42,7 +42,7 @@ pub async fn execute_contract_call_for_transaction(
 
 /// Execute a refund intent contract call
 /// This calls the refundIntent method on the IntentManager contract
-/// 
+///
 /// # Arguments
 /// * `signing_node` - The signing node to use for MPC signing
 /// * `node_manager` - Node membership manager
@@ -61,15 +61,17 @@ pub async fn execute_refund_intent_contract_call(
     timestamp: &str,
     reason: &str,
     vault_group_key: Option<ProjectivePoint>,
+    request_id: Option<String>,
+    original_request: Option<crate::network::ContractTransactionRequest>,
 ) -> Result<()> {
     use crate::chain_abstraction::{ChainTransaction, EthereumTransaction};
+    use crate::signing::EthereumSigner;
+    use crate::utils::get_eth_address_from_group_key;
     use crate::utils::transaction::{
         create_transaction_for_signing_contract, encode_refund_intent_calldata,
         estimate_gas_for_deposit_intent, fetch_ethereum_nonce, get_chain_id_from_name,
         get_gas_price_for_chain,
     };
-    use crate::utils::get_eth_address_from_group_key;
-    use crate::signing::EthereumSigner;
     use tracing::{debug, info};
 
     info!(
@@ -169,6 +171,8 @@ pub async fn execute_refund_intent_contract_call(
             vault_tweaked_share,
             None,
             vault_tweaked_share,
+            request_id,       // Pass request_id from sequencer for retry support
+            original_request, // Pass original_request for retry support
         )
         .await?;
 

@@ -520,7 +520,7 @@ impl MpcNetworkLayer {
                                 e
                             );
                             error!("❌ [NETWORK_SEQUENCER] {}", error_message);
-                            
+
                             // Store transaction error and trigger refund
                             if let Some(user_intent_manager) = &self.user_intent_manager {
                                 // Store the error
@@ -538,26 +538,29 @@ impl MpcNetworkLayer {
                                         intent_hash, error_message
                                     );
                                 }
-                                
+
                                 // Broadcast the error
                                 if let Some(signing_node) = &self.signing_node {
-                                    signing_node.broadcast_transaction_error(
-                                        Some(intent_hash),
-                                        &error_message,
-                                        "network_to_target",
-                                        None,
-                                    )
-                                    .await;
+                                    signing_node
+                                        .broadcast_transaction_error(
+                                            Some(intent_hash),
+                                            &error_message,
+                                            "network_to_target",
+                                            None,
+                                        )
+                                        .await;
                                 }
-                                
+
                                 // Trigger refund for NetworkToTarget transactions
                                 info!(
                                     "💸 [NETWORK_SEQUENCER] Network-to-target transaction failed, initiating refund for intent: {}",
                                     intent_hash
                                 );
-                                
+
                                 // Get the intent for refund calculation
-                                if let Some(intent) = user_intent_manager.get_intent(intent_hash).await {
+                                if let Some(intent) =
+                                    user_intent_manager.get_intent(intent_hash).await
+                                {
                                     // Calculate refund amount
                                     let intent_amount = intent.amount.parse::<u128>().unwrap_or(0);
                                     let refund_amount = if let Some(tx_ids) = user_intent_manager
@@ -574,7 +577,7 @@ impl MpcNetworkLayer {
                                     } else {
                                         intent_amount
                                     };
-                                    
+
                                     // Broadcast refund initiation through signing node
                                     if let Some(signing_node) = &self.signing_node {
                                         if let Err(refund_err) = signing_node
@@ -599,7 +602,7 @@ impl MpcNetworkLayer {
                                     );
                                 }
                             }
-                            
+
                             // Return the error so it can be logged by the caller
                             Err(anyhow::anyhow!("{}", error_message))
                         }
@@ -965,6 +968,8 @@ impl MpcNetworkLayer {
                     timestamp,
                     reason,
                     vault_group_key,
+                    None, // No request_id for non-sequencer fallback
+                    None, // No original_request for non-sequencer fallback
                 )
                 .await
             } else {
@@ -1210,6 +1215,8 @@ impl MpcNetworkLayer {
                         timestamp,
                         reason,
                         *vault_group_key,
+                        Some(request.transaction_id.clone()), // Pass request_id for retry support
+                        Some(request.clone()), // Pass original_request for retry support
                     )
                     .await;
 

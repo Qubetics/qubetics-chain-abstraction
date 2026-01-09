@@ -151,7 +151,11 @@ pub enum ContractTransactionFlow {
         transaction_hash: String,
         timestamp: String,
         reason: String,
-        vault_group_key: Option<ProjectivePoint>,
+        #[serde(
+            serialize_with = "serialize_vault_group_key",
+            deserialize_with = "deserialize_vault_group_key"
+        )]
+        vault_group_key: Option<ProjectivePoint>, // Serialized using SEC1 encoding for network transmission
     },
 }
 
@@ -4222,7 +4226,7 @@ mod tests {
                     target_address: "target".to_string(),
                     source_chain: "chain_a".to_string(),
                     target_chain: "chain_b".to_string(),
-                    amount: 10,
+                    amount: "10".to_string(),
                     source_token: "TOKENA".to_string(),
                     target_token: "TOKENB".to_string(),
                     timestamp: 0,

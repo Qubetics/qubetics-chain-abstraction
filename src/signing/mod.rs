@@ -2067,6 +2067,8 @@ impl SigningNode {
                         // Broadcast failure for sequencer retry
                         if let Some(ref req_id) = request_id {
                             self.broadcast_transaction_failure(req_id, "N/A", &format!("Signature aggregation failed: {}", e), original_request).await;
+                        }
+                        
                         // Check if aggregation failed due to insufficient signatures
                         let error_msg = e.to_string();
                         if error_msg.contains("Not enough signature shares") {
