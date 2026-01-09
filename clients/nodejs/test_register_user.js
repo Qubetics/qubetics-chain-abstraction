@@ -22,7 +22,7 @@ function randomUUID() {
 // =========================
 // Configuration
 // =========================
-const RPC_BASE_URL = 'http://124.243.185.174:8083';
+const RPC_BASE_URL = 'http://127.0.0.1:8081';
 const API_KEY = "2919cd546f2c4338bccb4794a3d6afba2282e5729653fc2c2ff6c5e0e194ar45";
 
 // 👉 Private key you provided (hex, no 0x prefix needed)
@@ -186,12 +186,12 @@ async function testUserMpcDeposit({ wallet, amount, idempotencyKey }) {
     // Construct DepositIntent
     const depositIntent = {
       source_address: userInfo.data.derived_eth_address, // Use canonical address
-      target_address: userInfo.data.derived_eth_address,
+      target_address: userInfo.data.derived_btc_address,
       source_chain: 'qubetics',
-      target_chain: 'qubetics',
+      target_chain: 'bitcoin',
       amount: amount, // Use the passed amount parameter
       source_token: 'TICS',
-      target_token: 'TICS',
+      target_token: 'BTC',
       timestamp: oooo,
     };
     // const depositIntent = {
@@ -323,25 +323,25 @@ async function runTests() {
   log(`\n🔑 Derived signer address from TEST_PRIVKEY: ${signerAddr}`, 'blue');
 
   // 1) DKG status
-  await testDKGStatus();
+  // await testDKGStatus();
 
-  // 2) Register ONLY the derived address 
-  const reg = await testRegisterUser(signerAddr, wallet);
+  // // 2) Register ONLY the derived address 
+  // const reg = await testRegisterUser(signerAddr, wallet);
 
-  if (reg.success) {
-    log(`\n⏳ Waiting 2 seconds before checking user info...`, 'yellow');
-    await new Promise(r => setTimeout(r, 2000));
-    await testGetUserInfo(signerAddr);
-  } else {
-    log(`\n⚠️ Registration failed; continuing to deposit test (is_registered may be false).`, 'yellow');
-  }
+  // if (reg.success) {
+  //   log(`\n⏳ Waiting 2 seconds before checking user info...`, 'yellow');
+  //   await new Promise(r => setTimeout(r, 2000));
+  //   await testGetUserInfo(signerAddr);
+  // } else {
+  //   log(`\n⚠️ Registration failed; continuing to deposit test (is_registered may be false).`, 'yellow');
+  // }
 
   // 3) MPC deposit test WITHOUT tx_id (should pass Some(signer) to handle_deposit_intent)
   // log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
   // const amount = 2000000000000000000
   // await testUserMpcDeposit({ wallet, amount });
   // log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
-  // const amount = "25000000000000000000"
+  // const amount = 30000000000000000000
   // await testUserMpcDeposit({ wallet, amount });
 
   // const address = '0xbac113cebd9CB2fBD2a01B5CBC43D0fC0EBed5e9';
