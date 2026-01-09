@@ -52,6 +52,8 @@ impl SigningNode {
                 tx_bytes,
                 Some(solver_address),
                 Some(TransactionType::WithdrawLiquidity),
+                None, // No request_id for withdraw liquidity
+                None, // No original_request for withdraw liquidity
             ),
         );
         info!(
@@ -106,7 +108,7 @@ impl SigningNode {
                 if is_reward_round {
                     let reward_pending_transactions =
                         self.pending.reward_pending_transactions_tics.read().await;
-                    if let Some((_tx, _tx_bytes, solver_address, transaction_type)) =
+                    if let Some((_tx, _tx_bytes, solver_address, transaction_type, _request_id, _original_request)) =
                         reward_pending_transactions.get(&round)
                     {
                         (None, transaction_type.clone(), solver_address.clone())
@@ -116,7 +118,7 @@ impl SigningNode {
                 } else if is_withdraw_round {
                     let withdraw_pending_transactions =
                         self.pending.withdraw_pending_transactions_tics.read().await;
-                    if let Some((_tx, _tx_bytes, solver_address, transaction_type)) =
+                    if let Some((_tx, _tx_bytes, solver_address, transaction_type, _request_id, _original_request)) =
                         withdraw_pending_transactions.get(&round)
                     {
                         (None, transaction_type.clone(), solver_address.clone())
@@ -125,7 +127,9 @@ impl SigningNode {
                     }
                 } else {
                     let pending = self.pending.pending_transactions.read().await;
-                    if let Some((_tx, _tx_bytes, intent_hash, tx_type)) = pending.get(&round) {
+                    if let Some((_tx, _tx_bytes, intent_hash, tx_type, _request_id, _original_request)) =
+                        pending.get(&round)
+                    {
                         (intent_hash.clone(), tx_type.clone(), None)
                     } else {
                         (None, None, None)
@@ -521,7 +525,7 @@ impl SigningNode {
                 if is_reward_round {
                     let reward_pending_transactions =
                         self.pending.reward_pending_transactions_tics.read().await;
-                    if let Some((_tx, _tx_bytes, solver_address, transaction_type)) =
+                    if let Some((_tx, _tx_bytes, solver_address, transaction_type, _request_id, _original_request)) =
                         reward_pending_transactions.get(&round)
                     {
                         info!("[store_transaction_id_for_round] [TICS][Reward] Found reward_pending_transactions_tics entry for round {}: solver_address={:?}, transaction_type={:?}", round, solver_address, transaction_type);
@@ -533,7 +537,7 @@ impl SigningNode {
                 } else if is_withdraw_round {
                     let withdraw_pending_transactions =
                         self.pending.withdraw_pending_transactions_tics.read().await;
-                    if let Some((_tx, _tx_bytes, solver_address, transaction_type)) =
+                    if let Some((_tx, _tx_bytes, solver_address, transaction_type, _request_id, _original_request)) =
                         withdraw_pending_transactions.get(&round)
                     {
                         info!("[store_transaction_id_for_round] [TICS][Withdraw] Found withdraw_pending_transactions_tics entry for round {}: solver_address={:?}, transaction_type={:?}", round, solver_address, transaction_type);
@@ -544,7 +548,7 @@ impl SigningNode {
                     }
                 } else {
                     let pending_transactions = self.pending.pending_transactions.read().await;
-                    if let Some((_tx, _tx_bytes, intent_hash, transaction_type)) =
+                    if let Some((_tx, _tx_bytes, intent_hash, transaction_type, _request_id, _original_request)) =
                         pending_transactions.get(&round)
                     {
                         info!("[store_transaction_id_for_round] [TICS][Non-Reward] Found pending_transactions entry for round {}: intent_hash={:?}, transaction_type={:?}", round, intent_hash, transaction_type);
@@ -891,6 +895,65 @@ impl SigningNode {
                     );
                 }
             }
+        }
+    }
+
+    /// Broadcast transaction success with request_id for sequencer tracking
+    pub(crate) async fn broadcast_transaction_success(
+        &self,
+        sequencer_request_id: &str,
+        blockchain_tx_hash: &str,
+        chain_id: u64,
+    ) {
+        let broadcast_message = crate::types::GossipsubMessage::TransactionBroadcast {
+            sequencer_request_id: Some(sequencer_request_id.to_string()),
+            blockchain_tx_hash: blockchain_tx_hash.to_string(),
+            chain_id,
+        };
+
+        let channel_message = crate::types::ChannelMessage::Broadcast {
+            topic: "transaction-broadcast".to_string(),
+            data: serde_json::to_vec(&broadcast_message).unwrap_or_default(),
+        };
+
+        if let Err(e) = self.message_tx.send(channel_message).await {
+            error!(
+                "❌ [SIGNING] Failed to broadcast transaction success to other nodes: {}",
+                e
+            );
+        } else {
+            info!(
+                "📡 [SIGNING] Broadcasted transaction success: request_id={}, tx_hash={}, chain_id={}",
+                sequencer_request_id, blockchain_tx_hash, chain_id
+            );
+        }
+    }
+
+    /// Broadcast transaction failure with request_id for sequencer retry
+    pub(crate) async fn broadcast_transaction_failure(
+        &self,
+        sequencer_request_id: &str,
+        blockchain_tx_hash: &str,
+        error: &str,
+        original_request: Option<crate::network::ContractTransactionRequest>,
+    ) {
+        let channel_message = crate::types::ChannelMessage::TransactionFailure {
+            sequencer_request_id: sequencer_request_id.to_string(),
+            blockchain_tx_hash: blockchain_tx_hash.to_string(),
+            error: error.to_string(),
+            original_request,
+        };
+
+        if let Err(e) = self.message_tx.send(channel_message).await {
+            error!(
+                "❌ [SIGNING] Failed to send transaction failure to channel: {}",
+                e
+            );
+        } else {
+            warn!(
+                "📡 [SIGNING] Sent transaction failure to channel: request_id={}, tx_hash={}, error={}",
+                sequencer_request_id, blockchain_tx_hash, error
+            );
         }
     }
 }

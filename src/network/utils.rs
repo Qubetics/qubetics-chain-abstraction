@@ -263,6 +263,8 @@ impl MpcNetworkLayer {
                 solver_id,
                 asset_chain_name,
                 amount,
+                None, // No request_id for non-sequencer fallback
+                None, // No original_request for non-sequencer fallback
             )
             .await
         }
@@ -772,6 +774,8 @@ impl MpcNetworkLayer {
                 asset_chain_name,
                 amount,
                 payout_tx_hash,
+                None, // No request_id for non-sequencer fallback
+                None, // No original_request for non-sequencer fallback
             )
             .await
         }
@@ -838,6 +842,8 @@ impl MpcNetworkLayer {
                 reward_btc,
                 reward_tics,
                 payout_tx_hash,
+                None, // No request_id for non-sequencer fallback
+                None, // No original_request for non-sequencer fallback
             )
             .await
         }
@@ -896,6 +902,8 @@ impl MpcNetworkLayer {
                     vault_group_key,
                     amount,
                     tx_hash,
+                    None, // No request_id for non-sequencer fallback
+                    None, // No original_request for non-sequencer fallback
                 )
                 .await
             } else {
@@ -1053,6 +1061,8 @@ impl MpcNetworkLayer {
                         *vault_group_key,
                         *amount,
                         &request.transaction_id,
+                        Some(request.transaction_id.clone()),
+                        Some(request.clone()), // Pass full request for guaranteed retry
                     )
                     .await;
 
@@ -1095,6 +1105,8 @@ impl MpcNetworkLayer {
                         solver_id,
                         asset_chain_name,
                         *amount,
+                        Some(request.transaction_id.clone()),
+                        Some(request.clone()), // Pass original_request for retry support
                     )
                     .await
                 {
@@ -1126,6 +1138,8 @@ impl MpcNetworkLayer {
                         asset_chain_name,
                         *amount,
                         payout_transaction_hash,
+                        Some(request.transaction_id.clone()),
+                        Some(request.clone()), // Pass original_request for retry support
                     )
                     .await
                 {
@@ -1157,6 +1171,8 @@ impl MpcNetworkLayer {
                         *reward_btc,
                         *reward_tics,
                         payout_transaction_hash,
+                        Some(request.transaction_id.clone()),
+                        Some(request.clone()), // Pass original_request for retry support
                     )
                     .await
                 {

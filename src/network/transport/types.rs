@@ -94,6 +94,8 @@ pub const TOPIC_VAULT_SEQUENCER_MISSING: &str = "vault-sequencer-missing";
 pub const TOPIC_MAIN_SEQUENCER_SELECT: &str = "main-sequencer-select";
 pub const TOPIC_MAIN_SEQUENCER_ACK: &str = "main-sequencer-ack";
 pub const TOPIC_MAIN_SEQUENCER_MISSING: &str = "main-sequencer-missing";
+pub const TOPIC_TRANSACTION_BROADCAST: &str = "transaction-broadcast";
+pub const TOPIC_TRANSACTION_FAILURE: &str = "transaction-failure";
 
 /// Typed view of the gossipsub topics this MPC node participates in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -127,6 +129,8 @@ pub enum GossipTopic {
     MainSequencerSelect,
     MainSequencerAck,
     MainSequencerMissing,
+    TransactionBroadcast,
+    TransactionFailure,
 }
 
 impl GossipTopic {
@@ -160,6 +164,8 @@ impl GossipTopic {
         GossipTopic::MainSequencerSelect,
         GossipTopic::MainSequencerAck,
         GossipTopic::MainSequencerMissing,
+        GossipTopic::TransactionBroadcast,
+        GossipTopic::TransactionFailure,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -195,6 +201,8 @@ impl GossipTopic {
             GossipTopic::MainSequencerSelect => TOPIC_MAIN_SEQUENCER_SELECT,
             GossipTopic::MainSequencerAck => TOPIC_MAIN_SEQUENCER_ACK,
             GossipTopic::MainSequencerMissing => TOPIC_MAIN_SEQUENCER_MISSING,
+            GossipTopic::TransactionBroadcast => TOPIC_TRANSACTION_BROADCAST,
+            GossipTopic::TransactionFailure => TOPIC_TRANSACTION_FAILURE,
         }
     }
 }

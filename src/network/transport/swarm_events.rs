@@ -307,6 +307,9 @@ impl MpcNetworkLayer {
             }
             ReqRespEvent::OutboundFailure { peer, error, .. } => {
                 info!("Outbound failure to peer {}: {:?}", peer, error);
+                // if let Some(retry_mgr) = &self.retry_manager {
+                //     retry_mgr.mark_peer_unreachable(peer).await;
+                // }
             }
             ReqRespEvent::InboundFailure { peer, error, .. } => {
                 info!("Inbound failure to peer {}: {:?}", peer, error);

@@ -520,7 +520,9 @@ impl MpcNetworkLayer {
         solver_address: &str,
         reward_btc: Option<u128>,
         reward_tics: Option<u128>,
-        transaction_hash: &str,
+        payout_tx_hash: &str,
+        request_id: Option<String>,
+        original_request: Option<crate::network::ContractTransactionRequest>,
     ) -> Result<()> {
         let contract_address = std::env::var("SOLVER_CONTRACT_ADDRESS")
             .unwrap_or_else(|_| "0x0000000000000000000000000000000000000000".to_string());
@@ -590,7 +592,7 @@ impl MpcNetworkLayer {
             &vault_address,
             solver_address,
             &rewards_payload,
-            transaction_hash,
+            payout_tx_hash,
             &contract_address,
             chain_id,
             chain_name,
@@ -653,7 +655,6 @@ impl MpcNetworkLayer {
                 // info!("🔧 [CONTRACT] Contract transaction data length: {:?}", contract_tx.data.len());
                 // info!("🔧 [COONTRACT] Contract transaction data as ref: {:?}", contract_tx.data.as_ref());
                 // info!("🔧 [CNTRACT] Contract transaction data as ref hex: {:?}", hex::encode(contract_tx.data.as_ref()));
-                // info!("🔧 [CONTRACT] Contract transaction data as ref length: {:?}", contract_tx.data.as_ref().len());
                 // info!("🔧 [CONTRACT] Contract transaction data as ref as ref: {:?}", contract_tx.data.as_ref().as_ref());
                 // info!("🔧 [CONTRACT] Contract transaction data as ref as ref hex: {:?}", hex::encode(contract_tx.data.as_ref().as_ref()));
                 let contract_tx_bytes =
@@ -676,6 +677,8 @@ impl MpcNetworkLayer {
                         vault_tweaked_share,
                         None,
                         vault_tweaked_share,
+                        request_id, // Pass request_id from sequencer
+                        original_request, // Pass original_request for retry support
                     )
                     .await?;
                 info!(
@@ -705,7 +708,9 @@ impl MpcNetworkLayer {
         solver_address: &str,
         asset_chain_name: &str,
         amount: u128,
-        transaction_hash: &str,
+        payout_tx_hash: &str,
+        request_id: Option<String>,
+        original_request: Option<crate::network::ContractTransactionRequest>,
     ) -> Result<()> {
         if amount == 0 {
             return Ok(());
@@ -787,7 +792,7 @@ impl MpcNetworkLayer {
             &solver_id,
             asset_chain_id_u256,
             amount_u256,
-            transaction_hash,
+            payout_tx_hash,
             &contract_address,
             contract_chain_id,
             contract_chain_name,
@@ -843,6 +848,8 @@ impl MpcNetworkLayer {
                         vault_tweaked_share,
                         None,
                         vault_tweaked_share,
+                        request_id, // Pass request_id from sequencer
+                        None, // No original_request available in this context
                     )
                     .await?;
                 info!(
@@ -873,6 +880,8 @@ impl MpcNetworkLayer {
         solver_id: &str,
         asset_chain_name: &str,
         amount: u128,
+        request_id: Option<String>,
+        original_request: Option<crate::network::ContractTransactionRequest>,
     ) -> Result<()> {
         if amount == 0 {
             return Ok(());
@@ -1008,6 +1017,8 @@ impl MpcNetworkLayer {
                         vault_tweaked_share,
                         None,
                         vault_tweaked_share,
+                        request_id, // Pass request_id from sequencer
+                        original_request, // Pass original_request for retry support
                     )
                     .await?;
                 info!(
@@ -1706,6 +1717,143 @@ impl MpcNetworkLayer {
                 info!(
                     "✅ [REFRESH-SECURE] Refresh share index {} sent via P2P RPC to {} (request_id: {:?}, connected: {})",
                     share_index, target_peer_id, request_id, is_connected
+                );
+            }
+            // CRITICAL GOSSIP DELIVERY - sends critical gossip bytes to specific peer via P2P RPC
+            ChannelMessage::UnicastCritical {
+                target_peer_id,
+                topic,
+                data,
+                message_type,
+                message_id,
+                retry_count,
+            } => {
+                const MAX_RETRIES: u8 = 1;
+                const RETRY_DELAY_MS: u64 = 200;
+
+                info!(
+                    "📨 [CRITICAL-UNICAST] Sending critical message {}:{} to peer {} (attempt {})",
+                    message_type,
+                    message_id,
+                    target_peer_id,
+                    retry_count + 1
+                );
+
+                let peer_id = match target_peer_id.parse::<PeerId>() {
+                    Ok(pid) => pid,
+                    Err(e) => {
+                        warn!(
+                            "❌ [CRITICAL-UNICAST] Invalid peer ID '{}': {}",
+                            target_peer_id, e
+                        );
+                        return Err(anyhow!("Invalid peer ID: {}", e));
+                    }
+                };
+
+                let mut is_connected = swarm.is_connected(&peer_id);
+                info!(
+                    "📨 [CRITICAL-UNICAST] Target Peer {} connected: {}",
+                    target_peer_id, is_connected
+                );
+
+                if !is_connected {
+                    if let Some(addr) = self
+                        .peer_discovery
+                        .peer_multiaddresses
+                        .get(&peer_id)
+                        .cloned()
+                    {
+                        info!(
+                            "📞 [CRITICAL-UNICAST] Not connected to {}, dialing before send: {}",
+                            target_peer_id, addr
+                        );
+                        let address: Multiaddr = if addr
+                            .to_string()
+                            .contains(&format!("/p2p/{}", target_peer_id))
+                        {
+                            addr.clone()
+                        } else {
+                            format!("{}/p2p/{}", addr, target_peer_id)
+                                .parse()
+                                .expect("valid multiaddr")
+                        };
+                        if let Err(e) = swarm.dial(address.clone()) {
+                            warn!(
+                                "⚠️ [CRITICAL-UNICAST] Dial to {} failed: {}",
+                                target_peer_id, e
+                            );
+                        } else {
+                            tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+                            is_connected = swarm.is_connected(&peer_id);
+                            info!(
+                                "📨 [CRITICAL-UNICAST] Dial to {} successful: {}",
+                                target_peer_id, is_connected
+                            );
+                        }
+                    } else {
+                        warn!(
+                            "⚠️ [CRITICAL-UNICAST] No known address to dial peer {}; will rely on retry manager",
+                            target_peer_id
+                        );
+                    }
+                }
+
+                if !is_connected && retry_count < MAX_RETRIES {
+                    info!(
+                        "🔄 [CRITICAL-UNICAST] Peer {} not connected - scheduling quick retry {} in {}ms",
+                        target_peer_id,
+                        retry_count + 1,
+                        RETRY_DELAY_MS
+                    );
+
+                    let tx = self.message_tx.clone();
+                    let retry_msg = ChannelMessage::UnicastCritical {
+                        target_peer_id: target_peer_id.clone(),
+                        topic: topic.clone(),
+                        data: data.clone(),
+                        message_type: message_type.clone(),
+                        message_id: message_id.clone(),
+                        retry_count: retry_count + 1,
+                    };
+
+                    tokio::spawn(async move {
+                        tokio::time::sleep(tokio::time::Duration::from_millis(RETRY_DELAY_MS)).await;
+                        if let Err(e) = tx.send(retry_msg).await {
+                            tracing::warn!(
+                                "❌ [CRITICAL-UNICAST] Failed to schedule retry for {}:{}: {}",
+                                message_type,
+                                message_id,
+                                e
+                            );
+                        }
+                    });
+
+                    return Ok(());
+                }
+
+                if !is_connected {
+                    warn!(
+                        "❌ [CRITICAL-UNICAST] Peer {} still not connected after quick retry - giving up",
+                        target_peer_id
+                    );
+                    return Ok(());
+                }
+
+                let request = RPCRequest::DeliverCriticalGossip {
+                    topic,
+                    data,
+                    message_type,
+                    message_id,
+                };
+
+                let request_id = swarm
+                    .behaviour_mut()
+                    .request_response
+                    .send_request(&peer_id, request);
+
+                info!(
+                    "✅ [CRITICAL-UNICAST] Critical message sent to {} (request_id: {:?}, connected: {})",
+                    target_peer_id, request_id, is_connected
                 );
             }
             // SECURE SIGNATURE DISTRIBUTION - sends ECDSA signature to final node via P2P RPC
@@ -2950,6 +3098,97 @@ impl MpcNetworkLayer {
                 } else {
                     warn!("❌ [LOCAL] Signing node not available for deposit intent");
                 }
+            }
+            ChannelMessage::TransactionFailure {
+                sequencer_request_id,
+                blockchain_tx_hash,
+                error,
+                original_request,
+            } => {
+                info!(
+                    "📝 [NETWORK] Processing transaction failure locally: request_id={}, error={}",
+                    sequencer_request_id, error
+                );
+
+                // Check if error message indicates transaction is already in mempool
+                // If so, skip failure handling - transaction will succeed later
+                if error.contains("tx already in mempool") {
+                    info!(
+                        "✅ [TX_FAILURE] Transaction {} is already in mempool (error: {}). Will succeed later. Skipping failure handling.",
+                        sequencer_request_id, error
+                    );
+                    // Don't re-insert or broadcast failure - transaction is pending and will succeed
+                    return Ok(());
+                }
+
+                // Process locally first - re-insert to sequencer
+                if let Some(sequencer) = &self.contract_sequencer {
+                    if let Some(request) = original_request.clone() {
+                        // Check if already in queue to avoid duplicates
+                        let already_in_queue = {
+                            let pending = sequencer.pending_requests.read().await;
+                            pending.contains_key(&sequencer_request_id)
+                        };
+
+                        if !already_in_queue {
+                            // Use submit to properly add the request (handles sequence, notifies waiters, etc.)
+                            match sequencer.submit(request).await {
+                                Ok(()) => {
+                                    info!(
+                                        "✅ [TX_FAILURE] [LOCAL] Re-inserted failed transaction locally: {}",
+                                        sequencer_request_id
+                                    );
+                                }
+                                Err(e) => {
+                                    error!(
+                                        "❌ [TX_FAILURE] [LOCAL] Failed to re-insert transaction {} locally: {}",
+                                        sequencer_request_id, e
+                                    );
+                                }
+                            }
+                        } else {
+                            info!(
+                                "ℹ️ [TX_FAILURE] [LOCAL] Transaction {} already in queue, skipping re-insert",
+                                sequencer_request_id
+                            );
+                        }
+                    } else {
+                        // Fallback to reinsert (for backwards compatibility)
+                        match sequencer.reinsert(&sequencer_request_id).await {
+                            Ok(()) => {
+                                info!(
+                                    "✅ [TX_FAILURE] [LOCAL] Re-inserted via cache: {}",
+                                    sequencer_request_id
+                                );
+                            }
+                            Err(e) => {
+                                error!(
+                                    "❌ [TX_FAILURE] [LOCAL] Failed to re-insert transaction {} via cache: {}",
+                                    sequencer_request_id, e
+                                );
+                            }
+                        }
+                    }
+                } else {
+                    warn!(
+                        "⚠️ [TX_FAILURE] [LOCAL] Cannot retry transaction {} - sequencer not available",
+                        sequencer_request_id
+                    );
+                }
+
+                // Then broadcast to other nodes via gossipsub
+                let failure_msg = GossipsubMessage::TransactionFailure {
+                    sequencer_request_id: sequencer_request_id.clone(),
+                    blockchain_tx_hash: blockchain_tx_hash.clone(),
+                    error: error.clone(),
+                    original_request,
+                };
+                let msg_bytes = serde_json::to_vec(&failure_msg)
+                    .map_err(|e| anyhow::anyhow!("Failed to serialize transaction failure: {}", e))?;
+                
+                let topic = gossipsub::IdentTopic::new("transaction-failure");
+                swarm.behaviour_mut().gossipsub.publish(topic, msg_bytes)?;
+                info!("📡 [NETWORK] Broadcasted transaction failure to P2P network");
             }
 
             ChannelMessage::TransactionIdBroadcast {

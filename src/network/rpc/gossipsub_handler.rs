@@ -14,8 +14,8 @@ use crate::{
     database::key_utils,
     signing::{BitcoinSigner, EthereumSigner},
     types::{
-        p2p::SerializablePeerId, rpc::RPCRequest, signing::SigningMessage,
-        vrf::VrfRoundSyncResponse, ChannelMessage, ConsensusMessage, GossipsubMessage,
+        p2p::SerializablePeerId, signing::SigningMessage, vrf::VrfRoundSyncResponse,
+        ChannelMessage, ConsensusMessage, GossipsubMessage,
     },
 };
 
@@ -1643,7 +1643,7 @@ impl MpcNetworkLayer {
                 round,
                 request_id,
                 final_node_id,
-                signature,
+                signature: _signature,
             } => {
                 info!(
                     "📨 [VAULT_SEQUENCER] Received SELECT: round={}, request_id={}, from={:?}",
@@ -1692,7 +1692,7 @@ impl MpcNetworkLayer {
                 round,
                 request_id,
                 final_node_id,
-                signature,
+                signature: _signature,
             } => {
                 info!(
                     "📨 [MAIN_SEQUENCER] Received SELECT: round={}, request_id={}, from={:?}",
@@ -1964,6 +1964,97 @@ impl MpcNetworkLayer {
                     }
                 } else {
                     warn!("⚠️ [RETRY] Retry manager not available - ACK not recorded");
+                }
+            }
+            GossipsubMessage::TransactionBroadcast {
+                sequencer_request_id,
+                blockchain_tx_hash,
+                chain_id,
+            } => {
+                info!(
+                    "📡 [TX_BROADCAST] Transaction broadcasted: chain_id={}, tx_hash={}",
+                    chain_id, blockchain_tx_hash
+                );
+                if let Some(request_id) = sequencer_request_id {
+                    info!("📝 [TX_BROADCAST] Request ID: {}", request_id);
+                }
+            }
+            GossipsubMessage::TransactionFailure {
+                sequencer_request_id,
+                blockchain_tx_hash,
+                error,
+                original_request,
+            } => {
+                warn!(
+                    "❌ [TX_FAILURE] Transaction failed: request_id={}, tx_hash={}, error={}",
+                    sequencer_request_id, blockchain_tx_hash, error
+                );
+
+                // Check if error message indicates transaction is already in mempool
+                // If so, skip failure handling - transaction will succeed later
+                if error.contains("tx already in mempool") {
+                    info!(
+                        "✅ [TX_FAILURE] Transaction {} is already in mempool (error: {}). Will succeed later. Skipping failure handling.",
+                        sequencer_request_id, error
+                    );
+                    // Don't re-insert - transaction is pending and will succeed
+                    return Ok(());
+                }
+
+                // Re-insert failed request back to ContractTransactionSequencer queue for retry
+                if let Some(sequencer) = &self.contract_sequencer {
+                    if let Some(request) = original_request {
+                        // Direct insert - guaranteed to work!
+                        // Check if already in queue to avoid duplicates
+                        let already_in_queue = {
+                            let pending = sequencer.pending_requests.read().await;
+                            pending.contains_key(&sequencer_request_id)
+                        };
+
+                        if !already_in_queue {
+                            // Use submit to properly add the request (handles sequence, notifies waiters, etc.)
+                            match sequencer.submit(request).await {
+                                Ok(()) => {
+                                    info!(
+                                        "✅ [TX_FAILURE] Re-inserted using original request from failure message: {}",
+                                        sequencer_request_id
+                                    );
+                                }
+                                Err(e) => {
+                                    error!(
+                                        "❌ [TX_FAILURE] Failed to submit original request for transaction {}: {}",
+                                        sequencer_request_id, e
+                                    );
+                                }
+                            }
+                        } else {
+                            info!(
+                                "ℹ️ [TX_FAILURE] Transaction {} already in queue, skipping re-insert",
+                                sequencer_request_id
+                            );
+                        }
+                    } else {
+                        // Fallback to reinsert (for backwards compatibility)
+                        match sequencer.reinsert(&sequencer_request_id).await {
+                            Ok(()) => {
+                                info!(
+                                    "✅ [TX_FAILURE] Re-inserted via cache: {}",
+                                    sequencer_request_id
+                                );
+                            }
+                            Err(e) => {
+                                error!(
+                                    "❌ [TX_FAILURE] Failed to re-insert transaction {}: {}",
+                                    sequencer_request_id, e
+                                );
+                            }
+                        }
+                    }
+                } else {
+                    warn!(
+                        "⚠️ [TX_FAILURE] Cannot retry transaction {} - sequencer not available",
+                        sequencer_request_id
+                    );
                 }
             }
         }
