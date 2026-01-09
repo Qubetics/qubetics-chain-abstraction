@@ -34,7 +34,7 @@ use crate::types::rpc_server::{
 const MAX_REQUEST_BODY_BYTES: u64 = 256 * 1024; // 256 KiB
 const REQUEST_TIMEOUT_SECONDS: u64 = 90;
 // Rate limiting configuration
-const RATE_LIMIT_MAX_REQUESTS: u32 = 2; // Maximum requests per window (per IP)
+const RATE_LIMIT_MAX_REQUESTS: u32 = 5; // Maximum requests per window (per IP)
 const RATE_LIMIT_WINDOW_SECONDS: u64 = 60; // Time window in seconds
 
 pub async fn start_http_server(
