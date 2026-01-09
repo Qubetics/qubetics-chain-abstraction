@@ -9,4 +9,6 @@ pub enum DKGStatus {
     Error { kind: String },
     Started,
     Completed,
-}
+}  
+
+

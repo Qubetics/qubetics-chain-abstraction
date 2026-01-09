@@ -203,11 +203,12 @@ impl SigningNode {
                     return;
                 }
 
-                // For UserToVault, NetworkToTarget, and VaultToNetwork, store and broadcast
+                // For UserToVault, NetworkToTarget, VaultToNetwork, and Refund, store and broadcast
                 let transaction_type_str = match transaction_type {
                     Some(crate::types::TransactionType::UserToVault) => "user_to_vault",
                     Some(crate::types::TransactionType::NetworkToTarget) => "network_to_target",
                     Some(crate::types::TransactionType::VaultToNetwork) => "vault_to_network",
+                    Some(crate::types::TransactionType::Refund) => "refund",
                     Some(crate::types::TransactionType::WithdrawLiquidity) => {
                         // Withdraw liquidity transactions should never have an intent_hash
                         error!(
@@ -361,16 +362,53 @@ impl SigningNode {
             .await
             .ok_or_else(|| anyhow!("Intent not found: {}", intent_hash))?;
 
+        // Parse intent amount from string
+        let intent_amount = intent.amount.parse::<u128>().unwrap_or(0);
+
+        // Calculate refund amount: if UserToVault transaction exists, include 5% extra
+        let refund_amount = if let Some(tx_ids) = user_intent_manager
+            .get_intent_transaction_ids(intent_hash)
+            .await
+        {
+            if tx_ids.user_to_network_tx_id.is_some() {
+                // UserToVault transaction exists, refund original amount + 5% extra
+                let full_amount = intent_amount + (intent_amount / 20);
+                info!(
+                    "💰 [SIGNING-REFUND] UserToVault transaction found, refunding full amount: {} (original: {} + 5% extra: {})",
+                    full_amount, intent_amount, intent_amount / 20
+                );
+                full_amount
+            } else {
+                // No UserToVault transaction, refund original amount
+                info!(
+                    "💰 [SIGNING-REFUND] No UserToVault transaction found, refunding original amount: {}",
+                    intent_amount
+                );
+                intent_amount
+            }
+        } else {
+            // Couldn't check transaction IDs, refund original amount
+            warn!(
+                "⚠️ [SIGNING-REFUND] Could not check transaction IDs, refunding original amount: {}",
+                intent_amount
+            );
+            intent_amount
+        };
+
         info!(
-            "📋 [SIGNING-REFUND] Found intent - Amount: {}, Source: {} ({}), Target: {} ({})",
+            "📋 [SIGNING-REFUND] Found intent - Original Amount: {}, Refund Amount: {}, Source: {} ({}), Target: {} ({})",
             intent.amount,
+            refund_amount,
             intent.source_address,
             intent.source_chain,
             intent.target_address,
             intent.target_chain
         );
 
-        if let Err(e) = self.broadcast_refund_initiation(intent_hash, &intent).await {
+        if let Err(e) = self
+            .broadcast_refund_initiation(intent_hash, &intent, refund_amount)
+            .await
+        {
             warn!(
                 "⚠️ [SIGNING-REFUND] Failed to broadcast refund initiation: {}",
                 e
@@ -380,17 +418,63 @@ impl SigningNode {
         Ok(())
     }
 
+    /// Check if a round is a NetworkToTarget transaction and trigger refund if signature verification fails
+    pub(crate) async fn check_and_trigger_refund_on_verification_failure(
+        &self,
+        round: u64,
+        txn_network: TransactionNetwork,
+    ) {
+        let (intent_hash, transaction_type) = match txn_network {
+            TransactionNetwork::TICS => {
+                let pending = self.pending.pending_transactions.read().await;
+                if let Some((_tx, _tx_bytes, intent_hash, tx_type)) = pending.get(&round) {
+                    (intent_hash.clone(), tx_type.clone())
+                } else {
+                    (None, None)
+                }
+            }
+            TransactionNetwork::BTC => {
+                let pending_btc = self.pending.pending_transactions_btc.read().await;
+                if let Some((_tx, _tx_bytes, intent_hash, tx_type, _extras)) =
+                    pending_btc.get(&round)
+                {
+                    (intent_hash.clone(), tx_type.clone())
+                } else {
+                    (None, None)
+                }
+            }
+        };
+
+        // Only trigger refund for NetworkToTarget transactions with an intent_hash
+        if let (Some(ref intent_hash), Some(TransactionType::NetworkToTarget)) =
+            (intent_hash, transaction_type)
+        {
+            info!(
+                "💸 [SIGNING-REFUND] Signature verification failed for NetworkToTarget transaction, initiating refund for intent: {}",
+                intent_hash
+            );
+            if let Err(e) = self.initiate_refund_transaction(intent_hash).await {
+                error!(
+                    "❌ [SIGNING-REFUND] Failed to initiate refund transaction: {}",
+                    e
+                );
+            }
+        }
+    }
+
     async fn broadcast_refund_initiation(
         &self,
         intent_hash: &str,
         intent: &DepositIntent,
+        refund_amount: u128,
     ) -> Result<()> {
         let refund_msg = serde_json::json!({
             "type": "refund_initiation",
             "intent_hash": intent_hash,
             "source_address": intent.source_address,
             "source_chain": intent.source_chain,
-            "amount": intent.amount.to_string(),
+            "original_amount": intent.amount.to_string(),
+            "refund_amount": refund_amount.to_string(),
             "timestamp": SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
@@ -551,7 +635,7 @@ impl SigningNode {
                     return;
                 }
 
-                // For UserToVault, NetworkToTarget, and VaultToNetwork, just broadcast without storing
+                // For UserToVault, NetworkToTarget, VaultToNetwork, and Refund, just broadcast without storing
                 // Storage will be handled by handle_transaction_id_storage when the broadcast message is received
                 let transaction_type_str = match transaction_type {
                     Some(crate::types::TransactionType::UserToVault) => {
@@ -598,6 +682,13 @@ impl SigningNode {
                             tx_id, intent_hash, round
                         );
                         "vault_to_network"
+                    }
+                    Some(crate::types::TransactionType::Refund) => {
+                        info!(
+                            "📡 [SIGNING] Broadcasting refund transaction ID {} for intent {} (round {}) - storage will be handled by message handler",
+                            tx_id, intent_hash, round
+                        );
+                        "refund"
                     }
                     Some(crate::types::TransactionType::WithdrawLiquidity) => {
                         // Withdraw liquidity transactions should never have an intent_hash

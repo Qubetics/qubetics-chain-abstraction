@@ -49,7 +49,7 @@ impl MpcNetworkLayer {
 
         info!("Local Peer ID: {}", self.local_peer_id);
 
-        loop {
+        loop {                                        
             tokio::select! {
                 event = swarm.select_next_some() => {
                     info!("[SWARM] some");
@@ -278,6 +278,9 @@ impl MpcNetworkLayer {
                             }
                             crate::network::sequencer::ContractTransactionFlow::SolverClaimReward { solver_address, reward_btc, reward_tics, payout_transaction_hash, .. } => {
                                 format!("solver_claim_reward:{}:{}:{}:{}", solver_address, reward_btc.unwrap_or(0), reward_tics.unwrap_or(0), payout_transaction_hash)
+                            }
+                            crate::network::sequencer::ContractTransactionFlow::RefundIntent { intent_id, transaction_hash, reason, .. } => {
+                                format!("refund_intent:{}:{}:{}", intent_id, transaction_hash, reason)
                             }
                         };
 

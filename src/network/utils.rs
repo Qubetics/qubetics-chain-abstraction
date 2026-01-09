@@ -188,6 +188,28 @@ impl MpcNetworkLayer {
         .await
     }
 
+    /// Execute refund intent contract call for a completed refund transaction
+    /// This follows the same flow as execute_contract_call_for_transaction but for refunds
+    /// Uses the sequencer to ensure sequential execution and prevent nonce collisions
+    pub(crate) async fn execute_refund_contract_call_for_transaction(
+        &mut self,
+        intent: &crate::types::DepositIntent,
+        intent_hash: &str,
+        transaction_hash: &str,
+        reason: &str,
+        vault_group_key: Option<k256::ProjectivePoint>,
+    ) -> Result<()> {
+        // Use sequencer to ensure sequential execution and prevent nonce collisions
+        self.submit_refund_intent_to_sequencer(
+            intent_hash,
+            transaction_hash,
+            &intent.timestamp.to_string(),
+            reason,
+            vault_group_key,
+        )
+        .await
+    }
+
     /// Submit a solver add-liquidity operation to the sequencer
     pub(crate) async fn submit_solver_add_liquidity_to_sequencer(
         &mut self,
@@ -471,7 +493,7 @@ impl MpcNetworkLayer {
                     // `EthereumSigner` treats `user_tweaked_share: Some(_)` as "user signing", so we
                     // pass the share via `signing_key_override` and force `user_eth_address=None`.
                     let network_signing_share = *user_tweaked_share;
-                    eth_signer
+                    match eth_signer
                         .sign_transaction(
                             tx_bytes.clone(),
                             &chain_handler,
@@ -483,13 +505,105 @@ impl MpcNetworkLayer {
                             None,
                             network_signing_share,
                         )
-                        .await?;
-
-                    info!(
-                        "✅ [NETWORK_SEQUENCER] Successfully signed NetworkToTarget transaction: intent_hash={}, tx_id={}",
-                        intent_hash, request.transaction_id
-                    );
-                    Ok(())
+                        .await
+                    {
+                        Ok(()) => {
+                            info!(
+                                "✅ [NETWORK_SEQUENCER] Successfully signed NetworkToTarget transaction: intent_hash={}, tx_id={}",
+                                intent_hash, request.transaction_id
+                            );
+                            Ok(())
+                        }
+                        Err(e) => {
+                            let error_message = format!(
+                                "Failed to sign NetworkToTarget transaction (insufficient TICS or other error): {}",
+                                e
+                            );
+                            error!("❌ [NETWORK_SEQUENCER] {}", error_message);
+                            
+                            // Store transaction error and trigger refund
+                            if let Some(user_intent_manager) = &self.user_intent_manager {
+                                // Store the error
+                                if let Err(store_err) = user_intent_manager
+                                    .store_transaction_error(intent_hash, &error_message, None)
+                                    .await
+                                {
+                                    warn!(
+                                        "❌ [NETWORK_SEQUENCER] Failed to store transaction error for intent {}: {}",
+                                        intent_hash, store_err
+                                    );
+                                } else {
+                                    info!(
+                                        "💥 [NETWORK_SEQUENCER] Stored transaction error for intent {}: {}",
+                                        intent_hash, error_message
+                                    );
+                                }
+                                
+                                // Broadcast the error
+                                if let Some(signing_node) = &self.signing_node {
+                                    signing_node.broadcast_transaction_error(
+                                        Some(intent_hash),
+                                        &error_message,
+                                        "network_to_target",
+                                        None,
+                                    )
+                                    .await;
+                                }
+                                
+                                // Trigger refund for NetworkToTarget transactions
+                                info!(
+                                    "💸 [NETWORK_SEQUENCER] Network-to-target transaction failed, initiating refund for intent: {}",
+                                    intent_hash
+                                );
+                                
+                                // Get the intent for refund calculation
+                                if let Some(intent) = user_intent_manager.get_intent(intent_hash).await {
+                                    // Calculate refund amount
+                                    let intent_amount = intent.amount.parse::<u128>().unwrap_or(0);
+                                    let refund_amount = if let Some(tx_ids) = user_intent_manager
+                                        .get_intent_transaction_ids(intent_hash)
+                                        .await
+                                    {
+                                        if tx_ids.user_to_network_tx_id.is_some() {
+                                            // UserToVault transaction exists, refund original amount + 5% extra
+                                            intent_amount + (intent_amount / 20)
+                                        } else {
+                                            // No UserToVault transaction, refund original amount
+                                            intent_amount
+                                        }
+                                    } else {
+                                        intent_amount
+                                    };
+                                    
+                                    // Broadcast refund initiation through signing node
+                                    if let Some(signing_node) = &self.signing_node {
+                                        if let Err(refund_err) = signing_node
+                                            .initiate_refund_transaction(intent_hash)
+                                            .await
+                                        {
+                                            error!(
+                                                "❌ [NETWORK_SEQUENCER] Failed to initiate refund transaction: {}",
+                                                refund_err
+                                            );
+                                        } else {
+                                            info!(
+                                                "✅ [NETWORK_SEQUENCER] Successfully initiated refund for intent: {}",
+                                                intent_hash
+                                            );
+                                        }
+                                    }
+                                } else {
+                                    warn!(
+                                        "❌ [NETWORK_SEQUENCER] Could not retrieve intent {} for refund initiation",
+                                        intent_hash
+                                    );
+                                }
+                            }
+                            
+                            // Return the error so it can be logged by the caller
+                            Err(anyhow::anyhow!("{}", error_message))
+                        }
+                    }
                 } else {
                     Err(anyhow::anyhow!("Signing node not available"))
                 }
@@ -799,6 +913,67 @@ impl MpcNetworkLayer {
         }
     }
 
+    /// Submit a refund intent contract call to the sequencer for sequential processing
+    pub(crate) async fn submit_refund_intent_to_sequencer(
+        &mut self,
+        intent_id: &str,
+        transaction_hash: &str,
+        timestamp: &str,
+        reason: &str,
+        vault_group_key: Option<k256::ProjectivePoint>,
+    ) -> Result<()> {
+        use crate::network::sequencer::ContractTransactionRequest;
+
+        // Initialize sequencer if not already initialized
+        if self.contract_sequencer.is_none() {
+            self.initialize_contract_sequencer().await;
+        }
+
+        if let Some(sequencer) = &self.contract_sequencer {
+            use crate::network::sequencer::ContractTransactionFlow;
+            // Use transaction_hash as the transaction_id for the refund intent contract call
+            let request = ContractTransactionRequest {
+                flow: ContractTransactionFlow::RefundIntent {
+                    intent_id: intent_id.to_string(),
+                    transaction_hash: transaction_hash.to_string(),
+                    timestamp: timestamp.to_string(),
+                    reason: reason.to_string(),
+                    vault_group_key,
+                },
+                transaction_id: format!("refund_contract_{}", transaction_hash),
+                sequence: 0, // Will be set by sequencer.submit()
+            };
+
+            sequencer.submit(request).await?;
+            info!(
+                "📋 [NETWORK] Submitted refund intent contract call to sequencer: intent_id={}, tx_hash={}",
+                intent_id, transaction_hash
+            );
+            Ok(())
+        } else {
+            warn!(
+                "❌ [NETWORK] Contract sequencer not available, falling back to direct execution for refund intent"
+            );
+            // Fallback to direct execution if sequencer initialization failed
+            if let Some(signing_node) = &mut self.signing_node {
+                crate::utils::contract::execute_refund_intent_contract_call(
+                    signing_node,
+                    self.node_manager.as_ref(),
+                    self.dkg_node.as_ref(),
+                    intent_id,
+                    transaction_hash,
+                    timestamp,
+                    reason,
+                    vault_group_key,
+                )
+                .await
+            } else {
+                warn!("❌ [NETWORK] Signing node not available for refund intent contract call execution");
+                Ok(())
+            }
+        }
+    }
+
     /// Initialize the contract transaction sequencer
     ///
     /// Production-ready implementation that creates a queue for sequential processing
@@ -1008,6 +1183,53 @@ impl MpcNetworkLayer {
                 } else {
                     info!(
                         "✅ [SEQUENCER] Successfully executed solver claim-reward contract call for transaction ID {}",
+                        request.transaction_id
+                    );
+                }
+            }
+            ContractTransactionFlow::RefundIntent {
+                intent_id,
+                transaction_hash,
+                timestamp,
+                reason,
+                vault_group_key,
+            } => {
+                info!(
+                    "📋 [SEQUENCER] Processing refund intent contract call: intent_id={}, tx_hash={}, reason={}, tx_id={}",
+                    intent_id, transaction_hash, reason, request.transaction_id
+                );
+
+                // Execute refund intent contract call
+                if let Some(signing_node) = &mut self.signing_node {
+                    let result = crate::utils::contract::execute_refund_intent_contract_call(
+                        signing_node,
+                        self.node_manager.as_ref(),
+                        self.dkg_node.as_ref(),
+                        intent_id,
+                        transaction_hash,
+                        timestamp,
+                        reason,
+                        *vault_group_key,
+                    )
+                    .await;
+
+                    match result {
+                        Ok(()) => {
+                            info!(
+                                "✅ [SEQUENCER] Successfully executed refund intent contract call for transaction ID {}",
+                                request.transaction_id
+                            );
+                        }
+                        Err(e) => {
+                            error!(
+                                "❌ [SEQUENCER] Failed to execute refund intent contract call for transaction ID {}: {}",
+                                request.transaction_id, e
+                            );
+                        }
+                    }
+                } else {
+                    warn!(
+                        "⚠️ [SEQUENCER] Signing node not available, skipping refund intent transaction for tx_id={}",
                         request.transaction_id
                     );
                 }

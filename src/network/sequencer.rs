@@ -145,6 +145,14 @@ pub enum ContractTransactionFlow {
         reward_tics: Option<u128>,
         payout_transaction_hash: String,
     },
+    /// Refund intent contract call
+    RefundIntent {
+        intent_id: String,
+        transaction_hash: String,
+        timestamp: String,
+        reason: String,
+        vault_group_key: Option<ProjectivePoint>,
+    },
 }
 
 /// Request to execute a contract transaction
@@ -830,6 +838,17 @@ impl ContractTransactionSequencer {
                     reward_btc.unwrap_or(0),
                     reward_tics.unwrap_or(0),
                     payout_transaction_hash
+                )
+            }
+            ContractTransactionFlow::RefundIntent {
+                intent_id,
+                transaction_hash,
+                reason,
+                ..
+            } => {
+                format!(
+                    "refund_intent:{}:{}:{}",
+                    intent_id, transaction_hash, reason
                 )
             }
         };
@@ -1538,6 +1557,17 @@ impl ContractTransactionSequencer {
                 format!(
                     "SolverClaimReward(solver={}, btc={:?}, tics={:?}, payout_tx={})",
                     solver_address, reward_btc, reward_tics, payout_transaction_hash
+                )
+            }
+            ContractTransactionFlow::RefundIntent {
+                intent_id,
+                transaction_hash,
+                reason,
+                ..
+            } => {
+                format!(
+                    "RefundIntent(intent_id={}, tx_hash={}, reason={})",
+                    intent_id, transaction_hash, reason
                 )
             }
         };
