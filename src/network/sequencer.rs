@@ -7,7 +7,10 @@
 /// All nodes must process the same request at the same time using deterministic ordering.
 use anyhow::Result;
 use hex;
-use k256::ProjectivePoint;
+use k256::elliptic_curve::sec1::{FromEncodedPoint, ToEncodedPoint};
+use k256::{AffinePoint, EncodedPoint, ProjectivePoint};
+use serde::de::Error;
+use serde::{Deserializer, Serializer};
 use sha3::{Digest, Keccak256};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
@@ -18,6 +21,96 @@ use crate::database::VrfStorage;
 use crate::types::{ConsensusMessage, DepositIntent, GossipsubMessage, TransactionType};
 use crate::vrf::service::VrfRoundSyncKind;
 
+/// Serialize Option<ProjectivePoint> using SEC1 encoding (compressed format)
+fn serialize_vault_group_key<S>(
+    key: &Option<ProjectivePoint>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    match key {
+        Some(point) => {
+            // Convert ProjectivePoint to AffinePoint for encoding
+            let affine = AffinePoint::from(*point);
+            // Serialize as compressed SEC1 encoded bytes (33 bytes)
+            let ep = affine.to_encoded_point(true);
+            serializer.serialize_some(ep.as_bytes())
+        }
+        None => serializer.serialize_none(),
+    }
+}
+
+/// Deserialize Option<ProjectivePoint> from SEC1 encoded bytes
+fn deserialize_vault_group_key<'de, D>(
+    deserializer: D,
+) -> Result<Option<ProjectivePoint>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de::Visitor;
+    use std::fmt;
+
+    struct OptionPointVisitor;
+
+    impl<'de> Visitor<'de> for OptionPointVisitor {
+        type Value = Option<ProjectivePoint>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("an optional secp256k1 point in compressed SEC1 format")
+        }
+
+        fn visit_none<E>(self) -> Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            Ok(None)
+        }
+
+        fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            deserializer.deserialize_bytes(PointBytesVisitor)
+        }
+    }
+
+    struct PointBytesVisitor;
+
+    impl<'de> Visitor<'de> for PointBytesVisitor {
+        type Value = Option<ProjectivePoint>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("a secp256k1 point in compressed SEC1 format")
+        }
+
+        fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            let ep = EncodedPoint::from_bytes(v)
+                .map_err(|_| E::custom("invalid SEC1 encoded point"))?;
+            let affine: Option<AffinePoint> = AffinePoint::from_encoded_point(&ep).into();
+            let affine = affine.ok_or_else(|| E::custom("invalid point on curve"))?;
+            // Convert AffinePoint to ProjectivePoint
+            Ok(Some(ProjectivePoint::from(affine)))
+        }
+
+        fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+        where
+            A: serde::de::SeqAccess<'de>,
+        {
+            let mut bytes = Vec::with_capacity(33);
+            while let Some(b) = seq.next_element()? {
+                bytes.push(b);
+            }
+            self.visit_bytes(&bytes)
+        }
+    }
+
+    deserializer.deserialize_option(OptionPointVisitor)
+}
+
 /// Enum to distinguish between different contract transaction flows
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum ContractTransactionFlow {
@@ -26,8 +119,11 @@ pub enum ContractTransactionFlow {
         intent: DepositIntent,
         intent_hash: String,
         transaction_type: TransactionType,
-        #[serde(skip)]
-        vault_group_key: Option<ProjectivePoint>, // Can be reconstructed from DKG during retry
+        #[serde(
+            serialize_with = "serialize_vault_group_key",
+            deserialize_with = "deserialize_vault_group_key"
+        )]
+        vault_group_key: Option<ProjectivePoint>, // Serialized using SEC1 encoding for network transmission
         amount: u128,
     },
     /// Solver operation: Add liquidity

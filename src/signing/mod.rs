@@ -48,6 +48,7 @@ use crate::user_intent_manager::UserIntentManager;
 use anyhow::bail;
 use num_traits::Zero;
 
+
 #[derive(Clone)]
 pub struct SigningNode {
     id: String,
@@ -1941,12 +1942,13 @@ impl SigningNode {
                                 chain_id
                             );
                             
-                            // Get request_id from pending transactions for sequencer tracking
-                            let request_id = {
+                            // Get request_id and original_request from pending transactions for sequencer tracking
+                            let (request_id, original_request) = {
                                 let pending = self.pending.pending_transactions.read().await;
-                                pending.get(&round).and_then(|(_, _, _, _, req_id, _)| req_id.clone())
+                                pending.get(&round).map(|(_, _, _, _, req_id, orig_req)| {
+                                    (req_id.clone(), orig_req.clone())
+                                }).unwrap_or((None, None))
                             };
-                            
                             match Self::broadcast_ethereum_transaction(&signed_tx_hex, chain_id)
                                 .await
                             {

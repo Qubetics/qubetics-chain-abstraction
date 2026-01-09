@@ -310,7 +310,7 @@ impl MpcNetworkLayer {
                         // Mark as completed (this will wait for all nodes to confirm)
                         if let Some(sequencer) = &self.contract_sequencer {
                             info!(
-                                "✅ [SEQUENCER] [FCFS] Marking tx_id={} (sequence={}) as completed, waiting for all nodes to confirm...",
+                                "   {} (sequence={}) as completed, waiting for all nodes to confirm...",
                                 tx_id, sequence
                             );
 
