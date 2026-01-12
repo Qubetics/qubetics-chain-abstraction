@@ -1335,18 +1335,6 @@ impl MpcNetworkLayer {
             // Count connected peers (not including self)
             let connected_peer_count = swarm.connected_peers().count();
 
-            info!("🔍 [NEW_NODE] Checking join conditions:");
-            info!("   - Has DKG data: {}", has_dkg_data);
-            info!("   - Total nodes in manager: {}", total);
-            info!("   - Connected peers: {}", connected_peer_count);
-            info!(
-                "   - Peers have indices: {} (max index: {})",
-                peers_have_indices, max_peer_index
-            );
-            info!(
-                "   - Peer indices count: {}",
-                self.peer_discovery.peer_indices.len()
-            );
 
             // NEW NODE DETECTION (more robust):
             // A node is a "new node joining established network" if:
@@ -1361,7 +1349,6 @@ impl MpcNetworkLayer {
             let is_new_node_joining = !has_dkg_data && total >= 4;
 
             if is_new_node_joining {
-                info!("🆕 [NEW_NODE] Detected as new node joining established network (total nodes: {}, connected: {})", total, connected_peer_count);
 
                 let connected_peers: Vec<PeerId> = swarm.connected_peers().cloned().collect();
 

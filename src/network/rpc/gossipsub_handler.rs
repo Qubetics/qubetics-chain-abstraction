@@ -1943,7 +1943,7 @@ impl MpcNetworkLayer {
                     "🔄 [UPGRADE] Peer {} upgrade announcement: {} to version {} (timestamp: {})",
                     peer, phase, target_version, timestamp
                 );
-                // Upgrade coordination will be handled when orchestrator is integrated
+             } // Upgrade coordination will be handled when orchestrator is integrated
             GossipsubMessage::TransactionBroadcast {
                 sequencer_request_id,
                 blockchain_tx_hash,
@@ -2162,5 +2162,6 @@ impl MpcNetworkLayer {
 
         // Perform periodic health check
         self.channel_health.health_check();
+        
     }
 }

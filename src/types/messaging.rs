@@ -320,7 +320,8 @@ pub enum GossipsubMessage {
         target_version: String,
         phase: String, // "starting", "completed", "failed", "rolled_back"
         timestamp: u64,
-    /// Maps sequencer request_id to blockchain tx_hash after broadcasting
+    },
+
     TransactionBroadcast {
         /// Sequencer request ID (None for non-sequencer transactions)
         sequencer_request_id: Option<String>,
