@@ -181,14 +181,15 @@ pub async fn execute(
         .expect("Time went backwards!")
         .as_secs();
 
-    let (source_token, target_token, target_address) = get_pair_and_target_address(source_chain, target_chain);
+    let (source_token, target_token, target_address) =
+        get_pair_and_target_address(source_chain, target_chain);
 
     let mut deposit_intent = DepositIntent {
         source_address: "".to_string(),
         target_address: "".to_string(),
         source_chain: "".to_string(),
         target_chain: "".to_string(),
-        amount: 0,
+        amount: "0".to_string(),
         source_token: "".to_string(),
         target_token: "".to_string(),
         timestamp: timestamp as u128,
@@ -218,7 +219,7 @@ pub async fn execute(
         send_eth(&private_key, &derived_eth_address, 40).await?;
 
         println!("Testing user_mpc_deposit...");
-        let amount = parse_ether(deposit_amount)?
+        let amount: u128 = parse_ether(deposit_amount)?
             .try_into()
             .map_err(|_| anyhow::anyhow!("Value too large for u128"))?; // 25 ETH
 
@@ -227,12 +228,14 @@ pub async fn execute(
             target_address: target_address.clone(),
             source_chain: source_chain.to_string(),
             target_chain: target_chain.to_string(),
-            amount,
+            amount: amount.to_string(),
             source_token: source_token.clone(),
             target_token: target_token.clone(),
             timestamp: timestamp as u128,
         };
-    } else if source_chain == SupportedNetwork::Bitcoin && target_chain == SupportedNetwork::Qubetics {
+    } else if source_chain == SupportedNetwork::Bitcoin
+        && target_chain == SupportedNetwork::Qubetics
+    {
         // Starting provide BTC liquidity -> backend side
         // Send 1500 sats to BTC Address Group Key
         println!(
@@ -251,16 +254,19 @@ pub async fn execute(
 
         send_eth(&private_key, &vault_eth_address, 2).await?;
 
-		// Provide ETH liquidity to ETH group key address
-		println!("Sending 30 ETH to ETH Address Group Key: {}", address_group_key);
-		send_eth(&private_key, &address_group_key, 30).await?;
+        // Provide ETH liquidity to ETH group key address
+        println!(
+            "Sending 30 ETH to ETH Address Group Key: {}",
+            address_group_key
+        );
+        send_eth(&private_key, &address_group_key, 30).await?;
 
         deposit_intent = DepositIntent {
             source_address: derived_btc_address.clone(),
             target_address: target_address.clone(),
             source_chain: source_chain.to_string(),
             target_chain: target_chain.to_string(),
-            amount: deposit_amount,
+            amount: deposit_amount.to_string(),
             source_token: source_token.clone(),
             target_token: target_token.clone(),
             timestamp: timestamp as u128,
@@ -271,22 +277,24 @@ pub async fn execute(
 
         send_eth(&private_key, &vault_eth_address, 2).await?;
 
-		// Provide ETH liquidity to ETH group key address
-		println!("Sending 30 ETH to ETH Address Group Key: {}", address_group_key);
-		send_eth(&private_key, &address_group_key, 30).await?;
+        // Provide ETH liquidity to ETH group key address
+        println!(
+            "Sending 30 ETH to ETH Address Group Key: {}",
+            address_group_key
+        );
+        send_eth(&private_key, &address_group_key, 30).await?;
 
         deposit_intent = DepositIntent {
             source_address: derived_eth_address.clone(),
             target_address: target_address.clone(),
             source_chain: source_chain.to_string(),
             target_chain: target_chain.to_string(),
-            amount: deposit_amount,
+            amount: deposit_amount.to_string(),
             source_token: source_token.clone(),
             target_token: target_token.clone(),
             timestamp: timestamp as u128,
         };
         println!("Deposit Intent: {:?}", deposit_intent);
-
     }
 
     let msg = serde_json::to_string(&deposit_intent)?;

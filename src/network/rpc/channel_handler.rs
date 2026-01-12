@@ -355,7 +355,11 @@ impl MpcNetworkLayer {
                     "❌ [{}] Failed to create BTC payout transaction: {}",
                     context, e
                 );
-                return Ok(false);
+                // Return error to propagate insufficient UTXO and other transaction creation errors
+                return Err(anyhow::anyhow!(
+                    "Failed to create BTC transaction: {}",
+                    e
+                ));
             }
         };
 
@@ -516,7 +520,9 @@ impl MpcNetworkLayer {
         solver_address: &str,
         reward_btc: Option<u128>,
         reward_tics: Option<u128>,
-        transaction_hash: &str,
+        payout_tx_hash: &str,
+        request_id: Option<String>,
+        original_request: Option<crate::network::ContractTransactionRequest>,
     ) -> Result<()> {
         let contract_address = std::env::var("SOLVER_CONTRACT_ADDRESS")
             .unwrap_or_else(|_| "0x0000000000000000000000000000000000000000".to_string());
@@ -586,7 +592,7 @@ impl MpcNetworkLayer {
             &vault_address,
             solver_address,
             &rewards_payload,
-            transaction_hash,
+            payout_tx_hash,
             &contract_address,
             chain_id,
             chain_name,
@@ -649,7 +655,6 @@ impl MpcNetworkLayer {
                 // info!("🔧 [CONTRACT] Contract transaction data length: {:?}", contract_tx.data.len());
                 // info!("🔧 [COONTRACT] Contract transaction data as ref: {:?}", contract_tx.data.as_ref());
                 // info!("🔧 [CNTRACT] Contract transaction data as ref hex: {:?}", hex::encode(contract_tx.data.as_ref()));
-                // info!("🔧 [CONTRACT] Contract transaction data as ref length: {:?}", contract_tx.data.as_ref().len());
                 // info!("🔧 [CONTRACT] Contract transaction data as ref as ref: {:?}", contract_tx.data.as_ref().as_ref());
                 // info!("🔧 [CONTRACT] Contract transaction data as ref as ref hex: {:?}", hex::encode(contract_tx.data.as_ref().as_ref()));
                 let contract_tx_bytes =
@@ -672,6 +677,8 @@ impl MpcNetworkLayer {
                         vault_tweaked_share,
                         None,
                         vault_tweaked_share,
+                        request_id, // Pass request_id from sequencer
+                        original_request, // Pass original_request for retry support
                     )
                     .await?;
                 info!(
@@ -701,7 +708,9 @@ impl MpcNetworkLayer {
         solver_address: &str,
         asset_chain_name: &str,
         amount: u128,
-        transaction_hash: &str,
+        payout_tx_hash: &str,
+        request_id: Option<String>,
+        original_request: Option<crate::network::ContractTransactionRequest>,
     ) -> Result<()> {
         if amount == 0 {
             return Ok(());
@@ -783,7 +792,7 @@ impl MpcNetworkLayer {
             &solver_id,
             asset_chain_id_u256,
             amount_u256,
-            transaction_hash,
+            payout_tx_hash,
             &contract_address,
             contract_chain_id,
             contract_chain_name,
@@ -839,6 +848,8 @@ impl MpcNetworkLayer {
                         vault_tweaked_share,
                         None,
                         vault_tweaked_share,
+                        request_id, // Pass request_id from sequencer
+                        original_request, // No original_request available in this context
                     )
                     .await?;
                 info!(
@@ -869,6 +880,8 @@ impl MpcNetworkLayer {
         solver_id: &str,
         asset_chain_name: &str,
         amount: u128,
+        request_id: Option<String>,
+        original_request: Option<crate::network::ContractTransactionRequest>,
     ) -> Result<()> {
         if amount == 0 {
             return Ok(());
@@ -1004,6 +1017,8 @@ impl MpcNetworkLayer {
                         vault_tweaked_share,
                         None,
                         vault_tweaked_share,
+                        request_id, // Pass request_id from sequencer
+                        original_request, // Pass original_request for retry support
                     )
                     .await?;
                 info!(
@@ -1179,28 +1194,15 @@ impl MpcNetworkLayer {
         message: ChannelMessage,
         swarm: &mut libp2p::Swarm<MpcNetworkBehaviour>,
     ) -> Result<()> {
-        info!("[handle_channel_message()] {:?}", message);
         match message {
             ChannelMessage::PeerDiscoveryRetry { attempt } => {
-                info!(
-                    "Received peer discovery retry notification (attempt {})",
-                    attempt
-                );
                 if !self.peer_discovery.pending_peer_discovery_retry {
-                    info!(
-                        "Received stale peer discovery retry notification (attempt {}), ignoring",
-                        attempt
-                    );
                     return Ok(());
                 }
 
                 self.peer_discovery.pending_peer_discovery_retry = false;
 
                 if self.has_additional_peers() {
-                    info!(
-                        "✅ Additional peers detected (attempt {}); broadcasting local presence",
-                        attempt
-                    );
                     self.broadcast_local_presence().await?;
                 } else if attempt >= Self::MAX_PEER_DISCOVERY_RETRIES {
                     warn!(
@@ -1209,41 +1211,23 @@ impl MpcNetworkLayer {
                         Self::MAX_PEER_DISCOVERY_RETRIES
                     );
                 } else {
-                    info!(
-                        "⏳ Peer discovery retry attempt {} found no additional peers; rescheduling",
-                        attempt
-                    );
                     self.schedule_peer_discovery_retry(attempt + 1);
                 }
             }
             ChannelMessage::StatusRequest { responder } => {
-                info!("📊 [STATUS] Processing status request");
                 let peer_id = self.local_peer_id.to_string();
                 let connected_peers = swarm.connected_peers().count();
-                info!(
-                    "📊 [STATUS] Peer ID: {}, Connected peers: {}",
-                    peer_id, connected_peers
-                );
 
                 let (dkg_status, has_final_share) = if let Some(dkg_node) = &self.dkg_node {
                     let status = dkg_node.get_status();
                     let has_share = dkg_node.get_final_secret_share().await.is_some();
-                    info!(
-                        "📊 [STATUS] DKG node available - status: {:?}, has_share: {}",
-                        status, has_share
-                    );
                     (status, has_share)
                 } else {
-                    info!("📊 [STATUS] DKG node not available - using default status");
                     (DKGStatus::New, false)
                 };
 
                 let is_ready = has_final_share && matches!(dkg_status, DKGStatus::Completed);
                 let dkg_status_str = format!("{:?}", dkg_status);
-                info!(
-                    "📊 [STATUS] Final status - DKG: {}, Ready: {}",
-                    dkg_status_str, is_ready
-                );
 
                 let status = NodeStatus {
                     peer_id,
@@ -1252,19 +1236,14 @@ impl MpcNetworkLayer {
                     is_ready,
                 };
 
-                if responder.send(status.clone()).is_err() {
+                if responder.send(status).is_err() {
                     warn!("❌ [STATUS] Failed to send node status response to requester");
-                } else {
-                    info!("✅ [STATUS] Successfully sent status response: peer_id={}, connected_peers={}, dkg_status={}, is_ready={}", 
-                          status.peer_id, status.connected_peers, status.dkg_status, status.is_ready);
                 }
             }
             // this is used in the dkg code
             ChannelMessage::Broadcast { topic, data } => {
                 // dkg.s.1
-                info!("📢 [BROADCAST] Attempting to broadcast to topic: {}", topic);
                 let topic_hash = gossipsub::IdentTopic::new(topic.clone());
-                info!("🏷️ [BROADCAST] Topic hash: {:?}", topic_hash.hash());
 
                 // Production: Check channel capacity and log warnings for monitoring
                 let channel_capacity_warning_threshold = 0.8; // Warn at 80% full
@@ -1311,8 +1290,6 @@ impl MpcNetworkLayer {
                                                     expected_nodes.clone(),
                                                 ).await {
                                                     error!("❌ [RETRY] Failed to register critical message for retry: {}", e);
-                                                } else {
-                                                    info!("✅ [RETRY] Successfully registered message {:?} for retry tracking", message_id);
                                                 }
                                             }
                                         } else {
@@ -1355,42 +1332,11 @@ impl MpcNetworkLayer {
                 // msg (check subscribe_to_default_topics())
                 let swarm_mut = swarm.behaviour_mut();
                 let peer_count = swarm_mut.gossipsub.all_peers().count();
-                
-                if is_retry {
-                    info!(
-                        "🔄 [RETRY] Publishing retry message to topic {} ({} peers available)",
-                        topic, peer_count
-                    );
-                } else {
-                    info!(
-                        "📊 [BROADCAST] Available peers for topic {}: {}",
-                        topic, peer_count
-                    );
-                }
 
                 if peer_count > 0 {
-                    if !is_retry {
-                        info!("👥 [BROADCAST] Connected peers:");
-                        for (peer_id, _peer_info) in swarm_mut.gossipsub.all_peers() {
-                            info!("   - Peer: {:?}", peer_id);
-                        }
-                    }
-
                     let publish_result = swarm_mut.gossipsub.publish(topic_hash, data);
                     match publish_result {
-                        Ok(_) => {
-                            if is_retry {
-                                info!(
-                                    "✅ [RETRY] Successfully published retry message to topic: {}",
-                                    topic
-                                );
-                            } else {
-                                info!(
-                                    "✅ [BROADCAST] Successfully published message to topic: {}",
-                                    topic
-                                );
-                            }
-                        }
+                        Ok(_) => {}
                         Err(e) => {
                             if is_retry {
                                 error!(
@@ -1433,12 +1379,6 @@ impl MpcNetworkLayer {
             } => {
                 const MAX_RETRIES: u8 = 10;
 
-                info!(
-                    "🔐 [DKG-SECURE] Sending share index {} via UNICAST to peer {} (attempt {})",
-                    share_index,
-                    target_peer_id,
-                    retry_count + 1
-                );
 
                 // Parse the target peer ID
                 let peer_id = match target_peer_id.parse::<PeerId>() {
@@ -1454,10 +1394,6 @@ impl MpcNetworkLayer {
 
                 // Attempt to dial if not connected and we have a listen address
                 let mut is_connected = swarm.is_connected(&peer_id);
-                info!(
-                    "🔐 [DKG-SECURE]  Target Peer {} connected: {}",
-                    target_peer_id, is_connected
-                );
                 let connected_peers = swarm.connected_peers().collect::<Vec<_>>();
                 info!("🔐 [DKG-SECURE]  Connected peers: {:?}", connected_peers);
 
@@ -1702,6 +1638,143 @@ impl MpcNetworkLayer {
                 info!(
                     "✅ [REFRESH-SECURE] Refresh share index {} sent via P2P RPC to {} (request_id: {:?}, connected: {})",
                     share_index, target_peer_id, request_id, is_connected
+                );
+            }
+            // CRITICAL GOSSIP DELIVERY - sends critical gossip bytes to specific peer via P2P RPC
+            ChannelMessage::UnicastCritical {
+                target_peer_id,
+                topic,
+                data,
+                message_type,
+                message_id,
+                retry_count,
+            } => {
+                const MAX_RETRIES: u8 = 1;
+                const RETRY_DELAY_MS: u64 = 200;
+
+                info!(
+                    "📨 [CRITICAL-UNICAST] Sending critical message {}:{} to peer {} (attempt {})",
+                    message_type,
+                    message_id,
+                    target_peer_id,
+                    retry_count + 1
+                );
+
+                let peer_id = match target_peer_id.parse::<PeerId>() {
+                    Ok(pid) => pid,
+                    Err(e) => {
+                        warn!(
+                            "❌ [CRITICAL-UNICAST] Invalid peer ID '{}': {}",
+                            target_peer_id, e
+                        );
+                        return Err(anyhow!("Invalid peer ID: {}", e));
+                    }
+                };
+
+                let mut is_connected = swarm.is_connected(&peer_id);
+                info!(
+                    "📨 [CRITICAL-UNICAST] Target Peer {} connected: {}",
+                    target_peer_id, is_connected
+                );
+
+                if !is_connected {
+                    if let Some(addr) = self
+                        .peer_discovery
+                        .peer_multiaddresses
+                        .get(&peer_id)
+                        .cloned()
+                    {
+                        info!(
+                            "📞 [CRITICAL-UNICAST] Not connected to {}, dialing before send: {}",
+                            target_peer_id, addr
+                        );
+                        let address: Multiaddr = if addr
+                            .to_string()
+                            .contains(&format!("/p2p/{}", target_peer_id))
+                        {
+                            addr.clone()
+                        } else {
+                            format!("{}/p2p/{}", addr, target_peer_id)
+                                .parse()
+                                .expect("valid multiaddr")
+                        };
+                        if let Err(e) = swarm.dial(address.clone()) {
+                            warn!(
+                                "⚠️ [CRITICAL-UNICAST] Dial to {} failed: {}",
+                                target_peer_id, e
+                            );
+                        } else {
+                            tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+                            is_connected = swarm.is_connected(&peer_id);
+                            info!(
+                                "📨 [CRITICAL-UNICAST] Dial to {} successful: {}",
+                                target_peer_id, is_connected
+                            );
+                        }
+                    } else {
+                        warn!(
+                            "⚠️ [CRITICAL-UNICAST] No known address to dial peer {}; will rely on retry manager",
+                            target_peer_id
+                        );
+                    }
+                }
+
+                if !is_connected && retry_count < MAX_RETRIES {
+                    info!(
+                        "🔄 [CRITICAL-UNICAST] Peer {} not connected - scheduling quick retry {} in {}ms",
+                        target_peer_id,
+                        retry_count + 1,
+                        RETRY_DELAY_MS
+                    );
+
+                    let tx = self.message_tx.clone();
+                    let retry_msg = ChannelMessage::UnicastCritical {
+                        target_peer_id: target_peer_id.clone(),
+                        topic: topic.clone(),
+                        data: data.clone(),
+                        message_type: message_type.clone(),
+                        message_id: message_id.clone(),
+                        retry_count: retry_count + 1,
+                    };
+
+                    tokio::spawn(async move {
+                        tokio::time::sleep(tokio::time::Duration::from_millis(RETRY_DELAY_MS)).await;
+                        if let Err(e) = tx.send(retry_msg).await {
+                            tracing::warn!(
+                                "❌ [CRITICAL-UNICAST] Failed to schedule retry for {}:{}: {}",
+                                message_type,
+                                message_id,
+                                e
+                            );
+                        }
+                    });
+
+                    return Ok(());
+                }
+
+                if !is_connected {
+                    warn!(
+                        "❌ [CRITICAL-UNICAST] Peer {} still not connected after quick retry - giving up",
+                        target_peer_id
+                    );
+                    return Ok(());
+                }
+
+                let request = RPCRequest::DeliverCriticalGossip {
+                    topic,
+                    data,
+                    message_type,
+                    message_id,
+                };
+
+                let request_id = swarm
+                    .behaviour_mut()
+                    .request_response
+                    .send_request(&peer_id, request);
+
+                info!(
+                    "✅ [CRITICAL-UNICAST] Critical message sent to {} (request_id: {:?}, connected: {})",
+                    target_peer_id, request_id, is_connected
                 );
             }
             // SECURE SIGNATURE DISTRIBUTION - sends ECDSA signature to final node via P2P RPC
@@ -2158,10 +2231,23 @@ impl MpcNetworkLayer {
                 swarm.behaviour_mut().gossipsub.publish(topic, msg_bytes)?;
                 info!("📡 [NETWORK] Broadcasted deposit intent to P2P network");
 
-                // Calculate intent hash for transaction ID storage
-                let intent_hash = crate::utils::calculate_intent_hash(&intent)
-                    .map_err(|e| anyhow::anyhow!("Failed to calculate intent hash: {}", e))?;
-                info!("🔐 [LOCAL] Calculated intent hash: {}", intent_hash);
+                // CRITICAL FIX: For refund transactions, use the ORIGINAL intent_hash from intent_id
+                // Refund intents have modified target_address/target_chain, so calculating hash from
+                // the modified intent would produce a different hash than the original intent
+                let intent_hash = if matches!(transaction_type, crate::types::TransactionType::Refund) 
+                    && intent_id.starts_with("refund-") 
+                {
+                    // Extract original intent_hash from "refund-{original_intent_hash}"
+                    let original_intent_hash = intent_id.strip_prefix("refund-").unwrap_or(&intent_id);
+                    info!("🔐 [LOCAL] Refund transaction detected - using ORIGINAL intent hash: {} (from intent_id: {})", original_intent_hash, intent_id);
+                    original_intent_hash.to_string()
+                } else {
+                    // For non-refund transactions, calculate hash from the intent
+                    let calculated_hash = crate::utils::calculate_intent_hash(&intent)
+                        .map_err(|e| anyhow::anyhow!("Failed to calculate intent hash: {}", e))?;
+                    info!("🔐 [LOCAL] Calculated intent hash: {}", calculated_hash);
+                    calculated_hash
+                };
 
                 // Prepare unsigned transaction for on-chain deposit intent recording
                 // self.prepare_deposit_intent_tx(&intent, &intent_hash).await;
@@ -2179,6 +2265,9 @@ impl MpcNetworkLayer {
                     }
                     crate::types::TransactionType::VaultToNetwork => {
                         &intent.source_chain.to_lowercase()
+                    }
+                    crate::types::TransactionType::Refund => {
+                        &intent.source_chain.to_lowercase() // Refund goes back to source chain
                     }
                     crate::types::TransactionType::RewardTxn => {
                         // RewardTxn is not valid for intent flow
@@ -2220,6 +2309,14 @@ impl MpcNetworkLayer {
                         // For vault-to-network, use vault's tweaked secret share
                         if let Some(dkg_node) = &self.dkg_node {
                             dkg_node.get_vault_tweaked_secret_share().await
+                        } else {
+                            None
+                        }
+                    }
+                    crate::types::TransactionType::Refund => {
+                        // For refund transactions, use network's DKG secret share (same as NetworkToTarget)
+                        if let Some(dkg_node) = &self.dkg_node {
+                            dkg_node.get_final_secret_share().await
                         } else {
                             None
                         }
@@ -2328,8 +2425,9 @@ impl MpcNetworkLayer {
                                         warn!("❌ [LOCAL] UserToVault transaction requires user_eth_address");
                                     }
                                 }
-                                crate::types::TransactionType::NetworkToTarget => {
-                                    // For network withdrawals, use network's DKG group key
+                                crate::types::TransactionType::NetworkToTarget
+                                | crate::types::TransactionType::Refund => {
+                                    // For network withdrawals and refunds, use network's DKG group key
                                     if let Some(dkg_node) = &self.dkg_node {
                                         if let Some(group_key) =
                                             dkg_node.get_final_public_key().await
@@ -2429,8 +2527,9 @@ impl MpcNetworkLayer {
                             }
                         }
                         crate::types::TransactionType::NetworkToTarget
-                        | crate::types::TransactionType::VaultToNetwork => {
-                            // For network withdrawals and vault-to-network, no derived addresses needed
+                        | crate::types::TransactionType::VaultToNetwork
+                        | crate::types::TransactionType::Refund => {
+                            // For network withdrawals, vault-to-network, and refunds, no derived addresses needed
                             (None, None)
                         }
                         crate::types::TransactionType::RewardTxn => {
@@ -2562,7 +2661,7 @@ impl MpcNetworkLayer {
                                             "📝 [LOCAL] NetworkToTarget (EVM) detected - queuing via network transaction sequencer (intent_hash={})",
                                             intent_hash
                                         );
-                                        self.submit_network_to_target_to_sequencer(
+                                        match self.submit_network_to_target_to_sequencer(
                                             &intent,
                                             &intent_hash,
                                             amount,
@@ -2571,8 +2670,116 @@ impl MpcNetworkLayer {
                                             user_tweaked_share,
                                             user_eth_address.clone(),
                                         )
-                                        .await?;
-                                        return Ok(());
+                                        .await
+                                        {
+                                            Ok(()) => {
+                                                return Ok(());
+                                            }
+                                            Err(e) => {
+                                                let error_message = format!(
+                                                    "Failed to submit NetworkToTarget transaction to sequencer: {}",
+                                                    e
+                                                );
+                                                error!("❌ [LOCAL] {}", error_message);
+                                                
+                                                // Store transaction error and trigger refund
+                                                if let Some(user_intent_manager) = &self.user_intent_manager {
+                                                    // Store the error
+                                                    if let Err(store_err) = user_intent_manager
+                                                        .store_transaction_error(&intent_hash, &error_message, None)
+                                                        .await
+                                                    {
+                                                        warn!(
+                                                            "❌ [LOCAL] Failed to store transaction error for intent {}: {}",
+                                                            intent_hash, store_err
+                                                        );
+                                                    } else {
+                                                        info!(
+                                                            "💥 [LOCAL] Stored transaction error for intent {}: {}",
+                                                            intent_hash, error_message
+                                                        );
+                                                    }
+                                                    
+                                                    // Broadcast the error
+                                                    if let Some(signing_node) = &self.signing_node {
+                                                        signing_node.broadcast_transaction_error(
+                                                            Some(&intent_hash),
+                                                            &error_message,
+                                                            "network_to_target",
+                                                            None,
+                                                        )
+                                                        .await;
+                                                    }
+                                                    
+                                                    // Trigger refund for NetworkToTarget transactions
+                                                    info!(
+                                                        "💸 [LOCAL] Network-to-target transaction failed, initiating refund for intent: {}",
+                                                        intent_hash
+                                                    );
+                                                    
+                                                    // Get the intent for refund calculation
+                                                    if let Some(intent) = user_intent_manager.get_intent(&intent_hash).await {
+                                                        let refund_amount = self.calculate_refund_amount(
+                                                            user_intent_manager,
+                                                            &intent_hash,
+                                                            &intent,
+                                                        )
+                                                        .await;
+                                                        
+                                                        // Broadcast refund initiation directly through message channel
+                                                        let refund_msg = serde_json::json!({
+                                                            "type": "refund_initiation",
+                                                            "intent_hash": intent_hash,
+                                                            "source_address": intent.source_address,
+                                                            "source_chain": intent.source_chain,
+                                                            "original_amount": intent.amount.to_string(),
+                                                            "refund_amount": refund_amount.to_string(),
+                                                            "timestamp": std::time::SystemTime::now()
+                                                                .duration_since(std::time::UNIX_EPOCH)
+                                                                .unwrap()
+                                                                .as_millis()
+                                                        });
+                                                        
+                                                        let msg_bytes = match serde_json::to_vec(&refund_msg) {
+                                                            Ok(bytes) => bytes,
+                                                            Err(serialize_err) => {
+                                                                error!(
+                                                                    "❌ [LOCAL] Failed to serialize refund initiation message: {}",
+                                                                    serialize_err
+                                                                );
+                                                                return Ok(());
+                                                            }
+                                                        };
+                                                        
+                                                        let channel_msg = ChannelMessage::RefundInitiation {
+                                                            intent_hash: intent_hash.clone(),
+                                                            data: msg_bytes,
+                                                        };
+                                                        
+                                                        if let Err(send_err) = self.message_tx.send(channel_msg).await {
+                                                            error!(
+                                                                "❌ [LOCAL] Failed to send refund initiation message: {}",
+                                                                send_err
+                                                            );
+                                                        } else {
+                                                            info!(
+                                                                "✅ [LOCAL] Successfully sent refund initiation for intent: {}",
+                                                                intent_hash
+                                                            );
+                                                        }
+                                                    } else {
+                                                        warn!(
+                                                            "❌ [LOCAL] Could not retrieve intent {} for refund initiation",
+                                                            intent_hash
+                                                        );
+                                                    }
+                                                } else {
+                                                    warn!("❌ [LOCAL] User intent manager not available to handle transaction error");
+                                                }
+                                                
+                                                return Ok(());
+                                            }
+                                        }
                                     }
 
                                     {
@@ -2695,12 +2902,214 @@ impl MpcNetworkLayer {
                             }
                         }
                         Err(e) => {
-                            warn!("❌ [LOCAL] Failed to create chain transaction from deposit intent: {}", e);
+                            let error_message = format!("Failed to create chain transaction from deposit intent: {}", e);
+                            error!("❌ [LOCAL] {}", error_message);
+                            
+                            // Store transaction error and trigger refund for NetworkToTarget transactions
+                            if let Some(user_intent_manager) = &self.user_intent_manager {
+                                // Store the error
+                                if let Err(store_err) = user_intent_manager
+                                    .store_transaction_error(&intent_hash, &error_message, None)
+                                    .await
+                                {
+                                    warn!(
+                                        "❌ [LOCAL] Failed to store transaction error for intent {}: {}",
+                                        intent_hash, store_err
+                                    );
+                                } else {
+                                    info!(
+                                        "💥 [LOCAL] Stored transaction error for intent {}: {}",
+                                        intent_hash, error_message
+                                    );
+                                }
+                                
+                                // Broadcast the error
+                                if let Some(signing_node) = &self.signing_node {
+                                    let transaction_type_str = match transaction_type {
+                                        crate::types::TransactionType::UserToVault => "user_to_vault",
+                                        crate::types::TransactionType::NetworkToTarget => "network_to_target",
+                                        crate::types::TransactionType::VaultToNetwork => "vault_to_network",
+                                        crate::types::TransactionType::Refund => "refund",
+                                        crate::types::TransactionType::RewardTxn => "reward_txn",
+                                        crate::types::TransactionType::WithdrawLiquidity => "withdraw_liquidity",
+                                        crate::types::TransactionType::AddLiquidity => "add_liquidity",
+                                    };
+                                    
+                                    signing_node.broadcast_transaction_error(
+                                        Some(&intent_hash),
+                                        &error_message,
+                                        transaction_type_str,
+                                        None,
+                                    )
+                                    .await;
+                                }
+                                
+                                // Trigger refund for NetworkToTarget transactions
+                                if matches!(
+                                    transaction_type,
+                                    crate::types::TransactionType::NetworkToTarget
+                                ) {
+                                    info!(
+                                        "💸 [LOCAL] Network-to-target transaction failed, initiating refund for intent: {}",
+                                        intent_hash
+                                    );
+                                    
+                                    // Get the intent for refund calculation
+                                    if let Some(intent) = user_intent_manager.get_intent(&intent_hash).await {
+                                        let refund_amount = self.calculate_refund_amount(
+                                            user_intent_manager,
+                                            &intent_hash,
+                                            &intent,
+                                        )
+                                        .await;
+                                        
+                                        // Broadcast refund initiation directly through message channel
+                                        let refund_msg = serde_json::json!({
+                                            "type": "refund_initiation",
+                                            "intent_hash": intent_hash,
+                                            "source_address": intent.source_address,
+                                            "source_chain": intent.source_chain,
+                                            "original_amount": intent.amount.to_string(),
+                                            "refund_amount": refund_amount.to_string(),
+                                            "timestamp": std::time::SystemTime::now()
+                                                .duration_since(std::time::UNIX_EPOCH)
+                                                .unwrap()
+                                                .as_millis()
+                                        });
+                                        
+                                        let msg_bytes = match serde_json::to_vec(&refund_msg) {
+                                            Ok(bytes) => bytes,
+                                            Err(e) => {
+                                                error!(
+                                                    "❌ [LOCAL] Failed to serialize refund initiation message: {}",
+                                                    e
+                                                );
+                                                return Ok(());
+                                            }
+                                        };
+                                        
+                                        let channel_msg = ChannelMessage::RefundInitiation {
+                                            intent_hash: intent_hash.clone(),
+                                            data: msg_bytes,
+                                        };
+                                        
+                                        if let Err(e) = self.message_tx.send(channel_msg).await {
+                                            error!(
+                                                "❌ [LOCAL] Failed to send refund initiation message: {}",
+                                                e
+                                            );
+                                        } else {
+                                            info!(
+                                                "✅ [LOCAL] Successfully sent refund initiation for intent: {}",
+                                                intent_hash
+                                            );
+                                        }
+                                    } else {
+                                        warn!(
+                                            "❌ [LOCAL] Could not retrieve intent {} for refund initiation",
+                                            intent_hash
+                                        );
+                                    }
+                                }
+                            } else {
+                                warn!("❌ [LOCAL] User intent manager not available to handle transaction error");
+                            }
                         }
                     }
                 } else {
                     warn!("❌ [LOCAL] Signing node not available for deposit intent");
                 }
+            }
+            ChannelMessage::TransactionFailure {
+                sequencer_request_id,
+                blockchain_tx_hash,
+                error,
+                original_request,
+            } => {
+                info!(
+                    "📝 [NETWORK] Processing transaction failure locally: request_id={}, error={}",
+                    sequencer_request_id, error
+                );
+
+                // Check if error message indicates transaction is already in mempool
+                // If so, skip failure handling - transaction will succeed later
+                if error.contains("tx already in mempool") {
+                    info!(
+                        "✅ [TX_FAILURE] Transaction {} is already in mempool (error: {}). Will succeed later. Skipping failure handling.",
+                        sequencer_request_id, error
+                    );
+                    // Don't re-insert or broadcast failure - transaction is pending and will succeed
+                    return Ok(());
+                }
+
+                // Process locally first - re-insert to sequencer
+                if let Some(sequencer) = &self.contract_sequencer {
+                    if let Some(request) = original_request.clone() {
+                        // Check if already in queue to avoid duplicates
+                        let already_in_queue = {
+                            let pending = sequencer.pending_requests.read().await;
+                            pending.contains_key(&sequencer_request_id)
+                        };
+
+                        if !already_in_queue {
+                            // Use submit to properly add the request (handles sequence, notifies waiters, etc.)
+                            match sequencer.submit(request).await {
+                                Ok(()) => {
+                                    info!(
+                                        "✅ [TX_FAILURE] [LOCAL] Re-inserted failed transaction locally: {}",
+                                        sequencer_request_id
+                                    );
+                                }
+                                Err(e) => {
+                                    error!(
+                                        "❌ [TX_FAILURE] [LOCAL] Failed to re-insert transaction {} locally: {}",
+                                        sequencer_request_id, e
+                                    );
+                                }
+                            }
+                        } else {
+                            info!(
+                                "ℹ️ [TX_FAILURE] [LOCAL] Transaction {} already in queue, skipping re-insert",
+                                sequencer_request_id
+                            );
+                        }
+                    } else {
+                        // Fallback to reinsert (for backwards compatibility)
+                        match sequencer.reinsert(&sequencer_request_id).await {
+                            Ok(()) => {
+                                info!(
+                                    "✅ [TX_FAILURE] [LOCAL] Re-inserted via cache: {}",
+                                    sequencer_request_id
+                                );
+                            }
+                            Err(e) => {
+                                error!(
+                                    "❌ [TX_FAILURE] [LOCAL] Failed to re-insert transaction {} via cache: {}",
+                                    sequencer_request_id, e
+                                );
+                            }
+                        }
+                    }
+                } else {
+                    warn!(
+                        "⚠️ [TX_FAILURE] [LOCAL] Cannot retry transaction {} - sequencer not available",
+                        sequencer_request_id
+                    );
+                }
+
+                // Then broadcast to other nodes via gossipsub
+                let failure_msg = GossipsubMessage::TransactionFailure {
+                    sequencer_request_id: sequencer_request_id.clone(),
+                    blockchain_tx_hash: blockchain_tx_hash.clone(),
+                    error: error.clone(),
+                    original_request,
+                };
+                let msg_bytes = serde_json::to_vec(&failure_msg)
+                    .map_err(|e| anyhow::anyhow!("Failed to serialize transaction failure: {}", e))?;
+                
+                let topic = gossipsub::IdentTopic::new("transaction-failure");
+                swarm.behaviour_mut().gossipsub.publish(topic, msg_bytes)?;
+                info!("📡 [NETWORK] Broadcasted transaction failure to P2P network");
             }
 
             ChannelMessage::TransactionIdBroadcast {
@@ -2997,9 +3406,36 @@ impl MpcNetworkLayer {
                             if let Some(mut intent) =
                                 user_intent_manager.get_intent(&intent_hash).await
                             {
+                                // Calculate refund amount: prefer refund_amount from message, otherwise calculate it
+                                let refund_amount = if let Some(refund_amount_str) = refund_data
+                                    .get("refund_amount")
+                                    .and_then(|v| v.as_str())
+                                {
+                                    // Use refund amount from message (already includes 5% extra if applicable)
+                                    if let Ok(amount) = refund_amount_str.parse::<u128>() {
+                                        info!(
+                                            "💰 [NETWORK-REFUND] Using refund amount from message: {}",
+                                            amount
+                                        );
+                                        amount
+                                    } else {
+                                        warn!(
+                                            "⚠️ [NETWORK-REFUND] Failed to parse refund_amount from message, calculating..."
+                                        );
+                                        // Fall back to calculation
+                                        self.calculate_refund_amount(user_intent_manager, &intent_hash, &intent).await
+                                    }
+                                } else {
+                                    // No refund_amount in message, calculate it
+                                    info!("💰 [NETWORK-REFUND] No refund_amount in message, calculating...");
+                                    self.calculate_refund_amount(user_intent_manager, &intent_hash, &intent).await
+                                };
+
                                 info!("🔄 [NETWORK-REFUND] Creating refund transaction from network to user's source address");
-                                info!("💰 [NETWORK-REFUND] Refunding {} from network to source address: {} on {}", 
-                                      intent.amount, intent.source_address, intent.source_chain);
+                                info!(
+                                    "💰 [NETWORK-REFUND] Refunding {} from network to source address: {} on {}",
+                                    intent.amount, intent.source_address, intent.source_chain
+                                );
 
                                 // Modify the intent to create a refund transaction:
                                 // - From: Network address (DKG group key)
@@ -3020,15 +3456,32 @@ impl MpcNetworkLayer {
                                       original_target, original_target_chain);
 
                                 // Create a refund transaction from network to user's source address
-                                // Use NetworkToTarget type since we're sending from network address to a target
+                                // Use Refund type specifically for refund transactions
                                 let refund_intent_id = format!("refund-{intent_hash}");
+                                // Parse amount for refund ChannelMessage
+                                let refund_amount = match refund_amount {
+                                    amount if amount > 0 => amount,
+                                    _ => {
+                                        // Fallback to intent amount if refund_amount is 0
+                                        match intent.amount.parse::<u128>() {
+                                            Ok(v) => v,
+                                            Err(e) => {
+                                                warn!(
+                                                    "❌ [NETWORK-REFUND] Invalid intent amount '{}' for refund {}: {}. Skipping refund.",
+                                                    intent.amount, intent_hash, e
+                                                );
+                                                return Ok(());
+                                            }
+                                        }
+                                    }
+                                };
+
                                 let refund_message = ChannelMessage::DepositIntent {
                                     intent: intent.clone(),
                                     intent_id: refund_intent_id,
                                     user_eth_address: None, // Use network's DKG key for refund
-                                    transaction_type:
-                                        crate::types::TransactionType::NetworkToTarget,
-                                    amount: intent.amount,
+                                    transaction_type: crate::types::TransactionType::Refund,
+                                    amount: refund_amount,
                                 };
 
                                 // Send the refund message through the channel to be processed
@@ -3320,5 +3773,45 @@ impl MpcNetworkLayer {
             }
         }
         Ok(())
+    }
+
+    /// Calculate refund amount: if UserToVault transaction exists, include 5% extra
+    async fn calculate_refund_amount(
+        &self,
+        user_intent_manager: &crate::user_intent_manager::UserIntentManager,
+        intent_hash: &str,
+        intent: &crate::types::intent::DepositIntent,
+    ) -> u128 {
+        // Parse intent amount from string
+        let intent_amount = intent.amount.parse::<u128>().unwrap_or(0);
+        
+        if let Some(tx_ids) = user_intent_manager
+            .get_intent_transaction_ids(intent_hash)
+            .await
+        {
+            if tx_ids.user_to_network_tx_id.is_some() {
+                // UserToVault transaction exists, refund original amount + 5% extra
+                let full_amount = intent_amount + (intent_amount / 20);
+                info!(
+                    "💰 [NETWORK-REFUND] UserToVault transaction found, refunding full amount: {} (original: {} + 5% extra: {})",
+                    full_amount, intent_amount, intent_amount / 20
+                );
+                full_amount
+            } else {
+                // No UserToVault transaction, refund original amount
+                info!(
+                    "💰 [NETWORK-REFUND] No UserToVault transaction found, refunding original amount: {}",
+                    intent_amount
+                );
+                intent_amount
+            }
+        } else {
+            // Couldn't check transaction IDs, refund original amount
+            warn!(
+                "⚠️ [NETWORK-REFUND] Could not check transaction IDs, refunding original amount: {}",
+                intent_amount
+            );
+            intent_amount
+        }
     }
 }

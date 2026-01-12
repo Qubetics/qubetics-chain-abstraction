@@ -7,7 +7,10 @@
 /// All nodes must process the same request at the same time using deterministic ordering.
 use anyhow::Result;
 use hex;
-use k256::ProjectivePoint;
+use k256::elliptic_curve::sec1::{FromEncodedPoint, ToEncodedPoint};
+use k256::{AffinePoint, EncodedPoint, ProjectivePoint};
+use serde::de::Error;
+use serde::{Deserializer, Serializer};
 use sha3::{Digest, Keccak256};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
@@ -18,15 +21,107 @@ use crate::database::VrfStorage;
 use crate::types::{ConsensusMessage, DepositIntent, GossipsubMessage, TransactionType};
 use crate::vrf::service::VrfRoundSyncKind;
 
+/// Serialize Option<ProjectivePoint> using SEC1 encoding (compressed format)
+fn serialize_vault_group_key<S>(
+    key: &Option<ProjectivePoint>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    match key {
+        Some(point) => {
+            // Convert ProjectivePoint to AffinePoint for encoding
+            let affine = AffinePoint::from(*point);
+            // Serialize as compressed SEC1 encoded bytes (33 bytes)
+            let ep = affine.to_encoded_point(true);
+            serializer.serialize_some(ep.as_bytes())
+        }
+        None => serializer.serialize_none(),
+    }
+}
+
+/// Deserialize Option<ProjectivePoint> from SEC1 encoded bytes
+fn deserialize_vault_group_key<'de, D>(deserializer: D) -> Result<Option<ProjectivePoint>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de::Visitor;
+    use std::fmt;
+
+    struct OptionPointVisitor;
+
+    impl<'de> Visitor<'de> for OptionPointVisitor {
+        type Value = Option<ProjectivePoint>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("an optional secp256k1 point in compressed SEC1 format")
+        }
+
+        fn visit_none<E>(self) -> Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            Ok(None)
+        }
+
+        fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            deserializer.deserialize_bytes(PointBytesVisitor)
+        }
+    }
+
+    struct PointBytesVisitor;
+
+    impl<'de> Visitor<'de> for PointBytesVisitor {
+        type Value = Option<ProjectivePoint>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("a secp256k1 point in compressed SEC1 format")
+        }
+
+        fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            let ep =
+                EncodedPoint::from_bytes(v).map_err(|_| E::custom("invalid SEC1 encoded point"))?;
+            let affine: Option<AffinePoint> = AffinePoint::from_encoded_point(&ep).into();
+            let affine = affine.ok_or_else(|| E::custom("invalid point on curve"))?;
+            // Convert AffinePoint to ProjectivePoint
+            Ok(Some(ProjectivePoint::from(affine)))
+        }
+
+        fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+        where
+            A: serde::de::SeqAccess<'de>,
+        {
+            let mut bytes = Vec::with_capacity(33);
+            while let Some(b) = seq.next_element()? {
+                bytes.push(b);
+            }
+            self.visit_bytes(&bytes)
+        }
+    }
+
+    deserializer.deserialize_option(OptionPointVisitor)
+}
+
 /// Enum to distinguish between different contract transaction flows
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum ContractTransactionFlow {
     /// Deposit intent transactions (UserToVault, NetworkToTarget, VaultToNetwork)
     DepositIntent {
         intent: DepositIntent,
         intent_hash: String,
         transaction_type: TransactionType,
-        vault_group_key: Option<ProjectivePoint>,
+        #[serde(
+            serialize_with = "serialize_vault_group_key",
+            deserialize_with = "deserialize_vault_group_key"
+        )]
+        vault_group_key: Option<ProjectivePoint>, // Serialized using SEC1 encoding for network transmission
         amount: u128,
     },
     /// Solver operation: Add liquidity
@@ -50,10 +145,22 @@ pub enum ContractTransactionFlow {
         reward_tics: Option<u128>,
         payout_transaction_hash: String,
     },
+    /// Refund intent contract call
+    RefundIntent {
+        intent_id: String,
+        transaction_hash: String,
+        timestamp: String,
+        reason: String,
+        #[serde(
+            serialize_with = "serialize_vault_group_key",
+            deserialize_with = "deserialize_vault_group_key"
+        )]
+        vault_group_key: Option<ProjectivePoint>, // Serialized using SEC1 encoding for network transmission
+    },
 }
 
 /// Request to execute a contract transaction
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ContractTransactionRequest {
     /// The type of transaction flow
     pub flow: ContractTransactionFlow,
@@ -114,6 +221,8 @@ pub struct ContractTransactionSequencer {
     node_id: String,
     /// Cached request for the current processing transaction (set when we propose it)
     current_request_cache: Arc<RwLock<Option<ContractTransactionRequest>>>,
+    /// Cache of completed requests for retry purposes (kept for a period after completion)
+    completed_requests_cache: Arc<RwLock<HashMap<String, ContractTransactionRequest>>>,
     /// Notify waiting tasks when queue state changes
     work_notify: Arc<Notify>,
 
@@ -137,6 +246,8 @@ pub struct ContractTransactionSequencer {
     vault_vrf_performed_rounds: Arc<RwLock<HashSet<u64>>>,
     /// Track when we started waiting for SELECT message (to detect timeouts)
     select_wait_start_time: Arc<RwLock<Option<std::time::SystemTime>>>,
+    /// Track when we started waiting for confirmations (to detect timeouts)
+    confirmation_wait_start_time: Arc<RwLock<Option<std::time::SystemTime>>>,
 }
 
 impl ContractTransactionSequencer {
@@ -160,6 +271,7 @@ impl ContractTransactionSequencer {
             message_tx: None,
             node_id: String::new(),
             current_request_cache: Arc::new(RwLock::new(None)),
+            completed_requests_cache: Arc::new(RwLock::new(HashMap::new())),
             work_notify: Arc::new(Notify::new()),
 
             // Initialize VRF + Consensus fields
@@ -172,6 +284,7 @@ impl ContractTransactionSequencer {
             locked_request: Arc::new(RwLock::new(None)),
             vault_vrf_performed_rounds: Arc::new(RwLock::new(HashSet::new())),
             select_wait_start_time: Arc::new(RwLock::new(None)),
+            confirmation_wait_start_time: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -279,7 +392,7 @@ impl ContractTransactionSequencer {
                     );
                 }
             }
-            
+
             // Mark this round as VRF-performed to prevent re-triggering
             self.vault_vrf_performed_rounds.write().await.insert(round);
             info!(
@@ -405,7 +518,7 @@ impl ContractTransactionSequencer {
 
         let final_node = self.select_final_node().await?;
         let is_final = local_peer == final_node;
-        
+
         if is_final {
             info!(
                 "✅ [VAULT_SEQUENCER] am_i_final_node() = true: local_peer={:?}, final_node={:?}",
@@ -417,7 +530,7 @@ impl ContractTransactionSequencer {
                 local_peer, final_node
             );
         }
-        
+
         Ok(is_final)
     }
 
@@ -466,10 +579,9 @@ impl ContractTransactionSequencer {
         &self,
         msg: crate::types::ConsensusMessage,
     ) -> Result<()> {
-        let final_round = match msg {
-            crate::types::ConsensusMessage::FinalNodeResult { round, .. } => Some(round),
-            _ => None,
-        };
+        // Extract round from consensus message
+        let crate::types::ConsensusMessage::FinalNodeResult { round, .. } = msg;
+        let final_round = Some(round);
 
         if let Some(consensus) = &self.consensus_node {
             let mut consensus_node = consensus.write().await;
@@ -491,9 +603,13 @@ impl ContractTransactionSequencer {
                 // get_consensus_result now checks both validated and pending results
                 if let Some(result) = consensus_guard.get_consensus_result(round) {
                     // Check if THIS vault sequencer performed VRF for this round
-                    let has_performed_vrf = self.vault_vrf_performed_rounds.read().await.contains(&round);
+                    let has_performed_vrf = self
+                        .vault_vrf_performed_rounds
+                        .read()
+                        .await
+                        .contains(&round);
                     let current_round = *self.vault_sequencer_round.read().await;
-                    
+
                     // CRITICAL FIX: Only cache if THIS vault sequencer performed VRF for this round
                     // Don't cache based on "round == current_round" because signing module
                     // might be at the same round number, and we'd cache ITS consensus result!
@@ -728,6 +844,17 @@ impl ContractTransactionSequencer {
                     payout_transaction_hash
                 )
             }
+            ContractTransactionFlow::RefundIntent {
+                intent_id,
+                transaction_hash,
+                reason,
+                ..
+            } => {
+                format!(
+                    "refund_intent:{}:{}:{}",
+                    intent_id, transaction_hash, reason
+                )
+            }
         };
 
         // CRITICAL: Hold both locks together to ensure atomic sequence assignment and queue insertion
@@ -797,6 +924,125 @@ impl ContractTransactionSequencer {
         Ok(())
     }
 
+    /// Reinsert a failed transaction request back into the sequencer for retry
+    ///
+    /// This method is used when a transaction fails during broadcast or execution.
+    /// Reinsert a failed transaction back into the sequencer queue for retry.
+    /// Simple approach: just add it back to the queue, it will be processed later.
+    pub async fn reinsert(&self, transaction_id: &str) -> Result<()> {
+        info!(
+            "🔄 [SEQUENCER] Attempting to reinsert failed transaction: {}",
+            transaction_id
+        );
+
+        // Try to find the request in multiple places:
+        // 1. current_request_cache (if currently processing)
+        // 2. pending_requests (if in queue)
+        // 3. completed_requests_cache (if already completed)
+        let request_opt = {
+            // First check current_request_cache (even if not currently processing, it might still be there)
+            let cache = self.current_request_cache.read().await;
+            let cache_has_request = cache.is_some();
+            let cache_tx_id = cache.as_ref().map(|r| r.transaction_id.clone());
+            let request = cache
+                .as_ref()
+                .filter(|r| r.transaction_id == transaction_id)
+                .cloned();
+            drop(cache);
+
+            info!(
+                "🔍 [SEQUENCER] [REINSERT] Checking current_request_cache for tx_id={}: has_request={}, cache_tx_id={:?}, matches={}",
+                transaction_id,
+                cache_has_request,
+                cache_tx_id,
+                request.is_some()
+            );
+
+            if request.is_some() {
+                info!(
+                    "✅ [SEQUENCER] [REINSERT] Transaction {} found in current_request_cache",
+                    transaction_id
+                );
+                request
+            } else {
+                // Try to find the request in pending_requests
+                let pending = self.pending_requests.read().await;
+                let pending_contains = pending.contains_key(transaction_id);
+                let pending_size = pending.len();
+                let request = pending.get(transaction_id).cloned();
+                drop(pending);
+
+                info!(
+                    "🔍 [SEQUENCER] [REINSERT] Checking pending_requests for tx_id={}: contains={}, pending_size={}, found={}",
+                    transaction_id,
+                    pending_contains,
+                    pending_size,
+                    request.is_some()
+                );
+
+                if request.is_some() {
+                    info!(
+                        "✅ [SEQUENCER] [REINSERT] Transaction {} found in pending_requests",
+                        transaction_id
+                    );
+                    request
+                } else {
+                    // Not in pending, check completed_requests_cache for retry
+                    info!(
+                        "🔍 [SEQUENCER] [REINSERT] Transaction {} not in pending queue, checking completed requests cache",
+                        transaction_id
+                    );
+                    let completed_cache = self.completed_requests_cache.read().await;
+                    let cache_contains = completed_cache.contains_key(transaction_id);
+                    let cache_size = completed_cache.len();
+                    let request = completed_cache.get(transaction_id).cloned();
+                    drop(completed_cache);
+
+                    info!(
+                        "🔍 [SEQUENCER] [REINSERT] Checking completed_requests_cache for tx_id={}: contains={}, cache_size={}, found={}",
+                        transaction_id,
+                        cache_contains,
+                        cache_size,
+                        request.is_some()
+                    );
+
+                    request
+                }
+            }
+        };
+
+        if let Some(request) = request_opt {
+            // Check if it's already in pending_requests (avoid duplicates)
+            let mut pending = self.pending_requests.write().await;
+            if pending.contains_key(transaction_id) {
+                info!(
+                    "ℹ️ [SEQUENCER] Transaction {} already in pending queue, skipping reinsert",
+                    transaction_id
+                );
+                return Ok(());
+            }
+
+            // Add it back to the queue - it will be processed after current transaction completes
+            pending.insert(transaction_id.to_string(), request);
+            drop(pending);
+
+            info!(
+                "✅ [SEQUENCER] Reinserted transaction {} into queue for retry (will be processed after current transaction completes)",
+                transaction_id
+            );
+
+            // Notify waiters that a new request is available
+            self.work_notify.notify_waiters();
+        } else {
+            warn!(
+                "⚠️ [SEQUENCER] [REINSERT] Cannot reinsert transaction {} - not found in any cache (current_request_cache, pending_requests, or completed_requests_cache). This transaction cannot be retried.",
+                transaction_id
+            );
+        }
+
+        Ok(())
+    }
+
     /// Get the current processing transaction info (if any)
     /// Returns (tx_id, sequence, is_confirmed) if we're processing something
     pub async fn get_current_processing(&self) -> Option<(String, u64, bool)> {
@@ -855,6 +1101,52 @@ impl ContractTransactionSequencer {
         sync_state.confirmed_nodes.contains(&self.node_id)
     }
 
+    /// Get confirmation status (confirmed count, total count)
+    pub async fn get_confirmation_status(&self) -> Option<(usize, usize)> {
+        let sync_state = self.sync_state.read().await;
+        if sync_state.current_processing.is_some() {
+            Some((sync_state.confirmed_nodes.len(), sync_state.total_nodes))
+        } else {
+            None
+        }
+    }
+
+    /// Check if confirmation wait timeout has been exceeded
+    pub async fn check_confirmation_timeout(&self, timeout_secs: u64) -> bool {
+        let sync_state = self.sync_state.read().await;
+        if sync_state.current_processing.is_none() {
+            // No transaction being processed, clear wait time
+            let mut wait_time = self.confirmation_wait_start_time.write().await;
+            *wait_time = None;
+            return false;
+        }
+
+        if sync_state.is_confirmed {
+            // All nodes confirmed, clear wait time
+            let mut wait_time = self.confirmation_wait_start_time.write().await;
+            *wait_time = None;
+            return false;
+        }
+
+        let now = std::time::SystemTime::now();
+        let mut wait_time = self.confirmation_wait_start_time.write().await;
+
+        if let Some(start_time) = *wait_time {
+            if let Ok(elapsed) = now.duration_since(start_time) {
+                if elapsed.as_secs() >= timeout_secs {
+                    // Timeout exceeded
+                    *wait_time = None;
+                    return true;
+                }
+            }
+        } else {
+            // First time waiting - record start time
+            *wait_time = Some(now);
+        }
+
+        false
+    }
+
     /// Get the next request to process based on final node selection
     /// Only the final node selects the request, others wait for SELECT message
     /// Returns None if something is currently being processed or not confirmed yet
@@ -864,7 +1156,7 @@ impl ContractTransactionSequencer {
         // CRITICAL: Don't move to next until previous is confirmed by all nodes
         if let Some(current_tx) = &sync_state.current_processing {
             if !sync_state.is_confirmed {
-                    info!(
+                info!(
                     "⏳ [VAULT_SEQUENCER] Waiting for confirmation: current_tx={}, confirmed_nodes={}/{}, is_confirmed={}",
                         current_tx,
                         sync_state.confirmed_nodes.len(),
@@ -888,8 +1180,12 @@ impl ContractTransactionSequencer {
 
         // Check if there's a locked request (selected by final node)
         {
-            let locked = self.locked_request.read().await;
-            if let Some(request_id) = &*locked {
+            let locked_request_id = {
+                let locked = self.locked_request.read().await;
+                locked.clone()
+            };
+
+            if let Some(request_id) = &locked_request_id {
                 // We have a locked request from final node - retrieve and return it
                 let mut pending = self.pending_requests.write().await;
                 if let Some(request) = pending.remove(request_id) {
@@ -899,32 +1195,58 @@ impl ContractTransactionSequencer {
                     );
                     return Some(request);
                 }
+                drop(pending);
+
+                // Locked request not in pending_requests - check if it's already being processed
+                let sync_state = self.sync_state.read().await;
+                let is_current = sync_state.current_processing.as_ref() == Some(request_id);
+                drop(sync_state);
+
+                if is_current {
+                    // Already being processed - this is fine, return None to wait
+                    info!(
+                        "ℹ️ [VAULT_SEQUENCER] Locked request {} is already being processed",
+                        request_id
+                    );
+                    return None;
+                }
+
+                // Locked request exists but not found - might be stale or missing
+                warn!(
+                    "⚠️ [VAULT_SEQUENCER] Locked request {} not found in pending_requests and not being processed. May need to wait for it to arrive.",
+                    request_id
+                );
+                // Continue to VRF logic - it will handle waiting or clearing
             }
         }
 
         // Check if we have pending requests
         let queue_len = {
-                let pending = self.pending_requests.read().await;
+            let pending = self.pending_requests.read().await;
             pending.len()
         };
 
         if queue_len == 0 {
-                    return None;
-                }
+            return None;
+        }
 
         // Get current round
         let round = *self.vault_sequencer_round.read().await;
-        
+
         // CRITICAL FIX: Check if THIS node has performed VRF selection for this round
         // This prevents skipping VRF when consensus results arrive from other nodes first
-        let has_performed_vrf = self.vault_vrf_performed_rounds.read().await.contains(&round);
+        let has_performed_vrf = self
+            .vault_vrf_performed_rounds
+            .read()
+            .await
+            .contains(&round);
         let has_final_node = self.final_node_cache.read().await.contains_key(&round);
 
-                info!(
+        info!(
             "📤 [VAULT_SEQUENCER] Dequeue attempt: round={}, queue_len={}, vrf_performed={}, consensus_ready={}",
             round, queue_len, has_performed_vrf, has_final_node
         );
-        
+
         if !has_performed_vrf {
             // THIS node hasn't performed VRF yet - must do it regardless of consensus status
             info!(
@@ -978,7 +1300,7 @@ impl ContractTransactionSequencer {
             );
             return None;
         }
-        
+
         // VRF completed - now check if consensus is complete
         if !has_final_node {
             // VRF done but consensus not yet complete - wait
@@ -994,7 +1316,7 @@ impl ContractTransactionSequencer {
             "✅ [VAULT_SEQUENCER] Round {}: VRF ✅ performed, consensus ✅ ready - proceeding to select transaction",
             round
         );
-        
+
         // Get final node info for logging
         let final_node_info = match self.select_final_node().await {
             Ok(peer_id) => {
@@ -1019,8 +1341,11 @@ impl ContractTransactionSequencer {
         match self.am_i_final_node().await {
             Ok(true) => {
                 // We are the final node - select the request
-                info!("🎯 [VAULT_SEQUENCER] I AM the final node for round {}, selecting transaction", round);
-                
+                info!(
+                    "🎯 [VAULT_SEQUENCER] I AM the final node for round {}, selecting transaction",
+                    round
+                );
+
                 let mut pending = self.pending_requests.write().await;
                 if let Some((tx_id, request)) = pending.pop_first() {
                     let sequence = request.sequence;
@@ -1031,7 +1356,7 @@ impl ContractTransactionSequencer {
                     );
 
                     // Lock this request
-                        drop(pending);
+                    drop(pending);
                     let mut locked = self.locked_request.write().await;
                     *locked = Some(tx_id.clone());
 
@@ -1041,8 +1366,8 @@ impl ContractTransactionSequencer {
                         // Clear locked request on failure
                         *locked = None;
                         drop(locked);
-                            return None;
-                        }
+                        return None;
+                    }
 
                     // Clear wait time since we successfully selected
                     let mut wait_time = self.select_wait_start_time.write().await;
@@ -1058,18 +1383,54 @@ impl ContractTransactionSequencer {
             }
             Ok(false) => {
                 // We are NOT the final node - check if SELECT message already arrived
-                let locked = self.locked_request.read().await;
-                if locked.is_some() {
+                let locked_request_id = {
+                    let locked = self.locked_request.read().await;
+                    locked.clone()
+                };
+
+                if let Some(request_id) = &locked_request_id {
+                    // CRITICAL FIX: Try to process the locked request immediately instead of deferring
+                    // Check if it's in pending_requests
+                    let mut pending = self.pending_requests.write().await;
+                    if let Some(request) = pending.remove(request_id) {
+                        let mut wait_time = self.select_wait_start_time.write().await;
+                        *wait_time = None;
+                        drop(wait_time);
                         info!(
-                        "✅ [VAULT_SEQUENCER] Not final node but SELECT message already received, will process on next call"
-                    );
-                    // Clear wait time since we got the SELECT
-                    drop(locked);
+                            "🔓 [VAULT_SEQUENCER] Processing locked request from final node (non-final node): {}",
+                            request_id
+                        );
+                        return Some(request);
+                    }
+                    drop(pending);
+
+                    // If not in pending_requests, check if it's already being processed
+                    let sync_state = self.sync_state.read().await;
+                    let is_current = sync_state.current_processing.as_ref() == Some(request_id);
+                    drop(sync_state);
+
+                    if is_current {
+                        // Already being processed - this is fine, return None to wait for it to complete
+                        let mut wait_time = self.select_wait_start_time.write().await;
+                        *wait_time = None;
+                        drop(wait_time);
+                        info!(
+                            "ℹ️ [VAULT_SEQUENCER] Locked request {} is already being processed, waiting for completion",
+                            request_id
+                        );
+                        return None;
+                    }
+
+                    // Locked request exists but not in pending_requests and not being processed
+                    // This might be a stale lock or the request hasn't arrived yet
                     let mut wait_time = self.select_wait_start_time.write().await;
                     *wait_time = None;
                     drop(wait_time);
-                    // Return None here - the locked request will be picked up on next iteration
-                    // (after the 3-second sleep)
+                    warn!(
+                        "⚠️ [VAULT_SEQUENCER] Locked request {} not found in pending_requests and not being processed. May be stale or missing.",
+                        request_id
+                    );
+                    // Return None - the locked request check at line 1002 will handle it on next iteration
                     None
                 } else {
                     // No SELECT message yet - wait for it
@@ -1101,9 +1462,9 @@ impl ContractTransactionSequencer {
                         false
                     };
                     drop(wait_time);
-                    
+
                     if !should_warn {
-                            info!(
+                        info!(
                             "⏳ [VAULT_SEQUENCER] Not final node (final={:?}), waiting for SELECT message...",
                             final_node_info.map(|(p, _)| p)
                         );
@@ -1134,7 +1495,7 @@ impl ContractTransactionSequencer {
                             drop(pending);
                             if let Err(e) = self.broadcast_select_message(&tx_id, &request).await {
                                 error!("❌ [VAULT_SEQUENCER] Failed to broadcast SELECT (fallback): {}", e);
-                            return None;
+                                return None;
                             }
                             return Some(request);
                         }
@@ -1202,9 +1563,20 @@ impl ContractTransactionSequencer {
                     solver_address, reward_btc, reward_tics, payout_transaction_hash
                 )
             }
+            ContractTransactionFlow::RefundIntent {
+                intent_id,
+                transaction_hash,
+                reason,
+                ..
+            } => {
+                format!(
+                    "RefundIntent(intent_id={}, tx_hash={}, reason={})",
+                    intent_id, transaction_hash, reason
+                )
+            }
         };
 
-                        info!(
+        info!(
             "📤 [VAULT_SEQUENCER] Broadcasting SELECT: round={}, request_id={}, flow={}",
             round, request_id, flow_label
         );
@@ -1318,7 +1690,7 @@ impl ContractTransactionSequencer {
         *wait_time = None;
         drop(wait_time);
 
-                            info!(
+        info!(
             "🔒 [VAULT_SEQUENCER] Locked request from final node: round={}, request_id={}",
             round, request_id
         );
@@ -1326,7 +1698,7 @@ impl ContractTransactionSequencer {
         // Check if we have this request
         let pending = self.pending_requests.read().await;
         let has_request = pending.contains_key(&request_id);
-                            drop(pending);
+        drop(pending);
 
         if has_request {
             info!(
@@ -1335,14 +1707,14 @@ impl ContractTransactionSequencer {
             );
             self.broadcast_ack(&request_id).await?;
         } else {
-                            warn!(
+            warn!(
                 "⚠️ [VAULT_SEQUENCER] Missing request, sending MISSING: {}",
                 request_id
-                            );
+            );
             self.broadcast_missing(&request_id).await?;
 
             // Wait for request to arrive
-                            info!(
+            info!(
                 "⏳ [VAULT_SEQUENCER] Waiting for missing request: {}",
                 request_id
             );
@@ -1381,7 +1753,7 @@ impl ContractTransactionSequencer {
         };
 
         if !is_for_current && !is_locked {
-                        info!(
+            info!(
                 "ℹ️ [VAULT_SEQUENCER] Ignoring ACK for unrelated request: {} (current={:?}, locked={})",
                 request_id,
                 sync_state.current_processing,
@@ -1400,7 +1772,7 @@ impl ContractTransactionSequencer {
                 sync_state.total_nodes,
                 (sync_state.total_nodes / 2) + 1
             );
-                } else {
+        } else {
             info!(
                 "🔄 [VAULT_SEQUENCER] Duplicate ACK ignored for request_id={} from {}",
                 request_id, node_id_str
@@ -1476,7 +1848,7 @@ impl ContractTransactionSequencer {
                 let mut pending = self.pending_requests.write().await;
                 if let Some(request) = pending.remove(&transaction_id) {
                     // We found and removed the request - now set it as current_processing and agree
-                drop(pending);
+                    drop(pending);
 
                     // Cache the request immediately so we can retrieve it later
                     let mut cache = self.current_request_cache.write().await;
@@ -1540,8 +1912,10 @@ impl ContractTransactionSequencer {
                 drop(sync_state);
                 self.trigger_missing_request_fetch(transaction_id.clone(), sequence)
                     .await;
-                sync_state = self.sync_state.write().await;
+                // Note: sync_state is dropped here, we don't need it anymore
             } else {
+                // Re-acquire sync_state for the warning message
+                let sync_state = self.sync_state.read().await;
                 warn!(
                     "⚠️ [SEQUENCER] [SYNC] Node {} proposed tx_id={} but we're processing {:?}",
                     node_id, transaction_id, sync_state.current_processing
@@ -1569,7 +1943,8 @@ impl ContractTransactionSequencer {
                         sync_state.confirmed_nodes.clear();
                         sync_state.is_confirmed = false; // Reset for next transaction
 
-                        // Clear the cached request
+                        // Request already stored in completed_requests_cache when mark_completed was called
+                        // Just clear the cached request now
                         drop(sync_state);
                         let mut cache = self.current_request_cache.write().await;
                         *cache = None;
@@ -1633,14 +2008,21 @@ impl ContractTransactionSequencer {
 
         let sequencer_clone = self.clone();
         tokio::spawn(async move {
-            sequencer_clone
+            if let Err(e) = sequencer_clone
                 .wait_for_missing_request_and_reagree(transaction_id, sequence)
-                .await;
+                .await
+            {
+                warn!("⚠️ [SEQUENCER] Error waiting for missing request: {}", e);
+            }
         });
     }
 
     /// Wait for a missing request to arrive and then agree to the proposal
-    async fn wait_for_missing_request_and_reagree(&self, transaction_id: String, sequence: u64) {
+    async fn wait_for_missing_request_and_reagree(
+        &self,
+        transaction_id: String,
+        sequence: u64,
+    ) -> Result<()> {
         let timeout_ms = 5000; // 5 seconds timeout
         let check_interval_ms = 100; // Check every 100ms
 
@@ -1648,12 +2030,12 @@ impl ContractTransactionSequencer {
 
         while start.elapsed().as_millis() < timeout_ms as u128 {
             // Check if request has arrived
-            let maybe_request = {
+            let request_exists = {
                 let pending = self.pending_requests.read().await;
-                pending.get(&transaction_id).cloned()
+                pending.contains_key(&transaction_id)
             };
 
-            if let Some(request) = maybe_request {
+            if request_exists {
                 // Request arrived! Now we can agree
                 let mut sync_state = self.sync_state.write().await;
 
@@ -1664,15 +2046,20 @@ impl ContractTransactionSequencer {
                     // Remove from missing_requests
                     sync_state.missing_requests.remove(&transaction_id);
 
-                    // Remove from pending_requests
+                    // Remove from pending_requests (safe: we just checked it exists)
                     let mut pending = self.pending_requests.write().await;
-                    let request = pending.remove(&transaction_id).unwrap();
+                    let request = pending.remove(&transaction_id).ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "Request {} disappeared from queue (race condition)",
+                            transaction_id
+                        )
+                    })?;
                     drop(pending);
 
                     // Cache the request
-                let mut cache = self.current_request_cache.write().await;
+                    let mut cache = self.current_request_cache.write().await;
                     *cache = Some(request.clone());
-                drop(cache);
+                    drop(cache);
 
                     // Set as current processing and agree
                     sync_state.current_processing = Some(transaction_id.clone());
@@ -1681,7 +2068,7 @@ impl ContractTransactionSequencer {
                     sync_state.is_confirmed = false;
                     sync_state.agreed_nodes.insert(self.node_id.clone());
 
-                info!(
+                    info!(
                         "✅ [SEQUENCER] [SYNC] Missing request {} arrived! Agreed to proposal (agreed: {}/{}, threshold: {})",
                         transaction_id,
                         sync_state.agreed_nodes.len(),
@@ -1708,7 +2095,7 @@ impl ContractTransactionSequencer {
                         }
                     }
 
-                    return;
+                    return Ok(());
                 } else {
                     // State changed - we're no longer waiting or something else is processing
                     info!(
@@ -1716,7 +2103,7 @@ impl ContractTransactionSequencer {
                         transaction_id, sync_state.current_processing
                     );
                     sync_state.missing_requests.remove(&transaction_id);
-                    return;
+                    return Ok(());
                 }
             }
 
@@ -1729,19 +2116,20 @@ impl ContractTransactionSequencer {
                     "ℹ️ [SEQUENCER] [SYNC] Request {} (sequence {}) was already processed, stopping wait",
                     transaction_id, sequence
                 );
-                return;
+                return Ok(());
             }
-            
+
             // Check if this transaction has been completed (is current_processing and confirmed)
-            if sync_state_check.current_processing.as_ref() == Some(&transaction_id) 
-                && sync_state_check.is_confirmed {
+            if sync_state_check.current_processing.as_ref() == Some(&transaction_id)
+                && sync_state_check.is_confirmed
+            {
                 // Transaction completed while we were waiting
                 drop(sync_state_check);
                 info!(
                     "ℹ️ [SEQUENCER] [SYNC] Request {} (sequence {}) completed while waiting, stopping wait",
                     transaction_id, sequence
                 );
-                return;
+                return Ok(());
             }
             drop(sync_state_check);
 
@@ -1758,18 +2146,19 @@ impl ContractTransactionSequencer {
                 "ℹ️ [SEQUENCER] [SYNC] Request {} (sequence {}) was processed during timeout period",
                 transaction_id, sequence
             );
-            return;
+            return Ok(());
         }
-        
+
         // Check if transaction completed
-        if sync_state_final.current_processing.as_ref() == Some(&transaction_id) 
-            && sync_state_final.is_confirmed {
+        if sync_state_final.current_processing.as_ref() == Some(&transaction_id)
+            && sync_state_final.is_confirmed
+        {
             drop(sync_state_final);
             info!(
                 "ℹ️ [SEQUENCER] [SYNC] Request {} (sequence {}) completed during timeout period",
                 transaction_id, sequence
             );
-            return;
+            return Ok(());
         }
         drop(sync_state_final);
 
@@ -1780,6 +2169,7 @@ impl ContractTransactionSequencer {
         );
         let mut sync_state = self.sync_state.write().await;
         sync_state.missing_requests.remove(&transaction_id);
+        Ok(())
     }
 
     /// Cache the request for the current processing transaction
@@ -1867,13 +2257,15 @@ impl ContractTransactionSequencer {
         let has_consensus = agreed_count >= threshold;
 
         if has_consensus {
-            info!(
+            if let Some(ref tx_id) = sync_state.current_processing {
+                info!(
                 "✅ [SEQUENCER] [CONSENSUS] Consensus reached for tx_id={}: {}/{} nodes agreed (threshold: {})",
-                sync_state.current_processing.as_ref().unwrap(),
+                    tx_id,
                 agreed_count,
                 sync_state.total_nodes,
                 threshold
             );
+            }
         } else {
             // Log every time we check (not just once) so we can see progress
             // Use a timestamp to ensure we can see if it's being called multiple times
@@ -1931,7 +2323,7 @@ impl ContractTransactionSequencer {
     /// Mark transaction as completed and broadcast confirmation
     /// NOTE: State is NOT cleared here - it's cleared when ALL nodes confirm
     pub async fn mark_completed(&self, transaction_id: &str) -> Result<()> {
-            let mut sync_state = self.sync_state.write().await;
+        let mut sync_state = self.sync_state.write().await;
 
         if sync_state.current_processing.as_deref() == Some(transaction_id) {
             let sequence = sync_state.current_sequence;
@@ -1948,38 +2340,128 @@ impl ContractTransactionSequencer {
             drop(sync_state);
 
             // Broadcast completion confirmation
-        if let Some(message_tx) = &self.message_tx {
-            let broadcast_data =
-                serde_json::to_vec(&crate::types::GossipsubMessage::SequencerSync {
-                    transaction_id: transaction_id.to_string(),
-                    sequence,
-                    node_id: self.node_id.clone(),
-                    state: "completed".to_string(),
-                })?;
+            if let Some(message_tx) = &self.message_tx {
+                let broadcast_data =
+                    serde_json::to_vec(&crate::types::GossipsubMessage::SequencerSync {
+                        transaction_id: transaction_id.to_string(),
+                        sequence,
+                        node_id: self.node_id.clone(),
+                        state: "completed".to_string(),
+                    })?;
 
-            message_tx
-                .send(crate::types::ChannelMessage::Broadcast {
-                    topic: "sequencer-sync".to_string(),
-                    data: broadcast_data,
-                })
-                .await?;
+                message_tx
+                    .send(crate::types::ChannelMessage::Broadcast {
+                        topic: "sequencer-sync".to_string(),
+                        data: broadcast_data,
+                    })
+                    .await?;
 
-            info!(
-                "📤 [SEQUENCER] [COMPLETE] Broadcasted completion confirmation for tx_id={}",
-                transaction_id
-            );
-        }
+                info!(
+                    "📤 [SEQUENCER] [COMPLETE] Broadcasted completion confirmation for tx_id={}",
+                    transaction_id
+                );
+            }
+
+            // CRITICAL: Store request in completed_requests_cache immediately after marking as completed
+            // This ensures the request is available for retry even if broadcast fails 5-7 seconds later
+            // We store it here (not waiting for all nodes to confirm) so it's always available for retry
+            {
+                info!(
+                    "🔍 [SEQUENCER] [COMPLETE] Attempting to store request {} in retry cache",
+                    transaction_id
+                );
+
+                // Try to get request from current_request_cache first
+                let request_opt = {
+                    let cache = self.current_request_cache.read().await;
+                    if let Some(ref request) = *cache {
+                        info!(
+                            "🔍 [SEQUENCER] [COMPLETE] Found request in current_request_cache: tx_id={}, matches={}",
+                            request.transaction_id,
+                            request.transaction_id == transaction_id
+                        );
+                        if request.transaction_id == transaction_id {
+                            Some(request.clone())
+                        } else {
+                            warn!(
+                                "⚠️ [SEQUENCER] [COMPLETE] current_request_cache has different transaction_id: expected={}, found={}",
+                                transaction_id,
+                                request.transaction_id
+                            );
+                            None
+                        }
+                    } else {
+                        info!(
+                            "🔍 [SEQUENCER] [COMPLETE] current_request_cache is None for tx_id={}",
+                            transaction_id
+                        );
+                        None
+                    }
+                };
+
+                // If not in current_request_cache, try pending_requests (should still be there when mark_completed is called)
+                let request_opt = if request_opt.is_none() {
+                    info!(
+                        "🔍 [SEQUENCER] [COMPLETE] Checking pending_requests for tx_id={}",
+                        transaction_id
+                    );
+                    let pending = self.pending_requests.read().await;
+                    let found = pending.contains_key(transaction_id);
+                    info!(
+                        "🔍 [SEQUENCER] [COMPLETE] pending_requests contains tx_id={}: {} (total pending: {})",
+                        transaction_id,
+                        found,
+                        pending.len()
+                    );
+                    pending.get(transaction_id).cloned()
+                } else {
+                    info!(
+                        "🔍 [SEQUENCER] [COMPLETE] Using request from current_request_cache for tx_id={}",
+                        transaction_id
+                    );
+                    request_opt
+                };
+
+                // Store in completed_requests_cache if we found it
+                if let Some(request) = request_opt {
+                    let mut completed_cache = self.completed_requests_cache.write().await;
+                    let was_present = completed_cache.contains_key(transaction_id);
+                    completed_cache.insert(transaction_id.to_string(), request.clone());
+                    info!(
+                        "💾 [SEQUENCER] [COMPLETE] Stored request {} in retry cache (available for retry if broadcast fails) - was_present={}, cache_size={}",
+                        transaction_id,
+                        was_present,
+                        completed_cache.len()
+                    );
+                    // Keep only last 100 completed requests to prevent unbounded growth
+                    if completed_cache.len() > 100 {
+                        let oldest_key = completed_cache.keys().next().cloned();
+                        if let Some(key) = oldest_key {
+                            completed_cache.remove(&key);
+                            info!("🗑️ [SEQUENCER] Removed oldest completed request from retry cache: {}", key);
+                        }
+                    }
+                } else {
+                    warn!(
+                        "⚠️ [SEQUENCER] [COMPLETE] Could not store request {} in retry cache - not found in current_request_cache or pending_requests. This will prevent retry if transaction fails later.",
+                        transaction_id
+                    );
+                }
+            }
 
             // Check if we should clear state (all nodes confirmed)
             let mut sync_state = self.sync_state.write().await;
             if sync_state.confirmed_nodes.len() >= sync_state.total_nodes {
+                // All nodes have confirmed - set is_confirmed to true before clearing
+                // This ensures get_next_request() knows the transaction is fully confirmed
                 let completed_tx = sync_state.current_processing.clone();
+                sync_state.is_confirmed = true;
                 sync_state.current_processing = None;
                 sync_state.agreed_nodes.clear();
                 sync_state.confirmed_nodes.clear();
-                sync_state.is_confirmed = false;
+                sync_state.is_confirmed = false; // Reset for next transaction
 
-                // Clear the cached request
+                // Clear the cached request (already stored in completed_requests_cache above)
                 drop(sync_state);
                 let mut cache = self.current_request_cache.write().await;
                 *cache = None;
@@ -2003,12 +2485,14 @@ impl ContractTransactionSequencer {
                 // Notify waiters that the queue can advance
                 self.work_notify.notify_waiters();
 
-                info!(
+                if let Some(ref tx_id) = completed_tx {
+                    info!(
                     "🎉 [SEQUENCER] [COMPLETE] ALL nodes confirmed tx_id={}! State cleared, ready for next transaction (round {} -> {}).",
-                    completed_tx.as_ref().unwrap(),
+                        tx_id,
                     old_round,
                     new_round
                 );
+                }
                 if let Some(completed) = completed_tx {
                     info!(
                         "🔓 [SEQUENCER] Released queue token for tx_id={}, allowing dequeue of next request",
@@ -2051,7 +2535,7 @@ impl ContractTransactionSequencer {
             sync_state.agreed_nodes.clear();
             sync_state.confirmed_nodes.clear();
             sync_state.is_confirmed = false;
-        drop(sync_state);
+            drop(sync_state);
 
             {
                 let mut cache = self.current_request_cache.write().await;
@@ -2359,7 +2843,7 @@ impl NetworkTransactionSequencer {
                     );
                 }
             }
-            
+
             // Mark this round as VRF-performed to prevent re-triggering
             self.main_vrf_performed_rounds.write().await.insert(round);
             info!(
@@ -2529,10 +3013,9 @@ impl NetworkTransactionSequencer {
         &self,
         msg: crate::types::ConsensusMessage,
     ) -> Result<()> {
-        let final_round = match msg {
-            crate::types::ConsensusMessage::FinalNodeResult { round, .. } => Some(round),
-            _ => None,
-        };
+        // Extract round from consensus message
+        let crate::types::ConsensusMessage::FinalNodeResult { round, .. } = msg;
+        let final_round = Some(round);
 
         if let Some(consensus) = &self.consensus_node {
             let mut consensus_node = consensus.write().await;
@@ -2551,8 +3034,9 @@ impl NetworkTransactionSequencer {
                 let consensus_guard = consensus.read().await;
                 if let Some(result) = consensus_guard.get_consensus_result(round) {
                     // Check if THIS main sequencer performed VRF for this round
-                    let has_performed_vrf = self.main_vrf_performed_rounds.read().await.contains(&round);
-                    
+                    let has_performed_vrf =
+                        self.main_vrf_performed_rounds.read().await.contains(&round);
+
                     if has_performed_vrf {
                         // Cache the result (both VALIDATED and PENDING)
                         // Even PENDING results should be cached so the final node can identify itself
@@ -2840,17 +3324,17 @@ impl NetworkTransactionSequencer {
 
         // Get current round
         let round = *self.main_sequencer_round.read().await;
-        
+
         // CRITICAL FIX: Check if THIS node has performed VRF selection for this round
         // This prevents skipping VRF when consensus results arrive from other nodes first
         let has_performed_vrf = self.main_vrf_performed_rounds.read().await.contains(&round);
         let has_final_node = self.final_node_cache.read().await.contains_key(&round);
-        
-            info!(
+
+        info!(
             "📤 [MAIN_SEQUENCER] Dequeue attempt: round={}, queue_len={}, vrf_performed={}, consensus_ready={}",
             round, queue_len, has_performed_vrf, has_final_node
         );
-        
+
         if !has_performed_vrf {
             // THIS node hasn't performed VRF yet - must do it regardless of consensus status
             info!(
@@ -2862,10 +3346,10 @@ impl NetworkTransactionSequencer {
             let nodes = self.available_nodes.read().await.clone();
             if nodes.is_empty() {
                 warn!("⚠️ [MAIN_SEQUENCER] No available nodes for VRF selection");
-            return None;
-        }
+                return None;
+            }
 
-                        info!(
+            info!(
                 "🔍 [MAIN_SEQUENCER] Available nodes for VRF: count={}, nodes={:?}",
                 nodes.len(),
                 nodes.iter().map(|p| p.to_string()).collect::<Vec<_>>()
@@ -2874,8 +3358,8 @@ impl NetworkTransactionSequencer {
             // Check if VRF service is available
             if self.vrf_service.is_none() {
                 error!("❌ [MAIN_SEQUENCER] VRF service not configured! Cannot perform selection.");
-                        return None;
-                    }
+                return None;
+            }
 
             // Trigger VRF selection (spawn async to avoid blocking)
             let threshold = nodes.len(); // All nodes must participate
@@ -2902,11 +3386,11 @@ impl NetworkTransactionSequencer {
             );
             return None;
         }
-        
+
         // VRF completed - now check if consensus is complete
         if !has_final_node {
             // VRF done but consensus not yet complete - wait
-        info!(
+            info!(
                 "⏳ [MAIN_SEQUENCER] Round {}: VRF ✅ performed, but consensus ⏳ not ready yet (waiting for other nodes)",
                 round
         );
@@ -2918,16 +3402,16 @@ impl NetworkTransactionSequencer {
             "✅ [MAIN_SEQUENCER] Round {}: VRF ✅ performed, consensus ✅ ready - proceeding to select transaction",
             round
         );
-        
+
         // Check if we are the final node
         match self.am_i_final_node().await {
             Ok(true) => {
                 // We are the final node - select the request
-        let mut pending = self.pending_requests.write().await;
+                let mut pending = self.pending_requests.write().await;
                 if let Some((tx_id, request)) = pending.pop_first() {
-            let sequence = request.sequence;
-            let queue_size = pending.len();
-            info!(
+                    let sequence = request.sequence;
+                    let queue_size = pending.len();
+                    info!(
                         "🎯 [MAIN_SEQUENCER] Final node selecting request: tx_id={}, sequence={}, remaining={}",
                         tx_id, sequence, queue_size
                     );
@@ -2943,9 +3427,9 @@ impl NetworkTransactionSequencer {
                     }
 
                     drop(locked);
-            Some(request)
-        } else {
-            None
+                    Some(request)
+                } else {
+                    None
                 }
             }
             Ok(false) => {
@@ -3381,28 +3865,28 @@ impl NetworkTransactionSequencer {
             drop(sync_state);
 
             // Broadcast completion confirmation
-        if let Some(message_tx) = &self.message_tx {
-            let broadcast_data = serde_json::to_vec(
-                &crate::types::GossipsubMessage::NetworkTransactionSequencerSync {
-                    transaction_id: transaction_id.to_string(),
-                    sequence,
-                    node_id: self.node_id.clone(),
-                    state: "completed".to_string(),
-                },
-            )?;
+            if let Some(message_tx) = &self.message_tx {
+                let broadcast_data = serde_json::to_vec(
+                    &crate::types::GossipsubMessage::NetworkTransactionSequencerSync {
+                        transaction_id: transaction_id.to_string(),
+                        sequence,
+                        node_id: self.node_id.clone(),
+                        state: "completed".to_string(),
+                    },
+                )?;
 
-            message_tx
+                message_tx
                 .send(crate::types::ChannelMessage::Broadcast {
                         topic: crate::network::transport::types::TOPIC_NETWORK_TRANSACTION_SEQUENCER_SYNC.to_string(),
                     data: broadcast_data,
                 })
                 .await?;
 
-            info!(
+                info!(
                 "📤 [NETWORK_SEQUENCER] [COMPLETE] Broadcasted completion confirmation for tx_id={}",
                 transaction_id
             );
-        }
+            }
 
             // Check if we should clear state (all nodes confirmed)
             let mut sync_state = self.sync_state.write().await;
@@ -3657,7 +4141,7 @@ impl NetworkTransactionSequencer {
                         // Notify waiters that the queue can advance
                         self.work_notify.notify_waiters();
 
-                                info!(
+                        info!(
                             "🎉 [MAIN_SEQUENCER] [SYNC] ALL nodes confirmed completion of tx_id={}! Round incremented: {} -> {}. State cleared, ready for next transaction.",
                             tx_id_for_log, old_round, new_round
                         );
@@ -3669,6 +4153,8 @@ impl NetworkTransactionSequencer {
                 }
             }
         }
+        // Note: "cancelled" state is only used by ContractTransactionSequencer for retry mechanism
+        // NetworkTransactionSequencer doesn't have retry, so no cancellation handling needed here
     }
 
     /// Update total nodes count (for consensus threshold)
@@ -3740,7 +4226,7 @@ mod tests {
                     target_address: "target".to_string(),
                     source_chain: "chain_a".to_string(),
                     target_chain: "chain_b".to_string(),
-                    amount: 10,
+                    amount: "10".to_string(),
                     source_token: "TOKENA".to_string(),
                     target_token: "TOKENB".to_string(),
                     timestamp: 0,

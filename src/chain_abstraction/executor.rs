@@ -34,6 +34,8 @@ impl MpcChainExecutor {
         vault_group_key: Option<ProjectivePoint>,
         amount: u128,
         tx_hash: &str,
+        request_id: Option<String>,
+        original_request: Option<crate::network::ContractTransactionRequest>,
     ) -> Result<()> {
         info!(
             "📝 [CHAIN_EXECUTOR] Executing contract call for transaction type: {:?}",
@@ -110,6 +112,8 @@ impl MpcChainExecutor {
                                     vault_tweaked_share,
                                     None,
                                     vault_tweaked_share,
+                                    request_id, // Pass request_id from sequencer
+                                    original_request, // Pass original_request for guaranteed retry
                                 )
                                 .await?;
                         }

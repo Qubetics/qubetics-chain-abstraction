@@ -123,6 +123,14 @@ pub enum RPCRequest {
         transaction_data: Vec<u8>,
         round: u64,
     },
+
+    /// Deliver critical gossip bytes via P2P RPC (unicast retry path)
+    DeliverCriticalGossip {
+        topic: String,
+        data: Vec<u8>,
+        message_type: String,
+        message_id: String,
+    },
 }
 
 /// RPC response variants.
@@ -212,6 +220,12 @@ pub enum RPCResponse {
         receiver_node_id: String,
         round: u64,
         success: bool,
+    },
+
+    /// Acknowledge receipt of critical gossip delivery via unicast
+    CriticalDeliveryAck {
+        message_type: String,
+        message_id: String,
     },
 }
 

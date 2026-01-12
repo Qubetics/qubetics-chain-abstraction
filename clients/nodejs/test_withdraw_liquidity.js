@@ -16,11 +16,11 @@ const WITHDRAW_ENDPOINT = `${RPC_BASE_URL}/withdraw_liquidity`;
 
 // Private key/address pair used in test_claim_reward.js (replace for real usage)
 const TEST_PRIVATE_KEY =
-  'aa5d2e1f7fc11bbe6f19b12316c7a9acb2d633bba798fc5a3fea547f1cf99b0a';
+  '0x93cc7fbc4bfd7fcfd83d11c85ba522f8fa1c03ece1a3b5f1782bc164996844d9';
 const DEFAULT_ETH_ADDRESS = '0x002aF85c8865DE4604dF07a1105EfEF2b8e0dE05';
 const DEFAULT_BTC_ADDRESS = 'mhF1CH8uxvYLhMzzGGqrxWYi4cWceXMEYB';
-const DEFAULT_TICS_WITHDRAW = null; // 1 TICS
-const DEFAULT_BTC_WITHDRAW = '800'; // set to string value if testing BTC
+const DEFAULT_TICS_WITHDRAW = '10'; // 1 TICS
+const DEFAULT_BTC_WITHDRAW = null; // set to string value if testing BTC
 
 const colors = {
   red: '\x1b[31m',

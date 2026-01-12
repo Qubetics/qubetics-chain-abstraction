@@ -22,6 +22,7 @@ impl MpcNetworkLayer {
             "reward_txn" => Ok(TransactionType::RewardTxn),
             "withdraw_liquidity" | "withdrawLiquidity" => Ok(TransactionType::WithdrawLiquidity),
             "add_liquidity" | "addLiquidity" => Ok(TransactionType::AddLiquidity),
+            "refund" => Ok(TransactionType::Refund),
             _ => Err(anyhow::anyhow!("Unknown transaction type: {}", tx_type_str)),
         }
     }
@@ -37,7 +38,28 @@ impl MpcNetworkLayer {
     ) -> Result<()> {
         match transaction_type {
             "user_to_vault" => {
-                // Calculate rewards for UserToVault
+                user_intent_manager
+                    .store_user_to_vault_tx_id(intent_hash, transaction_id, node_id)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{}", e))
+            }
+            "network_to_target" => {
+                user_intent_manager
+                    .store_network_to_target_tx_id(intent_hash, transaction_id, node_id)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{}", e))
+            },
+            "refund" => {
+                // Store refund transaction ID (refund transactions go from network to user's source address)
+                // We store it as network_to_target since it's the same flow
+                user_intent_manager
+                    .store_network_to_target_tx_id(intent_hash, transaction_id, node_id)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{}", e))
+            },
+            "vault_to_network" => 
+            {
+                // Calculate rewards for vault to network
                 if let Some(signing_node) = &self.signing_node {
                     if let Err(e) = signing_node.calculate_reward_per_solver(intent_hash).await {
                         warn!(
@@ -51,19 +73,11 @@ impl MpcNetworkLayer {
                         );
                     }
                 }
-                user_intent_manager
-                    .store_user_to_vault_tx_id(intent_hash, transaction_id, node_id)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("{}", e))
-            }
-            "network_to_target" => user_intent_manager
-                .store_network_to_target_tx_id(intent_hash, transaction_id, node_id)
-                .await
-                .map_err(|e| anyhow::anyhow!("{}", e)),
-            "vault_to_network" => user_intent_manager
+            user_intent_manager
                 .store_vault_to_network_tx_id(intent_hash, transaction_id, node_id)
                 .await
-                .map_err(|e| anyhow::anyhow!("{}", e)),
+                .map_err(|e| anyhow::anyhow!("{}", e))
+            }
             "withdraw_liquidity" | "withdrawLiquidity" => {
                 warn!(
                     "⚠️ [SIGNING] Received withdraw-liquidity transaction ID for intent {} but this flow is not implemented yet",
@@ -187,11 +201,46 @@ impl MpcNetworkLayer {
                                 transaction_id
                             );
 
-                            // Execute contract call only after consensus is reached
-                            if let Some(intent) = user_intent_manager.get_intent(intent_hash).await
-                            {
-                                let tx_type_enum = Self::parse_transaction_type(transaction_type)?;
-
+                            // Handle refund transactions differently - they use refundIntent contract method
+                            if transaction_type == "refund" {
+                                // Extract the original intent_hash from "refund-{intent_hash}"
+                                let original_intent_hash = intent_hash.strip_prefix("refund-").unwrap_or(intent_hash);
+                                
+                                // Get transaction IDs to extract error message (try this first, works even if intent is missing)
+                                let tx_ids = user_intent_manager.get_intent_transaction_ids(original_intent_hash).await;
+                                
+                                // Use stored error message as reason, or fallback to default
+                                let reason = tx_ids
+                                    .and_then(|ids| ids.error_message)
+                                    .unwrap_or_else(|| format!("Refund transaction completed: {}", transaction_id));
+                                
+                                // Get timestamp from intent if available, otherwise use current timestamp
+                                let timestamp = if let Some(intent) = user_intent_manager.get_intent(original_intent_hash).await {
+                                    intent.timestamp.to_string()
+                                } else {
+                                    // Intent not found - this should not happen if intent was stored during user-to-vault
+                                    // Log detailed warning to help diagnose the root cause
+                                    warn!(
+                                        "⚠️ [CONTRACT] Could not retrieve intent {} for refund contract call",
+                                        original_intent_hash
+                                    );
+                                    warn!(
+                                        "🔍 [CONTRACT] Root cause investigation: Intent should have been stored during user-to-vault transaction"
+                                    );
+                                    warn!(
+                                        "🔍 [CONTRACT] Possible reasons: 1) Intent hash broadcast missed, 2) Node joined network after intent was created, 3) Database synchronization issue"
+                                    );
+                                    
+                                    warn!(
+                                        "⚠️ [CONTRACT] Using current timestamp as fallback - refund contract call will proceed"
+                                    );
+                                    std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .unwrap()
+                                        .as_millis()
+                                        .to_string()
+                                };
+                                
                                 let vault_group_key = if let Some(dkg_node) = &self.dkg_node {
                                     dkg_node.get_vault_group_key().await
                                 } else {
@@ -199,37 +248,89 @@ impl MpcNetworkLayer {
                                 };
 
                                 if let Some(vault_group_key) = vault_group_key {
+                                    // Execute refund contract call using sequencer directly (doesn't require intent object)
                                     if let Err(e) = self
-                                        .execute_contract_call_for_transaction(
-                                            &intent,
-                                            intent_hash,
-                                            tx_type_enum,
+                                        .submit_refund_intent_to_sequencer(
+                                            original_intent_hash,
                                             transaction_id,
+                                            &timestamp,
+                                            &reason,
                                             Some(vault_group_key),
-                                            intent.amount,
                                         )
                                         .await
                                     {
                                         warn!(
-                                            "❌ [CONTRACT] Failed to submitted contract call for transaction ID {}: {}",
+                                            "❌ [CONTRACT] Failed to submit refund contract call for transaction ID {}: {}",
                                             transaction_id, e
                                         );
                                     } else {
                                         info!(
-                                            "✅ [CONTRACT] Successfully submitted contract call for transaction ID {} (after consensus verification)",
+                                            "✅ [CONTRACT] Successfully submitted refund contract call for transaction ID {} (after consensus verification)",
                                             transaction_id
                                         );
                                     }
                                 } else {
                                     warn!(
-                                        "❌ [CONTRACT] No vault group key available for contract call execution"
+                                        "❌ [CONTRACT] No vault group key available for refund contract call execution"
                                     );
                                 }
                             } else {
-                                warn!(
-                                    "❌ [CONTRACT] Could not retrieve intent {} for contract call execution",
-                                    intent_hash
-                                );
+                                // Execute contract call only after consensus is reached (for non-refund transactions)
+                                if let Some(intent) = user_intent_manager.get_intent(intent_hash).await
+                                {
+                                    let tx_type_enum = Self::parse_transaction_type(transaction_type)?;
+
+                                    let vault_group_key = if let Some(dkg_node) = &self.dkg_node {
+                                        dkg_node.get_vault_group_key().await
+                                    } else {
+                                        None
+                                    };
+
+                                    if let Some(vault_group_key) = vault_group_key {
+                                        // Parse intent amount (stored as string) into u128
+                                        let intent_amount = match intent.amount.parse::<u128>() {
+                                            Ok(v) => v,
+                                            Err(e) => {
+                                                warn!(
+                                                    "❌ [CONTRACT] Invalid intent amount '{}' for {}: {}. Skipping contract call.",
+                                                    intent.amount, intent_hash, e
+                                                );
+                                                return Ok(());
+                                            }
+                                        };
+
+                                        if let Err(e) = self
+                                            .execute_contract_call_for_transaction(
+                                                &intent,
+                                                intent_hash,
+                                                tx_type_enum,
+                                                transaction_id,
+                                                Some(vault_group_key),
+                                                intent_amount,
+                                            )
+                                            .await
+                                        {
+                                            warn!(
+                                                "❌ [CONTRACT] Failed to submitted contract call for transaction ID {}: {}",
+                                                transaction_id, e
+                                            );
+                                        } else {
+                                            info!(
+                                                "✅ [CONTRACT] Successfully submitted contract call for transaction ID {} (after consensus verification)",
+                                                transaction_id
+                                            );
+                                        }
+                                    } else {
+                                        warn!(
+                                            "❌ [CONTRACT] No vault group key available for contract call execution"
+                                        );
+                                    }
+                                } else {
+                                    warn!(
+                                        "❌ [CONTRACT] Could not retrieve intent {} for contract call execution",
+                                        intent_hash
+                                    );
+                                }
                             }
                         }
                     }
@@ -282,7 +383,8 @@ impl MpcNetworkLayer {
                     "user_to_vault" => {
                         tx_ids.user_to_network_tx_id.as_ref() == Some(&transaction_id.to_string())
                     }
-                    "network_to_target" => {
+                    "network_to_target" | "refund" => {
+                        // Refund transactions are stored as network_to_target_tx_id
                         tx_ids.network_to_target_tx_id.as_ref() == Some(&transaction_id.to_string())
                     }
                     "vault_to_network" => {

@@ -14,12 +14,16 @@ use crate::{
     user_intent_manager::UserIntentManager,
 };
 
-use super::handlers::{
-    handle_add_liquidity, handle_claim_reward, handle_get_dkg_status, handle_get_node_id,
-    handle_get_network_addresses, handle_get_reward_solver, handle_get_solver_liquidity,
-    handle_get_status, handle_get_uptime, handle_get_user_info, handle_heartbeat,
-    handle_log_partial_pubkeys, handle_register_user, handle_user_mpc_deposit,
-    handle_withdraw_liquidity,
+use super::{
+    errors::RpcError,
+    handlers::{
+        handle_add_liquidity, handle_claim_reward, handle_get_dkg_status,
+        handle_get_network_addresses, handle_get_node_id, handle_get_reward_solver,
+        handle_get_solver_liquidity, handle_get_status, handle_get_uptime, handle_get_user_info,
+        handle_heartbeat, handle_log_partial_pubkeys, handle_register_user,
+        handle_user_mpc_deposit, handle_withdraw_liquidity,
+    },
+    rate_limiter::RateLimiter,
 };
 use crate::types::rpc_server::{
     AddLiquidityRequest, ClaimRewardRequest, GetRewardSolverRequest, RequestContext,
@@ -29,6 +33,9 @@ use crate::types::rpc_server::{
 
 const MAX_REQUEST_BODY_BYTES: u64 = 256 * 1024; // 256 KiB
 const REQUEST_TIMEOUT_SECONDS: u64 = 90;
+// Rate limiting configuration
+const RATE_LIMIT_MAX_REQUESTS: u32 = 5; // Maximum requests per window (per IP)
+const RATE_LIMIT_WINDOW_SECONDS: u64 = 60; // Time window in seconds
 
 pub async fn start_http_server(
     message_tx: mpsc::Sender<ChannelMessage>,
@@ -49,9 +56,31 @@ pub async fn start_http_server(
     let reward_storage = Arc::new(reward_storage);
     let start_time = Arc::new(start_time);
 
+    // Initialize rate limiter
+    let rate_limiter = Arc::new(RateLimiter::new(
+        RATE_LIMIT_MAX_REQUESTS,
+        Duration::from_secs(RATE_LIMIT_WINDOW_SECONDS),
+    ));
+
+    // Start background cleanup task for rate limiter
+    let rate_limiter_cleanup = rate_limiter.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(300)); // Cleanup every 5 minutes
+        loop {
+            interval.tick().await;
+            rate_limiter_cleanup.cleanup().await;
+        }
+    });
+
+    info!(
+        "🚦 [RATE_LIMIT] Rate limiter initialized: {} requests per {} seconds",
+        RATE_LIMIT_MAX_REQUESTS, RATE_LIMIT_WINDOW_SECONDS
+    );
+
     let json_body_user_registration = limited_json_body::<UserRegistrationRequest>();
     let register_user = warp::path("register_user")
         .and(warp::post())
+        .and(with_rate_limit(rate_limiter.clone()))
         .and(json_body_user_registration)
         .and(with_user_intent_manager(user_intent_manager.clone()))
         .and(with_dkg_storage(dkg_storage.clone()))
@@ -62,6 +91,7 @@ pub async fn start_http_server(
 
     let user_mpc_deposit = warp::path("user_mpc_deposit")
         .and(warp::post())
+        .and(with_rate_limit(rate_limiter.clone()))
         .and(limited_json_body::<UserMpcDepositRequest>())
         .and(with_user_intent_manager(user_intent_manager.clone()))
         .and(with_message_tx(message_tx.clone()))
@@ -86,7 +116,7 @@ pub async fn start_http_server(
                             status: "timeout".to_string(),
                             signer_address: "".to_string(),
                             is_registered: false,
-                            amount: 0,
+                            amount: "0".to_string(),
                             user_to_network_tx_id: None,
                             network_to_target_tx_id: None,
                             vault_to_network_tx_id: None,
@@ -116,6 +146,7 @@ pub async fn start_http_server(
 
     let claim_reward = warp::path("claim_reward")
         .and(warp::post())
+        .and(with_rate_limit(rate_limiter.clone()))
         .and(limited_json_body::<ClaimRewardRequest>())
         .and(with_user_intent_manager(user_intent_manager.clone()))
         .and(with_reward_storage(reward_storage.clone()))
@@ -126,6 +157,7 @@ pub async fn start_http_server(
 
     let withdraw_liquidity = warp::path("withdraw_liquidity")
         .and(warp::post())
+        .and(with_rate_limit(rate_limiter.clone()))
         .and(limited_json_body::<WithdrawLiquidityRequest>())
         .and(with_user_intent_manager(user_intent_manager.clone()))
         .and(with_message_tx(message_tx.clone()))
@@ -135,6 +167,7 @@ pub async fn start_http_server(
 
     let add_liquidity = warp::path("add_liquidity")
         .and(warp::post())
+        .and(with_rate_limit(rate_limiter.clone()))
         .and(limited_json_body::<AddLiquidityRequest>())
         .and(with_user_intent_manager(user_intent_manager.clone()))
         .and(with_message_tx(message_tx.clone()))
@@ -172,10 +205,12 @@ pub async fn start_http_server(
         .and(with_start_time(start_time.clone()))
         .and_then(handle_get_uptime);
 
-
     let log_partial_pubkeys = warp::path("log_partial_pubkeys")
         .and(warp::post())
-        .and(limited_json_body::<crate::types::rpc_server::LogPartialPubkeysRequest>())
+        .and(with_rate_limit(rate_limiter.clone()))
+        .and(limited_json_body::<
+            crate::types::rpc_server::LogPartialPubkeysRequest,
+        >())
         .and(with_dkg_storage(dkg_storage.clone()))
         .and_then(handle_log_partial_pubkeys);
 
@@ -259,6 +294,9 @@ async fn handle_rejection(err: warp::Rejection) -> Result<impl Reply, Infallible
     } else if let Some(e) = err.find::<super::errors::RpcError>() {
         let code = match e {
             super::errors::RpcError::Unauthorized(_) => warp::http::StatusCode::UNAUTHORIZED,
+            super::errors::RpcError::RateLimitExceeded(_) => {
+                warp::http::StatusCode::TOO_MANY_REQUESTS
+            }
             super::errors::RpcError::InternalError(_) => {
                 warp::http::StatusCode::INTERNAL_SERVER_ERROR
             }
@@ -353,6 +391,30 @@ fn with_auth() -> impl Filter<Extract = (), Error = warp::Rejection> + Clone {
                 _ => Err(warp::reject::custom(super::errors::RpcError::Unauthorized(
                     "Invalid or missing API key".to_string(),
                 ))),
+            }
+        })
+        .untuple_one()
+}
+
+fn with_rate_limit(
+    rate_limiter: Arc<RateLimiter>,
+) -> impl Filter<Extract = (), Error = warp::Rejection> + Clone {
+    warp::addr::remote()
+        .and_then(move |addr: Option<std::net::SocketAddr>| {
+            let rate_limiter = rate_limiter.clone();
+            async move {
+                let ip = addr
+                    .map(|a| a.ip().to_string())
+                    .unwrap_or_else(|| "unknown".to_string());
+
+                if !rate_limiter.check(&ip).await {
+                    return Err(warp::reject::custom(RpcError::RateLimitExceeded(format!(
+                        "Rate limit exceeded for IP: {}. Maximum {} requests per {} seconds allowed.",
+                        ip, RATE_LIMIT_MAX_REQUESTS, RATE_LIMIT_WINDOW_SECONDS
+                    ))));
+                }
+
+                Ok(())
             }
         })
         .untuple_one()

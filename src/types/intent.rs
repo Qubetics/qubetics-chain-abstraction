@@ -8,6 +8,7 @@ pub enum TransactionType {
     RewardTxn,
     WithdrawLiquidity,
     AddLiquidity,
+    Refund,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -24,7 +25,8 @@ pub struct DepositIntent {
     pub target_address: String,
     pub source_chain: String,
     pub target_chain: String,
-    pub amount: u128,
+    /// Deposit amount in smallest units, encoded as a decimal string
+    pub amount: String,
     pub source_token: String,
     pub target_token: String,
     pub timestamp: u128,

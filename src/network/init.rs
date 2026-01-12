@@ -15,8 +15,8 @@ use crate::node_selection::NodeMembership;
 
 use crate::network::config::NetworkConfig;
 use crate::network::discovery::types::{DatabaseSyncState, PeerDiscoveryState};
-use crate::network::rpc::retry_manager::RetryManager;
 use crate::network::rpc::channel_monitor::ChannelHealthMonitor;
+use crate::network::rpc::retry_manager::RetryManager;
 use crate::network::transport::types::{MpcNetworkBehaviour, MpcNetworkLayer, MPC_TOPICS};
 
 impl MpcNetworkLayer {
@@ -24,7 +24,7 @@ impl MpcNetworkLayer {
     pub async fn new(node_manager: Box<dyn NodeMembership>, db: Database) -> Result<Self> {
         // Load network configuration from config.rs (hardcoded bootstrap nodes)
         let network_config = NetworkConfig::default();
-        
+
         // Log bootstrap node configuration
         info!(
             "🌐 [NETWORK_CONFIG] Loaded {} bootstrap peers and {} discovery seeds",
@@ -41,7 +41,7 @@ impl MpcNetworkLayer {
                 info!("   Discovery seed {}: {}", i + 1, addr);
             }
         }
-        
+
         // Load or create persistent keypair using the injected database
         // Wrap in Arc to satisfy KeyStore trait object requirements
         // Clone the database since we need to move it into the struct later
@@ -55,7 +55,7 @@ impl MpcNetworkLayer {
         // Increased significantly to handle parallel burst traffic without channel blocking
         let (tx, rx) = mpsc::channel(10000); // Increased from 2000 to 10000 for high parallel user load
         let tx_for_retry = tx.clone();
-        
+
         // Initialize channel health monitor for production monitoring
         let channel_health = Arc::new(ChannelHealthMonitor::new());
 
@@ -210,22 +210,26 @@ impl MpcNetworkLayer {
                 };
 
                 let gossipsub_config = gossipsub::ConfigBuilder::default()
-                    .heartbeat_interval(Duration::from_millis(500))  // Faster heartbeat for lower latency (default: 1s)
-                    .validation_mode(gossipsub::ValidationMode::Permissive)  // Faster validation (changed from Strict)
+                    .heartbeat_interval(Duration::from_millis(500)) // Faster heartbeat for lower latency (default: 1s)
+                    .iwant_followup_time(Duration::from_secs(15))
+                    .connection_handler_queue_len(20_000)
+                    .publish_queue_duration(Duration::from_secs(20))
+                    .forward_queue_duration(Duration::from_secs(5))
+                    .validation_mode(gossipsub::ValidationMode::Strict) // Faster validation (changed from Strict)
                     .message_id_fn(message_id_fn)
-                    .flood_publish(true)  // Publish to all peers immediately
+                    .flood_publish(false)
                     .fanout_ttl(Duration::from_secs(60))
                     .prune_peers(10)
                     .prune_backoff(Duration::from_secs(60))
                     // CRITICAL FIX: Increase limits for high parallel load (25+ transactions)
-                    .history_length(100)  // Keep much more message history (default: 5)
-                    .history_gossip(50)  // Send more historical messages in IHAVE (default: 3)
-                    .max_transmit_size(10_000_000)  // 10MB max message size (default: 65KB)
-                    .mesh_n_low(2)  // Min peers in mesh (default: 3) - keep it low for small network
-                    .mesh_n(3)  // Target peers in mesh (default: 6)
-                    .mesh_n_high(4)  // Max peers in mesh (default: 12)
-                    .mesh_outbound_min(1)  // Min outbound connections (default: 2)
-                    .validate_messages()  // Enable async validation to prevent blocking
+                    // .history_length(100) // Keep much more message history (default: 5)
+                    // .history_gossip(50) // Send more historical messages in IHAVE (default: 3)
+                    .max_transmit_size(10_000_000) // 10MB max message size (default: 65KB)
+                    // .mesh_n_low(2) // Min peers in mesh (default: 3) - keep it low for small network
+                    // .mesh_n(3) // Target peers in mesh (default: 6)
+                    // .mesh_n_high(4) // Max peers in mesh (default: 12)
+                    // .mesh_outbound_min(1) // Min outbound connections (default: 2)
+                    // .validate_messages() // Enable async validation to prevent blocking
                     .build()
                     .map_err(io::Error::other)
                     .map_err(io::Error::other)?;

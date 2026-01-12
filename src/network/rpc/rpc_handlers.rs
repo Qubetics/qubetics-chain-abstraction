@@ -1,8 +1,9 @@
 /// RPC Request/Response handlers
 /// This module contains all the RPC request and response handling logic
 use anyhow::Result;
+use libp2p::gossipsub::{IdentTopic, Message};
 use libp2p::PeerId;
-use tracing::{error, info, warn};
+use tracing::{error, warn};
 
 use crate::database::key_utils::{self, peer_addr_key};
 use crate::types::p2p::SerializablePeerId;
@@ -55,7 +56,6 @@ impl MpcNetworkLayer {
                     .await
             }
             RPCRequest::ScheduleADKG { start_time } => {
-                info!("🕒 Got DKGStartAt({})", start_time);
                 self.schedule_dkg_at(start_time);
                 RPCResponse::Ack
             }
@@ -81,10 +81,6 @@ impl MpcNetworkLayer {
                 commitments,
                 round,
             } => {
-                info!(
-                    "🔐 [DKG-SECURE] Received UNICAST share index: {}, share value: {:?}, commitments: {:?}, from: {}, round: {}",
-                    share_index, share_value, commitments, from_node_id, round
-                );
                 self.handle_incoming_dkg_share(
                     from_node_id,
                     share_index,
@@ -101,10 +97,6 @@ impl MpcNetworkLayer {
                 share_value,
                 commitments,
             } => {
-                info!(
-                    "🔐 [REFRESH-SECURE] Received UNICAST refresh share index: {}, from: {}",
-                    share_index, from_node_id
-                );
                 self.handle_incoming_refresh_share(
                     from_node_id,
                     share_index,
@@ -118,10 +110,6 @@ impl MpcNetworkLayer {
                 signature_data,
                 round,
             } => {
-                info!(
-                    "🔐 [SIGNING-SECURE] Received UNICAST ECDSA signature for round {} from {}",
-                    round, from_node_id
-                );
                 self.handle_incoming_ecdsa_signature(from_node_id, signature_data, round)
                     .await
             }
@@ -130,10 +118,6 @@ impl MpcNetworkLayer {
                 signature_data,
                 round,
             } => {
-                info!(
-                    "🔐 [SIGNING-SECURE] Received UNICAST BTC signatures for round {} from {}",
-                    round, from_node_id
-                );
                 self.handle_incoming_btc_signatures(from_node_id, signature_data, round)
                     .await
             }
@@ -142,12 +126,37 @@ impl MpcNetworkLayer {
                 transaction_data,
                 round,
             } => {
-                info!(
-                    "📦 [SIGNING-SECURE] Received UNICAST transaction data for round {} from {}",
-                    round, from_node_id
-                );
                 self.handle_incoming_transaction_data(from_node_id, transaction_data, round)
                     .await
+            }
+            RPCRequest::DeliverCriticalGossip {
+                topic,
+                data,
+                message_type,
+                message_id,
+            } => {
+                let message = Message {
+                    source: Some(peer),
+                    data,
+                    sequence_number: None,
+                    topic: IdentTopic::new(topic).hash(),
+                };
+
+                match self.handle_gossipsub_message(&message).await {
+                    Ok(()) => RPCResponse::CriticalDeliveryAck {
+                        message_type,
+                        message_id,
+                    },
+                    Err(e) => {
+                        warn!(
+                            "❌ [CRITICAL-UNICAST] Failed to handle delivered message: {}",
+                            e
+                        );
+                        RPCResponse::Error(format!(
+                            "Failed to handle critical message: {e}"
+                        ))
+                    }
+                }
             }
             _ => RPCResponse::Ack,
         }
@@ -334,11 +343,6 @@ impl MpcNetworkLayer {
                         "⚠️ [VRF_SYNC] Failed to persist peer round {} for {} to DB: {}",
                         round, peer, e
                     );
-                } else {
-                    info!(
-                        "💾 [VRF_SYNC] Stored VRF round {} for peer {} (DB, domain: {:?})",
-                        round, peer, domain
-                    );
                 }
             }
             true
@@ -357,7 +361,6 @@ impl MpcNetworkLayer {
         peer: PeerId,
         swarm: &libp2p::Swarm<MpcNetworkBehaviour>,
     ) -> RPCResponse {
-        info!("🔄 GetPeerList RPC received from {}", peer);
 
         // Gather everyone we know
         let peers: Vec<SerializablePeerId> = self
@@ -371,14 +374,10 @@ impl MpcNetworkLayer {
         // This ensures peer_indices stays in sync with the database
         for SerializablePeerId(pid) in &peers {
             if !self.peer_discovery.peer_indices.contains_key(pid) {
-                // Load from database if not in peer_indices
-                if let Some(db_idx) = self.get_index_from_db_async(pid).await {
-                    info!(
-                        "🔢 [PEER_LIST_SEND] Loaded index {} for peer {} from database",
-                        db_idx, pid
-                    );
-                    self.peer_discovery.peer_indices.insert(*pid, db_idx);
-                }
+            // Load from database if not in peer_indices
+            if let Some(db_idx) = self.get_index_from_db_async(pid).await {
+                self.peer_discovery.peer_indices.insert(*pid, db_idx);
+            }
             }
         }
 
@@ -392,10 +391,6 @@ impl MpcNetworkLayer {
                 match self.db.get_string_async::<usize>(&key).await {
                     Ok(Some(idx)) => {
                         // Update peer_indices with index from database
-                        info!(
-                            "🔢 [PEER_LIST_SEND] Loading index {} for peer {} from database",
-                            idx, pid
-                        );
                         self.peer_discovery.peer_indices.insert(*pid, idx);
                         indices.push(Some(idx));
                     }
@@ -448,14 +443,6 @@ impl MpcNetworkLayer {
             addresses.push(None);
         }
 
-        // Log how many peers we're returning
-        info!(
-            "📋 Sending PeerList response to {}: {} entries (addresses count: {})",
-            peer,
-            peers.len(),
-            addresses.iter().filter(|a| a.is_some()).count()
-        );
-
         RPCResponse::PeerList {
             peers,
             indices,
@@ -494,13 +481,7 @@ impl MpcNetworkLayer {
         // When we receive SendAVSSShare, we are the receiver, so we use our own node ID to get our index.
         let our_node_id = dkg_node.get_id();
         let share_index = match dkg_node.get_peer_index_for(our_node_id) {
-            Ok(Some(idx)) => {
-                info!(
-                    "🔢 [DKG] Using stored peer index {} for our node {} (from SendAVSSShare, receiver_id: {})",
-                    idx, our_node_id, receiver_id.0
-                );
-                idx
-            }
+            Ok(Some(idx)) => idx,
             Ok(None) => {
                 warn!(
                     "❌ [DKG] No stored peer index found for our node {}; cannot verify share (receiver_id: {})",
@@ -539,11 +520,6 @@ impl MpcNetworkLayer {
         commitments: Vec<SerializablePoint>,
         _round: u64,
     ) -> RPCResponse {
-        info!(
-            "🔐 [DKG-SECURE] Processing unicast share index: {}, share value: {:?}, commitments: {:?}, from: {}",
-            share_index, share_value, commitments, from_node_id
-        );
-
         let dkg_node = match &mut self.dkg_node {
             Some(node) => node,
             None => {
@@ -566,10 +542,6 @@ impl MpcNetworkLayer {
             .await
         {
             Ok(true) => {
-                info!(
-                    "✅ [DKG-SECURE] Share index {} from {} processed incoming share successfully ",
-                    share_index, from_node_id
-                );
                 RPCResponse::DKGShareReceived {
                     from_node_id,
                     receiver_node_id,
@@ -607,11 +579,6 @@ impl MpcNetworkLayer {
         share_value: SerializableScalar,
         commitments: Vec<SerializablePoint>,
     ) -> RPCResponse {
-        info!(
-            "🔐 [REFRESH-SECURE] Processing unicast refresh share index: {}, from: {}",
-            share_index, from_node_id
-        );
-
         let dkg_node = match &mut self.dkg_node {
             Some(node) => node,
             None => {
@@ -634,10 +601,6 @@ impl MpcNetworkLayer {
             .await
         {
             Ok(true) => {
-                info!(
-                    "✅ [REFRESH-SECURE] Refresh share index {} from {} processed successfully",
-                    share_index, from_node_id
-                );
                 RPCResponse::RefreshShareReceived {
                     from_node_id,
                     receiver_node_id,
@@ -674,11 +637,6 @@ impl MpcNetworkLayer {
         signature_data: Vec<u8>,
         round: u64,
     ) -> RPCResponse {
-        info!(
-            "🔐 [SIGNING-SECURE] Processing unicast ECDSA signature for round {} from {}",
-            round, from_node_id
-        );
-
         let signing_message = match serde_json::from_slice::<GossipsubMessage>(&signature_data) {
             Ok(GossipsubMessage::Signing(msg)) => msg,
             Ok(other) => {
@@ -752,10 +710,6 @@ impl MpcNetworkLayer {
 
         match result {
             Ok(_) => {
-                info!(
-                    "✅ [SIGNING-SECURE] Processed ECDSA signature for round {} from {}",
-                    round, from
-                );
                 RPCResponse::ECDSASignatureReceived {
                     from_node_id,
                     receiver_node_id,
@@ -785,11 +739,6 @@ impl MpcNetworkLayer {
         signature_data: Vec<u8>,
         round: u64,
     ) -> RPCResponse {
-        info!(
-            "🔐 [SIGNING-SECURE] Processing unicast BTC signatures for round {} from {}",
-            round, from_node_id
-        );
-
         let signing_message = match serde_json::from_slice::<GossipsubMessage>(&signature_data) {
             Ok(GossipsubMessage::Signing(msg)) => msg,
             Ok(other) => {
@@ -863,10 +812,6 @@ impl MpcNetworkLayer {
 
         match result {
             Ok(_) => {
-                info!(
-                    "✅ [SIGNING-SECURE] Processed BTC signatures for round {} from {}",
-                    round, from
-                );
                 RPCResponse::BtcSignaturesReceived {
                     from_node_id,
                     receiver_node_id,
@@ -896,11 +841,6 @@ impl MpcNetworkLayer {
         transaction_data: Vec<u8>,
         round: u64,
     ) -> RPCResponse {
-        info!(
-            "📦 [SIGNING-SECURE] Processing unicast transaction data for round {} from {}",
-            round, from_node_id
-        );
-
         let signing_message = match serde_json::from_slice::<GossipsubMessage>(&transaction_data) {
             Ok(GossipsubMessage::Signing(msg)) => msg,
             Ok(other) => {
@@ -919,22 +859,30 @@ impl MpcNetworkLayer {
             }
         };
 
-        let (from, tx_bytes, intent_hash, transaction_type, msg_round) = match signing_message {
-            SigningMessage::TransactionDataForFinalNode {
-                from,
-                round,
-                tx_bytes,
-                intent_hash,
-                transaction_type,
-                ..
-            } => (from, tx_bytes, intent_hash, transaction_type, round),
-            _ => {
-                warn!(
+        let (from, tx_bytes, intent_hash, transaction_type, request_id, msg_round) =
+            match signing_message {
+                SigningMessage::TransactionDataForFinalNode {
+                    from,
+                    round,
+                    tx_bytes,
+                    intent_hash,
+                    transaction_type,
+                    request_id,
+                } => (
+                    from,
+                    tx_bytes,
+                    intent_hash,
+                    transaction_type,
+                    request_id,
+                    round,
+                ),
+                _ => {
+                    warn!(
                     "❌ [SIGNING-SECURE] Received signing message that is not a transaction data payload"
                 );
-                return RPCResponse::Ack;
-            }
-        };
+                    return RPCResponse::Ack;
+                }
+            };
 
         if msg_round != round {
             warn!(
@@ -951,6 +899,7 @@ impl MpcNetworkLayer {
                     tx_bytes,
                     intent_hash,
                     transaction_type,
+                    request_id,
                 )
                 .await
         } else {
@@ -959,13 +908,7 @@ impl MpcNetworkLayer {
         };
 
         match result {
-            Ok(_) => {
-                info!(
-                    "✅ [SIGNING-SECURE] Processed transaction data for round {} from {}",
-                    round, from
-                );
-                RPCResponse::Ack
-            }
+            Ok(_) => RPCResponse::Ack,
             Err(e) => {
                 warn!(
                     "❌ [SIGNING-SECURE] Failed to process transaction data for round {}: {}",
@@ -978,10 +921,6 @@ impl MpcNetworkLayer {
 
     /// Handle RequestCurrentVrfRound RPC request
     async fn handle_request_current_vrf_round(&self, peer: PeerId) -> RPCResponse {
-        info!(
-            "🔄 Received request for current VRF round from peer {}",
-            peer
-        );
         let current_round = self
             .get_local_vrf_round_for_domain(VrfDomain::Signing, None)
             .await;
@@ -1025,11 +964,6 @@ impl MpcNetworkLayer {
         _peer: PeerId,
         requester_id: SerializablePeerId,
     ) -> RPCResponse {
-        info!(
-            "📦 [DB_SYNC] Received database sync request from peer: {:?}",
-            requester_id
-        );
-
         match self
             .db
             .count_entries_with_prefix_async(crate::database::keys::USER_REGISTRATION)
@@ -1037,10 +971,6 @@ impl MpcNetworkLayer {
         {
             Ok(total_entries) => {
                 let recommended_batch_size = 100; // Entries per batch
-                info!(
-                    "📦 [DB_SYNC] Database has {} user entries, recommending batch size of {}",
-                    total_entries, recommended_batch_size
-                );
                 RPCResponse::DatabaseSyncMetadata {
                     total_entries,
                     recommended_batch_size,
@@ -1060,11 +990,6 @@ impl MpcNetworkLayer {
         batch_index: usize,
         batch_size: usize,
     ) -> RPCResponse {
-        info!(
-            "📦 [DB_SYNC] Received database batch request: batch {} with size {} from peer {}",
-            batch_index, batch_size, peer
-        );
-
         match self
             .db
             .export_batch_with_prefix_async(
@@ -1079,13 +1004,6 @@ impl MpcNetworkLayer {
                     .into_iter()
                     .map(|(key, value)| crate::types::rpc::DatabaseEntry { key, value })
                     .collect();
-
-                info!(
-                    "📦 [DB_SYNC] Sending batch {} with {} user entries (last batch: {})",
-                    batch_index,
-                    db_entries.len(),
-                    is_last_batch
-                );
 
                 RPCResponse::DatabaseBatch {
                     batch_index,
@@ -1107,8 +1025,6 @@ impl MpcNetworkLayer {
         peer: PeerId,
         response: RPCResponse,
     ) -> Result<()> {
-        info!("📥 Got RPC response {:?} from {}", response, peer);
-
         match response {
             RPCResponse::PeerList {
                 peers,
@@ -1140,15 +1056,9 @@ impl MpcNetworkLayer {
                         }
                     }
                 }
-                info!(
-                    "🌐 [PEER_INFO] Stored {} addresses from peer {}",
-                    addr_count, peer
-                );
             }
             RPCResponse::GotAVSSShare { .. } => {}
-            RPCResponse::DKGStarted { peer_id } => {
-                info!("DKG has started by: {:?}", peer_id);
-            }
+            RPCResponse::DKGStarted { peer_id: _ } => {}
             RPCResponse::Error(err) => {
                 warn!("Received error from peer {}: {}", peer, err);
             }
@@ -1174,11 +1084,6 @@ impl MpcNetworkLayer {
                 total_entries,
                 recommended_batch_size,
             } => {
-                info!(
-                    "📦 [DB_SYNC] Received sync metadata: {} entries, batch size {}",
-                    total_entries, recommended_batch_size
-                );
-
                 if let Err(e) = self
                     .handle_database_sync_metadata(
                         swarm,
@@ -1196,12 +1101,6 @@ impl MpcNetworkLayer {
                 entries,
                 is_last_batch,
             } => {
-                info!(
-                    "📦 [DB_SYNC] Received batch {} with {} entries",
-                    batch_index,
-                    entries.len()
-                );
-
                 // Use the recommended batch size from metadata (default 100)
                 let batch_size = 100;
 
@@ -1219,30 +1118,64 @@ impl MpcNetworkLayer {
                     error!("❌ [DB_SYNC] Failed to handle batch: {}", e);
                 }
             }
-            RPCResponse::ECDSASignatureReceived {
-                from_node_id,
-                receiver_node_id,
-                round,
-                success,
+            RPCResponse::ECDSASignatureReceived { .. } => {}
+            RPCResponse::BtcSignaturesReceived { .. } => {}
+            RPCResponse::CriticalDeliveryAck {
+                message_type,
+                message_id,
             } => {
-                info!(
-                    "📩 [SIGNING-SECURE] ACK ECDSA signature from {} to {} for round {} (success: {})",
-                    from_node_id, receiver_node_id, round, success
-                );
-            }
-            RPCResponse::BtcSignaturesReceived {
-                from_node_id,
-                receiver_node_id,
-                round,
-                success,
-            } => {
-                info!(
-                    "📩 [SIGNING-SECURE] ACK BTC signatures from {} to {} for round {} (success: {})",
-                    from_node_id, receiver_node_id, round, success
-                );
+                let msg_type = match message_type.as_str() {
+                    "TransactionIdBroadcast" => {
+                        crate::network::rpc::retry_manager::CriticalMessageType::TransactionIdBroadcast
+                    }
+                    "VaultSequencerVrfSelectedNodes" => {
+                        crate::network::rpc::retry_manager::CriticalMessageType::VaultSequencerVrfSelectedNodes
+                    }
+                    "MainSequencerVrfSelectedNodes" => {
+                        crate::network::rpc::retry_manager::CriticalMessageType::MainSequencerVrfSelectedNodes
+                    }
+                    "VrfSelectedNodes" => {
+                        crate::network::rpc::retry_manager::CriticalMessageType::VrfSelectedNodes
+                    }
+                    "SequencerSync" => {
+                        crate::network::rpc::retry_manager::CriticalMessageType::SequencerSync
+                    }
+                    "VaultSequencerSelect" | "MainSequencerSelect" => {
+                        return Ok(());
+                    }
+                    _ => {
+                        warn!(
+                            "⚠️ [CRITICAL-UNICAST] Unknown message type in ACK: {}",
+                            message_type
+                        );
+                        return Ok(());
+                    }
+                };
+
+                let message_id_obj = crate::network::rpc::retry_manager::MessageId {
+                    message_type: msg_type.clone(),
+                    unique_id: message_id.clone(),
+                };
+
+                if let Some(retry_mgr) = &self.retry_manager {
+                    match retry_mgr
+                        .record_acknowledgment(&message_id_obj, peer)
+                        .await
+                    {
+                        Ok(true) => {}
+                        Ok(false) => {}
+                        Err(e) => {
+                            error!(
+                                "❌ [CRITICAL-UNICAST] Failed to record acknowledgment: {}",
+                                e
+                            );
+                        }
+                    }
+                }
             }
             other => {
-                info!("ℹ️  RPCResponse::{:?} from {} (no action)", other, peer);
+                // Unhandled response type
+                let _ = other;
             }
         }
 
@@ -1257,13 +1190,6 @@ impl MpcNetworkLayer {
         indices: Vec<Option<usize>>,
         addresses: Vec<Option<String>>,
     ) -> Result<()> {
-        info!("🔄 Merging peer‐set: {:?}", peers);
-        info!("🔄 Received indices: {:?}", indices);
-        info!(
-            "🔄 Received addresses (count with some): {}",
-            addresses.iter().filter(|a| a.is_some()).count()
-        );
-
         let mut batch_updates: Vec<(String, usize)> = Vec::new();
 
         // 1️⃣ First, merge all peers (no threshold updates yet)
@@ -1281,28 +1207,15 @@ impl MpcNetworkLayer {
             // Priority: 1) Index from peer list, 2) Existing in peer_indices, 3) Load from database
             let index_to_use = if let Some(idx) = indices.get(i).cloned().flatten() {
                 // Index provided in peer list - use it and persist to database
-                info!(
-                    "🔢 [PEER_LIST] Using index {} for peer {} from peer list",
-                    idx, p
-                );
                 Some(idx)
             } else if let Some(existing_idx) = self.peer_discovery.peer_indices.get(&p).cloned() {
                 // Already in peer_indices - keep it
-                info!(
-                    "🔢 [PEER_LIST] Using existing index {} for peer {} from peer_indices",
-                    existing_idx, p
-                );
                 Some(existing_idx)
             } else if let Some(db_idx) = self.get_index_from_db_async(&p).await {
                 // Load from database if available
-                info!(
-                    "🔢 [PEER_LIST] Loaded index {} for peer {} from database",
-                    db_idx, p
-                );
                 Some(db_idx)
             } else {
                 // No index available
-                warn!("⚠️  [PEER_LIST] No index found for peer {} (not in peer list, peer_indices, or database)", p);
                 None
             };
 
@@ -1324,10 +1237,6 @@ impl MpcNetworkLayer {
                 };
 
                 if let Ok(addr) = addr_with_p2p.parse::<libp2p::Multiaddr>() {
-                    info!(
-                        "🔐 [PEER_LIST] Inserting advertised address into map/db for peer {}: {}",
-                        p, addr
-                    );
                     self.peer_discovery
                         .peer_multiaddresses
                         .insert(p, addr.clone());
@@ -1336,7 +1245,6 @@ impl MpcNetworkLayer {
                         warn!("⚠️ [PEER_LIST] Failed to persist addr for {}: {}", p, e);
                     }
                     if p != *self.get_local_peer_id() && !swarm.is_connected(&p) {
-                        info!("📞 [PEER_LIST] Dialing peer {} at {}", p, addr);
                         if let Err(e) = swarm.dial(addr.clone()) {
                             warn!("⚠️ [PEER_LIST] Dial to {} failed: {}", p, e);
                         }
@@ -1352,10 +1260,6 @@ impl MpcNetworkLayer {
             let new_threshold = self.node_manager.get_threshold(); // Compute once
             if let Some(signing_node) = &mut self.signing_node {
                 signing_node.set_threshold(new_threshold);
-                info!(
-                    "✅ [THRESHOLD] Updated to {} after merging peers",
-                    new_threshold
-                );
             }
         }
 
@@ -1377,11 +1281,6 @@ impl MpcNetworkLayer {
             }
         }
 
-        info!(
-            "📊 [PEER_LIST] Updated peer_indices mapping: {} entries",
-            self.peer_discovery.peer_indices.len()
-        );
-
         // CRITICAL: Only use the peer_list_processed flag if DKG is NOT completed
         // This prevents duplicate processing ONLY during initial joining
         // After DKG completes, we can process PeerList responses again if needed
@@ -1394,16 +1293,11 @@ impl MpcNetworkLayer {
         if !dkg_completed {
             // New node joining - check if we've already processed a PeerList
             if self.peer_discovery.peer_list_processed {
-                info!("⏭️ [PEER_LIST] Already processed PeerList response during joining, skipping duplicate new node check");
-                info!("⏭️ [PEER_LIST] This prevents duplicate refresh triggers from multiple GetPeerList responses");
                 return Ok(());
             }
 
             // Mark as processed for this joining session
             self.peer_discovery.peer_list_processed = true;
-            info!("🔒 [PEER_LIST] Set peer_list_processed=true (will be used only until DKG completes)");
-        } else {
-            info!("✅ [PEER_LIST] DKG already completed, peer_list_processed flag not used");
         }
 
         // After learning about all peers, check if this is a new node joining existing network
@@ -1425,24 +1319,12 @@ impl MpcNetworkLayer {
 
             // Update DKG node parameters with current network size
             dkg_node.update_node_params(total, threshold)?;
-            info!(
-                "🔄 [NEW_NODE] Updated DKG params: total_nodes={}, threshold={}",
-                total, threshold
-            );
 
             let has_dkg_data = dkg_node.get_final_secret_share().await.is_some();
-            info!("🔍 [NEW_NODE] Has DKG data: {}", has_dkg_data);
 
             // If this node has no DKG data and network has > 3 nodes, it's a new node joining
             if !has_dkg_data && total > 3 {
-                info!("🆕 [NEW_NODE] Learned about {} total nodes, triggering database sync and share request", total);
-
                 let connected_peers: Vec<PeerId> = swarm.connected_peers().cloned().collect();
-                info!(
-                    "🔗 [NEW_NODE] Currently connected to {} peers: {:?}",
-                    connected_peers.len(),
-                    connected_peers
-                );
 
                 // Find first connected peer for sync (excluding ourselves)
                 let sync_peer = connected_peers
@@ -1450,35 +1332,19 @@ impl MpcNetworkLayer {
                     .find(|pid| **pid != self.local_peer_id)
                     .cloned();
 
-                let should_proceed = if let Some(ref peer) = sync_peer {
-                    info!("✅ [NEW_NODE] Selected connected peer for sync: {}", peer);
-                    true
-                } else {
-                    warn!("⚠️ [NEW_NODE] No connected peers available for database sync!");
-                    warn!(
-                        "⚠️ [NEW_NODE] Will retry database sync when a connection is established"
-                    );
-                    false
-                };
+                let should_proceed = sync_peer.is_some();
 
                 // CRITICAL: Check if this is a REJOINING node or a truly NEW node
                 let new_node_index = if let Some(existing_index) =
                     self.get_index_from_db_async(&self.local_peer_id).await
                 {
-                    info!(
-                        "🔄 [REJOIN] Node rejoining with existing index: {}",
-                        existing_index
-                    );
                     existing_index
                 } else {
                     // This is a truly NEW node - assign max_index + 1
                     let all_assigned_indices: Vec<usize> =
                         self.peer_discovery.peer_indices.values().cloned().collect();
                     let max_index = all_assigned_indices.iter().max().cloned().unwrap_or(0);
-                    let final_index = max_index + 1;
-                    info!("🆕 [NEW_NODE] Assigned permanent index: {} (max_existing={}, total_nodes={})", 
-                              final_index, max_index, total);
-                    final_index
+                    max_index + 1
                 };
 
                 (
@@ -1502,15 +1368,8 @@ impl MpcNetworkLayer {
         if should_sync {
             // First, sync database from an existing peer
             if let Some(sync_peer) = sync_peer_opt {
-                info!(
-                    "📦 [NEW_NODE] Initiating database sync from peer: {}",
-                    sync_peer
-                );
-
                 if let Err(e) = self.sync_database_from_peer(swarm, sync_peer).await {
                     warn!("❌ [NEW_NODE] Failed to start database sync: {:?}", e);
-                } else {
-                    info!("✅ [NEW_NODE] Database sync initiated");
                 }
             }
 
@@ -1529,8 +1388,6 @@ impl MpcNetworkLayer {
     /// Handle CurrentVrfRoundResponse
     async fn handle_current_vrf_round_response(&mut self, current_round: Option<u64>) {
         if let Some(network_round) = current_round {
-            info!("🔄 Received current VRF round response: {}", network_round);
-
             // Simple VRF round sync for both signing nodes
             if let Some(signing_node) = &mut self.signing_node {
                 signing_node
@@ -1541,13 +1398,6 @@ impl MpcNetworkLayer {
                 let mut node = db_signing_node.lock().await;
                 node.sync_vrf_round_with_network(network_round).await;
             }
-
-            info!(
-                "✅ [NETWORK] VRF round synced to network round: {}",
-                network_round
-            );
-        } else {
-            info!("ℹ️ Peer doesn't have current VRF round yet");
         }
     }
 
@@ -1573,7 +1423,7 @@ impl MpcNetworkLayer {
             reference_round,
             response.current_round,
         ) {
-            info!("✅ [VRF_SYNC] Applied VRF round sync from peer {}", peer);
+            // VRF round sync applied
         }
     }
 }
