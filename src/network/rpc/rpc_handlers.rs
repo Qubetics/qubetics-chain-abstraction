@@ -1322,8 +1322,47 @@ impl MpcNetworkLayer {
 
             let has_dkg_data = dkg_node.get_final_secret_share().await.is_some();
 
-            // If this node has no DKG data and network has > 3 nodes, it's a new node joining
-            if !has_dkg_data && total > 3 {
+            // Check if peer list includes nodes with assigned indices (indicates established network)
+            let peers_have_indices = !self.peer_discovery.peer_indices.is_empty();
+            let max_peer_index = self
+                .peer_discovery
+                .peer_indices
+                .values()
+                .max()
+                .cloned()
+                .unwrap_or(0);
+
+            // Count connected peers (not including self)
+            let connected_peer_count = swarm.connected_peers().count();
+
+            info!("🔍 [NEW_NODE] Checking join conditions:");
+            info!("   - Has DKG data: {}", has_dkg_data);
+            info!("   - Total nodes in manager: {}", total);
+            info!("   - Connected peers: {}", connected_peer_count);
+            info!(
+                "   - Peers have indices: {} (max index: {})",
+                peers_have_indices, max_peer_index
+            );
+            info!(
+                "   - Peer indices count: {}",
+                self.peer_discovery.peer_indices.len()
+            );
+
+            // NEW NODE DETECTION (more robust):
+            // A node is a "new node joining established network" if:
+            // 1. It has NO DKG data (no secret share)
+            // 2. AND the network has 4+ total nodes (meaning 3 existing + this new one)
+            //
+            // IMPORTANT: We use `total >= 4` (not connected_peer_count) because:
+            // - When we receive PeerList, we've already added those peers to node_manager
+            // - But we might not be CONNECTED to all of them yet (dialing happens after)
+            // - Initial 3-node DKG happens at EXACTLY total==3 (handled in swarm_events.rs)
+            // - So if total >= 4 and we have no DKG data, we're definitely a new node joining
+            let is_new_node_joining = !has_dkg_data && total >= 4;
+
+            if is_new_node_joining {
+                info!("🆕 [NEW_NODE] Detected as new node joining established network (total nodes: {}, connected: {})", total, connected_peer_count);
+
                 let connected_peers: Vec<PeerId> = swarm.connected_peers().cloned().collect();
 
                 // Find first connected peer for sync (excluding ourselves)

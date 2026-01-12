@@ -1246,3 +1246,26 @@ impl MpcNetworkLayer {
         Ok(())
     }
 }
+
+/// Parse semantic version string into (major, minor, patch)
+pub fn parse_semantic_version(version: &str) -> Result<(u32, u32, u32)> {
+    use anyhow::anyhow;
+
+    let parts: Vec<&str> = version.split('.').collect();
+
+    if parts.len() != 3 {
+        return Err(anyhow!("Invalid semantic version format: {}", version));
+    }
+
+    Ok((
+        parts[0]
+            .parse()
+            .map_err(|e| anyhow!("Invalid major version: {}", e))?,
+        parts[1]
+            .parse()
+            .map_err(|e| anyhow!("Invalid minor version: {}", e))?,
+        parts[2]
+            .parse()
+            .map_err(|e| anyhow!("Invalid patch version: {}", e))?,
+    ))
+}

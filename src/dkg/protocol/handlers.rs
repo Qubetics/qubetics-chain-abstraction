@@ -17,7 +17,6 @@ impl DKGNode {
         node_manager: Box<dyn NodeMembership>,
     ) -> Result<()> {
         match msg {
-
             DKGMessage::ShareValidation {
                 from,
                 to,
@@ -109,20 +108,21 @@ impl DKGNode {
             commitments.len(),
             from
         );
-        
+
         // Store commitments for verification when we receive the share via RPC
         let raw_commitments: Vec<k256::AffinePoint> = commitments.iter().map(|c| c.0).collect();
-        self.storage.store_commitments(&from, &raw_commitments).await?;
-        
+        self.storage
+            .store_commitments(&from, &raw_commitments)
+            .await?;
+
         info!(
             "✅ [DKG-SECURE] Stored {} commitments from {} (waiting for unicast share)",
             raw_commitments.len(),
             from
         );
-        
+
         Ok(())
     }
-
 
     fn get_node_index(&self, _node_manager: Box<dyn NodeMembership>) -> Result<usize> {
         info!("🔍 [DKG] === NODE INDEX LOOKUP (DB-only) ===");
@@ -233,7 +233,10 @@ impl DKGNode {
         Ok(())
     }
 
-    pub(crate) async fn check_completion(&mut self, node_manager: Box<dyn NodeMembership>) -> Result<()> {
+    pub(crate) async fn check_completion(
+        &mut self,
+        node_manager: Box<dyn NodeMembership>,
+    ) -> Result<()> {
         let (shares_len, validations_len, valid_validations) = {
             let validations = self.storage.get_all_validations().await?;
             let shares = self.storage.get_all_shares().await?;
@@ -254,8 +257,10 @@ impl DKGNode {
             (shares.len(), validations.len(), valid_validations)
         };
 
-        info!("Validations :{:?}", self.storage.get_all_validations().await?);
-        
+        info!(
+            "Validations :{:?}",
+            self.storage.get_all_validations().await?
+        );
 
         info!(
             "🔍 [DKG] Checking DKG completion - shares: {}, validations: {}, valid validations: {}",
@@ -273,17 +278,19 @@ impl DKGNode {
 
             let received = self.storage.get_received_shares().await.unwrap_or_default();
             let expected = self.storage.get_expected_shares().await.unwrap_or_default();
-            
+
             let received_set: std::collections::HashSet<_> = received.iter().collect();
             let expected_set: std::collections::HashSet<_> = expected.iter().collect();
-            
+
             if !expected.is_empty() && received_set != expected_set {
                 let pending = self.storage.get_pending_shares().await.unwrap_or_default();
                 warn!(
                     "⚠️ [DKG] Received shares ({:?}) do not match expected shares ({:?}). Pending: {:?}",
                     received, expected, pending
                 );
-                return Err(anyhow!("DKG failed: received shares do not match expected shares"));
+                return Err(anyhow!(
+                    "DKG failed: received shares do not match expected shares"
+                ));
             }
 
             info!("🎉 [DKG] DKG completion criteria met! Generating final keys...");
@@ -373,19 +380,13 @@ impl DKGNode {
 
         // Compute and store all share public keys for all peers
         if let Err(e) = self.compute_and_store_all_share_pubkeys().await {
-            warn!(
-                "⚠️ [DKG] Failed to compute and store share pubkeys: {}",
-                e
-            );
+            warn!("⚠️ [DKG] Failed to compute and store share pubkeys: {}", e);
         } else {
             info!("✅ [DKG] Successfully computed and stored all share pubkeys");
-            
+
             // Log all stored share pubkeys for verification
             if let Err(e) = self.storage.log_all_stored_share_pubkeys().await {
-                warn!(
-                    "⚠️ [DKG] Failed to log stored share pubkeys: {}",
-                    e
-                );
+                warn!("⚠️ [DKG] Failed to log stored share pubkeys: {}", e);
             }
         }
 
@@ -461,9 +462,15 @@ impl DKGNode {
             }
         }
 
-        if self.total_nodes() == 4 {
+        // Mark initial DKG as complete (works for 3+ nodes)
+        if self.total_nodes() >= 3 {
             if let Err(e) = self.storage.set_initial_dkg_complete(true).await {
                 warn!("⚠️ [DKG] Failed to set initial DKG complete flag: {}", e);
+            } else {
+                info!(
+                    "✅ [DKG] Marked initial DKG as complete for {} nodes",
+                    self.total_nodes()
+                );
             }
         }
 

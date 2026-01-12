@@ -1330,6 +1330,40 @@ pub(crate) async fn handle_get_node_id(
     Ok(warp::reply::json(&NodeIdResponse { node_id }))
 }
 
+pub(crate) async fn handle_get_node_info(
+    dkg_storage: Arc<DkgStorage>,
+    node_id: String,
+) -> Result<impl warp::Reply, warp::Rejection> {
+    info!("📊 HTTP: Received node info request");
+
+    let dkg_status = if dkg_storage.is_initial_dkg_complete().await.unwrap_or(false) {
+        "Completed"
+    } else {
+        "Pending"
+    };
+
+    let peer_indices = dkg_storage.get_all_peer_indices().ok();
+    let peer_count = peer_indices.as_ref().map(|p| p.len()).unwrap_or(0);
+
+    info!(
+        "✅ HTTP: Node info: peers={}, dkg={}",
+        peer_count, dkg_status
+    );
+
+    Ok(warp::reply::json(&serde_json::json!({
+        "node_id": node_id,
+        "status": "active",
+        "dkg_status": dkg_status,
+        "peer_count": peer_count,
+        "peers": peer_indices.unwrap_or_default(),
+        "capabilities": {
+            "signing": true,
+            "vrf": true,
+            "upgradeable": true
+        }
+    })))
+}
+
 pub(crate) async fn handle_get_status(
     message_tx: Arc<Mutex<mpsc::Sender<ChannelMessage>>>,
 ) -> Result<impl warp::Reply, warp::Rejection> {

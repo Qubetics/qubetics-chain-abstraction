@@ -3,6 +3,7 @@ mod handlers;
 mod rate_limiter;
 mod server;
 mod service;
+pub mod upgrade_handlers;
 mod utils;
 
 pub use errors::{RpcError, TransactionError};
