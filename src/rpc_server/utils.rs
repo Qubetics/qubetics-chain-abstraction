@@ -17,9 +17,7 @@ use tokio::time::{Duration, Instant};
 use tracing::{debug, error, info, warn};
 
 use crate::{
-    database::DkgStorage,
-    types::intent::TransactionNetwork,
-    user_intent_manager::UserIntentManager,
+    database::DkgStorage, types::intent::TransactionNetwork, user_intent_manager::UserIntentManager,
 };
 
 use super::errors::TransactionError;
@@ -566,4 +564,78 @@ pub fn recover_eth_address_secp(
     let mut addr20 = [0u8; 20];
     addr20.copy_from_slice(&keccak[12..]); // last 20 bytes
     Ok(crate::user_intent_manager::to_checksum_address(&addr20))
+}
+
+/// Fetch network address balance from the API
+pub async fn fetch_network_balance(address: &str, blockchain: &str) -> Result<u128, String> {
+    let base_url = std::env::var("BACKEND_API_URL")
+        .unwrap_or_else(|_| "https://stage-testnet4-crypto-api.qubetics.work".to_string());
+    let url = format!(
+        "{}/api/v1/balance/{}?blockchain={}",
+        base_url, address, blockchain
+    );
+    let client = Client::new();
+
+    info!("💰 Fetching network balance from URL: {}", url);
+
+    let resp = client.get(&url).send().await.map_err(|e| {
+        error!("Failed to fetch network balance: {}", e);
+        format!("Failed to fetch network balance: {}", e)
+    })?;
+
+    let status = resp.status();
+    debug!("Network balance API response status: {}", status);
+
+    let resp_text = resp.text().await.map_err(|e| {
+        error!("Failed to read network balance response text: {}", e);
+        format!("Failed to read network balance response text: {}", e)
+    })?;
+
+    debug!("Network balance API response body: {}", resp_text);
+
+    if !status.is_success() {
+        error!(
+            "Network balance API returned non-success status {}: {}",
+            status, resp_text
+        );
+        return Err(format!(
+            "Network balance API returned non-success status {}: {}",
+            status, resp_text
+        ));
+    }
+
+    let resp_json: Value = serde_json::from_str(&resp_text).map_err(|e| {
+        error!("Failed to parse network balance response: {}", e);
+        format!("Failed to parse network balance response: {}", e)
+    })?;
+
+    debug!("Network balance API response JSON: {:?}", resp_json);
+
+    if resp_json.get("error").and_then(|v| v.as_bool()) == Some(true) {
+        let msg = resp_json
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Unknown error");
+        error!("Network balance API error: {}", msg);
+        return Err(format!("Network balance API error: {}", msg));
+    }
+
+    let balance_str = resp_json
+        .get("data")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            error!("Missing 'data' field in network balance response");
+            "Missing 'data' field in network balance response".to_string()
+        })?;
+
+    let balance = balance_str.parse::<u128>().map_err(|e| {
+        error!("Failed to parse balance value '{}': {}", balance_str, e);
+        format!("Failed to parse balance value '{}': {}", balance_str, e)
+    })?;
+
+    info!(
+        "💰 Network balance for {} on {}: {}",
+        address, blockchain, balance
+    );
+    Ok(balance)
 }

@@ -35,9 +35,10 @@ use k256::elliptic_curve::sec1::ToEncodedPoint;
 use super::{
     errors::{RpcError, TransactionError},
     utils::{
-        convert_src_smallest_to_dst_smallest, fetch_crypto_prices, get_actual_dkg_secret_share,
-        normalize_eth_signature, recover_eth_address_secp, wait_for_reward_transaction_ids,
-        wait_for_transaction_result, wait_for_withdraw_liquidity_transaction_ids,
+        convert_src_smallest_to_dst_smallest, fetch_crypto_prices, fetch_network_balance,
+        get_actual_dkg_secret_share, normalize_eth_signature, recover_eth_address_secp,
+        wait_for_reward_transaction_ids, wait_for_transaction_result,
+        wait_for_withdraw_liquidity_transaction_ids,
     },
 };
 
@@ -170,6 +171,76 @@ pub(crate) async fn handle_deposit_intent(
             "✅ [VALIDATION] TICS->BTC conversion validated for {:?}: {} satoshis (minimum: {} satoshis)",
             transaction_type, target_smallest, MIN_BTC_INTENT_SATS
         );
+
+            // Check network address balance for the target chain
+            info!("💰 [VALIDATION] Checking network balance for target chain...");
+
+            // Get network addresses from DKG storage
+            let network_address = match _dkg_storage.get_final_public().await {
+                Ok(Some(final_public)) => {
+                    // Determine which address to use based on target chain
+                    if intent.target_chain.eq_ignore_ascii_case("btc")
+                        || intent.target_chain.eq_ignore_ascii_case("bitcoin")
+                    {
+                        crate::utils::get_btc_address_from_group_key(final_public)
+                    } else {
+                        crate::utils::get_eth_address_from_group_key(final_public)
+                    }
+                }
+                Ok(None) => {
+                    let msg = "Network address not available - DKG not initialized".to_string();
+                    warn!("❌ [VALIDATION] {}", msg);
+                    return Err(warp::reject::custom(RpcError::InvalidRequest(msg)));
+                }
+                Err(e) => {
+                    let msg = format!("Failed to get network address: {}", e);
+                    error!("❌ [VALIDATION] {}", msg);
+                    return Err(warp::reject::custom(RpcError::InvalidRequest(msg)));
+                }
+            };
+
+            // Determine blockchain parameter for API call
+            let blockchain = if intent.target_chain.eq_ignore_ascii_case("btc")
+                || intent.target_chain.eq_ignore_ascii_case("bitcoin")
+            {
+                "btc"
+            } else {
+                "eth"
+            };
+
+            info!(
+                "💰 [VALIDATION] Fetching balance for {} on blockchain {}",
+                network_address, blockchain
+            );
+
+            // Fetch network balance
+            let network_balance = fetch_network_balance(&network_address, blockchain)
+                .await
+                .map_err(|e| {
+                    let msg = format!("Failed to fetch network balance: {}", e);
+                    error!("❌ [VALIDATION] {}", msg);
+                    warp::reject::custom(RpcError::InvalidRequest(msg))
+                })?;
+
+            info!(
+                "💰 [VALIDATION] Network balance: {} (smallest units), required: {} (smallest units)",
+                network_balance, target_smallest
+            );
+
+            // Check if network has sufficient balance
+            if network_balance < target_smallest {
+                let msg = format!(
+                    "Insufficient network balance: available {} ",
+                    network_balance
+                );
+                warn!("❌ [VALIDATION] {}", msg);
+                return Err(warp::reject::custom(RpcError::InvalidRequest(msg)));
+            }
+
+            info!(
+                "✅ [VALIDATION] Network has sufficient balance: {}",
+                network_balance
+            );
         }
 
         // For VaultToNetwork and other types, use the intent amount plus 5%
