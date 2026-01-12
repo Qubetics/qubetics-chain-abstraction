@@ -345,9 +345,65 @@ impl MpcNetworkLayer {
         Ok(())
     }
 
-    /// Handle new listen address
-    fn handle_new_listen_addr(&self, _address: libp2p::Multiaddr) {
-        // Listen address registered
+    /// Handle new listen address - log P2P server details
+    fn handle_new_listen_addr(&self, address: libp2p::Multiaddr) {
+        // Extract port and protocol information from multiaddr
+        let mut tcp_port: Option<u16> = None;
+        let mut udp_port: Option<u16> = None;
+        let mut protocol = "unknown";
+        
+        // Parse multiaddr to extract port information
+        let addr_str = address.to_string();
+        
+        // Check for TCP port
+        if let Some(tcp_part) = addr_str.split("/tcp/").nth(1) {
+            if let Some(port_str) = tcp_part.split('/').next() {
+                if let Ok(port) = port_str.parse::<u16>() {
+                    tcp_port = Some(port);
+                    protocol = "TCP";
+                }
+            }
+        }
+        
+        // Check for UDP/QUIC port
+        if let Some(udp_part) = addr_str.split("/udp/").nth(1) {
+            if let Some(port_str) = udp_part.split('/').next() {
+                if let Ok(port) = port_str.parse::<u16>() {
+                    udp_port = Some(port);
+                    if addr_str.contains("quic-v1") {
+                        protocol = "QUIC";
+                    } else {
+                        protocol = "UDP";
+                    }
+                }
+            }
+        }
+        
+        // Log P2P server information
+        if let Some(port) = tcp_port {
+            info!(
+                "🌐 [P2P] P2P server listening on TCP port {} - Multiaddr: {}/p2p/{}",
+                port, address, self.local_peer_id
+            );
+            info!(
+                "🔗 [P2P] Connect to this node using: {}/p2p/{}",
+                address, self.local_peer_id
+            );
+        } else if let Some(port) = udp_port {
+            info!(
+                "🌐 [P2P] P2P server listening on {} port {} - Multiaddr: {}/p2p/{}",
+                protocol, port, address, self.local_peer_id
+            );
+            info!(
+                "🔗 [P2P] Connect to this node using: {}/p2p/{}",
+                address, self.local_peer_id
+            );
+        } else {
+            info!(
+                "🌐 [P2P] P2P server listening on address: {}/p2p/{}",
+                address, self.local_peer_id
+            );
+        }
     }
 
     /// Handle connection closed event

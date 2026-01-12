@@ -39,14 +39,17 @@ impl MpcNetworkLayer {
         let mut dkg_status_timer = tokio::time::interval(Duration::from_secs(300));
         let mut peerlist_logger = tokio::time::interval(Duration::from_secs(300));
 
+        info!("🌐 [P2P] Starting P2P server...");
+        info!("🔑 [P2P] Local Peer ID: {}", self.local_peer_id);
+        
         swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
         swarm.listen_on("/ip4/0.0.0.0/udp/0/quic-v1".parse()?)?;
+        
+        info!("⏳ [P2P] Waiting for listen addresses to be assigned...");
 
         self.dial_seed_addresses(&mut swarm);
         // Dial command-line provided addresses
         self.dial_command_line_addresses(&mut swarm);
-
-        info!("Local Peer ID: {}", self.local_peer_id);
 
         loop {                                        
             tokio::select! {
