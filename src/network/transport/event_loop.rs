@@ -6,7 +6,6 @@ use libp2p::{Multiaddr, PeerId};
 use std::time::Duration;
 use tracing::{error, info, warn};
 
-use crate::protocols::DKGStatus;
 
 use super::types::{MpcNetworkBehaviour, MpcNetworkLayer};
 
@@ -52,7 +51,6 @@ impl MpcNetworkLayer {
         loop {                                        
             tokio::select! {
                 event = swarm.select_next_some() => {
-                    info!("[SWARM] some");
                     // 🛡️ Error recovery for swarm events - prevent node crashes
                     if let Err(e) = self.handle_swarm_event(event, &mut swarm).await {
                         error!("❌ [NETWORK] Swarm event handling failed: {}", e);
@@ -81,7 +79,6 @@ impl MpcNetworkLayer {
 
                 _ = bootstrap_timer.tick() => {
                     // Periodic bootstrap to discover new peers
-                    info!("Performing periodic bootstrap...");
                     if let Err(e) = swarm.behaviour_mut().kademlia.bootstrap() {
                         warn!("Periodic bootstrap failed: {:?}", e);
                     }
@@ -111,6 +108,29 @@ impl MpcNetworkLayer {
                             if !is_confirmed {
                                 // Check if we already processed and confirmed locally
                                 if sequencer.is_locally_confirmed().await {
+                                    // CRITICAL FIX: Check for timeout to prevent infinite wait
+                                    if sequencer.check_confirmation_timeout(30).await {
+                                        // Timeout exceeded - force clear to unblock
+                                        warn!(
+                                            "⏰ [SEQUENCER] Confirmation wait timeout exceeded for tx_id={}, force clearing to unblock",
+                                            tx_id
+                                        );
+                                        sequencer.force_clear_processing(&tx_id, "Confirmation wait timeout (30s)").await;
+                                        // Sleep briefly and return to let other events process
+                                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                                        return None;
+                                    }
+
+                                    // Check confirmation status for logging
+                                    if let Some((confirmed, total)) = sequencer.get_confirmation_status().await {
+                                        if confirmed < total {
+                                            warn!(
+                                                "⏳ [SEQUENCER] Waiting for confirmations: tx_id={}, confirmed: {}/{}, will timeout after 30s",
+                                                tx_id, confirmed, total
+                                            );
+                                        }
+                                    }
+
                                     // Wait for other nodes to confirm
                                     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                                     return None;
@@ -140,6 +160,29 @@ impl MpcNetworkLayer {
                                     return None;
                                 }
                             } else {
+                                // Waiting for confirmation - check timeout first
+                                if sequencer.check_confirmation_timeout(30).await {
+                                    // Timeout exceeded - force clear to unblock
+                                    warn!(
+                                        "⏰ [SEQUENCER] Confirmation wait timeout exceeded for tx_id={}, force clearing to unblock",
+                                        tx_id
+                                    );
+                                    sequencer.force_clear_processing(&tx_id, "Confirmation wait timeout (30s)").await;
+                                    // Sleep briefly and return to let other events process
+                                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                                    return None;
+                                }
+
+                                // Check confirmation status for logging
+                                if let Some((confirmed, total)) = sequencer.get_confirmation_status().await {
+                                    if confirmed < total {
+                                        warn!(
+                                            "⏳ [SEQUENCER] Waiting for confirmations: tx_id={}, confirmed: {}/{}, will timeout after 30s",
+                                            tx_id, confirmed, total
+                                        );
+                                    }
+                                }
+
                                 // Waiting for confirmation - sleep and retry
                                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                                 return None;
@@ -233,6 +276,9 @@ impl MpcNetworkLayer {
                             crate::network::sequencer::ContractTransactionFlow::SolverClaimReward { solver_address, reward_btc, reward_tics, payout_transaction_hash, .. } => {
                                 format!("solver_claim_reward:{}:{}:{}:{}", solver_address, reward_btc.unwrap_or(0), reward_tics.unwrap_or(0), payout_transaction_hash)
                             }
+                            crate::network::sequencer::ContractTransactionFlow::RefundIntent { intent_id, transaction_hash, reason, .. } => {
+                                format!("refund_intent:{}:{}:{}", intent_id, transaction_hash, reason)
+                            }
                         };
 
                         // Clone the Arc to avoid borrowing self while holding the lock
@@ -264,7 +310,7 @@ impl MpcNetworkLayer {
                         // Mark as completed (this will wait for all nodes to confirm)
                         if let Some(sequencer) = &self.contract_sequencer {
                             info!(
-                                "✅ [SEQUENCER] [FCFS] Marking tx_id={} (sequence={}) as completed, waiting for all nodes to confirm...",
+                                "   {} (sequence={}) as completed, waiting for all nodes to confirm...",
                                 tx_id, sequence
                             );
 
@@ -512,28 +558,6 @@ impl MpcNetworkLayer {
 
     /// Perform periodic peer discovery
     fn perform_periodic_peer_discovery(&mut self, swarm: &mut libp2p::Swarm<MpcNetworkBehaviour>) {
-        info!("🔄 Performing periodic peer discovery...");
-
-        // Debug: Show current state before discovery
-        let current_total = self.node_manager.get_total_nodes();
-        let active_nodes = self.node_manager.get_active_nodes();
-        info!(
-            "📊 Current node manager state - Total: {}, Active nodes: {:?}",
-            current_total, active_nodes
-        );
-
-        // Log gossipsub state
-        let gossipsub_peers = swarm.behaviour_mut().gossipsub.all_peers().count();
-        info!("📡 Gossipsub connected peers: {}", gossipsub_peers);
-
-        // Log Kademlia state
-        let kbucket_count: usize = swarm
-            .behaviour_mut()
-            .kademlia
-            .kbuckets()
-            .map(|bucket| bucket.num_entries())
-            .sum();
-        info!("🌐 Kademlia routing table entries: {}", kbucket_count);
 
         swarm
             .behaviour_mut()
@@ -555,7 +579,6 @@ impl MpcNetworkLayer {
                 self.db.get_string::<usize>(&key).ok().flatten().is_some()
             };
             if !known {
-                info!("🔎 Requesting PeerList from {} to learn indices", p);
                 swarm
                     .behaviour_mut()
                     .request_response
@@ -566,22 +589,6 @@ impl MpcNetworkLayer {
 
     /// Log periodic DKG status
     async fn log_periodic_dkg_status(&self) {
-        if let Some(dkg_node) = &self.dkg_node {
-            let status = dkg_node.get_status();
-            info!("📊 DKG Status Check - Current status: {:?}", status);
-
-            if let DKGStatus::Completed = status {
-                // DKG is completed, log final results
-                if dkg_node.get_final_secret_share().await.is_some() {
-                    info!("🎯 DKG COMPLETED - Final secret share stored");
-                }
-                if let Some(public_key) = dkg_node.get_final_public_key().await {
-                    info!("🔑 DKG COMPLETED - Final public key: {:?}", public_key);
-                }
-            } else if let DKGStatus::Started = status {
-                // DKG is in progress, check progress
-                info!("⏳ DKG in progress...");
-            }
-        }
+        // Periodic DKG status check (logging removed to reduce overhead)
     }
 }

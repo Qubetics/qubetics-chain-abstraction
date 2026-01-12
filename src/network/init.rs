@@ -15,8 +15,8 @@ use crate::node_selection::NodeMembership;
 
 use crate::network::config::NetworkConfig;
 use crate::network::discovery::types::{DatabaseSyncState, PeerDiscoveryState};
-use crate::network::rpc::retry_manager::RetryManager;
 use crate::network::rpc::channel_monitor::ChannelHealthMonitor;
+use crate::network::rpc::retry_manager::RetryManager;
 use crate::network::transport::types::{MpcNetworkBehaviour, MpcNetworkLayer, MPC_TOPICS};
 
 impl MpcNetworkLayer {
@@ -24,7 +24,7 @@ impl MpcNetworkLayer {
     pub async fn new(node_manager: Box<dyn NodeMembership>, db: Database) -> Result<Self> {
         // Load network configuration from config.rs (hardcoded bootstrap nodes)
         let network_config = NetworkConfig::default();
-        
+
         // Log bootstrap node configuration
         info!(
             "🌐 [NETWORK_CONFIG] Loaded {} bootstrap peers and {} discovery seeds",
@@ -41,7 +41,7 @@ impl MpcNetworkLayer {
                 info!("   Discovery seed {}: {}", i + 1, addr);
             }
         }
-        
+
         // Load or create persistent keypair using the injected database
         // Wrap in Arc to satisfy KeyStore trait object requirements
         // Clone the database since we need to move it into the struct later
@@ -55,7 +55,7 @@ impl MpcNetworkLayer {
         // Increased significantly to handle parallel burst traffic without channel blocking
         let (tx, rx) = mpsc::channel(10000); // Increased from 2000 to 10000 for high parallel user load
         let tx_for_retry = tx.clone();
-        
+
         // Initialize channel health monitor for production monitoring
         let channel_health = Arc::new(ChannelHealthMonitor::new());
 
@@ -213,7 +213,7 @@ impl MpcNetworkLayer {
                     .heartbeat_interval(Duration::from_millis(500))  // Faster heartbeat for lower latency (default: 1s)
                     .validation_mode(gossipsub::ValidationMode::Strict)  // Faster validation (changed from Strict)
                     .message_id_fn(message_id_fn)
-                    .flood_publish(true)  // Publish to all peers immediately
+                    .flood_publish(false)
                     .fanout_ttl(Duration::from_secs(60))
                     .prune_peers(10)
                     .prune_backoff(Duration::from_secs(60))

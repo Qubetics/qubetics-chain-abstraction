@@ -65,6 +65,12 @@ pub enum ChannelMessage {
         /// "withdraw_liquidity"
         transaction_type: String,
     },
+    TransactionFailure {
+        sequencer_request_id: String,
+        blockchain_tx_hash: String,
+        error: String,
+        original_request: Option<crate::network::ContractTransactionRequest>,
+    },
     TransactionIdBroadcast {
         intent_hash: Option<String>,
         transaction_id: String,
@@ -105,6 +111,15 @@ pub enum ChannelMessage {
         share_index: usize,
         share_value: SerializableScalar,
         commitments: Vec<SerializablePoint>,
+        retry_count: u8,
+    },
+    /// Unicast a critical gossip message via P2P RPC
+    UnicastCritical {
+        target_peer_id: String,
+        topic: String,
+        data: Vec<u8>,
+        message_type: String,
+        message_id: String,
         retry_count: u8,
     },
     /// Send ECDSA signature to final node via P2P RPC unicast
@@ -305,5 +320,24 @@ pub enum GossipsubMessage {
         target_version: String,
         phase: String, // "starting", "completed", "failed", "rolled_back"
         timestamp: u64,
+    /// Maps sequencer request_id to blockchain tx_hash after broadcasting
+    TransactionBroadcast {
+        /// Sequencer request ID (None for non-sequencer transactions)
+        sequencer_request_id: Option<String>,
+        /// Blockchain transaction hash
+        blockchain_tx_hash: String,
+        /// Chain ID where the transaction was broadcasted
+        chain_id: u64,
+    },
+    /// Notification that a transaction failed (signature verification, broadcasting, etc.)
+    TransactionFailure {
+        /// Sequencer request ID
+        sequencer_request_id: String,
+        /// Blockchain transaction hash (or "N/A" if failed before broadcasting)
+        blockchain_tx_hash: String,
+        /// Error message
+        error: String,
+        /// Original request for guaranteed retry (even if cache is empty)
+        original_request: Option<crate::network::ContractTransactionRequest>,
     },
 }

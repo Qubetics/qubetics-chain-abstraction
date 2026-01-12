@@ -1,5 +1,5 @@
 /// Retry manager for critical messages with exponential backoff
-/// 
+///
 /// This module handles automatic retries for critical consensus messages that must
 /// reach all nodes in the network. It uses exponential backoff to avoid overwhelming
 /// the network and tracks acknowledgments from all nodes.
@@ -79,16 +79,12 @@ impl RetryManager {
             GossipsubMessage::MainSequencerVrfSelectedNodes(_) => {
                 Some(CriticalMessageType::MainSequencerVrfSelectedNodes)
             }
-            GossipsubMessage::VrfSelectedNodes(_) => {
-                Some(CriticalMessageType::VrfSelectedNodes)
-            }
+            GossipsubMessage::VrfSelectedNodes(_) => Some(CriticalMessageType::VrfSelectedNodes),
             // Removed: VaultSequencerSelect - has ACK/MISSING protocol for recovery
             GossipsubMessage::VaultSequencerSelect { .. } => None,
             // Removed: MainSequencerSelect - has ACK/MISSING protocol for recovery
             GossipsubMessage::MainSequencerSelect { .. } => None,
-            GossipsubMessage::SequencerSync { .. } => {
-                Some(CriticalMessageType::SequencerSync)
-            }
+            GossipsubMessage::SequencerSync { .. } => Some(CriticalMessageType::SequencerSync),
             _ => None,
         }
     }
@@ -99,14 +95,20 @@ impl RetryManager {
         msg: &GossipsubMessage,
     ) -> Result<MessageId> {
         let unique_id = match msg {
-            GossipsubMessage::TransactionIdBroadcast {
-                transaction_id, ..
-            } => transaction_id.clone(),
+            GossipsubMessage::TransactionIdBroadcast { transaction_id, .. } => {
+                transaction_id.clone()
+            }
             GossipsubMessage::VaultSequencerVrfSelectedNodes(broadcast) => {
-                format!("vault_vrf_{}_{}", broadcast.round, broadcast.selector_node_id.0)
+                format!(
+                    "vault_vrf_{}_{}",
+                    broadcast.round, broadcast.selector_node_id.0
+                )
             }
             GossipsubMessage::MainSequencerVrfSelectedNodes(broadcast) => {
-                format!("main_vrf_{}_{}", broadcast.round, broadcast.selector_node_id.0)
+                format!(
+                    "main_vrf_{}_{}",
+                    broadcast.round, broadcast.selector_node_id.0
+                )
             }
             GossipsubMessage::VrfSelectedNodes(broadcast) => {
                 format!("vrf_{}_{}", broadcast.round, broadcast.selector_node_id.0)
@@ -161,7 +163,7 @@ impl RetryManager {
         };
 
         let mut retries = self.active_retries.write().await;
-        
+
         // Check if message is already being tracked (shouldn't happen, but be safe)
         if retries.contains_key(&message_id) {
             warn!(
@@ -169,14 +171,15 @@ impl RetryManager {
                 message_id
             );
         }
-        
+
         retries.insert(message_id.clone(), state);
 
         info!(
             "🔄 [RETRY] Registered critical message for retry: {:?} (expecting {} nodes)",
-            message_id, expected_nodes.len()
+            message_id,
+            expected_nodes.len()
         );
-        
+
         // Log which nodes we're expecting ACKs from
         let expected_list: Vec<String> = expected_nodes.iter().map(|p| p.to_string()).collect();
         info!(
@@ -190,12 +193,7 @@ impl RetryManager {
         let msg_id_clone = message_id.clone();
 
         tokio::spawn(async move {
-            Self::monitor_and_retry(
-                retries_clone,
-                message_tx_clone,
-                msg_id_clone,
-            )
-            .await;
+            Self::monitor_and_retry(retries_clone, message_tx_clone, msg_id_clone).await;
         });
 
         Ok(())
@@ -211,10 +209,15 @@ impl RetryManager {
     ) -> Result<bool> {
         // Production: Add timeout to prevent hanging on lock acquisition
         let lock_timeout = Duration::from_secs(5);
-        let mut retries = match tokio::time::timeout(lock_timeout, self.active_retries.write()).await {
+        let mut retries = match tokio::time::timeout(lock_timeout, self.active_retries.write())
+            .await
+        {
             Ok(guard) => guard,
             Err(_) => {
-                error!("❌ [RETRY] CRITICAL: Timeout acquiring write lock for ACK recording (>{}s)", lock_timeout.as_secs());
+                error!(
+                    "❌ [RETRY] CRITICAL: Timeout acquiring write lock for ACK recording (>{}s)",
+                    lock_timeout.as_secs()
+                );
                 error!("❌ [RETRY] This indicates lock contention or deadlock - investigate immediately");
                 return Err(anyhow!("Timeout acquiring retry state lock"));
             }
@@ -234,15 +237,12 @@ impl RetryManager {
                 let acked_count = state.acknowledged_nodes.len();
                 let expected_count = state.expected_nodes.len();
                 let missing_count = expected_count - acked_count;
-                
+
                 info!(
                     "✅ [RETRY] Received ACK for {:?} from {} ({}/{})",
-                    message_id,
-                    node_id,
-                    acked_count,
-                    expected_count
+                    message_id, node_id, acked_count, expected_count
                 );
-                
+
                 // Log which nodes are still missing
                 if missing_count > 0 {
                     let missing_nodes: Vec<String> = state
@@ -281,6 +281,17 @@ impl RetryManager {
         Ok(false)
     }
 
+    /// Mark a peer as unreachable for all active retries
+    pub async fn mark_peer_unreachable(&self, peer_id: PeerId) {
+        let removed_count = Self::remove_peer_from_retries(&self.active_retries, &peer_id).await;
+        if removed_count > 0 {
+            warn!(
+                "⚠️ [RETRY] Marked peer {} unreachable for {} active retries",
+                peer_id, removed_count
+            );
+        }
+    }
+
     /// Helper: Check if message type is VRF-related (needs aggressive retry)
     fn is_vrf_message(msg_type: &CriticalMessageType) -> bool {
         matches!(
@@ -289,6 +300,35 @@ impl RetryManager {
                 | CriticalMessageType::VaultSequencerVrfSelectedNodes
                 | CriticalMessageType::MainSequencerVrfSelectedNodes
         )
+    }
+
+    async fn remove_peer_from_retries(
+        retries: &Arc<RwLock<HashMap<MessageId, RetryState>>>,
+        peer_id: &PeerId,
+    ) -> usize {
+        let mut retries_guard = retries.write().await;
+        let mut completed_messages = Vec::new();
+        let mut removed_count = 0;
+
+        for (message_id, state) in retries_guard.iter_mut() {
+            if state.expected_nodes.remove(peer_id) {
+                removed_count += 1;
+                warn!(
+                    "⚠️ [RETRY] Removing unreachable peer {} from expected set for {:?}",
+                    peer_id, message_id
+                );
+
+                if state.acknowledged_nodes.len() >= state.expected_nodes.len() {
+                    completed_messages.push(message_id.clone());
+                }
+            }
+        }
+
+        for message_id in completed_messages {
+            retries_guard.remove(&message_id);
+        }
+
+        removed_count
     }
 
     /// Monitor a message and retry if needed
@@ -303,46 +343,56 @@ impl RetryManager {
         const VRF_INITIAL_WAIT: Duration = Duration::from_millis(500); // Only 500ms wait for VRF
         const VRF_MAX_RETRIES: u8 = 10; // More retries for critical VRF
         const VRF_BACKOFF_DELAYS: [Duration; 10] = [
-            Duration::from_millis(100),  // 1st retry: 100ms (ultra-fast)
-            Duration::from_millis(200),  // 2nd retry: 200ms
-            Duration::from_millis(300),  // 3rd retry: 300ms
-            Duration::from_millis(500),  // 4th retry: 500ms
-            Duration::from_millis(500),  // 5th retry: 500ms
-            Duration::from_secs(1),      // 6th retry: 1s
-            Duration::from_secs(1),      // 7th retry: 1s
-            Duration::from_secs(2),      // 8th retry: 2s
-            Duration::from_secs(2),      // 9th retry: 2s
-            Duration::from_secs(3),      // 10th retry: 3s
+            Duration::from_millis(100), // 1st retry: 100ms (ultra-fast)
+            Duration::from_millis(200), // 2nd retry: 200ms
+            Duration::from_millis(300), // 3rd retry: 300ms
+            Duration::from_millis(500), // 4th retry: 500ms
+            Duration::from_millis(500), // 5th retry: 500ms
+            Duration::from_secs(1),     // 6th retry: 1s
+            Duration::from_secs(1),     // 7th retry: 1s
+            Duration::from_secs(2),     // 8th retry: 2s
+            Duration::from_secs(2),     // 9th retry: 2s
+            Duration::from_secs(3),     // 10th retry: 3s
         ];
         // VRF Total time: 500ms initial + 11.1s retries = ~12s (5x faster than standard!)
-        
+
         // STANDARD CONFIG: For non-VRF critical messages
         const STANDARD_INITIAL_WAIT: Duration = Duration::from_secs(3);
         const STANDARD_MAX_RETRIES: u8 = 7;
         const STANDARD_BACKOFF_DELAYS: [Duration; 7] = [
-            Duration::from_secs(1),   // 1st retry: 1 second
-            Duration::from_secs(2),   // 2nd retry: 2 seconds
-            Duration::from_secs(3),   // 3rd retry: 3 seconds
-            Duration::from_secs(5),   // 4th retry: 5 seconds
-            Duration::from_secs(8),   // 5th retry: 8 seconds
-            Duration::from_secs(13),  // 6th retry: 13 seconds
-            Duration::from_secs(21),  // 7th retry: 21 seconds
+            Duration::from_secs(1),  // 1st retry: 1 second
+            Duration::from_secs(2),  // 2nd retry: 2 seconds
+            Duration::from_secs(3),  // 3rd retry: 3 seconds
+            Duration::from_secs(5),  // 4th retry: 5 seconds
+            Duration::from_secs(8),  // 5th retry: 8 seconds
+            Duration::from_secs(13), // 6th retry: 13 seconds
+            Duration::from_secs(21), // 7th retry: 21 seconds
         ];
         // Standard Total time: 3s initial + 53s retries = 56s max
 
         // Select parameters based on message type
         let is_vrf = Self::is_vrf_message(&message_id.message_type);
-        let initial_wait = if is_vrf { VRF_INITIAL_WAIT } else { STANDARD_INITIAL_WAIT };
-        let max_retries = if is_vrf { VRF_MAX_RETRIES } else { STANDARD_MAX_RETRIES };
-        
-        let msg_type_str = if is_vrf { "VRF (aggressive)" } else { "standard" };
-        
+        let initial_wait = if is_vrf {
+            VRF_INITIAL_WAIT
+        } else {
+            STANDARD_INITIAL_WAIT
+        };
+        let max_retries = if is_vrf {
+            VRF_MAX_RETRIES
+        } else {
+            STANDARD_MAX_RETRIES
+        };
+
+        let msg_type_str = if is_vrf {
+            "VRF (aggressive)"
+        } else {
+            "standard"
+        };
+
         // Wait for initial ACKs
         info!(
             "⏰ [RETRY] Starting {} monitoring for {:?} - waiting {:?} for initial ACKs",
-            msg_type_str,
-            message_id,
-            initial_wait
+            msg_type_str, message_id, initial_wait
         );
         tokio::time::sleep(initial_wait).await;
 
@@ -378,62 +428,70 @@ impl RetryManager {
                 );
 
                 // Update retry state
-                {
+                let retry_count = {
                     let mut retries_guard = retries.write().await;
                     if let Some(state_mut) = retries_guard.get_mut(&message_id) {
                         state_mut.retry_count += 1;
                         state_mut.last_retry_at = Some(Instant::now());
+                        state_mut.retry_count
                     } else {
                         // Message was removed
                         return;
                     }
-                }
-
-                // Retry the broadcast
-                let retry_msg = ChannelMessage::Broadcast {
-                    topic: state.topic.clone(),
-                    data: state.data.clone(),
                 };
 
+                let missing_peers: Vec<PeerId> = state
+                    .expected_nodes
+                    .difference(&state.acknowledged_nodes)
+                    .cloned()
+                    .collect();
+
                 info!(
-                    "🔄 [RETRY] Sending {} retry broadcast for {:?} (attempt {}/{}) to channel",
+                    "🔄 [RETRY] Sending {} retry unicast for {:?} (attempt {}/{}) to {} peers",
                     msg_type_str,
                     message_id,
                     retry_attempt + 1,
-                    max_retries
+                    max_retries,
+                    missing_peers.len()
                 );
 
-                // Production: Use try_send with fallback to avoid blocking
-                // If channel is full, we log and continue - the message will be retried in the next attempt
-                match message_tx.try_send(retry_msg) {
-                    Ok(_) => {
-                        info!(
-                            "✅ [RETRY] {} retry message sent to channel for {:?} (attempt {}/{})",
-                            msg_type_str,
-                            message_id,
-                            retry_attempt + 1,
-                            max_retries
-                        );
-                    }
-                    Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                        warn!("⚠️ [RETRY] Channel full - retry will be attempted in next cycle");
-                        warn!("⚠️ [RETRY] This indicates high message volume - consider increasing channel capacity");
-                        warn!("⚠️ [RETRY] Current load: 11+ parallel users generating burst traffic");
-                        // Channel is full but system is still functional
-                        // The next retry cycle will try again - no message loss
-                        // This is graceful degradation under high load
-                    }
-                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                        error!("❌ [RETRY] CRITICAL: Channel closed - cannot send retries!");
-                        error!("❌ [RETRY] System is shutting down or channel was dropped");
-                        // Channel is closed - no point in continuing
-                        return;
+                let message_type = format!("{:?}", state.message_id.message_type);
+                let message_id_str = state.message_id.unique_id.clone();
+
+                for peer_id in missing_peers {
+                    let retry_msg = ChannelMessage::UnicastCritical {
+                        target_peer_id: peer_id.to_string(),
+                        topic: state.topic.clone(),
+                        data: state.data.clone(),
+                        message_type: message_type.clone(),
+                        message_id: message_id_str.clone(),
+                        retry_count,
+                    };
+
+                    match message_tx.try_send(retry_msg) {
+                        Ok(_) => {
+                            info!(
+                                "✅ [RETRY] Unicast retry sent to {} for {:?} (attempt {}/{})",
+                                peer_id,
+                                message_id,
+                                retry_attempt + 1,
+                                max_retries
+                            );
+                        }
+                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                            warn!("⚠️ [RETRY] Channel full - retry queued for next cycle");
+                        }
+                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                            error!("❌ [RETRY] CRITICAL: Channel closed - cannot send retries!");
+                            error!("❌ [RETRY] System is shutting down or channel was dropped");
+                            return;
+                        }
                     }
                 }
 
                 // Wait for backoff period before next retry (with jitter for production)
                 let retry_idx = retry_attempt as usize;
-                
+
                 // Select appropriate backoff delays based on message type
                 let base_delay = if is_vrf {
                     if retry_idx < VRF_BACKOFF_DELAYS.len() {
@@ -448,7 +506,7 @@ impl RetryManager {
                         STANDARD_BACKOFF_DELAYS[STANDARD_BACKOFF_DELAYS.len() - 1]
                     }
                 };
-                
+
                 // Add jitter (0-20% of base delay) to prevent thundering herd problem
                 // For VRF messages, use less jitter (0-10%) for more predictable timing
                 let jitter_ms = {
@@ -458,15 +516,15 @@ impl RetryManager {
                     } else {
                         rng.gen_range(0.0..0.2) // 0-20% jitter for others
                     };
-                        (base_delay.as_millis() as f64 * jitter_factor) as u64
-                    };
-                    let delay_with_jitter = base_delay + Duration::from_millis(jitter_ms);
-                    
-                    info!(
+                    (base_delay.as_millis() as f64 * jitter_factor) as u64
+                };
+                let delay_with_jitter = base_delay + Duration::from_millis(jitter_ms);
+
+                info!(
                         "⏳ [RETRY] {} waiting {:?} (base: {:?} + jitter: {}ms) before retry {} for {:?}",
                         msg_type_str, delay_with_jitter, base_delay, jitter_ms, retry_attempt + 2, message_id
                     );
-                    tokio::time::sleep(delay_with_jitter).await;
+                tokio::time::sleep(delay_with_jitter).await;
             }
         }
 
@@ -480,12 +538,11 @@ impl RetryManager {
             let missing_count = state.expected_nodes.len() - state.acknowledged_nodes.len();
             if missing_count > 0 {
                 let total_time = state.first_sent_at.elapsed();
-                let ack_rate = (state.acknowledged_nodes.len() as f64 / state.expected_nodes.len() as f64) * 100.0;
-                
-                error!(
-                    "❌ [RETRY] DELIVERY FAILURE for {:?}",
-                    message_id
-                );
+                let ack_rate = (state.acknowledged_nodes.len() as f64
+                    / state.expected_nodes.len() as f64)
+                    * 100.0;
+
+                error!("❌ [RETRY] DELIVERY FAILURE for {:?}", message_id);
                 error!(
                     "❌ [RETRY] Failed to deliver to {} of {} nodes ({:.1}% success rate)",
                     missing_count,
@@ -494,29 +551,25 @@ impl RetryManager {
                 );
                 error!(
                     "❌ [RETRY] Total attempts: {} retries over {:?}",
-                    max_retries,
-                    total_time
+                    max_retries, total_time
                 );
 
                 // Log which nodes are missing with detailed information
-                let missing_nodes: Vec<_> = state
+                let missing_nodes: Vec<PeerId> = state
                     .expected_nodes
                     .difference(&state.acknowledged_nodes)
+                    .cloned()
                     .collect();
                 error!(
                     "❌ [RETRY] Missing ACKs from {} nodes: {:?}",
                     missing_nodes.len(),
                     missing_nodes
                 );
-                
+
                 // Production: Log actionable information for operators
-                warn!(
-                    "⚠️ [RETRY] ACTION REQUIRED: Investigate connectivity to missing nodes"
-                );
-                warn!(
-                    "⚠️ [RETRY] This may indicate network partitioning or node failures"
-                );
-                
+                warn!("⚠️ [RETRY] ACTION REQUIRED: Investigate connectivity to missing nodes");
+                warn!("⚠️ [RETRY] This may indicate network partitioning or node failures");
+
                 // Log acknowledged nodes for comparison
                 let acked_nodes: Vec<_> = state.acknowledged_nodes.iter().collect();
                 info!(
@@ -558,4 +611,3 @@ impl RetryManager {
         })
     }
 }
-

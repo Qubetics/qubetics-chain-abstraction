@@ -84,5 +84,6 @@ pub enum SigningMessage {
         tx_bytes: Vec<u8>,
         intent_hash: Option<String>,
         transaction_type: Option<String>,
+        request_id: Option<String>,
     },
 }

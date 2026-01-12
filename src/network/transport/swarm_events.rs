@@ -3,7 +3,7 @@
 use anyhow::Result;
 use libp2p::swarm::{ConnectionError, SwarmEvent};
 use libp2p::{
-    gossipsub, kad::Event as KademliaEvent, multiaddr::Protocol,
+    gossipsub, kad::Event as KademliaEvent,
     request_response::Message as ReqRespMessage, PeerId,
 };
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -13,7 +13,7 @@ use crate::database::{key_utils::peer_addr_key, keys};
 use crate::protocols::DKGMessage;
 use crate::types::dkg::MSG_TOPIC_PEER_DISCOVERY;
 use crate::types::p2p::SerializablePeerId;
-use crate::types::rpc::{MPCProtocol, RPCRequest};
+use crate::types::rpc::RPCRequest;
 use crate::types::vrf::VrfRoundSyncRequest;
 use crate::types::{ChannelMessage, GossipsubMessage};
 
@@ -26,7 +26,6 @@ impl MpcNetworkLayer {
         event: SwarmEvent<NetworkEvent>,
         swarm: &mut libp2p::Swarm<MpcNetworkBehaviour>,
     ) -> Result<()> {
-        info!("[SWARM EVENT] {:?}", event);
         match event {
             SwarmEvent::ConnectionEstablished {
                 peer_id, endpoint, ..
@@ -42,17 +41,10 @@ impl MpcNetworkLayer {
                 self.handle_kademlia_event(kad_event).await?;
             }
             SwarmEvent::Behaviour(NetworkEvent::Gossipsub(gossipsub::Event::Message {
-                message_id,
-                propagation_source,
+                message_id: _,
+                propagation_source: _,
                 message,
             })) => {
-                info!(
-                    "📨 Received gossipsub message - Topic: {}, From: {}, Message ID: {:?}",
-                    message.topic, propagation_source, message_id
-                );
-                info!("📦 Message size: {} bytes", message.data.len());
-                info!("🏷️ Topic hash: {:?}", message.topic);
-
                 self.handle_gossipsub_message(&message).await?;
             }
             SwarmEvent::Behaviour(NetworkEvent::Gossipsub(gossipsub::Event::Subscribed {
@@ -80,9 +72,7 @@ impl MpcNetworkLayer {
                 self.handle_connection_closed(peer_id, num_established, cause)
                     .await;
             }
-            _ => {
-                info!("[EVENT] other");
-            }
+            _ => {}
         }
         Ok(())
     }
@@ -96,9 +86,7 @@ impl MpcNetworkLayer {
     ) -> Result<()> {
         use libp2p::core::ConnectedPoint;
 
-        info!("🔗 Connection established with peer: {:?}", peer_id);
         let remote_addr = endpoint.get_remote_address();
-        info!("📍 Remote address: {:?}", remote_addr);
 
         // Track connected peer
         self.connected_peers_cache.insert(peer_id);
@@ -106,10 +94,6 @@ impl MpcNetworkLayer {
         // Only persist the dialed address when we are the dialer; listener side remote_addr is ephemeral (caller source port).
         let is_dialer = matches!(endpoint, ConnectedPoint::Dialer { .. });
         if is_dialer {
-            info!(
-                "🔗 [CONNECTION_ESTABLISHED] Storing peer address {} => {} in peer_multiaddresses",
-                peer_id, remote_addr
-            );
             self.peer_discovery
                 .peer_multiaddresses
                 .insert(peer_id, remote_addr.clone());
@@ -120,11 +104,6 @@ impl MpcNetworkLayer {
                     peer_id, remote_addr, e
                 );
             }
-        } else {
-            info!(
-                "ℹ️ Listener-side connection from {} at {}; not persisting (likely ephemeral)",
-                peer_id, remote_addr
-            );
         }
 
         // Always request PeerInfo to learn the peer's listen addresses
@@ -147,21 +126,14 @@ impl MpcNetworkLayer {
 
         // Add peer to gossipsub as explicit peer
         swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
-        info!("➕ Added peer {} to gossipsub explicit peers", peer_id);
 
         // Retry database sync if needed
         if self.needs_database_sync && !self.db_sync_state.in_progress {
-            info!(
-                "🔄 [DB_SYNC] Connection established, retrying database sync with peer: {}",
-                peer_id
-            );
             self.needs_database_sync = false;
 
             if let Err(e) = self.sync_database_from_peer(swarm, peer_id).await {
                 warn!("❌ [DB_SYNC] Failed to start database sync: {:?}", e);
                 self.needs_database_sync = true;
-            } else {
-                info!("✅ [DB_SYNC] Database sync retry initiated successfully");
             }
         }
 
@@ -199,10 +171,6 @@ impl MpcNetworkLayer {
                     .unwrap()
                     .as_secs();
                 let start_time = now_secs + 10;
-                info!(
-                    "🕒 Scheduling initial DKG start at unix time {}",
-                    start_time
-                );
 
                 for peer in self.node_manager.get_active_nodes() {
                     if peer != *self.get_local_peer_id() {
@@ -212,18 +180,11 @@ impl MpcNetworkLayer {
                             .send_request(&peer, RPCRequest::ScheduleADKG { start_time });
                     }
                 }
-                info!(
-                    "📅 Scheduled initial DKG start for all peers at {}",
-                    start_time
-                );
                 self.schedule_dkg_at(start_time);
-            } else if total < 3 {
-                info!("⏳ Waiting for initial 3 nodes: {}/3", total);
             }
         }
 
         if is_dialer {
-            info!("🚀 Sending GetPeerList RPC to {}", peer_id);
             swarm
                 .behaviour_mut()
                 .request_response
@@ -231,10 +192,6 @@ impl MpcNetworkLayer {
 
             // Also request VRF round sync when connecting
             if !self.vrf_round_requested && !self.needs_database_sync {
-                info!(
-                    "🔄 [VRF_SYNC] Requesting current VRF round from peer {} on connection",
-                    peer_id
-                );
                 swarm.behaviour_mut().request_response.send_request(
                     &peer_id,
                     RPCRequest::VrfRoundSync(VrfRoundSyncRequest {
@@ -246,27 +203,8 @@ impl MpcNetworkLayer {
                     }),
                 );
                 self.vrf_round_requested = true;
-                info!("✅ [VRF_SYNC] VRF round request sent to peer {}", peer_id);
             }
         }
-
-        // Debug: Log Kademlia and gossipsub stats
-        let kbucket_count: usize = swarm
-            .behaviour_mut()
-            .kademlia
-            .kbuckets()
-            .map(|bucket| bucket.num_entries())
-            .sum();
-        info!(
-            "📋 Kademlia routing table now has {} entries",
-            kbucket_count
-        );
-
-        let gossipsub_peer_count = swarm.behaviour_mut().gossipsub.all_peers().count();
-        info!(
-            "📊 Gossipsub peer count after adding {}: {}",
-            peer_id, gossipsub_peer_count
-        );
 
         // Try to discover more peers through this connection
         swarm.behaviour_mut().kademlia.get_closest_peers(peer_id);
@@ -287,7 +225,6 @@ impl MpcNetworkLayer {
 
         match event {
             ReqRespEvent::Message { peer, message, .. } => {
-                info!("RPC request: peer: {} response: {:?}", peer, message);
                 match message {
                     ReqRespMessage::Request {
                         request, channel, ..
@@ -303,8 +240,6 @@ impl MpcNetworkLayer {
                                 peer,
                                 res.err()
                             );
-                        } else {
-                            info!("📤 Sent RPC response to {}: {:?}", peer, res);
                         }
                     }
                     ReqRespMessage::Response {
@@ -316,14 +251,15 @@ impl MpcNetworkLayer {
                 }
             }
             ReqRespEvent::OutboundFailure { peer, error, .. } => {
-                info!("Outbound failure to peer {}: {:?}", peer, error);
+                warn!("Outbound failure to peer {}: {:?}", peer, error);
+                // if let Some(retry_mgr) = &self.retry_manager {
+                //     retry_mgr.mark_peer_unreachable(peer).await;
+                // }
             }
             ReqRespEvent::InboundFailure { peer, error, .. } => {
-                info!("Inbound failure to peer {}: {:?}", peer, error);
+                warn!("Inbound failure to peer {}: {:?}", peer, error);
             }
-            ReqRespEvent::ResponseSent { peer, .. } => {
-                info!("Response sent to peer {}", peer);
-            }
+            ReqRespEvent::ResponseSent { .. } => {}
         }
         Ok(())
     }
@@ -334,75 +270,23 @@ impl MpcNetworkLayer {
             KademliaEvent::RoutingUpdated {
                 peer,
                 is_new_peer,
-                addresses,
-                bucket_range,
-                old_peer,
+                addresses: _,
+                bucket_range: _,
+                old_peer: _,
             } => {
-                info!(
-                    "-----------routing updated----------: Peer{:?}, is_new_peer{:?}, addresses{:?}, bucket_range{:?}, old_peer{:?}\n",
-                    peer, is_new_peer, addresses, bucket_range, old_peer
-                );
-
                 if is_new_peer {
                     // Check if this is a bootstrap node
                     if self.is_bootstrap_node(&peer) {
-                        info!("⚠️  This is a bootstrap node, skipping: {:?}", peer);
                         return Ok(());
                     }
-
-                    info!("\x1b[32m✅ This is a real MPC node: {:?}\x1b[0m", peer);
-
-                    let total = self.node_manager.get_total_nodes();
-                    let threshold = self.node_manager.get_threshold();
-
-                    // Debug: Show all active nodes
-                    let active_nodes = self.node_manager.get_active_nodes();
-                    info!(
-                        "\x1b[36m🔗 Active nodes in manager: {:?}\x1b[0m",
-                        active_nodes
-                    );
-                    info!(
-                        "\x1b[33m📊 node length: {:?}\x1b[0m",
-                        self.node_manager.get_total_nodes()
-                    );
-                    info!(
-                        "\x1b[35m🎯 Updated node count: {}, threshold: {}\x1b[0m",
-                        total, threshold
-                    );
                 }
             }
-            KademliaEvent::InboundRequest { request } => {
-                info!("-----------InboundRequest----------: {:?}", request);
-            }
-            KademliaEvent::OutboundQueryProgressed {
-                id,
-                result,
-                stats,
-                step,
-            } => {
-                info!(
-                    "-----------OutboundQueryProgressed----------: {:?}, {:?}, {:?}, {:?}",
-                    id, result, stats, step
-                );
-            }
-            KademliaEvent::UnroutablePeer { peer } => {
-                info!("-----------UnroutablePeer----------: {:?}", peer);
-            }
-            KademliaEvent::RoutablePeer { peer, address } => {
-                info!(
-                    "-----------RoutablePeer----------: {:?}, {:?}",
-                    peer, address
-                );
-            }
-            KademliaEvent::PendingRoutablePeer { peer, address } => {
-                info!(
-                    "-----------PendingRoutablePeer----------: {:?}, {:?}",
-                    peer, address
-                );
-            }
-            KademliaEvent::ModeChanged { new_mode } => {
-                info!("-----------ModeChanged----------: {:?}", new_mode);
-            }
+            KademliaEvent::InboundRequest { .. } => {}
+            KademliaEvent::OutboundQueryProgressed { .. } => {}
+            KademliaEvent::UnroutablePeer { .. } => {}
+            KademliaEvent::RoutablePeer { .. } => {}
+            KademliaEvent::PendingRoutablePeer { .. } => {}
+            KademliaEvent::ModeChanged { .. } => {}
         }
         Ok(())
     }
@@ -413,14 +297,8 @@ impl MpcNetworkLayer {
         peer_id: PeerId,
         topic: libp2p::gossipsub::TopicHash,
     ) -> Result<()> {
-        info!("📡 Peer {} subscribed to topic: {}", peer_id, topic);
-
         // If this is the peer discovery topic, we can now safely broadcast our presence
         if topic.as_str() == MSG_TOPIC_PEER_DISCOVERY {
-            info!(
-                "🎯 Peer discovery topic subscription confirmed by: {}",
-                peer_id
-            );
 
             let active_nodes = self.node_manager.get_active_nodes();
             let other_peers_in_manager: Vec<_> = active_nodes
@@ -444,41 +322,19 @@ impl MpcNetworkLayer {
 
             let has_other_peers = !other_peers_in_manager.is_empty() || other_peers_in_db > 0;
             if !has_other_peers {
-                info!(
-                    "ℹ️ No other peers found yet; delaying peer discovery broadcast until another peer is available"
-                );
                 self.schedule_peer_discovery_retry(1);
                 return Ok(());
             } else {
-                info!(
-                    "✅ Found {} other peers in node manager, {} in database",
-                    other_peers_in_manager.len(),
-                    other_peers_in_db
-                );
                 self.peer_discovery.pending_peer_discovery_retry = false;
             }
 
-            // Update peer_indices mapping for all active peers before logging
-            info!("🔢 Active nodes: {:?}", active_nodes);
+            // Update peer_indices mapping for all active peers
             for pid in &active_nodes {
                 if !self.peer_discovery.peer_indices.contains_key(pid) {
                     if let Some(db_idx) = self.get_index_from_db_async(pid).await {
-                        info!("🔢 Loaded index {} for peer {} from database", db_idx, pid);
                         self.peer_discovery.peer_indices.insert(*pid, db_idx);
                     }
                 }
-            }
-
-            let existing_peer_count = self.peer_discovery.peer_indices.len();
-            info!("📊 Existing peers count: {}", existing_peer_count);
-            if existing_peer_count > 0 {
-                let existing_peers: Vec<(String, usize)> = self
-                    .peer_discovery
-                    .peer_indices
-                    .iter()
-                    .map(|(pid, idx)| (pid.to_string(), *idx))
-                    .collect();
-                info!("📋 Existing peers with indices: {:?}", existing_peers);
             }
 
             if has_other_peers {
@@ -490,15 +346,8 @@ impl MpcNetworkLayer {
     }
 
     /// Handle new listen address
-    fn handle_new_listen_addr(&self, address: libp2p::Multiaddr) {
-        info!("Listening on {}", address);
-        let full = address.clone().with(Protocol::P2p(self.local_peer_id));
-        info!("📡 multiaddress   : {}", full);
-        info!(
-            "Listening for RPC connections on {}{}",
-            address,
-            MPCProtocol.as_ref()
-        );
+    fn handle_new_listen_addr(&self, _address: libp2p::Multiaddr) {
+        // Listen address registered
     }
 
     /// Handle connection closed event
@@ -523,11 +372,6 @@ impl MpcNetworkLayer {
 
         // STEP 1: Detect when a node fully disconnects (no remaining connections)
         if num_established == 0 {
-            info!(
-                "🔌 [DISCONNECT] Node {} has fully disconnected (0 connections remaining)",
-                peer_id
-            );
-
             // Check if this was an active node in our network
             let was_active = self.node_manager.get_active_nodes().contains(&peer_id);
 
@@ -557,21 +401,11 @@ impl MpcNetworkLayer {
                             "❌ [DISCONNECT] Failed to send disconnect notification to channel: {}",
                             e
                         );
-                    } else {
-                        info!(
-                            "📢 [DISCONNECT] Broadcasted disconnect notification for node {} to all nodes",
-                            peer_id
-                        );
                     }
                 }
 
                 // STEP 2: Process disconnect locally
                 self.handle_node_disconnect_internal(peer_id).await;
-            } else {
-                info!(
-                    "ℹ️ [DISCONNECT] Disconnected peer {} was not an active node",
-                    peer_id
-                );
             }
         }
     }

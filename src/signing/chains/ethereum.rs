@@ -74,6 +74,8 @@ impl<'a> EthereumSigner<'a> {
         user_tweaked_share: Option<Scalar>,
         user_eth_address: Option<String>,
         signing_key_override: Option<Scalar>,
+        request_id: Option<String>,
+        original_request: Option<crate::network::ContractTransactionRequest>,
     ) -> Result<()> {
         self.node
             .sign_contract_message(
@@ -83,6 +85,8 @@ impl<'a> EthereumSigner<'a> {
                 user_tweaked_share,
                 user_eth_address,
                 signing_key_override,
+                request_id,
+                original_request,
             )
             .await
     }
@@ -629,6 +633,8 @@ impl SigningNode {
                     tx_bytes.clone(),
                     intent_hash.clone(),
                     transaction_type,
+                    None, // No request_id for this path
+                    None, // No original_request for this path
                 ),
             );
             info!(
@@ -650,6 +656,8 @@ impl SigningNode {
         user_tweaked_share: Option<Scalar>,
         user_eth_address: Option<String>,
         signing_key_override: Option<Scalar>,
+        request_id: Option<String>,
+        original_request: Option<crate::network::ContractTransactionRequest>,
     ) -> Result<()> {
         // Determine which key to use for signing
         // Redacted user_tweaked_share from logs
@@ -829,6 +837,8 @@ impl SigningNode {
                 tx_bytes.clone(),
                 None, // No intent hash for direct contract calls
                 None,
+                request_id, // Store request_id for retry tracking
+                original_request, // Store original_request for guaranteed retry
             ),
         );
         info!(
@@ -873,7 +883,7 @@ impl SigningNode {
         let (chain_tx, transaction_type) = if is_reward_round {
             let reward_pending_transactions =
                 self.pending.reward_pending_transactions_tics.read().await;
-            if let Some((chain_tx, _tx_bytes, _solver_address, transaction_type)) =
+            if let Some((chain_tx, _tx_bytes, _solver_address, transaction_type, _request_id, _original_request)) =
                 reward_pending_transactions.get(&round)
             {
                 (Some(chain_tx.clone()), transaction_type.clone())
@@ -883,7 +893,7 @@ impl SigningNode {
         } else if is_withdraw_round {
             let withdraw_pending_transactions =
                 self.pending.withdraw_pending_transactions_tics.read().await;
-            if let Some((chain_tx, _tx_bytes, _solver_address, transaction_type)) =
+            if let Some((chain_tx, _tx_bytes, _solver_address, transaction_type, _request_id, _original_request)) =
                 withdraw_pending_transactions.get(&round)
             {
                 (Some(chain_tx.clone()), transaction_type.clone())
@@ -892,7 +902,7 @@ impl SigningNode {
             }
         } else {
             let pending_transactions = self.pending.pending_transactions.read().await;
-            if let Some((chain_tx, _tx_bytes, _intent_hash, transaction_type)) =
+            if let Some((chain_tx, _tx_bytes, _intent_hash, transaction_type, _request_id, _original_request)) =
                 pending_transactions.get(&round)
             {
                 (Some(chain_tx.clone()), transaction_type.clone())
@@ -964,12 +974,14 @@ impl SigningNode {
                             ));
                         }
                     }
-                    Some(crate::types::TransactionType::NetworkToTarget) => {
+                    Some(crate::types::TransactionType::NetworkToTarget)
+                    | Some(crate::types::TransactionType::Refund) => {
+                        // Refund uses network group key (same as NetworkToTarget)
                         let group_key = self.get_network_group_public_key().await?;
                         let group_address = get_eth_address_from_group_key(group_key);
 
                         let nonce = Self::fetch_ethereum_nonce(&group_address, chain_id).await?;
-                        info!("🔢 [SIGNING] NetworkToTarget transaction: fetching nonce {} from network group address {}", nonce, group_address);
+                        info!("🔢 [SIGNING] NetworkToTarget/Refund transaction: fetching nonce {} from network group address {}", nonce, group_address);
                         group_address
                     }
                     Some(crate::types::TransactionType::VaultToNetwork) => {
@@ -1073,7 +1085,7 @@ impl SigningNode {
                     &DummyTransaction {
                         to: original_tx.to.clone(),
                         value: original_tx.value.clone(),
-                        nonce: original_tx.nonce,  // Use original nonce that was signed
+                        nonce: original_tx.nonce, // Use original nonce that was signed
                         gas_limit: original_tx.gas_limit,
                         gas_price: original_tx.gas_price.clone(),
                         chain_id: original_tx.chain_id,
@@ -1137,7 +1149,17 @@ impl SigningNode {
         solver_address: String,
     ) {
         let mut pending = self.pending.reward_pending_transactions_tics.write().await;
-        pending.insert(round, (chain_tx, tx_bytes, Some(solver_address), Some(crate::types::TransactionType::RewardTxn)));
+        pending.insert(
+            round,
+            (
+                chain_tx,
+                tx_bytes,
+                Some(solver_address),
+                Some(crate::types::TransactionType::RewardTxn),
+                None, // No request_id for reward transactions
+                None, // No original_request for reward transactions
+            ),
+        );
         info!(
             "🎁 [SIGNING] Stored TICS reward transaction for round {} with solver address",
             round
