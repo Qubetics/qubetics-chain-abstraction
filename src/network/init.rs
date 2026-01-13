@@ -53,7 +53,8 @@ impl MpcNetworkLayer {
         // Formula: (users * avg_messages_per_user * burst_factor) + retry_buffer
         // For high load: (50 * 15 * 3) + 2000 = 2250 + large safety margin
         // Increased significantly to handle parallel burst traffic without channel blocking
-        let (tx, rx) = mpsc::channel(10000); // Increased from 2000 to 10000 for high parallel user load
+         // Increased to 50000 to prevent channel overflow and message loss under extreme load
+        let (tx, rx) = mpsc::channel(50000); // Increased from 10000 to 50000 to prevent overflow and message loss
         let tx_for_retry = tx.clone();
 
         // Initialize channel health monitor for production monitoring
@@ -210,7 +211,7 @@ impl MpcNetworkLayer {
                 };
 
                 let gossipsub_config = gossipsub::ConfigBuilder::default()
-                    .heartbeat_interval(Duration::from_millis(500))  // Faster heartbeat for lower latency (default: 1s)
+                    .heartbeat_interval(Duration::from_secs(1))  // Default heartbeat interval (1s)
                     .validation_mode(gossipsub::ValidationMode::Strict)  // Faster validation (changed from Strict)
                     .message_id_fn(message_id_fn)
                     .flood_publish(false)
