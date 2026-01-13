@@ -6,7 +6,6 @@ use libp2p::{Multiaddr, PeerId};
 use std::time::Duration;
 use tracing::{error, info, warn};
 
-
 use super::types::{MpcNetworkBehaviour, MpcNetworkLayer};
 
 impl MpcNetworkLayer {
@@ -41,17 +40,17 @@ impl MpcNetworkLayer {
 
         info!("🌐 [P2P] Starting P2P server...");
         info!("🔑 [P2P] Local Peer ID: {}", self.local_peer_id);
-        
-        swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
-        swarm.listen_on("/ip4/0.0.0.0/udp/0/quic-v1".parse()?)?;
-        
+
+        swarm.listen_on("/ip4/0.0.0.0/tcp/4001".parse()?)?;
+        swarm.listen_on("/ip4/0.0.0.0/udp/4002/quic-v1".parse()?)?;
+
         info!("⏳ [P2P] Waiting for listen addresses to be assigned...");
 
         self.dial_seed_addresses(&mut swarm);
         // Dial command-line provided addresses
         self.dial_command_line_addresses(&mut swarm);
 
-        loop {                                        
+        loop {
             tokio::select! {
                 event = swarm.select_next_some() => {
                     // 🛡️ Error recovery for swarm events - prevent node crashes
@@ -561,7 +560,6 @@ impl MpcNetworkLayer {
 
     /// Perform periodic peer discovery
     fn perform_periodic_peer_discovery(&mut self, swarm: &mut libp2p::Swarm<MpcNetworkBehaviour>) {
-
         swarm
             .behaviour_mut()
             .kademlia
