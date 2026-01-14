@@ -1263,21 +1263,13 @@ impl MpcNetworkLayer {
             }
         }
 
+        // Persist peer indices (encrypted). This is intentionally not using the batch writer,
+        // because peer indices are read via get_encrypted_string and must be stored encrypted.
         if !batch_updates.is_empty() {
-            if let Err(e) = self
-                .db
-                .batch_write_async(move |batch| {
-                    for (key, idx) in batch_updates {
-                        batch.put_string(&key, &idx)?;
-                    }
-                    Ok(())
-                })
-                .await
-            {
-                warn!(
-                    "❌ [PEER_LIST] Failed to persist peer indices batch: {:?}",
-                    e
-                );
+            for (key, idx) in batch_updates {
+                if let Err(e) = self.db.put_encrypted_string_async(&key, &idx).await {
+                    warn!("❌ [PEER_LIST] Failed to persist peer index {}: {:?}", key, e);
+                }
             }
         }
 

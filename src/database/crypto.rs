@@ -61,6 +61,12 @@ impl Cipher {
         Ok(result)
     }
 
+    /// Returns true if the bytes look like data encrypted by this module (V1 or V2).
+    /// This is a cheap format check (magic header only), not a cryptographic validation.
+    pub fn is_encrypted_format(data: &[u8]) -> bool {
+        data.starts_with(MAGIC_HEADER_V2) || data.starts_with(MAGIC_HEADER_V1)
+    }
+
     /// Decrypt data (legacy method, for keypairs)
     pub fn decrypt(&self, data: &[u8]) -> Result<Vec<u8>> {
         if data.len() < MAGIC_HEADER_V1.len() + NONCE_SIZE {

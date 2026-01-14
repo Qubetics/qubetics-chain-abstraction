@@ -119,9 +119,9 @@ pub async fn run_nodes(
     for dir in node_dirs {
         let _ = std::fs::create_dir_all(dir);
 
-        let _ = std::fs::remove_dir_all(format!("{}/data", dir));
-        let _ = std::fs::remove_dir_all(format!("{}/logs", dir));
-        std::fs::create_dir_all(format!("{}/logs", dir))?;
+        // let _ = std::fs::remove_dir_all(format!("{}/data", dir));
+        // let _ = std::fs::remove_dir_all(format!("{}/logs", dir));
+        // std::fs::create_dir_all(format!("{}/logs", dir))?;
 
         // Copy binary
         let _ = std::fs::remove_file(format!("{}/mpc-node", dir));

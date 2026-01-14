@@ -4,7 +4,7 @@ use anyhow::{anyhow, Result};
 use rocksdb::{Options, DB};
 use serde::{Deserialize, Serialize};
 use tokio::task;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
 use super::config::{ConfigError, DatabaseConfig};
 use crate::database::crypto::Cipher;
@@ -58,7 +58,7 @@ impl Database {
 
         // Validate stored data matches current peer-ID on startup
         if let Err(e) = database.validate_peer_id_binding() {
-            warn!("⚠️ [DATABASE] Peer-ID validation warning: {}. Some encrypted data may be invalid.", e);
+            tracing::warn!("⚠️ [DATABASE] Peer-ID validation warning: {}. Some encrypted data may be invalid.", e);
         }
 
         Ok(database)
@@ -68,7 +68,6 @@ impl Database {
     /// This prevents using data from a different node
     pub fn validate_peer_id_binding(&self) -> Result<()> {
         use crate::database::keys;
-        use tracing::warn;
         
         let peer_id = match self.get_peer_id()? {
             Some(pid) => pid,
@@ -302,13 +301,33 @@ impl Database {
                 let peer_id = self.get_peer_id()?
                     .ok_or_else(|| anyhow!("Peer-ID not found. Cannot decrypt data without peer-ID."))?;
 
-                // Try V2 format first (with integrity check)
-                let decrypted_bytes = match self.cipher.decrypt_with_integrity(&encrypted_bytes, &peer_id) {
-                    Ok(bytes) => bytes,
-                    Err(_) => {
-                        // Fallback to V1 format (legacy, no integrity check)
-                        self.cipher.decrypt(&encrypted_bytes)
-                            .map_err(|e| anyhow!("Failed to decrypt data: {}", e))?
+                // If the value is not in our encrypted format (no magic header),
+                // treat it as plaintext (bincode-serialized) for backward compatibility.
+                // This situation can happen if some code paths accidentally persisted
+                // sensitive keys using put_string/put (plaintext) instead of put_encrypted_string.
+                let decrypted_bytes = if !crate::database::crypto::Cipher::is_encrypted_format(&encrypted_bytes) {
+                    // Opportunistically migrate plaintext -> encrypted (best effort).
+                    // The stored bytes are already the serialized representation of V.
+                    if let Ok(re_encrypted) = self.cipher.encrypt_with_integrity(&encrypted_bytes, &peer_id) {
+                        if let Err(e) = self.db.put(key.as_bytes(), &re_encrypted) {
+                            tracing::debug!(
+                                "⚠️ [DATABASE] Failed to migrate plaintext key '{}' to encrypted format: {}",
+                                key,
+                                e
+                            );
+                        }
+                    }
+                    encrypted_bytes
+                } else {
+                    // Try V2 format first (with integrity check)
+                    match self.cipher.decrypt_with_integrity(&encrypted_bytes, &peer_id) {
+                        Ok(bytes) => bytes,
+                        Err(_) => {
+                            // Fallback to V1 format (legacy, no integrity check)
+                            self.cipher
+                                .decrypt(&encrypted_bytes)
+                                .map_err(|e| anyhow!("Failed to decrypt data: {}", e))?
+                        }
                     }
                 };
 

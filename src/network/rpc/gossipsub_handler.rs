@@ -1477,7 +1477,7 @@ impl MpcNetworkLayer {
                 if let Some(idx) = index {
                     self.peer_discovery.peer_indices.insert(peer, idx);
                     let key = key_utils::peer_index_key(&peer.to_string());
-                    if let Err(e) = self.db.put_string_async(&key, &idx).await {
+                    if let Err(e) = self.db.put_encrypted_string_async(&key, &idx).await {
                         warn!("Failed to persist peer index: {:?}", e);
                     }
                 }
