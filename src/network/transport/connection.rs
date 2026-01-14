@@ -55,8 +55,10 @@ impl MpcNetworkLayer {
                 "⚠️ [DISCONNECT] Failed to remove node {} from node manager: {}",
                 peer_id, e
             );
-            return;
         }
+
+        // 🚫 BLOCKLIST: permanently block this peer id (prevents rejoin with stale peer-id)
+        self.block_peer_id(peer_id).await;
 
         // Log active nodes AFTER removal to verify
         let active_nodes_after = self.node_manager.get_active_nodes();
@@ -161,6 +163,15 @@ impl MpcNetworkLayer {
         _swarm: &mut libp2p::Swarm<MpcNetworkBehaviour>,
         peer_id: PeerId,
     ) -> Result<()> {
+        // 🚫 BLOCKLIST: never announce or add blocked peers
+        if self.is_peer_blocked(&peer_id) {
+            warn!(
+                "🚫 [BLOCKLIST] Ignoring new peer connection from blocked peer {}",
+                peer_id
+            );
+            return Ok(());
+        }
+
         info!("📡 New peer {} connected; announcing to mesh", peer_id);
 
         // Assign and persist index based on DB state

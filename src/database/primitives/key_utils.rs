@@ -162,6 +162,10 @@ pub fn peer_index_key(peer_id: &str) -> String {
     format!("{}{}", keys::PEER_INDEX, peer_id)
 }
 
+pub fn peer_blocked_key(peer_id: &str) -> String {
+    format!("{}{}", keys::PEER_BLOCKED, peer_id)
+}
+
 pub fn peer_addr_key(peer_id: &str) -> String {
     format!("{}{}", keys::PEER_ADDR, peer_id)
 }

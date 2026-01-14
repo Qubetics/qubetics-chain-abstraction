@@ -1447,6 +1447,26 @@ impl MpcNetworkLayer {
                     peer, sequence, index
                 );
 
+                // 🚫 BLOCKLIST: ignore peer discovery messages from blocked senders
+                if let Some(source) = message.source {
+                    if self.is_peer_blocked(&source) {
+                        warn!(
+                            "🚫 [BLOCKLIST] Ignoring PeerDiscovered message from blocked peer {} (advertised peer {})",
+                            source, peer
+                        );
+                        return Ok(());
+                    }
+                }
+
+                // 🚫 BLOCKLIST: ignore discovery of a blocked peer-id
+                if self.is_peer_blocked(&peer) {
+                    warn!(
+                        "🚫 [BLOCKLIST] Ignoring PeerDiscovered for blocked peer-id {}",
+                        peer
+                    );
+                    return Ok(());
+                }
+
                 // Check if we already have this peer to avoid duplicates
                 let current_nodes = self.node_manager.get_active_nodes();
                 if current_nodes.contains(&peer) {

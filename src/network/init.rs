@@ -133,6 +133,21 @@ impl MpcNetworkLayer {
             }
         }
 
+        // Preload any persisted blocked peer ids into memory
+        if let Ok(keys) = this
+            .db
+            .get_keys_with_prefix_async(crate::database::keys::PEER_BLOCKED)
+            .await
+        {
+            for k in keys {
+                if let Some(peer_str) = k.strip_prefix(crate::database::keys::PEER_BLOCKED) {
+                    if let Ok(pid) = peer_str.parse::<PeerId>() {
+                        this.peer_discovery.blocked_peer_ids.insert(pid);
+                    }
+                }
+            }
+        }
+
         // Ensure we have our own index persisted
         this.ensure_local_index();
 

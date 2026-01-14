@@ -10,6 +10,24 @@ use crate::types::{ChannelMessage, GossipsubMessage};
 use crate::network::transport::types::MpcNetworkLayer;
 
 impl MpcNetworkLayer {
+    /// Check whether a peer id is permanently blocked.
+    pub(crate) fn is_peer_blocked(&self, peer_id: &PeerId) -> bool {
+        self.peer_discovery.blocked_peer_ids.contains(peer_id)
+    }
+
+    /// Permanently block a peer id (in-memory + persisted).
+    pub(crate) async fn block_peer_id(&mut self, peer_id: PeerId) {
+        if self.peer_discovery.blocked_peer_ids.insert(peer_id) {
+            let key = key_utils::peer_blocked_key(&peer_id.to_string());
+            // Value is irrelevant; presence of the key is the signal.
+            if let Err(e) = self.db.put_string_async(&key, &"1".to_string()).await {
+                warn!("⚠️ [BLOCKLIST] Failed to persist blocked peer {}: {}", peer_id, e);
+            } else {
+                info!("🚫 [BLOCKLIST] Persisted blocked peer {}", peer_id);
+            }
+        }
+    }
+
     /// Get maximum peer index from database
     pub(crate) fn get_max_peer_index_from_db(&self) -> usize {
         if let Ok(keys) = self

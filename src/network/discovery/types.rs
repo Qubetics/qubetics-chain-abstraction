@@ -1,5 +1,5 @@
 use libp2p::{Multiaddr, PeerId};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 /// Database sync state for tracking synchronization progress
@@ -70,6 +70,8 @@ pub struct PeerDiscoveryState {
     pub peer_multiaddresses: HashMap<PeerId, Multiaddr>,
     /// Track if we've already processed a PeerList response to prevent duplicate new node joining checks
     pub peer_list_processed: bool,
+    /// Permanently blocked peer ids (persisted to DB on write, loaded on startup).
+    pub blocked_peer_ids: HashSet<PeerId>,
 }
 
 impl PeerDiscoveryState {

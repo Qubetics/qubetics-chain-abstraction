@@ -29,6 +29,8 @@ pub const DKG_RECEIVED_SHARE: &str = "dkg_received_share:";
 pub const DKG_EXPECTED_SHARES: &str = "dkg_expected_shares";
 pub const DKG_REFRESH_IN_PROGRESS: &str = "dkg_refresh_in_progress";
 pub const PEER_INDEX: &str = "peer_index:";
+/// Permanently blocked peer ids (persisted).
+pub const PEER_BLOCKED: &str = "peer_blocked:";
 pub const SOLVER_AMOUNTS: &str = "solver_amounts:";
 pub const TOTAL_LIQUIDITY_TICS: &str = "total_liquidity_tics";
 pub const TOTAL_LIQUIDITY_BTC: &str = "total_liquidity_btc";

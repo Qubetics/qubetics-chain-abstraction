@@ -86,6 +86,16 @@ impl MpcNetworkLayer {
     ) -> Result<()> {
         use libp2p::core::ConnectedPoint;
 
+        // 🚫 BLOCKLIST: immediately disconnect blocked peers and skip all processing
+        if self.is_peer_blocked(&peer_id) {
+            warn!(
+                "🚫 [BLOCKLIST] Connection established from blocked peer {}; disconnecting",
+                peer_id
+            );
+            let _ = swarm.disconnect_peer_id(peer_id);
+            return Ok(());
+        }
+
         let remote_addr = endpoint.get_remote_address();
 
         // Track connected peer
