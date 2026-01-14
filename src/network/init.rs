@@ -103,7 +103,7 @@ impl MpcNetworkLayer {
         if let Ok(keys) = this.db.get_keys_with_prefix_async(keys::PEER_INDEX).await {
             for k in keys {
                 if let Some(peer_str) = k.strip_prefix(keys::PEER_INDEX) {
-                    if let Ok(Some(idx)) = this.db.get_string_async::<usize>(&k).await {
+                    if let Ok(Some(idx)) = this.db.get_encrypted_string_async::<usize>(&k).await {
                         if let Ok(pid) = peer_str.parse() {
                             this.peer_discovery.peer_indices.insert(pid, idx);
                         }

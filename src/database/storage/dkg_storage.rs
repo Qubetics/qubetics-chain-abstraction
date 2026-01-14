@@ -17,17 +17,19 @@ impl DkgStorage {
 
     pub async fn store_share(&self, from: &str, share: &KeyShare) -> Result<()> {
         let key = format!("{}{}", keys::DKG_SHARE, from);
-        self.db.put_string(&key, share)?;
+        self.db.put_encrypted_string(&key, share)?;
         Ok(())
     }
 
     pub async fn get_all_shares(&self) -> Result<HashMap<String, KeyShare>> {
         let prefix = keys::DKG_SHARE;
-        let results: Vec<(String, KeyShare)> = self.db.get_values_with_prefix(prefix)?;
+        let keys_vec = self.db.get_keys_with_prefix(prefix)?;
         let mut map = HashMap::new();
-        for (key, share) in results {
+        for key in keys_vec {
             if let Some(id) = key.strip_prefix(prefix) {
-                map.insert(id.to_string(), share);
+                if let Some(share) = self.db.get_encrypted_string::<KeyShare>(&key)? {
+                    map.insert(id.to_string(), share);
+                }
             }
         }
         Ok(map)
@@ -46,19 +48,20 @@ impl DkgStorage {
         let key = format!("{}{}", keys::DKG_COMMITMENT, from);
         let serializable: Vec<SerializablePoint> =
             commitments.iter().cloned().map(SerializablePoint).collect();
-        self.db.put_string(&key, &serializable)?;
+        self.db.put_encrypted_string(&key, &serializable)?;
         Ok(())
     }
 
     pub async fn get_all_commitments(&self) -> Result<HashMap<String, Vec<AffinePoint>>> {
         let prefix = keys::DKG_COMMITMENT;
-        let results: Vec<(String, Vec<SerializablePoint>)> =
-            self.db.get_values_with_prefix(prefix)?;
+        let keys_vec = self.db.get_keys_with_prefix(prefix)?;
         let mut map = HashMap::new();
-        for (key, ser_vec) in results {
+        for key in keys_vec {
             if let Some(id) = key.strip_prefix(prefix) {
-                let vec: Vec<AffinePoint> = ser_vec.into_iter().map(|p| p.0).collect();
-                map.insert(id.to_string(), vec);
+                if let Some(ser_vec) = self.db.get_encrypted_string::<Vec<SerializablePoint>>(&key)? {
+                    let vec: Vec<AffinePoint> = ser_vec.into_iter().map(|p| p.0).collect();
+                    map.insert(id.to_string(), vec);
+                }
             }
         }
         Ok(map)
@@ -96,7 +99,7 @@ impl DkgStorage {
         let key = format!("{}{}", keys::DKG_ORIGINAL_COMMITMENT, from);
         let serializable: Vec<SerializablePoint> =
             commitments.iter().cloned().map(SerializablePoint).collect();
-        self.db.put_string(&key, &serializable)?;
+        self.db.put_encrypted_string(&key, &serializable)?;
         tracing::info!(
             "💾 [DKG_STORAGE] Stored ORIGINAL commitments for {} (count: {})",
             from,
@@ -108,13 +111,14 @@ impl DkgStorage {
     /// Get all original DKG commitments (used for vault address derivation)
     pub async fn get_all_original_commitments(&self) -> Result<HashMap<String, Vec<AffinePoint>>> {
         let prefix = keys::DKG_ORIGINAL_COMMITMENT;
-        let results: Vec<(String, Vec<SerializablePoint>)> =
-            self.db.get_values_with_prefix(prefix)?;
+        let keys_vec = self.db.get_keys_with_prefix(prefix)?;
         let mut map = HashMap::new();
-        for (key, ser_vec) in results {
+        for key in keys_vec {
             if let Some(id) = key.strip_prefix(prefix) {
-                let vec: Vec<AffinePoint> = ser_vec.into_iter().map(|p| p.0).collect();
-                map.insert(id.to_string(), vec);
+                if let Some(ser_vec) = self.db.get_encrypted_string::<Vec<SerializablePoint>>(&key)? {
+                    let vec: Vec<AffinePoint> = ser_vec.into_iter().map(|p| p.0).collect();
+                    map.insert(id.to_string(), vec);
+                }
             }
         }
         tracing::debug!(
@@ -162,14 +166,14 @@ impl DkgStorage {
 
     pub async fn set_final_secret(&self, secret: Scalar) -> Result<()> {
         let ser = SerializableScalar(secret);
-        self.db.put_string(keys::DKG_FINAL_SECRET, &ser)?;
+        self.db.put_encrypted_string(keys::DKG_FINAL_SECRET, &ser)?;
         Ok(())
     }
 
     pub async fn get_final_secret(&self) -> Result<Option<Scalar>> {
         Ok(self
             .db
-            .get_string::<SerializableScalar>(keys::DKG_FINAL_SECRET)?
+            .get_encrypted_string::<SerializableScalar>(keys::DKG_FINAL_SECRET)?
             .map(|s| s.0))
     }
 
@@ -181,14 +185,14 @@ impl DkgStorage {
     pub async fn set_final_public(&self, pk: ProjectivePoint) -> Result<()> {
         let affine: AffinePoint = pk.into();
         let ser = SerializablePoint(affine);
-        self.db.put_string(keys::DKG_FINAL_PUBLIC, &ser)?;
+        self.db.put_encrypted_string(keys::DKG_FINAL_PUBLIC, &ser)?;
         Ok(())
     }
 
     pub async fn get_final_public(&self) -> Result<Option<ProjectivePoint>> {
         Ok(self
             .db
-            .get_string::<SerializablePoint>(keys::DKG_FINAL_PUBLIC)?
+            .get_encrypted_string::<SerializablePoint>(keys::DKG_FINAL_PUBLIC)?
             .map(|p| ProjectivePoint::from(p.0)))
     }
 
@@ -217,7 +221,7 @@ impl DkgStorage {
 
     pub async fn set_vault_tweaked_secret(&self, tweaked_secret: Scalar) -> Result<()> {
         let ser = SerializableScalar(tweaked_secret);
-        self.db.put_string(keys::DKG_VAULT_TWEAKED_SECRET, &ser)?;
+        self.db.put_encrypted_string(keys::DKG_VAULT_TWEAKED_SECRET, &ser)?;
         tracing::info!("💾 [DKG_STORAGE] Stored vault tweaked secret share");
         Ok(())
     }
@@ -225,7 +229,7 @@ impl DkgStorage {
     pub async fn get_vault_tweaked_secret(&self) -> Result<Option<Scalar>> {
         let result = self
             .db
-            .get_string::<SerializableScalar>(keys::DKG_VAULT_TWEAKED_SECRET)?
+            .get_encrypted_string::<SerializableScalar>(keys::DKG_VAULT_TWEAKED_SECRET)?
             .map(|s| s.0);
 
         if result.is_some() {
@@ -246,7 +250,7 @@ impl DkgStorage {
     pub async fn set_vault_group_key(&self, vault_group_key: ProjectivePoint) -> Result<()> {
         let affine: AffinePoint = vault_group_key.into();
         let ser = SerializablePoint(affine);
-        self.db.put_string(keys::DKG_VAULT_GROUP_KEY, &ser)?;
+        self.db.put_encrypted_string(keys::DKG_VAULT_GROUP_KEY, &ser)?;
         tracing::info!(
             "💾 [DKG_STORAGE] Stored vault group key: {:?}",
             vault_group_key
@@ -257,7 +261,7 @@ impl DkgStorage {
     pub async fn get_vault_group_key(&self) -> Result<Option<ProjectivePoint>> {
         let result = self
             .db
-            .get_string::<SerializablePoint>(keys::DKG_VAULT_GROUP_KEY)?
+            .get_encrypted_string::<SerializablePoint>(keys::DKG_VAULT_GROUP_KEY)?
             .map(|p| ProjectivePoint::from(p.0));
 
         if result.is_some() {
@@ -282,7 +286,7 @@ impl DkgStorage {
     pub async fn set_polynomial(&self, polynomial: &[Scalar]) -> Result<()> {
         let serializable: Vec<SerializableScalar> =
             polynomial.iter().map(|&s| SerializableScalar(s)).collect();
-        self.db.put_string(keys::DKG_POLYNOMIAL, &serializable)?;
+        self.db.put_encrypted_string(keys::DKG_POLYNOMIAL, &serializable)?;
         tracing::info!(
             "💾 [DKG_STORAGE] Stored polynomial with {} coefficients",
             polynomial.len()
@@ -294,7 +298,7 @@ impl DkgStorage {
     pub async fn get_polynomial(&self) -> Result<Option<Vec<Scalar>>> {
         let result = self
             .db
-            .get_string::<Vec<SerializableScalar>>(keys::DKG_POLYNOMIAL)?
+            .get_encrypted_string::<Vec<SerializableScalar>>(keys::DKG_POLYNOMIAL)?
             .map(|v| v.into_iter().map(|s| s.0).collect::<Vec<Scalar>>());
 
         if let Some(ref poly) = result {
@@ -364,14 +368,14 @@ impl DkgStorage {
 
     /// Store the node's permanent index (assigned during initial DKG or resharing)
     pub async fn set_my_permanent_index(&self, index: usize) -> Result<()> {
-        self.db.put_string(keys::DKG_MY_PERMANENT_INDEX, &index)?;
+        self.db.put_encrypted_string(keys::DKG_MY_PERMANENT_INDEX, &index)?;
         tracing::info!("🔢 [DKG_STORAGE] Stored permanent index: {}", index);
         Ok(())
     }
 
     /// Get the node's permanent index
     pub async fn get_my_permanent_index(&self) -> Result<Option<usize>> {
-        let result = self.db.get_string::<usize>(keys::DKG_MY_PERMANENT_INDEX)?;
+        let result = self.db.get_encrypted_string::<usize>(keys::DKG_MY_PERMANENT_INDEX)?;
 
         if let Some(idx) = result {
             tracing::debug!("🔍 [DKG_STORAGE] Retrieved permanent index: {}", idx);
@@ -385,13 +389,15 @@ impl DkgStorage {
     /// Get peer indices from database for deterministic ordering
     pub async fn get_peer_indices(&self) -> Result<HashMap<String, usize>> {
         let prefix = crate::database::keys::PEER_INDEX;
-        let results: Vec<(String, usize)> = self.db.get_values_with_prefix(prefix)?;
+        let keys_vec = self.db.get_keys_with_prefix(prefix)?;
         let mut indices = HashMap::new();
 
-        for (key, index) in results {
+        for key in keys_vec {
             // Extract peer ID from key (format: "peer_index:<peer_id>")
             if let Some(peer_id) = key.strip_prefix(prefix) {
-                indices.insert(peer_id.to_string(), index);
+                if let Some(index) = self.db.get_encrypted_string::<usize>(&key)? {
+                    indices.insert(peer_id.to_string(), index);
+                }
             }
         }
 
@@ -412,7 +418,7 @@ impl DkgStorage {
 
         // Return the specific peer's index
         let key = format!("{}{}", crate::database::keys::PEER_INDEX, peer_id);
-        let idx = self.db.get_string::<usize>(&key)?;
+        let idx = self.db.get_encrypted_string::<usize>(&key)?;
         info!("🔎 [DKG_STORAGE] index for {} => {:?}", peer_id, idx);
         Ok(idx)
     }
@@ -420,11 +426,13 @@ impl DkgStorage {
     /// Get all peer indices from database (synchronous helper)
     pub fn get_all_peer_indices(&self) -> Result<HashMap<String, usize>> {
         let prefix = crate::database::keys::PEER_INDEX;
-        let results: Vec<(String, usize)> = self.db.get_values_with_prefix(prefix)?;
+        let keys_vec = self.db.get_keys_with_prefix(prefix)?;
         let mut indices = HashMap::new();
-        for (key, index) in results {
+        for key in keys_vec {
             if let Some(peer_id) = key.strip_prefix(prefix) {
-                indices.insert(peer_id.to_string(), index);
+                if let Some(index) = self.db.get_encrypted_string::<usize>(&key)? {
+                    indices.insert(peer_id.to_string(), index);
+                }
             }
         }
         Ok(indices)

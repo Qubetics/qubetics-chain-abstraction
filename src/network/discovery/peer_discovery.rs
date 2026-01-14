@@ -18,7 +18,7 @@ impl MpcNetworkLayer {
         {
             let mut max_idx = 0usize;
             for k in keys {
-                if let Ok(Some(idx)) = self.db.get_string::<usize>(&k) {
+                if let Ok(Some(idx)) = self.db.get_encrypted_string::<usize>(&k) {
                     if idx > max_idx {
                         max_idx = idx;
                     }
@@ -33,13 +33,13 @@ impl MpcNetworkLayer {
     /// Get peer index from database
     pub(crate) fn get_index_from_db(&self, pid: &PeerId) -> Option<usize> {
         let key = crate::database::key_utils::peer_index_key(&pid.to_string());
-        self.db.get_string::<usize>(&key).ok().flatten()
+        self.db.get_encrypted_string::<usize>(&key).ok().flatten()
     }
 
     /// Async-safe helper for loading peer indices without blocking the Tokio runtime.
     pub(crate) async fn get_index_from_db_async(&self, pid: &PeerId) -> Option<usize> {
         let key = crate::database::key_utils::peer_index_key(&pid.to_string());
-        self.db.get_string_async::<usize>(&key).await.ok().flatten()
+        self.db.get_encrypted_string_async::<usize>(&key).await.ok().flatten()
     }
 
     /// Assign and persist peer index
@@ -50,7 +50,7 @@ impl MpcNetworkLayer {
         // Determine next index strictly from DB state
         let next = self.get_max_peer_index_from_db().saturating_add(1);
         let key = crate::database::key_utils::peer_index_key(&pid.to_string());
-        if let Err(e) = self.db.put_string(&key, &next) {
+        if let Err(e) = self.db.put_encrypted_string(&key, &next) {
             warn!("Failed to persist peer index: {:?}", e);
         }
         self.peer_discovery.peer_indices.insert(*pid, next);
@@ -69,7 +69,7 @@ impl MpcNetworkLayer {
         let current_max = self.get_max_peer_index_from_db();
         let idx = if current_max == 0 { 1 } else { current_max + 1 };
         let key = crate::database::key_utils::peer_index_key(&self.local_peer_id.to_string());
-        if let Err(e) = self.db.put_string(&key, &idx) {
+        if let Err(e) = self.db.put_encrypted_string(&key, &idx) {
             warn!("Failed to persist local index: {:?}", e);
         }
         self.peer_discovery
@@ -160,7 +160,7 @@ impl MpcNetworkLayer {
             .cloned()
         {
             let key = key_utils::peer_index_key(&self.local_peer_id.to_string());
-            if let Err(e) = self.db.put_string_async(&key, &idx).await {
+            if let Err(e) = self.db.put_encrypted_string_async(&key, &idx).await {
                 warn!("Failed to persist my index: {:?}", e);
             }
         }

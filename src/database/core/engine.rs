@@ -1,10 +1,10 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, Result};
 use rocksdb::{Options, DB};
 use serde::{Deserialize, Serialize};
 use tokio::task;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use super::config::{ConfigError, DatabaseConfig};
 use crate::database::crypto::Cipher;
@@ -20,6 +20,7 @@ use crate::database::keystore::KeyStore;
 pub struct Database {
     db: Arc<DB>,
     cipher: Arc<Cipher>,
+    peer_id: Arc<Mutex<Option<String>>>, // Cached peer-ID
 }
 
 impl Database {
@@ -49,10 +50,123 @@ impl Database {
         let cipher = Arc::new(Cipher::new(&key_bytes)?);
         info!("🔒 [DATABASE] Encryption initialized");
 
-        Ok(Self {
+        let database = Self {
             db: Arc::new(db),
             cipher,
-        })
+            peer_id: Arc::new(Mutex::new(None)),
+        };
+
+        // Validate stored data matches current peer-ID on startup
+        if let Err(e) = database.validate_peer_id_binding() {
+            warn!("⚠️ [DATABASE] Peer-ID validation warning: {}. Some encrypted data may be invalid.", e);
+        }
+
+        Ok(database)
+    }
+
+    /// Validate that stored encrypted data matches the current peer-ID
+    /// This prevents using data from a different node
+    pub fn validate_peer_id_binding(&self) -> Result<()> {
+        use crate::database::keys;
+        use tracing::warn;
+        
+        let peer_id = match self.get_peer_id()? {
+            Some(pid) => pid,
+            None => {
+                // No peer-ID yet, nothing to validate
+                return Ok(());
+            }
+        };
+
+        info!("🔍 [DATABASE] Validating peer-ID binding for: {}", peer_id);
+
+        // Try to read a few encrypted entries to verify they're bound to this peer-ID
+        // If decryption with peer-ID fails, data is from a different node
+        let test_keys = vec![
+            keys::DKG_FINAL_SECRET,
+            keys::DKG_MY_PERMANENT_INDEX,
+        ];
+
+        let mut validation_errors = Vec::new();
+        for key in test_keys {
+            if let Ok(Some(_)) = self.db.get(key.as_bytes()) {
+                // Entry exists, try to decrypt with current peer-ID
+                // Use a simple type that can be deserialized
+                match self.get_encrypted_string::<usize>(key) {
+                    Ok(_) => {
+                        debug!("✅ [DATABASE] Validated peer-ID binding for key: {}", key);
+                    }
+                    Err(e) => {
+                        // Try as bytes to see if it's just a type mismatch
+                        if let Ok(Some(_)) = self.db.get(key.as_bytes()) {
+                            // Check if it's encrypted by trying to decrypt
+                            if let Ok(encrypted_bytes) = self.db.get(key.as_bytes()) {
+                                if let Some(bytes) = encrypted_bytes {
+                                    // Try to decrypt with peer-ID
+                                    match self.cipher.decrypt_with_integrity(&bytes, &peer_id) {
+                                        Ok(_) => {
+                                            debug!("✅ [DATABASE] Validated peer-ID binding for key: {} (as bytes)", key);
+                                        }
+                                        Err(_) => {
+                                            validation_errors.push(format!("Key {}: Peer-ID mismatch or tampering detected", key));
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            validation_errors.push(format!("Key {}: {}", key, e));
+                        }
+                    }
+                }
+            }
+        }
+
+        if !validation_errors.is_empty() {
+            return Err(anyhow!(
+                "Peer-ID binding validation failed. Encrypted data may be from a different node. Errors: {:?}",
+                validation_errors
+            ));
+        }
+
+        info!("✅ [DATABASE] Peer-ID binding validation passed");
+        Ok(())
+    }
+
+    /// Get or derive the peer-ID from the stored keypair
+    /// This is used for binding encrypted data to the peer-ID
+    pub fn get_peer_id(&self) -> Result<Option<String>> {
+        // Check cache first
+        {
+            let cached = self.peer_id.lock().map_err(|e| anyhow!("Failed to lock peer-ID cache: {}", e))?;
+            if let Some(ref pid) = *cached {
+                return Ok(Some(pid.clone()));
+            }
+        }
+        
+        // Load from database
+        use crate::database::keys;
+        use libp2p::identity::Keypair;
+        use libp2p::PeerId;
+        
+        let peer_id_str = if let Some(keypair_bytes) = self.get_keypair(keys::PEER_KEYPAIR)? {
+            match Keypair::from_protobuf_encoding(&keypair_bytes) {
+                Ok(keypair) => {
+                    let peer_id = PeerId::from(keypair.public());
+                    Some(peer_id.to_string())
+                }
+                Err(_) => None,
+            }
+        } else {
+            None
+        };
+        
+        // Update cache
+        if let Some(ref pid) = peer_id_str {
+            let mut cached = self.peer_id.lock().map_err(|e| anyhow!("Failed to lock peer-ID cache: {}", e))?;
+            *cached = Some(pid.clone());
+        }
+        
+        Ok(peer_id_str)
     }
 
     /// Store a key-value pair where both key and value are serializable
@@ -94,6 +208,29 @@ impl Database {
         Ok(())
     }
 
+    /// Store encrypted string with integrity check and peer-ID binding
+    /// Use this for sensitive data like DKG shares, commitments, peer indices
+    pub fn put_encrypted_string<V>(&self, key: &str, value: &V) -> Result<()>
+    where
+        V: Serialize,
+    {
+        let value_bytes =
+            bincode::serialize(value).map_err(|e| anyhow!("Failed to serialize value: {}", e))?;
+
+        // Get peer-ID (blocking call, but we're already in sync context)
+        let peer_id = self.get_peer_id()?
+            .ok_or_else(|| anyhow!("Peer-ID not found. Cannot encrypt data without peer-ID binding."))?;
+
+        let encrypted = self.cipher.encrypt_with_integrity(&value_bytes, &peer_id)?;
+
+        self.db
+            .put(key.as_bytes(), &encrypted)
+            .map_err(|e| anyhow!("Failed to put encrypted data: {}", e))?;
+
+        debug!("🔒 [DATABASE] Stored encrypted string key-value pair: {}", key);
+        Ok(())
+    }
+
     /// Get a value by key where both key and value are deserializable
     pub fn get<K, V>(&self, key: &K) -> Result<Option<V>>
     where
@@ -128,7 +265,19 @@ impl Database {
     {
         match self.db.get(key.as_bytes()) {
             Ok(Some(value_bytes)) => {
-                let value: V = bincode::deserialize(&value_bytes)
+                // Try to decrypt first (for encrypted data)
+                let decrypted_bytes = match self.cipher.decrypt(&value_bytes) {
+                    Ok(bytes) => {
+                        // Successfully decrypted, use decrypted bytes
+                        bytes
+                    }
+                    Err(_) => {
+                        // Not encrypted or wrong format, try as plaintext
+                        value_bytes
+                    }
+                };
+                
+                let value: V = bincode::deserialize(&decrypted_bytes)
                     .map_err(|e| anyhow!("Failed to deserialize value: {}", e))?;
                 debug!("🔍 [DATABASE] Retrieved string key: {}", key);
                 Ok(Some(value))
@@ -138,6 +287,41 @@ impl Database {
                 Ok(None)
             }
             Err(e) => Err(anyhow!("Failed to get data: {}", e)),
+        }
+    }
+
+    /// Get encrypted string with integrity check and peer-ID validation
+    /// Use this for sensitive data like DKG shares, commitments, peer indices
+    pub fn get_encrypted_string<V>(&self, key: &str) -> Result<Option<V>>
+    where
+        V: for<'de> Deserialize<'de>,
+    {
+        match self.db.get(key.as_bytes()) {
+            Ok(Some(encrypted_bytes)) => {
+                // Get peer-ID for validation
+                let peer_id = self.get_peer_id()?
+                    .ok_or_else(|| anyhow!("Peer-ID not found. Cannot decrypt data without peer-ID."))?;
+
+                // Try V2 format first (with integrity check)
+                let decrypted_bytes = match self.cipher.decrypt_with_integrity(&encrypted_bytes, &peer_id) {
+                    Ok(bytes) => bytes,
+                    Err(_) => {
+                        // Fallback to V1 format (legacy, no integrity check)
+                        self.cipher.decrypt(&encrypted_bytes)
+                            .map_err(|e| anyhow!("Failed to decrypt data: {}", e))?
+                    }
+                };
+
+                let value: V = bincode::deserialize(&decrypted_bytes)
+                    .map_err(|e| anyhow!("Failed to deserialize value: {}", e))?;
+                debug!("🔒 [DATABASE] Retrieved encrypted string key: {}", key);
+                Ok(Some(value))
+            }
+            Ok(None) => {
+                debug!("🔍 [DATABASE] Encrypted string key not found: {}", key);
+                Ok(None)
+            }
+            Err(e) => Err(anyhow!("Failed to get encrypted data: {}", e)),
         }
     }
 
@@ -520,6 +704,39 @@ impl Database {
             .map_err(|e| anyhow!("Failed to put data: {}", e))?;
 
         Ok(())
+    }
+
+    /// Asynchronous wrapper for [`Database::put_encrypted_string`] safe to call from async contexts.
+    pub async fn put_encrypted_string_async<V>(&self, key: &str, value: &V) -> Result<()>
+    where
+        V: Serialize + Send + Sync + 'static,
+    {
+        let db = self.clone();
+        let key = key.to_owned();
+        let value = bincode::serialize(value).map_err(|e| anyhow!("Failed to serialize value: {}", e))?;
+        task::spawn_blocking(move || {
+            // Get peer-ID and encrypt
+            let peer_id = db.get_peer_id().ok().flatten()
+                .ok_or_else(|| anyhow!("Peer-ID not found. Cannot encrypt data without peer-ID binding."))?;
+            let encrypted = db.cipher.encrypt_with_integrity(&value, &peer_id)?;
+            db.db.put(key.as_bytes(), &encrypted)
+                .map_err(|e| anyhow!("Failed to put encrypted data: {}", e))?;
+            Ok(())
+        })
+            .await
+            .map_err(|e| anyhow!("Join error during put_encrypted_string_async: {}", e))?
+    }
+
+    /// Asynchronous wrapper for [`Database::get_encrypted_string`] safe to call from async contexts.
+    pub async fn get_encrypted_string_async<V>(&self, key: &str) -> Result<Option<V>>
+    where
+        V: for<'de> Deserialize<'de> + Send + 'static,
+    {
+        let db = self.clone();
+        let key = key.to_owned();
+        task::spawn_blocking(move || db.get_encrypted_string::<V>(&key))
+            .await
+            .map_err(|e| anyhow!("Join error during get_encrypted_string_async: {}", e))?
     }
 
     /// Asynchronous wrapper for [`Database::count_entries_with_prefix`] safe for async contexts.
