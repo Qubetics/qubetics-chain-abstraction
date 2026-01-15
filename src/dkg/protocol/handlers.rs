@@ -229,6 +229,31 @@ impl DKGNode {
     ) -> Result<()> {
         self.storage.add_validation(&to, &from, is_valid).await?;
         info!("📊 Validation from {} to {}: {}", from, to, is_valid);
+        
+        // RECOVERY LOGIC:
+        // If 'from' says they validated 'to' (which is us), but we don't have the share from 'from',
+        // we might have dropped it. We should request it.
+        // Also if 'to' is us, and 'from' is NOT us.
+        if to == self.id && is_valid && from != self.id {
+             if !self.storage.is_share_received(&from).await? {
+                 warn!("🚨 [DKG-RECOVERY] Node {} says it sent valid share to me ({}), but I don't have it! Requesting...", from, self.id);
+                 
+                 let tx = self.message_tx.clone();
+                 let target_peer_id = from.clone();
+                 let requester_id = self.id.clone();
+                 
+                 tokio::spawn(async move {
+                     let msg = crate::types::ChannelMessage::RequestDKGShare {
+                         target_peer_id,
+                         requester_id,
+                     };
+                     if let Err(e) = tx.send(msg).await {
+                         warn!("❌ [DKG-RECOVERY] Failed to enqueue RequestDKGShare: {}", e);
+                     }
+                 });
+             }
+        }
+
         self.check_completion(node_manager).await?;
         Ok(())
     }

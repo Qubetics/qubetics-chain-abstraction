@@ -104,6 +104,11 @@ pub enum ChannelMessage {
         round: u64,
         retry_count: u8,
     },
+    /// Request a missing DKG share from a peer
+    RequestDKGShare {
+        target_peer_id: String,
+        requester_id: String,
+    },
     /// Send a refresh share to a specific peer via P2P RPC unicast
     UnicastRefreshShare {
         target_peer_id: String,
@@ -156,27 +161,60 @@ pub enum ChannelMessage {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum GossipsubMessage {
+    // Core Protocol
     DKG(DKGMessage),
     Signing(SigningMessage),
     Command(Command),
     Consensus(ConsensusMessage),
-    VrfSelection(VrfSelectionMessage),
-    VrfSelectedNodes(VrfSelectedNodesBroadcast),
-    VrfRoundSyncRequest(VrfRoundSyncRequest),
-    VrfRoundSyncResponse(VrfRoundSyncResponse),
-    MainSequencerVrfRoundSyncRequest(VrfRoundSyncRequest),
-    MainSequencerVrfRoundSyncResponse(VrfRoundSyncResponse),
-    VaultSequencerVrfRoundSyncRequest(VrfRoundSyncRequest),
-    VaultSequencerVrfRoundSyncResponse(VrfRoundSyncResponse),
     PeerDiscovered {
         peer: PeerId,
         sequence: Option<u64>,
         index: Option<usize>,
     },
+    
+    // VRF (Generic/Legacy)
+    VrfSelection(VrfSelectionMessage),
+    VrfSelectedNodes(VrfSelectedNodesBroadcast),
+    VrfRoundSyncRequest(VrfRoundSyncRequest),
+    VrfRoundSyncResponse(VrfRoundSyncResponse),
+
+    // Consolidated / Multiplexed Topics
+    SequencerConsensus(SequencerConsensusMessage),
+    Liquidity(LiquidityMessage),
+    Rewards(RewardMessage),
+    Sync(SyncMessage),
+    
+    // Transactions
+    TransactionIdBroadcast {
+        intent_hash: Option<String>,
+        transaction_id: String,
+        transaction_type: String,
+        solver_address: Option<String>,
+        node_id: String,
+    },
+    TransactionBroadcast {
+        sequencer_request_id: Option<String>,
+        blockchain_tx_hash: String,
+        chain_id: u64,
+    },
+    TransactionFailure {
+        sequencer_request_id: String,
+        blockchain_tx_hash: String,
+        error: String,
+        original_request: Option<crate::network::ContractTransactionRequest>,
+    },
+    TransactionErrorBroadcast {
+        intent_hash: Option<String>,
+        error_message: String,
+        transaction_type: String,
+        solver_address: Option<String>,
+        node_id: String,
+    },
+
+    // Intents
     DepositIntent {
         intent: DepositIntent,
         intent_id: String,
-        /// If provided, use user's tweaked share; otherwise use network's DKG share
         user_eth_address: Option<String>,
         transaction_type: TransactionType,
         amount: u128,
@@ -186,7 +224,103 @@ pub enum GossipsubMessage {
         signer: String,
         intent: DepositIntent,
     },
-    ClaimReward {
+    IntentHashBroadcast {
+        intent_hash: String,
+        node_id: String,
+    },
+
+    // System
+    UserRegistration {
+        ethereum_address: String,
+        timestamp: i64,
+        node_id: String,
+    },
+    CriticalMessageAck {
+        message_type: String,
+        message_id: String,
+        node_id: PeerId,
+    },
+    VersionAnnouncement {
+        peer: PeerId,
+        version: String,
+        features: Vec<String>,
+        timestamp: i64,
+    },
+    UpgradeAnnouncement {
+        peer: PeerId,
+        target_version: String,
+        phase: String,
+        timestamp: u64,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum SequencerConsensusMessage {
+    // VRF
+    VrfSelectedNodes {
+        domain: SequencerDomain,
+        broadcast: VrfSelectedNodesBroadcast,
+    },
+    VrfRoundSyncRequest {
+        domain: SequencerDomain,
+        req: VrfRoundSyncRequest,
+    },
+    VrfRoundSyncResponse {
+        domain: SequencerDomain,
+        resp: VrfRoundSyncResponse,
+    },
+    
+    // Select/Consensus
+    Select {
+        domain: SequencerDomain,
+        round: u64,
+        request_id: String,
+        final_node_id: PeerId,
+        signature: Vec<u8>,
+    },
+    Ack {
+        domain: SequencerDomain,
+        round: u64,
+        request_id: String,
+        node_id: PeerId,
+    },
+    Missing {
+        domain: SequencerDomain,
+        round: u64,
+        request_id: String,
+        node_id: PeerId,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum SequencerDomain {
+    Vault,
+    Main,
+    Network,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum LiquidityMessage {
+    Add {
+        solver_address: String,
+        solver_id: String,
+        amount_btc: Option<String>,
+        amount_tics: Option<String>,
+        request_id: String,
+    },
+    Withdraw {
+        solver_address: String,
+        btc_address: Option<String>,
+        eth_address: Option<String>,
+        amount_btc: Option<String>,
+        amount_tics: Option<String>,
+        transaction_type: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum RewardMessage {
+    Claim {
         solver_address: String,
         btc_address: Option<String>,
         eth_address: Option<String>,
@@ -194,151 +328,22 @@ pub enum GossipsubMessage {
         reward_tics: Option<String>,
         transaction_type: String,
     },
-    AddLiquidity {
-        solver_address: String,
-        solver_id: String,
-        amount_btc: Option<String>,
-        amount_tics: Option<String>,
-        request_id: String,
-    },
-    WithdrawLiquidity {
-        solver_address: String,
-        btc_address: Option<String>,
-        eth_address: Option<String>,
-        amount_btc: Option<String>,
-        amount_tics: Option<String>,
-        transaction_type: String,
-    },
-    UserRegistration {
-        ethereum_address: String,
-        timestamp: i64,
-        node_id: String,
-    },
-    TransactionIdBroadcast {
-        intent_hash: Option<String>,
-        transaction_id: String,
-        /// "user_to_network", "network_to_target", "vault_to_network", or reward types
-        transaction_type: String,
-        solver_address: Option<String>,
-        /// Node that broadcasted the transaction
-        node_id: String,
-    },
-    TransactionErrorBroadcast {
-        intent_hash: Option<String>,
-        error_message: String,
-        /// "user_to_network", "network_to_target", "vault_to_network", or reward types
-        transaction_type: String,
-        solver_address: Option<String>,
-        /// Node that encountered the error
-        node_id: String,
-    },
-    IntentHashBroadcast {
-        intent_hash: String,
-        node_id: String,
-    },
-    SequencerSync {
-        /// The transaction_id of the request being processed
-        transaction_id: String,
-        /// The sequence number for ordering
-        sequence: u64,
-        /// Node that is proposing/processing this request
-        node_id: String,
-        /// State: "proposed", "processing", "completed"
-        state: String,
-    },
-    NetworkTransactionSequencerSync {
-        /// The transaction_id of the request being processed
-        transaction_id: String,
-        /// The sequence number for ordering
-        sequence: u64,
-        /// Node that is proposing/processing this request
-        node_id: String,
-        /// State: "proposed", "processing", "completed"
-        state: String,
-    },
-    /// Vault sequencer SELECT message (final node picks request)
-    VaultSequencerSelect {
-        round: u64,
-        request_id: String,
-        final_node_id: PeerId,
-        signature: Vec<u8>,
-    },
-    /// Vault sequencer ACK message (node has the request)
-    VaultSequencerAck {
-        round: u64,
-        request_id: String,
-        node_id: PeerId,
-    },
-    /// Vault sequencer MISSING message (node doesn't have the request)
-    VaultSequencerMissing {
-        round: u64,
-        request_id: String,
-        node_id: PeerId,
-    },
-    /// VRF selected nodes broadcast for vault sequencer (independent rounds)
-    VaultSequencerVrfSelectedNodes(VrfSelectedNodesBroadcast),
-    /// Main sequencer SELECT message (final node picks request)
-    MainSequencerSelect {
-        round: u64,
-        request_id: String,
-        final_node_id: PeerId,
-        signature: Vec<u8>,
-    },
-    /// Main sequencer ACK message (node has the request)
-    MainSequencerAck {
-        round: u64,
-        request_id: String,
-        node_id: PeerId,
-    },
-    /// Main sequencer MISSING message (node doesn't have the request)
-    MainSequencerMissing {
-        round: u64,
-        request_id: String,
-        node_id: PeerId,
-    },
-    /// VRF selected nodes broadcast for main sequencer (independent rounds)
-    MainSequencerVrfSelectedNodes(VrfSelectedNodesBroadcast),
-    /// Acknowledgment messages for critical message retry mechanism
-    CriticalMessageAck {
-        /// Type of message being acknowledged
-        message_type: String,
-        /// Unique identifier of the message
-        message_id: String,
-        /// Node that is acknowledging
-        node_id: PeerId,
-    },
-    /// Version announcement for rolling upgrades
-    VersionAnnouncement {
-        peer: PeerId,
-        version: String,
-        features: Vec<String>,
-        timestamp: i64,
-    },
-    /// Upgrade announcement (starting, completed, failed)
-    UpgradeAnnouncement {
-        peer: PeerId,
-        target_version: String,
-        phase: String, // "starting", "completed", "failed", "rolled_back"
-        timestamp: u64,
-    },
+}
 
-    TransactionBroadcast {
-        /// Sequencer request ID (None for non-sequencer transactions)
-        sequencer_request_id: Option<String>,
-        /// Blockchain transaction hash
-        blockchain_tx_hash: String,
-        /// Chain ID where the transaction was broadcasted
-        chain_id: u64,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum SyncMessage {
+    // General Sequencer Sync
+    Sequencer {
+        transaction_id: String,
+        sequence: u64,
+        node_id: String,
+        state: String,
     },
-    /// Notification that a transaction failed (signature verification, broadcasting, etc.)
-    TransactionFailure {
-        /// Sequencer request ID
-        sequencer_request_id: String,
-        /// Blockchain transaction hash (or "N/A" if failed before broadcasting)
-        blockchain_tx_hash: String,
-        /// Error message
-        error: String,
-        /// Original request for guaranteed retry (even if cache is empty)
-        original_request: Option<crate::network::ContractTransactionRequest>,
+    // Network Transaction Sync
+    NetworkSequencer {
+        transaction_id: String,
+        sequence: u64,
+        node_id: String,
+        state: String,
     },
 }

@@ -69,31 +69,19 @@ pub enum VrfDomain {
 pub const TOPIC_SIGNING: &str = "signing";
 pub const TOPIC_CONSENSUS: &str = "consensus";
 pub const TOPIC_COMMANDS: &str = "commands";
-pub const TOPIC_VRF_SELECTION: &str = "vrf-selection";
+pub const TOPIC_VRF_SELECTION: &str = "vrf-selection"; // Legacy/Generic VRF
 pub const TOPIC_TRANSACTIONS: &str = "transactions";
 pub const TOPIC_DEPOSIT_INTENTS: &str = "deposit-intents";
 pub const TOPIC_INTENT_HASHES: &str = "intent-hashes";
 pub const TOPIC_DKG_COMMANDS: &str = "dkg-commands";
 pub const TOPIC_USER_REGISTRATIONS: &str = "user-registrations";
-pub const TOPIC_SOLVER_REWARDS: &str = "solver-rewards";
-pub const TOPIC_CLAIM_REWARDS: &str = "claim-rewards";
-pub const TOPIC_ADD_LIQUIDITY: &str = "add-liquidity";
-pub const TOPIC_WITHDRAW_LIQUIDITY: &str = "withdraw-liquidity";
-pub const TOPIC_TRANSACTION_ID_SYNC: &str = "transaction-id-sync";
-pub const TOPIC_CONSENSUS_RESULT: &str = "consensus-result";
-pub const TOPIC_TRANSACTION_ERROR_SYNC: &str = "transaction-error-sync";
+// Consolidated Topics
+pub const TOPIC_SEQUENCER_CONSENSUS: &str = "topic-sequencer-consensus";
+pub const TOPIC_LIQUIDITY_EVENTS: &str = "topic-liquidity-events";
+pub const TOPIC_REWARD_EVENTS: &str = "topic-reward-events";
+pub const TOPIC_TX_SYNC: &str = "topic-tx-sync";
+// Legacy but still used in specific flows? keeping DKG
 pub const TOPIC_LEGACY_DKG: &str = "dkg";
-pub const TOPIC_SEQUENCER_SYNC: &str = "sequencer-sync";
-pub const TOPIC_NETWORK_TRANSACTION_SEQUENCER_SYNC: &str = "network-transaction-sequencer-sync";
-pub const TOPIC_DETERMINISTIC_SELECTION: &str = "deterministic-selection";
-pub const TOPIC_VAULT_SEQUENCER_VRF: &str = "vault-sequencer-vrf";
-pub const TOPIC_MAIN_SEQUENCER_VRF: &str = "main-sequencer-vrf";
-pub const TOPIC_VAULT_SEQUENCER_SELECT: &str = "vault-sequencer-select";
-pub const TOPIC_VAULT_SEQUENCER_ACK: &str = "vault-sequencer-ack";
-pub const TOPIC_VAULT_SEQUENCER_MISSING: &str = "vault-sequencer-missing";
-pub const TOPIC_MAIN_SEQUENCER_SELECT: &str = "main-sequencer-select";
-pub const TOPIC_MAIN_SEQUENCER_ACK: &str = "main-sequencer-ack";
-pub const TOPIC_MAIN_SEQUENCER_MISSING: &str = "main-sequencer-missing";
 pub const TOPIC_TRANSACTION_BROADCAST: &str = "transaction-broadcast";
 pub const TOPIC_TRANSACTION_FAILURE: &str = "transaction-failure";
 
@@ -111,26 +99,24 @@ pub enum GossipTopic {
     IntentHashes,
     DkgCommands,
     UserRegistrations,
-    SolverRewards,
-    ClaimRewards,
-    AddLiquidity,
-    WithdrawLiquidity,
-    TransactionIdSync,
-    ConsensusResult,
-    TransactionErrorSync,
+    TransactionBroadcast,
+    TransactionFailure,
     LegacyDkg,
-    SequencerSync,
-    NetworkTransactionSequencerSync,
-    VaultSequencerVrf,
-    MainSequencerVrf,
+    // Consolidated
+    SequencerConsensus,
+    LiquidityEvents,
+    RewardEvents,
+    TxSync,
+    // Vault Sequencer
     VaultSequencerSelect,
     VaultSequencerAck,
     VaultSequencerMissing,
+    // Main Sequencer
     MainSequencerSelect,
     MainSequencerAck,
-    MainSequencerMissing,
-    TransactionBroadcast,
-    TransactionFailure,
+    // Sync
+    SequencerSync,
+    ConsensusResult,
 }
 
 impl GossipTopic {
@@ -146,26 +132,20 @@ impl GossipTopic {
         GossipTopic::IntentHashes,
         GossipTopic::DkgCommands,
         GossipTopic::UserRegistrations,
-        GossipTopic::SolverRewards,
-        GossipTopic::ClaimRewards,
-        GossipTopic::AddLiquidity,
-        GossipTopic::WithdrawLiquidity,
-        GossipTopic::TransactionIdSync,
-        GossipTopic::ConsensusResult,
-        GossipTopic::TransactionErrorSync,
+        GossipTopic::TransactionBroadcast,
+        GossipTopic::TransactionFailure,
         GossipTopic::LegacyDkg,
-        GossipTopic::SequencerSync,
-        GossipTopic::NetworkTransactionSequencerSync,
-        GossipTopic::VaultSequencerVrf,
-        GossipTopic::MainSequencerVrf,
+        GossipTopic::SequencerConsensus,
+        GossipTopic::LiquidityEvents,
+        GossipTopic::RewardEvents,
+        GossipTopic::TxSync,
         GossipTopic::VaultSequencerSelect,
         GossipTopic::VaultSequencerAck,
         GossipTopic::VaultSequencerMissing,
         GossipTopic::MainSequencerSelect,
         GossipTopic::MainSequencerAck,
-        GossipTopic::MainSequencerMissing,
-        GossipTopic::TransactionBroadcast,
-        GossipTopic::TransactionFailure,
+        GossipTopic::SequencerSync,
+        GossipTopic::ConsensusResult,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -181,28 +161,21 @@ impl GossipTopic {
             GossipTopic::IntentHashes => TOPIC_INTENT_HASHES,
             GossipTopic::DkgCommands => TOPIC_DKG_COMMANDS,
             GossipTopic::UserRegistrations => TOPIC_USER_REGISTRATIONS,
-            GossipTopic::SolverRewards => TOPIC_SOLVER_REWARDS,
-            GossipTopic::ClaimRewards => TOPIC_CLAIM_REWARDS,
-            GossipTopic::AddLiquidity => TOPIC_ADD_LIQUIDITY,
-            GossipTopic::WithdrawLiquidity => TOPIC_WITHDRAW_LIQUIDITY,
-            GossipTopic::TransactionIdSync => TOPIC_TRANSACTION_ID_SYNC,
-            GossipTopic::ConsensusResult => TOPIC_CONSENSUS_RESULT,
-            GossipTopic::TransactionErrorSync => TOPIC_TRANSACTION_ERROR_SYNC,
-            GossipTopic::LegacyDkg => TOPIC_LEGACY_DKG,
-            GossipTopic::SequencerSync => TOPIC_SEQUENCER_SYNC,
-            GossipTopic::NetworkTransactionSequencerSync => {
-                TOPIC_NETWORK_TRANSACTION_SEQUENCER_SYNC
-            }
-            GossipTopic::VaultSequencerVrf => TOPIC_VAULT_SEQUENCER_VRF,
-            GossipTopic::MainSequencerVrf => TOPIC_MAIN_SEQUENCER_VRF,
-            GossipTopic::VaultSequencerSelect => TOPIC_VAULT_SEQUENCER_SELECT,
-            GossipTopic::VaultSequencerAck => TOPIC_VAULT_SEQUENCER_ACK,
-            GossipTopic::VaultSequencerMissing => TOPIC_VAULT_SEQUENCER_MISSING,
-            GossipTopic::MainSequencerSelect => TOPIC_MAIN_SEQUENCER_SELECT,
-            GossipTopic::MainSequencerAck => TOPIC_MAIN_SEQUENCER_ACK,
-            GossipTopic::MainSequencerMissing => TOPIC_MAIN_SEQUENCER_MISSING,
             GossipTopic::TransactionBroadcast => TOPIC_TRANSACTION_BROADCAST,
             GossipTopic::TransactionFailure => TOPIC_TRANSACTION_FAILURE,
+            GossipTopic::LegacyDkg => TOPIC_LEGACY_DKG,
+            GossipTopic::SequencerConsensus => TOPIC_SEQUENCER_CONSENSUS,
+            GossipTopic::LiquidityEvents => TOPIC_LIQUIDITY_EVENTS,
+            GossipTopic::RewardEvents => TOPIC_REWARD_EVENTS,
+            GossipTopic::TxSync => TOPIC_TX_SYNC,
+            // New topics
+            GossipTopic::VaultSequencerSelect => "vault-sequencer-select",
+            GossipTopic::VaultSequencerAck => "vault-sequencer-ack",
+            GossipTopic::VaultSequencerMissing => "vault-sequencer-missing",
+            GossipTopic::MainSequencerSelect => "main-sequencer-select",
+            GossipTopic::MainSequencerAck => "main-sequencer-ack",
+            GossipTopic::SequencerSync => "sequencer-sync",
+            GossipTopic::ConsensusResult => "consensus-result",
         }
     }
 }
@@ -248,6 +221,17 @@ pub struct MpcNetworkLayer {
     /// Retry manager for critical messages with exponential backoff
     pub(crate) retry_manager: Option<RetryManager>,
     pub(crate) channel_health: Arc<crate::network::rpc::channel_monitor::ChannelHealthMonitor>,
+    
+    /// Track pending share requests for reliability
+    pub(crate) pending_share_requests: HashMap<libp2p::request_response::OutboundRequestId, PendingShareRequest>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PendingShareRequest {
+    pub peer: PeerId,
+    pub request: RPCRequest,
+    pub retry_count: u8,
+    pub timestamp: std::time::Instant,
 }
 
 impl MpcNetworkLayer {

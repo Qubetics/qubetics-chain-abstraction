@@ -13,7 +13,7 @@ use crate::DKGMessage::ShareValidation;
 
 
 impl DKGNode {
-    pub async fn start_dkg(&mut self, _node_manager: Box<dyn NodeMembership>) -> Result<()> {
+    pub async fn start_dkg(&mut self, node_manager: Box<dyn NodeMembership>) -> Result<()> {
         info!(
             "🚀 Starting DKG for node {} with threshold {} and total nodes {}",
             self.id,
@@ -34,17 +34,45 @@ impl DKGNode {
         self.transition_status(crate::dkg::artifacts::DKGStatus::Started)?;
         info!("📤 Distributing DKG shares securely via P2P...");
 
-        // Get peer indices for secure distribution
-        let peer_indices = self.storage.get_peer_indices().await?;
+        // DETERMINISTIC INDEX ASSIGNMENT
+        // 1. Get all active peers from NodeManager
+        let mut active_peers: Vec<String> = node_manager.get_active_nodes().iter().map(|p| p.to_string()).collect();
+        // 2. Add ourselves if not present (NodeManager usually tracks *other* nodes)
+        if !active_peers.contains(&self.id) {
+            active_peers.push(self.id.clone());
+        }
+        // 3. Sort deterministically
+        active_peers.sort();
+        
+        info!("📋 [DKG] Deterministic Peer List: {:?}", active_peers);
+        
+        // 4. Assign indices and persist
+        if let Err(e) = self.storage.clear_peer_indices().await {
+            warn!("⚠️ [DKG] Failed to clear old peer indices: {}", e);
+        }
+        
+        let mut peer_indices = HashMap::new();
+        
+        for (i, peer_id) in active_peers.iter().enumerate() {
+            let index = i + 1; // 1-based index
+            let index_store = index;
+            peer_indices.insert(peer_id.clone(), index);
+            
+            if let Err(e) = self.storage.set_peer_index(peer_id, index_store).await {
+                warn!("⚠️ [DKG] Failed to persist index {} for peer {}: {}", index_store, peer_id, e);
+            }
+        }
+
+
 
         // Set expected shares from ALL nodes (including ourselves for accurate tracking)
-        let all_peers: Vec<String> = peer_indices.keys().cloned().collect();
-        self.storage.set_expected_shares(&all_peers).await?;
+        self.storage.set_expected_shares(&active_peers).await?;
         info!(
             "📋 [DKG] Expecting shares from {} nodes (including self): {:?}",
-            all_peers.len(),
-            all_peers
+            active_peers.len(),
+            active_peers
         );
+
         tokio::time::sleep(Duration::from_secs(1)).await;
 
         // Handle our own share locally first
@@ -143,6 +171,11 @@ impl DKGNode {
                         "✅ [DKG-SECURE] Share for index {} queued for unicast to {}",
                         share.index, target_peer_id
                     );
+                    
+                    // Store the generated share so we can resend it if requested
+                    if let Err(e) = self.storage.store_generated_share(target_peer_id, &share).await {
+                        warn!("⚠️ [DKG-SECURE] Failed to store generated share for {}: {}", target_peer_id, e);
+                    }
                 }
             } else {
                 warn!(

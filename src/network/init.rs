@@ -90,6 +90,7 @@ impl MpcNetworkLayer {
             network_transaction_processing_lock: Arc::new(Mutex::new(())),
             // Removed: deterministic_selection field
             retry_manager: Some(RetryManager::new(tx_for_retry)),
+            pending_share_requests: HashMap::new(),
             channel_health,
         };
 

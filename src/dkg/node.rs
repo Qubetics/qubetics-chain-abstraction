@@ -93,6 +93,14 @@ impl DKGNode {
         state.status = next;
         Ok(())
     }
+    pub async fn get_generated_share(&self, peer_id: &str) -> Result<Option<KeyShare>> {
+        self.storage.get_generated_share(peer_id).await
+    }
+
+    pub async fn get_my_commitments(&self) -> Result<Option<Vec<k256::AffinePoint>>> {
+        let all_commitments = self.storage.get_all_commitments().await?;
+        Ok(all_commitments.get(&self.id).cloned())
+    }
 
     pub fn new(
         id: String,
@@ -166,6 +174,9 @@ impl DKGNode {
         }
         if let Err(e) = self.storage.clear_share_tracking().await {
             failures.push(format!("clear share tracking: {e}"));
+        }
+        if let Err(e) = self.storage.clear_generated_shares().await {
+            failures.push(format!("clear generated shares: {e}"));
         }
 
         if failures.is_empty() {

@@ -17,6 +17,7 @@ impl DkgStorage {
 
     pub async fn store_share(&self, from: &str, share: &KeyShare) -> Result<()> {
         let key = format!("{}{}", keys::DKG_SHARE, from);
+        info!("💾 [DKG_DBG] Storing share. Key: '{}', Index: {}", key, share.index);
         self.db.put_string(&key, share)?;
         Ok(())
     }
@@ -24,10 +25,14 @@ impl DkgStorage {
     pub async fn get_all_shares(&self) -> Result<HashMap<String, KeyShare>> {
         let prefix = keys::DKG_SHARE;
         let results: Vec<(String, KeyShare)> = self.db.get_values_with_prefix(prefix)?;
+        info!("🔍 [DKG_DBG] get_all_shares found {} raw results for prefix '{}'", results.len(), prefix);
         let mut map = HashMap::new();
         for (key, share) in results {
+            info!("🔍 [DKG_DBG] Found share key: '{}', ShareIndex: {}", key, share.index);
             if let Some(id) = key.strip_prefix(prefix) {
                 map.insert(id.to_string(), share);
+            } else {
+                 warn!("⚠️ [DKG_DBG] Key '{}' does not start with prefix '{}'", key, prefix);
             }
         }
         Ok(map)
@@ -84,6 +89,28 @@ impl DkgStorage {
     pub async fn delete_commitment(&self, commitment_key: &str) -> Result<()> {
         let key = format!("{}{}", keys::DKG_COMMITMENT, commitment_key);
         self.db.delete_string(&key)?;
+        Ok(())
+    }
+
+    /// Store a generated share (outgoing) for a specific peer
+    pub async fn store_generated_share(&self, to_peer_id: &str, share: &KeyShare) -> Result<()> {
+        let key = format!("{}{}", keys::DKG_GENERATED_SHARE, to_peer_id);
+        self.db.put_string(&key, share)?;
+        Ok(())
+    }
+
+    /// Retrieve a generated share (outgoing) for a specific peer
+    pub async fn get_generated_share(&self, to_peer_id: &str) -> Result<Option<KeyShare>> {
+        let key = format!("{}{}", keys::DKG_GENERATED_SHARE, to_peer_id);
+        self.db.get_string(&key)
+    }
+
+    pub async fn clear_generated_shares(&self) -> Result<()> {
+        let prefix = keys::DKG_GENERATED_SHARE;
+        let keys_vec = self.db.get_keys_with_prefix(prefix)?;
+        for key in keys_vec {
+            self.db.delete_string(&key)?;
+        }
         Ok(())
     }
 
@@ -428,6 +455,25 @@ impl DkgStorage {
             }
         }
         Ok(indices)
+    }
+
+    /// Set a peer's index in the database
+    pub async fn set_peer_index(&self, peer_id: &str, index: usize) -> Result<()> {
+        let key = format!("{}{}", crate::database::keys::PEER_INDEX, peer_id);
+        self.db.put_string(&key, &index)?;
+        info!("🔢 [DKG_STORAGE] Set index for {} => {}", peer_id, index);
+        Ok(())
+    }
+
+    /// Clear all peer indices
+    pub async fn clear_peer_indices(&self) -> Result<()> {
+        let prefix = crate::database::keys::PEER_INDEX;
+        let keys_vec = self.db.get_keys_with_prefix(prefix)?;
+        for key in keys_vec {
+            self.db.delete_string(&key)?;
+        }
+        info!("🧹 [DKG_STORAGE] Cleared all peer indices");
+        Ok(())
     }
 
     // ============ SHARE TRACKING METHODS (Database-persistent) ============

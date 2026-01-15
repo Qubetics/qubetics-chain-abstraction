@@ -95,6 +95,11 @@ pub enum RPCRequest {
         round: u64,
     },
 
+    /// Request a missing DKG share from a specific participant (P2P Pull)
+    RequestDKGShare {
+        requester_id: String,
+    },
+
     /// Unicast a single refresh share to a specific participant (P2P, not broadcast)
     SendRefreshShare {
         from_node_id: String,

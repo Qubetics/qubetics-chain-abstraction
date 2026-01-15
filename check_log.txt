@@ -1,0 +1,272 @@
+    Checking mpc-node v0.1.0 (/Users/user/Works/chain_abstraction/qubetics-chain-abstraction)
+error[E0433]: failed to resolve: use of undeclared type `ChannelMessage`
+   --> src/network/rpc/rpc_handlers.rs:575:31
+    |
+575 |                     let msg = ChannelMessage::UnicastShareDKG {
+    |                               ^^^^^^^^^^^^^^ use of undeclared type `ChannelMessage`
+    |
+help: consider importing this enum through its public re-export
+    |
+1   + use crate::types::ChannelMessage;
+    |
+
+warning: unused import: `Payload`
+ --> src/database/crypto.rs:2:45
+  |
+2 | use chacha20poly1305::aead::{Aead, KeyInit, Payload};
+  |                                             ^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` on by default
+
+warning: type `Migration_v0_1_0_to_v0_2_0` should have an upper camel case name
+   --> src/database/upgrade/migrations.rs:174:8
+    |
+174 | struct Migration_v0_1_0_to_v0_2_0;
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^ help: convert the identifier to upper camel case: `MigrationV0_1_0ToV0_2_0`
+    |
+    = note: `#[warn(non_camel_case_types)]` on by default
+
+warning: unused import: `error`
+ --> src/database/upgrade/state_preservation.rs:6:15
+  |
+6 | use tracing::{error, info, warn};
+  |               ^^^^^
+
+warning: unused imports: `GetNetworkAddressesResponse`, `LogPartialPubkeysRequest`, `TransactionResponse`, and `rpc::RPCRequest`
+  --> src/rpc_server/handlers.rs:16:56
+   |
+16 |         intent::{DepositIntent, DepositIntentResponse, TransactionResponse, TransactionType},
+   |                                                        ^^^^^^^^^^^^^^^^^^^
+17 |         messaging::ChannelMessage,
+18 |         rpc::RPCRequest,
+   |         ^^^^^^^^^^^^^^^
+...
+21 |             DKGStatusResponse, EnhancedUserRegistrationResponse, GetNetworkAddressesResponse,
+   |                                                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+22 |             GetRewardSolverRequest, GetRewardSolverResponse, HeartbeatResponse,
+23 |             LogPartialPubkeysRequest, NodeIdResponse, RequestContext, SolverLiquidityRequest,
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `rpc::RPCRequest`
+ --> src/types/messaging.rs:6:9
+  |
+6 |         rpc::RPCRequest,
+  |         ^^^^^^^^^^^^^^^
+
+warning: unused imports: `ChainTransaction` and `EthereumTransaction`
+  --> src/utils/contract.rs:67:36
+   |
+67 |     use crate::chain_abstraction::{ChainTransaction, EthereumTransaction};
+   |                                    ^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^
+
+error[E0308]: mismatched types
+   --> src/database/storage/dkg_storage.rs:106:21
+    |
+106 |             Ok(Some(share))
+    |                ---- ^^^^^ expected `KeyShare`, found `Option<_>`
+    |                |
+    |                arguments to this enum variant are incorrect
+    |
+    = note: expected struct `KeyShare`
+                 found enum `std::option::Option<_>`
+help: the type constructed contains `std::option::Option<_>` due to the type of the argument passed
+   --> src/database/storage/dkg_storage.rs:106:16
+    |
+106 |             Ok(Some(share))
+    |                ^^^^^-----^
+    |                     |
+    |                     this argument influences the type of `Some`
+note: tuple variant defined here
+   --> /Users/user/.rustup/toolchains/1.87.0-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/option.rs:580:5
+    |
+580 |     Some(#[stable(feature = "rust1", since = "1.0.0")] T),
+    |     ^^^^
+help: consider using `Option::expect` to unwrap the `std::option::Option<_>` value, panicking if the value is an `Option::None`
+    |
+106 |             Ok(Some(share.expect("REASON")))
+    |                          +++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src/dkg/protocol/generation.rs:148:88
+    |
+148 |                     if let Err(e) = self.storage.store_generated_share(target_peer_id, share).await {
+    |                                                  ---------------------                 ^^^^^ expected `&KeyShare`, found `KeyShare`
+    |                                                  |
+    |                                                  arguments to this method are incorrect
+    |
+note: method defined here
+   --> src/database/storage/dkg_storage.rs:96:18
+    |
+96  |     pub async fn store_generated_share(&self, to_peer_id: &str, share: &KeyShare) -> Result<()> {
+    |                  ^^^^^^^^^^^^^^^^^^^^^                          ----------------
+help: consider borrowing here
+    |
+148 |                     if let Err(e) = self.storage.store_generated_share(target_peer_id, &share).await {
+    |                                                                                        +
+
+warning: unused variable: `channel_capacity_warning_threshold`
+    --> src/network/rpc/channel_handler.rs:1249:21
+     |
+1249 |                 let channel_capacity_warning_threshold = 0.8; // Warn at 80% full
+     |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_channel_capacity_warning_threshold`
+     |
+     = note: `#[warn(unused_variables)]` on by default
+
+warning: unused variable: `transaction_type`
+   --> src/network/rpc/gossipsub_handler.rs:779:112
+    |
+779 | ...r_message: String, transaction_type: String, solver_address: Option<String>, node_id: String) -> Result<()> {
+    |                       ^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_transaction_type`
+
+warning: unused variable: `sender_peer_id`
+   --> src/network/rpc/message_handlers.rs:361:9
+    |
+361 |         sender_peer_id: &PeerId,
+    |         ^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_sender_peer_id`
+
+warning: unused variable: `peer`
+   --> src/network/rpc/rpc_handlers.rs:365:9
+    |
+365 |         peer: PeerId,
+    |         ^^^^ help: if this is intentional, prefix it with an underscore: `_peer`
+
+error[E0616]: field `storage` of struct `DKGNode` is private
+   --> src/network/rpc/rpc_handlers.rs:533:24
+    |
+533 |         match dkg_node.storage.get_generated_share(&requester_id).await {
+    |                        ^^^^^^^ private field
+
+error[E0616]: field `storage` of struct `DKGNode` is private
+   --> src/network/rpc/rpc_handlers.rs:545:53
+    |
+545 |                 let my_commitments = match dkg_node.storage.get_all_commitments().await {
+    |                                                     ^^^^^^^ private field
+
+warning: unused variable: `from_node_id`
+   --> src/network/rpc/rpc_handlers.rs:928:9
+    |
+928 |         from_node_id: String,
+    |         ^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_from_node_id`
+
+warning: unused variable: `peer`
+    --> src/network/rpc/rpc_handlers.rs:1011:54
+     |
+1011 |     async fn handle_request_current_vrf_round(&self, peer: PeerId) -> RPCResponse {
+     |                                                      ^^^^ help: if this is intentional, prefix it with an underscore: `_peer`
+
+warning: unused variable: `requester_id`
+    --> src/network/rpc/rpc_handlers.rs:1053:9
+     |
+1053 |         requester_id: SerializablePeerId,
+     |         ^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_requester_id`
+
+warning: unused variable: `peer`
+    --> src/network/rpc/rpc_handlers.rs:1077:9
+     |
+1077 |         peer: PeerId,
+     |         ^^^^ help: if this is intentional, prefix it with an underscore: `_peer`
+
+warning: unused variable: `addr_count`
+    --> src/network/rpc/rpc_handlers.rs:1126:21
+     |
+1126 |                 let addr_count = peer_info.addresses.len();
+     |                     ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_addr_count`
+
+warning: unused variable: `peers_have_indices`
+    --> src/network/rpc/rpc_handlers.rs:1414:17
+     |
+1414 |             let peers_have_indices = !self.peer_discovery.peer_indices.is_empty();
+     |                 ^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_peers_have_indices`
+
+warning: unused variable: `max_peer_index`
+    --> src/network/rpc/rpc_handlers.rs:1415:17
+     |
+1415 |             let max_peer_index = self
+     |                 ^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_max_peer_index`
+
+warning: unused variable: `connected_peer_count`
+    --> src/network/rpc/rpc_handlers.rs:1424:17
+     |
+1424 |             let connected_peer_count = swarm.connected_peers().count();
+     |                 ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_connected_peer_count`
+
+warning: unused variable: `peer_id`
+   --> src/network/transport/swarm_events.rs:434:9
+    |
+434 |         peer_id: PeerId,
+    |         ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_peer_id`
+
+warning: unused variable: `refund_amount`
+   --> src/network/utils.rs:566:41
+    |
+566 | ...                   let refund_amount = if let Some(tx_ids) = user_intent_manager
+    |                           ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_refund_amount`
+
+warning: unused variable: `original_request`
+    --> src/signing/mod.rs:1968:46
+     |
+1968 | ...                   let (request_id, original_request) = {
+     |                                        ^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_original_request`
+
+warning: unused variable: `extras_opt`
+    --> src/signing/mod.rs:3394:28
+     |
+3394 |             let (chain_tx, extras_opt) = if is_reward_round {
+     |                            ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_extras_opt`
+
+warning: variable does not need to be mutable
+   --> src/signing/coordination/mod.rs:145:13
+    |
+145 |         let mut vrf_service = if let Some(ref storage) = self.vrf_storage {
+    |             ----^^^^^^^^^^^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` on by default
+
+warning: variable does not need to be mutable
+   --> src/signing/db_signing.rs:283:13
+    |
+283 |         let mut vrf_service = VrfService::new_with_storage_and_context(
+    |             ----^^^^^^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: unused variable: `chain_id`
+    --> src/utils/transaction.rs:2039:56
+     |
+2039 | pub async fn get_gas_price_for_chain(chain_name: &str, chain_id: u64) -> Result<String> {
+     |                                                        ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_chain_id`
+
+warning: use of deprecated method `libp2p::libp2p_request_response::Config::set_request_timeout`: Use `Config::with_request_timeout` for one-liner constructions.
+   --> src/types/rpc.rs:345:9
+    |
+345 |     cfg.set_request_timeout(std::time::Duration::from_secs(180));
+    |         ^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(deprecated)]` on by default
+
+warning: unused variable: `hash`
+  --> src/network/whitelist.rs:91:13
+   |
+91 |         let hash = hasher.finalize();
+   |             ^^^^ help: if this is intentional, prefix it with an underscore: `_hash`
+
+warning: unused variable: `key_hash`
+   --> src/network/whitelist.rs:110:13
+    |
+110 |         let key_hash = key_hasher.finalize();
+    |             ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_key_hash`
+
+warning: variable does not need to be mutable
+   --> src/utils/transaction.rs:385:13
+    |
+385 |         let mut skip_no_change_path = false;
+    |             ----^^^^^^^^^^^^^^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+Some errors have detailed explanations: E0308, E0433, E0616.
+For more information about an error, try `rustc --explain E0308`.
+warning: `mpc-node` (lib) generated 29 warnings
+error: could not compile `mpc-node` (lib) due to 5 previous errors; 29 warnings emitted

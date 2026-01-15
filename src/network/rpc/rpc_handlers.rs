@@ -3,12 +3,12 @@
 use anyhow::Result;
 use libp2p::gossipsub::{IdentTopic, Message};
 use libp2p::PeerId;
-use tracing::{error, warn};
+use tracing::{error, info, warn};
 
 use crate::database::key_utils::{self, peer_addr_key};
 use crate::types::p2p::SerializablePeerId;
 use crate::types::signing::SigningMessage;
-use crate::types::{GossipsubMessage, PeerInfo, SerializablePoint, SerializableScalar};
+use crate::types::{ChannelMessage, GossipsubMessage, PeerInfo, SerializablePoint, SerializableScalar};
 
 use crate::database::VrfStorage;
 use crate::protocols::DKGStatus;
@@ -157,6 +157,10 @@ impl MpcNetworkLayer {
                         ))
                     }
                 }
+            }
+
+            RPCRequest::RequestDKGShare { requester_id } => {
+                self.handle_request_dkg_share(peer, requester_id).await
             }
             _ => RPCResponse::Ack,
         }
@@ -508,6 +512,90 @@ impl MpcNetworkLayer {
             RPCResponse::ShareAccepted
         } else {
             RPCResponse::Error("Invalid share".into())
+        }
+    }
+
+    async fn handle_request_dkg_share(
+        &mut self,
+        peer: PeerId,
+        requester_id: String,
+    ) -> RPCResponse {
+        info!("📥 [DKG-SECURE] Received RequestDKGShare from {} (requester_id: {})", peer, requester_id);
+        
+        let dkg_node = match &self.dkg_node {
+            Some(node) => node,
+            None => {
+                warn!("❌ [DKG-SECURE] DKG node not initialized, cannot serve share request");
+                return RPCResponse::Error("DKG not initialized".to_string());
+            }
+        };
+
+        match dkg_node.get_generated_share(&requester_id).await {
+            Ok(Some(share)) => {
+                // Determine peer index if possible
+                let peer_index = share.index; // Share has .index but we need peer index? Share index IS the peer index usually.
+                
+                // We need commitments too.
+                // Assuming commitments are same for all?
+                // We stored "original commitments" in storage.
+                // But SendDKGShare needs generated commitments.
+                // We should store them too? Or retrieve "my" commitments.
+                
+                // Let's get my commitments.
+                let my_commitments = match dkg_node.get_my_commitments().await {
+                    Ok(Some(comms)) => Some(comms),
+                    _ => None,
+                };
+                
+                let commitments = my_commitments.unwrap_or_default();
+                let serializable_commitments: Vec<SerializablePoint> = commitments
+                    .iter()
+                    .map(|p| SerializablePoint(p.clone()))
+                    .collect();
+
+                info!("📤 [DKG-SECURE] Resending share index {} to {}", share.index, requester_id);
+                
+                // We don't send via channel here if we are responding to RPC.
+                // But RPC handlers return RPCResponse.
+                // SendDKGShare is a REQUEST.
+                // We cannot return a Request as a Response.
+                
+                // Should we return RPCResponse::DKGShare? 
+                // No, the RPC definition expects SendDKGShare to be a Request initiated by sender.
+                
+                // So we should spawn a task to send the share unicast?
+                // Yes.
+                
+                let tx = self.message_tx.clone();
+                let peer_str = peer.to_string();
+                let from_node = dkg_node.get_id().to_string();
+                let round = dkg_node.current_round();
+                
+                tokio::spawn(async move {
+                    let msg = ChannelMessage::UnicastShareDKG {
+                        target_peer_id: peer_str,
+                        from_node_id: from_node,
+                        share_index: share.index,
+                        share_value: share.value,
+                        commitments: serializable_commitments,
+                        round,
+                        retry_count: 0,
+                    };
+                    if let Err(e) = tx.send(msg).await {
+                       warn!("❌ [DKG-SECURE] Failed to enqueue RESENT share message: {}", e);
+                    }
+                });
+
+                RPCResponse::Ack
+            }
+            Ok(None) => {
+                warn!("⚠️ [DKG-SECURE] Requested share for {} not found in generated shares", requester_id);
+                RPCResponse::Error("Share not found".to_string())
+            }
+            Err(e) => {
+                warn!("❌ [DKG-SECURE] Failed to retrieve generated share: {}", e);
+                RPCResponse::Error(format!("Storage error: {}", e))
+            }
         }
     }
 
@@ -1129,10 +1217,10 @@ impl MpcNetworkLayer {
                         crate::network::rpc::retry_manager::CriticalMessageType::TransactionIdBroadcast
                     }
                     "VaultSequencerVrfSelectedNodes" => {
-                        crate::network::rpc::retry_manager::CriticalMessageType::VaultSequencerVrfSelectedNodes
+                        crate::network::rpc::retry_manager::CriticalMessageType::SequencerConsensusVrf
                     }
                     "MainSequencerVrfSelectedNodes" => {
-                        crate::network::rpc::retry_manager::CriticalMessageType::MainSequencerVrfSelectedNodes
+                        crate::network::rpc::retry_manager::CriticalMessageType::SequencerConsensusVrf
                     }
                     "VrfSelectedNodes" => {
                         crate::network::rpc::retry_manager::CriticalMessageType::VrfSelectedNodes

@@ -374,14 +374,17 @@ impl ContractTransactionSequencer {
             if let Some(broadcast_msg) = vrf_service.create_broadcast_for_round(round).await {
                 if let Some(message_tx) = &self.message_tx {
                     let broadcast_data = serde_json::to_vec(
-                        &crate::types::GossipsubMessage::VaultSequencerVrfSelectedNodes(
-                            broadcast_msg,
+                        &crate::types::GossipsubMessage::SequencerConsensus(
+                            crate::types::messaging::SequencerConsensusMessage::VrfSelectedNodes {
+                                domain: crate::types::messaging::SequencerDomain::Vault,
+                                broadcast: broadcast_msg,
+                            }
                         ),
                     )?;
 
                     message_tx
                         .send(crate::types::ChannelMessage::Broadcast {
-                            topic: "vault-sequencer-vrf".to_string(),
+                            topic: crate::network::transport::types::TOPIC_SEQUENCER_CONSENSUS.to_string(),
                             data: broadcast_data,
                         })
                         .await?;
@@ -1588,12 +1591,14 @@ impl ContractTransactionSequencer {
         if let Some(tx) = &self.message_tx {
             let msg = crate::types::ChannelMessage::Broadcast {
                 topic: "vault-sequencer-select".to_string(),
-                data: serde_json::to_vec(&crate::types::GossipsubMessage::VaultSequencerSelect {
+                data: serde_json::to_vec(&crate::types::GossipsubMessage::SequencerConsensus(
+                    crate::types::messaging::SequencerConsensusMessage::Select {
+                        domain: crate::types::messaging::SequencerDomain::Vault,
                     round,
                     request_id: request_id.to_string(),
                     final_node_id: local_peer,
                     signature,
-                })?,
+                }))?,
             };
 
             tx.send(msg)
@@ -1614,11 +1619,13 @@ impl ContractTransactionSequencer {
         if let Some(tx) = &self.message_tx {
             let msg = crate::types::ChannelMessage::Broadcast {
                 topic: "vault-sequencer-ack".to_string(),
-                data: serde_json::to_vec(&crate::types::GossipsubMessage::VaultSequencerAck {
+                data: serde_json::to_vec(&crate::types::GossipsubMessage::SequencerConsensus(
+                    crate::types::messaging::SequencerConsensusMessage::Ack {
+                        domain: crate::types::messaging::SequencerDomain::Vault,
                     round,
                     request_id: request_id.to_string(),
                     node_id: local_peer,
-                })?,
+                }))?,
             };
 
             tx.send(msg)
@@ -1639,11 +1646,13 @@ impl ContractTransactionSequencer {
         if let Some(tx) = &self.message_tx {
             let msg = crate::types::ChannelMessage::Broadcast {
                 topic: "vault-sequencer-missing".to_string(),
-                data: serde_json::to_vec(&crate::types::GossipsubMessage::VaultSequencerMissing {
+                data: serde_json::to_vec(&crate::types::GossipsubMessage::SequencerConsensus(
+                    crate::types::messaging::SequencerConsensusMessage::Missing {
+                        domain: crate::types::messaging::SequencerDomain::Vault,
                     round,
                     request_id: request_id.to_string(),
                     node_id: local_peer,
-                })?,
+                }))?,
             };
 
             tx.send(msg)
@@ -2079,12 +2088,13 @@ impl ContractTransactionSequencer {
                     // Broadcast our agreement
                     if let Some(message_tx) = &self.message_tx {
                         let broadcast_data =
-                            serde_json::to_vec(&crate::types::GossipsubMessage::SequencerSync {
+                            serde_json::to_vec(&crate::types::GossipsubMessage::Sync(
+                                crate::types::messaging::SyncMessage::Sequencer {
                                 transaction_id: transaction_id.clone(),
                                 sequence,
                                 node_id: self.node_id.clone(),
                                 state: "proposed".to_string(),
-                            });
+                            }));
                         if let Ok(data) = broadcast_data {
                             let _ = message_tx
                                 .send(crate::types::ChannelMessage::Broadcast {
@@ -2219,12 +2229,13 @@ impl ContractTransactionSequencer {
         // Broadcast proposal
         if let Some(message_tx) = &self.message_tx {
             let broadcast_data =
-                serde_json::to_vec(&crate::types::GossipsubMessage::SequencerSync {
+                serde_json::to_vec(&crate::types::GossipsubMessage::Sync(
+                    crate::types::messaging::SyncMessage::Sequencer {
                     transaction_id: transaction_id.to_string(),
                     sequence: current_sequence,
                     node_id: self.node_id.clone(),
                     state: "proposed".to_string(),
-                })?;
+                }))?;
 
             message_tx
                 .send(crate::types::ChannelMessage::Broadcast {
@@ -2298,12 +2309,13 @@ impl ContractTransactionSequencer {
             }
 
             let broadcast_data =
-                serde_json::to_vec(&crate::types::GossipsubMessage::SequencerSync {
+                serde_json::to_vec(&crate::types::GossipsubMessage::Sync(
+                    crate::types::messaging::SyncMessage::Sequencer {
                     transaction_id: transaction_id.to_string(),
                     sequence,
                     node_id: self.node_id.clone(),
                     state: "processing".to_string(),
-                })?;
+                }))?;
 
             message_tx
                 .send(crate::types::ChannelMessage::Broadcast {
@@ -2317,6 +2329,18 @@ impl ContractTransactionSequencer {
                 transaction_id, sequence
             );
         }
+        Ok(())
+    }
+
+    /// Handle notification that a transaction was submitted to the blockchain
+    pub async fn handle_transaction_submitted(&self, transaction_id: String, tx_hash: String) -> Result<()> {
+        info!("✅ [VAULT_SEQUENCER] Transaction submitted: {} (hash: {})", transaction_id, tx_hash);
+        Ok(())
+    }
+
+    /// Handle notification that a transaction failed
+    pub async fn handle_transaction_failure(&self, transaction_id: String, tx_hash: String, error: String) -> Result<()> {
+        error!("❌ [VAULT_SEQUENCER] Transaction failed: {} (hash: {}): {}", transaction_id, tx_hash, error);
         Ok(())
     }
 
@@ -2342,12 +2366,13 @@ impl ContractTransactionSequencer {
             // Broadcast completion confirmation
             if let Some(message_tx) = &self.message_tx {
                 let broadcast_data =
-                    serde_json::to_vec(&crate::types::GossipsubMessage::SequencerSync {
+                    serde_json::to_vec(&crate::types::GossipsubMessage::Sync(
+                        crate::types::messaging::SyncMessage::Sequencer {
                         transaction_id: transaction_id.to_string(),
                         sequence,
                         node_id: self.node_id.clone(),
                         state: "completed".to_string(),
-                    })?;
+                    }))?;
 
                 message_tx
                     .send(crate::types::ChannelMessage::Broadcast {
@@ -2825,14 +2850,17 @@ impl NetworkTransactionSequencer {
             if let Some(broadcast_msg) = vrf_service.create_broadcast_for_round(round).await {
                 if let Some(message_tx) = &self.message_tx {
                     let broadcast_data = serde_json::to_vec(
-                        &crate::types::GossipsubMessage::MainSequencerVrfSelectedNodes(
-                            broadcast_msg,
+                        &crate::types::GossipsubMessage::SequencerConsensus(
+                            crate::types::messaging::SequencerConsensusMessage::VrfSelectedNodes {
+                                domain: crate::types::messaging::SequencerDomain::Main,
+                                broadcast: broadcast_msg,
+                            }
                         ),
                     )?;
 
                     message_tx
                         .send(crate::types::ChannelMessage::Broadcast {
-                            topic: "main-sequencer-vrf".to_string(),
+                            topic: crate::network::transport::types::TOPIC_SEQUENCER_CONSENSUS.to_string(),
                             data: broadcast_data,
                         })
                         .await?;
@@ -3506,12 +3534,14 @@ impl NetworkTransactionSequencer {
         if let Some(tx) = &self.message_tx {
             let msg = crate::types::ChannelMessage::Broadcast {
                 topic: "main-sequencer-select".to_string(),
-                data: serde_json::to_vec(&crate::types::GossipsubMessage::MainSequencerSelect {
+                data: serde_json::to_vec(&crate::types::GossipsubMessage::SequencerConsensus(
+                    crate::types::messaging::SequencerConsensusMessage::Select {
+                        domain: crate::types::messaging::SequencerDomain::Main,
                     round,
                     request_id: request_id.to_string(),
                     final_node_id: local_peer,
                     signature,
-                })?,
+                }))?,
             };
 
             tx.send(msg)
@@ -3532,11 +3562,13 @@ impl NetworkTransactionSequencer {
         if let Some(tx) = &self.message_tx {
             let msg = crate::types::ChannelMessage::Broadcast {
                 topic: "main-sequencer-ack".to_string(),
-                data: serde_json::to_vec(&crate::types::GossipsubMessage::MainSequencerAck {
+                data: serde_json::to_vec(&crate::types::GossipsubMessage::SequencerConsensus(
+                    crate::types::messaging::SequencerConsensusMessage::Ack {
+                        domain: crate::types::messaging::SequencerDomain::Main,
                     round,
                     request_id: request_id.to_string(),
                     node_id: local_peer,
-                })?,
+                }))?,
             };
 
             tx.send(msg)
@@ -3556,12 +3588,14 @@ impl NetworkTransactionSequencer {
 
         if let Some(tx) = &self.message_tx {
             let msg = crate::types::ChannelMessage::Broadcast {
-                topic: "main-sequencer-missing".to_string(),
-                data: serde_json::to_vec(&crate::types::GossipsubMessage::MainSequencerMissing {
+                topic: crate::network::transport::types::TOPIC_SEQUENCER_CONSENSUS.to_string(),
+                data: serde_json::to_vec(&crate::types::GossipsubMessage::SequencerConsensus(
+                    crate::types::messaging::SequencerConsensusMessage::Missing {
+                        domain: crate::types::messaging::SequencerDomain::Main,
                     round,
                     request_id: request_id.to_string(),
                     node_id: local_peer,
-                })?,
+                }))?,
             };
 
             tx.send(msg)
@@ -3784,18 +3818,19 @@ impl NetworkTransactionSequencer {
         // Broadcast proposal
         if let Some(message_tx) = &self.message_tx {
             let broadcast_data = serde_json::to_vec(
-                &crate::types::GossipsubMessage::NetworkTransactionSequencerSync {
+                &crate::types::GossipsubMessage::Sync(
+                    crate::types::messaging::SyncMessage::NetworkSequencer {
                     transaction_id: transaction_id.to_string(),
                     sequence,
                     node_id: self.node_id.clone(),
                     state: "proposed".to_string(),
                 },
-            )?;
+            ))?;
 
             message_tx
                 .send(crate::types::ChannelMessage::Broadcast {
                     topic:
-                        crate::network::transport::types::TOPIC_NETWORK_TRANSACTION_SEQUENCER_SYNC
+                        crate::network::transport::types::TOPIC_TX_SYNC
                             .to_string(),
                     data: broadcast_data,
                 })
@@ -3825,18 +3860,19 @@ impl NetworkTransactionSequencer {
             }
 
             let broadcast_data = serde_json::to_vec(
-                &crate::types::GossipsubMessage::NetworkTransactionSequencerSync {
+                &crate::types::GossipsubMessage::Sync(
+                    crate::types::messaging::SyncMessage::NetworkSequencer {
                     transaction_id: transaction_id.to_string(),
                     sequence,
                     node_id: self.node_id.clone(),
                     state: "processing".to_string(),
                 },
-            )?;
+            ))?;
 
             message_tx
                 .send(crate::types::ChannelMessage::Broadcast {
                     topic:
-                        crate::network::transport::types::TOPIC_NETWORK_TRANSACTION_SEQUENCER_SYNC
+                        crate::network::transport::types::TOPIC_TX_SYNC
                             .to_string(),
                     data: broadcast_data,
                 })
@@ -3867,17 +3903,18 @@ impl NetworkTransactionSequencer {
             // Broadcast completion confirmation
             if let Some(message_tx) = &self.message_tx {
                 let broadcast_data = serde_json::to_vec(
-                    &crate::types::GossipsubMessage::NetworkTransactionSequencerSync {
+                    &crate::types::GossipsubMessage::Sync(
+                    crate::types::messaging::SyncMessage::NetworkSequencer {
                         transaction_id: transaction_id.to_string(),
                         sequence,
                         node_id: self.node_id.clone(),
                         state: "completed".to_string(),
                     },
-                )?;
+                ))?;
 
                 message_tx
                 .send(crate::types::ChannelMessage::Broadcast {
-                        topic: crate::network::transport::types::TOPIC_NETWORK_TRANSACTION_SEQUENCER_SYNC.to_string(),
+                        topic: crate::network::transport::types::TOPIC_TX_SYNC.to_string(),
                     data: broadcast_data,
                 })
                 .await?;
@@ -4168,6 +4205,17 @@ impl NetworkTransactionSequencer {
             total_nodes,
             (total_nodes / 2) + 1
         );
+    }
+    /// Handle notification that a transaction was submitted to the blockchain
+    pub async fn handle_transaction_submitted(&self, transaction_id: String, tx_hash: String) -> Result<()> {
+        info!("✅ [MAIN_SEQUENCER] Transaction submitted: {} (hash: {})", transaction_id, tx_hash);
+        Ok(())
+    }
+
+    /// Handle notification that a transaction failed
+    pub async fn handle_transaction_failure(&self, transaction_id: String, tx_hash: String, error: String) -> Result<()> {
+        error!("❌ [MAIN_SEQUENCER] Transaction failed: {} (hash: {}): {}", transaction_id, tx_hash, error);
+        Ok(())
     }
 }
 

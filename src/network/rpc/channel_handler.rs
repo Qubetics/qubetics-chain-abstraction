@@ -1498,11 +1498,51 @@ impl MpcNetworkLayer {
                 let request_id = swarm
                     .behaviour_mut()
                     .request_response
-                    .send_request(&peer_id, request);
+                    .send_request(&peer_id, request.clone());
+
+                // Track request for reliability
+                self.pending_share_requests.insert(
+                    request_id,
+                    crate::network::transport::types::PendingShareRequest {
+                        peer: peer_id,
+                        request,
+                        retry_count,
+                        timestamp: std::time::Instant::now(),
+                    },
+                );
 
                 info!(
                     "✅ [DKG-SECURE] Share index {} sent via P2P RPC to {} (request_id: {:?}, connected: {})",
                     share_index, target_peer_id, request_id, is_connected
+                );
+            }
+            ChannelMessage::RequestDKGShare {
+                target_peer_id,
+                requester_id,
+            } => {
+                 let peer_id = match target_peer_id.parse::<PeerId>() {
+                    Ok(pid) => pid,
+                    Err(e) => {
+                        warn!(
+                            "❌ [DKG-SECURE] Invalid peer ID '{}': {}",
+                            target_peer_id, e
+                        );
+                        return Err(anyhow!("Invalid peer ID: {}", e));
+                    }
+                };
+                
+                let request = RPCRequest::RequestDKGShare {
+                    requester_id,
+                };
+                
+                let request_id = swarm
+                    .behaviour_mut()
+                    .request_response
+                    .send_request(&peer_id, request);
+                    
+                info!(
+                    "📤 [DKG-SECURE] Sent RequestDKGShare to {} (request_id: {:?})",
+                    target_peer_id, request_id
                 );
             }
             // SECURE REFRESH SHARE DISTRIBUTION - sends refresh share to specific peer via P2P RPC
@@ -1633,7 +1673,18 @@ impl MpcNetworkLayer {
                 let request_id = swarm
                     .behaviour_mut()
                     .request_response
-                    .send_request(&peer_id, request);
+                    .send_request(&peer_id, request.clone());
+
+                // Track request for reliability
+                self.pending_share_requests.insert(
+                    request_id,
+                    crate::network::transport::types::PendingShareRequest {
+                        peer: peer_id,
+                        request,
+                        retry_count,
+                        timestamp: std::time::Instant::now(),
+                    },
+                );
 
                 info!(
                     "✅ [REFRESH-SECURE] Refresh share index {} sent via P2P RPC to {} (request_id: {:?}, connected: {})",
@@ -3569,17 +3620,16 @@ impl MpcNetworkLayer {
                 // Validate transaction type for reward flow
                 // Note: If TransactionType is added to ClaimReward message in the future,
                 // use: Self::validate_transaction_type_for_reward(&transaction_type)?;
-                // For now, reward flow only processes RewardTxn type transactions
-
-                // Broadcast the reward claim to other nodes via gossipsub immediately
-                let claim_reward_msg = GossipsubMessage::ClaimReward {
-                    solver_address: solver_address.clone(),
-                    btc_address: btc_address.clone(),
-                    eth_address: eth_address.clone(),
-                    reward_btc: reward_btc.clone(),
-                    reward_tics: reward_tics.clone(),
-                    transaction_type: transaction_type.clone(),
-                };
+                let claim_reward_msg = GossipsubMessage::Rewards(
+                    crate::types::messaging::RewardMessage::Claim {
+                        solver_address: solver_address.clone(),
+                        btc_address: btc_address.clone(),
+                        eth_address: eth_address.clone(),
+                        reward_btc: reward_btc.clone(),
+                        reward_tics: reward_tics.clone(),
+                        transaction_type: transaction_type.clone(),
+                    }
+                );
                 let msg_bytes = serde_json::to_vec(&claim_reward_msg).map_err(|e| {
                     anyhow::anyhow!("Failed to serialize claim reward message: {}", e)
                 })?;
@@ -3610,18 +3660,15 @@ impl MpcNetworkLayer {
                 amount_tics,
                 request_id,
             } => {
-                info!(
-                    "💧 [NETWORK] Processing add liquidity for solver {} (solver_id: {})",
-                    solver_address, solver_id
+                let add_msg = GossipsubMessage::Liquidity(
+                    crate::types::messaging::LiquidityMessage::Add {
+                        solver_address: solver_address.clone(),
+                        solver_id: solver_id.clone(),
+                        amount_btc: amount_btc.clone(),
+                        amount_tics: amount_tics.clone(),
+                        request_id: request_id.clone(),
+                    }
                 );
-
-                let add_msg = GossipsubMessage::AddLiquidity {
-                    solver_address: solver_address.clone(),
-                    solver_id: solver_id.clone(),
-                    amount_btc: amount_btc.clone(),
-                    amount_tics: amount_tics.clone(),
-                    request_id: request_id.clone(),
-                };
                 let msg_bytes = serde_json::to_vec(&add_msg)
                     .map_err(|e| anyhow::anyhow!("Failed to serialize add-liquidity msg: {}", e))?;
                 let topic = gossipsub::IdentTopic::new("add-liquidity");
@@ -3685,19 +3732,16 @@ impl MpcNetworkLayer {
                 amount_tics,
                 transaction_type,
             } => {
-                info!(
-                    "💧 [NETWORK] Processing withdraw liquidity for solver {}",
-                    solver_address
+                let withdraw_msg = GossipsubMessage::Liquidity(
+                    crate::types::messaging::LiquidityMessage::Withdraw {
+                        solver_address: solver_address.clone(),
+                        btc_address: btc_address.clone(),
+                        eth_address: eth_address.clone(),
+                        amount_btc: amount_btc.clone(),
+                        amount_tics: amount_tics.clone(),
+                        transaction_type: transaction_type.clone(),
+                    }
                 );
-
-                let withdraw_msg = GossipsubMessage::WithdrawLiquidity {
-                    solver_address: solver_address.clone(),
-                    btc_address: btc_address.clone(),
-                    eth_address: eth_address.clone(),
-                    amount_btc: amount_btc.clone(),
-                    amount_tics: amount_tics.clone(),
-                    transaction_type: transaction_type.clone(),
-                };
                 let msg_bytes = serde_json::to_vec(&withdraw_msg)
                     .map_err(|e| anyhow::anyhow!(e.to_string()))?;
                 let topic = gossipsub::IdentTopic::new("withdraw-liquidity");

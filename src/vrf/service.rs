@@ -13,6 +13,7 @@ use crate::{
     database::VrfStorage,
     types::{p2p::SerializablePeerId, vrf::VrfRoundSyncRequest, ChannelMessage, GossipsubMessage},
 };
+use crate::types::messaging::{SequencerConsensusMessage, SequencerDomain};
 
 use super::{
     selector::VrfNodeSelector,
@@ -65,10 +66,16 @@ impl VrfRoundSyncKind {
         match self {
             VrfRoundSyncKind::Signing => GossipsubMessage::VrfRoundSyncRequest(request),
             VrfRoundSyncKind::MainSequencer => {
-                GossipsubMessage::MainSequencerVrfRoundSyncRequest(request)
+                GossipsubMessage::SequencerConsensus(SequencerConsensusMessage::VrfRoundSyncRequest {
+                    domain: SequencerDomain::Main,
+                    req: request,
+                })
             }
             VrfRoundSyncKind::VaultSequencer => {
-                GossipsubMessage::VaultSequencerVrfRoundSyncRequest(request)
+                GossipsubMessage::SequencerConsensus(SequencerConsensusMessage::VrfRoundSyncRequest {
+                    domain: SequencerDomain::Vault,
+                    req: request,
+                })
             }
         }
     }
@@ -77,10 +84,10 @@ impl VrfRoundSyncKind {
         match self {
             VrfRoundSyncKind::Signing => crate::network::transport::types::TOPIC_CONSENSUS,
             VrfRoundSyncKind::MainSequencer => {
-                crate::network::transport::types::TOPIC_MAIN_SEQUENCER_VRF
+                crate::network::transport::types::TOPIC_SEQUENCER_CONSENSUS
             }
             VrfRoundSyncKind::VaultSequencer => {
-                crate::network::transport::types::TOPIC_VAULT_SEQUENCER_VRF
+                crate::network::transport::types::TOPIC_SEQUENCER_CONSENSUS
             }
         }
     }

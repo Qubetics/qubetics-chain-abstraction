@@ -11,7 +11,8 @@ use tokio::sync::RwLock;
 use tokio::time::{Duration, Instant};
 use tracing::{debug, error, info, warn};
 
-use crate::types::{ChannelMessage, GossipsubMessage};
+use crate::types::ChannelMessage;
+use crate::types::messaging::GossipsubMessage;
 
 // For production jitter in retry delays
 use rand::Rng;
@@ -24,67 +25,72 @@ pub struct MessageId {
 }
 
 /// Types of critical messages that need retry
-/// Reduced from 7 to 5 types - removed SELECT messages that have ACK/MISSING fallback
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum CriticalMessageType {
     TransactionIdBroadcast,
-    VaultSequencerVrfSelectedNodes,
-    MainSequencerVrfSelectedNodes,
-    VrfSelectedNodes,
-    // Removed: VaultSequencerSelect - has ACK/MISSING protocol
-    // Removed: MainSequencerSelect - has ACK/MISSING protocol
+    VrfSelectedNodes,          // Legacy/Generic
+    SequencerConsensusVrf,     // Consolidated VRF (Vault/Main/Network)
     SequencerSync,
+    DKGShareValidation,
+    DKGNewNodeShare,
+    DKGCommitmentBroadcast,
 }
 
-/// State of a message retry
 #[derive(Debug, Clone)]
 struct RetryState {
-    #[allow(dead_code)] // Used in logging and debugging
-    message_id: MessageId,
-    topic: String,
-    data: Vec<u8>,
-    expected_nodes: HashSet<PeerId>,
-    acknowledged_nodes: HashSet<PeerId>,
-    retry_count: u8,
-    first_sent_at: Instant,
-    last_retry_at: Option<Instant>,
+    pub message_id: MessageId,
+    pub topic: String,
+    pub data: Vec<u8>,
+    pub expected_nodes: HashSet<PeerId>,
+    pub acknowledged_nodes: HashSet<PeerId>,
+    pub retry_count: u8,
+    pub first_sent_at: Instant,
+    pub last_retry_at: Option<Instant>,
 }
 
-/// Retry manager for critical messages
+#[derive(Clone)]
 pub struct RetryManager {
-    /// Active retry states keyed by message ID
-    active_retries: Arc<RwLock<HashMap<MessageId, RetryState>>>,
-    /// Channel to send retry messages
     message_tx: tokio::sync::mpsc::Sender<ChannelMessage>,
+    active_retries: Arc<RwLock<HashMap<MessageId, RetryState>>>,
 }
 
 impl RetryManager {
+    // ... new ...
+
+    /// Create a new RetryManager
     pub fn new(message_tx: tokio::sync::mpsc::Sender<ChannelMessage>) -> Self {
         Self {
-            active_retries: Arc::new(RwLock::new(HashMap::new())),
             message_tx,
+            active_retries: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
     /// Check if a message type is critical and needs retry
-    /// Reduced from 7 to 5 types - SELECT messages have ACK/MISSING fallback
     pub fn is_critical_message(msg: &GossipsubMessage) -> Option<CriticalMessageType> {
         match msg {
             GossipsubMessage::TransactionIdBroadcast { .. } => {
                 Some(CriticalMessageType::TransactionIdBroadcast)
             }
-            GossipsubMessage::VaultSequencerVrfSelectedNodes(_) => {
-                Some(CriticalMessageType::VaultSequencerVrfSelectedNodes)
-            }
-            GossipsubMessage::MainSequencerVrfSelectedNodes(_) => {
-                Some(CriticalMessageType::MainSequencerVrfSelectedNodes)
-            }
+            // Sequencer Consensus VRF -> Critical
+            GossipsubMessage::SequencerConsensus(inner) => match inner {
+                crate::types::messaging::SequencerConsensusMessage::VrfSelectedNodes { .. } => {
+                    Some(CriticalMessageType::SequencerConsensusVrf)
+                }
+                _ => None, // Select/Ack/Missing handled via protocol flow
+            },
+            // Legacy/Generic VRF
             GossipsubMessage::VrfSelectedNodes(_) => Some(CriticalMessageType::VrfSelectedNodes),
-            // Removed: VaultSequencerSelect - has ACK/MISSING protocol for recovery
-            GossipsubMessage::VaultSequencerSelect { .. } => None,
-            // Removed: MainSequencerSelect - has ACK/MISSING protocol for recovery
-            GossipsubMessage::MainSequencerSelect { .. } => None,
-            GossipsubMessage::SequencerSync { .. } => Some(CriticalMessageType::SequencerSync),
+
+            GossipsubMessage::Sync(inner) => match inner {
+                 crate::types::messaging::SyncMessage::Sequencer { .. } |
+                 crate::types::messaging::SyncMessage::NetworkSequencer { .. } => Some(CriticalMessageType::SequencerSync),
+            },
+            GossipsubMessage::DKG(inner) => match inner {
+                crate::protocols::DKGMessage::ShareValidation { .. } => Some(CriticalMessageType::DKGShareValidation),
+                crate::protocols::DKGMessage::NewNodeShare { .. } => Some(CriticalMessageType::DKGNewNodeShare),
+                crate::protocols::DKGMessage::CommitmentBroadcast { .. } => Some(CriticalMessageType::DKGCommitmentBroadcast),
+                _ => None,
+            },
             _ => None,
         }
     }
@@ -98,26 +104,30 @@ impl RetryManager {
             GossipsubMessage::TransactionIdBroadcast { transaction_id, .. } => {
                 transaction_id.clone()
             }
-            GossipsubMessage::VaultSequencerVrfSelectedNodes(broadcast) => {
-                format!(
-                    "vault_vrf_{}_{}",
-                    broadcast.round, broadcast.selector_node_id.0
-                )
-            }
-            GossipsubMessage::MainSequencerVrfSelectedNodes(broadcast) => {
-                format!(
-                    "main_vrf_{}_{}",
-                    broadcast.round, broadcast.selector_node_id.0
-                )
-            }
+            GossipsubMessage::SequencerConsensus(inner) => match inner {
+                crate::types::messaging::SequencerConsensusMessage::VrfSelectedNodes {
+                    domain,
+                    broadcast,
+                } => format!(
+                    "seq_vrf_{:?}_{}_{}",
+                    domain, broadcast.round, broadcast.selector_node_id.0
+                ),
+                _ => return Err(anyhow!("Not a critical sequencer message")),
+            },
             GossipsubMessage::VrfSelectedNodes(broadcast) => {
                 format!("vrf_{}_{}", broadcast.round, broadcast.selector_node_id.0)
             }
-            GossipsubMessage::SequencerSync {
-                transaction_id,
-                sequence,
-                ..
-            } => format!("sync_{}_{}", transaction_id, sequence),
+
+            GossipsubMessage::Sync(inner) => match inner {
+                crate::types::messaging::SyncMessage::Sequencer { transaction_id, sequence, .. } => format!("sync_{}_{}", transaction_id, sequence),
+                crate::types::messaging::SyncMessage::NetworkSequencer { transaction_id, sequence, .. } => format!("net_sync_{}_{}", transaction_id, sequence),
+            },
+            GossipsubMessage::DKG(inner) => match inner {
+                crate::protocols::DKGMessage::ShareValidation { from, to, round, .. } => format!("dkg_valid_{}_{}_{}", from, to, round),
+                crate::protocols::DKGMessage::NewNodeShare { from, to, new_node_index, .. } => format!("dkg_share_{}_{}_{}", from, to, new_node_index),
+                crate::protocols::DKGMessage::CommitmentBroadcast { from, round, .. } => format!("dkg_commit_{}_{}", from, round),
+                _ => return Err(anyhow!("Not a critical DKG message")),
+            },
             _ => return Err(anyhow!("Not a critical message type")),
         };
 
@@ -297,8 +307,7 @@ impl RetryManager {
         matches!(
             msg_type,
             CriticalMessageType::VrfSelectedNodes
-                | CriticalMessageType::VaultSequencerVrfSelectedNodes
-                | CriticalMessageType::MainSequencerVrfSelectedNodes
+                | CriticalMessageType::SequencerConsensusVrf
         )
     }
 

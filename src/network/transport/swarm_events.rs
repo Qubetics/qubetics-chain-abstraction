@@ -163,8 +163,20 @@ impl MpcNetworkLayer {
                 info!("🔒 [DKG] Initial DKG already completed, skipping re-initialization");
                 info!("🆕 [NEW_NODE] Total nodes: {}, new node resharing will be triggered via PeerDiscovery gossipsub handler", total);
             } else if total == 3 {
-                // First time we have 3 nodes AND no existing DKG, start initial DKG
-                info!("🎯 Initial 3 nodes connected, triggering first DKG!");
+                // Check if DKG is already in progress
+                let is_dkg_running = if let Some(dkg) = &self.dkg_node {
+                    let status = dkg.get_status();
+                     !matches!(status, crate::protocols::DKGStatus::New)
+                } else {
+                    false
+                };
+
+                if is_dkg_running {
+                     info!("⏳ [DKG] 3 nodes connected, but DKG is already running (Status != New). Skipping re-init.");
+                } else {
+                    // First time we have 3 nodes AND no existing DKG, start initial DKG
+                    info!("🎯 Initial 3 nodes connected, triggering first DKG!");
+
 
                 let now_secs = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
@@ -183,6 +195,7 @@ impl MpcNetworkLayer {
                 self.schedule_dkg_at(start_time);
             }
         }
+    }
 
         if is_dialer {
             swarm
@@ -243,18 +256,142 @@ impl MpcNetworkLayer {
                         }
                     }
                     ReqRespMessage::Response {
-                        request_id: _,
+                        request_id,
                         response,
                     } => {
-                        self.handle_rpc_response(swarm, peer, response).await?;
+                        // Check if the response is an application-level error (e.g., "DKG not initialized")
+                        // If so, we treat it as a failure and retry, instead of considering it a success.
+                        let is_error_response = matches!(response, crate::types::rpc::RPCResponse::Error(_));
+
+                        if is_error_response {
+                            // It's an error, check if we should retry
+                            if let Some(mut pending) = self.pending_share_requests.remove(&request_id) {
+                                warn!("⚠️ [RETRY] Received application error for share request {:?}: {:?}", request_id, response);
+
+                                const MAX_RETRIES: u8 = 10;
+                                if pending.retry_count < MAX_RETRIES {
+                                    pending.retry_count += 1;
+                                    let delay_ms = 500 * (1 << pending.retry_count.min(6));
+                                    
+                                    info!(
+                                        "🔄 [RETRY] Rescheduling error-response share request to {} (attempt {}/{}) in {}ms", 
+                                        peer, pending.retry_count, MAX_RETRIES, delay_ms
+                                    );
+
+                                    // Reschedule via channel to avoid blocking and handle re-sending
+                                    let tx = self.message_tx.clone();
+                                    let request = pending.request.clone();
+                                    let peer_str = peer.to_string();
+                                    let retry_count = pending.retry_count;
+
+                                    tokio::spawn(async move {
+                                        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                                        
+                                        let msg = match request {
+                                            RPCRequest::SendDKGShare { from_node_id, share_index, share_value, commitments, round } => {
+                                                Some(ChannelMessage::UnicastShareDKG {
+                                                    target_peer_id: peer_str,
+                                                    from_node_id,
+                                                    share_index,
+                                                    share_value,
+                                                    commitments,
+                                                    round,
+                                                    retry_count,
+                                                })
+                                            },
+                                            RPCRequest::SendRefreshShare { from_node_id, share_index, share_value, commitments } => {
+                                                Some(ChannelMessage::UnicastRefreshShare {
+                                                    target_peer_id: peer_str,
+                                                    from_node_id,
+                                                    share_index,
+                                                    share_value,
+                                                    commitments,
+                                                    retry_count,
+                                                })
+                                            },
+                                            _ => None,
+                                        };
+
+                                        if let Some(channel_msg) = msg {
+                                            if let Err(e) = tx.send(channel_msg).await {
+                                                warn!("❌ [RETRY] Failed to enqueue retry message: {}", e);
+                                            }
+                                        }
+                                    });
+                                } else {
+                                    error!("❌ [RETRY] Max retries reached for share request to {}", peer);
+                                }
+                            } else {
+                                // Not a tracked request, just handle normally (log error)
+                                self.handle_rpc_response(swarm, peer, response).await?;
+                            }
+                        } else {
+                            // Success! Remove from pending tracking
+                            self.pending_share_requests.remove(&request_id);
+                            self.handle_rpc_response(swarm, peer, response).await?;
+                        }
                     }
                 }
             }
-            ReqRespEvent::OutboundFailure { peer, error, .. } => {
-                warn!("Outbound failure to peer {}: {:?}", peer, error);
-                // if let Some(retry_mgr) = &self.retry_manager {
-                //     retry_mgr.mark_peer_unreachable(peer).await;
-                // }
+            ReqRespEvent::OutboundFailure { peer, request_id, error, .. } => {
+                warn!("Outbound failure to peer {} (req: {:?}): {:?}", peer, request_id, error);
+                
+                // Check if this was a pending share request
+                if let Some(mut pending) = self.pending_share_requests.remove(&request_id) {
+                    const MAX_RETRIES: u8 = 10;
+                    if pending.retry_count < MAX_RETRIES {
+                        pending.retry_count += 1;
+                        let delay_ms = 500 * (1 << pending.retry_count.min(6));
+                        
+                        info!(
+                            "🔄 [RETRY] Rescheduling failed share request to {} (attempt {}/{}) in {}ms", 
+                            peer, pending.retry_count, MAX_RETRIES, delay_ms
+                        );
+
+                        // Reschedule via channel to avoid blocking and handle re-sending
+                        let tx = self.message_tx.clone();
+                        let request = pending.request.clone();
+                        let peer_str = peer.to_string();
+                        let retry_count = pending.retry_count;
+
+                        tokio::spawn(async move {
+                            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                            
+                            let msg = match request {
+                                RPCRequest::SendDKGShare { from_node_id, share_index, share_value, commitments, round } => {
+                                    Some(ChannelMessage::UnicastShareDKG {
+                                        target_peer_id: peer_str,
+                                        from_node_id,
+                                        share_index,
+                                        share_value,
+                                        commitments,
+                                        round,
+                                        retry_count,
+                                    })
+                                },
+                                RPCRequest::SendRefreshShare { from_node_id, share_index, share_value, commitments } => {
+                                    Some(ChannelMessage::UnicastRefreshShare {
+                                        target_peer_id: peer_str,
+                                        from_node_id,
+                                        share_index,
+                                        share_value,
+                                        commitments,
+                                        retry_count,
+                                    })
+                                },
+                                _ => None,
+                            };
+
+                            if let Some(channel_msg) = msg {
+                                if let Err(e) = tx.send(channel_msg).await {
+                                    warn!("❌ [RETRY] Failed to enqueue retry message: {}", e);
+                                }
+                            }
+                        });
+                    } else {
+                        error!("❌ [RETRY] Max retries reached for share request to {}", peer);
+                    }
+                }
             }
             ReqRespEvent::InboundFailure { peer, error, .. } => {
                 warn!("Inbound failure to peer {}: {:?}", peer, error);
