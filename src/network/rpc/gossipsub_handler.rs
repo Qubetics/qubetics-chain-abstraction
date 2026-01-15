@@ -15,7 +15,7 @@ use crate::{
     signing::{BitcoinSigner, EthereumSigner},
     types::{
         p2p::SerializablePeerId, signing::SigningMessage, vrf::VrfRoundSyncResponse,
-        ChannelMessage, ConsensusMessage, GossipsubMessage,
+        ChannelMessage, GossipsubMessage,
     },
 };
 
@@ -124,50 +124,6 @@ impl MpcNetworkLayer {
                     signing_node
                         .handle_consensus_message(consensus_msg.clone())
                         .await?;
-                }
-
-                // Also handle in sequencer consensus nodes (vault and main sequencer)
-                // Check if this is for vault sequencer or main sequencer based on round
-                match &consensus_msg {
-                    ConsensusMessage::FinalNodeResult { round, .. } => {
-                        // Handle in vault sequencer if available
-                        if let Some(sequencer) = &self.contract_sequencer {
-                            if let Err(e) = sequencer
-                                .handle_consensus_message(consensus_msg.clone())
-                                .await
-                            {
-                                // Log error but don't fail - consensus might be for different domain
-                                warn!(
-                                    "⚠️ [VAULT_SEQUENCER] Failed to handle consensus message for round {}: {}",
-                                    round, e
-                                );
-                            } else {
-                                info!(
-                                    "✅ [VAULT_SEQUENCER] Handled consensus message for round {}",
-                                    round
-                                );
-                            }
-                        }
-
-                        // Handle in main sequencer if available
-                        if let Some(sequencer) = &self.network_transaction_sequencer {
-                            if let Err(e) = sequencer
-                                .handle_consensus_message(consensus_msg.clone())
-                                .await
-                            {
-                                // Log error but don't fail - consensus might be for different domain
-                                warn!(
-                                    "⚠️ [MAIN_SEQUENCER] Failed to handle consensus message for round {}: {}",
-                                    round, e
-                                );
-                            } else {
-                                info!(
-                                    "✅ [MAIN_SEQUENCER] Handled consensus message for round {}",
-                                    round
-                                );
-                            }
-                        }
-                    }
                 }
             }
             GossipsubMessage::VrfSelection(vrf_msg) => {
@@ -735,8 +691,7 @@ impl MpcNetworkLayer {
                                 )
                                 .await
                             {
-                                Ok(()) => {
-                                }
+                                Ok(()) => {}
                                 Err(e) => {
                                     error!(
                                         "❌ [NETWORK] Failed to store synchronized transaction error: {}",
@@ -802,15 +757,17 @@ impl MpcNetworkLayer {
                 transaction_type,
                 amount,
             } => {
-
                 // CRITICAL FIX: For refund transactions, use the ORIGINAL intent_hash from intent_id
                 // Refund intents have modified target_address/target_chain, so calculating hash from
                 // the modified intent would produce a different hash than the original intent
-                let intent_hash = if matches!(transaction_type, crate::types::TransactionType::Refund) 
-                    && intent_id.starts_with("refund-") 
+                let intent_hash = if matches!(
+                    transaction_type,
+                    crate::types::TransactionType::Refund
+                ) && intent_id.starts_with("refund-")
                 {
                     // Extract original intent_hash from "refund-{original_intent_hash}"
-                    let original_intent_hash = intent_id.strip_prefix("refund-").unwrap_or(&intent_id);
+                    let original_intent_hash =
+                        intent_id.strip_prefix("refund-").unwrap_or(&intent_id);
                     info!("🔐 [GOSSIPSUB] Refund transaction detected - using ORIGINAL intent hash: {} (from intent_id: {})", original_intent_hash, intent_id);
                     original_intent_hash.to_string()
                 } else {
@@ -830,22 +787,29 @@ impl MpcNetworkLayer {
                         if let Ok(intent_hash_bytes) = hex::decode(&intent_hash) {
                             // Use the user_eth_address if available, otherwise use a placeholder
                             // The signer field is used for user identification
-                            let signer = user_eth_address.as_ref()
+                            let signer = user_eth_address
+                                .as_ref()
                                 .map(|addr| addr.clone())
                                 .unwrap_or_else(|| "network".to_string());
-                            
+
                             if let Err(e) = user_intent_manager
                                 .store_intent_hash(intent_hash_bytes, &signer, &intent)
                                 .await
                             {
-                                warn!("❌ [GOSSIPSUB] Failed to store intent hash {}: {}", intent_hash, e);
+                                warn!(
+                                    "❌ [GOSSIPSUB] Failed to store intent hash {}: {}",
+                                    intent_hash, e
+                                );
                             } else {
                             }
                         } else {
                             warn!("❌ [GOSSIPSUB] Invalid intent hash format: {}", intent_hash);
                         }
                     } else {
-                        debug!("✅ [GOSSIPSUB] Intent {} already exists in database", intent_hash);
+                        debug!(
+                            "✅ [GOSSIPSUB] Intent {} already exists in database",
+                            intent_hash
+                        );
                     }
                 } else {
                     warn!("❌ [GOSSIPSUB] User intent manager not available to store intent");
@@ -1553,27 +1517,8 @@ impl MpcNetworkLayer {
                     let message_tx = self.message_tx.clone();
                     sequencer.initialize(message_tx, node_id, total_nodes).await;
 
-                    // Configure VRF + Consensus for final node selection (mirrors initialization in network/utils)
+                    // Configure round-robin final node selection (mirrors initialization in network/utils)
                     sequencer.set_local_peer_id(self.local_peer_id);
-
-                    // Use isolated VRF storage for main sequencer to avoid round collisions with signing or vault
-                    let main_vrf_storage = crate::database::storage::VrfStorage::new_with_prefix(
-                        self.db.clone(),
-                        "main_seq:",
-                    );
-                    let main_vrf_service =
-                        crate::protocols::VrfService::new_with_storage_and_context(
-                            self.local_peer_id,
-                            self.message_tx.clone(),
-                            main_vrf_storage,
-                            "network",
-                        );
-                    sequencer.set_vrf_service(Arc::new(main_vrf_service));
-
-                    // Dedicated consensus node for network sequencer final node agreement
-                    sequencer.set_consensus_node(Arc::new(tokio::sync::RwLock::new(
-                        crate::consensus::ConsensusNode::new(),
-                    )));
 
                     // Seed available nodes for deterministic selection
                     let available_nodes: Vec<libp2p::PeerId> =
@@ -1698,7 +1643,7 @@ impl MpcNetworkLayer {
                     broadcast_msg.round, broadcast_msg.selector_node_id
                 );
 
-                let sender_peer_id = match message.source {
+                let _sender_peer_id = match message.source {
                     Some(pid) => pid,
                     None => {
                         warn!("🚫 [SECURITY] Rejecting VaultSequencerVrfSelectedNodes broadcast: message has no source");
@@ -1712,68 +1657,7 @@ impl MpcNetworkLayer {
                     &GossipsubMessage::VaultSequencerVrfSelectedNodes(broadcast_msg.clone()),
                 ).await;
 
-                if let Some(sequencer) = &self.contract_sequencer {
-                    let round = broadcast_msg.round;
-                    let total_nodes = self.node_manager.get_total_nodes();
-                    let min_selections = total_nodes;
-
-                    // Clone for async task (matches signing module pattern)
-                    let sequencer_clone = sequencer.clone();
-                    let broadcast_msg_clone = broadcast_msg.clone();
-
-                    // Spawn async task to handle VRF broadcast and check consensus
-                    // This avoids blocking and matches signing module's approach
-                    tokio::spawn(async move {
-                        // Handle VRF broadcast
-                        if let Err(e) = sequencer_clone
-                            .handle_vrf_broadcast(broadcast_msg_clone, sender_peer_id, total_nodes)
-                            .await
-                        {
-                            error!("❌ [VAULT_SEQUENCER] Failed to handle VRF broadcast: {}", e);
-                            return;
-                        }
-
-                        // Check if we can start consensus
-                        if sequencer_clone
-                            .can_start_consensus(round, min_selections)
-                            .await
-                        {
-                            info!(
-                                "🎯 [VAULT_SEQUENCER] Enough VRF selections for round {}, waiting for retries before consensus",
-                                round
-                            );
-
-                            // CRITICAL FIX: Wait for VRF retries to complete before triggering consensus
-                            // With aggressive VRF retries (500ms initial + up to 2s of retries),
-                            // we need to ensure ALL nodes have received ALL VRF broadcasts
-                            // before calculating consensus. Otherwise, nodes calculate with
-                            // incomplete data and reject each other's results.
-                            //
-                            // Wait time calculation:
-                            // - VRF_INITIAL_WAIT: 500ms
-                            // - First 4 retries: 100+200+300+500 = 1100ms
-                            // - Safety margin: 400ms
-                            // Total: 2000ms (2 seconds)
-                            tokio::time::sleep(tokio::time::Duration::from_millis(2000)).await;
-
-                            info!(
-                                "✅ [VAULT_SEQUENCER] Retry period complete, triggering consensus for round {}",
-                                round
-                            );
-
-                            if let Err(e) = sequencer_clone
-                                .check_and_trigger_consensus(round, min_selections)
-                                .await
-                            {
-                                error!("❌ [VAULT_SEQUENCER] Failed to trigger consensus: {}", e);
-                            }
-                        }
-                    });
-                } else {
-                    warn!(
-                        "⚠️ [VAULT_SEQUENCER] Received VRF broadcast but sequencer not initialized"
-                    );
-                }
+                info!("ℹ️ [VAULT_SEQUENCER] VRF broadcasts ignored (round-robin selection active)");
             }
             GossipsubMessage::MainSequencerVrfSelectedNodes(broadcast_msg) => {
                 info!(
@@ -1781,7 +1665,7 @@ impl MpcNetworkLayer {
                     broadcast_msg.round, broadcast_msg.selector_node_id
                 );
 
-                let sender_peer_id = match message.source {
+                let _sender_peer_id = match message.source {
                     Some(pid) => pid,
                     None => {
                         warn!("🚫 [SECURITY] Rejecting MainSequencerVrfSelectedNodes broadcast: message has no source");
@@ -1795,68 +1679,7 @@ impl MpcNetworkLayer {
                     &GossipsubMessage::MainSequencerVrfSelectedNodes(broadcast_msg.clone()),
                 ).await;
 
-                if let Some(sequencer) = &self.network_transaction_sequencer {
-                    let round = broadcast_msg.round;
-                    let total_nodes = self.node_manager.get_total_nodes();
-                    let min_selections = total_nodes;
-
-                    // Clone for async task (matches signing module pattern)
-                    let sequencer_clone = sequencer.clone();
-                    let broadcast_msg_clone = broadcast_msg.clone();
-
-                    // Spawn async task to handle VRF broadcast and check consensus
-                    // This avoids blocking and matches signing module's approach
-                    tokio::spawn(async move {
-                        // Handle VRF broadcast
-                        if let Err(e) = sequencer_clone
-                            .handle_vrf_broadcast(broadcast_msg_clone, sender_peer_id, total_nodes)
-                            .await
-                        {
-                            error!("❌ [MAIN_SEQUENCER] Failed to handle VRF broadcast: {}", e);
-                            return;
-                        }
-
-                        // Check if we can start consensus
-                        if sequencer_clone
-                            .can_start_consensus(round, min_selections)
-                            .await
-                        {
-                            info!(
-                                "🎯 [MAIN_SEQUENCER] Enough VRF selections for round {}, waiting for retries before consensus",
-                                round
-                            );
-
-                            // CRITICAL FIX: Wait for VRF retries to complete before triggering consensus
-                            // With aggressive VRF retries (500ms initial + up to 2s of retries),
-                            // we need to ensure ALL nodes have received ALL VRF broadcasts
-                            // before calculating consensus. Otherwise, nodes calculate with
-                            // incomplete data and reject each other's results.
-                            //
-                            // Wait time calculation:
-                            // - VRF_INITIAL_WAIT: 500ms
-                            // - First 4 retries: 100+200+300+500 = 1100ms
-                            // - Safety margin: 400ms
-                            // Total: 2000ms (2 seconds)
-                            tokio::time::sleep(tokio::time::Duration::from_millis(2000)).await;
-
-                            info!(
-                                "✅ [MAIN_SEQUENCER] Retry period complete, triggering consensus for round {}",
-                                round
-                            );
-
-                            if let Err(e) = sequencer_clone
-                                .check_and_trigger_consensus(round, min_selections)
-                                .await
-                            {
-                                error!("❌ [MAIN_SEQUENCER] Failed to trigger consensus: {}", e);
-                            }
-                        }
-                    });
-                } else {
-                    warn!(
-                        "⚠️ [MAIN_SEQUENCER] Received VRF broadcast but sequencer not initialized"
-                    );
-                }
+                info!("ℹ️ [MAIN_SEQUENCER] VRF broadcasts ignored (round-robin selection active)");
             }
             GossipsubMessage::CriticalMessageAck {
                 message_type,
@@ -1943,7 +1766,7 @@ impl MpcNetworkLayer {
                     "🔄 [UPGRADE] Peer {} upgrade announcement: {} to version {} (timestamp: {})",
                     peer, phase, target_version, timestamp
                 );
-             } // Upgrade coordination will be handled when orchestrator is integrated
+            } // Upgrade coordination will be handled when orchestrator is integrated
             GossipsubMessage::TransactionBroadcast {
                 sequencer_request_id,
                 blockchain_tx_hash,
@@ -2162,6 +1985,5 @@ impl MpcNetworkLayer {
 
         // Perform periodic health check
         self.channel_health.health_check();
-        
     }
 }

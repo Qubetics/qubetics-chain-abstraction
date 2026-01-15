@@ -22,7 +22,7 @@ function randomUUID() {
 // =========================
 // Configuration
 // =========================
-const RPC_BASE_URL = 'http://127.0.0.1:8084';
+const RPC_BASE_URL = 'http://127.0.0.1:8081';
 const API_KEY = "2919cd546f2c4338bccb4794a3d6afba2282e5729653fc2c2ff6c5e0e194ar45";
 
 // 👉 Private key you provided (hex, no 0x prefix needed)
@@ -185,12 +185,12 @@ async function testUserMpcDeposit({ wallet, amount, idempotencyKey }) {
 
     // Construct DepositIntent
     const depositIntent = {
-      source_address: userInfo.data.derived_btc_address, // Use canonical address
+      source_address: userInfo.data.derived_eth_address, // Use canonical address
       target_address: userInfo.data.derived_eth_address,
-      source_chain: 'bitcoin',
+      source_chain: 'qubetics',
       target_chain: 'qubetics',
       amount: amount, // Use the passed amount parameter
-      source_token: 'BTC',
+      source_token: 'TICS',
       target_token: 'TICS',
       timestamp: oooo,
     };
@@ -337,12 +337,12 @@ async function runTests() {
   // }
 
   // 3) MPC deposit test WITHOUT tx_id (should pass Some(signer) to handle_deposit_intent)
-  // log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
-  // const amount = 2000000000000000000
-  // await testUserMpcDeposit({ wallet, amount });
   log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
-  const amount = "2511"
+  const amount = "2200000000000000000"
   await testUserMpcDeposit({ wallet, amount });
+  // log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
+  // const amount = "2511"
+  // await testUserMpcDeposit({ wallet, amount });
 
   // const address = '0xbac113cebd9CB2fBD2a01B5CBC43D0fC0EBed5e9';
   // await testGetRewardSolver(address);
