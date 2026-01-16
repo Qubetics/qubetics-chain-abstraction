@@ -334,7 +334,42 @@ impl MpcNetworkLayer {
                 }
             }
             ReqRespEvent::OutboundFailure { peer, request_id, error, .. } => {
-                warn!("Outbound failure to peer {} (req: {:?}): {:?}", peer, request_id, error);
+                // Log detailed error information
+                warn!(
+                    "❌ [REQ-RESP] Outbound failure to peer {} (req: {:?}): {:?}",
+                    peer, request_id, error
+                );
+                
+                // Check if peer is actually connected (may show true even if request-response fails)
+                let is_connected = swarm.is_connected(&peer);
+                warn!(
+                    "🔍 [REQ-RESP] Peer {} connection status: {} (connection exists but request-response failed)",
+                    peer, is_connected
+                );
+                
+                // Log error type for debugging
+                let error_str = format!("{:?}", error);
+                if error_str.contains("Timeout") {
+                    warn!(
+                        "⏱️ [REQ-RESP] Request timeout to {} - peer may be overloaded or unresponsive",
+                        peer
+                    );
+                } else if error_str.contains("ConnectionClosed") || error_str.contains("Connection") {
+                    warn!(
+                        "🔌 [REQ-RESP] Connection issue to {} - peer may have disconnected or connection is stale",
+                        peer
+                    );
+                } else if error_str.contains("Dial") {
+                    warn!(
+                        "📞 [REQ-RESP] Dial failure to {} - connection may not be established",
+                        peer
+                    );
+                } else if error_str.contains("Unsupported") || error_str.contains("Protocol") {
+                    warn!(
+                        "🚫 [REQ-RESP] Protocol issue to {} - protocol mismatch or unsupported",
+                        peer
+                    );
+                }
                 
                 // Check if this was a pending share request
                 if let Some(mut pending) = self.pending_share_requests.remove(&request_id) {
