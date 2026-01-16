@@ -131,6 +131,31 @@ pub enum RPCRequest {
         message_type: String,
         message_id: String,
     },
+    /// Fetch request for missing transaction (via req-resp, NOT gossip)
+    FetchRequest {
+        request_id: String,
+        sequence: u64,        // From SELECT message
+        view_id: u64,
+        requester_id: SerializablePeerId,
+        round: u64,
+        sequencer_type: String, // "vault" or "main"
+    },
+    /// Done acknowledgment (unicast to leader via req-resp, NOT gossip)
+    DoneAck {
+        request_id: String,
+        sequence: u64,        // Leader-assigned from SELECT
+        view_id: u64,
+        node_id: SerializablePeerId,
+        round: u64,
+        sequencer_type: String, // "vault" or "main"
+    },
+    /// Resync head request (when fetch fails, via req-resp, NOT gossip)
+    ResyncHead {
+        view_id: u64,
+        requester_id: SerializablePeerId,
+        round: u64,
+        sequencer_type: String, // "vault" or "main"
+    },
 }
 
 /// RPC response variants.
@@ -226,6 +251,26 @@ pub enum RPCResponse {
     CriticalDeliveryAck {
         message_type: String,
         message_id: String,
+    },
+    /// Fetch response with full request payload (via req-resp)
+    FetchResponse {
+        request_id: String,
+        sequence: u64,        // From SELECT message
+        view_id: u64,
+        request: Vec<u8>,     // Serialized ContractTransactionRequest or NetworkTransactionRequest
+        round: u64,
+        sequencer_type: String, // "vault" or "main"
+    },
+    /// Resync response with state summary (via req-resp)
+    ResyncResponse {
+        view_id: u64,
+        round: u64,
+        // CRITICAL: Include committed state and current intent
+        last_committed: Option<(u64, String)>,  // (sequence, request_id) - latest committed
+        current_processing: Option<(u64, String, u64, SerializablePeerId)>,  // (sequence, request_id, round, leader_id) - current intent
+        pending_head: Vec<String>,  // Top N request_ids in leader's queue
+        recent_commits: Vec<(u64, String)>,  // Last 10 commits: (sequence, request_id)
+        sequencer_type: String, // "vault" or "main"
     },
 }
 

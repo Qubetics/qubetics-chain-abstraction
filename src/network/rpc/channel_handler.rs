@@ -1240,6 +1240,16 @@ impl MpcNetworkLayer {
                     warn!("❌ [STATUS] Failed to send node status response to requester");
                 }
             }
+            ChannelMessage::SendRpcRequest { target_peer_id, request } => {
+                let request_id = swarm
+                    .behaviour_mut()
+                    .request_response
+                    .send_request(&target_peer_id, request);
+                info!(
+                    "📤 [RPC] Sent RPC request to peer {} (request_id: {:?})",
+                    target_peer_id, request_id
+                );
+            }
             // this is used in the dkg code
             ChannelMessage::Broadcast { topic, data } => {
                 // dkg.s.1

@@ -152,6 +152,11 @@ pub enum ChannelMessage {
     StatusRequest {
         responder: oneshot::Sender<NodeStatus>,
     },
+    /// Send RPC request to a specific peer (for DONE_ACK, FETCH_REQUEST, etc.)
+    SendRpcRequest {
+        target_peer_id: PeerId,
+        request: RPCRequest,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -260,6 +265,8 @@ pub enum GossipsubMessage {
     VaultSequencerSelect {
         round: u64,
         request_id: String,
+        sequence: u64,        // CRITICAL: Leader-assigned sequence (single source of truth)
+        view_id: u64,          // Membership epoch (increments on membership change)
         final_node_id: PeerId,
         signature: Vec<u8>,
     },
@@ -281,6 +288,8 @@ pub enum GossipsubMessage {
     MainSequencerSelect {
         round: u64,
         request_id: String,
+        sequence: u64,        // CRITICAL: Leader-assigned sequence (single source of truth)
+        view_id: u64,          // Membership epoch (increments on membership change)
         final_node_id: PeerId,
         signature: Vec<u8>,
     },
@@ -340,5 +349,29 @@ pub enum GossipsubMessage {
         error: String,
         /// Original request for guaranteed retry (even if cache is empty)
         original_request: Option<crate::network::ContractTransactionRequest>,
+    },
+    /// Vault sequencer COMMIT_CERT message (broadcast by leader after quorum)
+    VaultSequencerCommitCert {
+        request_id: String,
+        sequence: u64,        // Leader-assigned from SELECT
+        view_id: u64,
+        round: u64,
+        final_node_id: PeerId,
+        acks: Vec<PeerId>,    // Quorum of DONE_ACK senders
+        quorum_size: usize,  // Actual quorum achieved
+        total_nodes: usize,  // Total nodes in view
+        signature: Vec<u8>,
+    },
+    /// Main sequencer COMMIT_CERT message (broadcast by leader after quorum)
+    MainSequencerCommitCert {
+        request_id: String,
+        sequence: u64,        // Leader-assigned from SELECT
+        view_id: u64,
+        round: u64,
+        final_node_id: PeerId,
+        acks: Vec<PeerId>,    // Quorum of DONE_ACK senders
+        quorum_size: usize,  // Actual quorum achieved
+        total_nodes: usize,  // Total nodes in view
+        signature: Vec<u8>,
     },
 }

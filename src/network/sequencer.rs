@@ -11,7 +11,8 @@ use k256::elliptic_curve::sec1::{FromEncodedPoint, ToEncodedPoint};
 use k256::{AffinePoint, EncodedPoint, ProjectivePoint};
 use serde::de::Error;
 use serde::{Deserializer, Serializer};
-use sha3::{Digest, Keccak256};
+use sha2::{Digest, Sha256};
+use sha3::Keccak256;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::{mpsc, Notify, RwLock};
@@ -175,20 +176,26 @@ pub struct ContractTransactionRequest {
 struct SequencerSyncState {
     /// Transaction ID currently being processed
     current_processing: Option<String>,
-    /// Sequence number for the current processing transaction
+    /// Sequence number for the current processing transaction (leader-assigned from SELECT)
     current_sequence: u64,
-    /// Global sequence counter for FCFS ordering
+    /// Global sequence counter for FCFS ordering (leader uses this to assign sequence in SELECT)
     global_sequence: u64,
+    /// Last committed sequence number (monotonic, advances only on COMMIT_CERT)
+    last_committed_sequence: u64,
+    /// Current view ID (membership epoch, increments on membership change)
+    view_id: u64,
     /// Nodes that have agreed to process the current request
     agreed_nodes: HashSet<String>,
     /// Nodes that have confirmed completion of the current request
     confirmed_nodes: HashSet<String>,
     /// Total number of active nodes (for consensus threshold)
     total_nodes: usize,
-    /// Whether current transaction is confirmed (all nodes confirmed)
+    /// Whether current transaction is confirmed (all nodes confirmed) - DEPRECATED: use COMMIT_CERT instead
     is_confirmed: bool,
     /// Transactions that were proposed before we had the full request
     missing_requests: HashSet<String>,
+    /// Processed transactions for idempotency: (round, request_id)
+    processed: HashSet<(u64, String)>,
 }
 
 /// Sequencer for contract transactions (Vault ETH Address)
@@ -248,6 +255,50 @@ pub struct ContractTransactionSequencer {
     select_wait_start_time: Arc<RwLock<Option<std::time::SystemTime>>>,
     /// Track when we started waiting for confirmations (to detect timeouts)
     confirmation_wait_start_time: Arc<RwLock<Option<std::time::SystemTime>>>,
+    /// Per-request exclusion list: tracks peers that have timed out repeatedly
+    /// Format: request_id -> set of excluded peer_ids
+    peer_exclusions: Arc<RwLock<HashMap<String, HashSet<libp2p::PeerId>>>>,
+    /// Per-peer timeout counts: tracks how many times each peer has timed out per request
+    /// Format: (request_id, peer_id) -> timeout_count
+    peer_timeout_counts: Arc<RwLock<HashMap<(String, libp2p::PeerId), u32>>>,
+    /// DONE_ACK collection: tracks acks received for (round, request_id)
+    /// Format: (round, request_id) -> HashSet<PeerId>
+    pub(crate) done_acks: Arc<RwLock<HashMap<(u64, String), HashSet<libp2p::PeerId>>>>,
+    /// Current leader (final_node_id) for the current processing transaction
+    pub(crate) current_leader: Arc<RwLock<Option<libp2p::PeerId>>>,
+    /// Pending DONE_ACKs that need resending: (sequence, request_id) -> (round, view_id, leader_peer_id, last_sent)
+    /// Resend every 2s until COMMIT_CERT received
+    pending_done_acks: Arc<RwLock<HashMap<(u64, String), (u64, u64, libp2p::PeerId, std::time::SystemTime)>>>,
+}
+
+/// HRW (Highest Random Weight) / Rendezvous Hashing helper functions
+/// These functions provide deterministic leader selection without consensus
+
+/// Compute HRW score for a peer given request_id, round, and peer_id
+/// Score = SHA256(request_id || round || peer_id)
+fn compute_hrw_score(request_id: &str, round: u64, peer_id: &libp2p::PeerId) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(request_id.as_bytes());
+    hasher.update(round.to_be_bytes());
+    hasher.update(peer_id.to_bytes());
+    hasher.finalize().into()
+}
+
+/// Get eligible candidates by filtering out excluded peers
+/// Returns sorted list for deterministic ordering
+fn get_eligible_candidates(
+    available_nodes: &[libp2p::PeerId],
+    excluded: &HashSet<libp2p::PeerId>,
+) -> Vec<libp2p::PeerId> {
+    let mut candidates: Vec<libp2p::PeerId> = available_nodes
+        .iter()
+        .filter(|peer_id| !excluded.contains(peer_id))
+        .cloned()
+        .collect();
+    
+    // Sort deterministically by peer_id bytes for consistent ordering
+    candidates.sort_by(|a, b| a.to_bytes().cmp(&b.to_bytes()));
+    candidates
 }
 
 impl ContractTransactionSequencer {
@@ -262,11 +313,14 @@ impl ContractTransactionSequencer {
                 current_processing: None,
                 current_sequence: 0,
                 global_sequence: 0,
+                last_committed_sequence: 0,
+                view_id: 0,
                 agreed_nodes: HashSet::new(),
                 confirmed_nodes: HashSet::new(),
                 total_nodes: 0,
                 is_confirmed: false,
                 missing_requests: HashSet::new(),
+                processed: HashSet::new(),
             })),
             message_tx: None,
             node_id: String::new(),
@@ -285,6 +339,11 @@ impl ContractTransactionSequencer {
             vault_vrf_performed_rounds: Arc::new(RwLock::new(HashSet::new())),
             select_wait_start_time: Arc::new(RwLock::new(None)),
             confirmation_wait_start_time: Arc::new(RwLock::new(None)),
+            peer_exclusions: Arc::new(RwLock::new(HashMap::new())),
+            peer_timeout_counts: Arc::new(RwLock::new(HashMap::new())),
+            done_acks: Arc::new(RwLock::new(HashMap::new())),
+            current_leader: Arc::new(RwLock::new(None)),
+            pending_done_acks: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -303,8 +362,186 @@ impl ContractTransactionSequencer {
         );
     }
 
+    /// Select leader deterministically using HRW (Highest Random Weight) / Rendezvous Hashing
+    /// Returns ordered list of top-N leaders for failover support
+    /// 
+    /// Algorithm:
+    /// - score(p) = hash(request_id || round || peer_id)
+    /// - leader = argmax_p score(p)
+    /// - Tie-break: lexicographically smallest peer_id
+    async fn select_leader_with_hrw(
+        &self,
+        request_id: &str,
+        round: u64,
+        max_candidates: usize,
+    ) -> Result<Vec<libp2p::PeerId>> {
+        // Get eligible candidates (exclude timed-out peers)
+        let available = self.available_nodes.read().await.clone();
+        let excluded = {
+            let exclusions = self.peer_exclusions.read().await;
+            exclusions.get(request_id).cloned().unwrap_or_default()
+        };
+        let candidates = get_eligible_candidates(&available, &excluded);
+
+        if candidates.is_empty() {
+            return Err(anyhow::anyhow!("No eligible candidates for HRW selection"));
+        }
+
+        // Compute HRW scores for all candidates
+        let mut scored: Vec<(libp2p::PeerId, [u8; 32])> = candidates
+            .iter()
+            .map(|peer_id| {
+                let score = compute_hrw_score(request_id, round, peer_id);
+                (*peer_id, score)
+            })
+            .collect();
+
+        // Sort by score (descending), then by peer_id (ascending) for tie-break
+        scored.sort_by(|a, b| {
+            match b.1.cmp(&a.1) {
+                // Descending by score
+                std::cmp::Ordering::Equal => {
+                    // Tie-break: lexicographically smallest peer_id
+                    a.0.to_bytes().cmp(&b.0.to_bytes())
+                }
+                other => other,
+            }
+        });
+
+        // Return top-N leaders
+        let leaders: Vec<libp2p::PeerId> = scored
+            .into_iter()
+            .take(max_candidates)
+            .map(|(peer_id, _)| peer_id)
+            .collect();
+
+        info!(
+            "🎯 [VAULT_SEQUENCER] HRW selected {} leader(s) for request_id={}, round={}: {:?}",
+            leaders.len(),
+            request_id,
+            round,
+            leaders.iter().map(|p| p.to_string()).collect::<Vec<_>>()
+        );
+
+        Ok(leaders)
+    }
+
+    /// Record a timeout for a peer on a specific request
+    /// If timeout count exceeds threshold (default: 3), peer is excluded from HRW selection
+    pub async fn record_peer_timeout(&self, request_id: &str, peer_id: libp2p::PeerId, timeout_threshold: u32) {
+        let mut timeout_counts = self.peer_timeout_counts.write().await;
+        let key = (request_id.to_string(), peer_id);
+        let count = timeout_counts.entry(key.clone()).or_insert(0);
+        *count += 1;
+
+        if *count >= timeout_threshold {
+            let mut exclusions = self.peer_exclusions.write().await;
+            exclusions.entry(request_id.to_string())
+                .or_insert_with(HashSet::new)
+                .insert(peer_id);
+            warn!(
+                "⚠️ [VAULT_SEQUENCER] Peer {} excluded from HRW for request {} ({} timeouts >= threshold {})",
+                peer_id, request_id, count, timeout_threshold
+            );
+        } else {
+            info!(
+                "📊 [VAULT_SEQUENCER] Peer {} timeout count for request {}: {}/{}",
+                peer_id, request_id, count, timeout_threshold
+            );
+        }
+    }
+
+    /// Clear exclusion and timeout counts for a completed request
+    pub async fn clear_request_exclusions(&self, request_id: &str) {
+        let mut exclusions = self.peer_exclusions.write().await;
+        exclusions.remove(request_id);
+        
+        let mut timeout_counts = self.peer_timeout_counts.write().await;
+        timeout_counts.retain(|(req_id, _), _| req_id != request_id);
+        
+        info!("🧹 [VAULT_SEQUENCER] Cleared exclusions for completed request {}", request_id);
+    }
+
+    /// Compute quorum threshold using ceil(2N/3) formula
+    /// CRITICAL: Uses ceil, not floor, to ensure safety
+    /// Formula: max(2, (2 * total_nodes + 2) / 3)
+    /// Examples:
+    ///   - N=3: quorum = 2 (ceil(6/3)=2)
+    ///   - N=4: quorum = 3 (ceil(8/3)=3, NOT 2)
+    ///   - N=5: quorum = 4 (ceil(10/3)=4, NOT 3)
+    ///   - N=7: quorum = 5 (ceil(14/3)=5, NOT 4)
+    pub fn compute_quorum_threshold(total_nodes: usize) -> usize {
+        if total_nodes == 0 {
+            return 0;
+        }
+        // Integer ceil for 2N/3: (2*n + 2) / 3
+        let quorum = (2 * total_nodes + 2) / 3;
+        // Minimum 2 nodes for 3-node cluster
+        quorum.max(2)
+    }
+
+    /// Get total nodes count
+    pub async fn get_total_nodes(&self) -> usize {
+        let sync_state = self.sync_state.read().await;
+        sync_state.total_nodes
+    }
+
+    /// Get current view_id
+    pub async fn get_view_id(&self) -> u64 {
+        let sync_state = self.sync_state.read().await;
+        sync_state.view_id
+    }
+
+    /// Get local peer ID
+    pub fn get_local_peer_id(&self) -> Option<libp2p::PeerId> {
+        self.local_peer_id
+    }
+
+    /// Get resync data for RESYNC_RESPONSE
+    pub async fn get_resync_data(&self) -> (
+        u64, // view_id
+        u64, // round
+        Option<(u64, String)>, // last_committed: (sequence, request_id)
+        Option<(u64, String, u64, libp2p::PeerId)>, // current_processing: (sequence, request_id, round, leader_id)
+        Vec<String>, // pending_head
+    ) {
+        let sync_state = self.sync_state.read().await;
+        let view_id = sync_state.view_id;
+        let last_committed_seq = sync_state.last_committed_sequence;
+        let current_seq = sync_state.current_sequence;
+        let current_processing = sync_state.current_processing.clone();
+        drop(sync_state);
+        
+        let round = *self.vault_sequencer_round.read().await;
+        let current_leader = self.current_leader.read().await.clone();
+        
+        // Get pending head (top 10 request IDs)
+        let pending = self.pending_requests.read().await;
+        let pending_head: Vec<String> = pending.keys().take(10).cloned().collect();
+        drop(pending);
+        
+        let last_committed = if last_committed_seq > 0 {
+            // We don't track request_id for committed sequences, so return None
+            // In production, maintain a mapping
+            None
+        } else {
+            None
+        };
+        
+        let current_processing_tuple = if let Some(ref req_id) = current_processing {
+            current_leader.map(|leader| (current_seq, req_id.clone(), round, leader))
+        } else {
+            None
+        };
+        
+        (view_id, round, last_committed, current_processing_tuple, pending_head)
+    }
+
     /// Select final node deterministically for current round using VRF + Consensus
     /// Returns the peer ID of the selected node (from consensus cache)
+    /// 
+    /// DEPRECATED: Use select_leader_with_hrw() instead
+    #[allow(dead_code)]
     async fn select_final_node(&self) -> Result<libp2p::PeerId> {
         let round = *self.vault_sequencer_round.read().await;
 
@@ -511,6 +748,42 @@ impl ContractTransactionSequencer {
     }
 
     /// Check if current node is the final node for this round
+    /// Check if this node is the final node for a given request using HRW
+    pub async fn am_i_final_node_for_request(&self, request_id: &str, round: u64) -> Result<bool> {
+        let local_peer = self
+            .local_peer_id
+            .ok_or_else(|| anyhow::anyhow!("Local peer ID not set"))?;
+
+        // Use HRW to compute leaders
+        let leaders = self.select_leader_with_hrw(request_id, round, 1).await?;
+        
+        if leaders.is_empty() {
+            return Err(anyhow::anyhow!("No leaders computed for request_id={}", request_id));
+        }
+
+        let final_node = leaders[0];
+        let is_final = local_peer == final_node;
+
+        if is_final {
+            info!(
+                "✅ [VAULT_SEQUENCER] am_i_final_node_for_request() = true: local_peer={:?}, final_node={:?}, request_id={}, round={}",
+                local_peer, final_node, request_id, round
+            );
+        } else {
+            debug!(
+                "🔍 [VAULT_SEQUENCER] am_i_final_node_for_request() = false: local_peer={:?}, final_node={:?}, request_id={}, round={}",
+                local_peer, final_node, request_id, round
+            );
+        }
+
+        Ok(is_final)
+    }
+
+    /// Check if this node is the final node (deprecated - use am_i_final_node_for_request instead)
+    /// 
+    /// DEPRECATED: This method uses old VRF+Consensus approach
+    /// Use am_i_final_node_for_request() with request_id and round for HRW-based selection
+    #[allow(dead_code)]
     pub async fn am_i_final_node(&self) -> Result<bool> {
         let local_peer = self
             .local_peer_id
@@ -1230,158 +1503,119 @@ impl ContractTransactionSequencer {
             return None;
         }
 
-        // Get current round
-        let round = *self.vault_sequencer_round.read().await;
-
-        // CRITICAL FIX: Check if THIS node has performed VRF selection for this round
-        // This prevents skipping VRF when consensus results arrive from other nodes first
-        let has_performed_vrf = self
-            .vault_vrf_performed_rounds
-            .read()
-            .await
-            .contains(&round);
-        let has_final_node = self.final_node_cache.read().await.contains_key(&round);
-
-        info!(
-            "📤 [VAULT_SEQUENCER] Dequeue attempt: round={}, queue_len={}, vrf_performed={}, consensus_ready={}",
-            round, queue_len, has_performed_vrf, has_final_node
-        );
-
-        if !has_performed_vrf {
-            // THIS node hasn't performed VRF yet - must do it regardless of consensus status
-            info!(
-                "🎯 [VAULT_SEQUENCER] Node hasn't performed VRF for round {}, triggering VRF selection",
-                round
-            );
-
-            // Get available nodes
-            let nodes = self.available_nodes.read().await.clone();
-            if nodes.is_empty() {
-                warn!("⚠️ [VAULT_SEQUENCER] No available nodes for VRF selection");
-                return None;
-            }
-
-            info!(
-                "🔍 [VAULT_SEQUENCER] Available nodes for VRF: count={}, nodes={:?}",
-                nodes.len(),
-                nodes.iter().map(|p| p.to_string()).collect::<Vec<_>>()
-            );
-
-            // Check if VRF service is available
-            if self.vrf_service.is_none() {
-                error!(
-                    "❌ [VAULT_SEQUENCER] VRF service not configured! Cannot perform selection."
-                );
-                return None;
-            }
-
-            // Trigger VRF selection (spawn async to avoid blocking)
-            let threshold = nodes.len(); // All nodes must participate
-            let sequencer_clone = self.clone();
-            tokio::spawn(async move {
-                info!(
-                    "🚀 [VAULT_SEQUENCER] Starting VRF selection task for round {}",
-                    round
-                );
-                if let Err(e) = sequencer_clone.perform_vrf_selection(threshold).await {
-                    error!("❌ [VAULT_SEQUENCER] VRF selection failed: {}", e);
-                } else {
-                    info!(
-                        "✅ [VAULT_SEQUENCER] VRF selection task completed for round {}",
-                        round
-                    );
-                }
-            });
-
-            // Return None - wait for VRF to complete and consensus to form
-            info!(
-                "⏸️ [VAULT_SEQUENCER] Waiting for VRF task to complete for round {}",
-                round
-            );
-            return None;
-        }
-
-        // VRF completed - now check if consensus is complete
-        if !has_final_node {
-            // VRF done but consensus not yet complete - wait
-            info!(
-                "⏳ [VAULT_SEQUENCER] Round {}: VRF ✅ performed, but consensus ⏳ not ready yet (waiting for other nodes)",
-                round
-            );
-            return None;
-        }
-
-        // Both VRF and consensus complete - proceed
-        info!(
-            "✅ [VAULT_SEQUENCER] Round {}: VRF ✅ performed, consensus ✅ ready - proceeding to select transaction",
-            round
-        );
-
-        // Get final node info for logging
-        let final_node_info = match self.select_final_node().await {
-            Ok(peer_id) => {
-                let local_peer = self.local_peer_id;
-                let is_final = local_peer.map(|p| p == peer_id).unwrap_or(false);
-                info!(
-                    "🔍 [VAULT_SEQUENCER] Round {}: Final node={:?}, Local peer={:?}, Am I final?={}",
-                    round, peer_id, local_peer, is_final
-                );
-                Some((peer_id, is_final))
-            }
+        // Sync round first to ensure all nodes have the same round
+        let round = match self.sync_round_with_peers().await {
+            Ok(r) => r,
             Err(e) => {
-                error!(
-                    "❌ [VAULT_SEQUENCER] Failed to get final node for round {}: {}",
-                    round, e
-                );
-                None
+                warn!("⚠️ [VAULT_SEQUENCER] Round sync failed: {}, using local round", e);
+                *self.vault_sequencer_round.read().await
             }
         };
 
-        // Check if we are the final node
-        match self.am_i_final_node().await {
-            Ok(true) => {
-                // We are the final node - select the request
+        // Get the first request from queue to compute HRW
+        let (first_tx_id, first_request) = {
+            let pending = self.pending_requests.read().await;
+            if let Some((tx_id, request)) = pending.first_key_value() {
+                (tx_id.clone(), request.clone())
+            } else {
+                return None;
+            }
+        };
+
+        info!(
+            "📤 [VAULT_SEQUENCER] Dequeue attempt: round={}, queue_len={}, first_request={}",
+            round, queue_len, first_tx_id
+        );
+
+        // Use HRW to get top-3 leaders for failover support
+        let leaders = match self.select_leader_with_hrw(&first_tx_id, round, 3).await {
+            Ok(leaders) => leaders,
+            Err(e) => {
+                error!(
+                    "❌ [VAULT_SEQUENCER] Failed to compute HRW for request {}: {}",
+                    first_tx_id, e
+                );
+                return None;
+            }
+        };
+
+        if leaders.is_empty() {
+            error!("❌ [VAULT_SEQUENCER] No leaders computed for request {}", first_tx_id);
+            return None;
+        }
+
+        let local_peer = match self.local_peer_id {
+            Some(peer) => peer,
+            None => {
+                error!("❌ [VAULT_SEQUENCER] Local peer ID not set");
+                return None;
+            }
+        };
+
+        // Check if we are the primary leader (leader[0])
+        let is_primary_leader = local_peer == leaders[0];
+        let leader_index = leaders.iter().position(|&p| p == local_peer);
+
+        if is_primary_leader {
+            info!(
+                "✅ [VAULT_SEQUENCER] Round {}: HRW selected this node as PRIMARY leader for request {}",
+                round, first_tx_id
+            );
+        } else if let Some(idx) = leader_index {
+            info!(
+                "🔍 [VAULT_SEQUENCER] Round {}: This node is backup leader #{} for request {} (primary: {:?})",
+                round, idx + 1, first_tx_id, leaders[0]
+            );
+        } else {
+            debug!(
+                "🔍 [VAULT_SEQUENCER] Round {}: HRW selected another node as leader for request {} (primary: {:?})",
+                round, first_tx_id, leaders[0]
+            );
+        }
+
+        // Check if we are the primary leader
+        if is_primary_leader {
+            // We are the leader - select the request
+            info!(
+                "🎯 [VAULT_SEQUENCER] I AM the leader for round {}, selecting transaction",
+                round
+            );
+
+            let mut pending = self.pending_requests.write().await;
+            if let Some((tx_id, request)) = pending.pop_first() {
+                let sequence = request.sequence;
+                let queue_size = pending.len();
                 info!(
-                    "🎯 [VAULT_SEQUENCER] I AM the final node for round {}, selecting transaction",
-                    round
+                    "🎯 [VAULT_SEQUENCER] Leader selecting request: tx_id={}, sequence={}, remaining={}",
+                    tx_id, sequence, queue_size
                 );
 
-                let mut pending = self.pending_requests.write().await;
-                if let Some((tx_id, request)) = pending.pop_first() {
-                    let sequence = request.sequence;
-                    let queue_size = pending.len();
-                    info!(
-                        "🎯 [VAULT_SEQUENCER] Final node selecting request: tx_id={}, sequence={}, remaining={}",
-                        tx_id, sequence, queue_size
-                    );
+                // Lock this request
+                drop(pending);
+                let mut locked = self.locked_request.write().await;
+                *locked = Some(tx_id.clone());
 
-                    // Lock this request
-                    drop(pending);
-                    let mut locked = self.locked_request.write().await;
-                    *locked = Some(tx_id.clone());
-
-                    // Broadcast SELECT message
-                    if let Err(e) = self.broadcast_select_message(&tx_id, &request).await {
-                        error!("❌ [VAULT_SEQUENCER] Failed to broadcast SELECT: {}", e);
-                        // Clear locked request on failure
-                        *locked = None;
-                        drop(locked);
-                        return None;
-                    }
-
-                    // Clear wait time since we successfully selected
-                    let mut wait_time = self.select_wait_start_time.write().await;
-                    *wait_time = None;
-                    drop(wait_time);
-
+                // Broadcast SELECT message
+                if let Err(e) = self.broadcast_select_message(&tx_id, &request).await {
+                    error!("❌ [VAULT_SEQUENCER] Failed to broadcast SELECT: {}", e);
+                    // Clear locked request on failure
+                    *locked = None;
                     drop(locked);
-                    Some(request)
-                } else {
-                    warn!("⚠️ [VAULT_SEQUENCER] Final node but no requests in queue!");
-                    None
+                    return None;
                 }
+
+                // Clear wait time since we successfully selected
+                let mut wait_time = self.select_wait_start_time.write().await;
+                *wait_time = None;
+                drop(wait_time);
+
+                drop(locked);
+                Some(request)
+            } else {
+                warn!("⚠️ [VAULT_SEQUENCER] Leader but no requests in queue!");
+                None
             }
-            Ok(false) => {
+        } else {
                 // We are NOT the final node - check if SELECT message already arrived
                 let locked_request_id = {
                     let locked = self.locked_request.read().await;
@@ -1433,26 +1667,15 @@ impl ContractTransactionSequencer {
                     // Return None - the locked request check at line 1002 will handle it on next iteration
                     None
                 } else {
-                    // No SELECT message yet - wait for it
+                    // No SELECT message yet - wait for it with failover support
                     // Track wait time and add timeout
                     let mut wait_time = self.select_wait_start_time.write().await;
                     let now = std::time::SystemTime::now();
-                    let should_warn = if let Some(start) = *wait_time {
+                    let timeout_seconds = 10; // Failover timeout: 10 seconds
+                    
+                    let should_failover = if let Some(start) = *wait_time {
                         if let Ok(elapsed) = now.duration_since(start) {
-                            if elapsed.as_secs() > 30 {
-                                // Been waiting more than 30 seconds - something is wrong
-                                error!(
-                                    "❌ [VAULT_SEQUENCER] TIMEOUT: Waiting for SELECT message for {} seconds! Final node={:?} may have failed. Round={}",
-                                    elapsed.as_secs(),
-                                    final_node_info.map(|(p, _)| p),
-                                    round
-                                );
-                                // Reset wait time to avoid spam
-                                *wait_time = Some(now);
-                                true
-                            } else {
-                                false
-                            }
+                            elapsed.as_secs() >= timeout_seconds
                         } else {
                             false
                         }
@@ -1463,46 +1686,85 @@ impl ContractTransactionSequencer {
                     };
                     drop(wait_time);
 
-                    if !should_warn {
-                        info!(
-                            "⏳ [VAULT_SEQUENCER] Not final node (final={:?}), waiting for SELECT message...",
-                            final_node_info.map(|(p, _)| p)
+                    // Failover: If we're a backup leader and primary timed out, take over
+                    if should_failover {
+                        // Record timeout for primary leader
+                        self.record_peer_timeout(&first_tx_id, leaders[0], 3).await;
+                        
+                        if let Some(backup_idx) = leader_index {
+                            if backup_idx > 0 && backup_idx < leaders.len() {
+                                // Check if all previous leaders have failed (we can detect this by timeout)
+                                let all_previous_failed = (0..backup_idx).all(|i| {
+                                    // In a real implementation, we'd check if leaders[i] is actually down
+                                    // For now, we assume timeout means failure
+                                    true
+                                });
+
+                                if all_previous_failed {
+                                    warn!(
+                                        "🔄 [VAULT_SEQUENCER] FAILOVER: Primary leader {:?} timed out after {}s. Backup leader #{} (this node) taking over for request {}",
+                                        leaders[0], timeout_seconds, backup_idx + 1, first_tx_id
+                                    );
+
+                                    // We are now the acting leader - select the request
+                                    let mut pending = self.pending_requests.write().await;
+                                    if let Some((tx_id, request)) = pending.pop_first() {
+                                        let mut locked = self.locked_request.write().await;
+                                        *locked = Some(tx_id.clone());
+
+                                        // Broadcast SELECT message
+                                        if let Err(e) = self.broadcast_select_message(&tx_id, &request).await {
+                                            error!("❌ [VAULT_SEQUENCER] Failed to broadcast SELECT (failover): {}", e);
+                                            *locked = None;
+                                            drop(locked);
+                                            return None;
+                                        }
+
+                                        // Clear wait time
+                                        let mut wait_time = self.select_wait_start_time.write().await;
+                                        *wait_time = None;
+                                        drop(wait_time);
+                                        drop(locked);
+                                        return Some(request);
+                                    }
+                                }
+                            }
+                        }
+
+                        // Timeout but we're not a backup leader or failover not applicable
+                        error!(
+                            "❌ [VAULT_SEQUENCER] TIMEOUT: Waiting for SELECT message for {} seconds! Primary leader {:?} may have failed. Round={}, Request={}",
+                            timeout_seconds,
+                            leaders[0],
+                            round,
+                            first_tx_id
                         );
+                        // Reset wait time to avoid spam
+                        let mut wait_time = self.select_wait_start_time.write().await;
+                        *wait_time = Some(now);
+                        drop(wait_time);
+                    } else {
+                        if let Some(idx) = leader_index {
+                            if idx > 0 {
+                                info!(
+                                    "⏳ [VAULT_SEQUENCER] Backup leader #{} waiting for SELECT from primary {:?}...",
+                                    idx + 1, leaders[0]
+                                );
+                            } else {
+                                info!(
+                                    "⏳ [VAULT_SEQUENCER] Not a leader, waiting for SELECT message from primary {:?}...",
+                                    leaders[0]
+                                );
+                            }
+                        } else {
+                            info!(
+                                "⏳ [VAULT_SEQUENCER] Not a leader, waiting for SELECT message from primary {:?}...",
+                                leaders[0]
+                            );
+                        }
                     }
                     None
                 }
-            }
-            Err(e) => {
-                error!(
-                    "❌ [VAULT_SEQUENCER] Error checking final node status: {}",
-                    e
-                );
-                // If we can't determine final node, try to use cached result
-                if let Some((final_peer, _)) = final_node_info {
-                    warn!(
-                        "🔄 [VAULT_SEQUENCER] Using fallback: final node from cache={:?}",
-                        final_peer
-                    );
-                    let local_peer = self.local_peer_id;
-                    if local_peer.map(|p| p == final_peer).unwrap_or(false) {
-                        // We might be the final node - try to proceed
-                        warn!("⚠️ [VAULT_SEQUENCER] Assuming we are final node based on cache");
-                        let mut pending = self.pending_requests.write().await;
-                        if let Some((tx_id, request)) = pending.pop_first() {
-                            let mut locked = self.locked_request.write().await;
-                            *locked = Some(tx_id.clone());
-                            drop(locked);
-                            drop(pending);
-                            if let Err(e) = self.broadcast_select_message(&tx_id, &request).await {
-                                error!("❌ [VAULT_SEQUENCER] Failed to broadcast SELECT (fallback): {}", e);
-                                return None;
-                            }
-                            return Some(request);
-                        }
-                    }
-                }
-                None
-            }
         }
     }
 
@@ -1576,10 +1838,14 @@ impl ContractTransactionSequencer {
             }
         };
 
-        info!(
-            "📤 [VAULT_SEQUENCER] Broadcasting SELECT: round={}, request_id={}, flow={}",
-            round, request_id, flow_label
-        );
+        // CRITICAL: Leader assigns sequence (single source of truth)
+        let (sequence, view_id) = {
+            let mut sync_state = self.sync_state.write().await;
+            sync_state.global_sequence += 1;
+            let seq = sync_state.global_sequence;
+            let vid = sync_state.view_id;
+            (seq, vid)
+        };
 
         // Create signature (simplified - in production use proper signing)
         let signature = vec![]; // TODO: Sign with node's private key
@@ -1591,6 +1857,8 @@ impl ContractTransactionSequencer {
                 data: serde_json::to_vec(&crate::types::GossipsubMessage::VaultSequencerSelect {
                     round,
                     request_id: request_id.to_string(),
+                    sequence,        // CRITICAL: Leader-assigned sequence
+                    view_id,         // Current view ID
                     final_node_id: local_peer,
                     signature,
                 })?,
@@ -1659,6 +1927,8 @@ impl ContractTransactionSequencer {
         &self,
         round: u64,
         request_id: String,
+        sequence: u64,
+        view_id: u64,
         final_node_id: libp2p::PeerId,
     ) -> Result<()> {
         let current_round = *self.vault_sequencer_round.read().await;
@@ -1671,6 +1941,29 @@ impl ContractTransactionSequencer {
             return Ok(());
         }
 
+        // Verify view_id (allow higher view_id to trigger resync)
+        let mut sync_state = self.sync_state.write().await;
+        if view_id < sync_state.view_id {
+            warn!(
+                "⚠️ [VAULT_SEQUENCER] SELECT with stale view_id: local={}, received={}",
+                sync_state.view_id, view_id
+            );
+            return Ok(());
+        }
+        if view_id > sync_state.view_id {
+            warn!(
+                "⚠️ [VAULT_SEQUENCER] SELECT with higher view_id: local={}, received={}, triggering resync",
+                sync_state.view_id, view_id
+            );
+            // TODO: Trigger view sync (PR 5)
+            sync_state.view_id = view_id;
+        }
+
+        // CRITICAL: Store leader-assigned sequence (single source of truth)
+        sync_state.current_sequence = sequence;
+        sync_state.current_processing = Some(request_id.clone());
+        drop(sync_state);
+
         // Verify the sender is actually the final node
         let expected_final = self.select_final_node().await?;
         if final_node_id != expected_final {
@@ -1680,6 +1973,11 @@ impl ContractTransactionSequencer {
             );
             return Ok(());
         }
+
+        // Store current leader for DONE_ACK sending
+        let mut current_leader = self.current_leader.write().await;
+        *current_leader = Some(final_node_id);
+        drop(current_leader);
 
         // Lock this request
         let mut locked = self.locked_request.write().await;
@@ -1691,8 +1989,8 @@ impl ContractTransactionSequencer {
         drop(wait_time);
 
         info!(
-            "🔒 [VAULT_SEQUENCER] Locked request from final node: round={}, request_id={}",
-            round, request_id
+            "🔒 [VAULT_SEQUENCER] Locked request from final node: round={}, request_id={}, sequence={}, view_id={}",
+            round, request_id, sequence, view_id
         );
 
         // Check if we have this request
@@ -1708,16 +2006,19 @@ impl ContractTransactionSequencer {
             self.broadcast_ack(&request_id).await?;
         } else {
             warn!(
-                "⚠️ [VAULT_SEQUENCER] Missing request, sending MISSING: {}",
+                "⚠️ [VAULT_SEQUENCER] Missing request, will fetch: {}",
                 request_id
             );
             self.broadcast_missing(&request_id).await?;
 
-            // Wait for request to arrive
+            // CRITICAL: Send FETCH_REQUEST via req-resp (NOT gossip)
+            // This will be handled by RPC handler
             info!(
-                "⏳ [VAULT_SEQUENCER] Waiting for missing request: {}",
+                "📥 [VAULT_SEQUENCER] Triggering FETCH_REQUEST for missing request: {}",
                 request_id
             );
+            // Note: Actual fetch will be handled by RPC handler when it receives the request
+            // For now, we still wait (will be replaced by fetch logic in RPC handler)
             self.wait_for_request(&request_id, round).await?;
         }
 
@@ -2320,47 +2621,147 @@ impl ContractTransactionSequencer {
         Ok(())
     }
 
-    /// Mark transaction as completed and broadcast confirmation
-    /// NOTE: State is NOT cleared here - it's cleared when ALL nodes confirm
+    /// Mark transaction as completed and send DONE_ACK to leader
+    /// NOTE: State is cleared when COMMIT_CERT is received (quorum-based, not all nodes)
     pub async fn mark_completed(&self, transaction_id: &str) -> Result<()> {
-        let mut sync_state = self.sync_state.write().await;
+        use crate::types::p2p::SerializablePeerId;
+        
+        // Clear exclusions for completed request
+        self.clear_request_exclusions(transaction_id).await;
+        
+        let (sequence, view_id, round, leader_peer_id) = {
+            let sync_state = self.sync_state.read().await;
+            
+            if sync_state.current_processing.as_deref() != Some(transaction_id) {
+                warn!(
+                    "⚠️ [SEQUENCER] [COMPLETE] Tried to mark tx_id={} as completed but current_processing={:?}",
+                    transaction_id, sync_state.current_processing
+                );
+                return Ok(());
+            }
 
-        if sync_state.current_processing.as_deref() == Some(transaction_id) {
-            let sequence = sync_state.current_sequence;
+            let seq = sync_state.current_sequence;
+            let vid = sync_state.view_id;
+            let rnd = *self.vault_sequencer_round.read().await;
+            
+            // Get current leader
+            let leader = self.current_leader.read().await.clone();
+            drop(sync_state);
+            
+            if let Some(leader_id) = leader {
+                (seq, vid, rnd, leader_id)
+            } else {
+                // Fallback: try to get leader from select_final_node
+                match self.select_final_node().await {
+                    Ok(leader_id) => (seq, vid, rnd, leader_id),
+                    Err(e) => {
+                        warn!(
+                            "⚠️ [SEQUENCER] [COMPLETE] Cannot determine leader for DONE_ACK: {}",
+                            e
+                        );
+                        return Ok(());
+                    }
+                }
+            }
+        };
 
-            // Add ourselves to confirmed nodes
-            sync_state.confirmed_nodes.insert(self.node_id.clone());
-            let confirmed_count = sync_state.confirmed_nodes.len();
+        let local_peer_id = self
+            .local_peer_id
+            .ok_or_else(|| anyhow::anyhow!("Local peer ID not set"))?;
+
+        info!(
+            "✅ [SEQUENCER] [COMPLETE] Marked tx_id={} as completed locally (sequence={}, view_id={}, round={})",
+            transaction_id, sequence, view_id, round
+        );
+
+        // CRITICAL: Send unicast DONE_ACK to leader via req-resp (NOT broadcast)
+        if let Some(message_tx) = &self.message_tx {
+            let done_ack_request = crate::types::rpc::RPCRequest::DoneAck {
+                request_id: transaction_id.to_string(),
+                sequence,
+                view_id,
+                node_id: SerializablePeerId(local_peer_id),
+                round,
+                sequencer_type: "vault".to_string(),
+            };
+
+            message_tx
+                .send(crate::types::ChannelMessage::SendRpcRequest {
+                    target_peer_id: leader_peer_id,
+                    request: done_ack_request.clone(),
+                })
+                .await?;
 
             info!(
-                "✅ [SEQUENCER] [COMPLETE] Marked tx_id={} as completed locally (sequence={}, confirmed: {}/{})",
-                transaction_id, sequence, confirmed_count, sync_state.total_nodes
+                seq_no = sequence,
+                request_id = %transaction_id,
+                view_id = view_id,
+                round = round,
+                leader_id = ?leader_peer_id,
+                peer_id = ?local_peer_id,
+                stage = "done_ack_sent",
+                "📤 [SEQUENCER] [COMPLETE] Sent DONE_ACK to leader {:?} for tx_id={}, sequence={}",
+                leader_peer_id, transaction_id, sequence
             );
-
-            drop(sync_state);
-
-            // Broadcast completion confirmation
-            if let Some(message_tx) = &self.message_tx {
-                let broadcast_data =
-                    serde_json::to_vec(&crate::types::GossipsubMessage::SequencerSync {
-                        transaction_id: transaction_id.to_string(),
-                        sequence,
-                        node_id: self.node_id.clone(),
-                        state: "completed".to_string(),
-                    })?;
-
-                message_tx
-                    .send(crate::types::ChannelMessage::Broadcast {
-                        topic: "sequencer-sync".to_string(),
-                        data: broadcast_data,
-                    })
-                    .await?;
-
-                info!(
-                    "📤 [SEQUENCER] [COMPLETE] Broadcasted completion confirmation for tx_id={}",
-                    transaction_id
-                );
-            }
+            
+            // Track for resend until COMMIT_CERT received
+            let mut pending = self.pending_done_acks.write().await;
+            pending.insert(
+                (sequence, transaction_id.to_string()),
+                (round, view_id, leader_peer_id, std::time::SystemTime::now()),
+            );
+            drop(pending);
+            
+            // Spawn resend task
+            let sequencer_clone = self.clone();
+            let message_tx_clone = message_tx.clone();
+            let request_id_clone = transaction_id.to_string();
+            let local_peer_id_clone = local_peer_id;
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(2));
+                loop {
+                    interval.tick().await;
+                    
+                    // Check if still pending
+                    let pending_read = sequencer_clone.pending_done_acks.read().await;
+                    let should_resend = pending_read.contains_key(&(sequence, request_id_clone.clone()));
+                    drop(pending_read);
+                    
+                    if !should_resend {
+                        // COMMIT_CERT received, stop resending
+                        break;
+                    }
+                    
+                    // Resend DONE_ACK
+                    let pending_read = sequencer_clone.pending_done_acks.read().await;
+                    if let Some((rnd, vid, leader, _)) = pending_read.get(&(sequence, request_id_clone.clone())) {
+                        let resend_request = crate::types::rpc::RPCRequest::DoneAck {
+                            request_id: request_id_clone.clone(),
+                            sequence,
+                            view_id: *vid,
+                            node_id: SerializablePeerId(local_peer_id_clone),
+                            round: *rnd,
+                            sequencer_type: "vault".to_string(),
+                        };
+                        
+                        if let Err(e) = message_tx_clone
+                            .send(crate::types::ChannelMessage::SendRpcRequest {
+                                target_peer_id: *leader,
+                                request: resend_request,
+                            })
+                            .await
+                        {
+                            warn!("⚠️ [SEQUENCER] Failed to resend DONE_ACK: {}", e);
+                        } else {
+                            info!(
+                                "🔄 [SEQUENCER] Resent DONE_ACK for tx_id={}, sequence={}",
+                                request_id_clone, sequence
+                            );
+                        }
+                    }
+                }
+            });
+        }
 
             // CRITICAL: Store request in completed_requests_cache immediately after marking as completed
             // This ensures the request is available for retry even if broadcast fails 5-7 seconds later
@@ -2449,70 +2850,158 @@ impl ContractTransactionSequencer {
                 }
             }
 
-            // Check if we should clear state (all nodes confirmed)
-            let mut sync_state = self.sync_state.write().await;
-            if sync_state.confirmed_nodes.len() >= sync_state.total_nodes {
-                // All nodes have confirmed - set is_confirmed to true before clearing
-                // This ensures get_next_request() knows the transaction is fully confirmed
-                let completed_tx = sync_state.current_processing.clone();
-                sync_state.is_confirmed = true;
-                sync_state.current_processing = None;
-                sync_state.agreed_nodes.clear();
-                sync_state.confirmed_nodes.clear();
-                sync_state.is_confirmed = false; // Reset for next transaction
+        // NOTE: State clearing is now done in handle_commit_cert() when COMMIT_CERT is received
+        // We no longer wait for "all nodes confirmed" - quorum-based commit replaces this
+        info!(
+            "⏳ [SEQUENCER] [COMPLETE] DONE_ACK sent, waiting for COMMIT_CERT from leader for tx_id={}, sequence={}",
+            transaction_id, sequence
+        );
 
-                // Clear the cached request (already stored in completed_requests_cache above)
-                drop(sync_state);
-                let mut cache = self.current_request_cache.write().await;
-                *cache = None;
-                drop(cache);
+        Ok(())
+    }
 
-                // Advance round and clear selection state so the next dequeue can proceed
-                let mut round_lock = self.vault_sequencer_round.write().await;
-                let old_round = *round_lock;
-                *round_lock += 1;
-                let new_round = *round_lock;
-                drop(round_lock);
+    /// Handle COMMIT_CERT message (follower-side: verify and advance state)
+    pub async fn handle_commit_cert(
+        &self,
+        request_id: String,
+        sequence: u64,
+        view_id: u64,
+        round: u64,
+        final_node_id: libp2p::PeerId,
+        acks: Vec<libp2p::PeerId>,
+        quorum_size: usize,
+        total_nodes: usize,
+    ) -> Result<()> {
+        // Verify view_id matches
+        let sync_state = self.sync_state.read().await;
+        let current_view_id = sync_state.view_id;
+        let current_processing = sync_state.current_processing.clone();
+        let current_sequence = sync_state.current_sequence;
+        let last_committed = sync_state.last_committed_sequence;
+        drop(sync_state);
 
-                let mut locked = self.locked_request.write().await;
-                *locked = None;
-                drop(locked);
-
-                let mut cache = self.final_node_cache.write().await;
-                cache.remove(&old_round);
-                drop(cache);
-
-                // Notify waiters that the queue can advance
-                self.work_notify.notify_waiters();
-
-                if let Some(ref tx_id) = completed_tx {
-                    info!(
-                    "🎉 [SEQUENCER] [COMPLETE] ALL nodes confirmed tx_id={}! State cleared, ready for next transaction (round {} -> {}).",
-                        tx_id,
-                    old_round,
-                    new_round
-                );
-                }
-                if let Some(completed) = completed_tx {
-                    info!(
-                        "🔓 [SEQUENCER] Released queue token for tx_id={}, allowing dequeue of next request",
-                        completed
-                    );
-                }
-            } else {
-                info!(
-                    "⏳ [SEQUENCER] [COMPLETE] Waiting for more confirmations: {}/{} nodes confirmed tx_id={}",
-                    sync_state.confirmed_nodes.len(),
-                    sync_state.total_nodes,
-                    transaction_id
-                );
-            }
-        } else {
+        if view_id < current_view_id {
             warn!(
-                "⚠️ [SEQUENCER] [COMPLETE] Tried to mark tx_id={} as completed but current_processing={:?}",
-                transaction_id, sync_state.current_processing
+                "⚠️ [VAULT_SEQUENCER] COMMIT_CERT with stale view_id: local={}, received={}, ignoring",
+                current_view_id, view_id
             );
+            return Ok(());
         }
+
+        // Verify sequence is monotonic (must be > last_committed)
+        if sequence <= last_committed {
+            warn!(
+                "⚠️ [VAULT_SEQUENCER] COMMIT_CERT with non-monotonic sequence: last_committed={}, received={}, ignoring",
+                last_committed, sequence
+            );
+            return Ok(());
+        }
+
+        // Verify this COMMIT_CERT is for the current processing transaction
+        if current_processing.as_deref() != Some(&request_id) {
+            warn!(
+                "⚠️ [VAULT_SEQUENCER] COMMIT_CERT for different request: current={:?}, received={}, ignoring",
+                current_processing, request_id
+            );
+            return Ok(());
+        }
+
+        // Verify quorum threshold
+        let quorum_threshold = Self::compute_quorum_threshold(total_nodes);
+        if quorum_size < quorum_threshold {
+            warn!(
+                "⚠️ [VAULT_SEQUENCER] COMMIT_CERT with insufficient quorum: received={}, required={}, ignoring",
+                quorum_size, quorum_threshold
+            );
+            return Ok(());
+        }
+
+        // Verify all acks are unique
+        let unique_acks: std::collections::HashSet<_> = acks.iter().collect();
+        if unique_acks.len() != acks.len() {
+            warn!(
+                "⚠️ [VAULT_SEQUENCER] COMMIT_CERT with duplicate acks, ignoring"
+            );
+            return Ok(());
+        }
+
+        // Verify final_node_id matches expected leader
+        let expected_leader = self.select_final_node().await?;
+        if final_node_id != expected_leader {
+            warn!(
+                "⚠️ [VAULT_SEQUENCER] COMMIT_CERT from non-leader: expected={:?}, got={:?}, ignoring",
+                expected_leader, final_node_id
+            );
+            return Ok(());
+        }
+
+        info!(
+            seq_no = sequence,
+            request_id = %request_id,
+            view_id = view_id,
+            round = round,
+            leader_id = ?final_node_id,
+            quorum_size = quorum_size,
+            total_nodes = total_nodes,
+            stage = "commit_cert_received",
+            "✅ [VAULT_SEQUENCER] Valid COMMIT_CERT received: request_id={}, sequence={}, quorum={}/{}",
+            request_id, sequence, quorum_size, total_nodes
+        );
+
+        // CRITICAL: Clear state and advance (replaces "all nodes confirmed" logic)
+        let mut sync_state = self.sync_state.write().await;
+        sync_state.last_committed_sequence = sequence;
+        sync_state.current_processing = None;
+        sync_state.agreed_nodes.clear();
+        sync_state.confirmed_nodes.clear();
+        sync_state.is_confirmed = false;
+        
+        // Mark as processed for idempotency
+        sync_state.processed.insert((sequence, request_id.clone()));
+        drop(sync_state);
+
+        // Clear the cached request
+        let mut cache = self.current_request_cache.write().await;
+        *cache = None;
+        drop(cache);
+
+        // Clear current leader
+        let mut current_leader = self.current_leader.write().await;
+        *current_leader = None;
+        drop(current_leader);
+
+        // Advance round and clear selection state
+        let mut round_lock = self.vault_sequencer_round.write().await;
+        let old_round = *round_lock;
+        *round_lock += 1;
+        let new_round = *round_lock;
+        drop(round_lock);
+
+        let mut locked = self.locked_request.write().await;
+        *locked = None;
+        drop(locked);
+
+        let mut cache = self.final_node_cache.write().await;
+        cache.remove(&old_round);
+        drop(cache);
+
+        // Clear done_acks for this round
+        let mut done_acks = self.done_acks.write().await;
+        done_acks.remove(&(old_round, request_id.clone()));
+        drop(done_acks);
+
+        // Clear pending DONE_ACK resend (COMMIT_CERT received, stop resending)
+        let mut pending_done_acks = self.pending_done_acks.write().await;
+        pending_done_acks.remove(&(sequence, request_id.clone()));
+        drop(pending_done_acks);
+
+        // Notify waiters that the queue can advance
+        self.work_notify.notify_waiters();
+
+        info!(
+            "🎉 [VAULT_SEQUENCER] COMMIT_CERT applied! State cleared, ready for next transaction (round {} -> {}, sequence {} committed)",
+            old_round, new_round, sequence
+        );
 
         Ok(())
     }
@@ -2640,18 +3129,24 @@ pub struct NetworkTransactionRequest {
 struct NetworkTransactionSyncState {
     /// Transaction ID currently being processed
     current_processing: Option<String>,
-    /// Sequence number for the current processing transaction
+    /// Sequence number for the current processing transaction (leader-assigned from SELECT)
     current_sequence: u64,
-    /// Global sequence counter for deterministic ordering
+    /// Global sequence counter for deterministic ordering (leader uses this to assign sequence in SELECT)
     global_sequence: u64,
+    /// Last committed sequence number (monotonic, advances only on COMMIT_CERT)
+    last_committed_sequence: u64,
+    /// Current view ID (membership epoch, increments on membership change)
+    view_id: u64,
     /// Nodes that have agreed to process the current request
     agreed_nodes: HashSet<String>,
     /// Nodes that have confirmed completion of the current request
     confirmed_nodes: HashSet<String>,
     /// Total number of active nodes (for consensus threshold)
     total_nodes: usize,
-    /// Whether current transaction is confirmed (all nodes confirmed)
+    /// Whether current transaction is confirmed (all nodes confirmed) - DEPRECATED: use COMMIT_CERT instead
     is_confirmed: bool,
+    /// Processed transactions for idempotency: (round, request_id)
+    processed: HashSet<(u64, String)>,
 }
 
 /// Sequencer for network transactions (Main ETH Address)
@@ -2705,6 +3200,20 @@ pub struct NetworkTransactionSequencer {
     /// Tracks rounds for which THIS node has performed VRF selection
     /// This prevents skipping VRF when consensus results arrive from other nodes first
     main_vrf_performed_rounds: Arc<RwLock<HashSet<u64>>>,
+    /// Per-request exclusion list: tracks peers that have timed out repeatedly
+    /// Format: request_id -> set of excluded peer_ids
+    peer_exclusions: Arc<RwLock<HashMap<String, HashSet<libp2p::PeerId>>>>,
+    /// Per-peer timeout counts: tracks how many times each peer has timed out per request
+    /// Format: (request_id, peer_id) -> timeout_count
+    peer_timeout_counts: Arc<RwLock<HashMap<(String, libp2p::PeerId), u32>>>,
+    /// DONE_ACK collection: tracks acks received for (round, request_id)
+    /// Format: (round, request_id) -> HashSet<PeerId>
+    done_acks: Arc<RwLock<HashMap<(u64, String), HashSet<libp2p::PeerId>>>>,
+    /// Current leader (final_node_id) for the current processing transaction
+    current_leader: Arc<RwLock<Option<libp2p::PeerId>>>,
+    /// Pending DONE_ACKs that need resending: (sequence, request_id) -> (round, view_id, leader_peer_id, last_sent)
+    /// Resend every 2s until COMMIT_CERT received
+    pending_done_acks: Arc<RwLock<HashMap<(u64, String), (u64, u64, libp2p::PeerId, std::time::SystemTime)>>>,
 }
 
 impl NetworkTransactionSequencer {
@@ -2717,10 +3226,13 @@ impl NetworkTransactionSequencer {
                 current_processing: None,
                 current_sequence: 0,
                 global_sequence: 0,
+                last_committed_sequence: 0,
+                view_id: 0,
                 agreed_nodes: HashSet::new(),
                 confirmed_nodes: HashSet::new(),
                 total_nodes: 0,
                 is_confirmed: false,
+                processed: HashSet::new(),
             })),
             message_tx: None,
             node_id: String::new(),
@@ -2736,6 +3248,11 @@ impl NetworkTransactionSequencer {
             final_node_cache: Arc::new(RwLock::new(HashMap::new())),
             locked_request: Arc::new(RwLock::new(None)),
             main_vrf_performed_rounds: Arc::new(RwLock::new(HashSet::new())),
+            peer_exclusions: Arc::new(RwLock::new(HashMap::new())),
+            peer_timeout_counts: Arc::new(RwLock::new(HashMap::new())),
+            done_acks: Arc::new(RwLock::new(HashMap::new())),
+            current_leader: Arc::new(RwLock::new(None)),
+            pending_done_acks: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -2754,8 +3271,160 @@ impl NetworkTransactionSequencer {
         );
     }
 
+    /// Select leader deterministically using HRW (Highest Random Weight) / Rendezvous Hashing
+    /// Returns ordered list of top-N leaders for failover support
+    /// 
+    /// Algorithm:
+    /// - score(p) = hash(request_id || round || peer_id)
+    /// - leader = argmax_p score(p)
+    /// - Tie-break: lexicographically smallest peer_id
+    async fn select_leader_with_hrw(
+        &self,
+        request_id: &str,
+        round: u64,
+        max_candidates: usize,
+    ) -> Result<Vec<libp2p::PeerId>> {
+        // Get eligible candidates (exclude timed-out peers)
+        let available = self.available_nodes.read().await.clone();
+        let excluded = {
+            let exclusions = self.peer_exclusions.read().await;
+            exclusions.get(request_id).cloned().unwrap_or_default()
+        };
+        let candidates = get_eligible_candidates(&available, &excluded);
+
+        if candidates.is_empty() {
+            return Err(anyhow::anyhow!("No eligible candidates for HRW selection"));
+        }
+
+        // Compute HRW scores for all candidates
+        let mut scored: Vec<(libp2p::PeerId, [u8; 32])> = candidates
+            .iter()
+            .map(|peer_id| {
+                let score = compute_hrw_score(request_id, round, peer_id);
+                (*peer_id, score)
+            })
+            .collect();
+
+        // Sort by score (descending), then by peer_id (ascending) for tie-break
+        scored.sort_by(|a, b| {
+            match b.1.cmp(&a.1) {
+                // Descending by score
+                std::cmp::Ordering::Equal => {
+                    // Tie-break: lexicographically smallest peer_id
+                    a.0.to_bytes().cmp(&b.0.to_bytes())
+                }
+                other => other,
+            }
+        });
+
+        // Return top-N leaders
+        let leaders: Vec<libp2p::PeerId> = scored
+            .into_iter()
+            .take(max_candidates)
+            .map(|(peer_id, _)| peer_id)
+            .collect();
+
+        info!(
+            "🎯 [MAIN_SEQUENCER] HRW selected {} leader(s) for request_id={}, round={}: {:?}",
+            leaders.len(),
+            request_id,
+            round,
+            leaders.iter().map(|p| p.to_string()).collect::<Vec<_>>()
+        );
+
+        Ok(leaders)
+    }
+
+    /// Record a timeout for a peer on a specific request
+    /// If timeout count exceeds threshold (default: 3), peer is excluded from HRW selection
+    pub async fn record_peer_timeout(&self, request_id: &str, peer_id: libp2p::PeerId, timeout_threshold: u32) {
+        let mut timeout_counts = self.peer_timeout_counts.write().await;
+        let key = (request_id.to_string(), peer_id);
+        let count = timeout_counts.entry(key.clone()).or_insert(0);
+        *count += 1;
+
+        if *count >= timeout_threshold {
+            let mut exclusions = self.peer_exclusions.write().await;
+            exclusions.entry(request_id.to_string())
+                .or_insert_with(HashSet::new)
+                .insert(peer_id);
+            warn!(
+                "⚠️ [MAIN_SEQUENCER] Peer {} excluded from HRW for request {} ({} timeouts >= threshold {})",
+                peer_id, request_id, count, timeout_threshold
+            );
+        } else {
+            info!(
+                "📊 [MAIN_SEQUENCER] Peer {} timeout count for request {}: {}/{}",
+                peer_id, request_id, count, timeout_threshold
+            );
+        }
+    }
+
+    /// Clear exclusion and timeout counts for a completed request
+    pub async fn clear_request_exclusions(&self, request_id: &str) {
+        let mut exclusions = self.peer_exclusions.write().await;
+        exclusions.remove(request_id);
+        
+        let mut timeout_counts = self.peer_timeout_counts.write().await;
+        timeout_counts.retain(|(req_id, _), _| req_id != request_id);
+        
+        info!("🧹 [MAIN_SEQUENCER] Cleared exclusions for completed request {}", request_id);
+    }
+
+    /// Compute quorum threshold using ceil(2N/3) formula
+    /// CRITICAL: Uses ceil, not floor, to ensure safety
+    /// Formula: max(2, (2 * total_nodes + 2) / 3)
+    /// Examples:
+    ///   - N=3: quorum = 2 (ceil(6/3)=2)
+    ///   - N=4: quorum = 3 (ceil(8/3)=3, NOT 2)
+    ///   - N=5: quorum = 4 (ceil(10/3)=4, NOT 3)
+    ///   - N=7: quorum = 5 (ceil(14/3)=5, NOT 4)
+    pub fn compute_quorum_threshold(total_nodes: usize) -> usize {
+        if total_nodes == 0 {
+            return 0;
+        }
+        // Integer ceil for 2N/3: (2*n + 2) / 3
+        let quorum = (2 * total_nodes + 2) / 3;
+        // Minimum 2 nodes for 3-node cluster
+        quorum.max(2)
+    }
+
+    /// Check if this node is the final node for a given request using HRW
+    pub async fn am_i_final_node_for_request(&self, request_id: &str, round: u64) -> Result<bool> {
+        let local_peer = self
+            .local_peer_id
+            .ok_or_else(|| anyhow::anyhow!("Local peer ID not set"))?;
+
+        // Use HRW to compute leaders
+        let leaders = self.select_leader_with_hrw(request_id, round, 1).await?;
+        
+        if leaders.is_empty() {
+            return Err(anyhow::anyhow!("No leaders computed for request_id={}", request_id));
+        }
+
+        let final_node = leaders[0];
+        let is_final = local_peer == final_node;
+
+        if is_final {
+            info!(
+                "✅ [MAIN_SEQUENCER] am_i_final_node_for_request() = true: local_peer={:?}, final_node={:?}, request_id={}, round={}",
+                local_peer, final_node, request_id, round
+            );
+        } else {
+            debug!(
+                "🔍 [MAIN_SEQUENCER] am_i_final_node_for_request() = false: local_peer={:?}, final_node={:?}, request_id={}, round={}",
+                local_peer, final_node, request_id, round
+            );
+        }
+
+        Ok(is_final)
+    }
+
     /// Select final node deterministically for current round using VRF + Consensus
     /// Returns the peer ID of the selected node (from consensus cache)
+    /// 
+    /// DEPRECATED: Use select_leader_with_hrw() instead
+    #[allow(dead_code)]
     async fn select_final_node(&self) -> Result<libp2p::PeerId> {
         let round = *self.main_sequencer_round.read().await;
 
@@ -3322,127 +3991,106 @@ impl NetworkTransactionSequencer {
             return None;
         }
 
-        // Get current round
-        let round = *self.main_sequencer_round.read().await;
-
-        // CRITICAL FIX: Check if THIS node has performed VRF selection for this round
-        // This prevents skipping VRF when consensus results arrive from other nodes first
-        let has_performed_vrf = self.main_vrf_performed_rounds.read().await.contains(&round);
-        let has_final_node = self.final_node_cache.read().await.contains_key(&round);
-
-        info!(
-            "📤 [MAIN_SEQUENCER] Dequeue attempt: round={}, queue_len={}, vrf_performed={}, consensus_ready={}",
-            round, queue_len, has_performed_vrf, has_final_node
-        );
-
-        if !has_performed_vrf {
-            // THIS node hasn't performed VRF yet - must do it regardless of consensus status
-            info!(
-                "🎯 [MAIN_SEQUENCER] Node hasn't performed VRF for round {}, triggering VRF selection",
-                round
-            );
-
-            // Get available nodes
-            let nodes = self.available_nodes.read().await.clone();
-            if nodes.is_empty() {
-                warn!("⚠️ [MAIN_SEQUENCER] No available nodes for VRF selection");
-                return None;
-            }
-
-            info!(
-                "🔍 [MAIN_SEQUENCER] Available nodes for VRF: count={}, nodes={:?}",
-                nodes.len(),
-                nodes.iter().map(|p| p.to_string()).collect::<Vec<_>>()
-            );
-
-            // Check if VRF service is available
-            if self.vrf_service.is_none() {
-                error!("❌ [MAIN_SEQUENCER] VRF service not configured! Cannot perform selection.");
-                return None;
-            }
-
-            // Trigger VRF selection (spawn async to avoid blocking)
-            let threshold = nodes.len(); // All nodes must participate
-            let sequencer_clone = self.clone();
-            tokio::spawn(async move {
-                info!(
-                    "🚀 [MAIN_SEQUENCER] Starting VRF selection task for round {}",
-                    round
-                );
-                if let Err(e) = sequencer_clone.perform_vrf_selection(threshold).await {
-                    error!("❌ [MAIN_SEQUENCER] VRF selection failed: {}", e);
-                } else {
-                    info!(
-                        "✅ [MAIN_SEQUENCER] VRF selection task completed for round {}",
-                        round
-                    );
-                }
-            });
-
-            // Return None - wait for VRF to complete and consensus to form
-            info!(
-                "⏸️ [MAIN_SEQUENCER] Waiting for VRF task to complete for round {}",
-                round
-            );
-            return None;
-        }
-
-        // VRF completed - now check if consensus is complete
-        if !has_final_node {
-            // VRF done but consensus not yet complete - wait
-            info!(
-                "⏳ [MAIN_SEQUENCER] Round {}: VRF ✅ performed, but consensus ⏳ not ready yet (waiting for other nodes)",
-                round
-        );
-            return None;
-        }
-
-        // Both VRF and consensus complete - proceed
-        info!(
-            "✅ [MAIN_SEQUENCER] Round {}: VRF ✅ performed, consensus ✅ ready - proceeding to select transaction",
-            round
-        );
-
-        // Check if we are the final node
-        match self.am_i_final_node().await {
-            Ok(true) => {
-                // We are the final node - select the request
-                let mut pending = self.pending_requests.write().await;
-                if let Some((tx_id, request)) = pending.pop_first() {
-                    let sequence = request.sequence;
-                    let queue_size = pending.len();
-                    info!(
-                        "🎯 [MAIN_SEQUENCER] Final node selecting request: tx_id={}, sequence={}, remaining={}",
-                        tx_id, sequence, queue_size
-                    );
-
-                    // Lock this request
-                    drop(pending);
-                    let mut locked = self.locked_request.write().await;
-                    *locked = Some(tx_id.clone());
-
-                    // Broadcast SELECT message
-                    if let Err(e) = self.broadcast_select_message(&tx_id, &request).await {
-                        warn!("⚠️ [MAIN_SEQUENCER] Failed to broadcast SELECT: {}", e);
-                    }
-
-                    drop(locked);
-                    Some(request)
-                } else {
-                    None
-                }
-            }
-            Ok(false) => {
-                // We are NOT the final node - wait for SELECT message
-                None
-            }
+        // Sync round first to ensure all nodes have the same round
+        let round = match self.sync_round_with_peers().await {
+            Ok(r) => r,
             Err(e) => {
-                warn!(
-                    "⚠️ [MAIN_SEQUENCER] Error checking final node status: {}",
-                    e
+                warn!("⚠️ [MAIN_SEQUENCER] Round sync failed: {}, using local round", e);
+                *self.main_sequencer_round.read().await
+            }
+        };
+
+        // Get the first request from queue to compute HRW
+        let (first_tx_id, first_request) = {
+            let pending = self.pending_requests.read().await;
+            if let Some((tx_id, request)) = pending.first_key_value() {
+                (tx_id.clone(), request.clone())
+            } else {
+                return None;
+            }
+        };
+
+        info!(
+            "📤 [MAIN_SEQUENCER] Dequeue attempt: round={}, queue_len={}, first_request={}",
+            round, queue_len, first_tx_id
+        );
+
+        // Use HRW to get top-3 leaders for failover support
+        let leaders = match self.select_leader_with_hrw(&first_tx_id, round, 3).await {
+            Ok(leaders) => leaders,
+            Err(e) => {
+                error!(
+                    "❌ [MAIN_SEQUENCER] Failed to compute HRW for request {}: {}",
+                    first_tx_id, e
                 );
+                return None;
+            }
+        };
+
+        if leaders.is_empty() {
+            error!("❌ [MAIN_SEQUENCER] No leaders computed for request {}", first_tx_id);
+            return None;
+        }
+
+        let local_peer = match self.local_peer_id {
+            Some(peer) => peer,
+            None => {
+                error!("❌ [MAIN_SEQUENCER] Local peer ID not set");
+                return None;
+            }
+        };
+
+        // Check if we are the primary leader (leader[0])
+        let is_primary_leader = local_peer == leaders[0];
+        let leader_index = leaders.iter().position(|&p| p == local_peer);
+
+        if is_primary_leader {
+            info!(
+                "✅ [MAIN_SEQUENCER] Round {}: HRW selected this node as PRIMARY leader for request {}",
+                round, first_tx_id
+            );
+        } else if let Some(idx) = leader_index {
+            info!(
+                "🔍 [MAIN_SEQUENCER] Round {}: This node is backup leader #{} for request {} (primary: {:?})",
+                round, idx + 1, first_tx_id, leaders[0]
+            );
+        } else {
+            debug!(
+                "🔍 [MAIN_SEQUENCER] Round {}: HRW selected another node as leader for request {} (primary: {:?})",
+                round, first_tx_id, leaders[0]
+            );
+        }
+
+        // Check if we are the primary leader
+        if is_primary_leader {
+            // We are the leader - select the request
+            let mut pending = self.pending_requests.write().await;
+            if let Some((tx_id, request)) = pending.pop_first() {
+                let sequence = request.sequence;
+                let queue_size = pending.len();
+                info!(
+                    "🎯 [MAIN_SEQUENCER] Leader selecting request: tx_id={}, sequence={}, remaining={}",
+                    tx_id, sequence, queue_size
+                );
+
+                // Lock this request
+                drop(pending);
+                let mut locked = self.locked_request.write().await;
+                *locked = Some(tx_id.clone());
+
+                // Broadcast SELECT message
+                if let Err(e) = self.broadcast_select_message(&tx_id, &request).await {
+                    warn!("⚠️ [MAIN_SEQUENCER] Failed to broadcast SELECT: {}", e);
+                }
+
+                drop(locked);
+                Some(request)
+            } else {
                 None
             }
+        } else {
+            // We are NOT the leader - wait for SELECT message
+            None
         }
     }
 
@@ -3499,6 +4147,15 @@ impl NetworkTransactionSequencer {
             round, request_id, flow_label
         );
 
+        // CRITICAL: Leader assigns sequence (single source of truth)
+        let (sequence, view_id) = {
+            let mut sync_state = self.sync_state.write().await;
+            sync_state.global_sequence += 1;
+            let seq = sync_state.global_sequence;
+            let vid = sync_state.view_id;
+            (seq, vid)
+        };
+
         // Create signature (simplified - in production use proper signing)
         let signature = vec![]; // TODO: Sign with node's private key
 
@@ -3509,6 +4166,8 @@ impl NetworkTransactionSequencer {
                 data: serde_json::to_vec(&crate::types::GossipsubMessage::MainSequencerSelect {
                     round,
                     request_id: request_id.to_string(),
+                    sequence,        // CRITICAL: Leader-assigned sequence
+                    view_id,         // Current view ID
                     final_node_id: local_peer,
                     signature,
                 })?,
@@ -3577,6 +4236,8 @@ impl NetworkTransactionSequencer {
         &self,
         round: u64,
         request_id: String,
+        sequence: u64,
+        view_id: u64,
         final_node_id: libp2p::PeerId,
     ) -> Result<()> {
         let current_round = *self.main_sequencer_round.read().await;
@@ -3589,6 +4250,29 @@ impl NetworkTransactionSequencer {
             return Ok(());
         }
 
+        // Verify view_id (allow higher view_id to trigger resync)
+        let mut sync_state = self.sync_state.write().await;
+        if view_id < sync_state.view_id {
+            warn!(
+                "⚠️ [MAIN_SEQUENCER] SELECT with stale view_id: local={}, received={}",
+                sync_state.view_id, view_id
+            );
+            return Ok(());
+        }
+        if view_id > sync_state.view_id {
+            warn!(
+                "⚠️ [MAIN_SEQUENCER] SELECT with higher view_id: local={}, received={}, triggering resync",
+                sync_state.view_id, view_id
+            );
+            // TODO: Trigger view sync (PR 5)
+            sync_state.view_id = view_id;
+        }
+
+        // CRITICAL: Store leader-assigned sequence (single source of truth)
+        sync_state.current_sequence = sequence;
+        sync_state.current_processing = Some(request_id.clone());
+        drop(sync_state);
+
         // Verify the sender is actually the final node
         let expected_final = self.select_final_node().await?;
         if final_node_id != expected_final {
@@ -3599,13 +4283,18 @@ impl NetworkTransactionSequencer {
             return Ok(());
         }
 
+        // Store current leader for DONE_ACK sending
+        let mut current_leader = self.current_leader.write().await;
+        *current_leader = Some(final_node_id);
+        drop(current_leader);
+
         // Lock this request
         let mut locked = self.locked_request.write().await;
         *locked = Some(request_id.clone());
 
         info!(
-            "🔒 [MAIN_SEQUENCER] Locked request from final node: round={}, request_id={}",
-            round, request_id
+            "🔒 [MAIN_SEQUENCER] Locked request from final node: round={}, request_id={}, sequence={}, view_id={}",
+            round, request_id, sequence, view_id
         );
 
         // Check if we have this request
@@ -3621,16 +4310,18 @@ impl NetworkTransactionSequencer {
             self.broadcast_ack(&request_id).await?;
         } else {
             warn!(
-                "⚠️ [MAIN_SEQUENCER] Missing request, sending MISSING: {}",
+                "⚠️ [MAIN_SEQUENCER] Missing request, will fetch: {}",
                 request_id
             );
             self.broadcast_missing(&request_id).await?;
 
-            // Wait for request to arrive
+            // CRITICAL: Send FETCH_REQUEST via req-resp (NOT gossip)
             info!(
-                "⏳ [MAIN_SEQUENCER] Waiting for missing request: {}",
+                "📥 [MAIN_SEQUENCER] Triggering FETCH_REQUEST for missing request: {}",
                 request_id
             );
+            // Note: Actual fetch will be handled by RPC handler when it receives the request
+            // For now, we still wait (will be replaced by fetch logic in RPC handler)
             self.wait_for_request(&request_id, round).await?;
         }
 
@@ -3848,6 +4539,9 @@ impl NetworkTransactionSequencer {
 
     /// Mark that we've completed processing the transaction
     pub async fn mark_completed(&self, transaction_id: &str) -> Result<()> {
+        // Clear exclusions for completed request
+        self.clear_request_exclusions(transaction_id).await;
+        
         let mut sync_state = self.sync_state.write().await;
 
         if sync_state.current_processing.as_ref() == Some(&transaction_id.to_string()) {

@@ -539,7 +539,7 @@ impl MpcNetworkLayer {
                 Some(i) => Some(i),
                 None => {
                     let key = crate::database::key_utils::peer_index_key(&p.to_string());
-                    match self.db.get_string::<usize>(&key) {
+                    match self.db.get_encrypted_string::<usize>(&key) {
                         Ok(Some(i)) => Some(i),
                         _ => None,
                     }
@@ -577,7 +577,7 @@ impl MpcNetworkLayer {
         for p in active {
             let known = self.peer_discovery.peer_indices.contains_key(&p) || {
                 let key = crate::database::key_utils::peer_index_key(&p.to_string());
-                self.db.get_string::<usize>(&key).ok().flatten().is_some()
+                self.db.get_encrypted_string::<usize>(&key).ok().flatten().is_some()
             };
             if !known {
                 swarm

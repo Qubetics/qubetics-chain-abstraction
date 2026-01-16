@@ -94,6 +94,8 @@ pub const TOPIC_VAULT_SEQUENCER_MISSING: &str = "vault-sequencer-missing";
 pub const TOPIC_MAIN_SEQUENCER_SELECT: &str = "main-sequencer-select";
 pub const TOPIC_MAIN_SEQUENCER_ACK: &str = "main-sequencer-ack";
 pub const TOPIC_MAIN_SEQUENCER_MISSING: &str = "main-sequencer-missing";
+pub const TOPIC_VAULT_SEQUENCER_COMMIT_CERT: &str = "vault-sequencer-commit-cert";
+pub const TOPIC_MAIN_SEQUENCER_COMMIT_CERT: &str = "main-sequencer-commit-cert";
 pub const TOPIC_TRANSACTION_BROADCAST: &str = "transaction-broadcast";
 pub const TOPIC_TRANSACTION_FAILURE: &str = "transaction-failure";
 
@@ -129,6 +131,8 @@ pub enum GossipTopic {
     MainSequencerSelect,
     MainSequencerAck,
     MainSequencerMissing,
+    VaultSequencerCommitCert,
+    MainSequencerCommitCert,
     TransactionBroadcast,
     TransactionFailure,
 }
@@ -164,6 +168,8 @@ impl GossipTopic {
         GossipTopic::MainSequencerSelect,
         GossipTopic::MainSequencerAck,
         GossipTopic::MainSequencerMissing,
+        GossipTopic::VaultSequencerCommitCert,
+        GossipTopic::MainSequencerCommitCert,
         GossipTopic::TransactionBroadcast,
         GossipTopic::TransactionFailure,
     ];
@@ -201,6 +207,8 @@ impl GossipTopic {
             GossipTopic::MainSequencerSelect => TOPIC_MAIN_SEQUENCER_SELECT,
             GossipTopic::MainSequencerAck => TOPIC_MAIN_SEQUENCER_ACK,
             GossipTopic::MainSequencerMissing => TOPIC_MAIN_SEQUENCER_MISSING,
+            GossipTopic::VaultSequencerCommitCert => TOPIC_VAULT_SEQUENCER_COMMIT_CERT,
+            GossipTopic::MainSequencerCommitCert => TOPIC_MAIN_SEQUENCER_COMMIT_CERT,
             GossipTopic::TransactionBroadcast => TOPIC_TRANSACTION_BROADCAST,
             GossipTopic::TransactionFailure => TOPIC_TRANSACTION_FAILURE,
         }

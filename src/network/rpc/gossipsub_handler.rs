@@ -1597,12 +1597,14 @@ impl MpcNetworkLayer {
             GossipsubMessage::VaultSequencerSelect {
                 round,
                 request_id,
+                sequence,
+                view_id,
                 final_node_id,
                 signature: _signature,
             } => {
                 info!(
-                    "📨 [VAULT_SEQUENCER] Received SELECT: round={}, request_id={}, from={:?}",
-                    round, request_id, final_node_id
+                    "📨 [VAULT_SEQUENCER] Received SELECT: round={}, request_id={}, sequence={}, view_id={}, from={:?}",
+                    round, request_id, sequence, view_id, final_node_id
                 );
 
                 // VaultSequencerSelect removed from retry - has ACK/MISSING fallback
@@ -1610,7 +1612,7 @@ impl MpcNetworkLayer {
 
                 if let Some(sequencer) = &self.contract_sequencer {
                     if let Err(e) = sequencer
-                        .handle_select_message(round, request_id, final_node_id)
+                        .handle_select_message(round, request_id, sequence, view_id, final_node_id)
                         .await
                     {
                         error!("❌ [VAULT_SEQUENCER] Failed to handle SELECT: {}", e);
@@ -1646,12 +1648,14 @@ impl MpcNetworkLayer {
             GossipsubMessage::MainSequencerSelect {
                 round,
                 request_id,
+                sequence,
+                view_id,
                 final_node_id,
                 signature: _signature,
             } => {
                 info!(
-                    "📨 [MAIN_SEQUENCER] Received SELECT: round={}, request_id={}, from={:?}",
-                    round, request_id, final_node_id
+                    "📨 [MAIN_SEQUENCER] Received SELECT: round={}, request_id={}, sequence={}, view_id={}, from={:?}",
+                    round, request_id, sequence, view_id, final_node_id
                 );
 
                 // MainSequencerSelect removed from retry - has ACK/MISSING fallback
@@ -1659,7 +1663,7 @@ impl MpcNetworkLayer {
 
                 if let Some(sequencer) = &self.network_transaction_sequencer {
                     if let Err(e) = sequencer
-                        .handle_select_message(round, request_id, final_node_id)
+                        .handle_select_message(round, request_id, sequence, view_id, final_node_id)
                         .await
                     {
                         error!("❌ [MAIN_SEQUENCER] Failed to handle SELECT: {}", e);
@@ -1691,6 +1695,60 @@ impl MpcNetworkLayer {
                     "⚠️ [MAIN_SEQUENCER] Received MISSING: round={}, request_id={}, from={:?}",
                     round, request_id, node_id
                 );
+            }
+            GossipsubMessage::VaultSequencerCommitCert {
+                request_id,
+                sequence,
+                view_id,
+                round,
+                final_node_id,
+                acks,
+                quorum_size,
+                total_nodes,
+                signature: _signature,
+            } => {
+                info!(
+                    "📨 [VAULT_SEQUENCER] Received COMMIT_CERT: request_id={}, sequence={}, view_id={}, round={}, quorum={}/{}",
+                    request_id, sequence, view_id, round, quorum_size, total_nodes
+                );
+                if let Some(sequencer) = &self.contract_sequencer {
+                    // acks and final_node_id are already PeerId in GossipsubMessage
+                    if let Err(e) = sequencer
+                        .handle_commit_cert(
+                            request_id,
+                            sequence,
+                            view_id,
+                            round,
+                            final_node_id,
+                            acks,
+                            quorum_size,
+                            total_nodes,
+                        )
+                        .await
+                    {
+                        error!("❌ [VAULT_SEQUENCER] Failed to handle COMMIT_CERT: {}", e);
+                    }
+                }
+            }
+            GossipsubMessage::MainSequencerCommitCert {
+                request_id,
+                sequence,
+                view_id,
+                round,
+                final_node_id,
+                acks,
+                quorum_size,
+                total_nodes,
+                signature: _signature,
+            } => {
+                info!(
+                    "📨 [MAIN_SEQUENCER] Received COMMIT_CERT: request_id={}, sequence={}, view_id={}, round={}, quorum={}/{}",
+                    request_id, sequence, view_id, round, quorum_size, total_nodes
+                );
+                // TODO: Implement COMMIT_CERT handling (PR 4)
+                if let Some(sequencer) = &self.network_transaction_sequencer {
+                    // Will be implemented in PR 4
+                }
             }
             GossipsubMessage::VaultSequencerVrfSelectedNodes(broadcast_msg) => {
                 info!(

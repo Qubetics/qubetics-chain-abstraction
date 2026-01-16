@@ -401,29 +401,6 @@ impl SigningNode {
         let tx_hash = hasher.finalize();
         info!("Tx hash: 0x{}", hex::encode(tx_hash));
 
-        // Get available nodes and perform VRF selection
-        let available_nodes = self.coordination.get_available_nodes_from_manager().await;
-
-        // Use VrfService for node selection (chain-agnostic)
-        if let Some(vrf_service) = self.coordination.vrf_service() {
-            let round = vrf_service.get_current_round().await;
-            let _selection_result = vrf_service
-                .perform_node_selection(
-                    &available_nodes,
-                    crate::vrf::VRF_NODE_SELECTION_COUNT,
-                    round,
-                    self.chain_handler.chain_type(),
-                )
-                .await?;
-
-            info!(
-                "🎯 [VRF] Node {} completed VRF selection for {} signing round {}",
-                self.id,
-                self.chain_handler.chain_type(),
-                round
-            );
-        }
-
         // Create ECDSA signature using secp256k1
         let msg = Message::from_digest_slice(&tx_hash)?;
         let signature = self.create_ecdsa_signature_with_key(&msg, transaction, &signing_key)?;
@@ -750,26 +727,6 @@ impl SigningNode {
         hasher.update(&tx_bytes);
         let tx_hash = hasher.finalize();
         info!("Tx hash: 0x{}", hex::encode(tx_hash));
-        // Get available nodes and perform VRF selection
-        let available_nodes = self.get_available_nodes_from_manager().await;
-
-        // Use VrfService for node selection (chain-agnostic)
-        if let Some(vrf_service) = self.coordination.vrf_service() {
-            let round = vrf_service.get_current_round().await;
-            let _selection_result = vrf_service
-                .perform_node_selection(
-                    &available_nodes,
-                    crate::vrf::VRF_NODE_SELECTION_COUNT,
-                    round,
-                    "ethereum",
-                )
-                .await?;
-
-            info!(
-                "🎯 [VRF] Node {} completed VRF selection for ethereum signing round {}",
-                self.id, round
-            );
-        }
 
         // Create ECDSA signature using secp256k1
         let msg = Message::from_digest_slice(&tx_hash)?;

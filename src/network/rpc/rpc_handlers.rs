@@ -3,7 +3,7 @@
 use anyhow::Result;
 use libp2p::gossipsub::{IdentTopic, Message};
 use libp2p::PeerId;
-use tracing::{error, warn};
+use tracing::{error, info, warn};
 
 use crate::database::key_utils::{self, peer_addr_key};
 use crate::types::p2p::SerializablePeerId;
@@ -157,6 +157,37 @@ impl MpcNetworkLayer {
                         ))
                     }
                 }
+            }
+            RPCRequest::FetchRequest {
+                request_id,
+                sequence,
+                view_id,
+                requester_id: _requester_id,
+                round,
+                sequencer_type,
+            } => {
+                self.handle_fetch_request(peer, request_id, sequence, view_id, round, sequencer_type)
+                    .await
+            }
+            RPCRequest::DoneAck {
+                request_id,
+                sequence,
+                view_id,
+                node_id,
+                round,
+                sequencer_type,
+            } => {
+                self.handle_done_ack(peer, request_id, sequence, view_id, node_id, round, sequencer_type)
+                    .await
+            }
+            RPCRequest::ResyncHead {
+                view_id,
+                requester_id: _requester_id,
+                round,
+                sequencer_type,
+            } => {
+                self.handle_resync_head(peer, view_id, round, sequencer_type)
+                    .await
             }
             _ => RPCResponse::Ack,
         }
@@ -388,7 +419,7 @@ impl MpcNetworkLayer {
                 indices.push(Some(idx));
             } else {
                 let key = key_utils::peer_index_key(&pid.to_string());
-                match self.db.get_string_async::<usize>(&key).await {
+                match self.db.get_encrypted_string_async::<usize>(&key).await {
                     Ok(Some(idx)) => {
                         // Update peer_indices with index from database
                         self.peer_discovery.peer_indices.insert(*pid, idx);
@@ -1450,6 +1481,252 @@ impl MpcNetworkLayer {
             response.current_round,
         ) {
             // VRF round sync applied
+        }
+    }
+
+    /// Handle FETCH_REQUEST RPC (leader-side: respond with request payload)
+    async fn handle_fetch_request(
+        &mut self,
+        _peer: PeerId,
+        request_id: String,
+        sequence: u64,
+        view_id: u64,
+        round: u64,
+        sequencer_type: String,
+    ) -> RPCResponse {
+        
+        // Get the sequencer based on type
+        if sequencer_type == "vault" {
+            if let Some(sequencer) = &self.contract_sequencer {
+                // Check pending_requests (public field)
+                let pending = sequencer.pending_requests.read().await;
+                let request_opt = pending.get(&request_id).cloned();
+                drop(pending);
+
+                if let Some(request) = request_opt {
+
+                    // Serialize the request
+                    let request_bytes = match serde_json::to_vec(&request) {
+                        Ok(bytes) => bytes,
+                        Err(e) => {
+                            return RPCResponse::Error(format!("Failed to serialize request: {}", e));
+                        }
+                    };
+
+                    info!(
+                        "📤 [VAULT_SEQUENCER] Responding to FETCH_REQUEST: request_id={}, sequence={}, view_id={}, round={}",
+                        request_id, sequence, view_id, round
+                    );
+
+                    return RPCResponse::FetchResponse {
+                        request_id,
+                        sequence,
+                        view_id,
+                        request: request_bytes,
+                        round,
+                        sequencer_type,
+                    };
+                }
+            }
+            warn!(
+                "⚠️ [VAULT_SEQUENCER] FETCH_REQUEST for unknown request_id: {}",
+                request_id
+            );
+            RPCResponse::Error(format!("Request not found: {}", request_id))
+        } else if sequencer_type == "main" {
+            // TODO: Implement for main sequencer (similar logic)
+            RPCResponse::Error(format!("Main sequencer fetch not yet implemented"))
+        } else {
+            RPCResponse::Error(format!("Unknown sequencer type: {}", sequencer_type))
+        }
+    }
+
+    /// Handle DONE_ACK RPC (leader-side: collect acks, broadcast COMMIT_CERT when quorum reached)
+    async fn handle_done_ack(
+        &mut self,
+        peer: PeerId,
+        request_id: String,
+        sequence: u64,
+        view_id: u64,
+        node_id: crate::types::p2p::SerializablePeerId,
+        round: u64,
+        sequencer_type: String,
+    ) -> RPCResponse {
+        use crate::network::sequencer::ContractTransactionSequencer;
+        
+        // Get the sequencer based on type
+        let sequencer_opt: Option<&crate::network::sequencer::ContractTransactionSequencer> = if sequencer_type == "vault" {
+            self.contract_sequencer.as_ref()
+        } else {
+            // Main sequencer handling will be similar - for now return early
+            warn!("⚠️ [SEQUENCER] Main sequencer DONE_ACK handling not yet implemented");
+            return RPCResponse::Ack;
+        };
+
+        if let Some(sequencer) = sequencer_opt {
+            // Deduplicate: check if we already have this DONE_ACK
+            let ack_key = (round, request_id.clone());
+            let mut done_acks = sequencer.done_acks.write().await;
+            
+            let ack_set = done_acks.entry(ack_key.clone()).or_insert_with(|| std::collections::HashSet::new());
+            
+            // Deduplicate by (sequence, node_id) - same node can't ack twice
+            if ack_set.contains(&peer) {
+                info!(
+                    "📥 [SEQUENCER] Duplicate DONE_ACK ignored: request_id={}, sequence={}, from={:?}",
+                    request_id, sequence, peer
+                );
+                return RPCResponse::Ack;
+            }
+            
+            // Add this ack
+            ack_set.insert(peer);
+            let ack_count = ack_set.len();
+            drop(done_acks);
+            
+            // Get total nodes and compute quorum
+            let total_nodes = sequencer.get_total_nodes().await;
+            let current_view_id = sequencer.get_view_id().await;
+            
+            // Verify view_id matches
+            if view_id != current_view_id {
+                warn!(
+                    "⚠️ [SEQUENCER] DONE_ACK with mismatched view_id: local={}, received={}, ignoring",
+                    current_view_id, view_id
+                );
+                return RPCResponse::Ack;
+            }
+            
+            let quorum_threshold = ContractTransactionSequencer::compute_quorum_threshold(total_nodes);
+            
+            info!(
+                seq_no = sequence,
+                request_id = %request_id,
+                view_id = view_id,
+                round = round,
+                peer_id = ?peer,
+                ack_count = ack_count,
+                total_nodes = total_nodes,
+                quorum_threshold = quorum_threshold,
+                stage = "done_ack_received",
+                "📥 [SEQUENCER] Received DONE_ACK: request_id={}, sequence={}, view_id={}, round={}, from={:?}, acks={}/{} (quorum={})",
+                request_id, sequence, view_id, round, peer, ack_count, total_nodes, quorum_threshold
+            );
+            
+            // Check if quorum reached
+            if ack_count >= quorum_threshold {
+                // Broadcast COMMIT_CERT
+                if let Some(leader_peer_id) = sequencer.get_local_peer_id() {
+                    // Get all acks (as PeerId list)
+                    let done_acks_read = sequencer.done_acks.read().await;
+                    let acks_list: Vec<libp2p::PeerId> = done_acks_read
+                        .get(&ack_key)
+                        .map(|s| s.iter().cloned().collect())
+                        .unwrap_or_default();
+                    drop(done_acks_read);
+                    
+                    // Create COMMIT_CERT message (GossipsubMessage uses PeerId directly)
+                    let commit_cert = crate::types::GossipsubMessage::VaultSequencerCommitCert {
+                        request_id: request_id.clone(),
+                        sequence,
+                        view_id,
+                        round,
+                        final_node_id: leader_peer_id,
+                        acks: acks_list,
+                        quorum_size: ack_count,
+                        total_nodes,
+                        signature: vec![], // TODO: Add signature (PR 6)
+                    };
+                    
+                    // Broadcast via message_tx
+                    let commit_cert_bytes = match serde_json::to_vec(&commit_cert) {
+                        Ok(bytes) => bytes,
+                        Err(e) => {
+                            error!("❌ [SEQUENCER] Failed to serialize COMMIT_CERT: {}", e);
+                            return RPCResponse::Ack;
+                        }
+                    };
+                    
+                    if let Err(e) = self.message_tx
+                        .send(crate::types::ChannelMessage::Broadcast {
+                            topic: "vault-sequencer-commit-cert".to_string(),
+                            data: commit_cert_bytes,
+                        })
+                        .await
+                    {
+                        error!("❌ [SEQUENCER] Failed to broadcast COMMIT_CERT: {}", e);
+                    } else {
+                        info!(
+                            seq_no = sequence,
+                            request_id = %request_id,
+                            view_id = view_id,
+                            round = round,
+                            quorum_size = ack_count,
+                            total_nodes = total_nodes,
+                            stage = "commit_cert_broadcast",
+                            "📤 [SEQUENCER] Broadcasted COMMIT_CERT: request_id={}, sequence={}, quorum={}/{}",
+                            request_id, sequence, ack_count, total_nodes
+                        );
+                    }
+                }
+            }
+        }
+        
+        RPCResponse::Ack
+    }
+
+    /// Handle RESYNC_HEAD RPC (leader-side: return state summary)
+    async fn handle_resync_head(
+        &mut self,
+        _peer: PeerId,
+        view_id: u64,
+        round: u64,
+        sequencer_type: String,
+    ) -> RPCResponse {
+        use crate::types::p2p::SerializablePeerId;
+        
+        info!(
+            "📥 [SEQUENCER] Received RESYNC_HEAD: view_id={}, round={}, sequencer_type={}",
+            view_id, round, sequencer_type
+        );
+        
+        if sequencer_type == "vault" {
+            if let Some(sequencer) = &self.contract_sequencer {
+                let (resync_view_id, resync_round, last_committed, current_processing_tuple, pending_head) = 
+                    sequencer.get_resync_data().await;
+                
+                // Convert current_processing to SerializablePeerId format
+                let current_processing_serialized = current_processing_tuple.map(|(seq, req_id, rnd, leader)| {
+                    (seq, req_id, rnd, SerializablePeerId(leader))
+                });
+                
+                // Recent commits: we don't have a history, so return empty for now
+                // In production, this would be maintained in a circular buffer
+                let recent_commits = vec![];
+                
+                return RPCResponse::ResyncResponse {
+                    view_id: resync_view_id,
+                    round: resync_round,
+                    last_committed,
+                    current_processing: current_processing_serialized,
+                    pending_head,
+                    recent_commits,
+                    sequencer_type,
+                };
+            }
+        } else if sequencer_type == "main" {
+            // TODO: Implement for main sequencer
+            warn!("⚠️ [SEQUENCER] Main sequencer RESYNC_HEAD not yet implemented");
+        }
+        
+        RPCResponse::ResyncResponse {
+            view_id,
+            round,
+            last_committed: None,
+            current_processing: None,
+            pending_head: vec![],
+            recent_commits: vec![],
+            sequencer_type,
         }
     }
 }

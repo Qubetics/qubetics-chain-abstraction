@@ -291,18 +291,43 @@ impl SigningNode {
             digests.push(digest);
         }
 
-        // ===== Select round via VRF =====
-        let available_nodes = self.coordination.get_available_nodes_from_manager().await;
+        // ===== Select round and determine final node via HRW =====
+        // Create a deterministic identifier from transaction data for HRW
+        let tx_identifier = {
+            use sha2::{Digest, Sha256};
+            let mut hasher = Sha256::new();
+            // Use first input's txid and vout as identifier (deterministic)
+            if let Some(first_input) = tx.inputs.first() {
+                // Decode hex txid to bytes
+                if let Ok(txid_bytes) = hex::decode(&first_input.txid) {
+                    hasher.update(&txid_bytes);
+                } else {
+                    // Fallback: use txid string as bytes
+                    hasher.update(first_input.txid.as_bytes());
+                }
+                hasher.update(first_input.vout.to_le_bytes());
+            }
+            // Also include output count for uniqueness
+            hasher.update((tx.outputs.len() as u64).to_le_bytes());
+            hasher.finalize().to_vec()
+        };
+
         let current_round = if let Some(vrf_service) = self.coordination.vrf_service() {
             vrf_service.sync_rounds_before_signing().await?;
             let round = vrf_service.get_next_round().await;
-            let _ = vrf_service
-                .perform_node_selection(&available_nodes, crate::vrf::VRF_NODE_SELECTION_COUNT, round, "bitcoin")
-                .await;
             info!(
-                "🎲 [SIGNING] Node {} using VRF round {} for Bitcoin transaction signing",
+                "🎲 [SIGNING] Node {} using round {} for Bitcoin transaction signing (HRW-based)",
                 self.id, round
             );
+            
+            // Determine final node using HRW (replaces VRF + Consensus)
+            if let Err(e) = self.determine_final_node_with_hrw(&tx_identifier, round).await {
+                warn!(
+                    "⚠️ [SIGNING] Failed to determine final node with HRW for round {}: {}. Continuing anyway.",
+                    round, e
+                );
+            }
+            
             round
         } else {
             warn!("⚠️ [SIGNING] No VRF service available, using round 0 as fallback");

@@ -9,7 +9,8 @@ use libp2p::PeerId;
 use num_bigint::BigUint;
 use num_traits::identities::One;
 use secp256k1::{self, ecdsa::RecoverableSignature, Message, PublicKey, Secp256k1, SecretKey};
-use sha3::Digest;
+use sha2::{Digest, Sha256};
+use sha3::Digest as Sha3Digest;
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -80,6 +81,75 @@ impl SigningNode {
 
     pub fn vrf_service_mut(&mut self) -> Option<&mut VrfService> {
         self.coordination.vrf_service_mut()
+    }
+
+    /// Compute HRW score for signing flow using transaction hash
+    /// Score = SHA256(tx_hash || round || peer_id)
+    fn compute_hrw_score_for_signing(tx_hash: &[u8], round: u64, peer_id: &PeerId) -> [u8; 32] {
+        let mut hasher = Sha256::new();
+        hasher.update(tx_hash);
+        hasher.update(round.to_be_bytes());
+        hasher.update(peer_id.to_bytes());
+        hasher.finalize().into()
+    }
+
+    /// Select final node using HRW (Highest Random Weight) / Rendezvous Hashing for signing flow
+    /// Returns ordered list of top-N final node IDs for failover support
+    /// 
+    /// Algorithm:
+    /// - score(p) = hash(tx_hash || round || peer_id)
+    /// - final_node = argmax_p score(p)
+    /// - Tie-break: lexicographically smallest peer_id
+    pub async fn select_final_node_with_hrw(
+        &self,
+        tx_hash: &[u8],
+        round: u64,
+        max_candidates: usize,
+    ) -> Result<Vec<String>> {
+        // Get available nodes
+        let available_nodes = self.coordination.get_available_nodes_from_manager().await;
+        
+        if available_nodes.is_empty() {
+            return Err(anyhow::anyhow!("No available nodes for HRW selection"));
+        }
+
+        // Compute HRW scores for all candidates
+        let mut scored: Vec<(String, [u8; 32])> = available_nodes
+            .iter()
+            .map(|peer_id| {
+                let score = Self::compute_hrw_score_for_signing(tx_hash, round, peer_id);
+                (peer_id.to_string(), score)
+            })
+            .collect();
+
+        // Sort by score (descending), then by peer_id string (ascending) for tie-break
+        scored.sort_by(|a, b| {
+            match b.1.cmp(&a.1) {
+                // Descending by score
+                std::cmp::Ordering::Equal => {
+                    // Tie-break: lexicographically smallest peer_id
+                    a.0.cmp(&b.0)
+                }
+                other => other,
+            }
+        });
+
+        // Return top-N final nodes
+        let final_nodes: Vec<String> = scored
+            .into_iter()
+            .take(max_candidates)
+            .map(|(node_id, _)| node_id)
+            .collect();
+
+        info!(
+            "🎯 [SIGNING] HRW selected {} final node(s) for tx_hash={:?}, round={}: {:?}",
+            final_nodes.len(),
+            hex::encode(&tx_hash[..tx_hash.len().min(8)]), // Show first 8 bytes
+            round,
+            final_nodes
+        );
+
+        Ok(final_nodes)
     }
 
     pub fn new(id: String, threshold: usize, message_tx: mpsc::Sender<ChannelMessage>) -> Self {
@@ -1125,7 +1195,7 @@ impl SigningNode {
     async fn get_peer_index_from_db(&self, peer_id: &str) -> Option<usize> {
         if let Some(db) = &self.database {
             let key = crate::database::key_utils::peer_index_key(peer_id);
-            match db.get_string::<usize>(&key) {
+            match db.get_encrypted_string::<usize>(&key) {
                 Ok(Some(index)) => {
                     info!(
                         "🔢 [SIGNING] Retrieved peer index {} for {} from database",
@@ -1188,52 +1258,19 @@ impl SigningNode {
     }
 
     /// Handle VRF selected nodes broadcast from another node
+    /// 
+    /// DEPRECATED: With HRW, we no longer need VRF broadcasts or consensus triggering.
+    /// This method is kept for backward compatibility but does nothing.
+    #[allow(dead_code)]
     pub fn handle_vrf_selected_nodes_broadcast(
         &mut self,
-        total_nodes: usize,
-        broadcast: VrfSelectedNodesBroadcast,
-        sender_peer_id: libp2p::PeerId,
+        _total_nodes: usize,
+        _broadcast: VrfSelectedNodesBroadcast,
+        _sender_peer_id: libp2p::PeerId,
     ) {
-        if let Some(vrf_service) = self.coordination.vrf_service() {
-            let round = broadcast.round;
-            let min_selections = total_nodes;
-
-            // Use async task to handle VRF broadcast
-            let vrf_service_clone = vrf_service.clone();
-            let mut signing_node_clone = self.clone();
-
-            tokio::spawn(async move {
-                // Handle VRF broadcast via service
-                if let Err(e) = vrf_service_clone
-                    .handle_vrf_broadcast(broadcast, sender_peer_id, total_nodes)
-                    .await
-                {
-                    error!("❌ [SIGNING] Failed to handle VRF broadcast: {}", e);
-                    return;
-                }
-
-                // Check if consensus should be triggered after receiving this broadcast
-                if vrf_service_clone
-                    .can_start_consensus(round, min_selections)
-                    .await
-                {
-                    info!(
-                    "🎯 [VRF] Enough selections collected for round {}, triggering consensus check",
-                    round
-                );
-
-                    if let Err(e) = signing_node_clone
-                        .check_and_trigger_consensus(round, min_selections)
-                        .await
-                    {
-                        error!(
-                            "❌ [CONSENSUS] Failed to trigger consensus for round {}: {}",
-                            round, e
-                        );
-                    }
-                }
-            });
-        }
+        // HRW-based final node selection doesn't require VRF broadcasts or consensus
+        // Each node computes the final node independently using the same deterministic algorithm
+        debug!("[SIGNING] VRF broadcast received but ignored (using HRW instead)");
     }
 
     /// Check and trigger consensus if ready
@@ -1253,7 +1290,55 @@ impl SigningNode {
         }
     }
 
+    /// Determine final node using HRW for a specific round and transaction hash
+    /// This replaces the VRF + Consensus approach with direct HRW computation
+    pub async fn determine_final_node_with_hrw(
+        &mut self,
+        tx_hash: &[u8],
+        round: u64,
+    ) -> Result<String> {
+        // Use HRW to compute final node
+        let final_nodes = self.select_final_node_with_hrw(tx_hash, round, 1).await?;
+        
+        if final_nodes.is_empty() {
+            return Err(anyhow::anyhow!("No final nodes computed for round {}", round));
+        }
+
+        let final_node_id = final_nodes[0].clone();
+
+        // Store the final node for this round
+        {
+            let mut final_nodes_map = self.signatures.final_nodes_by_round.write().await;
+            final_nodes_map.insert(round, final_node_id.clone());
+            info!(
+                "💾 [SIGNING] Stored final node {} for round {} (HRW-based)",
+                final_node_id, round
+            );
+        }
+
+        // Check if this node is the final selected node
+        if final_node_id == self.id {
+            info!(
+                "\x1b[32m🏆 [SIGNING] This node is the final selected node for round {} (HRW-based)!\x1b[0m",
+                round
+            );
+            // Trigger aggregate signature for the final node
+            self.trigger_aggregate_signature_for_final_node(round)
+                .await?;
+        } else {
+            info!(
+                "\x1b[31m📋 [SIGNING] This node is not the final selected node for round {} (final={})\x1b[0m",
+                round, final_node_id
+            );
+        }
+
+        Ok(final_node_id)
+    }
+
     /// Start consensus for a specific round
+    /// 
+    /// DEPRECATED: Use determine_final_node_with_hrw() instead
+    #[allow(dead_code)]
     pub async fn start_consensus_for_round(
         &mut self,
         round: u64,
@@ -4100,7 +4185,7 @@ impl SigningNode {
         // Get the stored peer index from database
         if let Some(db) = &self.database {
             let key = crate::database::key_utils::peer_index_key(peer_id);
-            if let Ok(Some(index)) = db.get_string::<usize>(&key) {
+            if let Ok(Some(index)) = db.get_encrypted_string::<usize>(&key) {
                 info!(
                     "🔢 [SIGNING] Using stored DKG index {} for peer {} (sync)",
                     index, peer_id
