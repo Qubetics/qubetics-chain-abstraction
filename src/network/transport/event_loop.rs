@@ -38,6 +38,36 @@ impl MpcNetworkLayer {
         let mut dkg_status_timer = tokio::time::interval(Duration::from_secs(300));
         let mut peerlist_logger = tokio::time::interval(Duration::from_secs(300));
 
+        // Global clock timer - reads interval from environment variable
+        let clock_interval_secs = std::env::var("GLOBAL_CLOCK_INTERVAL_SECONDS")
+            .ok()
+            .and_then(|val| val.parse::<u64>().ok())
+            .unwrap_or_else(|| {
+                info!("GLOBAL_CLOCK_INTERVAL_SECONDS not set, defaulting to 60 seconds");
+                60
+            });
+
+        // Calculate next epoch-aligned trigger time for synchronized global clock
+        // This ensures all nodes trigger at the same wall-clock time regardless of startup time
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("System time before Unix epoch");
+        let current_epoch_secs = now.as_secs();
+        let next_trigger_epoch =
+            ((current_epoch_secs / clock_interval_secs) + 1) * clock_interval_secs;
+        let wait_duration = Duration::from_secs(next_trigger_epoch - current_epoch_secs);
+
+        info!(
+            "⏰ [CLOCK] Synchronizing global clock to epoch boundaries - interval: {}s, first trigger in {}s",
+            clock_interval_secs,
+            wait_duration.as_secs()
+        );
+
+        let first_tick = tokio::time::Instant::now() + wait_duration;
+        let mut global_clock_timer =
+            tokio::time::interval_at(first_tick, Duration::from_secs(clock_interval_secs));
+        global_clock_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
         info!("🌐 [P2P] Starting P2P server...");
         info!("🔑 [P2P] Local Peer ID: {}", self.local_peer_id);
 
@@ -92,6 +122,15 @@ impl MpcNetworkLayer {
 
                 _ = dkg_status_timer.tick() => {
                     self.log_periodic_dkg_status().await;
+                }
+
+                _ = global_clock_timer.tick() => {
+                    info!("⏰ [CLOCK] Global clock tick triggered");
+                    if let Err(e) = self.handle_global_clock_tick().await {
+                        error!("⏰ [CLOCK] Clock task failed: {}", e);
+                    } else {
+                        info!("⏰ [CLOCK] Clock task executed successfully");
+                    }
                 }
 
                 // Contract sequencer removed - contract transactions are executed directly
@@ -352,5 +391,85 @@ impl MpcNetworkLayer {
     /// Log periodic DKG status
     async fn log_periodic_dkg_status(&self) {
         // Periodic DKG status check (logging removed to reduce overhead)
+    }
+
+    /// Handle global clock tick - performs VRF node selection every clock tick
+    /// This method has direct access to all network resources:
+    /// - self.db_signing_node: Arc<Mutex<DatabaseSigningNode>> (VRF service, signing)
+    /// - self.signing_node: Option<SigningNode>
+    /// - self.dkg_node: Option<DKGNode>
+    /// - self.user_intent_manager: Option<UserIntentManager>
+    /// - self.db: Database
+    /// - self.network_transaction_sequencer: Option<NetworkTransactionSequencer>
+    /// - self.node_manager: Box<dyn NodeMembership> (for getting available nodes)
+    /// - And all other MpcNetworkLayer fields
+    async fn handle_global_clock_tick(&mut self) -> Result<()> {
+        info!("⏰ [CLOCK] Global clock tick triggered - performing VRF node selection");
+
+        // Get available nodes from node manager and convert to Vec
+        let available_nodes: Vec<libp2p::PeerId> =
+            self.node_manager.get_active_nodes().into_iter().collect();
+
+        if available_nodes.is_empty() {
+            warn!("⏰ [CLOCK] No available nodes for VRF selection, skipping");
+            return Ok(());
+        }
+
+        info!(
+            "⏰ [CLOCK] Available nodes for VRF selection: count={}, nodes={:?}",
+            available_nodes.len(),
+            available_nodes
+                .iter()
+                .map(|p| p.to_string())
+                .collect::<Vec<_>>()
+        );
+
+        // Get VRF service - prefer signing_node, fall back to db_signing_node
+        // This matches the pattern used in rpc_handlers.rs
+        // Try signing_node first
+        if let Some(signing_node) = &self.signing_node {
+            if let Some(vrf_service) = signing_node.vrf_service() {
+                // Sync rounds before getting next round (like bitcoin signing does)
+                if let Err(e) = vrf_service.sync_rounds_before_signing().await {
+                    warn!(
+                        "⏰ [CLOCK] Failed to sync rounds before VRF selection: {}",
+                        e
+                    );
+                }
+
+                // Get next round (increments the round) - this ensures each clock tick uses a new round
+                let round = vrf_service.get_next_round().await;
+
+                info!(
+                    "⏰ [CLOCK] Performing VRF selection for round {} with {} available nodes (using signing_node)",
+                    round,
+                    available_nodes.len()
+                );
+
+                // Perform VRF node selection (selects 1 node) - ONLY ONCE
+                match vrf_service
+                    .perform_node_selection(
+                        &available_nodes,
+                        crate::vrf::VRF_NODE_SELECTION_COUNT,
+                        round,
+                        "global_clock",
+                    )
+                    .await
+                {
+                    Ok(selection_result) => {
+                        info!(
+                            "🎯 [CLOCK] VRF selection completed successfully for round {}: {:?}",
+                            round, selection_result
+                        );
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        error!("❌ [CLOCK] VRF selection failed for round {}: {}", round, e);
+                        return Err(e);
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 }
