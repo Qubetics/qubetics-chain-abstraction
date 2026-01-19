@@ -18,7 +18,7 @@ mod utils;
 pub mod whitelist;
 
 pub use sequencer::{
-    ContractTransactionRequest, NetworkTransactionFlow,
+    NetworkTransactionFlow,
     NetworkTransactionRequest, NetworkTransactionSequencer,
 };
 pub use upgrade::{

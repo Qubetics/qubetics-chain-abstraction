@@ -644,8 +644,6 @@ impl MpcNetworkLayer {
         amount: u128,
         payout_tx_hash: &str,
     ) -> Result<()> {
-        use crate::network::sequencer::{ContractTransactionFlow, ContractTransactionRequest};
-
         if amount == 0 {
             info!(
                 "⏭️ [NETWORK] Skipping withdraw-liquidity sequencing for solver {} (amount=0)",
@@ -674,8 +672,6 @@ impl MpcNetworkLayer {
         reward_tics: Option<u128>,
         payout_tx_hash: &str,
     ) -> Result<()> {
-        use crate::network::sequencer::{ContractTransactionFlow, ContractTransactionRequest};
-
         if reward_btc.is_none() && reward_tics.is_none() {
             info!(
                 "⏭️ [NETWORK] Skipping claim-reward sequencing for solver {} (both rewards are None)",
@@ -702,38 +698,6 @@ impl MpcNetworkLayer {
             None, // No original_request
         )
         .await
-    }
-
-    /// Execute contract transaction directly (sequencer removed)
-    pub(crate) async fn submit_contract_transaction_to_sequencer(
-        &mut self,
-        intent: &crate::types::DepositIntent,
-        intent_hash: &str,
-        transaction_type: crate::types::TransactionType,
-        tx_hash: &str,
-        vault_group_key: Option<k256::ProjectivePoint>,
-        amount: u128,
-    ) -> Result<()> {
-        // Execute contract call directly - sequencer removed
-        if let Some(signing_node) = &mut self.signing_node {
-            crate::chain_abstraction::MpcChainExecutor::execute_contract_call(
-                signing_node,
-                self.node_manager.as_ref(),
-                self.dkg_node.as_ref(),
-                intent,
-                intent_hash,
-                transaction_type,
-                vault_group_key,
-                amount,
-                tx_hash,
-                None, // No request_id
-                None, // No original_request
-            )
-            .await
-        } else {
-            warn!("❌ [NETWORK] Signing node not available for contract call execution");
-            Ok(())
-        }
     }
 
     /// Execute refund intent contract call directly (sequencer removed)
@@ -773,7 +737,7 @@ impl MpcNetworkLayer {
     #[allow(dead_code)]
     pub(crate) async fn process_contract_transaction(
         &mut self,
-        _request: crate::network::sequencer::ContractTransactionRequest,
+        _request: (),
     ) -> Result<()> {
         // Contract sequencer removed - transactions are executed directly
         Ok(())

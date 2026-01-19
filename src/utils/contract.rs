@@ -62,7 +62,7 @@ pub async fn execute_refund_intent_contract_call(
     reason: &str,
     vault_group_key: Option<ProjectivePoint>,
     request_id: Option<String>,
-    original_request: Option<crate::network::ContractTransactionRequest>,
+    _original_request: Option<()>,
 ) -> Result<()> {
     use crate::chain_abstraction::{ChainTransaction, EthereumTransaction};
     use crate::signing::EthereumSigner;
@@ -161,7 +161,7 @@ pub async fn execute_refund_intent_contract_call(
     // Get contract chain handler from signing node
     let contract_chain_handler = signing_node.get_contract_chain_handler().clone();
 
-    // Execute the signing operation
+        // Execute the signing operation (retry metadata no longer used)
     let mut eth_signer = EthereumSigner::new(signing_node);
     eth_signer
         .sign_contract_message(
@@ -171,8 +171,8 @@ pub async fn execute_refund_intent_contract_call(
             vault_tweaked_share,
             None,
             vault_tweaked_share,
-            request_id,       // Pass request_id from sequencer for retry support
-            original_request, // Pass original_request for retry support
+            request_id,
+            None,
         )
         .await?;
 

@@ -959,7 +959,7 @@ impl SigningNode {
         sequencer_request_id: &str,
         blockchain_tx_hash: &str,
         error: &str,
-        original_request: Option<crate::network::ContractTransactionRequest>,
+        original_request: Option<()>,
     ) {
         let channel_message = crate::types::ChannelMessage::TransactionFailure {
             sequencer_request_id: sequencer_request_id.to_string(),

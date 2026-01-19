@@ -75,7 +75,7 @@ impl<'a> EthereumSigner<'a> {
         user_eth_address: Option<String>,
         signing_key_override: Option<Scalar>,
         request_id: Option<String>,
-        original_request: Option<crate::network::ContractTransactionRequest>,
+        original_request: Option<()>,
     ) -> Result<()> {
         self.node
             .sign_contract_message(
@@ -657,7 +657,7 @@ impl SigningNode {
         user_eth_address: Option<String>,
         signing_key_override: Option<Scalar>,
         request_id: Option<String>,
-        original_request: Option<crate::network::ContractTransactionRequest>,
+        original_request: Option<()>,
     ) -> Result<()> {
         // Determine which key to use for signing
         // Redacted user_tweaked_share from logs

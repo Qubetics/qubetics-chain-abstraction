@@ -69,7 +69,7 @@ pub enum ChannelMessage {
         sequencer_request_id: String,
         blockchain_tx_hash: String,
         error: String,
-        original_request: Option<crate::network::ContractTransactionRequest>,
+        original_request: Option<()>,
     },
     TransactionIdBroadcast {
         intent_hash: Option<String>,
@@ -306,6 +306,6 @@ pub enum GossipsubMessage {
         /// Error message
         error: String,
         /// Original request for guaranteed retry (even if cache is empty)
-        original_request: Option<crate::network::ContractTransactionRequest>,
+        original_request: Option<()>,
     },
 }

@@ -522,7 +522,7 @@ impl MpcNetworkLayer {
         reward_tics: Option<u128>,
         payout_tx_hash: &str,
         request_id: Option<String>,
-        original_request: Option<crate::network::ContractTransactionRequest>,
+        original_request: Option<()>,
     ) -> Result<()> {
         let contract_address = std::env::var("SOLVER_CONTRACT_ADDRESS")
             .unwrap_or_else(|_| "0x0000000000000000000000000000000000000000".to_string());
@@ -710,7 +710,7 @@ impl MpcNetworkLayer {
         amount: u128,
         payout_tx_hash: &str,
         request_id: Option<String>,
-        original_request: Option<crate::network::ContractTransactionRequest>,
+        original_request: Option<()>,
     ) -> Result<()> {
         if amount == 0 {
             return Ok(());
@@ -881,7 +881,7 @@ impl MpcNetworkLayer {
         asset_chain_name: &str,
         amount: u128,
         request_id: Option<String>,
-        original_request: Option<crate::network::ContractTransactionRequest>,
+        original_request: Option<()>,
     ) -> Result<()> {
         if amount == 0 {
             return Ok(());

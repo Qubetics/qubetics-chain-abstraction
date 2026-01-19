@@ -65,8 +65,8 @@ pub struct PendingStore {
                     Vec<u8>,
                     Option<String>,
                     Option<TransactionType>,
-                    Option<String>, // request_id for retry tracking
-                    Option<crate::network::ContractTransactionRequest>, // original_request for guaranteed retry
+                    Option<String>, // request_id for retry tracking (contract_request removed)
+                    Option<()>, // deprecated original_request (unused)
                 ),
             >,
         >,
@@ -81,8 +81,8 @@ pub struct PendingStore {
                     Vec<u8>,
                     Option<String>,
                     Option<TransactionType>,
-                    Option<String>, // request_id for retry tracking
-                    Option<crate::network::ContractTransactionRequest>, // original_request for guaranteed retry
+                    Option<String>, // request_id for retry tracking (contract_request removed)
+                    Option<()>, // deprecated original_request (unused)
                 ),
             >,
         >,
@@ -98,8 +98,8 @@ pub struct PendingStore {
                     Vec<u8>,
                     Option<String>,
                     Option<TransactionType>,
-                    Option<String>, // request_id for retry tracking
-                    Option<crate::network::ContractTransactionRequest>, // original_request for guaranteed retry
+                    Option<String>, // request_id for retry tracking (contract_request removed)
+                    Option<()>, // deprecated original_request (unused)
                 ),
             >,
         >,

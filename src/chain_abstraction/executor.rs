@@ -35,7 +35,7 @@ impl MpcChainExecutor {
         amount: u128,
         tx_hash: &str,
         request_id: Option<String>,
-        original_request: Option<crate::network::ContractTransactionRequest>,
+        _original_request: Option<()>,
     ) -> Result<()> {
         info!(
             "📝 [CHAIN_EXECUTOR] Executing contract call for transaction type: {:?}",
@@ -99,24 +99,22 @@ impl MpcChainExecutor {
                             None
                         };
 
-                        // Execute the signing operation
+                        // Execute the signing operation (retry metadata no longer used)
                         let contract_chain_handler =
                             signing_node.get_contract_chain_handler().clone();
-                        {
-                            let mut eth_signer = EthereumSigner::new(signing_node);
-                            eth_signer
-                                .sign_contract_message(
-                                    contract_tx_bytes,
-                                    &contract_chain_handler,
-                                    &contract_tx,
-                                    vault_tweaked_share,
-                                    None,
-                                    vault_tweaked_share,
-                                    request_id, // Pass request_id from sequencer
-                                    original_request, // Pass original_request for guaranteed retry
-                                )
-                                .await?;
-                        }
+                        let mut eth_signer = EthereumSigner::new(signing_node);
+                        eth_signer
+                            .sign_contract_message(
+                                contract_tx_bytes,
+                                &contract_chain_handler,
+                                &contract_tx,
+                                vault_tweaked_share,
+                                None,
+                                vault_tweaked_share,
+                                request_id,
+                                None,
+                            )
+                            .await?;
                     }
                     _ => {
                         info!(

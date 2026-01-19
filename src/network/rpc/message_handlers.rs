@@ -280,17 +280,22 @@ impl MpcNetworkLayer {
                                         }
                                     };
 
-                                if let Err(e) = self
-                                    .submit_contract_transaction_to_sequencer(
+                                if let Some(signing_node) = &mut self.signing_node {
+                                    if let Err(e) = crate::chain_abstraction::MpcChainExecutor::execute_contract_call(
+                                        signing_node,
+                                        self.node_manager.as_ref(),
+                                        self.dkg_node.as_ref(),
                                         &intent,
                                         intent_hash,
                                         tx_type_enum,
-                                        transaction_id,
                                         Some(vault_group_key),
                                         intent_amount,
+                                        transaction_id,
+                                        None, // No request_id
+                                        None, // No original_request
                                     )
                                     .await
-                                {
+                                    {
                                         warn!(
                                             "❌ [CONTRACT] Failed to submitted contract call for transaction ID {}: {}",
                                             transaction_id, e
@@ -301,6 +306,12 @@ impl MpcNetworkLayer {
                                             transaction_id
                                         );
                                     }
+                                } else {
+                                    warn!(
+                                        "❌ [CONTRACT] Signing node not available for contract call execution (tx_id={}, intent_hash={})",
+                                        transaction_id, intent_hash
+                                    );
+                                }
                                 } else {
                                     warn!(
                                         "❌ [CONTRACT] No vault group key available for contract call execution"
