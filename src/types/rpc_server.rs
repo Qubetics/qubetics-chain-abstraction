@@ -253,7 +253,7 @@ pub struct UserSharePubkeyInfo {
 pub struct GetNetworkAddressesResponse {
     pub status: String,
     pub network_addresses: Option<AddressInfo>,
-    pub vault_addresses: Option<AddressInfo>,
+    pub liquidity_operator_addresses: Option<AddressInfo>,
     pub message: String,
     pub error_message: Option<String>,
 }

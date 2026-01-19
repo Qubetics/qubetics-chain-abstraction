@@ -31,8 +31,8 @@ pub enum ChannelMessage {
     DepositIntent {
         intent: DepositIntent,
         intent_id: String,
-        /// If provided, use user's tweaked share; otherwise use network's DKG share
-        user_eth_address: Option<String>,
+        /// User's Ethereum address - required for UserToVault deposits
+        user_eth_address: String,
         transaction_type: TransactionType,
         amount: u128,
     },
@@ -174,8 +174,8 @@ pub enum GossipsubMessage {
     DepositIntent {
         intent: DepositIntent,
         intent_id: String,
-        /// If provided, use user's tweaked share; otherwise use network's DKG share
-        user_eth_address: Option<String>,
+        /// User's Ethereum address - required for UserToVault deposits
+        user_eth_address: String,
         /// Note: Gossiped DepositIntent is always processed as UserToVault
         amount: u128,
     },

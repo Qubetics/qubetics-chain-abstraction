@@ -582,14 +582,14 @@ impl MpcNetworkLayer {
             return Ok(());
         };
 
-        let vault_address = crate::utils::get_eth_address_from_group_key(group_public_key);
+        let liquidity_operator_address = crate::utils::get_eth_address_from_group_key(group_public_key);
         info!(
-            "🧾 [SOLVER] Submitting reward update for {} via vault address {}",
-            solver_address, vault_address
+            "🧾 [SOLVER] Submitting reward update for {} via liquidity operator address {}",
+            solver_address, liquidity_operator_address
         );
 
         let chain_tx = crate::utils::transaction::create_solver_rewards_update_transaction(
-            &vault_address,
+            &liquidity_operator_address,
             solver_address,
             &rewards_payload,
             payout_tx_hash,
@@ -776,7 +776,7 @@ impl MpcNetworkLayer {
             return Ok(());
         };
 
-        let vault_address = crate::utils::get_eth_address_from_group_key(group_public_key);
+        let liquidity_operator_address = crate::utils::get_eth_address_from_group_key(group_public_key);
         info!(
             "🧾 [SOLVER] Submitting removeLiquidity for solver {} (solver_id={}, chain_id={}, amount={}, contract={}, from={})",
             solver_address,
@@ -784,11 +784,11 @@ impl MpcNetworkLayer {
             asset_chain_id_value,
             amount,
             contract_address,
-            vault_address
+            liquidity_operator_address
         );
 
         let eth_tx = crate::utils::transaction::create_solver_remove_liquidity_transaction(
-            &vault_address,
+            &liquidity_operator_address,
             &solver_id,
             asset_chain_id_u256,
             amount_u256,
@@ -936,7 +936,7 @@ impl MpcNetworkLayer {
             return Ok(());
         };
 
-        let vault_address = crate::utils::get_eth_address_from_group_key(group_public_key);
+        let liquidity_operator_address = crate::utils::get_eth_address_from_group_key(group_public_key);
         info!(
             "🧾 [SOLVER] Submitting addLiquidity for solver {} (solver_id={}, chain_id={}, amount={}, contract={}, from={})",
             solver_address,
@@ -944,11 +944,11 @@ impl MpcNetworkLayer {
             asset_chain_id_value,
             amount,
             contract_address,
-            vault_address
+            liquidity_operator_address
         );
 
         let chain_tx = crate::utils::transaction::create_solver_add_liquidity_transaction(
-            &vault_address,
+            &liquidity_operator_address,
             solver_id,
             asset_chain_id_u256,
             amount_u256,
@@ -2294,7 +2294,7 @@ impl MpcNetworkLayer {
                 let signing_key: Option<k256::Scalar> = match transaction_type {
                     crate::types::TransactionType::UserToVault => {
                         // For user deposits, use user's tweaked secret share
-                        self.get_signing_key_for_user(user_eth_address.as_ref())
+                        self.get_signing_key_for_user(Some(&user_eth_address))
                             .await
                     }
                     crate::types::TransactionType::NetworkToTarget => {
@@ -2372,7 +2372,8 @@ impl MpcNetworkLayer {
                             match transaction_type {
                                 crate::types::TransactionType::UserToVault => {
                                     // For user deposits, use user's specific group key
-                                    if let Some(eth_addr) = &user_eth_address {
+                                    {
+                                        let eth_addr = &user_eth_address;
                                         if let Some(user_intent_manager) = &self.user_intent_manager
                                         {
                                             if let Some(user) = user_intent_manager
@@ -2413,8 +2414,6 @@ impl MpcNetworkLayer {
                                                 "❌ [LOCAL] User registry not available for Bitcoin transaction"
                                             );
                                         }
-                                    } else {
-                                        warn!("❌ [LOCAL] UserToVault transaction requires user_eth_address");
                                     }
                                 }
                                 crate::types::TransactionType::NetworkToTarget
@@ -2472,27 +2471,21 @@ impl MpcNetworkLayer {
                     let (derived_eth_addr, derived_btc_addr) = match transaction_type {
                         crate::types::TransactionType::UserToVault => {
                             // For user deposits, use user's derived addresses
-                            if let Some(eth_addr) = &user_eth_address {
-                                if let Some(user_intent_manager) = &self.user_intent_manager {
-                                    if let Some(user) =
-                                        user_intent_manager.get_user_by_address(eth_addr).await
-                                    {
-                                        (
-                                            user.derived_eth_address.clone(),
-                                            user.derived_btc_address.clone(),
-                                        )
-                                    } else {
-                                        warn!("❌ [LOCAL] User {} not found in registry", eth_addr);
-                                        (None, None)
-                                    }
+                            let eth_addr = &user_eth_address;
+                            if let Some(user_intent_manager) = &self.user_intent_manager {
+                                if let Some(user) =
+                                    user_intent_manager.get_user_by_address(eth_addr).await
+                                {
+                                    (
+                                        user.derived_eth_address.clone(),
+                                        user.derived_btc_address.clone(),
+                                    )
                                 } else {
-                                    warn!("❌ [LOCAL] User registry not available");
+                                    warn!("❌ [LOCAL] User {} not found in registry", eth_addr);
                                     (None, None)
                                 }
                             } else {
-                                warn!(
-                                    "❌ [LOCAL] UserToVault transaction requires user_eth_address"
-                                );
+                                warn!("❌ [LOCAL] User registry not available");
                                 (None, None)
                             }
                         }
@@ -2525,19 +2518,19 @@ impl MpcNetworkLayer {
                         None
                     };
 
-                    // Get vault addresses from database
-                    let (vault_eth_addr, vault_btc_addr) =
+                    // Get liquidity operator addresses from database
+                    let (liquidity_operator_eth_addr, liquidity_operator_btc_addr) =
                         if let Some(registry) = &self.user_intent_manager {
                             let database = registry.get_database();
-                            let vault_eth = database
-                                .get_string(crate::database::keys::DKG_VAULT_ETH_ADDRESS)
+                            let liquidity_operator_eth = database
+                                .get_string(crate::database::keys::DKG_LIQUIDITY_OPERATOR_ETH_ADDRESS)
                                 .ok()
                                 .flatten();
-                            let vault_btc = database
-                                .get_string(crate::database::keys::DKG_VAULT_BTC_ADDRESS)
+                            let liquidity_operator_btc = database
+                                .get_string(crate::database::keys::DKG_LIQUIDITY_OPERATOR_BTC_ADDRESS)
                                 .ok()
                                 .flatten();
-                            (vault_eth, vault_btc)
+                            (liquidity_operator_eth, liquidity_operator_btc)
                         } else {
                             return Err(anyhow::anyhow!("User registry not available"));
                         };
@@ -2549,8 +2542,8 @@ impl MpcNetworkLayer {
                             derived_eth_addr.as_ref(),
                             derived_btc_addr.as_ref(),
                             transaction_type.clone(),
-                            vault_eth_addr.as_ref(),
-                            vault_btc_addr.as_ref(),
+                            liquidity_operator_eth_addr.as_ref(),
+                            liquidity_operator_btc_addr.as_ref(),
                             amount,
                         )
                         .await;
@@ -2599,7 +2592,7 @@ impl MpcNetworkLayer {
                                                 tx_bytes.clone(),
                                                 &chain_handler,
                                                 Some(btc_tx.clone()),
-                                                user_eth_address.clone(),
+                                                Some(user_eth_address.clone()),
                                                 Some(intent_hash.clone()),
                                                 Some(transaction_type.clone()),
                                                 signing_key,
@@ -2637,7 +2630,7 @@ impl MpcNetworkLayer {
                                             tx_bytes.clone(),
                                             eth_tx.clone(),
                                             user_tweaked_share,
-                                            user_eth_address.clone(),
+                                            Some(user_eth_address.clone()),
                                         )
                                         .await
                                         {
@@ -2759,7 +2752,7 @@ impl MpcNetworkLayer {
                                                 &chain_handler,
                                                 eth_tx,
                                                 user_tweaked_share,
-                                                user_eth_address.clone(),
+                                                Some(user_eth_address.clone()),
                                                 Some(intent_hash.clone()),
                                                 Some(transaction_type.clone()),
                                                 None,
@@ -3298,7 +3291,7 @@ impl MpcNetworkLayer {
                                 let refund_message = ChannelMessage::DepositIntent {
                                     intent: intent.clone(),
                                     intent_id: refund_intent_id,
-                                    user_eth_address: None, // Use network's DKG key for refund
+                                    user_eth_address: "network".to_string(), // Refund uses network's DKG key, placeholder address
                                     transaction_type: crate::types::TransactionType::Refund,
                                     amount: refund_amount,
                                 };

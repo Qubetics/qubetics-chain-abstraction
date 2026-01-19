@@ -300,7 +300,7 @@ impl DKGNode {
 
                     if let Err(e) = self
                         .storage
-                        .set_vault_addresses(&vault_eth, &vault_btc)
+                        .set_liquidity_operator_addresses(&vault_eth, &vault_btc)
                         .await
                     {
                         warn!("⚠️ [NEW_NODE] Failed to store vault addresses: {}", e);

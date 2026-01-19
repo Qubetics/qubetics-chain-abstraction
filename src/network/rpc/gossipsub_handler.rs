@@ -702,14 +702,8 @@ impl MpcNetworkLayer {
                 user_eth_address,
                 amount,
             } => {
-                // CRITICAL: UserToVault requires user_eth_address
-                let user_eth_addr = match user_eth_address {
-                    Some(addr) => addr,
-                    None => {
-                        warn!("❌ [GOSSIPSUB] Rejecting DepositIntent - user_eth_address is required for UserToVault");
-                        return Ok(());
-                    }
-                };
+                // user_eth_address is now mandatory (not Option)
+                let user_eth_addr = user_eth_address;
 
                 // Calculate intent hash from the intent
                 let intent_hash = match crate::utils::calculate_intent_hash(&intent) {
@@ -840,19 +834,19 @@ impl MpcNetworkLayer {
                         None
                     };
 
-                    // Get vault addresses from database
-                    let (vault_eth_addr, vault_btc_addr) =
+                    // Get liquidity operator addresses from database
+                    let (liquidity_operator_eth_addr, liquidity_operator_btc_addr) =
                         if let Some(registry) = &self.user_intent_manager {
                             let database = registry.get_database();
-                            let vault_eth = database
-                                .get_string(crate::database::keys::DKG_VAULT_ETH_ADDRESS)
+                            let liquidity_operator_eth = database
+                                .get_string(crate::database::keys::DKG_LIQUIDITY_OPERATOR_ETH_ADDRESS)
                                 .ok()
                                 .flatten();
-                            let vault_btc = database
-                                .get_string(crate::database::keys::DKG_VAULT_BTC_ADDRESS)
+                            let liquidity_operator_btc = database
+                                .get_string(crate::database::keys::DKG_LIQUIDITY_OPERATOR_BTC_ADDRESS)
                                 .ok()
                                 .flatten();
-                            (vault_eth, vault_btc)
+                            (liquidity_operator_eth, liquidity_operator_btc)
                         } else {
                             return Err(anyhow::anyhow!("User registry not available"));
                         };
@@ -864,8 +858,8 @@ impl MpcNetworkLayer {
                             derived_eth_addr.as_ref(),
                             derived_btc_addr.as_ref(),
                             crate::types::TransactionType::UserToVault,
-                            vault_eth_addr.as_ref(),
-                            vault_btc_addr.as_ref(),
+                            liquidity_operator_eth_addr.as_ref(),
+                            liquidity_operator_btc_addr.as_ref(),
                             amount,
                         )
                         .await;

@@ -253,7 +253,7 @@ pub(crate) async fn handle_deposit_intent(
     let deposit_intent_msg = ChannelMessage::DepositIntent {
         intent: intent.clone(),
         intent_id: intent_id.clone(),
-        user_eth_address: user_eth_address.clone(),
+        user_eth_address: user_eth_address.as_ref().map(|s| s.clone()).unwrap_or_else(|| "unknown".to_string()),
         transaction_type: transaction_type.clone(),
         amount: required_amount_u128,
     };
@@ -1131,7 +1131,7 @@ pub(crate) async fn handle_user_mpc_deposit(
     };
 
     // UserToVault always requires user_eth_address
-    let user_eth_address = Some(user_registration.ethereum_address.clone());
+    let user_eth_address = user_registration.ethereum_address.clone();
 
     // For UserToVault, transaction confirmation would be on source chain
     if let Some(ref tx_id) = req.tx_id {
@@ -1144,7 +1144,7 @@ pub(crate) async fn handle_user_mpc_deposit(
 
     match handle_deposit_intent(
         req.msg.clone(),
-        user_eth_address,
+        Some(user_eth_address),
         message_tx,
         transaction_type,
         dkg_storage.clone(),
@@ -3055,7 +3055,7 @@ pub(crate) async fn handle_get_network_addresses(
     };
 
     // Get vault aggregated group key
-    let vault_addresses = match dkg_storage.get_vault_group_key().await {
+    let liquidity_operator_addresses = match dkg_storage.get_vault_group_key().await {
         Ok(Some(vault_group_key)) => {
             let eth_addr = crate::utils::get_eth_address_from_group_key(vault_group_key);
             let btc_addr = crate::utils::get_btc_address_from_group_key(vault_group_key);
@@ -3081,10 +3081,10 @@ pub(crate) async fn handle_get_network_addresses(
             net_addrs.eth_address, net_addrs.btc_address
         );
     }
-    if let Some(ref vault_addrs) = vault_addresses {
+    if let Some(ref liquidity_operator_addrs) = liquidity_operator_addresses {
         info!(
-            "📍 [RPC] Vault Addresses: ETH={}, BTC={}",
-            vault_addrs.eth_address, vault_addrs.btc_address
+            "📍 [RPC] Liquidity Operator Addresses: ETH={}, BTC={}",
+            liquidity_operator_addrs.eth_address, liquidity_operator_addrs.btc_address
         );
     }
 
@@ -3092,7 +3092,7 @@ pub(crate) async fn handle_get_network_addresses(
         &crate::types::rpc_server::GetNetworkAddressesResponse {
             status: "success".to_string(),
             network_addresses,
-            vault_addresses,
+            liquidity_operator_addresses,
             message: "Retrieved network addresses (same across all nodes)".to_string(),
             error_message: None,
         },

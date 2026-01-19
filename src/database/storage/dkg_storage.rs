@@ -197,17 +197,17 @@ impl DkgStorage {
         Ok(())
     }
 
-    pub async fn set_vault_addresses(&self, eth_address: &str, btc_address: &str) -> Result<()> {
+    pub async fn set_liquidity_operator_addresses(&self, eth_address: &str, btc_address: &str) -> Result<()> {
         self.db
-            .put_string(keys::DKG_VAULT_ETH_ADDRESS, &eth_address.to_string())?;
+            .put_string(keys::DKG_LIQUIDITY_OPERATOR_ETH_ADDRESS, &eth_address.to_string())?;
         self.db
-            .put_string(keys::DKG_VAULT_BTC_ADDRESS, &btc_address.to_string())?;
+            .put_string(keys::DKG_LIQUIDITY_OPERATOR_BTC_ADDRESS, &btc_address.to_string())?;
         Ok(())
     }
 
-    pub async fn get_vault_addresses(&self) -> Result<Option<(String, String)>> {
-        let eth: Option<String> = self.db.get_string(keys::DKG_VAULT_ETH_ADDRESS)?;
-        let btc: Option<String> = self.db.get_string(keys::DKG_VAULT_BTC_ADDRESS)?;
+    pub async fn get_liquidity_operator_addresses(&self) -> Result<Option<(String, String)>> {
+        let eth: Option<String> = self.db.get_string(keys::DKG_LIQUIDITY_OPERATOR_ETH_ADDRESS)?;
+        let btc: Option<String> = self.db.get_string(keys::DKG_LIQUIDITY_OPERATOR_BTC_ADDRESS)?;
         if let (Some(e), Some(b)) = (eth, btc) {
             Ok(Some((e, b)))
         } else {

@@ -913,7 +913,7 @@ pub(crate) async fn estimate_gas_for_deposit_intent(
 /// Create a chain-specific transaction from a deposit intent
 /// For Bitcoin transactions, group_public_key is required to derive the Bitcoin address and fetch UTXOs
 /// transaction_type determines the fund flow:
-/// - UserToVault: User deposit - FROM derived address TO vault address (on source chain)
+/// - UserToVault: User deposit - FROM derived address TO liquidity operator address (on source chain)
 /// - NetworkToTarget: Network withdrawal - FROM network address TO target address (on target chain)
 ///   derived_eth_addr and derived_btc_addr are the actual addresses that hold user funds
 pub async fn create_chain_transaction_from_deposit_intent(
@@ -922,8 +922,8 @@ pub async fn create_chain_transaction_from_deposit_intent(
     derived_eth_addr: Option<&String>,
     derived_btc_addr: Option<&String>,
     transaction_type: crate::types::TransactionType,
-    vault_eth_address: Option<&String>,
-    vault_btc_address: Option<&String>,
+    liquidity_operator_eth_address: Option<&String>,
+    liquidity_operator_btc_address: Option<&String>,
     amount: u128,
 ) -> Result<ChainTransaction> {
     create_chain_transaction_from_deposit_intent_internal(
@@ -932,8 +932,8 @@ pub async fn create_chain_transaction_from_deposit_intent(
         derived_eth_addr,
         derived_btc_addr,
         transaction_type,
-        vault_eth_address,
-        vault_btc_address,
+        liquidity_operator_eth_address,
+        liquidity_operator_btc_address,
         amount,
     )
     .await
@@ -1028,8 +1028,8 @@ async fn create_chain_transaction_from_deposit_intent_internal(
     derived_eth_addr: Option<&String>,
     derived_btc_addr: Option<&String>,
     transaction_type: crate::types::TransactionType,
-    vault_eth_address: Option<&String>,
-    vault_btc_address: Option<&String>,
+    liquidity_operator_eth_address: Option<&String>,
+    liquidity_operator_btc_address: Option<&String>,
     amount: u128,
 ) -> Result<ChainTransaction> {
     // Determine chain type based on transaction type:
@@ -1063,9 +1063,9 @@ async fn create_chain_transaction_from_deposit_intent_internal(
     );
 
     if is_evm_chain(chain_to_use) {
-        // Get vault address from parameter
-        let vault_address =
-            vault_eth_address.ok_or_else(|| anyhow::anyhow!("Vault ETH address not provided"))?;
+        // Get liquidity operator address from parameter
+        let liquidity_operator_address =
+            liquidity_operator_eth_address.ok_or_else(|| anyhow::anyhow!("Liquidity operator ETH address not provided"))?;
 
         // Determine source and target based on transaction type
         // NOTE: group_public_key will always be available once the solver ecosystem is live,
@@ -1079,11 +1079,11 @@ async fn create_chain_transaction_from_deposit_intent_internal(
                 // Group public key is not needed for UserToVault on EVM chains
                 if let Some(derived_addr) = derived_eth_addr {
                     tracing::info!(
-                        "💰 [TRANSACTION] User to vault: {} -> {}",
+                        "💰 [TRANSACTION] User to liquidity operator: {} -> {}",
                         derived_addr,
-                        vault_address
+                        liquidity_operator_address
                     );
-                    (derived_addr.clone(), vault_address.clone())
+                    (derived_addr.clone(), liquidity_operator_address.clone())
                 } else {
                     return Err(anyhow::anyhow!(
                         "UserToVault transaction requires derived_eth_address"
@@ -1141,9 +1141,9 @@ async fn create_chain_transaction_from_deposit_intent_internal(
 
         Ok(ChainTransaction::Ethereum(ethereum_tx))
     } else if chain_to_use == "bitcoin" || chain_to_use == "btc" {
-        // Get vault address from parameter
-        let btc_vault_address =
-            vault_btc_address.ok_or_else(|| anyhow::anyhow!("Vault BTC address not provided"))?;
+        // Get liquidity operator address from parameter
+        let btc_liquidity_operator_address =
+            liquidity_operator_btc_address.ok_or_else(|| anyhow::anyhow!("Liquidity operator BTC address not provided"))?;
 
         // Determine source and target based on transaction type
         // NOTE: group_public_key will always be available once the solver ecosystem is live,
@@ -1157,11 +1157,11 @@ async fn create_chain_transaction_from_deposit_intent_internal(
                 // Group public key is not needed for UserToVault on Bitcoin
                 if let Some(derived_btc_addr) = derived_btc_addr {
                     tracing::info!(
-                        "💰 [TRANSACTION] Bitcoin user to vault: {} -> {}",
+                        "💰 [TRANSACTION] Bitcoin user to liquidity operator: {} -> {}",
                         derived_btc_addr,
-                        btc_vault_address
+                        btc_liquidity_operator_address
                     );
-                    (derived_btc_addr.clone(), btc_vault_address.clone())
+                    (derived_btc_addr.clone(), btc_liquidity_operator_address.clone())
                 } else {
                     return Err(anyhow::anyhow!(
                         "UserToVault transaction requires derived_btc_address"
