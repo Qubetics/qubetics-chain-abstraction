@@ -251,6 +251,16 @@ impl MpcNetworkLayer {
                                 let tx_type_enum =
                                     Self::parse_transaction_type(transaction_type)?;
 
+                                // Skip contract call entirely for UserToVault transactions
+                                if matches!(tx_type_enum, crate::types::TransactionType::UserToVault)
+                                {
+                                    info!(
+                                        "⏭️ [CONTRACT] Skipping contract call for UserToVault tx_id={} intent_hash={}",
+                                        transaction_id, intent_hash
+                                    );
+                                    return Ok(());
+                                }
+
                                 let vault_group_key = if let Some(dkg_node) = &self.dkg_node {
                                     dkg_node.get_vault_group_key().await
                                 } else {
@@ -270,17 +280,17 @@ impl MpcNetworkLayer {
                                         }
                                     };
 
-                                    if let Err(e) = self
-                                        .execute_contract_call_for_transaction(
-                                            &intent,
-                                            intent_hash,
-                                            tx_type_enum,
-                                            transaction_id,
-                                            Some(vault_group_key),
-                                            intent_amount,
-                                        )
-                                        .await
-                                    {
+                                if let Err(e) = self
+                                    .submit_contract_transaction_to_sequencer(
+                                        &intent,
+                                        intent_hash,
+                                        tx_type_enum,
+                                        transaction_id,
+                                        Some(vault_group_key),
+                                        intent_amount,
+                                    )
+                                    .await
+                                {
                                         warn!(
                                             "❌ [CONTRACT] Failed to submitted contract call for transaction ID {}: {}",
                                             transaction_id, e

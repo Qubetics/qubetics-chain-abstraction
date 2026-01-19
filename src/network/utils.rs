@@ -163,52 +163,7 @@ impl MpcNetworkLayer {
         }
     }
 
-    /// Execute contract call for a given transaction type and intent
-    ///
-    /// This method delegates to MpcChainExecutor to keep contract execution
-    /// logic separate from networking concerns.
-    pub(crate) async fn execute_contract_call_for_transaction(
-        &mut self,
-        intent: &crate::types::DepositIntent,
-        intent_hash: &str,
-        transaction_type: crate::types::TransactionType,
-        tx_hash: &str,
-        vault_group_key: Option<k256::ProjectivePoint>,
-        amount: u128,
-    ) -> Result<()> {
-        // Use sequencer to ensure sequential execution and prevent nonce collisions
-        self.submit_contract_transaction_to_sequencer(
-            intent,
-            intent_hash,
-            transaction_type,
-            tx_hash,
-            vault_group_key,
-            amount,
-        )
-        .await
-    }
-
-    /// Execute refund intent contract call for a completed refund transaction
-    /// This follows the same flow as execute_contract_call_for_transaction but for refunds
-    /// Uses the sequencer to ensure sequential execution and prevent nonce collisions
-    pub(crate) async fn execute_refund_contract_call_for_transaction(
-        &mut self,
-        intent: &crate::types::DepositIntent,
-        intent_hash: &str,
-        transaction_hash: &str,
-        reason: &str,
-        vault_group_key: Option<k256::ProjectivePoint>,
-    ) -> Result<()> {
-        // Use sequencer to ensure sequential execution and prevent nonce collisions
-        self.submit_refund_intent_to_sequencer(
-            intent_hash,
-            transaction_hash,
-            &intent.timestamp.to_string(),
-            reason,
-            vault_group_key,
-        )
-        .await
-    }
+    // Contract call helpers for user-to-vault have been removed; contract execution is skipped for that flow.
 
     /// Execute solver add-liquidity operation directly (sequencer removed)
     pub(crate) async fn submit_solver_add_liquidity_to_sequencer(
@@ -750,7 +705,7 @@ impl MpcNetworkLayer {
     }
 
     /// Execute contract transaction directly (sequencer removed)
-    async fn submit_contract_transaction_to_sequencer(
+    pub(crate) async fn submit_contract_transaction_to_sequencer(
         &mut self,
         intent: &crate::types::DepositIntent,
         intent_hash: &str,
