@@ -2,7 +2,7 @@ use anyhow::Result;
 use libp2p::identity::Keypair;
 use libp2p::PeerId;
 use std::sync::Arc;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 use crate::database::{keys, KeyStore};
 
@@ -187,453 +187,60 @@ impl MpcNetworkLayer {
     }
 
     // ----------------------------------------------------------------------------
-    // Network transaction sequencer (NetworkToTarget and future flows)
+    // Network transaction helper functions (sequencer removed, will be replaced with pool approach)
     // ----------------------------------------------------------------------------
 
-    /// Initialize the network transaction sequencer if not already present
-    async fn initialize_network_transaction_sequencer(&mut self) {
-        if self.network_transaction_sequencer.is_none() {
-            let mut sequencer = crate::network::sequencer::NetworkTransactionSequencer::new();
-            let total_nodes = self.node_manager.get_total_nodes();
-            let node_id = self.local_peer_id.to_string();
-            let message_tx = self.message_tx.clone();
-            sequencer.initialize(message_tx, node_id, total_nodes).await;
-
-            // Configure VRF + Consensus for final node selection
-            sequencer.set_local_peer_id(self.local_peer_id);
-
-            // Create SEPARATE VRF service for main sequencer with "main_seq:" storage prefix
-            // This ensures main sequencer VRF data doesn't collide with signing or vault sequencer
-            let main_vrf_storage =
-                crate::database::storage::VrfStorage::new_with_prefix(self.db.clone(), "main_seq:");
-            let main_vrf_service = crate::protocols::VrfService::new_with_storage_and_context(
-                self.local_peer_id,
-                self.message_tx.clone(),
-                main_vrf_storage,
-                "network",
-            );
-            sequencer.set_vrf_service(Arc::new(main_vrf_service));
-            info!("✅ [MAIN_SEQUENCER] Separate VRF service configured with storage prefix 'main_seq:'");
-
-            // Create a new consensus node for main sequencer (independent from signing)
-            sequencer.set_consensus_node(Arc::new(tokio::sync::RwLock::new(
-                crate::consensus::ConsensusNode::new(),
-            )));
-            info!("✅ [MAIN_SEQUENCER] Consensus node configured");
-
-            // Get available nodes from node manager
-            let available_nodes: Vec<libp2p::PeerId> =
-                self.node_manager.get_active_nodes().into_iter().collect();
-            sequencer
-                .update_available_nodes(available_nodes.clone())
-                .await;
-            info!(
-                "✅ [MAIN_SEQUENCER] Available nodes configured: count={}",
-                available_nodes.len()
-            );
-
-            self.network_transaction_sequencer = Some(sequencer);
-            info!(
-                "✅ [NETWORK] Network transaction sequencer fully initialized with {} total nodes",
-                total_nodes
-            );
-        }
-    }
-
-    /// Submit a NetworkToTarget transaction to the network transaction sequencer
+    /// Submit a NetworkToTarget transaction (sequencer removed - stub for future pool implementation)
     pub(crate) async fn submit_network_to_target_to_sequencer(
         &mut self,
-        intent: &crate::types::DepositIntent,
+        _intent: &crate::types::DepositIntent,
         intent_hash: &str,
-        amount: u128,
-        tx_bytes: Vec<u8>,
-        eth_tx: crate::chain_abstraction::EthereumTransaction,
-        user_tweaked_share: Option<k256::Scalar>,
-        user_eth_address: Option<String>,
+        _amount: u128,
+        _tx_bytes: Vec<u8>,
+        _eth_tx: crate::chain_abstraction::EthereumTransaction,
+        _user_tweaked_share: Option<k256::Scalar>,
+        _user_eth_address: Option<String>,
     ) -> Result<()> {
-        use crate::network::sequencer::{NetworkTransactionFlow, NetworkTransactionRequest};
-
-        if self.network_transaction_sequencer.is_none() {
-            self.initialize_network_transaction_sequencer().await;
-        }
-
-        if let Some(sequencer) = &self.network_transaction_sequencer {
-            let transaction_id = crate::network::sequencer::NetworkTransactionSequencer::generate_transaction_id_for_network_to_target(intent_hash);
-
-            let request = NetworkTransactionRequest {
-                flow: NetworkTransactionFlow::NetworkToTarget {
-                    intent: intent.clone(),
-                    intent_hash: intent_hash.to_string(),
-                    transaction_type: crate::types::TransactionType::NetworkToTarget,
-                    amount,
-                    tx_bytes,
-                    eth_tx,
-                    user_tweaked_share,
-                    user_eth_address,
-                },
-                transaction_id: transaction_id.clone(),
-                sequence: 0, // set by sequencer.submit
-            };
-
-            sequencer.submit(request).await?;
-            info!(
-                "📋 [NETWORK] Submitted NetworkToTarget to network transaction sequencer: intent_hash={}, amount={}, tx_id={}",
-                intent_hash, amount, transaction_id
-            );
-            Ok(())
-        } else {
-            warn!("❌ [NETWORK] Network transaction sequencer not available for NetworkToTarget transaction");
-            Ok(())
-        }
+        // Sequencer removed - will be replaced with pool approach later
+        info!(
+            "📋 [NETWORK] NetworkToTarget transaction helper called (sequencer removed, pool approach pending): intent_hash={}",
+            intent_hash
+        );
+        Ok(())
     }
 
-    /// Submit a withdraw liquidity transaction to the network sequencer
+    /// Submit a withdraw liquidity transaction (sequencer removed - stub for future pool implementation)
     pub(crate) async fn submit_withdraw_liquidity_to_sequencer(
         &mut self,
         solver_address: &str,
         eth_address: &str,
         amount: u128,
-        tx_bytes: Vec<u8>,
-        eth_tx: crate::chain_abstraction::EthereumTransaction,
+        _tx_bytes: Vec<u8>,
+        _eth_tx: crate::chain_abstraction::EthereumTransaction,
     ) -> Result<()> {
-        use crate::network::sequencer::{NetworkTransactionFlow, NetworkTransactionRequest};
-
-        if self.network_transaction_sequencer.is_none() {
-            self.initialize_network_transaction_sequencer().await;
-        }
-
-        if let Some(sequencer) = &self.network_transaction_sequencer {
-            let transaction_id = crate::network::sequencer::NetworkTransactionSequencer::generate_transaction_id_for_withdraw_liquidity(&tx_bytes);
-
-            let request = NetworkTransactionRequest {
-                flow: NetworkTransactionFlow::WithdrawLiquidity {
-                    solver_address: solver_address.to_string(),
-                    eth_address: eth_address.to_string(),
-                    amount,
-                    tx_bytes,
-                    eth_tx,
-                },
-                transaction_id: transaction_id.clone(),
-                sequence: 0, // set by sequencer.submit
-            };
-
-            sequencer.submit(request).await?;
-            info!(
-                "📋 [NETWORK] Submitted WithdrawLiquidity to network transaction sequencer: solver={}, eth_address={}, amount={}, tx_id={}",
-                solver_address, eth_address, amount, transaction_id
-            );
-            Ok(())
-        } else {
-            warn!("❌ [NETWORK] Network transaction sequencer not available for WithdrawLiquidity transaction");
-            Ok(())
-        }
+        // Sequencer removed - will be replaced with pool approach later
+        info!(
+            "📋 [NETWORK] WithdrawLiquidity transaction helper called (sequencer removed, pool approach pending): solver={}, eth_address={}, amount={}",
+            solver_address, eth_address, amount
+        );
+        Ok(())
     }
 
-    /// Submit a reward payout transaction to the network sequencer
+    /// Submit a reward payout transaction (sequencer removed - stub for future pool implementation)
     pub(crate) async fn submit_reward_payout_to_sequencer(
         &mut self,
         solver_address: &str,
         eth_address: &str,
         amount: u128,
-        tx_bytes: Vec<u8>,
-        eth_tx: crate::chain_abstraction::EthereumTransaction,
+        _tx_bytes: Vec<u8>,
+        _eth_tx: crate::chain_abstraction::EthereumTransaction,
     ) -> Result<()> {
-        use crate::network::sequencer::{NetworkTransactionFlow, NetworkTransactionRequest};
-
-        if self.network_transaction_sequencer.is_none() {
-            self.initialize_network_transaction_sequencer().await;
-        }
-
-        if let Some(sequencer) = &self.network_transaction_sequencer {
-            let transaction_id = crate::network::sequencer::NetworkTransactionSequencer::generate_transaction_id_for_reward_payout(&tx_bytes);
-
-            let request = NetworkTransactionRequest {
-                flow: NetworkTransactionFlow::RewardPayout {
-                    solver_address: solver_address.to_string(),
-                    eth_address: eth_address.to_string(),
-                    amount,
-                    tx_bytes,
-                    eth_tx,
-                },
-                transaction_id: transaction_id.clone(),
-                sequence: 0, // set by sequencer.submit
-            };
-
-            sequencer.submit(request).await?;
-            info!(
-                "📋 [NETWORK] Submitted RewardPayout to network transaction sequencer: solver={}, eth_address={}, amount={}, tx_id={}",
-                solver_address, eth_address, amount, transaction_id
-            );
-            Ok(())
-        } else {
-            warn!("❌ [NETWORK] Network transaction sequencer not available for RewardPayout transaction");
-            Ok(())
-        }
-    }
-
-    /// Process a network transaction from the sequencer (currently only NetworkToTarget)
-    pub(crate) async fn process_network_transaction(
-        &mut self,
-        request: crate::network::sequencer::NetworkTransactionRequest,
-    ) -> Result<()> {
-        use crate::network::sequencer::NetworkTransactionFlow;
-        use crate::signing::EthereumSigner;
-
-        match &request.flow {
-            NetworkTransactionFlow::NetworkToTarget {
-                intent_hash,
-                tx_bytes,
-                eth_tx,
-                user_tweaked_share,
-                user_eth_address: _user_eth_address,
-                transaction_type,
-                ..
-            } => {
-                info!(
-                    "📋 [NETWORK_SEQUENCER] Processing NetworkToTarget transaction: intent_hash={}, tx_id={}",
-                    intent_hash, request.transaction_id
-                );
-
-                if let Some(signing_node) = &mut self.signing_node {
-                    let chain_handler: Arc<dyn crate::chain_abstraction::ChainHandler> =
-                        crate::chain_abstraction::ChainHandlerFactory::create_ethereum_handler(
-                            eth_tx.chain_id,
-                        )
-                        .into();
-                    let mut eth_signer = EthereumSigner::new(signing_node);
-                    // IMPORTANT:
-                    // For NetworkToTarget, we must sign with the NETWORK's DKG share so the
-                    // recovered "from" address is the network main address (derived from group key),
-                    // not a user-derived address.
-                    //
-                    // `EthereumSigner` treats `user_tweaked_share: Some(_)` as "user signing", so we
-                    // pass the share via `signing_key_override` and force `user_eth_address=None`.
-                    let network_signing_share = *user_tweaked_share;
-                    match eth_signer
-                        .sign_transaction(
-                            tx_bytes.clone(),
-                            &chain_handler,
-                            eth_tx,
-                            None,
-                            None,
-                            Some(intent_hash.clone()),
-                            Some(transaction_type.clone()),
-                            None,
-                            network_signing_share,
-                        )
-                        .await
-                    {
-                        Ok(()) => {
-                            info!(
-                                "✅ [NETWORK_SEQUENCER] Successfully signed NetworkToTarget transaction: intent_hash={}, tx_id={}",
-                                intent_hash, request.transaction_id
-                            );
-                            Ok(())
-                        }
-                        Err(e) => {
-                            let error_message = format!(
-                                "Failed to sign NetworkToTarget transaction (insufficient TICS or other error): {}",
-                                e
-                            );
-                            error!("❌ [NETWORK_SEQUENCER] {}", error_message);
-
-                            // Store transaction error and trigger refund
-                            if let Some(user_intent_manager) = &self.user_intent_manager {
-                                // Store the error
-                                if let Err(store_err) = user_intent_manager
-                                    .store_transaction_error(intent_hash, &error_message, None)
-                                    .await
-                                {
-                                    warn!(
-                                        "❌ [NETWORK_SEQUENCER] Failed to store transaction error for intent {}: {}",
-                                        intent_hash, store_err
-                                    );
-                                } else {
-                                    info!(
-                                        "💥 [NETWORK_SEQUENCER] Stored transaction error for intent {}: {}",
-                                        intent_hash, error_message
-                                    );
-                                }
-
-                                // Broadcast the error
-                                if let Some(signing_node) = &self.signing_node {
-                                    signing_node
-                                        .broadcast_transaction_error(
-                                            Some(intent_hash),
-                                            &error_message,
-                                            "network_to_target",
-                                            None,
-                                        )
-                                        .await;
-                                }
-
-                                // Trigger refund for NetworkToTarget transactions
-                                info!(
-                                    "💸 [NETWORK_SEQUENCER] Network-to-target transaction failed, initiating refund for intent: {}",
-                                    intent_hash
-                                );
-
-                                // Get the intent for refund calculation
-                                if let Some(intent) =
-                                    user_intent_manager.get_intent(intent_hash).await
-                                {
-                                    // Calculate refund amount
-                                    let intent_amount = intent.amount.parse::<u128>().unwrap_or(0);
-                                    let refund_amount = if let Some(tx_ids) = user_intent_manager
-                                        .get_intent_transaction_ids(intent_hash)
-                                        .await
-                                    {
-                                        if tx_ids.user_to_network_tx_id.is_some() {
-                                            // UserToVault transaction exists, refund original amount + 5% extra
-                                            intent_amount + (intent_amount / 20)
-                                        } else {
-                                            // No UserToVault transaction, refund original amount
-                                            intent_amount
-                                        }
-                                    } else {
-                                        intent_amount
-                                    };
-
-                                    // Broadcast refund initiation through signing node
-                                    if let Some(signing_node) = &self.signing_node {
-                                        if let Err(refund_err) = signing_node
-                                            .initiate_refund_transaction(intent_hash)
-                                            .await
-                                        {
-                                            error!(
-                                                "❌ [NETWORK_SEQUENCER] Failed to initiate refund transaction: {}",
-                                                refund_err
-                                            );
-                                        } else {
-                                            info!(
-                                                "✅ [NETWORK_SEQUENCER] Successfully initiated refund for intent: {}",
-                                                intent_hash
-                                            );
-                                        }
-                                    }
-                                } else {
-                                    warn!(
-                                        "❌ [NETWORK_SEQUENCER] Could not retrieve intent {} for refund initiation",
-                                        intent_hash
-                                    );
-                                }
-                            }
-
-                            // Return the error so it can be logged by the caller
-                            Err(anyhow::anyhow!("{}", error_message))
-                        }
-                    }
-                } else {
-                    Err(anyhow::anyhow!("Signing node not available"))
-                }
-            }
-            NetworkTransactionFlow::WithdrawLiquidity {
-                solver_address,
-                eth_address,
-                amount,
-                tx_bytes,
-                eth_tx,
-            } => {
-                info!(
-                    "📋 [NETWORK_SEQUENCER] Processing WithdrawLiquidity transaction: solver={}, eth_address={}, amount={}, tx_id={}",
-                    solver_address, eth_address, amount, request.transaction_id
-                );
-
-                if let Some(signing_node) = &mut self.signing_node {
-                    let chain_handler: Arc<dyn crate::chain_abstraction::ChainHandler> =
-                        crate::chain_abstraction::ChainHandlerFactory::create_ethereum_handler(
-                            eth_tx.chain_id,
-                        )
-                        .into();
-                    // IMPORTANT:
-                    // RewardTxn and WithdrawLiquidity must be handled identically:
-                    // 1. Both use network's DKG secret share for signing (network group key)
-                    // 2. Both verify signatures against individual partial public keys (network share pubkeys)
-                    // 3. Both go through the same multi-node signature collection and verification process
-                    // Do not rely on `SigningNode.key_store.private_key` being pre-populated.
-                    // Instead, explicitly pass the network's DKG secret share as an override.
-                    let network_signing_share = match &self.dkg_node {
-                        Some(dkg_node) => dkg_node.get_final_secret_share().await,
-                        None => None,
-                    };
-                    let mut eth_signer = EthereumSigner::new(signing_node);
-                    eth_signer
-                        .sign_transaction(
-                            tx_bytes.clone(),
-                            &chain_handler,
-                            eth_tx,
-                            None, // never treat this as "user signing"
-                            None, // No user address for network transactions
-                            None, // No intent_hash for withdraw liquidity
-                            Some(crate::types::TransactionType::WithdrawLiquidity),
-                            Some(solver_address.clone()),
-                            network_signing_share,
-                        )
-                        .await?;
-
-                    info!(
-                        "✅ [NETWORK_SEQUENCER] Successfully signed WithdrawLiquidity transaction: solver={}, tx_id={}",
-                        solver_address, request.transaction_id
-                    );
-                    Ok(())
-                } else {
-                    Err(anyhow::anyhow!("Signing node not available"))
-                }
-            }
-            NetworkTransactionFlow::RewardPayout {
-                solver_address,
-                eth_address,
-                amount,
-                tx_bytes,
-                eth_tx,
-            } => {
-                info!(
-                    "📋 [NETWORK_SEQUENCER] Processing RewardPayout transaction: solver={}, eth_address={}, amount={}, tx_id={}",
-                    solver_address, eth_address, amount, request.transaction_id
-                );
-
-                if let Some(signing_node) = &mut self.signing_node {
-                    let chain_handler: Arc<dyn crate::chain_abstraction::ChainHandler> =
-                        crate::chain_abstraction::ChainHandlerFactory::create_ethereum_handler(
-                            eth_tx.chain_id,
-                        )
-                        .into();
-                    // IMPORTANT:
-                    // RewardTxn and WithdrawLiquidity must be handled identically:
-                    // 1. Both use network's DKG secret share for signing (network group key)
-                    // 2. Both verify signatures against individual partial public keys (network share pubkeys)
-                    // 3. Both go through the same multi-node signature collection and verification process
-                    // Do not rely on `SigningNode.key_store.private_key` being pre-populated.
-                    // Instead, explicitly pass the network's DKG secret share as an override.
-                    let network_signing_share = match &self.dkg_node {
-                        Some(dkg_node) => dkg_node.get_final_secret_share().await,
-                        None => None,
-                    };
-                    let mut eth_signer = EthereumSigner::new(signing_node);
-                    eth_signer
-                        .sign_transaction(
-                            tx_bytes.clone(),
-                            &chain_handler,
-                            eth_tx,
-                            None, // never treat this as "user signing"
-                            None, // No user address for network transactions
-                            None, // No intent_hash for reward payout
-                            Some(crate::types::TransactionType::RewardTxn),
-                            Some(solver_address.clone()),
-                            network_signing_share,
-                        )
-                        .await?;
-
-                    info!(
-                        "✅ [NETWORK_SEQUENCER] Successfully signed RewardPayout transaction: solver={}, tx_id={}",
-                        solver_address, request.transaction_id
-                    );
-                    Ok(())
-                } else {
-                    Err(anyhow::anyhow!("Signing node not available"))
-                }
-            }
-        }
+        // Sequencer removed - will be replaced with pool approach later
+        info!(
+            "📋 [NETWORK] RewardPayout transaction helper called (sequencer removed, pool approach pending): solver={}, eth_address={}, amount={}",
+            solver_address, eth_address, amount
+        );
+        Ok(())
     }
 
     /// Submit a solver withdraw-liquidity contract update to the sequencer

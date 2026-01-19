@@ -15,7 +15,6 @@ use crate::consensus::ConsensusNode;
 use crate::database::Database;
 use crate::network::discovery::types::{DatabaseSyncState, PeerDiscoveryState};
 use crate::network::rpc::retry_manager::RetryManager;
-use crate::network::sequencer::NetworkTransactionSequencer;
 use crate::node_selection::NodeMembership;
 use crate::protocols::DKGNode;
 use crate::signing::{DatabaseSigningNode, SigningNode};
@@ -62,7 +61,6 @@ impl From<ReqRespEvent<RPCRequest, RPCResponse>> for NetworkEvent {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum VrfDomain {
     Signing,
-    MainSequencer,
 }
 
 pub const TOPIC_SIGNING: &str = "signing";
@@ -82,12 +80,6 @@ pub const TOPIC_TRANSACTION_ID_SYNC: &str = "transaction-id-sync";
 pub const TOPIC_CONSENSUS_RESULT: &str = "consensus-result";
 pub const TOPIC_TRANSACTION_ERROR_SYNC: &str = "transaction-error-sync";
 pub const TOPIC_LEGACY_DKG: &str = "dkg";
-pub const TOPIC_NETWORK_TRANSACTION_SEQUENCER_SYNC: &str = "network-transaction-sequencer-sync";
-pub const TOPIC_DETERMINISTIC_SELECTION: &str = "deterministic-selection";
-pub const TOPIC_MAIN_SEQUENCER_VRF: &str = "main-sequencer-vrf";
-pub const TOPIC_MAIN_SEQUENCER_SELECT: &str = "main-sequencer-select";
-pub const TOPIC_MAIN_SEQUENCER_ACK: &str = "main-sequencer-ack";
-pub const TOPIC_MAIN_SEQUENCER_MISSING: &str = "main-sequencer-missing";
 pub const TOPIC_TRANSACTION_BROADCAST: &str = "transaction-broadcast";
 pub const TOPIC_TRANSACTION_FAILURE: &str = "transaction-failure";
 
@@ -113,11 +105,6 @@ pub enum GossipTopic {
     ConsensusResult,
     TransactionErrorSync,
     LegacyDkg,
-    NetworkTransactionSequencerSync,
-    MainSequencerVrf,
-    MainSequencerSelect,
-    MainSequencerAck,
-    MainSequencerMissing,
     TransactionBroadcast,
     TransactionFailure,
 }
@@ -143,11 +130,6 @@ impl GossipTopic {
         GossipTopic::ConsensusResult,
         GossipTopic::TransactionErrorSync,
         GossipTopic::LegacyDkg,
-        GossipTopic::NetworkTransactionSequencerSync,
-        GossipTopic::MainSequencerVrf,
-        GossipTopic::MainSequencerSelect,
-        GossipTopic::MainSequencerAck,
-        GossipTopic::MainSequencerMissing,
         GossipTopic::TransactionBroadcast,
         GossipTopic::TransactionFailure,
     ];
@@ -173,13 +155,6 @@ impl GossipTopic {
             GossipTopic::ConsensusResult => TOPIC_CONSENSUS_RESULT,
             GossipTopic::TransactionErrorSync => TOPIC_TRANSACTION_ERROR_SYNC,
             GossipTopic::LegacyDkg => TOPIC_LEGACY_DKG,
-            GossipTopic::NetworkTransactionSequencerSync => {
-                TOPIC_NETWORK_TRANSACTION_SEQUENCER_SYNC
-            }
-            GossipTopic::MainSequencerVrf => TOPIC_MAIN_SEQUENCER_VRF,
-            GossipTopic::MainSequencerSelect => TOPIC_MAIN_SEQUENCER_SELECT,
-            GossipTopic::MainSequencerAck => TOPIC_MAIN_SEQUENCER_ACK,
-            GossipTopic::MainSequencerMissing => TOPIC_MAIN_SEQUENCER_MISSING,
             GossipTopic::TransactionBroadcast => TOPIC_TRANSACTION_BROADCAST,
             GossipTopic::TransactionFailure => TOPIC_TRANSACTION_FAILURE,
         }
@@ -215,7 +190,6 @@ pub struct MpcNetworkLayer {
     /// Cache of currently connected peers (for fast address responses)
     pub(crate) connected_peers_cache: HashSet<PeerId>,
 
-    pub(crate) network_transaction_sequencer: Option<NetworkTransactionSequencer>,
     /// Mutex to ensure only one network transaction is processed at a time
     pub(crate) network_transaction_processing_lock: Arc<Mutex<()>>,
     // Removed: deterministic_selection field

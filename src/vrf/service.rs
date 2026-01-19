@@ -55,26 +55,19 @@ pub struct VrfService {
 
 #[derive(Clone, Copy, Debug)]
 pub enum VrfRoundSyncKind {
-    Signing,
-    MainSequencer,
+    Signing
 }
 
 impl VrfRoundSyncKind {
     fn to_message(self, request: VrfRoundSyncRequest) -> GossipsubMessage {
         match self {
             VrfRoundSyncKind::Signing => GossipsubMessage::VrfRoundSyncRequest(request),
-            VrfRoundSyncKind::MainSequencer => {
-                GossipsubMessage::MainSequencerVrfRoundSyncRequest(request)
-            }
         }
     }
 
     fn topic(self) -> &'static str {
         match self {
-            VrfRoundSyncKind::Signing => crate::network::transport::types::TOPIC_CONSENSUS,
-            VrfRoundSyncKind::MainSequencer => {
-                crate::network::transport::types::TOPIC_MAIN_SEQUENCER_VRF
-            }
+            VrfRoundSyncKind::Signing => crate::network::transport::types::TOPIC_SIGNING
         }
     }
 }

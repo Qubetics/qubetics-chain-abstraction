@@ -28,10 +28,7 @@ pub struct MessageId {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum CriticalMessageType {
     TransactionIdBroadcast,
-    MainSequencerVrfSelectedNodes,
     VrfSelectedNodes,
-    // Removed: VaultSequencerSelect - has ACK/MISSING protocol
-    // Removed: MainSequencerSelect - has ACK/MISSING protocol
 }
 
 /// State of a message retry
@@ -71,12 +68,7 @@ impl RetryManager {
             GossipsubMessage::TransactionIdBroadcast { .. } => {
                 Some(CriticalMessageType::TransactionIdBroadcast)
             }
-            GossipsubMessage::MainSequencerVrfSelectedNodes(_) => {
-                Some(CriticalMessageType::MainSequencerVrfSelectedNodes)
-            }
             GossipsubMessage::VrfSelectedNodes(_) => Some(CriticalMessageType::VrfSelectedNodes),
-            // Removed: MainSequencerSelect - has ACK/MISSING protocol for recovery
-            GossipsubMessage::MainSequencerSelect { .. } => None,
             _ => None,
         }
     }
@@ -89,12 +81,6 @@ impl RetryManager {
         let unique_id = match msg {
             GossipsubMessage::TransactionIdBroadcast { transaction_id, .. } => {
                 transaction_id.clone()
-            }
-            GossipsubMessage::MainSequencerVrfSelectedNodes(broadcast) => {
-                format!(
-                    "main_vrf_{}_{}",
-                    broadcast.round, broadcast.selector_node_id.0
-                )
             }
             GossipsubMessage::VrfSelectedNodes(broadcast) => {
                 format!("vrf_{}_{}", broadcast.round, broadcast.selector_node_id.0)
@@ -278,7 +264,6 @@ impl RetryManager {
         matches!(
             msg_type,
             CriticalMessageType::VrfSelectedNodes
-                | CriticalMessageType::MainSequencerVrfSelectedNodes
         )
     }
 

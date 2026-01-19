@@ -164,8 +164,6 @@ pub enum GossipsubMessage {
     VrfSelectedNodes(VrfSelectedNodesBroadcast),
     VrfRoundSyncRequest(VrfRoundSyncRequest),
     VrfRoundSyncResponse(VrfRoundSyncResponse),
-    MainSequencerVrfRoundSyncRequest(VrfRoundSyncRequest),
-    MainSequencerVrfRoundSyncResponse(VrfRoundSyncResponse),
     PeerDiscovered {
         peer: PeerId,
         sequence: Option<u64>,
@@ -234,37 +232,6 @@ pub enum GossipsubMessage {
         intent_hash: String,
         node_id: String,
     },
-    NetworkTransactionSequencerSync {
-        /// The transaction_id of the request being processed
-        transaction_id: String,
-        /// The sequence number for ordering
-        sequence: u64,
-        /// Node that is proposing/processing this request
-        node_id: String,
-        /// State: "proposed", "processing", "completed"
-        state: String,
-    },
-    /// Main sequencer SELECT message (final node picks request)
-    MainSequencerSelect {
-        round: u64,
-        request_id: String,
-        final_node_id: PeerId,
-        signature: Vec<u8>,
-    },
-    /// Main sequencer ACK message (node has the request)
-    MainSequencerAck {
-        round: u64,
-        request_id: String,
-        node_id: PeerId,
-    },
-    /// Main sequencer MISSING message (node doesn't have the request)
-    MainSequencerMissing {
-        round: u64,
-        request_id: String,
-        node_id: PeerId,
-    },
-    /// VRF selected nodes broadcast for main sequencer (independent rounds)
-    MainSequencerVrfSelectedNodes(VrfSelectedNodesBroadcast),
     /// Acknowledgment messages for critical message retry mechanism
     CriticalMessageAck {
         /// Type of message being acknowledged

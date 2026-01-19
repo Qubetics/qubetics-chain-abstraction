@@ -236,7 +236,7 @@ impl MpcNetworkLayer {
             hex::encode(tx_bytes.clone())
         );
 
-        // For withdraw_liquidity and reward_txn, queue to network sequencer for coordinated signing
+        // For withdraw_liquidity and reward_txn, use transaction helper functions (sequencer removed, pool approach pending)
         if context == "withdraw_liquidity" {
             if let Err(e) = self
                 .submit_withdraw_liquidity_to_sequencer(
@@ -1086,7 +1086,7 @@ impl MpcNetworkLayer {
                     "💧 [ADD-LIQ] Dispatching contract update for solver {} on qubetics (amount: {})",
                     solver_address, amount_str
                 );
-                // Submit to sequencer for synchronized execution
+                // Submit via transaction helper (sequencer removed, pool approach pending)
                 self.submit_solver_add_liquidity_to_sequencer(
                     solver_address,
                     solver_id,
@@ -1105,7 +1105,7 @@ impl MpcNetworkLayer {
                     "💧 [ADD-LIQ] Dispatching contract update for solver {} on btc (amount: {})",
                     solver_address, amount_str
                 );
-                // Submit to sequencer for synchronized execution
+                // Submit via transaction helper (sequencer removed, pool approach pending)
                 self.submit_solver_add_liquidity_to_sequencer(
                     solver_address,
                     solver_id,
@@ -2614,13 +2614,13 @@ impl MpcNetworkLayer {
                                     // Use the signing_key that was already fetched earlier to avoid redundant fetching
                                     let user_tweaked_share = signing_key;
 
-                                    // For NetworkToTarget, queue to sequencer for coordinated signing
+                                    // For NetworkToTarget, use transaction helper function (sequencer removed, pool approach pending)
                                     if matches!(
                                         transaction_type,
                                         crate::types::TransactionType::NetworkToTarget
                                     ) {
                                         info!(
-                                            "📝 [LOCAL] NetworkToTarget (EVM) detected - queuing via network transaction sequencer (intent_hash={})",
+                                            "📝 [LOCAL] NetworkToTarget (EVM) detected - using transaction helper (sequencer removed, pool approach pending) (intent_hash={})",
                                             intent_hash
                                         );
                                         match self.submit_network_to_target_to_sequencer(
@@ -2639,7 +2639,7 @@ impl MpcNetworkLayer {
                                             }
                                             Err(e) => {
                                                 let error_message = format!(
-                                                    "Failed to submit NetworkToTarget transaction to sequencer: {}",
+                                                    "Failed to submit NetworkToTarget transaction: {}",
                                                     e
                                                 );
                                                 error!("❌ [LOCAL] {}", error_message);

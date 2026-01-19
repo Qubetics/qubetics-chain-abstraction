@@ -15,12 +15,12 @@ use crate::{
     signing::{BitcoinSigner, EthereumSigner},
     types::{
         p2p::SerializablePeerId, signing::SigningMessage, vrf::VrfRoundSyncResponse,
-        ChannelMessage, ConsensusMessage, GossipsubMessage,
+        ChannelMessage, GossipsubMessage,
     },
 };
 
 use crate::network::transport::types::{
-    MpcNetworkLayer, VrfDomain, TOPIC_CONSENSUS, TOPIC_MAIN_SEQUENCER_VRF,
+    MpcNetworkLayer, VrfDomain, TOPIC_CONSENSUS,
 };
 
 impl MpcNetworkLayer {
@@ -123,31 +123,6 @@ impl MpcNetworkLayer {
                     signing_node
                         .handle_consensus_message(consensus_msg.clone())
                         .await?;
-                }
-
-                // Also handle in sequencer consensus nodes (vault and main sequencer)
-                // Check if this is for main sequencer based on round
-                match &consensus_msg {
-                    ConsensusMessage::FinalNodeResult { round, .. } => {
-                        // Handle in main sequencer if available
-                        if let Some(sequencer) = &self.network_transaction_sequencer {
-                            if let Err(e) = sequencer
-                                .handle_consensus_message(consensus_msg.clone())
-                                .await
-                            {
-                                // Log error but don't fail - consensus might be for different domain
-                                warn!(
-                                    "⚠️ [MAIN_SEQUENCER] Failed to handle consensus message for round {}: {}",
-                                    round, e
-                                );
-                            } else {
-                                info!(
-                                    "✅ [MAIN_SEQUENCER] Handled consensus message for round {}",
-                                    round
-                                );
-                            }
-                        }
-                    }
                 }
             }
             GossipsubMessage::VrfSelection(vrf_msg) => {
@@ -307,85 +282,6 @@ impl MpcNetworkLayer {
                 ) {
                     info!(
                         "💾 [VRF_SYNC] Stored round {:?} for peer {} from gossipsub response",
-                        sync_response.current_round, peer
-                    );
-                }
-            }
-            GossipsubMessage::MainSequencerVrfRoundSyncRequest(sync_request) => {
-                let peer = sync_request.from.0;
-                let reference_round = self
-                    .get_local_vrf_round_for_domain(
-                        VrfDomain::MainSequencer,
-                        Some(&sync_request.context),
-                    )
-                    .await;
-
-                if self.store_peer_round_if_valid(
-                    VrfDomain::MainSequencer,
-                    &sync_request.context,
-                    peer,
-                    reference_round,
-                    sync_request.current_round,
-                ) {
-                    info!(
-                        "💾 [MAIN_VRF_SYNC] Stored round {:?} for peer {} from request",
-                        sync_request.current_round, peer
-                    );
-                }
-
-                let response_round = self
-                    .get_local_vrf_round_for_domain(
-                        VrfDomain::MainSequencer,
-                        Some(&sync_request.context),
-                    )
-                    .await;
-                let response =
-                    GossipsubMessage::MainSequencerVrfRoundSyncResponse(VrfRoundSyncResponse {
-                        from: SerializablePeerId(self.local_peer_id),
-                        current_round: response_round,
-                        context: sync_request.context.clone(),
-                    });
-
-                match serde_json::to_vec(&response) {
-                    Ok(data) => {
-                        if let Err(e) = self
-                            .message_tx
-                            .send(ChannelMessage::Broadcast {
-                                topic: TOPIC_MAIN_SEQUENCER_VRF.to_string(),
-                                data,
-                            })
-                            .await
-                        {
-                            warn!(
-                                "⚠️ [MAIN_VRF_SYNC] Failed to send round sync response to {}: {}",
-                                peer, e
-                            );
-                        }
-                    }
-                    Err(e) => warn!(
-                        "⚠️ [MAIN_VRF_SYNC] Failed to serialize VRF round sync response: {}",
-                        e
-                    ),
-                }
-            }
-            GossipsubMessage::MainSequencerVrfRoundSyncResponse(sync_response) => {
-                let peer = sync_response.from.0;
-                let reference_round = self
-                    .get_local_vrf_round_for_domain(
-                        VrfDomain::MainSequencer,
-                        Some(&sync_response.context),
-                    )
-                    .await;
-
-                if self.store_peer_round_if_valid(
-                    VrfDomain::MainSequencer,
-                    &sync_response.context,
-                    peer,
-                    reference_round,
-                    sync_response.current_round,
-                ) {
-                    info!(
-                        "💾 [MAIN_VRF_SYNC] Stored round {:?} for peer {} from response",
                         sync_response.current_round, peer
                     );
                 }
@@ -1208,199 +1104,6 @@ impl MpcNetworkLayer {
                     }
                 }
             }
-            GossipsubMessage::NetworkTransactionSequencerSync {
-                transaction_id,
-                sequence,
-                node_id,
-                state,
-            } => {
-                info!(
-                    "🔄 [NETWORK_SEQUENCER] Received network transaction sequencer sync: tx_id={}, sequence={}, node={}, state={}",
-                    transaction_id, sequence, node_id, state
-                );
-
-                // Initialize sequencer if not already initialized (e.g., when receiving sync before submitting)
-                if self.network_transaction_sequencer.is_none() {
-                    let mut sequencer =
-                        crate::network::sequencer::NetworkTransactionSequencer::new();
-                    let total_nodes = self.node_manager.get_total_nodes();
-                    let node_id = self.local_peer_id.to_string();
-                    let message_tx = self.message_tx.clone();
-                    sequencer.initialize(message_tx, node_id, total_nodes).await;
-
-                    // Configure VRF + Consensus for final node selection (mirrors initialization in network/utils)
-                    sequencer.set_local_peer_id(self.local_peer_id);
-
-                    // Use isolated VRF storage for main sequencer to avoid round collisions with signing or vault
-                    let main_vrf_storage = crate::database::storage::VrfStorage::new_with_prefix(
-                        self.db.clone(),
-                        "main_seq:",
-                    );
-                    let main_vrf_service =
-                        crate::protocols::VrfService::new_with_storage_and_context(
-                            self.local_peer_id,
-                            self.message_tx.clone(),
-                            main_vrf_storage,
-                            "network",
-                        );
-                    sequencer.set_vrf_service(Arc::new(main_vrf_service));
-
-                    // Dedicated consensus node for network sequencer final node agreement
-                    sequencer.set_consensus_node(Arc::new(tokio::sync::RwLock::new(
-                        crate::consensus::ConsensusNode::new(),
-                    )));
-
-                    // Seed available nodes for deterministic selection
-                    let available_nodes: Vec<libp2p::PeerId> =
-                        self.node_manager.get_active_nodes().into_iter().collect();
-                    sequencer.update_available_nodes(available_nodes).await;
-                    self.network_transaction_sequencer = Some(sequencer);
-                    info!(
-                        "✅ [NETWORK_SEQUENCER] Initialized sequencer on sync message receipt with {} total nodes",
-                        total_nodes
-                    );
-                }
-
-                if let Some(sequencer) = &self.network_transaction_sequencer {
-                    sequencer
-                        .handle_sync_message(transaction_id, sequence, node_id, state)
-                        .await;
-                } else {
-                    warn!("⚠️ [NETWORK_SEQUENCER] Failed to initialize sequencer");
-                }
-            }
-            GossipsubMessage::MainSequencerSelect {
-                round,
-                request_id,
-                final_node_id,
-                signature: _signature,
-            } => {
-                info!(
-                    "📨 [MAIN_SEQUENCER] Received SELECT: round={}, request_id={}, from={:?}",
-                    round, request_id, final_node_id
-                );
-
-                // MainSequencerSelect removed from retry - has ACK/MISSING fallback
-                // No acknowledgment needed for retry mechanism
-
-                if let Some(sequencer) = &self.network_transaction_sequencer {
-                    if let Err(e) = sequencer
-                        .handle_select_message(round, request_id, final_node_id)
-                        .await
-                    {
-                        error!("❌ [MAIN_SEQUENCER] Failed to handle SELECT: {}", e);
-                    }
-                }
-            }
-            GossipsubMessage::MainSequencerAck {
-                round,
-                request_id,
-                node_id,
-            } => {
-                info!(
-                    "✅ [MAIN_SEQUENCER] Received ACK: round={}, request_id={}, from={:?}",
-                    round, request_id, node_id
-                );
-
-                if let Some(sequencer) = &self.network_transaction_sequencer {
-                    sequencer
-                        .handle_select_ack(round, &request_id, node_id)
-                        .await;
-                }
-            }
-            GossipsubMessage::MainSequencerMissing {
-                round,
-                request_id,
-                node_id,
-            } => {
-                warn!(
-                    "⚠️ [MAIN_SEQUENCER] Received MISSING: round={}, request_id={}, from={:?}",
-                    round, request_id, node_id
-                );
-            }
-            GossipsubMessage::MainSequencerVrfSelectedNodes(broadcast_msg) => {
-                info!(
-                    "📥 [MAIN_SEQUENCER] Received VRF broadcast: round={}, from={:?}",
-                    broadcast_msg.round, broadcast_msg.selector_node_id
-                );
-
-                let sender_peer_id = match message.source {
-                    Some(pid) => pid,
-                    None => {
-                        warn!("🚫 [SECURITY] Rejecting MainSequencerVrfSelectedNodes broadcast: message has no source");
-                        return Ok(());
-                    }
-                };
-
-                // Send acknowledgment for critical message
-                self.send_critical_message_ack(
-                    crate::network::rpc::retry_manager::CriticalMessageType::MainSequencerVrfSelectedNodes,
-                    &GossipsubMessage::MainSequencerVrfSelectedNodes(broadcast_msg.clone()),
-                ).await;
-
-                if let Some(sequencer) = &self.network_transaction_sequencer {
-                    let round = broadcast_msg.round;
-                    let total_nodes = self.node_manager.get_total_nodes();
-                    let min_selections = total_nodes;
-
-                    // Clone for async task (matches signing module pattern)
-                    let sequencer_clone = sequencer.clone();
-                    let broadcast_msg_clone = broadcast_msg.clone();
-
-                    // Spawn async task to handle VRF broadcast and check consensus
-                    // This avoids blocking and matches signing module's approach
-                    tokio::spawn(async move {
-                        // Handle VRF broadcast
-                        if let Err(e) = sequencer_clone
-                            .handle_vrf_broadcast(broadcast_msg_clone, sender_peer_id, total_nodes)
-                            .await
-                        {
-                            error!("❌ [MAIN_SEQUENCER] Failed to handle VRF broadcast: {}", e);
-                            return;
-                        }
-
-                        // Check if we can start consensus
-                        if sequencer_clone
-                            .can_start_consensus(round, min_selections)
-                            .await
-                        {
-                            info!(
-                                "🎯 [MAIN_SEQUENCER] Enough VRF selections for round {}, waiting for retries before consensus",
-                                round
-                            );
-
-                            // CRITICAL FIX: Wait for VRF retries to complete before triggering consensus
-                            // With aggressive VRF retries (500ms initial + up to 2s of retries),
-                            // we need to ensure ALL nodes have received ALL VRF broadcasts
-                            // before calculating consensus. Otherwise, nodes calculate with
-                            // incomplete data and reject each other's results.
-                            //
-                            // Wait time calculation:
-                            // - VRF_INITIAL_WAIT: 500ms
-                            // - First 4 retries: 100+200+300+500 = 1100ms
-                            // - Safety margin: 400ms
-                            // Total: 2000ms (2 seconds)
-                            tokio::time::sleep(tokio::time::Duration::from_millis(2000)).await;
-
-                            info!(
-                                "✅ [MAIN_SEQUENCER] Retry period complete, triggering consensus for round {}",
-                                round
-                            );
-
-                            if let Err(e) = sequencer_clone
-                                .check_and_trigger_consensus(round, min_selections)
-                                .await
-                            {
-                                error!("❌ [MAIN_SEQUENCER] Failed to trigger consensus: {}", e);
-                            }
-                        }
-                    });
-                } else {
-                    warn!(
-                        "⚠️ [MAIN_SEQUENCER] Received VRF broadcast but sequencer not initialized"
-                    );
-                }
-            }
             GossipsubMessage::CriticalMessageAck {
                 message_type,
                 message_id,
@@ -1412,16 +1115,9 @@ impl MpcNetworkLayer {
                 );
 
                 // Parse message type and create message ID
-                // Note: SELECT messages removed from retry (have ACK/MISSING fallback)
                 let msg_type = match message_type.as_str() {
                     "TransactionIdBroadcast" => crate::network::rpc::retry_manager::CriticalMessageType::TransactionIdBroadcast,
-                    "MainSequencerVrfSelectedNodes" => crate::network::rpc::retry_manager::CriticalMessageType::MainSequencerVrfSelectedNodes,
                     "VrfSelectedNodes" => crate::network::rpc::retry_manager::CriticalMessageType::VrfSelectedNodes,
-                    // Removed: VaultSequencerSelect and MainSequencerSelect (have ACK/MISSING fallback)
-                    "MainSequencerSelect" => {
-                        info!("ℹ️ [RETRY] Ignoring ACK for {} - not in retry system (has ACK/MISSING fallback)", message_type);
-                        return Ok(());
-                    }
                     _ => {
                         warn!("⚠️ [RETRY] Unknown message type in ACK: {}", message_type);
                         return Ok(());
@@ -1589,9 +1285,6 @@ impl MpcNetworkLayer {
         let topic = match msg_type {
             crate::network::rpc::retry_manager::CriticalMessageType::TransactionIdBroadcast => {
                 crate::network::transport::types::TOPIC_TRANSACTION_ID_SYNC
-            }
-            crate::network::rpc::retry_manager::CriticalMessageType::MainSequencerVrfSelectedNodes => {
-                crate::network::transport::types::TOPIC_MAIN_SEQUENCER_VRF
             }
             crate::network::rpc::retry_manager::CriticalMessageType::VrfSelectedNodes => {
                 crate::network::transport::types::TOPIC_VRF_SELECTION

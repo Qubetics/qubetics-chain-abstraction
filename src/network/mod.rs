@@ -12,15 +12,9 @@ pub mod upgrade;
 // Internal helpers for initialization and component management
 mod getters;
 mod init;
-mod sequencer;
 mod setters;
 mod utils;
 pub mod whitelist;
-
-pub use sequencer::{
-    NetworkTransactionFlow,
-    NetworkTransactionRequest, NetworkTransactionSequencer,
-};
 pub use upgrade::{
     NetworkVersionTracker, RollingUpgradeOrchestrator, UpgradePhase, UpgradeValidation,
 };
