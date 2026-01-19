@@ -968,48 +968,50 @@ pub(crate) async fn handle_user_mpc_deposit(
 
     info!("🧾 HTTP: user_mpc_deposit received");
 
-    info!("🧾 HTTP: user_mpc_deposit received");
-
-    let mut transaction_ids = Vec::new();
-    let tx_mapping = user_intent_manager
-        .get_intent_transaction_ids(&intent_hash_hex)
-        .await;
-    if let Some(tx_ids) = user_intent_manager
-        .get_intent_transaction_ids(&intent_hash_hex)
-        .await
-    {
-        if tx_ids.error_message.is_none() {
-            if let Some(ref user_to_network_tx) = tx_ids.user_to_network_tx_id {
-                transaction_ids.push(user_to_network_tx.clone());
-            }
-            if let Some(ref network_to_target_tx) = tx_ids.network_to_target_tx_id {
-                transaction_ids.push(network_to_target_tx.clone());
-            }
-        }
-    }
-
-    let transaction_type = if transaction_ids.len() == 1 {
-        TransactionType::NetworkToTarget
-    } else if transaction_ids.is_empty() {
-        TransactionType::UserToVault
-    } else {
+    // CRITICAL: Only support UserToVault transaction type
+    // Reject immediately if intent_hash already exists in database
+    if user_intent_manager.get_intent(&intent_hash_hex).await.is_some() {
+        warn!(
+            request_id = %request_context.request_id,
+            intent_hash = %intent_hash_hex,
+            "⚠️ HTTP: Rejecting deposit - intent hash already exists in database"
+        );
         return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
             status: "error".to_string(),
             signer_address: "".to_string(),
             is_registered: false,
-            amount: "0".to_string(),
-            user_to_network_tx_id: tx_mapping
-                .as_ref()
-                .and_then(|tx| tx.user_to_network_tx_id.clone()),
-            network_to_target_tx_id: tx_mapping
-                .as_ref()
-                .and_then(|tx| tx.network_to_target_tx_id.clone()),
+            amount: req.msg.amount,
+            user_to_network_tx_id: None,
+            network_to_target_tx_id: None,
             final_solver_id: None,
-            error_message: Some(
-                "Duplicate intent detected - this intent has already been processed".to_string(),
-            ),
+            error_message: Some("Intent hash already exists - this deposit has already been processed".to_string()),
         }));
+    }
+
+    // CRITICAL: Signature is now mandatory for UserToVault deposits
+    let signature = match &req.signature {
+        Some(sig) => sig,
+        None => {
+            warn!(
+                request_id = %request_context.request_id,
+                intent_hash = %intent_hash_hex,
+                "⚠️ HTTP: Rejecting deposit - signature is required"
+            );
+            return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+                status: "error".to_string(),
+                signer_address: "".to_string(),
+                is_registered: false,
+                amount: req.msg.amount,
+                user_to_network_tx_id: None,
+                network_to_target_tx_id: None,
+                final_solver_id: None,
+                error_message: Some("Signature is required for UserToVault deposits".to_string()),
+            }));
+        }
     };
+
+    // Only support UserToVault transaction type
+    let transaction_type = TransactionType::UserToVault;
 
     info!(
         "🔐 Processing MPC deposit - Intent hash: {:?}, Amount: {}",
@@ -1032,8 +1034,8 @@ pub(crate) async fn handle_user_mpc_deposit(
     {
         Some(existing_user) => existing_user,
         None => {
-            match &req.signature {
-                Some(signature) => {
+            // Signature is already validated above, so we can safely unwrap
+            {
                     info!("No existing user found for intent hash, but signature is present in the request.");
                     let (compact, v) = match normalize_eth_signature(signature) {
                         Ok(t) => t,
@@ -1124,58 +1126,19 @@ pub(crate) async fn handle_user_mpc_deposit(
                     info!("✅ Intent hash store message sent for user: {}", signer);
 
                     user_reg
-                }
-                None => {
-                    return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
-                        status: "error".to_string(),
-                        signer_address: "".to_string(),
-                        is_registered: false,
-                        amount: "0".to_string(),
-                        user_to_network_tx_id: None,
-                        network_to_target_tx_id: None,
-                        final_solver_id: None,
-                        error_message: Some("No details found in database for intent hash and no signature provided.".to_string()),
-                    }));
-                }
             }
         }
     };
 
-    let user_eth_address = match transaction_type {
-        crate::types::TransactionType::UserToVault => {
-            Some(user_registration.ethereum_address.clone())
-        }
-        _ => None,
-    };
+    // UserToVault always requires user_eth_address
+    let user_eth_address = Some(user_registration.ethereum_address.clone());
 
-    let chain_to_check = if let Some(ref tx_id) = req.tx_id {
-        if let Some(ref map) = tx_mapping {
-            if map.user_to_network_tx_id.as_ref() == Some(tx_id) {
-                Some("source")
-            } else if map.network_to_target_tx_id.as_ref() == Some(tx_id) {
-                Some("target")
-            } else {
-                Some("tics")
-            }
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
+    // For UserToVault, transaction confirmation would be on source chain
     if let Some(ref tx_id) = req.tx_id {
         let source_chain = req.msg.source_chain.to_lowercase();
-        let target_chain = req.msg.target_chain.to_lowercase();
-        let selected_chain = match chain_to_check {
-            Some("target") => &target_chain,
-            Some("source") => &source_chain,
-            Some("tics") | Some(_) => "tics",
-            None => "tics",
-        };
         info!(
             "🔎 Would check tx {} confirmation on chain {} (functionality disabled)",
-            tx_id, selected_chain
+            tx_id, source_chain
         );
     }
 

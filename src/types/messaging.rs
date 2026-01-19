@@ -176,7 +176,7 @@ pub enum GossipsubMessage {
         intent_id: String,
         /// If provided, use user's tweaked share; otherwise use network's DKG share
         user_eth_address: Option<String>,
-        transaction_type: TransactionType,
+        /// Note: Gossiped DepositIntent is always processed as UserToVault
         amount: u128,
     },
     IntentHash {

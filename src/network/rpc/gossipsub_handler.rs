@@ -698,130 +698,63 @@ impl MpcNetworkLayer {
             }
             GossipsubMessage::DepositIntent {
                 intent,
-                intent_id,
+                intent_id: _intent_id,
                 user_eth_address,
-                transaction_type,
                 amount,
             } => {
-
-                // CRITICAL FIX: For refund transactions, use the ORIGINAL intent_hash from intent_id
-                // Refund intents have modified target_address/target_chain, so calculating hash from
-                // the modified intent would produce a different hash than the original intent
-                let intent_hash = if matches!(transaction_type, crate::types::TransactionType::Refund) 
-                    && intent_id.starts_with("refund-") 
-                {
-                    // Extract original intent_hash from "refund-{original_intent_hash}"
-                    let original_intent_hash = intent_id.strip_prefix("refund-").unwrap_or(&intent_id);
-                    info!("🔐 [GOSSIPSUB] Refund transaction detected - using ORIGINAL intent hash: {} (from intent_id: {})", original_intent_hash, intent_id);
-                    original_intent_hash.to_string()
-                } else {
-                    // For non-refund transactions, calculate hash from the intent
-                    let calculated_hash = crate::utils::calculate_intent_hash(&intent)
-                        .map_err(|e| anyhow::anyhow!("Failed to calculate intent hash: {}", e))?;
-                    info!("🔐 [GOSSIPSUB] Calculated intent hash: {}", calculated_hash);
-                    calculated_hash
+                // CRITICAL: UserToVault requires user_eth_address
+                let user_eth_addr = match user_eth_address {
+                    Some(addr) => addr,
+                    None => {
+                        warn!("❌ [GOSSIPSUB] Rejecting DepositIntent - user_eth_address is required for UserToVault");
+                        return Ok(());
+                    }
                 };
 
-                // CRITICAL: Store the intent in database if not already stored
-                // This ensures all nodes have the intent even if they missed the IntentHash broadcast
+                // Calculate intent hash from the intent
+                let intent_hash = match crate::utils::calculate_intent_hash(&intent) {
+                    Ok(hash) => hash,
+                    Err(e) => {
+                        warn!("❌ [GOSSIPSUB] Failed to calculate intent hash: {}", e);
+                        return Ok(());
+                    }
+                };
+                info!("🔐 [GOSSIPSUB] Calculated intent hash: {}", intent_hash);
+
+                // CRITICAL: Reject immediately if intent_hash already exists in database
                 if let Some(user_intent_manager) = &self.user_intent_manager {
-                    // Check if intent already exists
-                    if user_intent_manager.get_intent(&intent_hash).await.is_none() {
-                        // Decode intent_hash from hex to bytes for store_intent_hash
-                        if let Ok(intent_hash_bytes) = hex::decode(&intent_hash) {
-                            // Use the user_eth_address if available, otherwise use a placeholder
-                            // The signer field is used for user identification
-                            let signer = user_eth_address.as_ref()
-                                .map(|addr| addr.clone())
-                                .unwrap_or_else(|| "network".to_string());
-                            
-                            if let Err(e) = user_intent_manager
-                                .store_intent_hash(intent_hash_bytes, &signer, &intent)
-                                .await
-                            {
-                                warn!("❌ [GOSSIPSUB] Failed to store intent hash {}: {}", intent_hash, e);
-                            } else {
-                            }
-                        } else {
-                            warn!("❌ [GOSSIPSUB] Invalid intent hash format: {}", intent_hash);
+                    if user_intent_manager.get_intent(&intent_hash).await.is_some() {
+                        warn!(
+                            "⚠️ [GOSSIPSUB] Rejecting DepositIntent - intent hash {} already exists in database",
+                            intent_hash
+                        );
+                        return Ok(());
+                    }
+
+                    // Store the intent in database
+                    if let Ok(intent_hash_bytes) = hex::decode(&intent_hash) {
+                        if let Err(e) = user_intent_manager
+                            .store_intent_hash(intent_hash_bytes, &user_eth_addr, &intent)
+                            .await
+                        {
+                            warn!("❌ [GOSSIPSUB] Failed to store intent hash {}: {}", intent_hash, e);
+                            return Ok(());
                         }
                     } else {
-                        debug!("✅ [GOSSIPSUB] Intent {} already exists in database", intent_hash);
+                        warn!("❌ [GOSSIPSUB] Invalid intent hash format: {}", intent_hash);
+                        return Ok(());
                     }
                 } else {
                     warn!("❌ [GOSSIPSUB] User intent manager not available to store intent");
+                    return Ok(());
                 }
 
-                // Determine chain type based on transaction type:
-                // - UserToVault: use source_chain (user is depositing FROM this chain)
-                // - NetworkToTarget: use target_chain (network is withdrawing TO this chain)
-                let chain_to_use = match transaction_type {
-                    crate::types::TransactionType::UserToVault => {
-                        &intent.source_chain.to_lowercase()
-                    }
-                    crate::types::TransactionType::NetworkToTarget => {
-                        &intent.target_chain.to_lowercase()
-                    }
-                    crate::types::TransactionType::Refund => {
-                        &intent.source_chain.to_lowercase() // Refund goes back to source chain
-                    }
-                    crate::types::TransactionType::RewardTxn => {
-                        // RewardTxn is not valid for intent flow
-                        warn!("❌ [GOSSIPSUB] RewardTxn is not valid for deposit intent flow");
-                        return Ok(());
-                    }
-                    crate::types::TransactionType::WithdrawLiquidity => {
-                        warn!(
-                            "❌ [GOSSIPSUB] WithdrawLiquidity is not valid for deposit intent flow"
-                        );
-                        return Ok(());
-                    }
-                    crate::types::TransactionType::AddLiquidity => {
-                        warn!("❌ [GOSSIPSUB] AddLiquidity is not valid for deposit intent flow");
-                        return Ok(());
-                    }
-                };
+                // UserToVault: use source_chain (user is depositing FROM this chain)
+                let chain_to_use = &intent.source_chain.to_lowercase();
 
-                // Get the appropriate signing key based on transaction type
-                let signing_key: Option<k256::Scalar> = match transaction_type {
-                    crate::types::TransactionType::UserToVault => {
-                        // For user deposits, use user's tweaked secret share
-                        self.get_signing_key_for_user(user_eth_address.as_ref())
-                            .await
-                    }
-                    crate::types::TransactionType::NetworkToTarget => {
-                        // For network withdrawals, use network's DKG secret share
-                        if let Some(dkg_node) = &self.dkg_node {
-                            dkg_node.get_final_secret_share().await
-                        } else {
-                            None
-                        }
-                    }
-                    crate::types::TransactionType::Refund => {
-                        // For refund transactions, use network's DKG secret share (same as NetworkToTarget)
-                        if let Some(dkg_node) = &self.dkg_node {
-                            dkg_node.get_final_secret_share().await
-                        } else {
-                            None
-                        }
-                    }
-                    crate::types::TransactionType::RewardTxn => {
-                        // RewardTxn is not valid for intent flow
-                        None
-                    }
-                    crate::types::TransactionType::WithdrawLiquidity => {
-                        warn!(
-                            "❌ [GOSSIPSUB] WithdrawLiquidity is not supported for deposit intent signing"
-                        );
-                        None
-                    }
-                    crate::types::TransactionType::AddLiquidity => {
-                        warn!(
-                            "❌ [GOSSIPSUB] AddLiquidity is not supported for deposit intent signing"
-                        );
-                        None
-                    }
-                };
+                // For UserToVault, use user's tweaked secret share
+                let signing_key: Option<k256::Scalar> = self.get_signing_key_for_user(Some(&user_eth_addr))
+                    .await;
 
                 if let Some(signing_node) = &mut self.signing_node {
                     let chain_handler: Option<Arc<dyn crate::chain_abstraction::ChainHandler>> =
@@ -839,67 +772,32 @@ impl MpcNetworkLayer {
                                         .to_string(),
                                 );
 
-                            match transaction_type {
-                                crate::types::TransactionType::UserToVault => {
-                                    if let Some(eth_addr) = &user_eth_address {
-                                        if let Some(user_intent_manager) = &self.user_intent_manager
-                                        {
-                                            if let Some(user) = user_intent_manager
-                                                .get_user_by_address(eth_addr)
-                                                .await
-                                            {
-                                                if let Some(user_group_key) = &user.user_group_key {
-                                                    let affine_point = user_group_key.0;
-                                                    let encoded_point =
-                                                        k256::EncodedPoint::from(affine_point);
-                                                    let compressed_bytes = encoded_point
-                                                        .compress()
-                                                        .to_bytes()
-                                                        .to_vec();
+                            // UserToVault: set user's group public key for Bitcoin
+                            if let Some(user_intent_manager) = &self.user_intent_manager {
+                                if let Some(user) = user_intent_manager
+                                    .get_user_by_address(&user_eth_addr)
+                                    .await
+                                {
+                                    if let Some(user_group_key) = &user.user_group_key {
+                                        let affine_point = user_group_key.0;
+                                        let encoded_point =
+                                            k256::EncodedPoint::from(affine_point);
+                                        let compressed_bytes = encoded_point
+                                            .compress()
+                                            .to_bytes()
+                                            .to_vec();
 
-                                                    if let Some(btc_handler) = handler.as_any_mut().downcast_mut::<crate::chain_abstraction::BitcoinChainHandler>() {
-                                                        btc_handler.set_group_public_key(compressed_bytes);
-                                                    }
-                                                } else {
-                                                    warn!("❌ [GOSSIPSUB] User {} has no group key for Bitcoin transaction", eth_addr);
-                                                }
-                                            } else {
-                                                warn!("❌ [GOSSIPSUB] User {} not found for Bitcoin transaction", eth_addr);
-                                            }
-                                        } else {
-                                            warn!("❌ [GOSSIPSUB] User registry not available for Bitcoin transaction");
+                                        if let Some(btc_handler) = handler.as_any_mut().downcast_mut::<crate::chain_abstraction::BitcoinChainHandler>() {
+                                            btc_handler.set_group_public_key(compressed_bytes);
                                         }
                                     } else {
-                                        warn!("❌ [GOSSIPSUB] UserToVault transaction requires user_eth_address");
+                                        warn!("❌ [GOSSIPSUB] User {} has no group key for Bitcoin transaction", user_eth_addr);
                                     }
+                                } else {
+                                    warn!("❌ [GOSSIPSUB] User {} not found for Bitcoin transaction", user_eth_addr);
                                 }
-                                crate::types::TransactionType::NetworkToTarget
-                                | crate::types::TransactionType::Refund => {
-                                    // Refund uses network DKG group key (same as NetworkToTarget)
-                                    if let Some(dkg_node) = &self.dkg_node {
-                                        if let Some(group_key) =
-                                            dkg_node.get_final_public_key().await
-                                        {
-                                            let affine_point = group_key.to_affine();
-                                            let encoded_point =
-                                                k256::EncodedPoint::from(affine_point);
-                                            let compressed_bytes =
-                                                encoded_point.compress().to_bytes().to_vec();
-
-                                            if let Some(btc_handler) = handler.as_any_mut().downcast_mut::<crate::chain_abstraction::BitcoinChainHandler>() {
-                                                btc_handler.set_group_public_key(compressed_bytes);
-                                                info!("🔑 [GOSSIPSUB] Set network DKG group public key in Bitcoin chain handler");
-                                            }
-                                        }
-                                    }
-                                }
-                                crate::types::TransactionType::RewardTxn => {}
-                                crate::types::TransactionType::WithdrawLiquidity => {
-                                    warn!("❌ [GOSSIPSUB] WithdrawLiquidity is not supported for Bitcoin deposit handling");
-                                }
-                                crate::types::TransactionType::AddLiquidity => {
-                                    warn!("❌ [GOSSIPSUB] AddLiquidity is not supported for Bitcoin deposit handling");
-                                }
+                            } else {
+                                warn!("❌ [GOSSIPSUB] User registry not available for Bitcoin transaction");
                             }
 
                             Some(Arc::from(handler)
@@ -915,56 +813,25 @@ impl MpcNetworkLayer {
                     let Some(chain_handler) = chain_handler else {
                         return Err(anyhow!("Unsupported chain: {}", chain_to_use));
                     };
-                    // Get derived addresses based on transaction type
-                    let (derived_eth_addr, derived_btc_addr) = match transaction_type {
-                        crate::types::TransactionType::UserToVault => {
-                            // For user deposits, use user's derived addresses
-                            if let Some(eth_addr) = &user_eth_address {
-                                if let Some(user_intent_manager) = &self.user_intent_manager {
-                                    if let Some(user) =
-                                        user_intent_manager.get_user_by_address(eth_addr).await
-                                    {
-                                        (
-                                            user.derived_eth_address.clone(),
-                                            user.derived_btc_address.clone(),
-                                        )
-                                    } else {
-                                        warn!(
-                                            "❌ [GOSSIPSUB] User {} not found in registry",
-                                            eth_addr
-                                        );
-                                        (None, None)
-                                    }
-                                } else {
-                                    warn!("❌ [GOSSIPSUB] User registry not available");
-                                    (None, None)
-                                }
-                            } else {
-                                warn!("❌ [GOSSIPSUB] UserToVault transaction requires user_eth_address");
-                                (None, None)
-                            }
-                        }
-                        crate::types::TransactionType::NetworkToTarget
-                        | crate::types::TransactionType::Refund => {
-                            // For network withdrawals and refunds, no derived addresses needed
-                            (None, None)
-                        }
-                        crate::types::TransactionType::RewardTxn => {
-                            // RewardTxn is not valid for intent flow
-                            (None, None)
-                        }
-                        crate::types::TransactionType::WithdrawLiquidity => {
+                    // For UserToVault, use user's derived addresses
+                    let (derived_eth_addr, derived_btc_addr) = if let Some(user_intent_manager) = &self.user_intent_manager {
+                        if let Some(user) =
+                            user_intent_manager.get_user_by_address(&user_eth_addr).await
+                        {
+                            (
+                                user.derived_eth_address.clone(),
+                                user.derived_btc_address.clone(),
+                            )
+                        } else {
                             warn!(
-                                "❌ [GOSSIPSUB] WithdrawLiquidity transaction type not supported for derived addresses"
+                                "❌ [GOSSIPSUB] User {} not found in registry",
+                                user_eth_addr
                             );
                             (None, None)
                         }
-                        crate::types::TransactionType::AddLiquidity => {
-                            warn!(
-                                "❌ [GOSSIPSUB] AddLiquidity transaction type not supported for derived addresses"
-                            );
-                            (None, None)
-                        }
+                    } else {
+                        warn!("❌ [GOSSIPSUB] User registry not available");
+                        (None, None)
                     };
 
                     let group_public_key = if let Some(dkg_node) = &self.dkg_node {
@@ -996,7 +863,7 @@ impl MpcNetworkLayer {
                             group_public_key,
                             derived_eth_addr.as_ref(),
                             derived_btc_addr.as_ref(),
-                            transaction_type.clone(),
+                            crate::types::TransactionType::UserToVault,
                             vault_eth_addr.as_ref(),
                             vault_btc_addr.as_ref(),
                             amount,
@@ -1048,9 +915,9 @@ impl MpcNetworkLayer {
                                                 tx_bytes.clone(),
                                                 &chain_handler,
                                                 Some(btc_tx.clone()),
-                                                user_eth_address.clone(),
+                                                Some(user_eth_addr.clone()),
                                                 Some(intent_hash.clone()),
-                                                Some(transaction_type.clone()),
+                                                Some(crate::types::TransactionType::UserToVault),
                                                 signing_key,
                                                 None,
                                                 signing_key,
@@ -1070,28 +937,6 @@ impl MpcNetworkLayer {
                                     // Use the signing_key that was already fetched earlier to avoid redundant fetching
                                     let user_tweaked_share = signing_key;
 
-                                    // For NetworkToTarget, queue to sequencer for coordinated signing
-                                    if matches!(
-                                        transaction_type,
-                                        crate::types::TransactionType::NetworkToTarget
-                                    ) {
-                                        info!(
-                                            "📝 [GOSSIPSUB] NetworkToTarget (EVM) detected - queuing via network transaction sequencer (intent_hash={})",
-                                            intent_hash
-                                        );
-                                        self.submit_network_to_target_to_sequencer(
-                                            &intent,
-                                            &intent_hash,
-                                            amount,
-                                            tx_bytes.clone(),
-                                            eth_tx.clone(),
-                                            user_tweaked_share,
-                                            user_eth_address.clone(),
-                                        )
-                                        .await?;
-                                        return Ok(());
-                                    }
-
                                     {
                                         let mut eth_signer = EthereumSigner::new(signing_node);
                                         eth_signer
@@ -1100,9 +945,9 @@ impl MpcNetworkLayer {
                                                 &chain_handler,
                                                 eth_tx,
                                                 user_tweaked_share,
-                                                user_eth_address.clone(),
+                                                Some(user_eth_addr.clone()),
                                                 Some(intent_hash.clone()),
-                                                Some(transaction_type.clone()),
+                                                Some(crate::types::TransactionType::UserToVault),
                                                 None,
                                                 signing_key,
                                             )

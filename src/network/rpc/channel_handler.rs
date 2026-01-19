@@ -2214,13 +2214,17 @@ impl MpcNetworkLayer {
                     intent
                 );
 
-                // Only broadcast to other nodes via gossipsub when using network share (no user_eth_address)
-                info!("🌐 [NETWORK] Using network share - broadcasting to P2P network");
+                // Only broadcast UserToVault deposits via gossipsub
+                // Note: Gossiped DepositIntent is always processed as UserToVault
+                if !matches!(transaction_type, crate::types::TransactionType::UserToVault) {
+                    info!("⏭️ [NETWORK] Skipping gossip broadcast - only UserToVault deposits are gossiped");
+                    return Ok(());
+                }
+                info!("🌐 [NETWORK] Broadcasting UserToVault deposit to P2P network");
                 let deposit_intent_msg = GossipsubMessage::DepositIntent {
                     intent: intent.clone(),
                     intent_id: intent_id.clone(),
                     user_eth_address: user_eth_address.clone(),
-                    transaction_type: transaction_type.clone(),
                     amount,
                 };
                 let msg_bytes = serde_json::to_vec(&deposit_intent_msg)
