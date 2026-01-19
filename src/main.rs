@@ -397,6 +397,7 @@ impl NodeContext {
 
         Ok(())
     }
+
 }
 
 // Increase tokio worker threads from default (num_cpus) to 16
@@ -430,6 +431,8 @@ async fn main() -> Result<()> {
     context.init_network().await?;
     context.spawn_rpc().await?;
     context.start_network().await?;
+    // Global clock is now integrated into the network event loop
+    // See: src/network/transport/event_loop.rs -> handle_global_clock_tick()
 
     Ok(())
 }
