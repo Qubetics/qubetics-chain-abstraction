@@ -28,12 +28,10 @@ pub struct MessageId {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum CriticalMessageType {
     TransactionIdBroadcast,
-    VaultSequencerVrfSelectedNodes,
     MainSequencerVrfSelectedNodes,
     VrfSelectedNodes,
     // Removed: VaultSequencerSelect - has ACK/MISSING protocol
     // Removed: MainSequencerSelect - has ACK/MISSING protocol
-    SequencerSync,
 }
 
 /// State of a message retry
@@ -73,18 +71,12 @@ impl RetryManager {
             GossipsubMessage::TransactionIdBroadcast { .. } => {
                 Some(CriticalMessageType::TransactionIdBroadcast)
             }
-            GossipsubMessage::VaultSequencerVrfSelectedNodes(_) => {
-                Some(CriticalMessageType::VaultSequencerVrfSelectedNodes)
-            }
             GossipsubMessage::MainSequencerVrfSelectedNodes(_) => {
                 Some(CriticalMessageType::MainSequencerVrfSelectedNodes)
             }
             GossipsubMessage::VrfSelectedNodes(_) => Some(CriticalMessageType::VrfSelectedNodes),
-            // Removed: VaultSequencerSelect - has ACK/MISSING protocol for recovery
-            GossipsubMessage::VaultSequencerSelect { .. } => None,
             // Removed: MainSequencerSelect - has ACK/MISSING protocol for recovery
             GossipsubMessage::MainSequencerSelect { .. } => None,
-            GossipsubMessage::SequencerSync { .. } => Some(CriticalMessageType::SequencerSync),
             _ => None,
         }
     }
@@ -98,12 +90,6 @@ impl RetryManager {
             GossipsubMessage::TransactionIdBroadcast { transaction_id, .. } => {
                 transaction_id.clone()
             }
-            GossipsubMessage::VaultSequencerVrfSelectedNodes(broadcast) => {
-                format!(
-                    "vault_vrf_{}_{}",
-                    broadcast.round, broadcast.selector_node_id.0
-                )
-            }
             GossipsubMessage::MainSequencerVrfSelectedNodes(broadcast) => {
                 format!(
                     "main_vrf_{}_{}",
@@ -113,11 +99,6 @@ impl RetryManager {
             GossipsubMessage::VrfSelectedNodes(broadcast) => {
                 format!("vrf_{}_{}", broadcast.round, broadcast.selector_node_id.0)
             }
-            GossipsubMessage::SequencerSync {
-                transaction_id,
-                sequence,
-                ..
-            } => format!("sync_{}_{}", transaction_id, sequence),
             _ => return Err(anyhow!("Not a critical message type")),
         };
 
@@ -297,7 +278,6 @@ impl RetryManager {
         matches!(
             msg_type,
             CriticalMessageType::VrfSelectedNodes
-                | CriticalMessageType::VaultSequencerVrfSelectedNodes
                 | CriticalMessageType::MainSequencerVrfSelectedNodes
         )
     }

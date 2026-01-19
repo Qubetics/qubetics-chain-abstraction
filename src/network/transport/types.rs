@@ -15,7 +15,7 @@ use crate::consensus::ConsensusNode;
 use crate::database::Database;
 use crate::network::discovery::types::{DatabaseSyncState, PeerDiscoveryState};
 use crate::network::rpc::retry_manager::RetryManager;
-use crate::network::sequencer::{ContractTransactionSequencer, NetworkTransactionSequencer};
+use crate::network::sequencer::NetworkTransactionSequencer;
 use crate::node_selection::NodeMembership;
 use crate::protocols::DKGNode;
 use crate::signing::{DatabaseSigningNode, SigningNode};
@@ -63,7 +63,6 @@ impl From<ReqRespEvent<RPCRequest, RPCResponse>> for NetworkEvent {
 pub enum VrfDomain {
     Signing,
     MainSequencer,
-    VaultSequencer,
 }
 
 pub const TOPIC_SIGNING: &str = "signing";
@@ -83,14 +82,9 @@ pub const TOPIC_TRANSACTION_ID_SYNC: &str = "transaction-id-sync";
 pub const TOPIC_CONSENSUS_RESULT: &str = "consensus-result";
 pub const TOPIC_TRANSACTION_ERROR_SYNC: &str = "transaction-error-sync";
 pub const TOPIC_LEGACY_DKG: &str = "dkg";
-pub const TOPIC_SEQUENCER_SYNC: &str = "sequencer-sync";
 pub const TOPIC_NETWORK_TRANSACTION_SEQUENCER_SYNC: &str = "network-transaction-sequencer-sync";
 pub const TOPIC_DETERMINISTIC_SELECTION: &str = "deterministic-selection";
-pub const TOPIC_VAULT_SEQUENCER_VRF: &str = "vault-sequencer-vrf";
 pub const TOPIC_MAIN_SEQUENCER_VRF: &str = "main-sequencer-vrf";
-pub const TOPIC_VAULT_SEQUENCER_SELECT: &str = "vault-sequencer-select";
-pub const TOPIC_VAULT_SEQUENCER_ACK: &str = "vault-sequencer-ack";
-pub const TOPIC_VAULT_SEQUENCER_MISSING: &str = "vault-sequencer-missing";
 pub const TOPIC_MAIN_SEQUENCER_SELECT: &str = "main-sequencer-select";
 pub const TOPIC_MAIN_SEQUENCER_ACK: &str = "main-sequencer-ack";
 pub const TOPIC_MAIN_SEQUENCER_MISSING: &str = "main-sequencer-missing";
@@ -119,13 +113,8 @@ pub enum GossipTopic {
     ConsensusResult,
     TransactionErrorSync,
     LegacyDkg,
-    SequencerSync,
     NetworkTransactionSequencerSync,
-    VaultSequencerVrf,
     MainSequencerVrf,
-    VaultSequencerSelect,
-    VaultSequencerAck,
-    VaultSequencerMissing,
     MainSequencerSelect,
     MainSequencerAck,
     MainSequencerMissing,
@@ -154,13 +143,8 @@ impl GossipTopic {
         GossipTopic::ConsensusResult,
         GossipTopic::TransactionErrorSync,
         GossipTopic::LegacyDkg,
-        GossipTopic::SequencerSync,
         GossipTopic::NetworkTransactionSequencerSync,
-        GossipTopic::VaultSequencerVrf,
         GossipTopic::MainSequencerVrf,
-        GossipTopic::VaultSequencerSelect,
-        GossipTopic::VaultSequencerAck,
-        GossipTopic::VaultSequencerMissing,
         GossipTopic::MainSequencerSelect,
         GossipTopic::MainSequencerAck,
         GossipTopic::MainSequencerMissing,
@@ -189,15 +173,10 @@ impl GossipTopic {
             GossipTopic::ConsensusResult => TOPIC_CONSENSUS_RESULT,
             GossipTopic::TransactionErrorSync => TOPIC_TRANSACTION_ERROR_SYNC,
             GossipTopic::LegacyDkg => TOPIC_LEGACY_DKG,
-            GossipTopic::SequencerSync => TOPIC_SEQUENCER_SYNC,
             GossipTopic::NetworkTransactionSequencerSync => {
                 TOPIC_NETWORK_TRANSACTION_SEQUENCER_SYNC
             }
-            GossipTopic::VaultSequencerVrf => TOPIC_VAULT_SEQUENCER_VRF,
             GossipTopic::MainSequencerVrf => TOPIC_MAIN_SEQUENCER_VRF,
-            GossipTopic::VaultSequencerSelect => TOPIC_VAULT_SEQUENCER_SELECT,
-            GossipTopic::VaultSequencerAck => TOPIC_VAULT_SEQUENCER_ACK,
-            GossipTopic::VaultSequencerMissing => TOPIC_VAULT_SEQUENCER_MISSING,
             GossipTopic::MainSequencerSelect => TOPIC_MAIN_SEQUENCER_SELECT,
             GossipTopic::MainSequencerAck => TOPIC_MAIN_SEQUENCER_ACK,
             GossipTopic::MainSequencerMissing => TOPIC_MAIN_SEQUENCER_MISSING,
@@ -236,15 +215,11 @@ pub struct MpcNetworkLayer {
     /// Cache of currently connected peers (for fast address responses)
     pub(crate) connected_peers_cache: HashSet<PeerId>,
 
-    pub(crate) contract_sequencer: Option<ContractTransactionSequencer>,
-    /// Mutex to ensure only one contract transaction is processed at a time
-    /// This prevents parallel processing even if multiple requests are queued
-    pub(crate) contract_processing_lock: Arc<Mutex<()>>,
     pub(crate) network_transaction_sequencer: Option<NetworkTransactionSequencer>,
     /// Mutex to ensure only one network transaction is processed at a time
     pub(crate) network_transaction_processing_lock: Arc<Mutex<()>>,
     // Removed: deterministic_selection field
-    // Final node selection is now integrated into ContractTransactionSequencer and NetworkTransactionSequencer
+    // Final node selection is now integrated into NetworkTransactionSequencer
     /// Retry manager for critical messages with exponential backoff
     pub(crate) retry_manager: Option<RetryManager>,
     pub(crate) channel_health: Arc<crate::network::rpc::channel_monitor::ChannelHealthMonitor>,

@@ -5,7 +5,7 @@ pub mod commands;
 pub mod consensus;
 pub mod contract;
 pub mod database;
-// Deterministic selection is now integrated into ContractTransactionSequencer and NetworkTransactionSequencer
+// Deterministic selection is now integrated into NetworkTransactionSequencer
 // pub mod deterministic_selection;
 pub mod dkg;
 pub mod intent_manager;

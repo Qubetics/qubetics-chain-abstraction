@@ -191,12 +191,6 @@ impl MpcNetworkLayer {
                 .and_then(|seq| seq.vrf_service())
                 .map(|svc| svc.context().to_string())
                 .unwrap_or_default(),
-            VrfDomain::VaultSequencer => self
-                .contract_sequencer
-                .as_ref()
-                .and_then(|seq| seq.vrf_service())
-                .map(|svc| svc.context().to_string())
-                .unwrap_or_default(),
         }
     }
 
@@ -227,17 +221,6 @@ impl MpcNetworkLayer {
             }
             VrfDomain::MainSequencer => {
                 if let Some(sequencer) = &self.network_transaction_sequencer {
-                    if sequencer
-                        .vrf_service()
-                        .map(|service| service.context() == context)
-                        .unwrap_or(false)
-                    {
-                        return Some(sequencer.get_current_round().await);
-                    }
-                }
-            }
-            VrfDomain::VaultSequencer => {
-                if let Some(sequencer) = &self.contract_sequencer {
                     if sequencer
                         .vrf_service()
                         .map(|service| service.context() == context)
@@ -286,10 +269,6 @@ impl MpcNetworkLayer {
             }
             VrfDomain::MainSequencer => self
                 .network_transaction_sequencer
-                .as_ref()
-                .and_then(|seq| seq.vrf_storage()),
-            VrfDomain::VaultSequencer => self
-                .contract_sequencer
                 .as_ref()
                 .and_then(|seq| seq.vrf_storage()),
         }
@@ -1128,19 +1107,13 @@ impl MpcNetworkLayer {
                     "TransactionIdBroadcast" => {
                         crate::network::rpc::retry_manager::CriticalMessageType::TransactionIdBroadcast
                     }
-                    "VaultSequencerVrfSelectedNodes" => {
-                        crate::network::rpc::retry_manager::CriticalMessageType::VaultSequencerVrfSelectedNodes
-                    }
                     "MainSequencerVrfSelectedNodes" => {
                         crate::network::rpc::retry_manager::CriticalMessageType::MainSequencerVrfSelectedNodes
                     }
                     "VrfSelectedNodes" => {
                         crate::network::rpc::retry_manager::CriticalMessageType::VrfSelectedNodes
                     }
-                    "SequencerSync" => {
-                        crate::network::rpc::retry_manager::CriticalMessageType::SequencerSync
-                    }
-                    "VaultSequencerSelect" | "MainSequencerSelect" => {
+                    "MainSequencerSelect" => {
                         return Ok(());
                     }
                     _ => {

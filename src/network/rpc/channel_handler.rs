@@ -3006,60 +3006,11 @@ impl MpcNetworkLayer {
                     return Ok(());
                 }
 
-                // Process locally first - re-insert to sequencer
-                if let Some(sequencer) = &self.contract_sequencer {
-                    if let Some(request) = original_request.clone() {
-                        // Check if already in queue to avoid duplicates
-                        let already_in_queue = {
-                            let pending = sequencer.pending_requests.read().await;
-                            pending.contains_key(&sequencer_request_id)
-                        };
-
-                        if !already_in_queue {
-                            // Use submit to properly add the request (handles sequence, notifies waiters, etc.)
-                            match sequencer.submit(request).await {
-                                Ok(()) => {
-                                    info!(
-                                        "✅ [TX_FAILURE] [LOCAL] Re-inserted failed transaction locally: {}",
-                                        sequencer_request_id
-                                    );
-                                }
-                                Err(e) => {
-                                    error!(
-                                        "❌ [TX_FAILURE] [LOCAL] Failed to re-insert transaction {} locally: {}",
-                                        sequencer_request_id, e
-                                    );
-                                }
-                            }
-                        } else {
-                            info!(
-                                "ℹ️ [TX_FAILURE] [LOCAL] Transaction {} already in queue, skipping re-insert",
-                                sequencer_request_id
-                            );
-                        }
-                    } else {
-                        // Fallback to reinsert (for backwards compatibility)
-                        match sequencer.reinsert(&sequencer_request_id).await {
-                            Ok(()) => {
-                                info!(
-                                    "✅ [TX_FAILURE] [LOCAL] Re-inserted via cache: {}",
-                                    sequencer_request_id
-                                );
-                            }
-                            Err(e) => {
-                                error!(
-                                    "❌ [TX_FAILURE] [LOCAL] Failed to re-insert transaction {} via cache: {}",
-                                    sequencer_request_id, e
-                                );
-                            }
-                        }
-                    }
-                } else {
-                    warn!(
-                        "⚠️ [TX_FAILURE] [LOCAL] Cannot retry transaction {} - sequencer not available",
-                        sequencer_request_id
-                    );
-                }
+                // Contract sequencer removed - transaction failures are logged but not retried via sequencer
+                warn!(
+                    "⚠️ [TX_FAILURE] [LOCAL] Contract transaction {} failed: {}. Sequencer removed, no automatic retry.",
+                    sequencer_request_id, error
+                );
 
                 // Then broadcast to other nodes via gossipsub
                 let failure_msg = GossipsubMessage::TransactionFailure {

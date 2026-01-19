@@ -71,7 +71,6 @@ impl MpcNetworkLayer {
             db_signing_node: None,
             consensus_node: None,
             command_processor: None,
-            contract_processing_lock: Arc::new(Mutex::new(())),
             user_intent_manager: None,
             node_manager,
             scheduled_dkg_task: None,
@@ -85,7 +84,6 @@ impl MpcNetworkLayer {
             bootstrap_peer_ids: Vec::new(),
             discovery_seeds: network_config.discovery_seeds,
             connected_peers_cache: std::collections::HashSet::new(),
-            contract_sequencer: None,
             network_transaction_sequencer: None,
             network_transaction_processing_lock: Arc::new(Mutex::new(())),
             // Removed: deterministic_selection field

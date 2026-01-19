@@ -57,7 +57,6 @@ pub struct VrfService {
 pub enum VrfRoundSyncKind {
     Signing,
     MainSequencer,
-    VaultSequencer,
 }
 
 impl VrfRoundSyncKind {
@@ -67,9 +66,6 @@ impl VrfRoundSyncKind {
             VrfRoundSyncKind::MainSequencer => {
                 GossipsubMessage::MainSequencerVrfRoundSyncRequest(request)
             }
-            VrfRoundSyncKind::VaultSequencer => {
-                GossipsubMessage::VaultSequencerVrfRoundSyncRequest(request)
-            }
         }
     }
 
@@ -78,9 +74,6 @@ impl VrfRoundSyncKind {
             VrfRoundSyncKind::Signing => crate::network::transport::types::TOPIC_CONSENSUS,
             VrfRoundSyncKind::MainSequencer => {
                 crate::network::transport::types::TOPIC_MAIN_SEQUENCER_VRF
-            }
-            VrfRoundSyncKind::VaultSequencer => {
-                crate::network::transport::types::TOPIC_VAULT_SEQUENCER_VRF
             }
         }
     }
