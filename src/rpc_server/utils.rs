@@ -243,7 +243,6 @@ pub(crate) async fn get_transaction_id_for_intent(
     Option<String>,
     Option<String>,
     Option<String>,
-    Option<String>,
 ) {
     let intent_hash_hex = hex::encode(intent_hash);
 
@@ -275,26 +274,15 @@ pub(crate) async fn get_transaction_id_for_intent(
             }
         }
 
-        let mut vault_to_network_tx_id = None;
-        if let Some(ref tx_id) = tx_ids.vault_to_network_tx_id {
-            if user_intent_manager
-                .get_transaction_status(tx_id)
-                .await
-                .is_some()
-            {
-                vault_to_network_tx_id = Some(tx_id.clone());
-            }
-        }
         let final_solver_id = tx_ids.final_solver_id.clone();
         return (
             user_to_network_tx_id,
             network_to_target_tx_id,
-            vault_to_network_tx_id,
             final_solver_id,
         );
     }
 
-    (None, None, None, None)
+    (None, None, None)
 }
 
 /// Wait for a transaction ID or chain error associated with the given intent hash.
@@ -310,7 +298,6 @@ pub(crate) async fn wait_for_transaction_result(
     Option<String>,
     Option<String>,
     Option<String>,
-    Option<String>,
 ) {
     let start = Instant::now();
     let intent_hash_hex = hex::encode(intent_hash);
@@ -319,18 +306,18 @@ pub(crate) async fn wait_for_transaction_result(
 
     // Give a bit more time to potentially get all transaction IDs
     let extended_timeout = timeout + Duration::from_secs(2);
-    let mut best_result = (None, None, None, None, None);
+    let mut best_result = (None, None, None, None);
 
     loop {
         // Check for transaction ids
-        let (u2n_tx, n2t_tx, v2n_tx, final_solver) =
+        let (u2n_tx, n2t_tx, final_solver) =
             get_transaction_id_for_intent(user_intent_manager, intent_hash).await;
 
         // Update our best result if we have new information
-        if u2n_tx.is_some() || n2t_tx.is_some() || v2n_tx.is_some() {
-            best_result = (u2n_tx, n2t_tx, v2n_tx, final_solver, None);
+        if u2n_tx.is_some() || n2t_tx.is_some() {
+            best_result = (u2n_tx, n2t_tx, final_solver, None);
             // If we have all transaction IDs, return immediately
-            if best_result.0.is_some() && best_result.1.is_some() && best_result.2.is_some() {
+            if best_result.0.is_some() && best_result.1.is_some() {
                 return best_result;
             }
 
@@ -348,7 +335,6 @@ pub(crate) async fn wait_for_transaction_result(
         {
             if let Some(error_msg) = tx_ids.error_message {
                 return (
-                    None,
                     None,
                     None,
                     tx_ids.final_solver_id.clone(),

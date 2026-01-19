@@ -400,7 +400,6 @@ impl IntentStorage {
         intent_hash: &str,
         user_to_network_tx_id: Option<String>,
         network_to_target_tx_id: Option<String>,
-        vault_to_network_tx_id: Option<String>,
         final_solver_id: Option<String>,
     ) -> Result<()> {
         let key = key_utils::intent_transaction_ids_key(intent_hash);
@@ -409,7 +408,6 @@ impl IntentStorage {
         info!("  🔗 Intent hash: {}", intent_hash);
         info!("  📤 User->Network TX ID: {:?}", user_to_network_tx_id);
         info!("  📥 Network->Target TX ID: {:?}", network_to_target_tx_id);
-        info!("  🏦 Vault->Network TX ID: {:?}", vault_to_network_tx_id);
         info!("  🧮 Final solver ID: {:?}", final_solver_id);
         info!("  🗄️  Database key: {}", key);
 
@@ -435,7 +433,6 @@ impl IntentStorage {
                     intent_hash: intent_hash.to_string(),
                     user_to_network_tx_id: None,
                     network_to_target_tx_id: None,
-                    vault_to_network_tx_id: None,
                     final_solver_id: None,
                     error_message: None,
                     created_at: Utc::now(),
@@ -480,19 +477,6 @@ impl IntentStorage {
             info!("  🆕 New TX ID: {}", tx_id);
         }
 
-        if let Some(tx_id) = vault_to_network_tx_id {
-            let old_tx_id = tx_ids.vault_to_network_tx_id.clone();
-            tx_ids.vault_to_network_tx_id = Some(tx_id.clone());
-            tx_ids.updated_at = Utc::now();
-            changes_made = true;
-
-            info!(
-                "🏦 [INTENT_STORAGE] Updated vault_to_network_tx_id for intent: {}",
-                intent_hash
-            );
-            info!("  🔄 Old TX ID: {:?}", old_tx_id);
-            info!("  🆕 New TX ID: {}", tx_id);
-        }
 
         if final_solver_id.is_some() {
             let solver_ref = final_solver_id.as_ref().unwrap();
@@ -596,7 +580,6 @@ impl IntentStorage {
             intent_hash,
             Some(tx_id.to_string()),
             None,
-            None,
             final_solver_id,
         )
         .await
@@ -613,28 +596,11 @@ impl IntentStorage {
             intent_hash,
             None,
             Some(tx_id.to_string()),
-            None,
             final_solver_id,
         )
         .await
     }
 
-    /// Store vault_to_network transaction ID
-    pub async fn store_vault_to_network_tx_id(
-        &self,
-        intent_hash: &str,
-        tx_id: &str,
-        final_solver_id: Option<String>,
-    ) -> Result<()> {
-        self.store_intent_transaction_ids(
-            intent_hash,
-            None,
-            None,
-            Some(tx_id.to_string()),
-            final_solver_id,
-        )
-        .await
-    }
 
     /// Store or update the final solver for an intent
     pub async fn store_final_solver(&self, intent_hash: &str, solver: &str) -> Result<()> {
@@ -650,7 +616,6 @@ impl IntentStorage {
                 intent_hash: intent_hash.to_string(),
                 user_to_network_tx_id: None,
                 network_to_target_tx_id: None,
-                vault_to_network_tx_id: None,
                 final_solver_id: None,
                 error_message: None,
                 created_at: Utc::now(),
@@ -690,7 +655,6 @@ impl IntentStorage {
                 intent_hash: intent_hash.to_string(),
                 user_to_network_tx_id: None,
                 network_to_target_tx_id: None,
-                vault_to_network_tx_id: None,
                 final_solver_id: None,
                 error_message: None,
                 created_at: Utc::now(),

@@ -915,7 +915,6 @@ pub(crate) async fn estimate_gas_for_deposit_intent(
 /// transaction_type determines the fund flow:
 /// - UserToVault: User deposit - FROM derived address TO vault address (on source chain)
 /// - NetworkToTarget: Network withdrawal - FROM network address TO target address (on target chain)
-/// - VaultToNetwork: Vault to network - FROM vault address TO network address (on source chain)
 ///   derived_eth_addr and derived_btc_addr are the actual addresses that hold user funds
 pub async fn create_chain_transaction_from_deposit_intent(
     intent: &DepositIntent,
@@ -1036,11 +1035,9 @@ async fn create_chain_transaction_from_deposit_intent_internal(
     // Determine chain type based on transaction type:
     // - UserToVault: use source_chain (user is depositing FROM this chain)
     // - NetworkToTarget: use target_chain (network is withdrawing TO this chain)
-    // - VaultToNetwork: use source_chain (vault is sending back to network on source chain)
     let chain_to_use = match transaction_type {
         crate::types::TransactionType::UserToVault => &intent.source_chain.to_lowercase(),
         crate::types::TransactionType::NetworkToTarget => &intent.target_chain.to_lowercase(),
-        crate::types::TransactionType::VaultToNetwork => &intent.source_chain.to_lowercase(),
         crate::types::TransactionType::Refund => &intent.source_chain.to_lowercase(), // Refund goes back to source chain
         crate::types::TransactionType::RewardTxn => {
             // RewardTxn is not valid for intent flow
@@ -1074,7 +1071,7 @@ async fn create_chain_transaction_from_deposit_intent_internal(
         // NOTE: group_public_key will always be available once the solver ecosystem is live,
         // but it's passed or not depending on transaction type. For UserToVault transactions
         // on EVM chains, the group key is not required as we use the derived user address.
-        // For NetworkToTarget and VaultToNetwork, the group key is required to derive the
+        // For NetworkToTarget, the group key is required to derive the
         // network address. We only unwrap and compute network_address when it's actually needed.
         let (from_address, to_address) = match transaction_type {
             crate::types::TransactionType::UserToVault => {
@@ -1106,20 +1103,6 @@ async fn create_chain_transaction_from_deposit_intent_internal(
                     intent.target_address
                 );
                 (network_address.clone(), intent.target_address.clone())
-            }
-            crate::types::TransactionType::VaultToNetwork => {
-                // Vault to network: FROM vault address TO network address
-                // Group public key is required to derive the network address
-                let group_key = group_public_key.ok_or_else(|| {
-                    anyhow::anyhow!("Group public key required for VaultToNetwork transactions")
-                })?;
-                let network_address = get_eth_address_from_group_key(group_key);
-                tracing::info!(
-                    "💰 [TRANSACTION] Vault to network: {} -> {}",
-                    vault_address,
-                    network_address
-                );
-                (vault_address.clone(), network_address.clone())
             }
             crate::types::TransactionType::Refund => {
                 // Refund: FROM network address TO user's source address
@@ -1166,7 +1149,7 @@ async fn create_chain_transaction_from_deposit_intent_internal(
         // NOTE: group_public_key will always be available once the solver ecosystem is live,
         // but it's passed or not depending on transaction type. For UserToVault transactions
         // on Bitcoin, the group key is not required as we use the derived user address.
-        // For NetworkToTarget and VaultToNetwork, the group key is required to derive the
+        // For NetworkToTarget, the group key is required to derive the
         // network address. We only unwrap and compute btc_network_address when it's actually needed.
         let (from_address, to_address) = match transaction_type {
             crate::types::TransactionType::UserToVault => {
@@ -1198,20 +1181,6 @@ async fn create_chain_transaction_from_deposit_intent_internal(
                     intent.target_address
                 );
                 (btc_network_address.clone(), intent.target_address.clone())
-            }
-            crate::types::TransactionType::VaultToNetwork => {
-                // Vault to network: FROM vault bitcoin address TO network bitcoin address
-                // Group public key is required to derive the network address
-                let group_key = group_public_key.ok_or_else(|| {
-                    anyhow::anyhow!("Group public key required for VaultToNetwork transactions")
-                })?;
-                let btc_network_address = crate::utils::get_btc_address_from_group_key(group_key);
-                tracing::info!(
-                    "💰 [TRANSACTION] Bitcoin vault to network: {} -> {}",
-                    btc_vault_address,
-                    btc_network_address
-                );
-                (btc_vault_address.clone(), btc_network_address.clone())
             }
             crate::types::TransactionType::Refund => {
                 // Refund: FROM network bitcoin address TO user's source address
@@ -1263,15 +1232,6 @@ pub async fn create_chain_transaction_from_contract_call(
     tx_hash: &str,
     transaction_type: crate::types::TransactionType,
 ) -> Result<ChainTransaction> {
-    // VaultToNetwork transaction type should not create contract transactions
-    if matches!(
-        transaction_type,
-        crate::types::TransactionType::VaultToNetwork
-    ) {
-        return Err(anyhow::anyhow!(
-            "Contract transactions are not supported for VaultToNetwork transaction type"
-        ));
-    }
 
     // Group public key is required for contract call transactions
     // NOTE: group_public_key will always be available once the solver ecosystem is live,

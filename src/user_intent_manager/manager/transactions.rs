@@ -68,38 +68,6 @@ impl UserIntentManager {
         }
     }
 
-    /// Store transaction ID for vault_address -> network_aggregated_address
-    pub async fn store_vault_to_network_tx_id(
-        &self,
-        intent_hash: &str,
-        tx_id: &str,
-        solver_id: Option<&str>,
-    ) -> Result<(), String> {
-        info!("🔗 [DB_USER_REGISTRY] Processing vault_to_network transaction ID storage:");
-        info!("  🔗 Intent hash: {}", intent_hash);
-        info!("  🏦 Transaction ID: {}", tx_id);
-        info!("  🔄 Transaction type: vault_address -> network_aggregated_address");
-
-        match self
-            .intent_storage
-            .store_vault_to_network_tx_id(intent_hash, tx_id, solver_id.map(|s| s.to_string()))
-            .await
-        {
-            Ok(()) => {
-                info!("✅ [DB_USER_REGISTRY] Successfully stored vault_to_network_tx_id");
-                info!("  🎯 Intent: {}", intent_hash);
-                info!("  🏦 TX ID: {}", tx_id);
-                Ok(())
-            }
-            Err(e) => {
-                error!("❌ [DB_USER_REGISTRY] Failed to store vault_to_network_tx_id");
-                error!("  🔗 Intent hash: {}", intent_hash);
-                error!("  🏦 Transaction ID: {}", tx_id);
-                error!("  💥 Error: {}", e);
-                Err(e.to_string())
-            }
-        }
-    }
 
     /// Store or update the final solver for an intent
     pub async fn store_final_solver(&self, intent_hash: &str, solver: &str) -> Result<(), String> {
@@ -130,7 +98,6 @@ impl UserIntentManager {
         intent_hash: &str,
         user_to_network_tx_id: Option<String>,
         network_to_target_tx_id: Option<String>,
-        vault_to_network_tx_id: Option<String>,
         final_solver_id: Option<String>,
     ) -> Result<(), String> {
         self.intent_storage
@@ -138,7 +105,6 @@ impl UserIntentManager {
                 intent_hash,
                 user_to_network_tx_id,
                 network_to_target_tx_id,
-                vault_to_network_tx_id,
                 final_solver_id,
             )
             .await

@@ -221,11 +221,10 @@ impl SigningNode {
                     return;
                 }
 
-                // For UserToVault, NetworkToTarget, VaultToNetwork, and Refund, store and broadcast
+                // For UserToVault, NetworkToTarget, and Refund, store and broadcast
                 let transaction_type_str = match transaction_type {
                     Some(crate::types::TransactionType::UserToVault) => "user_to_vault",
                     Some(crate::types::TransactionType::NetworkToTarget) => "network_to_target",
-                    Some(crate::types::TransactionType::VaultToNetwork) => "vault_to_network",
                     Some(crate::types::TransactionType::Refund) => "refund",
                     Some(crate::types::TransactionType::WithdrawLiquidity) => {
                         // Withdraw liquidity transactions should never have an intent_hash
@@ -679,7 +678,7 @@ impl SigningNode {
                     return;
                 }
 
-                // For UserToVault, NetworkToTarget, VaultToNetwork, and Refund, just broadcast without storing
+                // For UserToVault, NetworkToTarget, and Refund, just broadcast without storing
                 // Storage will be handled by handle_transaction_id_storage when the broadcast message is received
                 let transaction_type_str = match transaction_type {
                     Some(crate::types::TransactionType::UserToVault) => {
@@ -707,25 +706,6 @@ impl SigningNode {
                             tx_id, intent_hash, round
                         );
                         "network_to_target"
-                    }
-                    Some(crate::types::TransactionType::VaultToNetwork) => {
-                        if let Some(user_intent_manager) = &self.user_intent_manager {
-                            if let Err(e) = user_intent_manager
-                                .store_final_solver(intent_hash, self.id.as_str())
-                                .await
-                            {
-                                warn!(
-                                    "⚠️ [SIGNING] Failed to store final solver locally for intent {}: {}",
-                                    intent_hash, e
-                                );
-                            }
-                        }
-
-                        info!(
-                            "📡 [SIGNING] Broadcasting vault-to-network transaction ID {} for intent {} (round {}) - storage will be handled by message handler",
-                            tx_id, intent_hash, round
-                        );
-                        "vault_to_network"
                     }
                     Some(crate::types::TransactionType::Refund) => {
                         info!(
@@ -763,7 +743,7 @@ impl SigningNode {
                     }
                 };
 
-                // Broadcast transaction ID for UserToVault, NetworkToTarget, or VaultToNetwork
+                // Broadcast transaction ID for UserToVault, NetworkToTarget, or Refund
                 info!(
                     "📡 [SIGNING] Broadcasting transaction ID {} for intent {} (type: {})",
                     tx_id, intent_hash, transaction_type_str

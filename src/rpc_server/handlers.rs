@@ -103,7 +103,7 @@ pub(crate) async fn handle_deposit_intent(
         target_smallest
     } else {
         // Check if this is a TICS -> BTC conversion - validate immediately when RPC is hit
-        // This applies to ALL transaction types (UserToVault, NetworkToTarget, VaultToNetwork)
+        // This applies to ALL transaction types (UserToVault, NetworkToTarget)
         let is_tics_to_btc = (intent.source_chain.eq_ignore_ascii_case("tics")
             || intent.source_chain.eq_ignore_ascii_case("qubetics"))
             && (intent.target_chain.eq_ignore_ascii_case("btc")
@@ -157,7 +157,7 @@ pub(crate) async fn handle_deposit_intent(
             );
 
             // Reject TICS -> BTC conversions that fall below the minimum BTC amount
-            // This applies to UserToVault, NetworkToTarget, and VaultToNetwork transactions
+            // This applies to UserToVault and NetworkToTarget transactions
             if target_smallest < MIN_BTC_INTENT_SATS {
                 let msg = format!(
                 "TICS to BTC conversion failed: converted amount {} satoshis is below the minimum required {} satoshis (original TICS amount: {}) [transaction_type: {:?}]",
@@ -243,7 +243,7 @@ pub(crate) async fn handle_deposit_intent(
             );
         }
 
-        // For VaultToNetwork and other types, use the intent amount plus 5%
+        // For other types, use the intent amount plus 5%
         let base_amount = parsed_amount + (parsed_amount / 20);
         info!("💱 No price conversion needed; using adjusted intent amount");
         base_amount
@@ -931,7 +931,6 @@ pub(crate) async fn handle_user_mpc_deposit(
             amount: req.msg.amount,
             user_to_network_tx_id: None,
             network_to_target_tx_id: None,
-            vault_to_network_tx_id: None,
             final_solver_id: None,
             error_message: Some("shares are getting refreshed".to_string()),
         }));
@@ -952,7 +951,6 @@ pub(crate) async fn handle_user_mpc_deposit(
                 amount: req.msg.amount,
                 user_to_network_tx_id: None,
                 network_to_target_tx_id: None,
-                vault_to_network_tx_id: None,
                 final_solver_id: None,
                 error_message: Some("Invalid deposit intent payload".to_string()),
             }));
@@ -987,17 +985,10 @@ pub(crate) async fn handle_user_mpc_deposit(
             if let Some(ref network_to_target_tx) = tx_ids.network_to_target_tx_id {
                 transaction_ids.push(network_to_target_tx.clone());
             }
-            if let Some(ref vault_to_network_tx) = tx_ids.vault_to_network_tx_id {
-                transaction_ids.push(vault_to_network_tx.clone());
-            }
         }
     }
 
-    let transaction_type = if transaction_ids.len() == 2 {
-        // Both user->network and network->target transactions exist:
-        // this is a vault-to-network case (funds are being sent back to the network).
-        TransactionType::VaultToNetwork
-    } else if transaction_ids.len() == 1 {
+    let transaction_type = if transaction_ids.len() == 1 {
         TransactionType::NetworkToTarget
     } else if transaction_ids.is_empty() {
         TransactionType::UserToVault
@@ -1013,9 +1004,6 @@ pub(crate) async fn handle_user_mpc_deposit(
             network_to_target_tx_id: tx_mapping
                 .as_ref()
                 .and_then(|tx| tx.network_to_target_tx_id.clone()),
-            vault_to_network_tx_id: tx_mapping
-                .as_ref()
-                .and_then(|tx| tx.vault_to_network_tx_id.clone()),
             final_solver_id: None,
             error_message: Some(
                 "Duplicate intent detected - this intent has already been processed".to_string(),
@@ -1058,7 +1046,6 @@ pub(crate) async fn handle_user_mpc_deposit(
                                 amount: "0".to_string(),
                                 user_to_network_tx_id: None,
                                 network_to_target_tx_id: None,
-                                vault_to_network_tx_id: None,
                                 final_solver_id: None,
                                 error_message: Some(format!("Invalid signature format: {e}")),
                             }));
@@ -1087,7 +1074,6 @@ pub(crate) async fn handle_user_mpc_deposit(
                                         amount: "0".to_string(),
                                         user_to_network_tx_id: None,
                                         network_to_target_tx_id: None,
-                                        vault_to_network_tx_id: None,
                                         final_solver_id: None,
                                         error_message: Some(format!(
                                             "Failed to recover signature: personal_sign={e1}, raw={e2}"
@@ -1107,7 +1093,6 @@ pub(crate) async fn handle_user_mpc_deposit(
                                 amount: "0".to_string(),
                                 user_to_network_tx_id: None,
                                 network_to_target_tx_id: None,
-                                vault_to_network_tx_id: None,
                                 final_solver_id: None,
                                 error_message: Some(
                                     "No user registration found for signer address.".to_string(),
@@ -1131,7 +1116,6 @@ pub(crate) async fn handle_user_mpc_deposit(
                             amount: "0".to_string(),
                             user_to_network_tx_id: None,
                             network_to_target_tx_id: None,
-                            vault_to_network_tx_id: None,
                             final_solver_id: None,
                             error_message: Some(format!("Failed to process deposit intent: {e}")),
                         }));
@@ -1149,7 +1133,6 @@ pub(crate) async fn handle_user_mpc_deposit(
                         amount: "0".to_string(),
                         user_to_network_tx_id: None,
                         network_to_target_tx_id: None,
-                        vault_to_network_tx_id: None,
                         final_solver_id: None,
                         error_message: Some("No details found in database for intent hash and no signature provided.".to_string()),
                     }));
@@ -1224,7 +1207,6 @@ pub(crate) async fn handle_user_mpc_deposit(
                 amount: req.msg.amount,
                 user_to_network_tx_id: None,
                 network_to_target_tx_id: None,
-                vault_to_network_tx_id: None,
                 final_solver_id: None,
                 error_message: Some(error_message),
             }));
@@ -1238,7 +1220,7 @@ pub(crate) async fn handle_user_mpc_deposit(
     );
     info!("⏳ Waiting for transaction to be processed by the network...");
 
-    let (u2n_tx_id, n2t_tx_id, v2n_tx_id, final_solver_id, chain_error) =
+    let (u2n_tx_id, n2t_tx_id, final_solver_id, chain_error) =
         wait_for_transaction_result(&user_intent_manager, &intent_hash, 40).await;
 
     if let Some(ref tx_id_str) = u2n_tx_id {
@@ -1253,16 +1235,10 @@ pub(crate) async fn handle_user_mpc_deposit(
             tx_id_str
         );
     }
-    if let Some(ref tx_id_str) = v2n_tx_id {
-        info!(
-            "✅ Vault->Network transaction completed with ID: {:?}",
-            tx_id_str
-        );
-    }
 
     let duration_ms = request_context.started_at.elapsed().as_millis() as u64;
 
-    if u2n_tx_id.is_some() || n2t_tx_id.is_some() || v2n_tx_id.is_some() {
+    if u2n_tx_id.is_some() || n2t_tx_id.is_some() {
         info!(
             request_id = %request_context.request_id,
             duration_ms,
@@ -1275,7 +1251,6 @@ pub(crate) async fn handle_user_mpc_deposit(
             amount: req.msg.amount,
             user_to_network_tx_id: u2n_tx_id,
             network_to_target_tx_id: n2t_tx_id,
-            vault_to_network_tx_id: v2n_tx_id,
             final_solver_id: final_solver_id.clone(),
             error_message: None,
         }))
@@ -1292,7 +1267,6 @@ pub(crate) async fn handle_user_mpc_deposit(
             amount: req.msg.amount,
             user_to_network_tx_id: None,
             network_to_target_tx_id: None,
-            vault_to_network_tx_id: None,
             final_solver_id: final_solver_id.clone(),
             error_message: Some(error_msg),
         }))
@@ -1309,7 +1283,6 @@ pub(crate) async fn handle_user_mpc_deposit(
             amount: req.msg.amount,
             user_to_network_tx_id: None,
             network_to_target_tx_id: None,
-            vault_to_network_tx_id: None,
             final_solver_id,
             error_message: Some(format!(
                 "Transaction processing timeout. Intent hash: {intent_hash_hex}. The transaction may still be processing or may have failed. Please check the status later."

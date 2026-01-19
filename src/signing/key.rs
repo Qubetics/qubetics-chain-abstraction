@@ -177,20 +177,6 @@ impl KeyStore {
                     ))
                 }
             }
-            Some(TransactionType::VaultToNetwork) => {
-                if let Some(vault_key) = self.vault_group_key {
-                    let affine_point = vault_key.to_affine();
-                    let encoded_point = EncodedPoint::from(affine_point);
-                    let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
-
-                    info!("🔑 [SIGNING] VaultToNetwork: Using vault group public key");
-                    Ok(compressed_bytes)
-                } else {
-                    Err(anyhow!(
-                        "Vault group public key not available for VaultToNetwork transaction - ensure vault key is set"
-                    ))
-                }
-            }
             Some(TransactionType::RewardTxn) => {
                 // IMPORTANT: RewardTxn and WithdrawLiquidity must use the same network group public key
                 // Both transactions are signed by the network group key (via network DKG secret share)
@@ -226,7 +212,7 @@ impl KeyStore {
                 }
             }
             Some(TransactionType::AddLiquidity) => {
-                // AddLiquidity uses vault group key (same as VaultToNetwork)
+                // AddLiquidity uses vault group key
                 if let Some(vault_key) = self.vault_group_key {
                     let affine_point = vault_key.to_affine();
                     let encoded_point = EncodedPoint::from(affine_point);

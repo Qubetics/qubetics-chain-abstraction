@@ -2255,16 +2255,12 @@ impl MpcNetworkLayer {
                 // Determine chain type based on transaction type:
                 // - UserToVault: use source_chain (user is depositing FROM this chain)
                 // - NetworkToTarget: use target_chain (network is withdrawing TO this chain)
-                // - VaultToNetwork: use source_chain (vault is sending back to network on source chain)
                 let chain_to_use = match transaction_type {
                     crate::types::TransactionType::UserToVault => {
                         &intent.source_chain.to_lowercase()
                     }
                     crate::types::TransactionType::NetworkToTarget => {
                         &intent.target_chain.to_lowercase()
-                    }
-                    crate::types::TransactionType::VaultToNetwork => {
-                        &intent.source_chain.to_lowercase()
                     }
                     crate::types::TransactionType::Refund => {
                         &intent.source_chain.to_lowercase() // Refund goes back to source chain
@@ -2301,14 +2297,6 @@ impl MpcNetworkLayer {
                         // For network withdrawals, use network's DKG secret share
                         if let Some(dkg_node) = &self.dkg_node {
                             dkg_node.get_final_secret_share().await
-                        } else {
-                            None
-                        }
-                    }
-                    crate::types::TransactionType::VaultToNetwork => {
-                        // For vault-to-network, use vault's tweaked secret share
-                        if let Some(dkg_node) = &self.dkg_node {
-                            dkg_node.get_vault_tweaked_secret_share().await
                         } else {
                             None
                         }
@@ -2448,28 +2436,6 @@ impl MpcNetworkLayer {
                                         }
                                     }
                                 }
-                                crate::types::TransactionType::VaultToNetwork => {
-                                    // For vault-to-network, use vault's group key
-                                    if let Some(dkg_node) = &self.dkg_node {
-                                        if let Some(vault_group_key) =
-                                            dkg_node.get_vault_group_key().await
-                                        {
-                                            let affine_point = vault_group_key.to_affine();
-                                            let encoded_point =
-                                                k256::EncodedPoint::from(affine_point);
-                                            let compressed_bytes =
-                                                encoded_point.compress().to_bytes().to_vec();
-
-                                            if let Some(btc_handler) = handler
-                                                .as_any_mut()
-                                                .downcast_mut::<crate::chain_abstraction::BitcoinChainHandler>()
-                                            {
-                                                btc_handler.set_group_public_key(compressed_bytes);
-                                                info!("🔑 [LOCAL] Set vault group public key in Bitcoin chain handler");
-                                            }
-                                        }
-                                    }
-                                }
                                 crate::types::TransactionType::RewardTxn => {
                                     // RewardTxn is not valid for intent flow
                                 }
@@ -2527,9 +2493,8 @@ impl MpcNetworkLayer {
                             }
                         }
                         crate::types::TransactionType::NetworkToTarget
-                        | crate::types::TransactionType::VaultToNetwork
                         | crate::types::TransactionType::Refund => {
-                            // For network withdrawals, vault-to-network, and refunds, no derived addresses needed
+                            // For network withdrawals and refunds, no derived addresses needed
                             (None, None)
                         }
                         crate::types::TransactionType::RewardTxn => {
@@ -2928,7 +2893,6 @@ impl MpcNetworkLayer {
                                     let transaction_type_str = match transaction_type {
                                         crate::types::TransactionType::UserToVault => "user_to_vault",
                                         crate::types::TransactionType::NetworkToTarget => "network_to_target",
-                                        crate::types::TransactionType::VaultToNetwork => "vault_to_network",
                                         crate::types::TransactionType::Refund => "refund",
                                         crate::types::TransactionType::RewardTxn => "reward_txn",
                                         crate::types::TransactionType::WithdrawLiquidity => "withdraw_liquidity",

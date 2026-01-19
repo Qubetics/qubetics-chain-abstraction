@@ -83,7 +83,6 @@ pub struct UserMpcDepositVerifyResponse {
     pub amount: String,
     pub user_to_network_tx_id: Option<String>,
     pub network_to_target_tx_id: Option<String>,
-    pub vault_to_network_tx_id: Option<String>,
     pub final_solver_id: Option<String>,
     pub error_message: Option<String>,
 }

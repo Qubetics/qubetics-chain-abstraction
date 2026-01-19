@@ -126,7 +126,6 @@ pub async fn start_http_server(
                             amount: "0".to_string(),
                             user_to_network_tx_id: None,
                             network_to_target_tx_id: None,
-                            vault_to_network_tx_id: None,
                             final_solver_id: None,
                             error_message: Some(
                                 "Request timed out before processing could complete".to_string(),

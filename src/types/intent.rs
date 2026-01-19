@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 pub enum TransactionType {
     UserToVault,
     NetworkToTarget,
-    VaultToNetwork,
     RewardTxn,
     WithdrawLiquidity,
     AddLiquidity,

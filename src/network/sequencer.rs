@@ -112,7 +112,7 @@ where
 /// Enum to distinguish between different contract transaction flows
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum ContractTransactionFlow {
-    /// Deposit intent transactions (UserToVault, NetworkToTarget, VaultToNetwork)
+    /// Deposit intent transactions (UserToVault, NetworkToTarget)
     DepositIntent {
         intent: DepositIntent,
         intent_hash: String,

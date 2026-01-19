@@ -984,27 +984,6 @@ impl SigningNode {
                         info!("🔢 [SIGNING] NetworkToTarget/Refund transaction: fetching nonce {} from network group address {}", nonce, group_address);
                         group_address
                     }
-                    Some(crate::types::TransactionType::VaultToNetwork) => {
-                        if let Some(user_intent_manager) = &self.user_intent_manager {
-                            let database = user_intent_manager.get_database();
-                            let vault_eth_address: String = database
-                                .get_string(crate::database::keys::DKG_VAULT_ETH_ADDRESS)
-                                .ok()
-                                .flatten()
-                                .ok_or_else(|| {
-                                    anyhow!("Vault ETH address not found in database")
-                                })?;
-
-                            let nonce =
-                                Self::fetch_ethereum_nonce(&vault_eth_address, chain_id).await?;
-                            info!("🔢 [SIGNING] VaultToNetwork transaction: fetching nonce {} from vault address {}", nonce, vault_eth_address);
-                            vault_eth_address
-                        } else {
-                            return Err(anyhow!(
-                                "User registry not available for vault transaction"
-                            ));
-                        }
-                    }
                     Some(crate::types::TransactionType::RewardTxn) => {
                         // For reward transactions, use network group address
                         let group_address = get_eth_address_from_group_key(

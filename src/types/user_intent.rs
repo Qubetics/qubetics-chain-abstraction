@@ -22,10 +22,9 @@ pub enum TransactionStatus {
 }
 
 /// Transaction IDs associated with an intent hash
-/// Each intent has up to three transactions:
+/// Each intent has up to two transactions:
 /// 1. user_aggregated_address -> network_aggregated_address
 /// 2. network_aggregated_address -> user_target_address
-/// 3. vault_address -> network_aggregated_address
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IntentTransactionIds {
     pub intent_hash: String,
@@ -33,8 +32,6 @@ pub struct IntentTransactionIds {
     pub user_to_network_tx_id: Option<String>,
     /// Transaction ID for network_aggregated_address -> user_target_address
     pub network_to_target_tx_id: Option<String>,
-    /// Transaction ID for vault_address -> network_aggregated_address
-    pub vault_to_network_tx_id: Option<String>,
     /// Final solver identifier responsible for the deposit
     pub final_solver_id: Option<String>,
     /// Error message from blockchain if transaction failed

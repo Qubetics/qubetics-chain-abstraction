@@ -264,27 +264,6 @@ impl SigningNode {
                     ))
                 }
             }
-            Some(TransactionType::VaultToNetwork) => {
-                let vault_key = if let Some(vault_key) = self.key_store.get_vault_group_key() {
-                    Some(vault_key)
-                } else if let Some(database) = &self.database {
-                    match database.get_string::<SerializablePoint>(keys::DKG_VAULT_GROUP_KEY) {
-                        Ok(Some(serialized)) => Some(serialized.0.into()),
-                        _ => None,
-                    }
-                } else {
-                    None
-                };
-
-                if let Some(vault_key) = vault_key {
-                    let encoded_point = k256::EncodedPoint::from(vault_key.to_affine());
-                    Ok(encoded_point.compress().to_bytes().to_vec())
-                } else {
-                    Err(anyhow!(
-                        "Vault group public key not available for VaultToNetwork transaction - ensure vault key is set"
-                    ))
-                }
-            }
             Some(TransactionType::RewardTxn) => {
                 let group_key = if let Some(key) = self.key_store.get_group_public_key() {
                     Some(key)
@@ -329,7 +308,7 @@ impl SigningNode {
                 }
             }
             Some(TransactionType::AddLiquidity) => {
-                // AddLiquidity uses vault group key (same as VaultToNetwork)
+                // AddLiquidity uses vault group key
                 let vault_key = if let Some(vault_key) = self.key_store.get_vault_group_key() {
                     Some(vault_key)
                 } else if let Some(database) = &self.database {
@@ -1180,7 +1159,6 @@ impl SigningNode {
     }
 
     // Initiate a refund transaction when network-to-target broadcast fails
-    /// This will create a VaultToNetwork transaction to return funds to the user's source address
     /// Broadcast refund initiation message to the network
     /// This notifies other nodes that a refund transaction needs to be created
     async fn get_available_nodes_from_manager(&self) -> Vec<PeerId> {
@@ -2835,7 +2813,6 @@ impl SigningNode {
             match t.as_str() {
                 "UserToVault" => Some(crate::types::TransactionType::UserToVault),
                 "NetworkToTarget" => Some(crate::types::TransactionType::NetworkToTarget),
-                "VaultToNetwork" => Some(crate::types::TransactionType::VaultToNetwork),
                 "Refund" => Some(crate::types::TransactionType::Refund),
                 "WithdrawLiquidity" => Some(crate::types::TransactionType::WithdrawLiquidity),
                 "RewardTxn" => Some(crate::types::TransactionType::RewardTxn),
@@ -3270,7 +3247,6 @@ impl SigningNode {
         let share_type = match transaction_type {
             Some(crate::types::TransactionType::UserToVault) => "user-share",
             Some(crate::types::TransactionType::NetworkToTarget) => "network-share",
-            Some(crate::types::TransactionType::VaultToNetwork) => "vault-share",
             Some(crate::types::TransactionType::Refund) => "network-share", // Refund uses network share (same as NetworkToTarget)
             Some(crate::types::TransactionType::AddLiquidity) => "vault-share",
             Some(crate::types::TransactionType::RewardTxn) => "network-share",
@@ -3691,7 +3667,6 @@ impl SigningNode {
         let share_type = match transaction_type {
             Some(crate::types::TransactionType::UserToVault) => "user-share",
             Some(crate::types::TransactionType::NetworkToTarget) => "network-share",
-            Some(crate::types::TransactionType::VaultToNetwork) => "vault-share",
             Some(crate::types::TransactionType::Refund) => "network-share", // Refund uses network share (same as NetworkToTarget)
             Some(crate::types::TransactionType::AddLiquidity) => "vault-share",
             Some(crate::types::TransactionType::RewardTxn) => "network-share",
@@ -3943,7 +3918,6 @@ impl SigningNode {
         // Mapping:
         // - UserToVault → per-node-user-share PARTIAL pubkey verification
         // - NetworkToTarget → per-node-network-share PARTIAL pubkey verification
-        // - VaultToNetwork → per-node-vault-share PARTIAL pubkey verification
         // - AddLiquidity → per-node-vault-share PARTIAL pubkey verification
         // - RewardTxn/WithdrawLiquidity → per-node-network-share PARTIAL pubkey verification
         // Works for both ETH/TICS and BTC transactions
@@ -4017,18 +3991,6 @@ impl SigningNode {
                     .ok_or_else(|| {
                         anyhow!(
                             "Network share pubkey not found for peer {} (NetworkToTarget/Refund transaction)",
-                            peer_id
-                        )
-                    })
-            }
-            Some(crate::types::TransactionType::VaultToNetwork) => {
-                // VaultToNetwork → per-node-vault-share pubkey
-                dkg_storage
-                    .get_vault_share_pubkey(peer_id)
-                    .await?
-                    .ok_or_else(|| {
-                        anyhow!(
-                            "Vault share pubkey not found for peer {} (VaultToNetwork transaction)",
                             peer_id
                         )
                     })
