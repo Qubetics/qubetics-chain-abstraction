@@ -14,6 +14,8 @@ pub struct ConsensusNode {
     consensus_results: HashMap<u64, ConsensusResult>,
     /// Consensus results that arrived before we had selected_nodes for that round
     pending_results: HashMap<u64, ConsensusResult>,
+    /// Operation type that triggered VRF for each round (e.g., "global_clock", "bitcoin", "ethereum")
+    operation_types_by_round: HashMap<u64, String>,
 }
 
 impl Default for ConsensusNode {
@@ -29,6 +31,7 @@ impl ConsensusNode {
             selected_nodes_by_round: HashMap::new(),
             consensus_results: HashMap::new(),
             pending_results: HashMap::new(),
+            operation_types_by_round: HashMap::new(),
         }
     }
 
@@ -146,10 +149,7 @@ impl ConsensusNode {
                         self.consensus_results.insert(round, result);
                         self.current_round = self.current_round.max(round);
                     }
-                    Err(e) if e
-                        .to_string()
-                        .contains("no selected nodes available") =>
-                    {
+                    Err(e) if e.to_string().contains("no selected nodes available") => {
                         warn!(
                             "⏳ [CONSENSUS] Missing selected_nodes for round {}, stashing consensus result to validate later. Error: {}",
                             round, e
@@ -197,8 +197,7 @@ impl ConsensusNode {
         };
 
         // SECURITY CHECK 4: Verify final_node is actually in the selected_nodes
-        let final_node_in_selected =
-            selected_nodes.iter().any(|node| *node == result.final_node);
+        let final_node_in_selected = selected_nodes.iter().any(|node| *node == result.final_node);
         if !final_node_in_selected {
             return Err(anyhow::anyhow!(
                 "Invalid consensus result for round {}: final_node {:?} is not in selected_nodes {:?}",
@@ -224,7 +223,7 @@ impl ConsensusNode {
         // STRICT VALIDATION: Ensure consensus results match exactly
         // With aggressive VRF retries (100-500ms), all nodes should receive complete
         // VRF data before consensus calculation, so strict validation is safe.
-        
+
         // Validate that the received result is internally consistent
         let received_final_node =
             Self::calculate_final_node_from_frequencies(&result.node_frequencies, round)?;
@@ -234,7 +233,7 @@ impl ConsensusNode {
                 round, result.final_node, result.node_frequencies
             ));
         }
-        
+
         // Strict validation: final_node must match exactly
         if expected_result.final_node != result.final_node {
             return Err(anyhow::anyhow!(
@@ -429,10 +428,26 @@ impl ConsensusNode {
         self.selected_nodes_by_round.get(&round)
     }
 
+    /// Store the operation type that triggered VRF for this round
+    pub fn set_operation_type_for_round(&mut self, round: u64, operation_type: String) {
+        self.operation_types_by_round.insert(round, operation_type);
+        info!(
+            "📝 [CONSENSUS] Stored operation type '{}' for round {}",
+            self.operation_types_by_round.get(&round).unwrap(),
+            round
+        );
+    }
+
+    /// Get the operation type that triggered VRF for this round
+    pub fn get_operation_type_for_round(&self, round: u64) -> Option<&String> {
+        self.operation_types_by_round.get(&round)
+    }
+
     /// Clear data for a specific round
     pub fn clear_round_data(&mut self, round: u64) {
         self.selected_nodes_by_round.remove(&round);
         self.consensus_results.remove(&round);
+        self.operation_types_by_round.remove(&round);
         debug!("🗑️ [CONSENSUS] Cleared data for round {}", round);
     }
 }

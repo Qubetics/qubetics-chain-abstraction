@@ -68,6 +68,9 @@ pub struct VrfSelectedNodesBroadcast {
     pub round: u64,
     pub selector_node_id: SerializablePeerId,
     pub timestamp: u64,
+    /// Operation type that triggered this VRF selection (e.g., "global_clock", "bitcoin", "ethereum")
+    #[serde(default)]
+    pub operation_type: Option<String>,
 }
 
 impl VrfSelectedNodesBroadcast {
@@ -82,6 +85,23 @@ impl VrfSelectedNodesBroadcast {
             round,
             selector_node_id,
             timestamp,
+            operation_type: None,
+        }
+    }
+
+    pub fn with_operation_type(
+        selected_nodes: Vec<SerializablePeerId>,
+        round: u64,
+        selector_node_id: SerializablePeerId,
+        timestamp: u64,
+        operation_type: Option<String>,
+    ) -> Self {
+        Self {
+            selected_nodes,
+            round,
+            selector_node_id,
+            timestamp,
+            operation_type,
         }
     }
 }
