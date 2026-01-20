@@ -68,7 +68,6 @@ impl UserIntentManager {
         }
     }
 
-
     /// Store or update the final solver for an intent
     pub async fn store_final_solver(&self, intent_hash: &str, solver: &str) -> Result<(), String> {
         match self
@@ -272,6 +271,42 @@ impl UserIntentManager {
             Err(e) => {
                 tracing::error!("Failed to get transaction status {}: {}", tx_hash, e);
                 None
+            }
+        }
+    }
+
+    /// Get intents that have completed UserToVault transaction but are awaiting NetworkToTarget transaction
+    /// Returns: Vec<(intent_hash, DepositIntent, IntentTransactionIds)>
+    ///
+    /// This is useful for identifying:
+    /// - Deposits where users have sent funds to the vault
+    /// - But the network hasn't fulfilled the withdrawal to target chain yet
+    ///
+    /// # Arguments
+    /// * `minimum_wait_seconds` - Optional minimum time in seconds since last update.
+    ///   If provided, only returns intents that haven't been updated in at least this many seconds.
+    ///
+    /// # Examples
+    /// ```
+    /// // Get all awaiting intents
+    /// let all = user_intent_manager.get_intents_awaiting_network_fulfillment(None).await;
+    ///
+    /// // Get only intents not updated in the last 10 seconds
+    /// let stale = user_intent_manager.get_intents_awaiting_network_fulfillment(Some(10)).await;
+    /// ```
+    pub async fn get_intents_awaiting_network_fulfillment(
+        &self,
+        minimum_wait_seconds: Option<i64>,
+    ) -> Vec<(String, DepositIntent, IntentTransactionIds)> {
+        match self
+            .intent_storage
+            .get_intents_awaiting_network_fulfillment(minimum_wait_seconds)
+            .await
+        {
+            Ok(intents) => intents,
+            Err(e) => {
+                tracing::error!("Failed to get intents awaiting network fulfillment: {}", e);
+                Vec::new()
             }
         }
     }

@@ -477,7 +477,6 @@ impl IntentStorage {
             info!("  🆕 New TX ID: {}", tx_id);
         }
 
-
         if final_solver_id.is_some() {
             let solver_ref = final_solver_id.as_ref().unwrap();
             let needs_update = match &tx_ids.final_solver_id {
@@ -600,7 +599,6 @@ impl IntentStorage {
         )
         .await
     }
-
 
     /// Store or update the final solver for an intent
     pub async fn store_final_solver(&self, intent_hash: &str, solver: &str) -> Result<()> {
@@ -753,6 +751,61 @@ impl IntentStorage {
             pending_intents.len()
         );
         Ok(pending_intents)
+    }
+
+    /// Get intents that have completed UserToVault transaction but are awaiting NetworkToTarget transaction
+    /// These are deposits where the user has sent funds to the vault, but the network hasn't fulfilled yet.
+    ///
+    /// # Arguments
+    /// * `minimum_wait_seconds` - Optional minimum time in seconds since last update.
+    ///   If provided, only returns intents that haven't been updated in at least this many seconds.
+    ///   This is useful to avoid re-processing intents too frequently.
+    ///   
+    /// # Examples
+    /// ```
+    /// // Get all awaiting intents
+    /// let all = intent_storage.get_intents_awaiting_network_fulfillment(None).await?;
+    ///
+    /// // Get only intents that haven't been updated in the last 10 seconds
+    /// let stale = intent_storage.get_intents_awaiting_network_fulfillment(Some(10)).await?;
+    /// ```
+    pub async fn get_intents_awaiting_network_fulfillment(
+        &self,
+        minimum_wait_seconds: Option<i64>,
+    ) -> Result<Vec<(String, DepositIntent, IntentTransactionIds)>> {
+        let prefix = crate::database::keys::INTENT_TRANSACTION_IDS;
+        let tx_results: Vec<(String, IntentTransactionIds)> =
+            self.db.get_values_with_prefix(prefix)?;
+
+        let mut awaiting_intents = Vec::new();
+        let now = chrono::Utc::now();
+
+        for (_key, tx_ids) in tx_results {
+            // Check if UserToVault TX is present but NetworkToTarget TX is missing
+            if tx_ids.user_to_network_tx_id.is_some() && tx_ids.network_to_target_tx_id.is_none() {
+                // If minimum_wait_seconds is specified, check if enough time has passed
+                if let Some(min_wait) = minimum_wait_seconds {
+                    let time_since_update = now.signed_duration_since(tx_ids.updated_at);
+                    let seconds_since_update = time_since_update.num_seconds();
+
+                    if seconds_since_update < min_wait {
+                        // Skip this intent - not enough time has passed since last update
+                        continue;
+                    }
+                }
+
+                if let Some(intent) = self.get_intent(&tx_ids.intent_hash).await? {
+                    awaiting_intents.push((tx_ids.intent_hash.clone(), intent, tx_ids));
+                }
+            }
+        }
+
+        info!(
+            "🔍 [INTENT_STORAGE] Found {} intents awaiting network fulfillment (user deposited, network pending){}",
+            awaiting_intents.len(),
+            minimum_wait_seconds.map(|s| format!(" [min_wait: {}s]", s)).unwrap_or_default()
+        );
+        Ok(awaiting_intents)
     }
 }
 

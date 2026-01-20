@@ -1248,6 +1248,16 @@ impl SigningNode {
                 .get_all_selected_nodes_with_frequencies(round)
                 .await
         };
+        
+        // Extract operation_type from VRF broadcast for this round (if available)
+        let operation_type = {
+            let vrf_service = self
+                .coordination
+                .vrf_service()
+                .ok_or_else(|| anyhow::anyhow!("VRF selector not available"))?;
+            vrf_service.create_broadcast_for_round(round).await
+                .and_then(|b| b.operation_type)
+        };
 
         if all_selected_nodes.is_empty() {
             info!(
@@ -1270,6 +1280,11 @@ impl SigningNode {
 
         // Add selected nodes to consensus
         consensus_node.add_selected_nodes(round, all_selected_nodes);
+        
+        // Store operation_type if available
+        if let Some(op_type) = operation_type {
+            consensus_node.set_operation_type_for_round(round, op_type);
+        }
 
         // Start consensus
         match consensus_node.start_consensus(round) {
@@ -1289,10 +1304,12 @@ impl SigningNode {
                 let gossipsub_msg = GossipsubMessage::Consensus(consensus_msg);
                 let broadcast_data = serde_json::to_vec(&gossipsub_msg)?;
 
-                // Store the result for later use
+                // Extract data before dropping consensus_node mutable borrow
                 let is_final_node = consensus_node.is_final_node(round, &own_node_id);
+                let operation_type = consensus_node.get_operation_type_for_round(round).cloned();
+                drop(consensus_node); // Explicitly drop the mutable borrow
 
-                // Broadcast outside of the borrow
+                // Now we can safely borrow self immutably
                 self.broadcast("consensus-result", &broadcast_data).await?;
 
                 info!(
@@ -1316,6 +1333,18 @@ impl SigningNode {
                         "\x1b[32m🏆 [CONSENSUS] This node is the final selected node for round {}!\x1b[0m",
                         round
                     );
+                    
+                    // NEW: Check if this round was triggered by global clock (already extracted above)
+                    if operation_type.as_deref() == Some("global_clock") {
+                        info!("⏰ [CLOCK] Round {} was triggered by global clock, processing phase 1 intents...", round);
+                        // Process phase 1 intents (UserToVault done, NetworkToTarget pending)
+                        if let Err(e) = self.process_phase1_intents_for_global_clock(round).await {
+                            warn!("⚠️ [CLOCK] Failed to process phase 1 intents for round {}: {}", round, e);
+                        }
+                    } else {
+                        info!("ℹ️  [CONSENSUS] Round {} operation_type={:?}, skipping intent processing", round, operation_type);
+                    }
+                    
                     // Trigger aggregate signature for the final node
                     self.trigger_aggregate_signature_for_final_node(round)
                         .await?;
@@ -1393,6 +1422,112 @@ impl SigningNode {
             round
         );
 
+        Ok(())
+    }
+
+    /// Process phase 1 completed intents for global clock trigger
+    /// Phase 1 = UserToVault transaction complete, NetworkToTarget pending
+    /// Alternates between chains based on timestamp cycles
+    async fn process_phase1_intents_for_global_clock(&self, round: u64) -> Result<()> {
+        info!("🔍 [CLOCK] Processing phase 1 completed intents for round {}", round);
+        
+        // Read the global clock interval from environment
+        let clock_interval_secs = std::env::var("GLOBAL_CLOCK_INTERVAL_SECONDS")
+            .ok()
+            .and_then(|val| val.parse::<u64>().ok())
+            .unwrap_or(60);
+        
+        // Read max intents per cycle from environment (configurable)
+        let max_intents_per_cycle = std::env::var("MAX_INTENTS_PER_CYCLE")
+            .ok()
+            .and_then(|val| val.parse::<usize>().ok())
+            .unwrap_or(20);
+        
+        // Get user intent manager
+        let user_intent_manager = self.user_intent_manager
+            .as_ref()
+            .ok_or_else(|| anyhow!("User intent manager not available"))?;
+        
+        // Determine chain based on timestamp cycles (not round number)
+        // Divide epoch by interval to get cycle number, then check even/odd
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        let current_epoch_secs = now.as_secs();
+        let cycle_number = current_epoch_secs / clock_interval_secs;
+        
+        // Alternate: even cycles = Qubetics, odd cycles = Bitcoin
+        let target_chain = if cycle_number % 2 == 0 {
+            "qubetics"
+        } else {
+            "bitcoin"
+        };
+        
+        info!(
+            "⏰ [CLOCK] Cycle {} ({}): Processing {} intents...",
+            cycle_number,
+            if cycle_number % 2 == 0 { "even" } else { "odd" },
+            target_chain.to_uppercase()
+        );
+        
+        // Get intents awaiting network fulfillment (stale > 10 seconds)
+        let awaiting_intents = user_intent_manager
+            .get_intents_awaiting_network_fulfillment(Some(10))
+            .await;
+        
+        // Filter by target chain
+        let mut filtered_intents: Vec<_> = awaiting_intents
+            .into_iter()
+            .filter(|(_, intent, _)| {
+                intent.target_chain.to_lowercase() == target_chain
+            })
+            .collect();
+        
+        // Sort by updated_at (oldest first) - intents waiting longest get priority
+        filtered_intents.sort_by(|a, b| a.2.updated_at.cmp(&b.2.updated_at));
+        
+        // Limit to configured max intents to avoid overwhelming the system
+        let intents_to_process: Vec<_> = filtered_intents.into_iter().take(max_intents_per_cycle).collect();
+        
+        info!(
+            "📊 [CLOCK] Found {} {} intents (sorted by age, limited to {})",
+            intents_to_process.len(),
+            target_chain.to_uppercase(),
+            max_intents_per_cycle
+        );
+        
+        for (intent_hash, intent, tx_ids) in intents_to_process {
+            info!(
+                "🔄 [CLOCK] Processing {} intent {}: amount={}, source={}, target={}",
+                target_chain.to_uppercase(),
+                intent_hash,
+                intent.amount,
+                intent.source_chain,
+                intent.target_chain
+            );
+            
+            let wait_duration = chrono::Utc::now().signed_duration_since(tx_ids.updated_at);
+            info!(
+                "⏱️  [CLOCK] Intent {} has been waiting {} seconds since last update",
+                intent_hash,
+                wait_duration.num_seconds()
+            );
+            
+            // TODO: Trigger NetworkToTarget transaction signing here
+            // This would involve:
+            // 1. Creating a signing request for this intent
+            // 2. Initiating VRF selection for signing nodes
+            // 3. Coordinating the signing process
+            
+            // For now, just log
+            info!(
+                "✅ [CLOCK] {} intent {} ready for NetworkToTarget processing (UserToVault TX: {})",
+                target_chain.to_uppercase(),
+                intent_hash,
+                tx_ids.user_to_network_tx_id.unwrap()
+            );
+        }
+        
         Ok(())
     }
 

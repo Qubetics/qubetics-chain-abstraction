@@ -19,6 +19,8 @@ pub struct VrfNodeSelector {
     submissions: HashMap<u64, HashMap<PeerId, VrfOutput>>,
     results: HashMap<u64, NodeSelectionResult>,
     received_selections: HashMap<u64, HashMap<SerializablePeerId, VrfSelectedNodesBroadcast>>,
+    /// Operation type that triggered VRF for each round (e.g., "global_clock", "bitcoin", "ethereum")
+    operation_types_by_round: HashMap<u64, String>,
 }
 
 impl VrfNodeSelector {
@@ -36,7 +38,18 @@ impl VrfNodeSelector {
             submissions: HashMap::new(),
             results: HashMap::new(),
             received_selections: HashMap::new(),
+            operation_types_by_round: HashMap::new(),
         }
+    }
+
+    /// Store the operation type for this round
+    pub fn set_operation_type(&mut self, round: u64, operation_type: String) {
+        self.operation_types_by_round.insert(round, operation_type);
+    }
+
+    /// Get the operation type for this round
+    pub fn get_operation_type(&self, round: u64) -> Option<&String> {
+        self.operation_types_by_round.get(&round)
     }
 
     pub fn ensure_local_submission(&mut self, round: u64) {
@@ -363,6 +376,7 @@ impl VrfNodeSelector {
                 round,
                 selector_node_id: SerializablePeerId(self.node_id),
                 timestamp,
+                operation_type: self.operation_types_by_round.get(&round).cloned(),
             })
         } else {
             None
