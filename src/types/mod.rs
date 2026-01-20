@@ -19,9 +19,14 @@ pub use chain::bitcoin::{
 };
 pub use chain::ethereum::{encode_hex_to_bytes, RlpEncoder};
 pub use consensus::{ConsensusMessage, ConsensusResult};
+pub use deterministic_selection::{
+    DeterministicSelectionMessage, DeterministicSelectionResult, FinalNodeSelection,
+    RequestMetadata, RequestSelectionPolicy, RoundSeed, SelectRequestMessage,
+    SequencerSelectionState, SequencerType,
+};
 pub use intent::{
-    ContractTransaction, DepositIntent, DepositIntentResponse, DummyTransaction,
-    TransactionNetwork, TransactionResponse, TransactionType,
+    BatchIntentInput, BatchType, ContractTransaction, DepositIntent, DepositIntentResponse,
+    DummyTransaction, TransactionNetwork, TransactionResponse, TransactionType,
 };
 pub use messaging::{ChannelMessage, GossipsubMessage, KeyShare};
 pub use p2p::{PeerInfo, SerializablePeerId};
@@ -34,11 +39,6 @@ pub use user_intent::{
     IntentRegistry, IntentStatus, IntentTransactionIds, TransactionStatus, UserRegistration,
 };
 pub use vrf::{NodeSelectionResult, VrfOutput, VrfSelectedNodesBroadcast, VrfSelectionMessage};
-pub use deterministic_selection::{
-    DeterministicSelectionMessage, DeterministicSelectionResult, FinalNodeSelection,
-    RequestMetadata, RequestSelectionPolicy, RoundSeed, SelectRequestMessage, SequencerSelectionState,
-    SequencerType,
-};
 
 pub use network::{
     init_network_type_from_env, is_testnet, network_type, qubetics_rpc_url_from_env, NetworkType,

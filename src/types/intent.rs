@@ -73,3 +73,26 @@ pub struct DepositIntentResponse {
     pub message: String,
     pub raw_transaction: Option<String>,
 }
+
+/// Batch intent input structure for processBatchIntents contract call
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchIntentInput {
+    pub source_address: String,
+    pub target_address: String,
+    pub source_chain: String,
+    pub target_chain: String,
+    pub amount: u128,
+    pub source_token: String,
+    pub target_token: String,
+    pub intent_id: String,
+    pub withdraw_tx_hash: String,
+    pub deposit_tx_hash: String,
+}
+
+/// Batch type for processBatchIntents: 0 = BTC, 1 = TICS
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[repr(u8)]
+pub enum BatchType {
+    BTC = 0,
+    TICS = 1,
+}

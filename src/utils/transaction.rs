@@ -1,8 +1,8 @@
 use crate::chain_abstraction::{ChainTransaction, EthereumTransaction};
 use crate::types::{
-    network as network_cfg, BitcoinInput, BitcoinOutput, BitcoinTransaction, BitcoinUtxo,
-    BitcoinWitness, BitcoinWitnessUtxo, ContractTransaction, DepositIntent, DummyTransaction,
-    RlpEncoder, SpendKind, UtxoStatus,
+    network as network_cfg, BatchIntentInput, BatchType, BitcoinInput, BitcoinOutput,
+    BitcoinTransaction, BitcoinUtxo, BitcoinWitness, BitcoinWitnessUtxo, ContractTransaction,
+    DepositIntent, DummyTransaction, RlpEncoder, SpendKind, UtxoStatus,
 };
 use crate::utils::get_eth_address_from_group_key;
 use anyhow::{bail, Result};
@@ -1064,8 +1064,8 @@ async fn create_chain_transaction_from_deposit_intent_internal(
 
     if is_evm_chain(chain_to_use) {
         // Get liquidity operator address from parameter
-        let liquidity_operator_address =
-            liquidity_operator_eth_address.ok_or_else(|| anyhow::anyhow!("Liquidity operator ETH address not provided"))?;
+        let liquidity_operator_address = liquidity_operator_eth_address
+            .ok_or_else(|| anyhow::anyhow!("Liquidity operator ETH address not provided"))?;
 
         // Determine source and target based on transaction type
         // NOTE: group_public_key will always be available once the solver ecosystem is live,
@@ -1142,8 +1142,8 @@ async fn create_chain_transaction_from_deposit_intent_internal(
         Ok(ChainTransaction::Ethereum(ethereum_tx))
     } else if chain_to_use == "bitcoin" || chain_to_use == "btc" {
         // Get liquidity operator address from parameter
-        let btc_liquidity_operator_address =
-            liquidity_operator_btc_address.ok_or_else(|| anyhow::anyhow!("Liquidity operator BTC address not provided"))?;
+        let btc_liquidity_operator_address = liquidity_operator_btc_address
+            .ok_or_else(|| anyhow::anyhow!("Liquidity operator BTC address not provided"))?;
 
         // Determine source and target based on transaction type
         // NOTE: group_public_key will always be available once the solver ecosystem is live,
@@ -1161,7 +1161,10 @@ async fn create_chain_transaction_from_deposit_intent_internal(
                         derived_btc_addr,
                         btc_liquidity_operator_address
                     );
-                    (derived_btc_addr.clone(), btc_liquidity_operator_address.clone())
+                    (
+                        derived_btc_addr.clone(),
+                        btc_liquidity_operator_address.clone(),
+                    )
                 } else {
                     return Err(anyhow::anyhow!(
                         "UserToVault transaction requires derived_btc_address"
@@ -1232,7 +1235,6 @@ pub async fn create_chain_transaction_from_contract_call(
     tx_hash: &str,
     transaction_type: crate::types::TransactionType,
 ) -> Result<ChainTransaction> {
-
     // Group public key is required for contract call transactions
     // NOTE: group_public_key will always be available once the solver ecosystem is live,
     // but we handle the None case gracefully to prevent panics
@@ -1263,23 +1265,12 @@ pub async fn create_chain_transaction_from_contract_call(
     info!("🔧 [CONTRACT] Network address: {}", network_address);
     info!("🔧 [CONTRACT] Chain ID: {}", chain_id);
 
-    // Choose the appropriate calldata encoding function based on transaction type
-    let calldata = match transaction_type {
-        crate::types::TransactionType::UserToVault => {
-            info!("🔧 [CONTRACT] Using depositIntent calldata for UserToVault transaction");
-            encode_deposit_intent_calldata(
-                &intent.source_address,
-                &intent.target_address,
-                &intent.source_chain,
-                &intent.target_chain,
-                amount,
-                &intent.source_token,
-                &intent.target_token,
-                tx_hash,
-                intent_hash,
-                &intent.timestamp.to_string(),
-            )
-        }
+    // Determine batch type based on transaction type
+    // UserToVault = BTC (deposits from Bitcoin to vault)
+    // NetworkToTarget = TICS (fulfillments from vault to target chain)
+    let batch_type = match transaction_type {
+        crate::types::TransactionType::UserToVault => BatchType::BTC,
+        crate::types::TransactionType::NetworkToTarget => BatchType::TICS,
         crate::types::TransactionType::Refund => {
             // Refund transactions don't need contract calls - they're just fund transfers
             // The refund intent contract call is handled separately after the refund transaction completes
@@ -1303,25 +1294,49 @@ pub async fn create_chain_transaction_from_contract_call(
                 "AddLiquidity is not valid for deposit intent flow"
             ));
         }
+    };
+
+    info!(
+        "🔧 [CONTRACT] Using processBatchIntents with batch_type {:?} for {:?} transaction",
+        batch_type, transaction_type
+    );
+
+    // Create a single-intent batch for this transaction
+    // For UserToVault: withdrawTxHash = tx_hash (user's deposit tx), depositTxHash = intent_hash
+    // For NetworkToTarget: withdrawTxHash = intent_hash, depositTxHash = tx_hash (fulfillment tx)
+    let (withdraw_tx_hash, deposit_tx_hash) = match transaction_type {
+        crate::types::TransactionType::UserToVault => {
+            // User deposited funds, so tx_hash is the withdraw (from user), intent_hash is the deposit (to vault)
+            (tx_hash.to_string(), intent_hash.to_string())
+        }
+        crate::types::TransactionType::NetworkToTarget => {
+            // Network is fulfilling, so intent_hash is the withdraw (from vault), tx_hash is the deposit (to user)
+            (intent_hash.to_string(), tx_hash.to_string())
+        }
         _ => {
-            info!(
-                "🔧 [CONTRACT] Using fulfillIntent calldata for {:?} transaction",
-                transaction_type
-            );
-            encode_fulfill_intent_calldata(
-                &intent.source_address,
-                &intent.target_address,
-                &intent.source_chain,
-                &intent.target_chain,
-                amount,
-                &intent.source_token,
-                &intent.target_token,
-                tx_hash,
-                intent_hash,
-                &intent.timestamp.to_string(),
-            )
+            // Already handled above, but compiler needs this
+            return Err(anyhow::anyhow!("Invalid transaction type"));
         }
     };
+
+    let batch_intent = BatchIntentInput {
+        source_address: intent.source_address.clone(),
+        target_address: intent.target_address.clone(),
+        source_chain: intent.source_chain.clone(),
+        target_chain: intent.target_chain.clone(),
+        amount,
+        source_token: intent.source_token.clone(),
+        target_token: intent.target_token.clone(),
+        intent_id: intent_hash.to_string(),
+        withdraw_tx_hash,
+        deposit_tx_hash,
+    };
+
+    let calldata = encode_process_batch_intents_calldata(
+        &[batch_intent],
+        batch_type,
+        &intent.timestamp.to_string(),
+    );
 
     let calldata_hex = calldata
         .as_ref()
@@ -1590,94 +1605,6 @@ pub async fn create_solver_add_liquidity_transaction(
     Ok(ChainTransaction::Ethereum(ethereum_tx))
 }
 
-pub fn encode_deposit_intent_calldata(
-    source_address: &str,
-    target_address: &str,
-    source_chain: &str,
-    target_chain: &str,
-    amount: u128,
-    source_token: &str,
-    target_token: &str,
-    transaction_hash: &str,
-    intent_id: &str,
-    timestamp: &str,
-) -> Option<Vec<u8>> {
-    #[allow(deprecated)]
-    let f = Function {
-        name: "depositIntent".to_owned(),
-        inputs: vec![
-            Param {
-                name: "sourceAddress".into(),
-                kind: ParamType::String,
-                internal_type: None,
-            },
-            Param {
-                name: "targetAddress".into(),
-                kind: ParamType::String,
-                internal_type: None,
-            },
-            Param {
-                name: "sourceChain".into(),
-                kind: ParamType::String,
-                internal_type: None,
-            },
-            Param {
-                name: "targetChain".into(),
-                kind: ParamType::String,
-                internal_type: None,
-            },
-            Param {
-                name: "amount".into(),
-                kind: ParamType::Uint(128),
-                internal_type: None,
-            },
-            Param {
-                name: "sourceToken".into(),
-                kind: ParamType::String,
-                internal_type: None,
-            },
-            Param {
-                name: "targetToken".into(),
-                kind: ParamType::String,
-                internal_type: None,
-            },
-            Param {
-                name: "transactionHash".into(),
-                kind: ParamType::String,
-                internal_type: None,
-            },
-            Param {
-                name: "intentId".into(),
-                kind: ParamType::String,
-                internal_type: None,
-            },
-            Param {
-                name: "timestamp".into(),
-                kind: ParamType::String,
-                internal_type: None,
-            },
-        ],
-        outputs: vec![],
-        constant: None,
-        state_mutability: StateMutability::NonPayable,
-    };
-
-    let tokens = vec![
-        Token::String(source_address.to_owned()),
-        Token::String(target_address.to_owned()),
-        Token::String(source_chain.to_owned()),
-        Token::String(target_chain.to_owned()),
-        Token::Uint(U256::from(amount)), // uint128
-        Token::String(source_token.to_owned()),
-        Token::String(target_token.to_owned()),
-        Token::String(transaction_hash.to_owned()),
-        Token::String(intent_id.to_owned()),
-        Token::String(timestamp.to_owned()),
-    ];
-
-    f.encode_input(&tokens).ok()
-}
-
 pub fn encode_refund_intent_calldata(
     intent_id: &str,
     transaction_hash: &str,
@@ -1724,65 +1651,39 @@ pub fn encode_refund_intent_calldata(
     f.encode_input(&tokens).ok()
 }
 
-pub fn encode_fulfill_intent_calldata(
-    source_address: &str,
-    target_address: &str,
-    source_chain: &str,
-    target_chain: &str,
-    amount: u128,
-    source_token: &str,
-    target_token: &str,
-    transaction_hash: &str,
-    intent_id: &str,
+/// Encode calldata for processBatchIntents contract call
+/// This replaces individual depositIntent and fulfillIntent calls with a single batch operation
+pub fn encode_process_batch_intents_calldata(
+    batch_intents: &[BatchIntentInput],
+    batch_type: BatchType,
     timestamp: &str,
 ) -> Option<Vec<u8>> {
+    // Define the tuple type for BatchIntentInput struct
+    let batch_intent_tuple_type = ParamType::Tuple(vec![
+        ParamType::String,    // sourceAddress
+        ParamType::String,    // targetAddress
+        ParamType::String,    // sourceChain
+        ParamType::String,    // targetChain
+        ParamType::Uint(128), // amount
+        ParamType::String,    // sourceToken
+        ParamType::String,    // targetToken
+        ParamType::String,    // intentId
+        ParamType::String,    // withdrawTxHash
+        ParamType::String,    // depositTxHash
+    ]);
+
     #[allow(deprecated)]
     let f = Function {
-        name: "fulfillIntent".to_owned(),
+        name: "processBatchIntents".to_owned(),
         inputs: vec![
             Param {
-                name: "sourceAddress".into(),
-                kind: ParamType::String,
+                name: "batchIntents".into(),
+                kind: ParamType::Array(Box::new(batch_intent_tuple_type)),
                 internal_type: None,
             },
             Param {
-                name: "targetAddress".into(),
-                kind: ParamType::String,
-                internal_type: None,
-            },
-            Param {
-                name: "sourceChain".into(),
-                kind: ParamType::String,
-                internal_type: None,
-            },
-            Param {
-                name: "targetChain".into(),
-                kind: ParamType::String,
-                internal_type: None,
-            },
-            Param {
-                name: "amount".into(),
-                kind: ParamType::Uint(128),
-                internal_type: None,
-            },
-            Param {
-                name: "sourceToken".into(),
-                kind: ParamType::String,
-                internal_type: None,
-            },
-            Param {
-                name: "targetToken".into(),
-                kind: ParamType::String,
-                internal_type: None,
-            },
-            Param {
-                name: "transactionHash".into(),
-                kind: ParamType::String,
-                internal_type: None,
-            },
-            Param {
-                name: "intentId".into(),
-                kind: ParamType::String,
+                name: "batchType".into(),
+                kind: ParamType::Uint(8), // enum represented as uint8
                 internal_type: None,
             },
             Param {
@@ -1796,16 +1697,28 @@ pub fn encode_fulfill_intent_calldata(
         state_mutability: StateMutability::NonPayable,
     };
 
+    // Convert BatchIntentInput structs to Token tuples
+    let intent_tokens: Vec<Token> = batch_intents
+        .iter()
+        .map(|intent| {
+            Token::Tuple(vec![
+                Token::String(intent.source_address.clone()),
+                Token::String(intent.target_address.clone()),
+                Token::String(intent.source_chain.clone()),
+                Token::String(intent.target_chain.clone()),
+                Token::Uint(U256::from(intent.amount)),
+                Token::String(intent.source_token.clone()),
+                Token::String(intent.target_token.clone()),
+                Token::String(intent.intent_id.clone()),
+                Token::String(intent.withdraw_tx_hash.clone()),
+                Token::String(intent.deposit_tx_hash.clone()),
+            ])
+        })
+        .collect();
+
     let tokens = vec![
-        Token::String(source_address.to_owned()),
-        Token::String(target_address.to_owned()),
-        Token::String(source_chain.to_owned()),
-        Token::String(target_chain.to_owned()),
-        Token::Uint(U256::from(amount)), // uint128
-        Token::String(source_token.to_owned()),
-        Token::String(target_token.to_owned()),
-        Token::String(transaction_hash.to_owned()),
-        Token::String(intent_id.to_owned()),
+        Token::Array(intent_tokens),
+        Token::Uint(U256::from(batch_type as u8)),
         Token::String(timestamp.to_owned()),
     ];
 
