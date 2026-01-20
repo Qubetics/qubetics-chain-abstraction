@@ -1103,14 +1103,13 @@ pub(crate) async fn handle_user_mpc_deposit(
                         }
                     };
                     let intent_hash_bytes = intent_hash.to_vec();
-                    let store_msg = ChannelMessage::IntentHash {
-                        intent_hash: intent_hash_bytes.clone(),
-                        signer: signer.clone(),
-                        intent: req.msg.clone(),
-                    };
-                    let tx_sender = message_tx.lock().await;
-                    if let Err(e) = tx_sender.send(store_msg).await {
-                        error!("❌ Failed to dispatch intent hash store message: {}", e);
+                    // Store intent hash directly in the local user intent manager instead of
+                    // broadcasting it via ChannelMessage::IntentHash / gossipsub.
+                    if let Err(e) = user_intent_manager
+                        .store_intent_hash(intent_hash_bytes.clone(), &signer, &req.msg)
+                        .await
+                    {
+                        error!("❌ Failed to store intent hash in user intent manager: {}", e);
                         return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
                             status: "error".to_string(),
                             signer_address: signer.clone(),
@@ -1123,7 +1122,7 @@ pub(crate) async fn handle_user_mpc_deposit(
                         }));
                     }
 
-                    info!("✅ Intent hash store message sent for user: {}", signer);
+                    info!("✅ Stored intent hash for user: {}", signer);
 
                     user_reg
             }

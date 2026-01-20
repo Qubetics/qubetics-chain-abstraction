@@ -69,7 +69,7 @@ pub const TOPIC_COMMANDS: &str = "commands";
 pub const TOPIC_VRF_SELECTION: &str = "vrf-selection";
 pub const TOPIC_TRANSACTIONS: &str = "transactions";
 pub const TOPIC_DEPOSIT_INTENTS: &str = "deposit-intents";
-pub const TOPIC_INTENT_HASHES: &str = "intent-hashes";
+pub const TOPIC_INTENT_HASH_BROADCAST: &str = "intent-hash-broadcast";
 pub const TOPIC_DKG_COMMANDS: &str = "dkg-commands";
 pub const TOPIC_USER_REGISTRATIONS: &str = "user-registrations";
 pub const TOPIC_SOLVER_REWARDS: &str = "solver-rewards";
@@ -82,6 +82,7 @@ pub const TOPIC_TRANSACTION_ERROR_SYNC: &str = "transaction-error-sync";
 pub const TOPIC_LEGACY_DKG: &str = "dkg";
 pub const TOPIC_TRANSACTION_BROADCAST: &str = "transaction-broadcast";
 pub const TOPIC_TRANSACTION_FAILURE: &str = "transaction-failure";
+pub const TOPIC_INTENT_BATCH_BROADCAST: &str = "intent-batch-broadcast";
 
 /// Typed view of the gossipsub topics this MPC node participates in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -94,7 +95,7 @@ pub enum GossipTopic {
     VrfSelection,
     Transactions,
     DepositIntents,
-    IntentHashes,
+    IntentBatchBroadcast,
     DkgCommands,
     UserRegistrations,
     SolverRewards,
@@ -119,8 +120,8 @@ impl GossipTopic {
         GossipTopic::VrfSelection,
         GossipTopic::Transactions,
         GossipTopic::DepositIntents,
-        GossipTopic::IntentHashes,
         GossipTopic::DkgCommands,
+        GossipTopic::IntentBatchBroadcast,
         GossipTopic::UserRegistrations,
         GossipTopic::SolverRewards,
         GossipTopic::ClaimRewards,
@@ -144,7 +145,7 @@ impl GossipTopic {
             GossipTopic::VrfSelection => TOPIC_VRF_SELECTION,
             GossipTopic::Transactions => TOPIC_TRANSACTIONS,
             GossipTopic::DepositIntents => TOPIC_DEPOSIT_INTENTS,
-            GossipTopic::IntentHashes => TOPIC_INTENT_HASHES,
+            GossipTopic::IntentBatchBroadcast => TOPIC_INTENT_BATCH_BROADCAST,
             GossipTopic::DkgCommands => TOPIC_DKG_COMMANDS,
             GossipTopic::UserRegistrations => TOPIC_USER_REGISTRATIONS,
             GossipTopic::SolverRewards => TOPIC_SOLVER_REWARDS,

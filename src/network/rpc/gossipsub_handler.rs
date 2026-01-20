@@ -551,44 +551,6 @@ impl MpcNetworkLayer {
                     warn!("❌ [NETWORK] No user registry available to store synchronized transaction error");
                 }
             }
-            GossipsubMessage::IntentHashBroadcast {
-                intent_hash,
-                node_id,
-            } => {
-                info!(
-                    "📨 [GOSSIPSUB] Received intent hash broadcast {} from node {}",
-                    intent_hash, node_id
-                );
-            }
-            GossipsubMessage::IntentHash {
-                intent_hash,
-                signer,
-                intent,
-            } => {
-                info!(
-                    "📝 [GOSSIPSUB] Received intent hash {} from {}",
-                    intent_hash, signer
-                );
-
-                if let Some(user_intent_manager) = &self.user_intent_manager {
-                    match hex::decode(&intent_hash) {
-                        Ok(bytes) => {
-                            if let Err(e) = user_intent_manager
-                                .store_intent_hash(bytes, &signer, &intent)
-                                .await
-                            {
-                                warn!("❌ [GOSSIPSUB] Failed to store intent hash: {}", e);
-                            } else {
-                            }
-                        }
-                        Err(e) => {
-                            warn!("❌ [GOSSIPSUB] Invalid intent hash {}: {}", intent_hash, e);
-                        }
-                    }
-                } else {
-                    warn!("❌ [GOSSIPSUB] No user registry available to store intent hash");
-                }
-            }
             GossipsubMessage::DepositIntent {
                 intent,
                 intent_id: _intent_id,

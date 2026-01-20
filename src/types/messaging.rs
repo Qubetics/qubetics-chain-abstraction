@@ -36,11 +36,6 @@ pub enum ChannelMessage {
         transaction_type: TransactionType,
         amount: u128,
     },
-    IntentHash {
-        intent_hash: Vec<u8>,
-        signer: String,
-        intent: DepositIntent,
-    },
     ClaimReward {
         solver_address: String,
         btc_address: Option<String>,
@@ -93,10 +88,6 @@ pub enum ChannelMessage {
     },
     UserRegistration {
         ethereum_address: String,
-        node_id: String,
-    },
-    IntentHashBroadcast {
-        intent_hash: String,
         node_id: String,
     },
     RefundInitiation {
@@ -190,11 +181,6 @@ pub enum GossipsubMessage {
         /// Note: Gossiped DepositIntent is always processed as UserToVault
         amount: u128,
     },
-    IntentHash {
-        intent_hash: String,
-        signer: String,
-        intent: DepositIntent,
-    },
     ClaimReward {
         solver_address: String,
         btc_address: Option<String>,
@@ -239,10 +225,6 @@ pub enum GossipsubMessage {
         transaction_type: String,
         solver_address: Option<String>,
         /// Node that encountered the error
-        node_id: String,
-    },
-    IntentHashBroadcast {
-        intent_hash: String,
         node_id: String,
     },
     /// Acknowledgment messages for critical message retry mechanism

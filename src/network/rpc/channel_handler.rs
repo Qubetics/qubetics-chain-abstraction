@@ -2237,39 +2237,6 @@ impl MpcNetworkLayer {
                     round, target_peer_id, request_id, is_connected
                 );
             }
-            ChannelMessage::IntentHash {
-                intent_hash,
-                signer,
-                intent,
-            } => {
-                info!("📝 [NETWORK] Storing intent hash from signer {}", signer);
-
-                if let Some(user_intent_manager) = &self.user_intent_manager {
-                    if let Err(e) = user_intent_manager
-                        .store_intent_hash(intent_hash.clone(), &signer, &intent)
-                        .await
-                    {
-                        warn!("❌ [NETWORK] Failed to store intent hash: {}", e);
-                    } else {
-                        info!("✅ [NETWORK] Intent hash stored locally");
-                    }
-                } else {
-                    warn!("❌ [NETWORK] No user registry available to store intent hash");
-                }
-
-                let intent_hash_hex = hex::encode(&intent_hash);
-                let gossip_msg = GossipsubMessage::IntentHash {
-                    intent_hash: intent_hash_hex.clone(),
-                    signer: signer.clone(),
-                    intent: intent.clone(),
-                };
-                let msg_bytes = serde_json::to_vec(&gossip_msg).map_err(|e| {
-                    anyhow::anyhow!("Failed to serialize intent hash message: {}", e)
-                })?;
-                let topic = gossipsub::IdentTopic::new("intent-hashes");
-                swarm.behaviour_mut().gossipsub.publish(topic, msg_bytes)?;
-                info!("📡 [NETWORK] Broadcasted intent hash {}", intent_hash_hex);
-            }
             ChannelMessage::DepositIntent {
                 intent,
                 intent_id,
@@ -3169,25 +3136,7 @@ impl MpcNetworkLayer {
                     }
                 }
             }
-            ChannelMessage::IntentHashBroadcast {
-                intent_hash,
-                node_id,
-            } => {
-                info!(
-                    "📡 [NETWORK] Broadcasting intent hash {} from node {}",
-                    intent_hash, node_id
-                );
-                let broadcast_msg = GossipsubMessage::IntentHashBroadcast {
-                    intent_hash: intent_hash.clone(),
-                    node_id: node_id.clone(),
-                };
-                let msg_bytes = serde_json::to_vec(&broadcast_msg).map_err(|e| {
-                    anyhow::anyhow!("Failed to serialize intent hash broadcast: {}", e)
-                })?;
-                let topic = gossipsub::IdentTopic::new("intent-hashes");
-                swarm.behaviour_mut().gossipsub.publish(topic, msg_bytes)?;
-                info!("📡 [NETWORK] Broadcasted intent hash to P2P network");
-            }
+            
             ChannelMessage::UserRegistration {
                 ethereum_address,
                 node_id,
