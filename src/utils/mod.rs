@@ -7,6 +7,7 @@ use k256::elliptic_curve::sec1::ToEncodedPoint;
 use k256::{AffinePoint, ProjectivePoint, Scalar};
 use sha3::{Digest, Keccak256};
 pub mod bigint;
+pub mod bitcoin_batch;
 pub mod contract;
 pub mod hmac_helper;
 pub mod transaction;

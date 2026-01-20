@@ -939,7 +939,7 @@ pub async fn create_chain_transaction_from_deposit_intent(
     .await
 }
 
-fn classify_address(addr: &str) -> Result<(SpendKind, bitcoin::Network)> {
+pub(crate) fn classify_address(addr: &str) -> Result<(SpendKind, bitcoin::Network)> {
     use bitcoin::address::{Address, AddressData, NetworkUnchecked};
     use bitcoin::{Network, WitnessVersion};
 
@@ -2206,7 +2206,7 @@ mod tests {
     }
 }
 
-fn create_bitcoin_script_pubkey(address: &str) -> Result<Vec<u8>> {
+pub(crate) fn create_bitcoin_script_pubkey(address: &str) -> Result<Vec<u8>> {
     use bitcoin::Address;
     use std::str::FromStr;
 
