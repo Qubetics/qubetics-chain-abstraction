@@ -71,6 +71,19 @@ pub enum ChannelMessage {
         error: String,
         original_request: Option<()>,
     },
+    /// Internal signal to broadcast and locally process an intent batch
+    IntentBatchBroadcast {
+        /// List of intent hashes to process
+        intent_hashes: Vec<String>,
+        /// Batch type: "BTC" or "TICS"
+        batch_type: String,
+        /// Timestamp when batch was created
+        timestamp: String,
+        /// Round number that triggered this batch
+        round: u64,
+        /// Node ID of the final node broadcasting this batch
+        node_id: String,
+    },
     TransactionIdBroadcast {
         intent_hash: Option<String>,
         transaction_id: String,
@@ -263,6 +276,20 @@ pub enum GossipsubMessage {
         blockchain_tx_hash: String,
         /// Chain ID where the transaction was broadcasted
         chain_id: u64,
+    },
+    /// Batch of intent hashes for processing by all nodes
+    /// Sent by final node after global clock trigger
+    IntentBatchBroadcast {
+        /// List of intent hashes to process
+        intent_hashes: Vec<String>,
+        /// Batch type: "BTC" or "TICS"
+        batch_type: String,
+        /// Timestamp when batch was created
+        timestamp: String,
+        /// Round number that triggered this batch
+        round: u64,
+        /// Node ID of the final node broadcasting this batch
+        node_id: String,
     },
     /// Notification that a transaction failed (signature verification, broadcasting, etc.)
     TransactionFailure {

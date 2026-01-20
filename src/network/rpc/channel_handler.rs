@@ -1367,6 +1367,74 @@ impl MpcNetworkLayer {
                     }
                 }
             }
+            // Local + network handling for intent batches:
+            // - Origin node sends ChannelMessage::IntentBatchBroadcast
+            // - We:
+            //   1) Build the corresponding GossipsubMessage::IntentBatchBroadcast
+            //   2) Call handle_gossipsub_message locally so this node processes its own batch
+            //   3) Publish the message over gossipsub so other peers process it too
+            ChannelMessage::IntentBatchBroadcast {
+                intent_hashes,
+                batch_type,
+                timestamp,
+                round,
+                node_id,
+            } => {
+                use libp2p::gossipsub::{IdentTopic, Message as GossipMessage};
+
+                let gossip_msg = crate::types::GossipsubMessage::IntentBatchBroadcast {
+                    intent_hashes,
+                    batch_type,
+                    timestamp,
+                    round,
+                    node_id,
+                };
+
+                let data = match serde_json::to_vec(&gossip_msg) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        warn!(
+                            "❌ [INTENT_BATCH] Failed to serialize IntentBatchBroadcast: {}",
+                            e
+                        );
+                        return Ok(());
+                    }
+                };
+
+                // 1) Process locally by calling the main gossipsub handler
+                let topic = "intent-batch".to_string();
+                let topic_hash = IdentTopic::new(topic.clone());
+                let local_msg = GossipMessage {
+                    source: Some(self.local_peer_id),
+                    data: data.clone(),
+                    sequence_number: None,
+                    topic: topic_hash.hash(),
+                };
+
+                if let Err(e) = self.handle_gossipsub_message(&local_msg).await {
+                    warn!(
+                        "❌ [INTENT_BATCH] Failed to process local IntentBatchBroadcast: {}",
+                        e
+                    );
+                }
+
+                // 2) Publish to other peers via gossipsub
+                let swarm_mut = swarm.behaviour_mut();
+                let peer_count = swarm_mut.gossipsub.all_peers().count();
+
+                if peer_count > 0 {
+                    if let Err(e) = swarm_mut.gossipsub.publish(topic_hash, data) {
+                        warn!(
+                            "❌ [INTENT_BATCH] Failed to publish IntentBatchBroadcast to topic {}: {:?}",
+                            topic, e
+                        );
+                    }
+                } else {
+                    warn!(
+                        "⚠️ [INTENT_BATCH] No peers available for broadcasting IntentBatchBroadcast"
+                    );
+                }
+            }
             // SECURE DKG SHARE DISTRIBUTION - sends share to specific peer via P2P RPC
             ChannelMessage::UnicastShareDKG {
                 target_peer_id,

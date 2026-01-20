@@ -1456,18 +1456,27 @@ impl SigningNode {
         let current_epoch_secs = now.as_secs();
         let cycle_number = current_epoch_secs / clock_interval_secs;
         
-        // Alternate: even cycles = Qubetics, odd cycles = Bitcoin
+        // Alternate: even cycles = Qubetics (TICS), odd cycles = Bitcoin (BTC)
         let target_chain = if cycle_number % 2 == 0 {
             "qubetics"
         } else {
             "bitcoin"
         };
         
+        // Determine batch type based on target chain
+        // Target chain "qubetics" = TICS batch, "bitcoin" = BTC batch
+        let batch_type = if target_chain == "qubetics" {
+            crate::types::BatchType::TICS
+        } else {
+            crate::types::BatchType::BTC
+        };
+        
         info!(
-            "⏰ [CLOCK] Cycle {} ({}): Processing {} intents...",
+            "⏰ [CLOCK] Cycle {} ({}): Processing {} intents with batch type {:?}...",
             cycle_number,
             if cycle_number % 2 == 0 { "even" } else { "odd" },
-            target_chain.to_uppercase()
+            target_chain.to_uppercase(),
+            batch_type
         );
         
         // Get intents awaiting network fulfillment (stale > 10 seconds)
@@ -1496,35 +1505,60 @@ impl SigningNode {
             max_intents_per_cycle
         );
         
-        for (intent_hash, intent, tx_ids) in intents_to_process {
+        // Collect intent hashes for broadcasting
+        let intent_hashes: Vec<String> = intents_to_process
+            .iter()
+            .map(|(intent_hash, _, _)| intent_hash.clone())
+            .collect();
+        
+        // If we have intents to process, broadcast the batch to all nodes
+        if !intent_hashes.is_empty() {
             info!(
-                "🔄 [CLOCK] Processing {} intent {}: amount={}, source={}, target={}",
+                "📤 [CLOCK] Broadcasting batch of {} {} intent hashes to all nodes (batch type: {:?})",
+                intent_hashes.len(),
                 target_chain.to_uppercase(),
-                intent_hash,
-                intent.amount,
-                intent.source_chain,
-                intent.target_chain
+                batch_type
             );
             
-            let wait_duration = chrono::Utc::now().signed_duration_since(tx_ids.updated_at);
+            // Create timestamp for the batch
+            let batch_timestamp = chrono::Utc::now().to_rfc3339();
+            
+            // Send via channel so the origin node processes the batch locally AND gossips it
+            // to other peers (channel handler will publish and also call gossipsub handler).
+            self.message_tx
+                .send(crate::types::ChannelMessage::IntentBatchBroadcast {
+                    intent_hashes: intent_hashes.clone(),
+                    batch_type: format!("{:?}", batch_type), // "BTC" or "TICS"
+                    timestamp: batch_timestamp.clone(),
+                    round,
+                    node_id: self.id.clone(),
+                })
+                .await?;
+            
             info!(
-                "⏱️  [CLOCK] Intent {} has been waiting {} seconds since last update",
-                intent_hash,
-                wait_duration.num_seconds()
+                "✅ [CLOCK] Successfully broadcasted {} intent batch with {} hashes at {}",
+                target_chain.to_uppercase(),
+                intent_hashes.len(),
+                batch_timestamp
             );
             
-            // TODO: Trigger NetworkToTarget transaction signing here
-            // This would involve:
-            // 1. Creating a signing request for this intent
-            // 2. Initiating VRF selection for signing nodes
-            // 3. Coordinating the signing process
-            
-            // For now, just log
+            // Log details of each intent in the batch
+            for (intent_hash, intent, tx_ids) in intents_to_process {
+                let wait_duration = chrono::Utc::now().signed_duration_since(tx_ids.updated_at);
+                info!(
+                    "  📋 [BATCH] Intent {}: amount={}, source={}, target={}, waiting={}s, UserToVault TX: {}",
+                    intent_hash,
+                    intent.amount,
+                    intent.source_chain,
+                    intent.target_chain,
+                    wait_duration.num_seconds(),
+                    tx_ids.user_to_network_tx_id.unwrap_or_else(|| "N/A".to_string())
+                );
+            }
+        } else {
             info!(
-                "✅ [CLOCK] {} intent {} ready for NetworkToTarget processing (UserToVault TX: {})",
-                target_chain.to_uppercase(),
-                intent_hash,
-                tx_ids.user_to_network_tx_id.unwrap()
+                "ℹ️  [CLOCK] No {} intents ready for processing in this cycle",
+                target_chain.to_uppercase()
             );
         }
         
