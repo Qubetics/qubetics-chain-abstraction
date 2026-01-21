@@ -110,6 +110,7 @@ impl MpcChainExecutor {
                                 &contract_tx,
                                 vault_tweaked_share,
                                 None,
+                                vec![],
                                 vault_tweaked_share,
                                 request_id,
                                 None,

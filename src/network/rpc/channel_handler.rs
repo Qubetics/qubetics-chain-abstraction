@@ -676,6 +676,7 @@ impl MpcNetworkLayer {
                         &contract_tx,
                         vault_tweaked_share,
                         None,
+                        vec![],
                         vault_tweaked_share,
                         request_id, // Pass request_id from sequencer
                         original_request, // Pass original_request for retry support
@@ -847,6 +848,7 @@ impl MpcNetworkLayer {
                         &contract_tx,
                         vault_tweaked_share,
                         None,
+                        vec![],
                         vault_tweaked_share,
                         request_id, // Pass request_id from sequencer
                         original_request, // No original_request available in this context
@@ -1016,6 +1018,7 @@ impl MpcNetworkLayer {
                         &contract_tx,
                         vault_tweaked_share,
                         None,
+                        vec![],
                         vault_tweaked_share,
                         request_id, // Pass request_id from sequencer
                         original_request, // Pass original_request for retry support
@@ -1246,7 +1249,7 @@ impl MpcNetworkLayer {
                 let topic_hash = gossipsub::IdentTopic::new(topic.clone());
 
                 // Production: Check channel capacity and log warnings for monitoring
-                let channel_capacity_warning_threshold = 0.8; // Warn at 80% full
+                let _channel_capacity_warning_threshold = 0.8; // Warn at 80% full
                 // Note: We can't directly check channel capacity, but we can monitor via try_send failures
                 
                 // Check if this is a critical message that needs retry tracking

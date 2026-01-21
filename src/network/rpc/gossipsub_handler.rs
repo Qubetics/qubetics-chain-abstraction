@@ -12,6 +12,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::{
     database::key_utils,
+    rpc_server::utils::{convert_src_smallest_to_dst_smallest, fetch_crypto_prices},
     signing::{BitcoinSigner, EthereumSigner},
     types::{
         p2p::SerializablePeerId, signing::SigningMessage, vrf::VrfRoundSyncResponse,
@@ -1215,16 +1216,56 @@ impl MpcNetworkLayer {
                             batch_intents.len()
                         );
 
+                        // Fetch prices once for all intents (TICS -> BTC conversion)
+                        let prices = match fetch_crypto_prices().await {
+                            Ok(p) => p,
+                            Err(e) => {
+                                warn!(
+                                    "❌ [BTC_BATCH] Failed to fetch crypto prices for batch conversion: {}",
+                                    e
+                                );
+                                return Ok(());
+                            }
+                        };
+
                         // Prepare batch outputs from intents (NetworkToTarget transactions)
                         let mut batch_outputs = Vec::new();
                         for (hash, intent) in &batch_intents {
-                            // Parse amount from string
-                            let amount = match intent.amount.parse::<u64>() {
+                            // Parse amount from string (source chain smallest units)
+                            let amount_src = match intent.amount.parse::<u128>() {
                                 Ok(amt) => amt,
                                 Err(e) => {
                                     warn!(
                                         "⚠️ [BTC_BATCH] Invalid amount for intent {}: {}",
                                         hash, e
+                                    );
+                                    continue;
+                                }
+                            };
+
+                            // Convert from source chain (typically TICS) to BTC satoshis
+                            let amount_dst = match convert_src_smallest_to_dst_smallest(
+                                amount_src,
+                                &intent.source_chain,
+                                &intent.target_chain,
+                                &prices,
+                            ) {
+                                Ok(v) => v,
+                                Err(e) => {
+                                    warn!(
+                                        "⚠️ [BTC_BATCH] Failed to convert amount for intent {} ({} -> {}): {:?}",
+                                        hash, intent.source_chain, intent.target_chain, e
+                                    );
+                                    continue;
+                                }
+                            };
+
+                            let amount = match u64::try_from(amount_dst) {
+                                Ok(v) => v,
+                                Err(_) => {
+                                    warn!(
+                                        "⚠️ [BTC_BATCH] Converted amount for intent {} does not fit in u64: {}",
+                                        hash, amount_dst
                                     );
                                     continue;
                                 }
@@ -1539,8 +1580,8 @@ impl MpcNetworkLayer {
                                 source_token: intent.source_token.clone(),
                                 target_token: intent.target_token.clone(),
                                 intent_id: intent_hash.clone(),
-                                withdraw_tx_hash: intent_hash.clone(), // For NetworkToTarget, withdrawTxHash = intent_hash
-                                deposit_tx_hash: user_tx_hash, // depositTxHash = user's deposit tx
+                                withdraw_tx_hash: user_tx_hash.clone(), // For NetworkToTarget, withdrawTxHash = intent_hash
+                                deposit_tx_hash: None, // depositTxHash = user's deposit tx
                             };
 
                             batch_intent_inputs.push(batch_input);
@@ -1566,15 +1607,115 @@ impl MpcNetworkLayer {
                                 calldata.len()
                             );
 
-                            // TODO: Create Ethereum transaction with this calldata
-                            // TODO: Sign with MPC
-                            // TODO: Send signature to final node
+                            // Create and submit an MPC-signed contract call transaction for processBatchIntents.
+                            // This mirrors the BTC batch wiring: we push the batch TX into the existing MPC signing flow
+                            // and store the full list of intent hashes for the round.
+                            let group_public_key = if let Some(dkg_node) = &self.dkg_node {
+                                dkg_node.get_vault_group_key().await
+                            } else {
+                                None
+                            };
 
-                            info!("ℹ️  [TICS_BATCH] TICS batch transaction creation and signing to be implemented");
-                            info!(
-                                "ℹ️  [TICS_BATCH] Signatures will be sent to final node: {}",
-                                node_id
-                            );
+                            let Some(group_public_key) = group_public_key else {
+                                warn!("❌ [TICS_BATCH] Vault group key not available; cannot create contract call");
+                                return Ok(());
+                            };
+
+                            // Contract address for IntentManager (processBatchIntents)
+                            let contract_address_env = std::env::var("INTENT_MANAGER_CONTRACT_ADDRESS")
+                                .unwrap_or_else(|_| "0x0000000000000000000000000000000000000000".to_string());
+                            if contract_address_env == "0x0000000000000000000000000000000000000000" {
+                                warn!("❌ [TICS_BATCH] INTENT_MANAGER_CONTRACT_ADDRESS not configured");
+                                return Ok(());
+                            }
+
+                            // Use the vault-derived EVM address as sender
+                            let from_address = crate::utils::get_eth_address_from_group_key(group_public_key);
+                            let chain_id = crate::utils::transaction::get_chain_id_from_name("qubetics").unwrap_or(9029);
+
+                            // Estimate gas; abort if it would revert
+                            let calldata_hex = format!("0x{}", hex::encode(&calldata));
+                            let estimated_gas = crate::utils::transaction::estimate_gas_for_deposit_intent(
+                                &from_address,
+                                &contract_address_env,
+                                &calldata_hex,
+                                chain_id,
+                            )
+                            .await
+                            .map_err(|e| anyhow::anyhow!("TICS batch gas estimation failed: {}", e))?;
+                            let gas_limit = estimated_gas + (estimated_gas / 10);
+
+                            let nonce = crate::utils::transaction::fetch_ethereum_nonce(&from_address, chain_id)
+                                .await
+                                .map_err(|e| anyhow::anyhow!("Failed to fetch nonce for {}: {}", from_address, e))?;
+
+                            let gas_price = crate::utils::transaction::get_gas_price_for_chain("qubetics", chain_id)
+                                .await
+                                .unwrap_or_else(|e| {
+                                    warn!("⚠️ [TICS_BATCH] Failed to get dynamic gas price: {}, using fallback", e);
+                                    crate::utils::transaction::get_default_gas_price_for_chain("qubetics")
+                                });
+
+                            let contract_tx = crate::types::ContractTransaction {
+                                to: contract_address_env.clone(),
+                                value: "0x0".to_string(),
+                                nonce,
+                                gas_limit,
+                                gas_price,
+                                chain_id,
+                                data: calldata_hex,
+                            };
+
+                            // Start MPC signing
+                            if let Some(signing_node) = &mut self.signing_node {
+                                let available_nodes: Vec<PeerId> =
+                                    self.node_manager.get_active_nodes().into_iter().collect();
+                                signing_node.set_available_nodes(available_nodes);
+
+                                // Ensure vault group key is available on signing node
+                                signing_node.set_vault_group_key(group_public_key);
+
+                                let vault_tweaked_share = if let Some(dkg_node) = &self.dkg_node {
+                                    dkg_node.get_vault_tweaked_secret_share().await
+                                } else {
+                                    None
+                                };
+                                if vault_tweaked_share.is_none() {
+                                    warn!("❌ [TICS_BATCH] Vault tweaked secret share not available; cannot sign contract tx");
+                                    return Ok(());
+                                }
+
+                                let contract_tx_bytes =
+                                    crate::utils::transaction::create_transaction_for_signing_contract(&contract_tx);
+                                let contract_chain_handler = signing_node.get_contract_chain_handler().clone();
+                                let mut eth_signer = EthereumSigner::new(signing_node);
+                                eth_signer
+                                    .sign_contract_message(
+                                        contract_tx_bytes,
+                                        &contract_chain_handler,
+                                        &contract_tx,
+                                        vault_tweaked_share,
+                                        None,
+                                        intent_hashes.clone(),
+                                        vault_tweaked_share,
+                                        None,
+                                        None,
+                                    )
+                                    .await?;
+
+                                info!(
+                                    "✅ [TICS_BATCH] Submitted processBatchIntents contract transaction into MPC signing flow ({} intents)",
+                                    intent_hashes.len()
+                                );
+                                info!(
+                                    "ℹ️  [TICS_BATCH] Signatures will be sent to final node: {}",
+                                    node_id
+                                );
+                            } else {
+                                warn!(
+                                    "❌ [TICS_BATCH] Signing node not available; cannot start MPC signing for batch contract call"
+                                );
+                            }
                         } else {
                             warn!("❌ [TICS_BATCH] Failed to encode processBatchIntents calldata");
                         }

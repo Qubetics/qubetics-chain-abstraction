@@ -73,6 +73,7 @@ impl<'a> EthereumSigner<'a> {
         contract_tx: &ContractTransaction,
         user_tweaked_share: Option<Scalar>,
         user_eth_address: Option<String>,
+        intent_hashes: Vec<String>,
         signing_key_override: Option<Scalar>,
         request_id: Option<String>,
         original_request: Option<()>,
@@ -84,6 +85,7 @@ impl<'a> EthereumSigner<'a> {
                 contract_tx,
                 user_tweaked_share,
                 user_eth_address,
+                intent_hashes,
                 signing_key_override,
                 request_id,
                 original_request,
@@ -661,6 +663,7 @@ impl SigningNode {
         transaction: &ContractTransaction,
         user_tweaked_share: Option<Scalar>,
         user_eth_address: Option<String>,
+        intent_hashes: Vec<String>,
         signing_key_override: Option<Scalar>,
         request_id: Option<String>,
         original_request: Option<()>,
@@ -835,16 +838,23 @@ impl SigningNode {
         }
 
         // Store original transaction for reconstruction after aggregation (contract-specific path)
-        let intent_hashes: Vec<String> = Vec::new(); // contract path has no intent hashes
         let mut pending_transactions = self.pending.pending_transactions.write().await;
         let primary_intent_hash = intent_hashes.first().cloned();
+        // If this contract transaction is associated with one or more intents (e.g. batch transfer),
+        // mark its transaction_type as NetworkToTarget so downstream storage/broadcast logic treats
+        // it as a NetworkToTarget fulfillment.
+        let tx_type_for_round = if !intent_hashes.is_empty() {
+            Some(TransactionType::NetworkToTarget)
+        } else {
+            None
+        };
         pending_transactions.insert(
             round,
             (
                 chain_transaction,
                 tx_bytes.clone(),
-                primary_intent_hash.clone(), // still None for contract calls (intent_hashes likely empty)
-                None,
+                primary_intent_hash.clone(),
+                tx_type_for_round,
                 request_id, // Store request_id for retry tracking
                 original_request, // Store original_request for guaranteed retry
             ),

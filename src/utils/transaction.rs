@@ -1075,15 +1075,46 @@ async fn create_chain_transaction_from_deposit_intent_internal(
         // network address. We only unwrap and compute network_address when it's actually needed.
         let (from_address, to_address) = match transaction_type {
             crate::types::TransactionType::UserToVault => {
-                // User deposit: FROM derived ethereum address TO vault address
-                // Group public key is not needed for UserToVault on EVM chains
+                // User deposit: FROM derived ethereum address
+                // - On TICS/qubetics: TO IntentManager contract (from env)
+                // - On other EVM chains: TO liquidity operator address
                 if let Some(derived_addr) = derived_eth_addr {
-                    tracing::info!(
-                        "💰 [TRANSACTION] User to liquidity operator: {} -> {}",
-                        derived_addr,
-                        liquidity_operator_address
-                    );
-                    (derived_addr.clone(), liquidity_operator_address.clone())
+                    // Default target is liquidity operator
+                    let mut target_address = liquidity_operator_address.clone();
+
+                    // For TICS/qubetics source chain, override with Treasury Vault contract if configured
+                    if chain_to_use.eq_ignore_ascii_case("tics")
+                        || chain_to_use.eq_ignore_ascii_case("qubetics")
+                    {
+                        let contract_address_env = std::env::var("TREASURY_VAULT_CONTRACT_ADDRESS")
+                            .unwrap_or_else(|_| "0x0000000000000000000000000000000000000000".to_string());
+                        if contract_address_env
+                            != "0x0000000000000000000000000000000000000000"
+                        {
+                            tracing::info!(
+                                "💰 [TRANSACTION] UserToVault on {}: {} -> TreasuryVault contract {}",
+                                chain_to_use,
+                                derived_addr,
+                                contract_address_env
+                            );
+                            target_address = contract_address_env;
+                        } else {
+                            tracing::warn!(
+                                "⚠️ [TRANSACTION] TREASURY_VAULT_CONTRACT_ADDRESS not configured; using liquidity operator {} for UserToVault on {}",
+                                liquidity_operator_address,
+                                chain_to_use
+                            );
+                        }
+                    } else {
+                        tracing::info!(
+                            "💰 [TRANSACTION] User to liquidity operator: {} -> {} on chain {}",
+                            derived_addr,
+                            liquidity_operator_address,
+                            chain_to_use
+                        );
+                    }
+
+                    (derived_addr.clone(), target_address)
                 } else {
                     return Err(anyhow::anyhow!(
                         "UserToVault transaction requires derived_eth_address"
@@ -1246,6 +1277,7 @@ pub async fn create_chain_transaction_from_contract_call(
         .ok_or_else(|| anyhow::anyhow!("Unknown EVM chain: {}", "eth"))?;
 
     // Get contract address from environment variable and normalize to 0x-prefixed
+    // For processBatchIntents / intent management, use the IntentManager contract
     let contract_address_env = std::env::var("INTENT_MANAGER_CONTRACT_ADDRESS")
         .unwrap_or_else(|_| "0x0000000000000000000000000000000000000000".to_string());
 
@@ -1329,7 +1361,7 @@ pub async fn create_chain_transaction_from_contract_call(
         target_token: intent.target_token.clone(),
         intent_id: intent_hash.to_string(),
         withdraw_tx_hash,
-        deposit_tx_hash,
+        deposit_tx_hash: Some(deposit_tx_hash),
     };
 
     let calldata = encode_process_batch_intents_calldata(
@@ -1711,7 +1743,7 @@ pub fn encode_process_batch_intents_calldata(
                 Token::String(intent.target_token.clone()),
                 Token::String(intent.intent_id.clone()),
                 Token::String(intent.withdraw_tx_hash.clone()),
-                Token::String(intent.deposit_tx_hash.clone()),
+                Token::String(intent.deposit_tx_hash.clone().unwrap_or_else(|| "NULL".to_string())),
             ])
         })
         .collect();

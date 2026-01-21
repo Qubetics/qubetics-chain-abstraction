@@ -843,7 +843,7 @@ impl SigningNode {
     ) {
         let channel_message_transaction_id_broadcast =
             crate::types::ChannelMessage::TransactionIdBroadcast {
-                intent_hashes,
+                intent_hashes: intent_hashes.clone(),
                 transaction_id: tx_id.to_string(),
                 transaction_type: transaction_type.to_string(),
                 solver_address: solver_address.map(|s| s.to_string()),
@@ -860,10 +860,10 @@ impl SigningNode {
                 e
             );
         } else {
-            if !channel_message_transaction_id_broadcast.intent_hashes.is_empty() {
+            if !intent_hashes.is_empty() {
                 info!(
                     "📡 [SIGNING] Broadcasted transaction ID {} for intents {:?} (type: {}) to other nodes",
-                    tx_id, channel_message_transaction_id_broadcast.intent_hashes, transaction_type
+                    tx_id, intent_hashes, transaction_type
                 );
             } else if let Some(solver) = solver_address {
                 info!(
