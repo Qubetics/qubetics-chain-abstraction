@@ -1496,36 +1496,51 @@ impl SigningNode {
             max_intents_per_cycle
         );
         
-        for (intent_hash, intent, tx_ids) in intents_to_process {
+        // Collect intent hashes for broadcasting
+        let intent_hashes: Vec<String> = intents_to_process
+            .iter()
+            .map(|(hash, _, _)| hash.clone())
+            .collect();
+        
+        if !intent_hashes.is_empty() {
             info!(
-                "🔄 [CLOCK] Processing {} intent {}: amount={}, source={}, target={}",
-                target_chain.to_uppercase(),
-                intent_hash,
-                intent.amount,
-                intent.source_chain,
-                intent.target_chain
+                "📤 [CLOCK] Broadcasting {} {} intent hashes to all peers",
+                intent_hashes.len(),
+                target_chain.to_uppercase()
             );
             
-            let wait_duration = chrono::Utc::now().signed_duration_since(tx_ids.updated_at);
+            // Broadcast to all peers via gossipsub
+            let gossipsub_message = GossipsubMessage::Phase1IntentsBroadcast {
+                intent_hashes: intent_hashes.clone(),
+                target_chain: target_chain.to_string(),
+                round,
+                node_id: self.id.clone(),
+            };
+            
+            let broadcast_data = serde_json::to_vec(&gossipsub_message)?;
+            self.broadcast(crate::network::transport::types::TOPIC_PHASE1_INTENTS, &broadcast_data).await?;
+            
             info!(
-                "⏱️  [CLOCK] Intent {} has been waiting {} seconds since last update",
-                intent_hash,
-                wait_duration.num_seconds()
+                "✅ [CLOCK] Broadcasted {} intent hashes to all peers via gossipsub",
+                intent_hashes.len()
             );
             
-            // TODO: Trigger NetworkToTarget transaction signing here
-            // This would involve:
-            // 1. Creating a signing request for this intent
-            // 2. Initiating VRF selection for signing nodes
-            // 3. Coordinating the signing process
+            // Also send to self via channel (same pattern as deposit intents)
+            let channel_message = ChannelMessage::Phase1IntentsBroadcast {
+                intent_hashes,
+                target_chain: target_chain.to_string(),
+                round,
+                node_id: self.id.clone(),
+            };
             
-            // For now, just log
-            info!(
-                "✅ [CLOCK] {} intent {} ready for NetworkToTarget processing (UserToVault TX: {})",
-                target_chain.to_uppercase(),
-                intent_hash,
-                tx_ids.user_to_network_tx_id.unwrap()
-            );
+            if let Err(e) = self.message_tx.send(channel_message).await {
+                error!(
+                    "❌ [CLOCK] Failed to send Phase1IntentsBroadcast to self via channel: {}",
+                    e
+                );
+            } else {
+                info!("✅ [CLOCK] Sent Phase1IntentsBroadcast to self via channel");
+            }
         }
         
         Ok(())

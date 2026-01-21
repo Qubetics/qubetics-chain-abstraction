@@ -160,7 +160,18 @@ pub async fn fetch_bitcoin_utxos(address: &str, is_testnet: bool) -> Result<Vec<
     // Prefer custom API if provided: BTC_UTXO_API_BASE=http://host:port
     if let Ok(custom_base) = std::env::var("BTC_UTXO_API_BASE") {
         let base = custom_base.trim_end_matches('/');
-        let url = format!("{base}/api/v1/utxos?address={address}");
+
+        // Detect if it's Blockstream API
+        let is_blockstream = base.contains("blockstream.info");
+
+        let url = if is_blockstream {
+            // Blockstream API format: /api/address/{address}/utxo
+            format!("{base}/address/{address}/utxo")
+        } else {
+            // Custom API format: /api/v1/utxos?address={address}
+            format!("{base}/api/v1/utxos?address={address}")
+        };
+
         tracing::info!("🌐 Using custom UTXO API: {}", url);
         let client = reqwest::Client::new();
         let response = client.get(&url).send().await?;
@@ -178,27 +189,39 @@ pub async fn fetch_bitcoin_utxos(address: &str, is_testnet: bool) -> Result<Vec<
             ));
         }
 
-        let wrapper: CustomApiUtxoResponse = response.json().await?;
-        if wrapper.error {
-            tracing::error!(
-                "❌ Custom API error (status {}): {}",
-                wrapper.status_code,
-                wrapper.message
+        if is_blockstream {
+            // Blockstream returns Esplora format directly as array
+            let utxos: Vec<BitcoinUtxo> = response.json().await?;
+            tracing::info!(
+                "✅ Blockstream API returned {} UTXOs for address {}",
+                utxos.len(),
+                address
             );
-            return Err(anyhow::anyhow!(
-                "Custom API error (status {}): {}",
-                wrapper.status_code,
-                wrapper.message
-            ));
+            return Ok(utxos);
+        } else {
+            // Custom API returns wrapped format
+            let wrapper: CustomApiUtxoResponse = response.json().await?;
+            if wrapper.error {
+                tracing::error!(
+                    "❌ Custom API error (status {}): {}",
+                    wrapper.status_code,
+                    wrapper.message
+                );
+                return Err(anyhow::anyhow!(
+                    "Custom API error (status {}): {}",
+                    wrapper.status_code,
+                    wrapper.message
+                ));
+            }
+
+            tracing::info!(
+                "✅ Custom API returned {} UTXOs for address {}",
+                wrapper.data.len(),
+                address
+            );
+
+            return Ok(wrapper.data);
         }
-
-        tracing::info!(
-            "✅ Custom API returned {} UTXOs for address {}",
-            wrapper.data.len(),
-            address
-        );
-
-        return Ok(wrapper.data);
     }
 
     // Fallback to mempool.space Esplora API

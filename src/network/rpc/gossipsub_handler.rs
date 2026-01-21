@@ -19,9 +19,7 @@ use crate::{
     },
 };
 
-use crate::network::transport::types::{
-    MpcNetworkLayer, VrfDomain, TOPIC_CONSENSUS,
-};
+use crate::network::transport::types::{MpcNetworkLayer, VrfDomain, TOPIC_CONSENSUS};
 
 impl MpcNetworkLayer {
     /// Main gossipsub message handler - delegates to specific message type handlers
@@ -532,8 +530,7 @@ impl MpcNetworkLayer {
                                 )
                                 .await
                             {
-                                Ok(()) => {
-                                }
+                                Ok(()) => {}
                                 Err(e) => {
                                     error!(
                                         "❌ [NETWORK] Failed to store synchronized transaction error: {}",
@@ -554,44 +551,7 @@ impl MpcNetworkLayer {
                     warn!("❌ [NETWORK] No user registry available to store synchronized transaction error");
                 }
             }
-            GossipsubMessage::IntentHashBroadcast {
-                intent_hash,
-                node_id,
-            } => {
-                info!(
-                    "📨 [GOSSIPSUB] Received intent hash broadcast {} from node {}",
-                    intent_hash, node_id
-                );
-            }
-            GossipsubMessage::IntentHash {
-                intent_hash,
-                signer,
-                intent,
-            } => {
-                info!(
-                    "📝 [GOSSIPSUB] Received intent hash {} from {}",
-                    intent_hash, signer
-                );
 
-                if let Some(user_intent_manager) = &self.user_intent_manager {
-                    match hex::decode(&intent_hash) {
-                        Ok(bytes) => {
-                            if let Err(e) = user_intent_manager
-                                .store_intent_hash(bytes, &signer, &intent)
-                                .await
-                            {
-                                warn!("❌ [GOSSIPSUB] Failed to store intent hash: {}", e);
-                            } else {
-                            }
-                        }
-                        Err(e) => {
-                            warn!("❌ [GOSSIPSUB] Invalid intent hash {}: {}", intent_hash, e);
-                        }
-                    }
-                } else {
-                    warn!("❌ [GOSSIPSUB] No user registry available to store intent hash");
-                }
-            }
             GossipsubMessage::DepositIntent {
                 intent,
                 intent_id: _intent_id,
@@ -627,7 +587,10 @@ impl MpcNetworkLayer {
                             .store_intent_hash(intent_hash_bytes, &user_eth_addr, &intent)
                             .await
                         {
-                            warn!("❌ [GOSSIPSUB] Failed to store intent hash {}: {}", intent_hash, e);
+                            warn!(
+                                "❌ [GOSSIPSUB] Failed to store intent hash {}: {}",
+                                intent_hash, e
+                            );
                             return Ok(());
                         }
                     } else {
@@ -643,8 +606,8 @@ impl MpcNetworkLayer {
                 let chain_to_use = &intent.source_chain.to_lowercase();
 
                 // For UserToVault, use user's tweaked secret share
-                let signing_key: Option<k256::Scalar> = self.get_signing_key_for_user(Some(&user_eth_addr))
-                    .await;
+                let signing_key: Option<k256::Scalar> =
+                    self.get_signing_key_for_user(Some(&user_eth_addr)).await;
 
                 if let Some(signing_node) = &mut self.signing_node {
                     let chain_handler: Option<Arc<dyn crate::chain_abstraction::ChainHandler>> =
@@ -670,12 +633,9 @@ impl MpcNetworkLayer {
                                 {
                                     if let Some(user_group_key) = &user.user_group_key {
                                         let affine_point = user_group_key.0;
-                                        let encoded_point =
-                                            k256::EncodedPoint::from(affine_point);
-                                        let compressed_bytes = encoded_point
-                                            .compress()
-                                            .to_bytes()
-                                            .to_vec();
+                                        let encoded_point = k256::EncodedPoint::from(affine_point);
+                                        let compressed_bytes =
+                                            encoded_point.compress().to_bytes().to_vec();
 
                                         if let Some(btc_handler) = handler.as_any_mut().downcast_mut::<crate::chain_abstraction::BitcoinChainHandler>() {
                                             btc_handler.set_group_public_key(compressed_bytes);
@@ -684,7 +644,10 @@ impl MpcNetworkLayer {
                                         warn!("❌ [GOSSIPSUB] User {} has no group key for Bitcoin transaction", user_eth_addr);
                                     }
                                 } else {
-                                    warn!("❌ [GOSSIPSUB] User {} not found for Bitcoin transaction", user_eth_addr);
+                                    warn!(
+                                        "❌ [GOSSIPSUB] User {} not found for Bitcoin transaction",
+                                        user_eth_addr
+                                    );
                                 }
                             } else {
                                 warn!("❌ [GOSSIPSUB] User registry not available for Bitcoin transaction");
@@ -704,25 +667,27 @@ impl MpcNetworkLayer {
                         return Err(anyhow!("Unsupported chain: {}", chain_to_use));
                     };
                     // For UserToVault, use user's derived addresses
-                    let (derived_eth_addr, derived_btc_addr) = if let Some(user_intent_manager) = &self.user_intent_manager {
-                        if let Some(user) =
-                            user_intent_manager.get_user_by_address(&user_eth_addr).await
-                        {
-                            (
-                                user.derived_eth_address.clone(),
-                                user.derived_btc_address.clone(),
-                            )
+                    let (derived_eth_addr, derived_btc_addr) =
+                        if let Some(user_intent_manager) = &self.user_intent_manager {
+                            if let Some(user) = user_intent_manager
+                                .get_user_by_address(&user_eth_addr)
+                                .await
+                            {
+                                (
+                                    user.derived_eth_address.clone(),
+                                    user.derived_btc_address.clone(),
+                                )
+                            } else {
+                                warn!(
+                                    "❌ [GOSSIPSUB] User {} not found in registry",
+                                    user_eth_addr
+                                );
+                                (None, None)
+                            }
                         } else {
-                            warn!(
-                                "❌ [GOSSIPSUB] User {} not found in registry",
-                                user_eth_addr
-                            );
+                            warn!("❌ [GOSSIPSUB] User registry not available");
                             (None, None)
-                        }
-                    } else {
-                        warn!("❌ [GOSSIPSUB] User registry not available");
-                        (None, None)
-                    };
+                        };
 
                     let group_public_key = if let Some(dkg_node) = &self.dkg_node {
                         dkg_node.get_final_public_key().await
@@ -735,11 +700,15 @@ impl MpcNetworkLayer {
                         if let Some(registry) = &self.user_intent_manager {
                             let database = registry.get_database();
                             let liquidity_operator_eth = database
-                                .get_string(crate::database::keys::DKG_LIQUIDITY_OPERATOR_ETH_ADDRESS)
+                                .get_string(
+                                    crate::database::keys::DKG_LIQUIDITY_OPERATOR_ETH_ADDRESS,
+                                )
                                 .ok()
                                 .flatten();
                             let liquidity_operator_btc = database
-                                .get_string(crate::database::keys::DKG_LIQUIDITY_OPERATOR_BTC_ADDRESS)
+                                .get_string(
+                                    crate::database::keys::DKG_LIQUIDITY_OPERATOR_BTC_ADDRESS,
+                                )
                                 .ok()
                                 .flatten();
                             (liquidity_operator_eth, liquidity_operator_btc)
@@ -1042,6 +1011,35 @@ impl MpcNetworkLayer {
                     );
                 }
             }
+            GossipsubMessage::Phase1IntentsBroadcast {
+                intent_hashes,
+                target_chain,
+                round,
+                node_id,
+            } => {
+                info!(
+                    "📥 [GOSSIPSUB] Received Phase1IntentsBroadcast: {} intents for {} chain from {} (round {})",
+                    intent_hashes.len(),
+                    target_chain,
+                    node_id,
+                    round
+                );
+
+                // Forward to channel for processing
+                let channel_message = ChannelMessage::Phase1IntentsBroadcast {
+                    intent_hashes,
+                    target_chain,
+                    round,
+                    node_id,
+                };
+
+                if let Err(e) = self.message_tx.send(channel_message).await {
+                    error!(
+                        "❌ [GOSSIPSUB] Failed to forward Phase1IntentsBroadcast to channel: {}",
+                        e
+                    );
+                }
+            }
             GossipsubMessage::PeerDiscovered {
                 peer,
                 sequence,
@@ -1180,7 +1178,7 @@ impl MpcNetworkLayer {
                     "🔄 [UPGRADE] Peer {} upgrade announcement: {} to version {} (timestamp: {})",
                     peer, phase, target_version, timestamp
                 );
-             } // Upgrade coordination will be handled when orchestrator is integrated
+            } // Upgrade coordination will be handled when orchestrator is integrated
             GossipsubMessage::TransactionBroadcast {
                 sequencer_request_id,
                 blockchain_tx_hash,
@@ -1340,6 +1338,5 @@ impl MpcNetworkLayer {
 
         // Perform periodic health check
         self.channel_health.health_check();
-        
     }
 }

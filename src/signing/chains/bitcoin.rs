@@ -297,7 +297,12 @@ impl SigningNode {
             vrf_service.sync_rounds_before_signing().await?;
             let round = vrf_service.get_next_round().await;
             let _ = vrf_service
-                .perform_node_selection(&available_nodes, crate::vrf::VRF_NODE_SELECTION_COUNT, round, "bitcoin")
+                .perform_node_selection(
+                    &available_nodes,
+                    crate::vrf::VRF_NODE_SELECTION_COUNT,
+                    round,
+                    "bitcoin",
+                )
                 .await;
             info!(
                 "🎲 [SIGNING] Node {} using VRF round {} for Bitcoin transaction signing",

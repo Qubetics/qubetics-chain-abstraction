@@ -46,7 +46,7 @@ pub(crate) fn pow10_dec(n: u32) -> Decimal {
     v
 }
 
-pub(crate) fn convert_src_smallest_to_dst_smallest(
+pub fn convert_src_smallest_to_dst_smallest(
     amount_src_smallest: u128,
     src_chain: &str,
     dst_chain: &str,
@@ -239,11 +239,7 @@ pub async fn fetch_crypto_prices() -> Result<HashMap<String, Decimal>, String> {
 pub(crate) async fn get_transaction_id_for_intent(
     user_intent_manager: &UserIntentManager,
     intent_hash: &[u8],
-) -> (
-    Option<String>,
-    Option<String>,
-    Option<String>,
-) {
+) -> (Option<String>, Option<String>, Option<String>) {
     let intent_hash_hex = hex::encode(intent_hash);
 
     // Fetch any recorded transaction IDs for this intent hash
@@ -334,12 +330,7 @@ pub(crate) async fn wait_for_transaction_result(
             .await
         {
             if let Some(error_msg) = tx_ids.error_message {
-                return (
-                    None,
-                    None,
-                    tx_ids.final_solver_id.clone(),
-                    Some(error_msg),
-                );
+                return (None, None, tx_ids.final_solver_id.clone(), Some(error_msg));
             }
         }
 
@@ -554,74 +545,140 @@ pub fn recover_eth_address_secp(
 
 /// Fetch network address balance from the API
 pub async fn fetch_network_balance(address: &str, blockchain: &str) -> Result<u128, String> {
-    let base_url = std::env::var("BACKEND_API_URL")
-        .unwrap_or_else(|_| "https://stage-testnet4-crypto-api.qubetics.work".to_string());
-    let url = format!(
-        "{}/api/v1/balance/{}?blockchain={}",
-        base_url, address, blockchain
-    );
+    let blockchain_lower = blockchain.to_lowercase();
+    let is_bitcoin = blockchain_lower.contains("btc") || blockchain_lower.contains("bitcoin");
+
     let client = Client::new();
 
-    info!("💰 Fetching network balance from URL: {}", url);
+    if is_bitcoin {
+        // For Bitcoin, use Blockstream testnet3 Esplora API
+        let url = format!("https://blockstream.info/testnet/api/address/{}", address);
+        info!("💰 Fetching Bitcoin balance from Blockstream: {}", url);
 
-    let resp = client.get(&url).send().await.map_err(|e| {
-        error!("Failed to fetch network balance: {}", e);
-        format!("Failed to fetch network balance: {}", e)
-    })?;
-
-    let status = resp.status();
-    debug!("Network balance API response status: {}", status);
-
-    let resp_text = resp.text().await.map_err(|e| {
-        error!("Failed to read network balance response text: {}", e);
-        format!("Failed to read network balance response text: {}", e)
-    })?;
-
-    debug!("Network balance API response body: {}", resp_text);
-
-    if !status.is_success() {
-        error!(
-            "Network balance API returned non-success status {}: {}",
-            status, resp_text
-        );
-        return Err(format!(
-            "Network balance API returned non-success status {}: {}",
-            status, resp_text
-        ));
-    }
-
-    let resp_json: Value = serde_json::from_str(&resp_text).map_err(|e| {
-        error!("Failed to parse network balance response: {}", e);
-        format!("Failed to parse network balance response: {}", e)
-    })?;
-
-    debug!("Network balance API response JSON: {:?}", resp_json);
-
-    if resp_json.get("error").and_then(|v| v.as_bool()) == Some(true) {
-        let msg = resp_json
-            .get("message")
-            .and_then(|v| v.as_str())
-            .unwrap_or("Unknown error");
-        error!("Network balance API error: {}", msg);
-        return Err(format!("Network balance API error: {}", msg));
-    }
-
-    let balance_str = resp_json
-        .get("data")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| {
-            error!("Missing 'data' field in network balance response");
-            "Missing 'data' field in network balance response".to_string()
+        let resp = client.get(&url).send().await.map_err(|e| {
+            error!("Failed to fetch Bitcoin balance from Blockstream: {}", e);
+            format!("Failed to fetch Bitcoin balance: {}", e)
         })?;
 
-    let balance = balance_str.parse::<u128>().map_err(|e| {
-        error!("Failed to parse balance value '{}': {}", balance_str, e);
-        format!("Failed to parse balance value '{}': {}", balance_str, e)
-    })?;
+        let status = resp.status();
+        debug!("Blockstream API response status: {}", status);
 
-    info!(
-        "💰 Network balance for {} on {}: {}",
-        address, blockchain, balance
-    );
-    Ok(balance)
+        let resp_text = resp.text().await.map_err(|e| {
+            error!("Failed to read Blockstream response text: {}", e);
+            format!("Failed to read Blockstream response: {}", e)
+        })?;
+
+        debug!("Blockstream API response body: {}", resp_text);
+
+        if !status.is_success() {
+            error!(
+                "Blockstream API returned non-success status {}: {}",
+                status, resp_text
+            );
+            return Err(format!("Blockstream API error {}: {}", status, resp_text));
+        }
+
+        let resp_json: Value = serde_json::from_str(&resp_text).map_err(|e| {
+            error!("Failed to parse Blockstream response: {}", e);
+            format!("Failed to parse Blockstream response: {}", e)
+        })?;
+
+        debug!("Blockstream API response JSON: {:?}", resp_json);
+
+        // Blockstream returns: { chain_stats: { funded_txo_sum, spent_txo_sum }, ... }
+        // Balance = funded - spent (in satoshis)
+        let chain_stats = resp_json.get("chain_stats").ok_or_else(|| {
+            error!("Missing 'chain_stats' in Blockstream response");
+            "Missing 'chain_stats' in Blockstream response".to_string()
+        })?;
+
+        let funded = chain_stats
+            .get("funded_txo_sum")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as u128;
+
+        let spent = chain_stats
+            .get("spent_txo_sum")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as u128;
+
+        let balance = funded.saturating_sub(spent);
+
+        info!(
+            "💰 Bitcoin balance for {}: {} satoshis (funded: {}, spent: {})",
+            address, balance, funded, spent
+        );
+        Ok(balance)
+    } else {
+        // For Qubetics and other chains, use custom backend API
+        let base_url = std::env::var("BACKEND_API_URL")
+            .unwrap_or_else(|_| "https://dev-solver-crypto-api.qubetics.work".to_string());
+        let url = format!(
+            "{}/api/v1/balance/{}?blockchain={}",
+            base_url, address, blockchain
+        );
+
+        info!("💰 Fetching balance from custom API: {}", url);
+
+        let resp = client.get(&url).send().await.map_err(|e| {
+            error!("Failed to fetch network balance: {}", e);
+            format!("Failed to fetch network balance: {}", e)
+        })?;
+
+        let status = resp.status();
+        debug!("Network balance API response status: {}", status);
+
+        let resp_text = resp.text().await.map_err(|e| {
+            error!("Failed to read network balance response text: {}", e);
+            format!("Failed to read network balance response text: {}", e)
+        })?;
+
+        debug!("Network balance API response body: {}", resp_text);
+
+        if !status.is_success() {
+            error!(
+                "Network balance API returned non-success status {}: {}",
+                status, resp_text
+            );
+            return Err(format!(
+                "Network balance API returned non-success status {}: {}",
+                status, resp_text
+            ));
+        }
+
+        let resp_json: Value = serde_json::from_str(&resp_text).map_err(|e| {
+            error!("Failed to parse network balance response: {}", e);
+            format!("Failed to parse network balance response: {}", e)
+        })?;
+
+        debug!("Network balance API response JSON: {:?}", resp_json);
+
+        if resp_json.get("error").and_then(|v| v.as_bool()) == Some(true) {
+            let msg = resp_json
+                .get("message")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Unknown error");
+            error!("Network balance API error: {}", msg);
+            return Err(format!("Network balance API error: {}", msg));
+        }
+
+        let balance_str = resp_json
+            .get("data")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                error!("Missing 'data' field in network balance response");
+                "Missing 'data' field in network balance response".to_string()
+            })?;
+
+        let balance = balance_str.parse::<u128>().map_err(|e| {
+            error!("Failed to parse balance value '{}': {}", balance_str, e);
+            format!("Failed to parse balance value '{}': {}", balance_str, e)
+        })?;
+
+        info!(
+            "💰 Network balance for {} on {}: {}",
+            address, blockchain, balance
+        );
+        Ok(balance)
+    }
 }

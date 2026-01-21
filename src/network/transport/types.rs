@@ -69,7 +69,7 @@ pub const TOPIC_COMMANDS: &str = "commands";
 pub const TOPIC_VRF_SELECTION: &str = "vrf-selection";
 pub const TOPIC_TRANSACTIONS: &str = "transactions";
 pub const TOPIC_DEPOSIT_INTENTS: &str = "deposit-intents";
-pub const TOPIC_INTENT_HASHES: &str = "intent-hashes";
+pub const TOPIC_PHASE1_INTENTS: &str = "phase1-intents";
 pub const TOPIC_DKG_COMMANDS: &str = "dkg-commands";
 pub const TOPIC_USER_REGISTRATIONS: &str = "user-registrations";
 pub const TOPIC_SOLVER_REWARDS: &str = "solver-rewards";
@@ -94,7 +94,7 @@ pub enum GossipTopic {
     VrfSelection,
     Transactions,
     DepositIntents,
-    IntentHashes,
+    Phase1Intents,
     DkgCommands,
     UserRegistrations,
     SolverRewards,
@@ -119,7 +119,7 @@ impl GossipTopic {
         GossipTopic::VrfSelection,
         GossipTopic::Transactions,
         GossipTopic::DepositIntents,
-        GossipTopic::IntentHashes,
+        GossipTopic::Phase1Intents,
         GossipTopic::DkgCommands,
         GossipTopic::UserRegistrations,
         GossipTopic::SolverRewards,
@@ -144,7 +144,7 @@ impl GossipTopic {
             GossipTopic::VrfSelection => TOPIC_VRF_SELECTION,
             GossipTopic::Transactions => TOPIC_TRANSACTIONS,
             GossipTopic::DepositIntents => TOPIC_DEPOSIT_INTENTS,
-            GossipTopic::IntentHashes => TOPIC_INTENT_HASHES,
+            GossipTopic::Phase1Intents => TOPIC_PHASE1_INTENTS,
             GossipTopic::DkgCommands => TOPIC_DKG_COMMANDS,
             GossipTopic::UserRegistrations => TOPIC_USER_REGISTRATIONS,
             GossipTopic::SolverRewards => TOPIC_SOLVER_REWARDS,

@@ -36,11 +36,7 @@ pub enum ChannelMessage {
         transaction_type: TransactionType,
         amount: u128,
     },
-    IntentHash {
-        intent_hash: Vec<u8>,
-        signer: String,
-        intent: DepositIntent,
-    },
+
     ClaimReward {
         solver_address: String,
         btc_address: Option<String>,
@@ -82,13 +78,16 @@ pub enum ChannelMessage {
         ethereum_address: String,
         node_id: String,
     },
-    IntentHashBroadcast {
-        intent_hash: String,
-        node_id: String,
-    },
+
     RefundInitiation {
         intent_hash: String,
         data: Vec<u8>,
+    },
+    Phase1IntentsBroadcast {
+        intent_hashes: Vec<String>,
+        target_chain: String,
+        round: u64,
+        node_id: String,
     },
     ScheduledDKGStart,
     PeerDiscoveryRetry {
@@ -177,11 +176,7 @@ pub enum GossipsubMessage {
         /// Note: Gossiped DepositIntent is always processed as UserToVault
         amount: u128,
     },
-    IntentHash {
-        intent_hash: String,
-        signer: String,
-        intent: DepositIntent,
-    },
+
     ClaimReward {
         solver_address: String,
         btc_address: Option<String>,
@@ -228,8 +223,11 @@ pub enum GossipsubMessage {
         /// Node that encountered the error
         node_id: String,
     },
-    IntentHashBroadcast {
-        intent_hash: String,
+
+    Phase1IntentsBroadcast {
+        intent_hashes: Vec<String>,
+        target_chain: String,
+        round: u64,
         node_id: String,
     },
     /// Acknowledgment messages for critical message retry mechanism
