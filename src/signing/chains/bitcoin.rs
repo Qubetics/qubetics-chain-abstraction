@@ -43,7 +43,7 @@ impl<'a> BitcoinSigner<'a> {
         chain_handler: &Arc<dyn crate::chain_abstraction::ChainHandler>,
         original_tx: Option<BitcoinTransaction>,
         user_eth_address: Option<String>,
-        intent_hash: Option<String>,
+        intent_hashes: Vec<String>,
         transaction_type: Option<TransactionType>,
         user_tweaked_share: Option<Scalar>,
         solver_address: Option<String>,
@@ -55,7 +55,7 @@ impl<'a> BitcoinSigner<'a> {
                 chain_handler,
                 original_tx,
                 user_eth_address,
-                intent_hash,
+                intent_hashes,
                 transaction_type,
                 user_tweaked_share,
                 solver_address,
@@ -104,7 +104,7 @@ impl SigningNode {
         _chain_handler: &Arc<dyn crate::chain_abstraction::ChainHandler>,
         original_tx: Option<BitcoinTransaction>,
         user_eth_address: Option<String>,
-        intent_hash: Option<String>,
+        intent_hashes: Vec<String>,
         transaction_type: Option<TransactionType>,
         user_tweaked_share: Option<Scalar>,
         solver_address: Option<String>,
@@ -123,8 +123,8 @@ impl SigningNode {
         }
 
         info!(
-            "📝 [SIGNING] Node {} starting Bitcoin transaction signing",
-            self.id
+            "📝 [SIGNING] Node {} starting Bitcoin transaction signing (intent_hashes: {:?})",
+            self.id, intent_hashes
         );
 
         // We require the full tx object to compute correct per-input digests.
@@ -483,19 +483,24 @@ impl SigningNode {
             } else {
                 // This is an intent-based transaction - store in regular pending transactions
                 let mut pending = self.pending.pending_transactions_btc.write().await;
+                let primary_intent_hash = intent_hashes.first().cloned();
                 pending.insert(
                     current_round,
                     (
                         ChainTransaction::Bitcoin(original_tx.clone()),
                         tx_bytes.clone(),
-                        intent_hash.clone(),
+                        primary_intent_hash.clone(),
                         transaction_type.clone(),
                         Some(extras), // <-- critical for aggregation/finalization
                     ),
                 );
+                {
+                    let mut intent_map = self.pending.intent_hashes_by_round.write().await;
+                    intent_map.insert(current_round, intent_hashes.clone());
+                }
                 info!(
                 "💾 [BTC-SIGNING] Node {} stored intent-based BTC transaction for round {} reconstruction (intent_hash: {:?}, inputs={})",
-                self.id, current_round, intent_hash, original_tx.inputs.len()
+                self.id, current_round, primary_intent_hash, original_tx.inputs.len()
             );
             }
         }

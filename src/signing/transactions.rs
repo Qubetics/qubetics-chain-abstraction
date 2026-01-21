@@ -669,7 +669,7 @@ impl SigningNode {
                     );
 
                     self.broadcast_transaction_id(
-                        None,
+                        vec![],
                         tx_id,
                         "reward_txn",
                         retrieved_solver_address.as_deref(),
@@ -749,8 +749,13 @@ impl SigningNode {
                     tx_id, intent_hash, transaction_type_str
                 );
 
-                self.broadcast_transaction_id(Some(intent_hash), tx_id, transaction_type_str, None)
-                    .await;
+                self.broadcast_transaction_id(
+                    vec![intent_hash.to_string()],
+                    tx_id,
+                    transaction_type_str,
+                    None,
+                )
+                .await;
             }
             (None, Some(_)) => {
                 // Handle reward transactions (RewardTxn) - they should always have None for intent_hash
@@ -774,8 +779,13 @@ impl SigningNode {
                             tx_id, solver_addr, round
                         );
 
-                        self.broadcast_transaction_id(None, tx_id, "reward_txn", Some(solver_addr))
-                            .await;
+                        self.broadcast_transaction_id(
+                            vec![],
+                            tx_id,
+                            "reward_txn",
+                            Some(solver_addr),
+                        )
+                        .await;
                     } else if matches!(
                         transaction_type,
                         Some(crate::types::TransactionType::RewardTxn)
@@ -804,7 +814,7 @@ impl SigningNode {
                         );
 
                         self.broadcast_transaction_id(
-                            None,
+                            vec![],
                             tx_id,
                             "withdraw_liquidity",
                             Some(solver_addr),
@@ -826,14 +836,14 @@ impl SigningNode {
 
     pub(crate) async fn broadcast_transaction_id(
         &self,
-        intent_hash: Option<&str>,
+        intent_hashes: Vec<String>,
         tx_id: &str,
         transaction_type: &str,
         solver_address: Option<&str>,
     ) {
         let channel_message_transaction_id_broadcast =
             crate::types::ChannelMessage::TransactionIdBroadcast {
-                intent_hash: intent_hash.map(|s| s.to_string()),
+                intent_hashes,
                 transaction_id: tx_id.to_string(),
                 transaction_type: transaction_type.to_string(),
                 solver_address: solver_address.map(|s| s.to_string()),
@@ -850,25 +860,21 @@ impl SigningNode {
                 e
             );
         } else {
-            match (intent_hash, solver_address) {
-                (Some(hash), _) => {
-                    info!(
-                        "📡 [SIGNING] Broadcasted transaction ID {} for intent {} (type: {}) to other nodes",
-                        tx_id, hash, transaction_type
-                    );
-                }
-                (None, Some(solver)) => {
-                    info!(
-                        "📡 [SIGNING] Broadcasted reward transaction ID {} for solver {} (type: {}) to other nodes",
-                        tx_id, solver, transaction_type
-                    );
-                }
-                (None, None) => {
-                    warn!(
-                        "⚠️ [SIGNING] Broadcasted transaction ID {} without intent hash or solver address (type: {})",
-                        tx_id, transaction_type
-                    );
-                }
+            if !channel_message_transaction_id_broadcast.intent_hashes.is_empty() {
+                info!(
+                    "📡 [SIGNING] Broadcasted transaction ID {} for intents {:?} (type: {}) to other nodes",
+                    tx_id, channel_message_transaction_id_broadcast.intent_hashes, transaction_type
+                );
+            } else if let Some(solver) = solver_address {
+                info!(
+                    "📡 [SIGNING] Broadcasted reward transaction ID {} for solver {} (type: {}) to other nodes",
+                    tx_id, solver, transaction_type
+                );
+            } else {
+                warn!(
+                    "⚠️ [SIGNING] Broadcasted transaction ID {} without intent hashes or solver address (type: {})",
+                    tx_id, transaction_type
+                );
             }
         }
     }

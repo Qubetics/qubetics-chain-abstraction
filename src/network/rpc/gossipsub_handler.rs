@@ -377,7 +377,7 @@ impl MpcNetworkLayer {
                 }
             }
             GossipsubMessage::TransactionIdBroadcast {
-                intent_hash,
+                intent_hashes,
                 transaction_id,
                 transaction_type,
                 solver_address,
@@ -416,19 +416,19 @@ impl MpcNetworkLayer {
                     "✅ [SECURITY] TransactionIdBroadcast authenticated from trusted node {}",
                     node_id
                 );
-                if let Some(hash) = &intent_hash {
-                    info!("🔗 [NETWORK] Intent hash: {}", hash);
+                if !intent_hashes.is_empty() {
+                    info!("🔗 [NETWORK] Intent hashes: {:?}", intent_hashes);
                 } else if let Some(solver) = &solver_address {
                     info!("🧩 [NETWORK] Solver address: {}", solver);
                 } else {
-                    info!("ℹ️ [NETWORK] No intent hash or solver address supplied with transaction ID broadcast");
+                    info!("ℹ️ [NETWORK] No intent hashes or solver address supplied with transaction ID broadcast");
                 }
 
                 // Send acknowledgment for critical message
                 self.send_critical_message_ack(
                     crate::network::rpc::retry_manager::CriticalMessageType::TransactionIdBroadcast,
                     &GossipsubMessage::TransactionIdBroadcast {
-                        intent_hash: intent_hash.clone(),
+                        intent_hashes: intent_hashes.clone(),
                         transaction_id: transaction_id.clone(),
                         transaction_type: transaction_type.clone(),
                         solver_address: solver_address.clone(),
@@ -438,8 +438,8 @@ impl MpcNetworkLayer {
                 .await;
 
                 // Process using shared handler
-                match (intent_hash.as_ref(), solver_address.as_ref()) {
-                    (Some(intent_hash), _) => {
+                if !intent_hashes.is_empty() {
+                    for intent_hash in intent_hashes.iter() {
                         if let Err(e) = self
                             .handle_transaction_id_storage(
                                 intent_hash,
@@ -451,12 +451,12 @@ impl MpcNetworkLayer {
                             .await
                         {
                             error!(
-                                "❌ [NETWORK] Failed to handle transaction ID storage: {}",
-                                e
+                                "❌ [NETWORK] Failed to handle transaction ID storage for intent {}: {}",
+                                intent_hash, e
                             );
                         }
                     }
-                    (None, Some(solver_addr)) => {
+                } else if let Some(solver_addr) = solver_address.as_ref() {
                         let storage_result = match transaction_type.as_str() {
                             "reward_txn" => {
                                 self.handle_reward_transaction_id_storage(
@@ -492,10 +492,10 @@ impl MpcNetworkLayer {
                                 e
                             );
                         }
-                    }
-                    _ => {
-                        warn!("⚠️ [NETWORK] Transaction ID broadcast missing both intent hash and solver address");
-                    }
+                } else {
+                    warn!(
+                        "⚠️ [NETWORK] Transaction ID broadcast missing both intent hashes and solver address"
+                    );
                 }
             }
             GossipsubMessage::TransactionErrorBroadcast {
@@ -774,7 +774,7 @@ impl MpcNetworkLayer {
                                                 &chain_handler,
                                                 Some(btc_tx.clone()),
                                                 Some(user_eth_addr.clone()),
-                                                Some(intent_hash.clone()),
+                                                vec![intent_hash.clone()],
                                                 Some(crate::types::TransactionType::UserToVault),
                                                 signing_key,
                                                 None,
@@ -804,7 +804,7 @@ impl MpcNetworkLayer {
                                                 eth_tx,
                                                 user_tweaked_share,
                                                 Some(user_eth_addr.clone()),
-                                                Some(intent_hash.clone()),
+                                                vec![intent_hash.clone()],
                                                 Some(crate::types::TransactionType::UserToVault),
                                                 None,
                                                 signing_key,
@@ -1474,7 +1474,7 @@ impl MpcNetworkLayer {
                                         &chain_handler,
                                         Some(internal_tx),
                                         None, // user_eth_address
-                                        None, // intent_hash (batch of intents)
+                                        intent_hashes.clone(), // intent hashes (batch)
                                         Some(crate::types::TransactionType::NetworkToTarget),
                                         None, // user_tweaked_share
                                         None, // solver_address

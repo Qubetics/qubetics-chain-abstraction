@@ -299,7 +299,7 @@ impl MpcNetworkLayer {
                     &eth_tx,
                     None,
                     None,
-                    None,
+                    vec![],
                     Some(tx_type),
                     Some(solver_address.to_string()),
                     Some(secret_share),
@@ -426,7 +426,7 @@ impl MpcNetworkLayer {
                 &chain_handler,
                 Some(btc_tx),
                 None,
-                None,
+                vec![],
                 Some(tx_type),
                 None,
                 Some(solver_address.to_string()),
@@ -1402,7 +1402,7 @@ impl MpcNetworkLayer {
                 };
 
                 // 1) Process locally by calling the main gossipsub handler
-                let topic = "intent-batch".to_string();
+                let topic = "intent-batch-broadcast".to_string();
                 let topic_hash = IdentTopic::new(topic.clone());
                 let local_msg = GossipMessage {
                     source: Some(self.local_peer_id),
@@ -2628,7 +2628,7 @@ impl MpcNetworkLayer {
                                                 &chain_handler,
                                                 Some(btc_tx.clone()),
                                                 Some(user_eth_address.clone()),
-                                                Some(intent_hash.clone()),
+                                                vec![intent_hash.clone()],
                                                 Some(transaction_type.clone()),
                                                 signing_key,
                                                 None,
@@ -2788,7 +2788,7 @@ impl MpcNetworkLayer {
                                                 eth_tx,
                                                 user_tweaked_share,
                                                 Some(user_eth_address.clone()),
-                                                Some(intent_hash.clone()),
+                                                vec![intent_hash.clone()],
                                                 Some(transaction_type.clone()),
                                                 None,
                                                 signing_key,
@@ -2960,7 +2960,7 @@ impl MpcNetworkLayer {
             }
 
             ChannelMessage::TransactionIdBroadcast {
-                intent_hash,
+                intent_hashes,
                 transaction_id,
                 transaction_type,
                 solver_address,
@@ -2972,17 +2972,17 @@ impl MpcNetworkLayer {
                 );
                 info!("💳 [NETWORK] Transaction ID: {}", transaction_id);
                 info!("🔄 [NETWORK] Transaction type: {}", transaction_type);
-                if let Some(hash) = &intent_hash {
-                    info!("🔗 [NETWORK] Intent hash: {}", hash);
+                if !intent_hashes.is_empty() {
+                    info!("🔗 [NETWORK] Intent hashes: {:?}", intent_hashes);
                 } else if let Some(solver) = &solver_address {
                     info!("🧩 [NETWORK] Solver address: {}", solver);
                 } else {
-                    info!("ℹ️ [NETWORK] No intent hash or solver address supplied with transaction ID broadcast");
+                    info!("ℹ️ [NETWORK] No intent hashes or solver address supplied with transaction ID broadcast");
                 }
 
                 // Gossip the transaction ID broadcast to other peers immediately so everyone can contribute their share in parallel
                 let gossip_message = GossipsubMessage::TransactionIdBroadcast {
-                    intent_hash: intent_hash.clone(),
+                    intent_hashes: intent_hashes.clone(),
                     transaction_id: transaction_id.clone(),
                     transaction_type: transaction_type.clone(),
                     solver_address: solver_address.clone(),
@@ -3053,30 +3053,32 @@ impl MpcNetworkLayer {
                         e
                     );
                 } else {
-                    match (intent_hash.as_ref(), solver_address.as_ref()) {
-                        (Some(hash), _) => {
-                            info!("📡 [NETWORK] Gossiped transaction ID {} for intent {} (type: {}) to other peers", transaction_id, hash, transaction_type);
-                        }
-                        (None, Some(solver)) => {
-                            info!("📡 [NETWORK] Gossiped reward transaction ID {} for solver {} (type: {}) to other peers", transaction_id, solver, transaction_type);
-                        }
-                        _ => {
-                            info!(
-                                "📡 [NETWORK] Gossiped transaction ID {} (type: {}) to other peers",
-                                transaction_id, transaction_type
-                            );
-                        }
+                    if !intent_hashes.is_empty() {
+                        info!(
+                            "📡 [NETWORK] Gossiped transaction ID {} for intents {:?} (type: {}) to other peers",
+                            transaction_id, intent_hashes, transaction_type
+                        );
+                    } else if let Some(solver) = &solver_address {
+                        info!(
+                            "📡 [NETWORK] Gossiped reward transaction ID {} for solver {} (type: {}) to other peers",
+                            transaction_id, solver, transaction_type
+                        );
+                    } else {
+                        info!(
+                            "📡 [NETWORK] Gossiped transaction ID {} (type: {}) to other peers",
+                            transaction_id, transaction_type
+                        );
                     }
                 }
 
                 // Now process locally using shared handler
-                match (intent_hash.as_ref(), solver_address.as_ref()) {
-                    (Some(intent_hash), _) => {
-                        // Parse node_id to get PeerId for security check
-                        let sender_peer_id = node_id
-                            .parse::<libp2p::PeerId>()
-                            .unwrap_or_else(|_| libp2p::PeerId::random());
+                if !intent_hashes.is_empty() {
+                    // Parse node_id to get PeerId for security check
+                    let sender_peer_id = node_id
+                        .parse::<libp2p::PeerId>()
+                        .unwrap_or_else(|_| libp2p::PeerId::random());
 
+                    for intent_hash in intent_hashes.iter() {
                         if let Err(e) = self
                             .handle_transaction_id_storage(
                                 intent_hash,
@@ -3088,12 +3090,12 @@ impl MpcNetworkLayer {
                             .await
                         {
                             error!(
-                                "❌ [NETWORK] Failed to handle transaction ID storage: {}",
-                                e
+                                "❌ [NETWORK] Failed to handle transaction ID storage for intent {}: {}",
+                                intent_hash, e
                             );
                         }
                     }
-                    (None, Some(solver_addr)) => {
+                } else if let Some(solver_addr) = solver_address.as_ref() {
                         // Handle reward or withdraw liquidity transaction IDs
                         let storage_result = match transaction_type.as_str() {
                             "reward_txn" => {
@@ -3130,10 +3132,8 @@ impl MpcNetworkLayer {
                                 e
                             );
                         }
-                    }
-                    _ => {
-                        warn!("⚠️ [NETWORK] Transaction ID broadcast missing both intent hash and solver address");
-                    }
+                } else {
+                    warn!("⚠️ [NETWORK] Transaction ID broadcast missing both intent hashes and solver address");
                 }
             }
             

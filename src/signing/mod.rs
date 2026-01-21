@@ -4027,6 +4027,31 @@ impl SigningNode {
             }
         };
 
+        // Retrieve intent hashes context for this round (single vs batch vs none)
+        let intent_hashes_for_round = {
+            let map = self.pending.intent_hashes_by_round.read().await;
+            map.get(&round).cloned().unwrap_or_default()
+        };
+
+        if intent_hashes_for_round.len() > 1 {
+            info!(
+                "📦 [SIGNING] Round {} identified as BATCH transaction ({} intents)",
+                round,
+                intent_hashes_for_round.len()
+            );
+        } else if intent_hashes_for_round.len() == 1 {
+            info!(
+                "🧾 [SIGNING] Round {} identified as SINGLE transaction (intent: {})",
+                round,
+                intent_hashes_for_round[0]
+            );
+        } else {
+            info!(
+                "🧾 [SIGNING] Round {} has no intent hashes (solver-only or contract path)",
+                round
+            );
+        }
+
         // Hash the transaction bytes to get the digest
         let mut hasher = sha3::Keccak256::new();
         hasher.update(&tx_bytes);

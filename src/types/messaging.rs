@@ -80,7 +80,10 @@ pub enum ChannelMessage {
         node_id: String,
     },
     TransactionIdBroadcast {
-        intent_hash: Option<String>,
+        /// One or more intent hashes associated with this transaction ID.
+        /// For single transactions, this will contain exactly one hash.
+        /// For batch transactions, this will include all intent hashes in the batch.
+        intent_hashes: Vec<String>,
         transaction_id: String,
         transaction_type: String,
         solver_address: Option<String>,
@@ -210,7 +213,10 @@ pub enum GossipsubMessage {
         node_id: String,
     },
     TransactionIdBroadcast {
-        intent_hash: Option<String>,
+        /// One or more intent hashes associated with this transaction ID.
+        /// For single transactions, this will contain exactly one hash.
+        /// For batch transactions, this will include all intent hashes in the batch.
+        intent_hashes: Vec<String>,
         transaction_id: String,
         /// "user_to_network", "network_to_target", or reward types
         transaction_type: String,

@@ -46,7 +46,7 @@ impl<'a> EthereumSigner<'a> {
         transaction: &EthereumTransaction,
         user_tweaked_share: Option<Scalar>,
         user_eth_address: Option<String>,
-        intent_hash: Option<String>,
+        intent_hashes: Vec<String>,
         transaction_type: Option<TransactionType>,
         solver_address: Option<String>,
         signing_key_override: Option<Scalar>,
@@ -58,7 +58,7 @@ impl<'a> EthereumSigner<'a> {
                 transaction,
                 user_tweaked_share,
                 user_eth_address,
-                intent_hash,
+                intent_hashes,
                 transaction_type,
                 solver_address,
                 signing_key_override,
@@ -317,7 +317,7 @@ impl SigningNode {
         transaction: &EthereumTransaction,
         user_tweaked_share: Option<Scalar>,
         user_eth_address: Option<String>,
-        intent_hash: Option<String>,
+        intent_hashes: Vec<String>,
         transaction_type: Option<TransactionType>,
         solver_address: Option<String>,
         signing_key_override: Option<Scalar>,
@@ -626,20 +626,26 @@ impl SigningNode {
                     data: None,
                     chain_id: transaction.chain_id,
                 });
+            let primary_intent_hash = intent_hashes.first().cloned();
             pending_transactions.insert(
                 round,
                 (
                     chain_tx,
                     tx_bytes.clone(),
-                    intent_hash.clone(),
+                    primary_intent_hash.clone(),
                     transaction_type,
                     None, // No request_id for this path
                     None, // No original_request for this path
                 ),
             );
+            // Track intent hash scope (single intent = vec![hash], none = empty)
+            {
+                let mut intent_map = self.pending.intent_hashes_by_round.write().await;
+                intent_map.insert(round, intent_hashes.clone());
+            }
             info!(
                 "💾 [SIGNING] Node {} stored intent-based transaction for round {} reconstruction (intent_hash: {:?})",
-                self.id, round, intent_hash
+                self.id, round, primary_intent_hash
             );
         }
 
@@ -829,18 +835,24 @@ impl SigningNode {
         }
 
         // Store original transaction for reconstruction after aggregation (contract-specific path)
+        let intent_hashes: Vec<String> = Vec::new(); // contract path has no intent hashes
         let mut pending_transactions = self.pending.pending_transactions.write().await;
+        let primary_intent_hash = intent_hashes.first().cloned();
         pending_transactions.insert(
             round,
             (
                 chain_transaction,
                 tx_bytes.clone(),
-                None, // No intent hash for direct contract calls
+                primary_intent_hash.clone(), // still None for contract calls (intent_hashes likely empty)
                 None,
                 request_id, // Store request_id for retry tracking
                 original_request, // Store original_request for guaranteed retry
             ),
         );
+        {
+            let mut intent_map = self.pending.intent_hashes_by_round.write().await;
+            intent_map.insert(round, intent_hashes.clone());
+        }
         info!(
             "💾 [SIGNING] Node {} stored contract transaction for round {} reconstruction",
             self.id, round
