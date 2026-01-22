@@ -640,7 +640,7 @@ pub async fn create_ethereum_transaction(
     let ethereum_tx = EthereumTransaction {
         to: to_address.to_string(),
         value: amount_to_hex_string(amount),
-        gas_limit: 21000, // Standard ETH transfer gas limit
+        gas_limit: 300000, // Standard ETH transfer gas limit
         gas_price,
         nonce,
         data: None, // No calldata for simple ETH transfer

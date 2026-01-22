@@ -458,41 +458,38 @@ impl MpcNetworkLayer {
                         }
                     }
                 } else if let Some(solver_addr) = solver_address.as_ref() {
-                        let storage_result = match transaction_type.as_str() {
-                            "reward_txn" => {
-                                self.handle_reward_transaction_id_storage(
-                                    solver_addr,
-                                    &transaction_id,
-                                    &transaction_type,
-                                )
-                                .await
-                            }
-                            "withdraw_liquidity" | "withdrawLiquidity" => {
-                                self.handle_withdraw_liquidity_transaction_id_storage(
-                                    solver_addr,
-                                    &transaction_id,
-                                    &transaction_type,
-                                )
-                                .await
-                            }
-                            _ => {
-                                warn!(
-                                    "❌ [NETWORK] Unknown transaction type: {}",
-                                    transaction_type
-                                );
-                                return Err(anyhow!(
-                                    "Unknown transaction type: {}",
-                                    transaction_type
-                                ));
-                            }
-                        };
-
-                        if let Err(e) = storage_result {
-                            error!(
-                                "❌ [NETWORK] Failed to handle transaction ID storage: {}",
-                                e
-                            );
+                    let storage_result = match transaction_type.as_str() {
+                        "reward_txn" => {
+                            self.handle_reward_transaction_id_storage(
+                                solver_addr,
+                                &transaction_id,
+                                &transaction_type,
+                            )
+                            .await
                         }
+                        "withdraw_liquidity" | "withdrawLiquidity" => {
+                            self.handle_withdraw_liquidity_transaction_id_storage(
+                                solver_addr,
+                                &transaction_id,
+                                &transaction_type,
+                            )
+                            .await
+                        }
+                        _ => {
+                            warn!(
+                                "❌ [NETWORK] Unknown transaction type: {}",
+                                transaction_type
+                            );
+                            return Err(anyhow!("Unknown transaction type: {}", transaction_type));
+                        }
+                    };
+
+                    if let Err(e) = storage_result {
+                        error!(
+                            "❌ [NETWORK] Failed to handle transaction ID storage: {}",
+                            e
+                        );
+                    }
                 } else {
                     warn!(
                         "⚠️ [NETWORK] Transaction ID broadcast missing both intent hashes and solver address"
@@ -502,7 +499,7 @@ impl MpcNetworkLayer {
             GossipsubMessage::TransactionErrorBroadcast {
                 intent_hash,
                 error_message,
-                transaction_type,
+                transaction_type: _transaction_type,
                 solver_address,
                 node_id,
             } => {
@@ -540,7 +537,7 @@ impl MpcNetworkLayer {
                                 }
                             }
                         }
-                        (None, Some(solver_addr)) => {
+                        (None, Some(_solver_addr)) => {
                             // Reward transaction error - just log for now
                             // The user_intent_manager might need a method to store reward transaction errors
                         }
@@ -836,7 +833,7 @@ impl MpcNetworkLayer {
                 eth_address,
                 reward_btc,
                 reward_tics,
-                transaction_type,
+                transaction_type: _transaction_type,
             } => {
                 info!(
                     "🎁 [GOSSIPSUB] Processing claim reward received via gossipsub for solver: {}",
@@ -868,7 +865,7 @@ impl MpcNetworkLayer {
                 eth_address,
                 amount_btc,
                 amount_tics,
-                transaction_type,
+                transaction_type: _transaction_type,
             } => {
                 info!(
                     "💧 [GOSSIPSUB] Received withdraw-liquidity request for solver {}",
@@ -1349,22 +1346,21 @@ impl MpcNetworkLayer {
                             change_address
                         );
 
-                        let available_utxos =
-                            match crate::utils::transaction::fetch_bitcoin_utxos(
-                                &change_address,
-                                is_testnet,
-                            )
-                            .await
-                            {
-                                Ok(utxos) => utxos,
-                                Err(e) => {
-                                    warn!("❌ [BTC_BATCH] Failed to fetch UTXOs: {}", e);
-                                    warn!(
+                        let available_utxos = match crate::utils::transaction::fetch_bitcoin_utxos(
+                            &change_address,
+                            is_testnet,
+                        )
+                        .await
+                        {
+                            Ok(utxos) => utxos,
+                            Err(e) => {
+                                warn!("❌ [BTC_BATCH] Failed to fetch UTXOs: {}", e);
+                                warn!(
                                         "⚠️ [BTC_BATCH] Cannot proceed with batch transaction without UTXOs"
                                     );
-                                    return Ok(());
-                                }
-                            };
+                                return Ok(());
+                            }
+                        };
 
                         if available_utxos.is_empty() {
                             warn!(
@@ -1441,8 +1437,8 @@ impl MpcNetworkLayer {
                         // and final-node aggregation logic that single Bitcoin transactions use.
                         if let Some(signing_node) = &mut self.signing_node {
                             use crate::chain_abstraction::{
-                                BitcoinInput, BitcoinOutput, BitcoinTransaction, BitcoinWitnessUtxo,
-                                ChainTransaction,
+                                BitcoinInput, BitcoinOutput, BitcoinTransaction,
+                                BitcoinWitnessUtxo, ChainTransaction,
                             };
 
                             // Map inputs: selected.utxos[i] ↔ unsigned_tx.input[i]
@@ -1489,12 +1485,10 @@ impl MpcNetworkLayer {
                                         .bitcoin_network_label()
                                         .to_string(),
                                 );
-                            let chain_handler: Arc<
-                                dyn crate::chain_abstraction::ChainHandler,
-                            > = Arc::from(handler);
+                            let chain_handler: Arc<dyn crate::chain_abstraction::ChainHandler> =
+                                Arc::from(handler);
 
-                            let chain_tx =
-                                ChainTransaction::Bitcoin(internal_tx.clone());
+                            let chain_tx = ChainTransaction::Bitcoin(internal_tx.clone());
                             let tx_bytes = chain_handler
                                 .create_transaction_bytes(&chain_tx)
                                 .unwrap_or_else(|e| {
@@ -1514,7 +1508,7 @@ impl MpcNetworkLayer {
                                         tx_bytes,
                                         &chain_handler,
                                         Some(internal_tx),
-                                        None, // user_eth_address
+                                        None,                  // user_eth_address
                                         intent_hashes.clone(), // intent hashes (batch)
                                         Some(crate::types::TransactionType::NetworkToTarget),
                                         None, // user_tweaked_share
@@ -1610,44 +1604,59 @@ impl MpcNetworkLayer {
                             // Create and submit an MPC-signed contract call transaction for processBatchIntents.
                             // This mirrors the BTC batch wiring: we push the batch TX into the existing MPC signing flow
                             // and store the full list of intent hashes for the round.
+                            // Use MAIN DKG group key (not vault key) for processBatchIntents.
                             let group_public_key = if let Some(dkg_node) = &self.dkg_node {
-                                dkg_node.get_vault_group_key().await
+                                dkg_node.get_final_public_key().await
                             } else {
                                 None
                             };
 
                             let Some(group_public_key) = group_public_key else {
-                                warn!("❌ [TICS_BATCH] Vault group key not available; cannot create contract call");
+                                warn!("❌ [TICS_BATCH] Main DKG group key not available; cannot create contract call");
                                 return Ok(());
                             };
 
                             // Contract address for IntentManager (processBatchIntents)
-                            let contract_address_env = std::env::var("INTENT_MANAGER_CONTRACT_ADDRESS")
-                                .unwrap_or_else(|_| "0x0000000000000000000000000000000000000000".to_string());
-                            if contract_address_env == "0x0000000000000000000000000000000000000000" {
+                            let contract_address_env =
+                                std::env::var("INTENT_MANAGER_CONTRACT_ADDRESS").unwrap_or_else(
+                                    |_| "0x0000000000000000000000000000000000000000".to_string(),
+                                );
+                            if contract_address_env == "0x0000000000000000000000000000000000000000"
+                            {
                                 warn!("❌ [TICS_BATCH] INTENT_MANAGER_CONTRACT_ADDRESS not configured");
                                 return Ok(());
                             }
 
-                            // Use the vault-derived EVM address as sender
-                            let from_address = crate::utils::get_eth_address_from_group_key(group_public_key);
-                            let chain_id = crate::utils::transaction::get_chain_id_from_name("qubetics").unwrap_or(9029);
+                            // Use the MAIN group-derived EVM address as sender
+                            let from_address =
+                                crate::utils::get_eth_address_from_group_key(group_public_key);
+                            let chain_id =
+                                crate::utils::transaction::get_chain_id_from_name("qubetics")
+                                    .unwrap_or(9029);
 
                             // Estimate gas; abort if it would revert
                             let calldata_hex = format!("0x{}", hex::encode(&calldata));
-                            let estimated_gas = crate::utils::transaction::estimate_gas_for_deposit_intent(
+                            let estimated_gas =
+                                crate::utils::transaction::estimate_gas_for_deposit_intent(
+                                    &from_address,
+                                    &contract_address_env,
+                                    &calldata_hex,
+                                    chain_id,
+                                )
+                                .await
+                                .map_err(|e| {
+                                    anyhow::anyhow!("TICS batch gas estimation failed: {}", e)
+                                })?;
+                            let gas_limit = estimated_gas + (estimated_gas / 10);
+
+                            let nonce = crate::utils::transaction::fetch_ethereum_nonce(
                                 &from_address,
-                                &contract_address_env,
-                                &calldata_hex,
                                 chain_id,
                             )
                             .await
-                            .map_err(|e| anyhow::anyhow!("TICS batch gas estimation failed: {}", e))?;
-                            let gas_limit = estimated_gas + (estimated_gas / 10);
-
-                            let nonce = crate::utils::transaction::fetch_ethereum_nonce(&from_address, chain_id)
-                                .await
-                                .map_err(|e| anyhow::anyhow!("Failed to fetch nonce for {}: {}", from_address, e))?;
+                            .map_err(|e| {
+                                anyhow::anyhow!("Failed to fetch nonce for {}: {}", from_address, e)
+                            })?;
 
                             let gas_price = crate::utils::transaction::get_gas_price_for_chain("qubetics", chain_id)
                                 .await
@@ -1672,32 +1681,35 @@ impl MpcNetworkLayer {
                                     self.node_manager.get_active_nodes().into_iter().collect();
                                 signing_node.set_available_nodes(available_nodes);
 
-                                // Ensure vault group key is available on signing node
-                                signing_node.set_vault_group_key(group_public_key);
+                                // Ensure MAIN group key is available on signing node
+                                signing_node.set_group_public_key(group_public_key);
 
-                                let vault_tweaked_share = if let Some(dkg_node) = &self.dkg_node {
-                                    dkg_node.get_vault_tweaked_secret_share().await
+                                // Use MAIN final secret share for signing (network group key path)
+                                let secret_share = if let Some(dkg_node) = &self.dkg_node {
+                                    dkg_node.get_final_secret_share().await
                                 } else {
                                     None
                                 };
-                                if vault_tweaked_share.is_none() {
-                                    warn!("❌ [TICS_BATCH] Vault tweaked secret share not available; cannot sign contract tx");
+                                if secret_share.is_none() {
+                                    warn!("❌ [TICS_BATCH] Main DKG secret share not available; cannot sign contract tx");
                                     return Ok(());
                                 }
 
                                 let contract_tx_bytes =
                                     crate::utils::transaction::create_transaction_for_signing_contract(&contract_tx);
-                                let contract_chain_handler = signing_node.get_contract_chain_handler().clone();
+                                let contract_chain_handler =
+                                    signing_node.get_contract_chain_handler().clone();
                                 let mut eth_signer = EthereumSigner::new(signing_node);
                                 eth_signer
                                     .sign_contract_message(
                                         contract_tx_bytes,
                                         &contract_chain_handler,
                                         &contract_tx,
-                                        vault_tweaked_share,
                                         None,
+                                        None, // user_eth_address (not applicable)
                                         intent_hashes.clone(),
-                                        vault_tweaked_share,
+                                        // Use the main DKG share as an explicit signing key override.
+                                        secret_share,
                                         None,
                                         None,
                                     )
@@ -1730,7 +1742,7 @@ impl MpcNetworkLayer {
                 sequencer_request_id,
                 blockchain_tx_hash,
                 error,
-                original_request,
+                original_request: _original_request,
             } => {
                 warn!(
                     "❌ [TX_FAILURE] Transaction failed: request_id={}, tx_hash={}, error={}",

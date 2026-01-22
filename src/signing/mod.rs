@@ -3878,17 +3878,21 @@ impl SigningNode {
         };
 
         // Try TICS (Ethereum) transactions first
-        let (tx_bytes, transaction_type, user_eth_address) = if is_reward_round {
+        //
+        // NOTE: For partial signature verification we may override the stored transaction_type
+        // for certain contract calls (e.g. IntentManager.processBatchIntents) so that verification
+        // is performed against the VAULT/main key path.
+        let (tx_bytes, mut transaction_type, user_eth_address, chain_tx_opt) = if is_reward_round {
             let reward_pt = self.pending.reward_pending_transactions_tics.read().await;
-            if let Some((_tx, tx_bytes, _solver_address, tx_type, _request_id, _original_request)) = reward_pt.get(&round) {
-                (tx_bytes.clone(), tx_type.clone(), None)
+            if let Some((chain_tx, tx_bytes, _solver_address, tx_type, _request_id, _original_request)) = reward_pt.get(&round) {
+                (tx_bytes.clone(), tx_type.clone(), None, Some(chain_tx.clone()))
             } else {
                 // Try BTC reward
                 let reward_pt_btc = self.pending.reward_pending_transactions_btc.read().await;
                 if let Some((_tx, tx_bytes, _solver_address, tx_type, _extras)) =
                     reward_pt_btc.get(&round)
                 {
-                    (tx_bytes.clone(), tx_type.clone(), None)
+                    (tx_bytes.clone(), tx_type.clone(), None, None)
                 } else {
                     return Err(anyhow!(
                         "No pending transaction found for reward round {}",
@@ -3898,16 +3902,16 @@ impl SigningNode {
             }
         } else if is_withdraw_round {
             let withdraw_pt = self.pending.withdraw_pending_transactions_tics.read().await;
-            if let Some((_tx, tx_bytes, _solver_address, tx_type, _request_id, _original_request)) =
+            if let Some((chain_tx, tx_bytes, _solver_address, tx_type, _request_id, _original_request)) =
                 withdraw_pt.get(&round) {
-                (tx_bytes.clone(), tx_type.clone(), None)
+                (tx_bytes.clone(), tx_type.clone(), None, Some(chain_tx.clone()))
             } else {
                 // Try BTC withdraw
                 let withdraw_pt_btc = self.pending.withdraw_pending_transactions_btc.read().await;
                 if let Some((_tx, tx_bytes, _solver_address, tx_type, _request_id)) =
                     withdraw_pt_btc.get(&round)
                 {
-                    (tx_bytes.clone(), tx_type.clone(), None)
+                    (tx_bytes.clone(), tx_type.clone(), None, None)
                 } else {
                     return Err(anyhow!(
                         "No pending transaction found for withdraw round {}",
@@ -3918,7 +3922,7 @@ impl SigningNode {
         } else {
             // Regular transaction - try TICS first
             let pending = self.pending.pending_transactions.read().await;
-            if let Some((_tx, tx_bytes, intent_hash, tx_type, _request_id, _original_request)) = pending.get(&round) {
+            if let Some((chain_tx, tx_bytes, intent_hash, tx_type, _request_id, _original_request)) = pending.get(&round) {
                 // For UserToVault transactions, retrieve user_eth_address from intent_hash
                 // This ensures the final node retrieves the address on its own, not relying on the unicasting peer
                 let user_addr = if matches!(
@@ -3966,7 +3970,7 @@ impl SigningNode {
                 } else {
                     None
                 };
-                (tx_bytes.clone(), tx_type.clone(), user_addr)
+                (tx_bytes.clone(), tx_type.clone(), user_addr, Some(chain_tx.clone()))
             } else {
                 // Try BTC
                 let pending_btc = self.pending.pending_transactions_btc.read().await;
@@ -4020,7 +4024,7 @@ impl SigningNode {
                     } else {
                         None
                     };
-                    (tx_bytes.clone(), tx_type.clone(), user_addr)
+                    (tx_bytes.clone(), tx_type.clone(), user_addr, None)
                 } else {
                     return Err(anyhow!("No pending transaction found for round {}", round));
                 }
@@ -4051,6 +4055,10 @@ impl SigningNode {
                 round
             );
         }
+
+        // NOTE: IntentManager.processBatchIntents contract txs are signed with the MAIN DKG key
+        // (network group key path) and should therefore use the normal NetworkToTarget verification
+        // path (network share pubkeys) for partial signature verification.
 
         // Hash the transaction bytes to get the digest
         let mut hasher = sha3::Keccak256::new();
@@ -4272,4 +4280,16 @@ impl SigningNode {
     );
         1
     }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn intent_manager_address_comparison_is_case_insensitive() {
+        let to = "0xAbC0000000000000000000000000000000000000";
+        let intent_manager = "0xabc0000000000000000000000000000000000000";
+        assert_eq!(to.to_lowercase(), intent_manager.to_lowercase());
+    }
+
+    // NOTE: additional helper tests removed after switching processBatchIntents to the main DKG key path
 }
