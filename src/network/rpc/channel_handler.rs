@@ -2221,6 +2221,31 @@ impl MpcNetworkLayer {
                     calculated_hash
                 };
 
+                // CRITICAL: Store the intent hash in the database
+                // This ensures the HTTP-receiving node has the intent stored locally
+                // (Gossipsub-receiving nodes store it via GossipsubMessage::DepositIntent handler)
+                if let Some(user_intent_manager) = &self.user_intent_manager {
+                    if let Ok(intent_hash_bytes) = hex::decode(&intent_hash) {
+                        if let Err(e) = user_intent_manager
+                            .store_intent_hash(intent_hash_bytes, &user_eth_address, &intent)
+                            .await
+                        {
+                            error!(
+                                "❌ [LOCAL] Failed to store intent hash {}: {}",
+                                intent_hash, e
+                            );
+                            return Ok(());
+                        }
+                        info!("✅ [LOCAL] Stored intent hash {} in database", intent_hash);
+                    } else {
+                        error!("❌ [LOCAL] Invalid intent hash format: {}", intent_hash);
+                        return Ok(());
+                    }
+                } else {
+                    error!("❌ [LOCAL] User intent manager not available to store intent");
+                    return Ok(());
+                }
+
                 // Prepare unsigned transaction for on-chain deposit intent recording
                 // self.prepare_deposit_intent_tx(&intent, &intent_hash).await;
 
@@ -3005,6 +3030,57 @@ impl MpcNetworkLayer {
                 // Now process locally using shared handler
                 match (intent_hash.as_ref(), solver_address.as_ref()) {
                     (Some(intent_hash), _) => {
+                        // Check if this is a batch transaction (intent_hash starts with "batch-")
+                        if intent_hash.starts_with("batch-") {
+                            // This is a batch transaction - update all intents in the batch
+                            info!("📦 [BATCH] Local processing of TXID {} for batch {}", transaction_id, intent_hash);
+                            
+                            if let Some(user_intent_manager) = &self.user_intent_manager {
+                                let batch_key = format!("batch_intents:{}", intent_hash);
+                                match user_intent_manager.get_database().get_string::<Vec<String>>(&batch_key) {
+                                    Ok(Some(intent_hashes_in_batch)) => {
+                                        info!("✅ [BATCH] Found {} intents in batch {} metadata", intent_hashes_in_batch.len(), intent_hash);
+                                        
+                                        for individual_intent_hash in &intent_hashes_in_batch {
+                                            match user_intent_manager
+                                                .store_network_to_target_tx_id(
+                                                    individual_intent_hash,
+                                                    &transaction_id,
+                                                    Some(&node_id),
+                                                )
+                                                .await
+                                            {
+                                                Ok(()) => {
+                                                    info!(
+                                                        "✅ [BATCH] Updated network_to_target_tx_id for intent {} (batch {})",
+                                                        individual_intent_hash, intent_hash
+                                                    );
+                                                }
+                                                Err(e) => {
+                                                    error!(
+                                                        "❌ [BATCH] Failed to update network_to_target_tx_id for intent {}: {}",
+                                                        individual_intent_hash, e
+                                                    );
+                                                }
+                                            }
+                                        }
+                                        
+                                        // Clean up batch metadata after processing
+                                        let _ = user_intent_manager.get_database().delete(&batch_key);
+                                        info!("🧹 [BATCH] Cleaned up batch metadata for {}", intent_hash);
+                                    }
+                                    Ok(None) => {
+                                        warn!("⚠️ [BATCH] No metadata found for batch {}", intent_hash);
+                                    }
+                                    Err(e) => {
+                                        error!("❌ [BATCH] Failed to retrieve batch metadata for {}: {}", intent_hash, e);
+                                    }
+                                }
+                            }
+                            
+                            return Ok(());
+                        }
+                        
                         // Parse node_id to get PeerId for security check
                         let sender_peer_id = node_id
                             .parse::<libp2p::PeerId>()
@@ -3359,6 +3435,23 @@ impl MpcNetworkLayer {
                         
                         // Create batch intent hash identifier (for tracking)
                         let batch_intent_hash = format!("batch-{}-{}", target_chain, round);
+                        
+                        // Store batch metadata: map batch_intent_hash -> list of individual intent_hashes
+                        // This allows us to update all intent TXIDs when the batch TXID is broadcast
+                        let intent_hashes_in_batch: Vec<String> = intent_data.iter()
+                            .map(|(hash, _, _)| hash.clone())
+                            .collect();
+                        
+                        if let Some(user_intent_manager) = &self.user_intent_manager {
+                            let batch_key = format!("batch_intents:{}", batch_intent_hash);
+                            if let Err(e) = user_intent_manager.get_database()
+                                .put_string(&batch_key, &intent_hashes_in_batch)
+                            {
+                                error!("❌ [BATCH] Failed to store batch metadata for {}: {}", batch_intent_hash, e);
+                            } else {
+                                info!("💾 [BATCH] Stored {} intent hashes for batch {}", intent_hashes_in_batch.len(), batch_intent_hash);
+                            }
+                        }
                         
                         use crate::signing::chains::BitcoinSigner;
                         let mut btc_signer = BitcoinSigner::new(signing_node);

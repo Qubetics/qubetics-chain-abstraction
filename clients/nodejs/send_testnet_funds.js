@@ -13,13 +13,15 @@ const api = axios.create({
     })
 });
 
-// Configuration
+// Configuration for Bitcoin Testnet3
 const CONFIG = {
-    network: bitcoin.networks.testnet,
-    targetAddress: 'mjckTtE8E5pdwma1a2aBbPAPzjVM5Grx65',
-    privateKeyWIF: 'cScjg3oChv5iK4xuxUc8n4nGMQBTouNtmbhsQF7qjFcahyLjGZ13',
-    rpcEndpoint: 'https://mempool.space/testnet4/api',
-    amountPerTx: 1500, // satoshis
+    network: bitcoin.networks.testnet, // testnet3 network
+    targetAddress: 'mumB8xGqxM4WqWwBfjXWTHkCbw5w1WnGv3',
+    privateKeyWIF: 'cSQR4rCmfeUrwFu6apsMXY3T9jeYYmB16AKZ1dz5zoGRpdocB1P3',
+    // NOTE: mempool.space's JSON API for Bitcoin testnet is under `/testnet/api`.
+    // The `/testnet3` path may serve HTML (the explorer UI), which breaks UTXO fetching.
+    rpcEndpoint: 'https://mempool.space/testnet/api',
+    amountPerTx: 2000, // satoshis
     numberOfTx: 10,
     delayBetweenTx: 2000 // 2 seconds delay between transactions
 };
@@ -29,7 +31,8 @@ const CONFIG = {
  */
 async function getUTXOs(address) {
     try {
-        const response = await api.get(`${CONFIG.rpcEndpoint}/address/${address}/utxo`, {
+        const url = `${CONFIG.rpcEndpoint}/address/${address}/utxo`;
+        const response = await api.get(url, {
             headers: { 'Accept': 'application/json' }
         });
         const utxos = response.data;
@@ -41,8 +44,18 @@ async function getUTXOs(address) {
             console.log(`   DEBUG: Response sample: ${JSON.stringify(utxos).substring(0, 200)}`);
         }
 
-        // Validate response - sometimes returns HTML for empty addresses
+        // Validate response - sometimes returns HTML (wrong endpoint / UI)
         if (!Array.isArray(utxos)) {
+            // Fallback: try the alternate mempool testnet API base once
+            if (CONFIG.rpcEndpoint.includes('/testnet3/api')) {
+                const fallbackBase = 'https://mempool.space/testnet/api';
+                const fallbackUrl = `${fallbackBase}/address/${address}/utxo`;
+                console.log(`   DEBUG: Non-JSON response from ${url}. Retrying via ${fallbackUrl}`);
+                const retry = await api.get(fallbackUrl, {
+                    headers: { 'Accept': 'application/json' }
+                });
+                if (Array.isArray(retry.data)) return retry.data;
+            }
             return [];
         }
 
@@ -145,7 +158,7 @@ async function sendTransaction(keyPair, fromAddress, toAddress, amount, utxos) {
  * Main function to send funds multiple times
  */
 async function main() {
-    console.log('🚀 Starting Bitcoin Testnet4 Fund Transfer Script\n');
+    console.log('🚀 Starting Bitcoin Testnet3 Fund Transfer Script\n');
     console.log(`Target Address: ${CONFIG.targetAddress}`);
     console.log(`Amount per transaction: ${CONFIG.amountPerTx} satoshis`);
     console.log(`Number of transactions: ${CONFIG.numberOfTx}`);

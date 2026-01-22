@@ -437,6 +437,72 @@ impl MpcNetworkLayer {
                 )
                 .await;
 
+                // Check if this is a batch transaction (intent_hash starts with "batch-")
+                if let Some(ref ih) = intent_hash {
+                    if ih.starts_with("batch-") {
+                        // This is a batch transaction - update all intents in the batch
+                        info!(
+                            "📦 [BATCH] Received TXID {} for batch {}",
+                            transaction_id, ih
+                        );
+
+                        if let Some(user_intent_manager) = &self.user_intent_manager {
+                            let batch_key = format!("batch_intents:{}", ih);
+                            match user_intent_manager
+                                .get_database()
+                                .get_string::<Vec<String>>(&batch_key)
+                            {
+                                Ok(Some(intent_hashes_in_batch)) => {
+                                    info!(
+                                        "✅ [BATCH] Found {} intents in batch {} metadata",
+                                        intent_hashes_in_batch.len(),
+                                        ih
+                                    );
+
+                                    for individual_intent_hash in &intent_hashes_in_batch {
+                                        match user_intent_manager
+                                            .store_network_to_target_tx_id(
+                                                individual_intent_hash,
+                                                &transaction_id,
+                                                Some(&node_id),
+                                            )
+                                            .await
+                                        {
+                                            Ok(()) => {
+                                                info!(
+                                                    "✅ [BATCH] Updated network_to_target_tx_id for intent {} (batch {})",
+                                                    individual_intent_hash, ih
+                                                );
+                                            }
+                                            Err(e) => {
+                                                error!(
+                                                    "❌ [BATCH] Failed to update network_to_target_tx_id for intent {}: {}",
+                                                    individual_intent_hash, e
+                                                );
+                                            }
+                                        }
+                                    }
+
+                                    // Clean up batch metadata after processing
+                                    let _ = user_intent_manager.get_database().delete(&batch_key);
+                                    info!("🧹 [BATCH] Cleaned up batch metadata for {}", ih);
+                                }
+                                Ok(None) => {
+                                    warn!("⚠️ [BATCH] No metadata found for batch {}", ih);
+                                }
+                                Err(e) => {
+                                    error!(
+                                        "❌ [BATCH] Failed to retrieve batch metadata for {}: {}",
+                                        ih, e
+                                    );
+                                }
+                            }
+                        }
+
+                        return Ok(());
+                    }
+                }
+
                 // Process using shared handler
                 match (intent_hash.as_ref(), solver_address.as_ref()) {
                     (Some(intent_hash), _) => {
