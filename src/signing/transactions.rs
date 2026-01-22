@@ -233,12 +233,6 @@ impl SigningNode {
                         );
                         return;
                     }
-                    Some(crate::types::TransactionType::AddLiquidity) => {
-                        error!(
-                            "❌ [SIGNING] AddLiquidity transaction type found with intent_hash - this flow is not supported."
-                        );
-                        return;
-                    }
                     Some(crate::types::TransactionType::RewardTxn) => {
                         // Reward transactions should never have an intent_hash
                         error!(
@@ -718,12 +712,6 @@ impl SigningNode {
                         // Withdraw liquidity transactions should never have an intent_hash
                         error!(
                             "❌ [SIGNING] WithdrawLiquidity transaction type found with intent_hash - this is invalid."
-                        );
-                        return;
-                    }
-                    Some(crate::types::TransactionType::AddLiquidity) => {
-                        error!(
-                            "❌ [SIGNING] AddLiquidity transaction type found with intent_hash - this flow is not supported."
                         );
                         return;
                     }

@@ -307,28 +307,6 @@ impl SigningNode {
                     ))
                 }
             }
-            Some(TransactionType::AddLiquidity) => {
-                // AddLiquidity uses vault group key
-                let vault_key = if let Some(vault_key) = self.key_store.get_vault_group_key() {
-                    Some(vault_key)
-                } else if let Some(database) = &self.database {
-                    match database.get_string::<SerializablePoint>(keys::DKG_VAULT_GROUP_KEY) {
-                        Ok(Some(serialized)) => Some(serialized.0.into()),
-                        _ => None,
-                    }
-                } else {
-                    None
-                };
-
-                if let Some(vault_key) = vault_key {
-                    let encoded_point = k256::EncodedPoint::from(vault_key.to_affine());
-                    Ok(encoded_point.compress().to_bytes().to_vec())
-                } else {
-                    Err(anyhow!(
-                        "Vault group public key not available for AddLiquidity - ensure vault key is set"
-                    ))
-                }
-            }
             Some(TransactionType::Refund) => {
                 // Refund uses network group key (same as NetworkToTarget)
                 let group_key = if let Some(key) = self.key_store.get_group_public_key() {
@@ -2985,7 +2963,6 @@ impl SigningNode {
                 "Refund" => Some(crate::types::TransactionType::Refund),
                 "WithdrawLiquidity" => Some(crate::types::TransactionType::WithdrawLiquidity),
                 "RewardTxn" => Some(crate::types::TransactionType::RewardTxn),
-                "AddLiquidity" => Some(crate::types::TransactionType::AddLiquidity),
                 _ => None,
             }
         });
@@ -3417,7 +3394,6 @@ impl SigningNode {
             Some(crate::types::TransactionType::UserToVault) => "user-share",
             Some(crate::types::TransactionType::NetworkToTarget) => "network-share",
             Some(crate::types::TransactionType::Refund) => "network-share", // Refund uses network share (same as NetworkToTarget)
-            Some(crate::types::TransactionType::AddLiquidity) => "vault-share",
             Some(crate::types::TransactionType::RewardTxn) => "network-share",
             Some(crate::types::TransactionType::WithdrawLiquidity) => "network-share",
             None => "vault-share",
@@ -3837,7 +3813,6 @@ impl SigningNode {
             Some(crate::types::TransactionType::UserToVault) => "user-share",
             Some(crate::types::TransactionType::NetworkToTarget) => "network-share",
             Some(crate::types::TransactionType::Refund) => "network-share", // Refund uses network share (same as NetworkToTarget)
-            Some(crate::types::TransactionType::AddLiquidity) => "vault-share",
             Some(crate::types::TransactionType::RewardTxn) => "network-share",
             Some(crate::types::TransactionType::WithdrawLiquidity) => "network-share",
             None => "vault-share",
@@ -4120,7 +4095,6 @@ impl SigningNode {
         // Mapping:
         // - UserToVault → per-node-user-share PARTIAL pubkey verification
         // - NetworkToTarget → per-node-network-share PARTIAL pubkey verification
-        // - AddLiquidity → per-node-vault-share PARTIAL pubkey verification
         // - RewardTxn/WithdrawLiquidity → per-node-network-share PARTIAL pubkey verification
         // Works for both ETH/TICS and BTC transactions
         match transaction_type {
@@ -4193,18 +4167,6 @@ impl SigningNode {
                     .ok_or_else(|| {
                         anyhow!(
                             "Network share pubkey not found for peer {} (NetworkToTarget/Refund transaction)",
-                            peer_id
-                        )
-                    })
-            }
-            Some(crate::types::TransactionType::AddLiquidity) => {
-                // AddLiquidity → per-node-vault-share pubkey
-                dkg_storage
-                    .get_vault_share_pubkey(peer_id)
-                    .await?
-                    .ok_or_else(|| {
-                        anyhow!(
-                            "Vault share pubkey not found for peer {} (AddLiquidity transaction)",
                             peer_id
                         )
                     })

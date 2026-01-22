@@ -211,21 +211,6 @@ impl KeyStore {
                     ))
                 }
             }
-            Some(TransactionType::AddLiquidity) => {
-                // AddLiquidity uses vault group key
-                if let Some(vault_key) = self.vault_group_key {
-                    let affine_point = vault_key.to_affine();
-                    let encoded_point = EncodedPoint::from(affine_point);
-                    let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
-
-                    info!("🔑 [SIGNING] AddLiquidity: Using vault group public key");
-                    Ok(compressed_bytes)
-                } else {
-                    Err(anyhow!(
-                        "Vault group public key not available for AddLiquidity transaction - ensure vault key is set"
-                    ))
-                }
-            }
             None => {
                 if let Some(group_key) = self.group_public_key {
                     let affine_point = group_key.to_affine();

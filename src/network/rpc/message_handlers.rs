@@ -20,7 +20,6 @@ impl MpcNetworkLayer {
             "network_to_target" => Ok(TransactionType::NetworkToTarget),
             "reward_txn" => Ok(TransactionType::RewardTxn),
             "withdraw_liquidity" | "withdrawLiquidity" => Ok(TransactionType::WithdrawLiquidity),
-            "add_liquidity" | "addLiquidity" => Ok(TransactionType::AddLiquidity),
             "refund" => Ok(TransactionType::Refund),
             _ => Err(anyhow::anyhow!("Unknown transaction type: {}", tx_type_str)),
         }
@@ -406,20 +405,6 @@ impl MpcNetworkLayer {
                             transaction_id, solver_address, network
                         );
                     } else {
-                        if let Err(e) = user_intent_manager
-                            .set_solver_add_liquidity_txn_hash(
-                                solver_address,
-                                network,
-                                transaction_id.to_string(),
-                            )
-                            .await
-                        {
-                            warn!(
-                                "⚠️ [NETWORK] Failed to store add-liquidity txn hash for solver {}: {}",
-                                solver_address, e
-                            );
-                        }
-
                         // Update claimed amounts and reduce rewards
                         if let Some(amount) = self
                             .update_reward_claims(solver_address, network, transaction_id)

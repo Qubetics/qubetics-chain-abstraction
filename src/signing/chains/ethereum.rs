@@ -1024,11 +1024,6 @@ impl SigningNode {
                         info!("🔢 [SIGNING] WithdrawLiquidity transaction: fetching nonce {} from network group address {}", nonce, group_address);
                         group_address
                     }
-                    Some(crate::types::TransactionType::AddLiquidity) => {
-                        return Err(anyhow!(
-                            "AddLiquidity transactions are not supported in the Ethereum signing path"
-                        ));
-                    }
                     None => {
                         if let Some(user_addr) = &user_eth_address {
                             if let Some(user_intent_manager) = &self.user_intent_manager {

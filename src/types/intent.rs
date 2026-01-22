@@ -6,7 +6,6 @@ pub enum TransactionType {
     NetworkToTarget,
     RewardTxn,
     WithdrawLiquidity,
-    AddLiquidity,
     Refund,
 }
 

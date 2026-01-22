@@ -165,26 +165,6 @@ impl MpcNetworkLayer {
 
     // Contract call helpers for user-to-vault have been removed; contract execution is skipped for that flow.
 
-    /// Execute solver add-liquidity operation directly (sequencer removed)
-    pub(crate) async fn submit_solver_add_liquidity_to_sequencer(
-        &mut self,
-        solver_address: &str,
-        solver_id: &str,
-        asset_chain_name: &str,
-        amount: u128,
-        request_id: &str,
-    ) -> Result<()> {
-        // Execute directly - sequencer removed
-        self.submit_solver_add_liquidity_contract_update(
-            solver_address,
-            solver_id,
-            asset_chain_name,
-            amount,
-            None, // No request_id
-            None, // No original_request
-        )
-        .await
-    }
 
     // ----------------------------------------------------------------------------
     // Network transaction helper functions (sequencer removed, will be replaced with pool approach)

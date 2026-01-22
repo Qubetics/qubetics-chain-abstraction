@@ -74,7 +74,6 @@ pub const TOPIC_DKG_COMMANDS: &str = "dkg-commands";
 pub const TOPIC_USER_REGISTRATIONS: &str = "user-registrations";
 pub const TOPIC_SOLVER_REWARDS: &str = "solver-rewards";
 pub const TOPIC_CLAIM_REWARDS: &str = "claim-rewards";
-pub const TOPIC_ADD_LIQUIDITY: &str = "add-liquidity";
 pub const TOPIC_WITHDRAW_LIQUIDITY: &str = "withdraw-liquidity";
 pub const TOPIC_TRANSACTION_ID_SYNC: &str = "transaction-id-sync";
 pub const TOPIC_CONSENSUS_RESULT: &str = "consensus-result";
@@ -100,7 +99,6 @@ pub enum GossipTopic {
     UserRegistrations,
     SolverRewards,
     ClaimRewards,
-    AddLiquidity,
     WithdrawLiquidity,
     TransactionIdSync,
     ConsensusResult,
@@ -125,7 +123,6 @@ impl GossipTopic {
         GossipTopic::UserRegistrations,
         GossipTopic::SolverRewards,
         GossipTopic::ClaimRewards,
-        GossipTopic::AddLiquidity,
         GossipTopic::WithdrawLiquidity,
         GossipTopic::TransactionIdSync,
         GossipTopic::ConsensusResult,
@@ -150,7 +147,6 @@ impl GossipTopic {
             GossipTopic::UserRegistrations => TOPIC_USER_REGISTRATIONS,
             GossipTopic::SolverRewards => TOPIC_SOLVER_REWARDS,
             GossipTopic::ClaimRewards => TOPIC_CLAIM_REWARDS,
-            GossipTopic::AddLiquidity => TOPIC_ADD_LIQUIDITY,
             GossipTopic::WithdrawLiquidity => TOPIC_WITHDRAW_LIQUIDITY,
             GossipTopic::TransactionIdSync => TOPIC_TRANSACTION_ID_SYNC,
             GossipTopic::ConsensusResult => TOPIC_CONSENSUS_RESULT,

@@ -17,7 +17,7 @@ use crate::{
 use super::{
     errors::RpcError,
     handlers::{
-        handle_add_liquidity, handle_claim_reward, handle_get_dkg_status,
+        handle_claim_reward, handle_get_dkg_status,
         handle_get_network_addresses, handle_get_node_id, handle_get_node_info,
         handle_get_reward_solver, handle_get_solver_liquidity, handle_get_status,
         handle_get_uptime, handle_get_user_info, handle_heartbeat, handle_log_partial_pubkeys,
@@ -31,7 +31,7 @@ use super::{
     },
 };
 use crate::types::rpc_server::{
-    AddLiquidityRequest, ClaimRewardRequest, GetRewardSolverRequest, RequestContext,
+    ClaimRewardRequest, GetRewardSolverRequest, RequestContext,
     SolverLiquidityRequest, UserMpcDepositRequest, UserMpcDepositVerifyResponse,
     UserRegistrationRequest, WithdrawLiquidityRequest,
 };
@@ -171,16 +171,6 @@ pub async fn start_http_server(
         .and(with_auth())
         .and_then(handle_withdraw_liquidity);
 
-    let add_liquidity = warp::path("add_liquidity")
-        .and(warp::post())
-        .and(with_rate_limit(rate_limiter.clone()))
-        .and(limited_json_body::<AddLiquidityRequest>())
-        .and(with_user_intent_manager(user_intent_manager.clone()))
-        .and(with_message_tx(message_tx.clone()))
-        .and(with_dkg_storage(dkg_storage.clone()))
-        .and(with_auth())
-        .and_then(handle_add_liquidity);
-
     let get_user_info = warp::path("user_info")
         .and(warp::path::param())
         .and(warp::get())
@@ -284,7 +274,6 @@ pub async fn start_http_server(
         .or(get_solver_liquidity)
         .or(claim_reward)
         .or(withdraw_liquidity)
-        .or(add_liquidity)
         .or(heartbeat)
         .or(uptime)
         .or(log_partial_pubkeys)

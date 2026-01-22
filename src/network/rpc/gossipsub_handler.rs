@@ -945,69 +945,6 @@ impl MpcNetworkLayer {
                     );
                 }
             }
-            GossipsubMessage::AddLiquidity {
-                solver_address,
-                solver_id,
-                amount_btc,
-                amount_tics,
-                request_id,
-            } => {
-                info!(
-                    "💧 [GOSSIPSUB] Received add-liquidity broadcast for solver {} (solver_id: {})",
-                    solver_address, solver_id
-                );
-                info!(
-                    "💧 [GOSSIPSUB] Amounts - BTC: {:?}, TICS: {:?}",
-                    amount_btc, amount_tics
-                );
-                // 1) Submit / relay the add-liquidity contract call on this node (if applicable)
-                self.handle_add_liquidity_contract_calls(
-                    &solver_address,
-                    &solver_id,
-                    &amount_btc,
-                    &amount_tics,
-                    &request_id,
-                )
-                .await?;
-
-                // 2) Apply the liquidity increase locally based on the requested amount.
-                if let Some(signing_node) = &self.signing_node {
-                    let delta_btc = amount_btc
-                        .as_ref()
-                        .and_then(|v| ethers::types::U256::from_dec_str(v).ok());
-                    let delta_tics = amount_tics
-                        .as_ref()
-                        .and_then(|v| ethers::types::U256::from_dec_str(v).ok());
-                    match signing_node
-                        .apply_liquidity_delta(
-                            &solver_address,
-                            Some(&solver_id),
-                            delta_btc,
-                            delta_tics,
-                            true,
-                        )
-                        .await
-                    {
-                        Ok(()) => {
-                            info!(
-                                "✅ [GOSSIPSUB] Applied local liquidity add for {}",
-                                solver_address
-                            );
-                        }
-                        Err(e) => {
-                            warn!(
-                                "⚠️ [GOSSIPSUB] Failed to apply local liquidity add for {}: {}",
-                                solver_address, e
-                            );
-                        }
-                    }
-                } else {
-                    warn!(
-                        "⚠️ [GOSSIPSUB] Signing node unavailable; cannot apply local liquidity add for {}",
-                        solver_address
-                    );
-                }
-            }
             GossipsubMessage::PeerDiscovered {
                 peer,
                 sequence,

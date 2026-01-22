@@ -207,25 +207,6 @@ pub struct WithdrawLiquidityResponse {
     pub error_message: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AddLiquidityRequest {
-    pub signature: String,
-    pub message: String,
-    pub solver_id: String,
-    pub amount_tics: Option<String>,
-    pub amount_btc: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AddLiquidityResponse {
-    pub status: String,
-    pub solver_address: String,
-    pub solver_id: String,
-    pub amount_tics: Option<String>,
-    pub amount_btc: Option<String>,
-    pub message: String,
-    pub error_message: Option<String>,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogPartialPubkeysRequest {

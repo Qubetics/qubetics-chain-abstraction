@@ -26,15 +26,6 @@ impl LiquidityStorage {
         Self { db }
     }
 
-    fn key_for_add(&self, solver_address: &str, network: TransactionNetwork) -> String {
-        match network {
-            TransactionNetwork::TICS => {
-                key_utils::solver_add_liquidity_tics_txn_key(solver_address)
-            }
-            TransactionNetwork::BTC => key_utils::solver_add_liquidity_btc_txn_key(solver_address),
-        }
-    }
-
     fn key_for_remove(&self, solver_address: &str, network: TransactionNetwork) -> String {
         match network {
             TransactionNetwork::TICS => {
@@ -62,29 +53,6 @@ impl LiquidityStorage {
             self.db.put_string(key, &serialized)?;
         }
         Ok(())
-    }
-
-    pub async fn set_add_liquidity_tx_id(
-        &self,
-        solver_address: &str,
-        network: TransactionNetwork,
-        tx_id: String,
-    ) -> Result<()> {
-        let key = self.key_for_add(solver_address, network);
-        let mut record = self.load_record(&key)?;
-        record.last_tx_id = Some(tx_id);
-        // clear pending amount for add entries
-        record.pending_amount = None;
-        self.store_record(&key, &record)
-    }
-
-    pub async fn get_add_liquidity_tx_id(
-        &self,
-        solver_address: &str,
-        network: TransactionNetwork,
-    ) -> Result<Option<String>> {
-        let key = self.key_for_add(solver_address, network);
-        Ok(self.load_record(&key)?.last_tx_id)
     }
 
     pub async fn set_remove_liquidity_tx_id(

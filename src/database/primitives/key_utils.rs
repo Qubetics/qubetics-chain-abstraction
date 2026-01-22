@@ -126,21 +126,6 @@ pub fn solver_btc_txn_hashes_key(solver_address: &str) -> String {
     )
 }
 
-pub fn solver_add_liquidity_tics_txn_key(solver_address: &str) -> String {
-    format!(
-        "{}{}",
-        keys::SOLVER_ADD_LIQ_TICS_TXN,
-        solver_address.to_lowercase()
-    )
-}
-
-pub fn solver_add_liquidity_btc_txn_key(solver_address: &str) -> String {
-    format!(
-        "{}{}",
-        keys::SOLVER_ADD_LIQ_BTC_TXN,
-        solver_address.to_lowercase()
-    )
-}
 
 pub fn solver_remove_liquidity_tics_txn_key(solver_address: &str) -> String {
     format!(
