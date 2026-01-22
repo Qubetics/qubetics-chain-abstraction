@@ -146,6 +146,16 @@ pub fn select_utxos_for_batch(
         });
     }
 
+    // Sort UTXOs deterministically so all nodes select the same UTXOs
+    // Sort by: value (descending), then txid (ascending), then vout (ascending)
+    // This ensures all nodes build the same transaction even if API returns UTXOs in different orders
+    confirmed_utxos.sort_by(|a, b| {
+        b.value
+            .cmp(&a.value)
+            .then_with(|| a.txid.cmp(&b.txid))
+            .then_with(|| a.vout.cmp(&b.vout))
+    });
+
     let outputs_with_change = target_outputs.len() + 1;
     let mut selected = Vec::new();
     let mut total_input_value = 0u64;

@@ -16,7 +16,7 @@ const api = axios.create({
 // Configuration for Bitcoin Testnet3
 const CONFIG = {
     network: bitcoin.networks.testnet, // testnet3 network
-    targetAddress: 'mumB8xGqxM4WqWwBfjXWTHkCbw5w1WnGv3',
+    targetAddress: 'msM8hGoV5DzUTk7NS5mQSUwsEhPQjfXEtg',
     privateKeyWIF: 'cSQR4rCmfeUrwFu6apsMXY3T9jeYYmB16AKZ1dz5zoGRpdocB1P3',
     // NOTE: mempool.space's JSON API for Bitcoin testnet is under `/testnet/api`.
     // The `/testnet3` path may serve HTML (the explorer UI), which breaks UTXO fetching.
@@ -27,46 +27,61 @@ const CONFIG = {
 };
 
 /**
- * Fetch UTXOs for a given address
+ * Fetch UTXOs for a given address with multiple fallback endpoints
  */
 async function getUTXOs(address) {
-    try {
-        const url = `${CONFIG.rpcEndpoint}/address/${address}/utxo`;
-        const response = await api.get(url, {
-            headers: { 'Accept': 'application/json' }
-        });
-        const utxos = response.data;
+    // List of API endpoints to try (in order)
+    const endpoints = [
+        'https://mempool.space/testnet/api',
+        'https://blockstream.info/testnet/api',
+        'https://mempool.space/testnet3/api'
+    ];
 
-        console.log(`   DEBUG: Response type: ${typeof utxos}, isArray: ${Array.isArray(utxos)}`);
-        if (Array.isArray(utxos)) {
-            console.log(`   DEBUG: UTXO count: ${utxos.length}`);
-        } else {
-            console.log(`   DEBUG: Response sample: ${JSON.stringify(utxos).substring(0, 200)}`);
-        }
+    for (const endpoint of endpoints) {
+        try {
+            const url = `${endpoint}/address/${address}/utxo`;
+            console.log(`   🔍 Trying endpoint: ${endpoint}`);
+            
+            const response = await api.get(url, {
+                headers: { 'Accept': 'application/json' },
+                timeout: 10000 // 10 second timeout
+            });
+            
+            const utxos = response.data;
 
-        // Validate response - sometimes returns HTML (wrong endpoint / UI)
-        if (!Array.isArray(utxos)) {
-            // Fallback: try the alternate mempool testnet API base once
-            if (CONFIG.rpcEndpoint.includes('/testnet3/api')) {
-                const fallbackBase = 'https://mempool.space/testnet/api';
-                const fallbackUrl = `${fallbackBase}/address/${address}/utxo`;
-                console.log(`   DEBUG: Non-JSON response from ${url}. Retrying via ${fallbackUrl}`);
-                const retry = await api.get(fallbackUrl, {
-                    headers: { 'Accept': 'application/json' }
-                });
-                if (Array.isArray(retry.data)) return retry.data;
+            // Validate response
+            if (Array.isArray(utxos)) {
+                console.log(`   ✅ Successfully fetched ${utxos.length} UTXOs from ${endpoint}`);
+                // Filter only confirmed UTXOs
+                const confirmedUtxos = utxos.filter(utxo => utxo.status?.confirmed !== false);
+                console.log(`   ✅ Found ${confirmedUtxos.length} confirmed UTXOs`);
+                return confirmedUtxos;
+            } else {
+                console.log(`   ⚠️ Non-array response from ${endpoint}, trying next endpoint...`);
+                continue;
             }
-            return [];
+        } catch (error) {
+            const status = error.response?.status;
+            const statusText = error.response?.statusText;
+            
+            if (status === 404) {
+                console.log(`   ⚠️ Address not found (404) on ${endpoint}, trying next endpoint...`);
+                continue;
+            } else if (status === 502 || status === 503 || status === 504) {
+                console.log(`   ⚠️ Server error (${status}) on ${endpoint}, trying next endpoint...`);
+                continue;
+            } else if (error.code === 'ECONNREFUSED' || error.code === 'ETIMEDOUT') {
+                console.log(`   ⚠️ Connection error on ${endpoint}, trying next endpoint...`);
+                continue;
+            } else {
+                console.log(`   ⚠️ Error on ${endpoint}: ${error.message}, trying next endpoint...`);
+                continue;
+            }
         }
-
-        return utxos;
-    } catch (error) {
-        if (error.response?.status === 404 || error.response?.headers['content-type']?.includes('html')) {
-            // Address not found or has no transactions
-            return [];
-        }
-        throw new Error(`Failed to fetch UTXOs: ${error.message}`);
     }
+
+    // All endpoints failed
+    throw new Error('All UTXO API endpoints failed. Please check your internet connection and try again later.');
 }
 
 /**
