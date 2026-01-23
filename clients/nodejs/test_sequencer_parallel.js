@@ -178,12 +178,12 @@ async function testUserMpcDeposit({ wallet, amount, userId }) {
     // Construct DepositIntent (EXACTLY like test_register_user.js)
     const depositIntent = {
       source_address: userInfo.data.derived_eth_address,  // ETH address
-      target_address: userInfo.data.derived_eth_address,  // ETH address
+      target_address: "tb1q2nd0utgnrseanclhq2tr7hqhqtuc389mmjm2fs",  // ETH address
       source_chain: 'qubetics',
-      target_chain: 'qubetics',
+      target_chain: 'bitcoin',
       amount: amount,
       source_token: 'TICS',
-      target_token: 'TICS',
+      target_token: 'BTC',
       timestamp: 4356767664578,
     };
 
@@ -390,7 +390,7 @@ async function step2_SubmitTransactions() {
 
   // Submit all transactions in parallel
   const depositPromises = wallets.map(({ wallet, userId }) => {
-    const amount = "30000000000000000000";  // Use same amount as test_register_user.js
+    const amount = "32000000000000000000";  // Use same amount as test_register_user.js
     return testUserMpcDeposit({ wallet, amount, userId });
   });
 

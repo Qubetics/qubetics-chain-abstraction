@@ -3465,25 +3465,29 @@ impl SigningNode {
                 }
             } else {
                 let pt = self.pending.pending_transactions_btc.read().await;
-                if let Some((_tx, _raw, intent_hash, tx_type, _extras)) = pt.get(&round) {
+                if let Some((_tx, _raw, intent_hashes, tx_type, _extras)) = pt.get(&round) {
                     // For UserToVault transactions, retrieve user_eth_address from intent_hash
                     let user_addr = if matches!(
                         tx_type,
                         Some(crate::types::TransactionType::UserToVault)
                     ) {
-                        if let Some(intent_hash) = intent_hash {
-                            if let Some(database) = &self.database {
-                                use crate::database::storage::UserStorage;
-                                let user_storage = UserStorage::new(database.as_ref().clone());
-                                match user_storage.get_user_by_intent_hash(intent_hash).await {
-                                    Ok(Some(user)) => {
-                                        info!(
-                                            "🔍 [BTC-SIGNING] Retrieved user_eth_address {} from intent_hash {} for UserToVault BTC transaction (round {})",
-                                            user.ethereum_address, intent_hash, round
-                                        );
-                                        Some(user.ethereum_address)
+                        if let Some(intent_hashes_vec) = intent_hashes {
+                            if let Some(first_intent_hash) = intent_hashes_vec.first() {
+                                if let Some(database) = &self.database {
+                                    use crate::database::storage::UserStorage;
+                                    let user_storage = UserStorage::new(database.as_ref().clone());
+                                    match user_storage.get_user_by_intent_hash(first_intent_hash).await {
+                                        Ok(Some(user)) => {
+                                            info!(
+                                                "🔍 [BTC-SIGNING] Retrieved user_eth_address {} from intent_hash {} for UserToVault BTC transaction (round {})",
+                                                user.ethereum_address, first_intent_hash, round
+                                            );
+                                            Some(user.ethereum_address)
+                                        }
+                                        _ => None,
                                     }
-                                    _ => None,
+                                } else {
+                                    None
                                 }
                             } else {
                                 None
@@ -3949,7 +3953,7 @@ impl SigningNode {
             } else {
                 // Try BTC
                 let pending_btc = self.pending.pending_transactions_btc.read().await;
-                if let Some((_tx, tx_bytes, intent_hash, tx_type, _extras)) =
+                if let Some((_tx, tx_bytes, intent_hashes, tx_type, _extras)) =
                     pending_btc.get(&round)
                 {
                     // For UserToVault transactions, retrieve user_eth_address from intent_hash
@@ -3958,39 +3962,43 @@ impl SigningNode {
                         tx_type,
                         Some(crate::types::TransactionType::UserToVault)
                     ) {
-                        if let Some(intent_hash) = intent_hash {
-                            // Retrieve user's ethereum address from intent hash using database
-                            if let Some(database) = &self.database {
-                                use crate::database::storage::UserStorage;
-                                let user_storage = UserStorage::new(database.as_ref().clone());
-                                match user_storage.get_user_by_intent_hash(intent_hash).await {
-                                    Ok(Some(user)) => {
-                                        info!(
-                                            "🔍 [SIGNING] Retrieved user_eth_address {} from intent_hash {} for UserToVault BTC transaction (round {})",
-                                            user.ethereum_address, intent_hash, round
-                                        );
-                                        Some(user.ethereum_address)
+                        if let Some(intent_hashes_vec) = intent_hashes {
+                            if let Some(first_intent_hash) = intent_hashes_vec.first() {
+                                // Retrieve user's ethereum address from intent hash using database
+                                if let Some(database) = &self.database {
+                                    use crate::database::storage::UserStorage;
+                                    let user_storage = UserStorage::new(database.as_ref().clone());
+                                    match user_storage.get_user_by_intent_hash(first_intent_hash).await {
+                                        Ok(Some(user)) => {
+                                            info!(
+                                                "🔍 [SIGNING] Retrieved user_eth_address {} from intent_hash {} for UserToVault BTC transaction (round {})",
+                                                user.ethereum_address, first_intent_hash, round
+                                            );
+                                            Some(user.ethereum_address)
+                                        }
+                                        Ok(None) => {
+                                            warn!(
+                                                "⚠️ [SIGNING] No user found for intent_hash {} in UserToVault BTC transaction (round {})",
+                                                first_intent_hash, round
+                                            );
+                                            None
+                                        }
+                                        Err(e) => {
+                                            warn!(
+                                                "⚠️ [SIGNING] Failed to retrieve user from intent_hash {}: {} (round {})",
+                                                first_intent_hash, e, round
+                                            );
+                                            None
+                                        }
                                     }
-                                    Ok(None) => {
-                                        warn!(
-                                            "⚠️ [SIGNING] No user found for intent_hash {} in UserToVault BTC transaction (round {})",
-                                            intent_hash, round
-                                        );
-                                        None
-                                    }
-                                    Err(e) => {
-                                        warn!(
-                                            "⚠️ [SIGNING] Failed to retrieve user from intent_hash {}: {} (round {})",
-                                            intent_hash, e, round
-                                        );
-                                        None
-                                    }
+                                } else {
+                                    warn!(
+                                        "⚠️ [SIGNING] Database not available to retrieve user_eth_address from intent_hash (round {})",
+                                        round
+                                    );
+                                    None
                                 }
                             } else {
-                                warn!(
-                                    "⚠️ [SIGNING] Database not available to retrieve user_eth_address from intent_hash {} (round {})",
-                                    intent_hash, round
-                                );
                                 None
                             }
                         } else {

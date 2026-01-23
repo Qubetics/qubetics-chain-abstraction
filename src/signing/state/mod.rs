@@ -22,7 +22,7 @@ pub struct BtcRoundExtras {
 pub type PendingValue = (
     ChainTransaction,
     Vec<u8>,
-    Option<String>, // intent_hash
+    Option<Vec<String>>, // intent_hashes (batch support)
     Option<TransactionType>,
     Option<BtcRoundExtras>, // <-- NEW
 );
@@ -66,7 +66,7 @@ pub struct PendingStore {
                     Option<String>,
                     Option<TransactionType>,
                     Option<String>, // request_id for retry tracking (contract_request removed)
-                    Option<()>, // deprecated original_request (unused)
+                    Option<()>,     // deprecated original_request (unused)
                 ),
             >,
         >,
@@ -82,7 +82,7 @@ pub struct PendingStore {
                     Option<String>,
                     Option<TransactionType>,
                     Option<String>, // request_id for retry tracking (contract_request removed)
-                    Option<()>, // deprecated original_request (unused)
+                    Option<()>,     // deprecated original_request (unused)
                 ),
             >,
         >,
@@ -99,7 +99,7 @@ pub struct PendingStore {
                     Option<String>,
                     Option<TransactionType>,
                     Option<String>, // request_id for retry tracking (contract_request removed)
-                    Option<()>, // deprecated original_request (unused)
+                    Option<()>,     // deprecated original_request (unused)
                 ),
             >,
         >,

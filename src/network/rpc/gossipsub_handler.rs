@@ -1121,12 +1121,27 @@ impl MpcNetworkLayer {
                 }
 
                 // SHARED: Fetch intent details from database (same for BTC and TICS)
+                let mut intent_data = Vec::new();
+
                 if let Some(user_intent_manager) = &self.user_intent_manager {
                     let mut batch_intents = Vec::new();
 
                     for intent_hash in &intent_hashes {
                         if let Some(intent) = user_intent_manager.get_intent(intent_hash).await {
-                            batch_intents.push((intent_hash.clone(), intent));
+                            batch_intents.push((intent_hash.clone(), intent.clone()));
+                            if let Some(tx_ids) = user_intent_manager
+                                .get_intent_transaction_ids(intent_hash)
+                                .await
+                            {
+                                if tx_ids.user_to_network_tx_id.is_some() {
+                                    intent_data.push((intent_hash.clone(), intent, tx_ids));
+                                } else {
+                                    warn!(
+                                        "⚠️  [BATCH] Intent {} missing UserToVault transaction",
+                                        intent_hash
+                                    );
+                                }
+                            }
                         } else {
                             warn!("⚠️ [BATCH] Intent {} not found in database", intent_hash);
                         }
@@ -1145,216 +1160,204 @@ impl MpcNetworkLayer {
 
                     // DIFFERENT: Process based on batch type
                     if batch_type == "BTC" {
+                        // BITCOIN BATCH TRANSACTION FLOW
                         info!(
-                            "🪙 [BTC_BATCH] Creating Bitcoin batch transaction with {} intents",
-                            batch_intents.len()
+                            "₿ [BATCH] Processing Bitcoin batch transaction for {} intents",
+                            intent_data.len()
                         );
 
-                        // Fetch prices once for all intents (TICS -> BTC conversion)
-                        let prices = match fetch_crypto_prices().await {
+                        // Step 0.5: Fetch crypto prices for TICS → BTC conversion
+                        let prices = match crate::rpc_server::utils::fetch_crypto_prices().await {
                             Ok(p) => p,
                             Err(e) => {
-                                warn!(
-                                    "❌ [BTC_BATCH] Failed to fetch crypto prices for batch conversion: {}",
+                                error!(
+                                    "❌ [BATCH] Failed to fetch crypto prices for conversion: {}",
                                     e
                                 );
                                 return Ok(());
                             }
                         };
 
-                        // Prepare batch outputs from intents (NetworkToTarget transactions)
+                        info!("💱 [BATCH] Fetched crypto prices for conversion");
+
+                        // Step 1: Build BatchOutput list from intents
+                        use crate::signing::chains::bitcoin_batch::BatchOutput;
                         let mut batch_outputs = Vec::new();
-                        for (hash, intent) in &batch_intents {
-                            // Parse amount from string (source chain smallest units)
-                            let amount_src = match intent.amount.parse::<u128>() {
+
+                        for (intent_hash, intent, _tx_ids) in &intent_data {
+                            // Parse TICS amount (in smallest units, 18 decimals)
+                            let amount_tics_smallest: u128 = match intent.amount.parse() {
                                 Ok(amt) => amt,
                                 Err(e) => {
                                     warn!(
-                                        "⚠️ [BTC_BATCH] Invalid amount for intent {}: {}",
-                                        hash, e
+                                        "⚠️ [BATCH] Failed to parse amount for intent {}: {}",
+                                        intent_hash, e
                                     );
                                     continue;
                                 }
                             };
 
-                            // Convert from source chain (typically TICS) to BTC satoshis
-                            let amount_dst = match convert_src_smallest_to_dst_smallest(
-                                amount_src,
-                                &intent.source_chain,
-                                &intent.target_chain,
-                                &prices,
-                            ) {
-                                Ok(v) => v,
-                                Err(e) => {
-                                    warn!(
-                                        "⚠️ [BTC_BATCH] Failed to convert amount for intent {} ({} -> {}): {:?}",
-                                        hash, intent.source_chain, intent.target_chain, e
-                                    );
-                                    continue;
-                                }
-                            };
+                            // Convert TICS → BTC satoshis using price conversion
+                            let amount_sats =
+                                match crate::rpc_server::utils::convert_src_smallest_to_dst_smallest(
+                                    amount_tics_smallest,
+                                    &intent.source_chain,
+                                    &intent.target_chain,
+                                    &prices,
+                                ) {
+                                    Ok(amt) => amt as u64,
+                                    Err(e) => {
+                                        error!("❌ [BATCH] Currency conversion failed for intent {}: {:?}", intent_hash, e);
+                                        continue;
+                                    }
+                                };
 
-                            let amount = match u64::try_from(amount_dst) {
-                                Ok(v) => v,
-                                Err(_) => {
-                                    warn!(
-                                        "⚠️ [BTC_BATCH] Converted amount for intent {} does not fit in u64: {}",
-                                        hash, amount_dst
-                                    );
-                                    continue;
-                                }
-                            };
+                            info!("💱 [BATCH] Converted {} TICS ({} smallest units) → {} BTC satoshis", 
+                                intent.amount, amount_tics_smallest, amount_sats);
 
-                            // NetworkToTarget: send to target_address on target chain (Bitcoin)
-                            batch_outputs.push(
-                                crate::signing::chains::bitcoin_batch::BatchOutput {
-                                    address: intent.target_address.clone(),
-                                    amount,
-                                },
+                            // Validate dust threshold
+                            if amount_sats < 546 {
+                                warn!("⚠️ [BATCH] Intent {} amount {} sats is below dust threshold, skipping", 
+                                    intent_hash, amount_sats);
+                                continue;
+                            }
+
+                            batch_outputs.push(BatchOutput {
+                                address: intent.target_address.clone(),
+                                amount: amount_sats,
+                            });
+
+                            info!(
+                                "💰 [BATCH] Added output: {} sats to {}",
+                                amount_sats, intent.target_address
                             );
                         }
 
-                        info!(
-                            "📤 [BTC_BATCH] Prepared {} batch outputs for NetworkToTarget",
-                            batch_outputs.len()
-                        );
-
-                        // Get DKG group public key for Bitcoin address derivation
-                        let group_public_key = if let Some(dkg_node) = &self.dkg_node {
-                            dkg_node.get_final_public_key().await
-                        } else {
-                            None
-                        };
-
-                        if group_public_key.is_none() {
-                            warn!("❌ [BTC_BATCH] DKG group public key not available");
+                        if batch_outputs.is_empty() {
+                            warn!("⚠️ [BATCH] No valid outputs after filtering");
                             return Ok(());
                         }
 
-                        // Derive Bitcoin address from group public key for change
-                        let group_pubkey = group_public_key.unwrap();
-
-                        // Convert ProjectivePoint to AffinePoint then to encoded point
-                        use k256::elliptic_curve::sec1::ToEncodedPoint;
-                        let affine_point = k256::AffinePoint::from(group_pubkey);
-                        let compressed_pubkey = affine_point.to_encoded_point(true);
-                        let pubkey_bytes = compressed_pubkey.as_bytes();
-
-                        let bitcoin_pubkey =
-                            bitcoin::PublicKey::from_slice(pubkey_bytes).map_err(|e| {
-                                anyhow::anyhow!("Failed to create Bitcoin PublicKey: {}", e)
-                            })?;
-
-                        let is_testnet = crate::types::network::network_type().is_testnet();
-                        let network = if is_testnet {
-                            bitcoin::Network::Testnet
-                        } else {
-                            bitcoin::Network::Bitcoin
-                        };
-                        let change_address =
-                            bitcoin::Address::p2pkh(&bitcoin_pubkey, network).to_string();
-
-                        // Derive canonical P2PKH script_pubkey for the change address from the pubkey
-                        let signer_h160 = {
-                            use sha2::Digest;
-                            let sha = sha2::Sha256::digest(pubkey_bytes);
-                            let rip = ripemd::Ripemd160::digest(sha);
-                            let mut out = [0u8; 20];
-                            out.copy_from_slice(&rip);
-                            out
-                        };
-                        let mut change_spk: Vec<u8> = Vec::with_capacity(25);
-                        change_spk.extend_from_slice(&[0x76, 0xa9, 0x14]); // OP_DUP OP_HASH160 PUSH20
-                        change_spk.extend_from_slice(&signer_h160);
-                        change_spk.extend_from_slice(&[0x88, 0xac]); // OP_EQUALVERIFY OP_CHECKSIG
-
-                        info!("🔑 [BTC_BATCH] Derived change address: {}", change_address);
-
-                        // Create batch policy
-                        let policy = crate::signing::chains::bitcoin_batch::BatchPolicy {
-                            fee_rate: 1, // 1 sat/byte
-                            dust_threshold: 546,
-                            change_address: change_address.clone(),
+                        // Step 2: Get network's DKG Bitcoin address (where network BTC is stored)
+                        // Use the network group key address, NOT the vault address
+                        let dkg_node = match &self.dkg_node {
+                            Some(node) => node,
+                            None => {
+                                error!("❌ [BATCH] DKG node not available");
+                                return Ok(());
+                            }
                         };
 
-                        // Fetch UTXOs from the Bitcoin UTXO helper
+                        let group_key = match dkg_node.get_final_public_key().await {
+                            Some(key) => key,
+                            None => {
+                                error!("❌ [BATCH] Network group key not available");
+                                return Ok(());
+                            }
+                        };
+
+                        let network_btc_address =
+                            crate::utils::get_btc_address_from_group_key(group_key);
+
                         info!(
-                            "🔍 [BTC_BATCH] Fetching UTXOs for address {} from Bitcoin UTXO helper",
-                            change_address
+                            "🏦 [BATCH] Using network BTC address: {}",
+                            network_btc_address
                         );
 
-                        let available_utxos = match crate::utils::transaction::fetch_bitcoin_utxos(
-                            &change_address,
+                        // Step 3: Fetch network BTC UTXOs
+                        let is_testnet = crate::types::network::network_type().is_testnet();
+                        let utxos = match crate::utils::transaction::fetch_bitcoin_utxos(
+                            &network_btc_address,
                             is_testnet,
                         )
                         .await
                         {
                             Ok(utxos) => utxos,
                             Err(e) => {
-                                warn!("❌ [BTC_BATCH] Failed to fetch UTXOs: {}", e);
-                                warn!(
-                                        "⚠️ [BTC_BATCH] Cannot proceed with batch transaction without UTXOs"
-                                    );
+                                error!("❌ [BATCH] Failed to fetch UTXOs for network vault: {}", e);
                                 return Ok(());
                             }
                         };
 
-                        if available_utxos.is_empty() {
-                            warn!(
-                                "⚠️ [BTC_BATCH] No UTXOs available for address {}",
-                                change_address
-                            );
-                            warn!("⚠️ [BTC_BATCH] Cannot create batch transaction without UTXOs");
-                            return Ok(());
-                        }
-
                         info!(
-                            "✅ [BTC_BATCH] Fetched {} UTXOs for batch transaction",
-                            available_utxos.len()
+                            "📦 [BATCH] Fetched {} UTXOs from network vault",
+                            utxos.len()
                         );
 
-                        // Convert generic BitcoinUtxo into BatchUtxo with a shared script_pubkey
+                        // Step 4: Convert BitcoinUtxo → BatchUtxo
+                        use crate::signing::chains::bitcoin_batch::BatchUtxo;
+                        let mut batch_utxos = Vec::new();
 
-                        let batch_utxos: Vec<crate::signing::chains::bitcoin_batch::BatchUtxo> =
-                            available_utxos
-                                .iter()
-                                .map(|u| crate::signing::chains::bitcoin_batch::BatchUtxo {
-                                    txid: u.txid.clone(),
-                                    vout: u.vout,
-                                    value: u.value,
-                                    // All UTXOs are for the same P2PKH change address
-                                    script_pubkey: change_spk.clone(),
-                                })
-                                .collect();
-
-                        // 1. Select UTXOs
-                        let selected =
-                            match crate::signing::chains::bitcoin_batch::select_utxos_for_batch(
-                                &batch_utxos,
-                                &batch_outputs,
-                                &policy,
+                        // We need to get the script_pubkey for the network address
+                        let network_script_pubkey =
+                            match crate::utils::transaction::create_bitcoin_script_pubkey(
+                                &network_btc_address,
                             ) {
-                                Ok(s) => s,
+                                Ok(spk) => spk,
                                 Err(e) => {
-                                    warn!("❌ [BTC_BATCH] UTXO selection failed: {}", e);
+                                    error!("❌ [BATCH] Failed to create script pubkey for network address: {}", e);
                                     return Ok(());
                                 }
                             };
 
-                        info!("✅ [BTC_BATCH] Selected {} UTXOs, total: {} sats, fee: {} sats, change: {} sats",
-                            selected.utxos.len(), selected.total_input_value, selected.fee, selected.change);
+                        for utxo in utxos {
+                            if !utxo.status.confirmed {
+                                continue; // Skip unconfirmed
+                            }
 
-                        // 2. Build unsigned transaction (bitcoin::Transaction)
+                            batch_utxos.push(BatchUtxo {
+                                txid: utxo.txid,
+                                vout: utxo.vout,
+                                value: utxo.value,
+                                script_pubkey: network_script_pubkey.clone(),
+                            });
+                        }
+
+                        info!(
+                            "✅ [BATCH] Prepared {} confirmed UTXOs for selection",
+                            batch_utxos.len()
+                        );
+
+                        // Step 5: Select UTXOs for batch transaction
+                        use crate::signing::chains::bitcoin_batch::{
+                            select_utxos_for_batch, BatchPolicy,
+                        };
+
+                        let policy = BatchPolicy {
+                            fee_rate: std::env::var("BTC_FEE_RATE_SAT_VB")
+                                .ok()
+                                .and_then(|v| v.parse().ok())
+                                .unwrap_or(1),
+                            dust_threshold: 546,
+                            change_address: network_btc_address.clone(),
+                        };
+
+                        let selected =
+                            match select_utxos_for_batch(&batch_utxos, &batch_outputs, &policy) {
+                                Ok(sel) => sel,
+                                Err(e) => {
+                                    error!("❌ [BATCH] UTXO selection failed: {}", e);
+                                    return Ok(());
+                                }
+                            };
+
+                        info!(
+                            "💰 [BATCH] Selected {} UTXOs: total={} sats, fee={} sats, change={} sats",
+                            selected.utxos.len(),
+                            selected.total_input_value,
+                            selected.fee,
+                            selected.change
+                        );
+
+                        // Step 6: Build unsigned transaction
+                        use crate::signing::chains::bitcoin_batch::build_batch_unsigned_tx;
+
                         let unsigned_tx =
-                            match crate::signing::chains::bitcoin_batch::build_batch_unsigned_tx(
-                                &selected,
-                                &batch_outputs,
-                                &policy,
-                            ) {
+                            match build_batch_unsigned_tx(&selected, &batch_outputs, &policy) {
                                 Ok(tx) => tx,
                                 Err(e) => {
-                                    warn!(
-                                        "❌ [BTC_BATCH] Failed to build unsigned transaction: {}",
+                                    error!(
+                                        "❌ [BATCH] Failed to build unsigned transaction: {}",
                                         e
                                     );
                                     return Ok(());
@@ -1362,106 +1365,115 @@ impl MpcNetworkLayer {
                             };
 
                         info!(
-                            "✅ [BTC_BATCH] Built unsigned transaction with {} inputs and {} outputs",
+                            "🔨 [BATCH] Built unsigned transaction: {} inputs, {} outputs",
                             unsigned_tx.input.len(),
                             unsigned_tx.output.len()
                         );
 
-                        // 3. Convert unsigned Transaction into internal BitcoinTransaction and
-                        //     hand off to the existing MPC signing pipeline.
-                        //
-                        // This reuses the exact same BTC per-input signing, unicast distribution,
-                        // and final-node aggregation logic that single Bitcoin transactions use.
+                        // Step 7: Convert bitcoin::Transaction to our BitcoinTransaction type
+                        let mut our_inputs = Vec::new();
+                        for (i, tx_in) in unsigned_tx.input.iter().enumerate() {
+                            our_inputs.push(crate::types::BitcoinInput {
+                                txid: tx_in.previous_output.txid.to_string(),
+                                vout: tx_in.previous_output.vout,
+                                script_sig: vec![], // Empty for unsigned
+                                sequence: tx_in.sequence.0,
+                                witness_utxo: Some(crate::types::BitcoinWitnessUtxo {
+                                    value: selected.utxos[i].value,
+                                    script_pubkey: selected.utxos[i].script_pubkey.clone(),
+                                }),
+                            });
+                        }
+
+                        let mut our_outputs = Vec::new();
+                        for tx_out in &unsigned_tx.output {
+                            our_outputs.push(crate::types::BitcoinOutput {
+                                value: tx_out.value.to_sat(),
+                                script_pubkey: tx_out.script_pubkey.as_bytes().to_vec(),
+                            });
+                        }
+
+                        let our_btc_tx = crate::types::BitcoinTransaction {
+                            version: unsigned_tx.version.0 as u32,
+                            inputs: our_inputs,
+                            outputs: our_outputs,
+                            lock_time: unsigned_tx.lock_time.to_consensus_u32(),
+                            witness: None, // P2PKH doesn't use witness
+                        };
+
+                        info!("🔄 [BATCH] Converted to internal BitcoinTransaction type");
+
+                        // Step 8: Trigger signing using existing flow
                         if let Some(signing_node) = &mut self.signing_node {
-                            use crate::chain_abstraction::{
-                                BitcoinInput, BitcoinOutput, BitcoinTransaction,
-                                BitcoinWitnessUtxo, ChainTransaction,
+                            let mut chain_handler_box = crate::chain_abstraction::ChainHandlerFactory::create_bitcoin_handler(
+                                crate::types::network::network_type().bitcoin_network_label().to_string()
+                            );
+
+                            // Set network's DKG group key
+                            if let Some(dkg_node) = &self.dkg_node {
+                                if let Some(group_key) = dkg_node.get_final_public_key().await {
+                                    let affine_point = group_key.to_affine();
+                                    let encoded_point = k256::EncodedPoint::from(affine_point);
+                                    let compressed_bytes =
+                                        encoded_point.compress().to_bytes().to_vec();
+
+                                    if let Some(btc_handler) = chain_handler_box.as_any_mut().downcast_mut::<crate::chain_abstraction::BitcoinChainHandler>()
+                                    {
+                                        btc_handler.set_group_public_key(compressed_bytes);
+                                        info!("🔑 [BATCH] Set network DKG group public key");
+                                    }
+                                }
+                            }
+
+                            // Convert Box<dyn ChainHandler> to Arc<dyn ChainHandler>
+                            let chain_handler: std::sync::Arc<
+                                dyn crate::chain_abstraction::ChainHandler,
+                            > = std::sync::Arc::from(chain_handler_box);
+                            let tx_bytes = chain_handler.create_transaction_bytes(
+                                &crate::chain_abstraction::ChainTransaction::Bitcoin(
+                                    our_btc_tx.clone(),
+                                ),
+                            )?;
+
+                            // Get DKG secret share for signing
+                            let signing_key = if let Some(dkg_node) = &self.dkg_node {
+                                dkg_node.get_final_secret_share().await
+                            } else {
+                                None
                             };
 
-                            // Map inputs: selected.utxos[i] ↔ unsigned_tx.input[i]
-                            let mut inputs: Vec<BitcoinInput> =
-                                Vec::with_capacity(unsigned_tx.input.len());
-                            for (idx, utxo) in selected.utxos.iter().enumerate() {
-                                let txin = &unsigned_tx.input[idx];
-                                inputs.push(BitcoinInput {
-                                    txid: utxo.txid.clone(),
-                                    vout: utxo.vout,
-                                    script_sig: Vec::new(),
-                                    // RBF sequence is already set on the bitcoin::Transaction
-                                    sequence: u32::from(txin.sequence),
-                                    witness_utxo: Some(BitcoinWitnessUtxo {
-                                        value: utxo.value,
-                                        script_pubkey: utxo.script_pubkey.clone(),
-                                    }),
-                                });
-                            }
+                            info!("🔐 [BATCH] Starting Bitcoin batch signing process...");
 
-                            // Map outputs
-                            let mut outputs: Vec<BitcoinOutput> =
-                                Vec::with_capacity(unsigned_tx.output.len());
-                            for out in &unsigned_tx.output {
-                                outputs.push(BitcoinOutput {
-                                    value: out.value.to_sat(),
-                                    script_pubkey: out.script_pubkey.as_bytes().to_vec(),
-                                });
-                            }
-
-                            // Internal legacy P2PKH transaction – version/lock_time are fixed in builder
-                            let internal_tx = BitcoinTransaction {
-                                inputs,
-                                outputs,
-                                version: 2,
-                                lock_time: 0,
-                                witness: None,
-                            };
-
-                            // Build a Bitcoin chain handler and bytes for signing
-                            let mut handler =
-                                crate::chain_abstraction::ChainHandlerFactory::create_bitcoin_handler(
-                                    crate::types::network::network_type()
-                                        .bitcoin_network_label()
-                                        .to_string(),
-                                );
-                            let chain_handler: Arc<dyn crate::chain_abstraction::ChainHandler> =
-                                Arc::from(handler);
-
-                            let chain_tx = ChainTransaction::Bitcoin(internal_tx.clone());
-                            let tx_bytes = chain_handler
-                                .create_transaction_bytes(&chain_tx)
-                                .unwrap_or_else(|e| {
-                                    warn!(
-                                        "❌ [BTC_BATCH] Failed to create transaction bytes for batch: {}",
-                                        e
-                                    );
-                                    Vec::new()
-                                });
-
-                            // Hand off to existing MPC Bitcoin signing flow (per-input signing,
-                            // storage in btc_state, later RequestBtcSignatures, unicast, and finalization)
-                            {
-                                let mut btc_signer = BitcoinSigner::new(signing_node);
-                                btc_signer
-                                    .sign_transaction(
-                                        tx_bytes,
-                                        &chain_handler,
-                                        Some(internal_tx),
-                                        None,                  // user_eth_address
-                                        intent_hashes.clone(), // intent hashes (batch)
-                                        Some(crate::types::TransactionType::NetworkToTarget),
-                                        None, // user_tweaked_share
-                                        None, // solver_address
-                                        None, // signing_key_override
-                                    )
-                                    .await?;
-                            }
+                            // Collect intent hashes from batch for signing
+                            let intent_hashes_in_batch: Vec<String> = intent_data
+                                .iter()
+                                .map(|(hash, _, _)| hash.clone())
+                                .collect();
 
                             info!(
-                                "✅ [BTC_BATCH] Submitted batch transaction into MPC BTC signing flow"
+                                "💾 [BATCH] Processing {} intent hashes in batch",
+                                intent_hashes_in_batch.len()
                             );
+
+                            use crate::signing::chains::BitcoinSigner;
+                            let mut btc_signer = BitcoinSigner::new(signing_node);
+                            btc_signer
+                                .sign_transaction(
+                                    tx_bytes,
+                                    &chain_handler,
+                                    Some(our_btc_tx),
+                                    None, // No user eth address for network transaction
+                                    intent_hashes_in_batch,
+                                    Some(crate::types::TransactionType::NetworkToTarget),
+                                    signing_key,
+                                    None, // No solver
+                                    signing_key,
+                                )
+                                .await?;
+
+                            info!("✅ [BATCH] Bitcoin batch transaction signed successfully");
                         } else {
-                            warn!(
-                                "❌ [BTC_BATCH] Signing node not available; cannot start MPC signing for batch"
-                            );
+                            error!("❌ [BATCH] Signing node not available");
                         }
                     } else if batch_type == "TICS" {
                         info!(

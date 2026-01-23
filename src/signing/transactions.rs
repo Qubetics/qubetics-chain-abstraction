@@ -22,7 +22,7 @@ impl SigningNode {
             (
                 chain_tx,
                 tx_bytes,
-                Some(solver_address),
+                Some(vec![solver_address]),
                 Some(TransactionType::RewardTxn),
                 Some(extras),
             ),
@@ -76,7 +76,7 @@ impl SigningNode {
             (
                 chain_tx,
                 tx_bytes,
-                Some(solver_address),
+                Some(vec![solver_address]),
                 Some(TransactionType::WithdrawLiquidity),
                 Some(extras),
             ),
@@ -158,29 +158,34 @@ impl SigningNode {
                 if is_reward_round {
                     let reward_pending_transactions_btc =
                         self.pending.reward_pending_transactions_btc.read().await;
-                    if let Some((_tx, _tx_bytes, solver_address, transaction_type, _extras)) =
+                    if let Some((_tx, _tx_bytes, solver_addresses, transaction_type, _extras)) =
                         reward_pending_transactions_btc.get(&round)
                     {
-                        (None, transaction_type.clone(), solver_address.clone())
+                        let solver_address =
+                            solver_addresses.as_ref().and_then(|v| v.first().cloned());
+                        (None, transaction_type.clone(), solver_address)
                     } else {
                         (None, None, None)
                     }
                 } else if is_withdraw_round {
                     let withdraw_pending_transactions_btc =
                         self.pending.withdraw_pending_transactions_btc.read().await;
-                    if let Some((_tx, _tx_bytes, solver_address, transaction_type, _extras)) =
+                    if let Some((_tx, _tx_bytes, solver_addresses, transaction_type, _extras)) =
                         withdraw_pending_transactions_btc.get(&round)
                     {
-                        (None, transaction_type.clone(), solver_address.clone())
+                        let solver_address =
+                            solver_addresses.as_ref().and_then(|v| v.first().cloned());
+                        (None, transaction_type.clone(), solver_address)
                     } else {
                         (None, None, None)
                     }
                 } else {
                     let pending_btc = self.pending.pending_transactions_btc.read().await;
-                    if let Some((_tx, _tx_bytes, intent_hash, tx_type, _extras)) =
+                    if let Some((_tx, _tx_bytes, intent_hashes, tx_type, _extras)) =
                         pending_btc.get(&round)
                     {
-                        (intent_hash.clone(), tx_type.clone(), None)
+                        let intent_hash = intent_hashes.as_ref().and_then(|v| v.first().cloned());
+                        (intent_hash, tx_type.clone(), None)
                     } else {
                         (None, None, None)
                     }
@@ -454,10 +459,11 @@ impl SigningNode {
             }
             TransactionNetwork::BTC => {
                 let pending_btc = self.pending.pending_transactions_btc.read().await;
-                if let Some((_tx, _tx_bytes, intent_hash, tx_type, _extras)) =
+                if let Some((_tx, _tx_bytes, intent_hashes, tx_type, _extras)) =
                     pending_btc.get(&round)
                 {
-                    (intent_hash.clone(), tx_type.clone())
+                    let intent_hash = intent_hashes.as_ref().and_then(|v| v.first().cloned());
+                    (intent_hash, tx_type.clone())
                 } else {
                     (None, None)
                 }
@@ -600,11 +606,13 @@ impl SigningNode {
                 if is_reward_round {
                     let reward_pending_transactions_btc =
                         self.pending.reward_pending_transactions_btc.read().await;
-                    if let Some((_tx, _tx_bytes, solver_address, transaction_type, _extras)) =
+                    if let Some((_tx, _tx_bytes, solver_addresses, transaction_type, _extras)) =
                         reward_pending_transactions_btc.get(&round)
                     {
+                        let solver_address =
+                            solver_addresses.as_ref().and_then(|v| v.first().cloned());
                         info!("[store_transaction_id_for_round] [BTC][Reward] Found reward_pending_transactions_btc entry for round {}: solver_address={:?}, transaction_type={:?}", round, solver_address, transaction_type);
-                        (None, transaction_type.clone(), solver_address.clone())
+                        (None, transaction_type.clone(), solver_address)
                     } else {
                         warn!("[store_transaction_id_for_round] [BTC][Reward] No entry in reward_pending_transactions_btc for round {}", round);
                         (None, None, None)
@@ -612,11 +620,13 @@ impl SigningNode {
                 } else if is_withdraw_round {
                     let withdraw_pending_transactions_btc =
                         self.pending.withdraw_pending_transactions_btc.read().await;
-                    if let Some((_tx, _tx_bytes, solver_address, transaction_type, _extras)) =
+                    if let Some((_tx, _tx_bytes, solver_addresses, transaction_type, _extras)) =
                         withdraw_pending_transactions_btc.get(&round)
                     {
+                        let solver_address =
+                            solver_addresses.as_ref().and_then(|v| v.first().cloned());
                         info!("[store_transaction_id_for_round] [BTC][Withdraw] Found withdraw_pending_transactions_btc entry for round {}: solver_address={:?}, transaction_type={:?}", round, solver_address, transaction_type);
-                        (None, transaction_type.clone(), solver_address.clone())
+                        (None, transaction_type.clone(), solver_address)
                     } else {
                         warn!("[store_transaction_id_for_round] [BTC][Withdraw] No entry in withdraw_pending_transactions_btc for round {}", round);
                         (None, None, None)
@@ -624,11 +634,12 @@ impl SigningNode {
                 } else {
                     let pending_transactions_btc =
                         self.pending.pending_transactions_btc.read().await;
-                    if let Some((_tx, _tx_bytes, intent_hash, transaction_type, _extras)) =
+                    if let Some((_tx, _tx_bytes, intent_hashes, transaction_type, _extras)) =
                         pending_transactions_btc.get(&round)
                     {
+                        let intent_hash = intent_hashes.as_ref().and_then(|v| v.first().cloned());
                         info!("[store_transaction_id_for_round] [BTC][Non-Reward] Found pending_transactions_btc entry for round {}: intent_hash={:?}, transaction_type={:?}", round, intent_hash, transaction_type);
-                        (intent_hash.clone(), transaction_type.clone(), None)
+                        (intent_hash, transaction_type.clone(), None)
                     } else {
                         warn!("[store_transaction_id_for_round] [BTC][Non-Reward] No entry in pending_transactions_btc for round {}", round);
                         (None, None, None)
