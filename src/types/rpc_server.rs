@@ -244,3 +244,9 @@ pub struct AddressInfo {
     pub eth_address: String,
     pub btc_address: String,
 }
+
+/// Response for GET /intents_solved_count
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IntentsSolvedCountResponse {
+    pub count: u64,
+}

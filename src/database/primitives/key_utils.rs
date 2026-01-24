@@ -18,6 +18,12 @@ pub fn user_intent_key(ethereum_address: &str, intent_hash: &str) -> String {
     )
 }
 
+/// Reverse index key: intent_hash -> ethereum_address. Enables O(1) get_user_by_intent_hash
+/// instead of scanning all users, reducing races and signature verification failures under load.
+pub fn intent_hash_to_user_key(intent_hash: &str) -> String {
+    format!("{}{}", keys::INTENT_HASH_TO_USER, intent_hash)
+}
+
 pub fn intent_transaction_ids_key(intent_hash: &str) -> String {
     format!("{}{}", keys::INTENT_TRANSACTION_IDS, intent_hash)
 }

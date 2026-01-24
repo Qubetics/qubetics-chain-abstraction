@@ -20,11 +20,12 @@ use crate::{
             ClaimRewardRequest, ClaimRewardResponse,
             DKGStatusResponse, EnhancedUserRegistrationResponse, GetNetworkAddressesResponse,
             GetRewardSolverRequest, GetRewardSolverResponse, HeartbeatResponse,
-            LogPartialPubkeysRequest, NodeIdResponse, RequestContext, SolverLiquidityRequest,
-            SolverLiquidityResponse, UptimeResponse, UserInfoResponse, UserMpcDepositRequest,
-            UserMpcDepositVerifyResponse, UserRegistrationRequest, WithdrawLiquidityRequest,
-            WithdrawLiquidityResponse,
+            IntentsSolvedCountResponse, LogPartialPubkeysRequest, NodeIdResponse, RequestContext,
+            SolverLiquidityRequest, SolverLiquidityResponse, UptimeResponse, UserInfoResponse,
+            UserMpcDepositRequest, UserMpcDepositVerifyResponse, UserRegistrationRequest,
+            WithdrawLiquidityRequest, WithdrawLiquidityResponse,
         },
+        IntentStatus,
         TransactionNetwork,
     },
     user_intent_manager::{checksum_from_any, UserIntentManager},
@@ -1419,6 +1420,19 @@ pub(crate) async fn handle_get_uptime(
     Ok(warp::reply::json(&UptimeResponse {
         uptime_seconds: uptime,
     }))
+}
+
+/// Returns the total count of intents with status Solved.
+/// GET /intents_solved_count
+pub(crate) async fn handle_get_intents_solved_count(
+    user_intent_manager: Arc<UserIntentManager>,
+) -> Result<impl warp::Reply, warp::Rejection> {
+    let intents = user_intent_manager
+        .get_intents_by_status_global(IntentStatus::Solved)
+        .await;
+    let count = intents.len() as u64;
+    info!("📊 HTTP: intents_solved_count = {}", count);
+    Ok(warp::reply::json(&IntentsSolvedCountResponse { count }))
 }
 
 pub(crate) async fn handle_get_dkg_status(

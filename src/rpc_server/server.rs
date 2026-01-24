@@ -18,10 +18,11 @@ use super::{
     errors::RpcError,
     handlers::{
         handle_claim_reward, handle_get_dkg_status,
-        handle_get_network_addresses, handle_get_node_id, handle_get_node_info,
-        handle_get_reward_solver, handle_get_solver_liquidity, handle_get_status,
-        handle_get_uptime, handle_get_user_info, handle_heartbeat, handle_log_partial_pubkeys,
-        handle_register_user, handle_user_mpc_deposit, handle_withdraw_liquidity,
+        handle_get_intents_solved_count, handle_get_network_addresses, handle_get_node_id,
+        handle_get_node_info, handle_get_reward_solver, handle_get_solver_liquidity,
+        handle_get_status, handle_get_uptime, handle_get_user_info, handle_heartbeat,
+        handle_log_partial_pubkeys, handle_register_user, handle_user_mpc_deposit,
+        handle_withdraw_liquidity,
     },
     rate_limiter::RateLimiter,
     upgrade_handlers::{
@@ -221,6 +222,11 @@ pub async fn start_http_server(
         .and(with_dkg_storage(dkg_storage.clone()))
         .and_then(handle_get_network_addresses);
 
+    let get_intents_solved_count = warp::path("intents_solved_count")
+        .and(warp::get())
+        .and(with_user_intent_manager(user_intent_manager.clone()))
+        .and_then(handle_get_intents_solved_count);
+
     // Upgrade endpoints
     let validate_upgrade = warp::path("validate-upgrade")
         .and(warp::post())
@@ -278,6 +284,7 @@ pub async fn start_http_server(
         .or(uptime)
         .or(log_partial_pubkeys)
         .or(get_network_addresses)
+        .or(get_intents_solved_count)
         .or(validate_upgrade)
         .or(upgrade)
         .or(upgrade_status)
