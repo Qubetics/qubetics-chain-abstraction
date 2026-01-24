@@ -1039,6 +1039,7 @@ async fn create_chain_transaction_from_deposit_intent_internal(
         crate::types::TransactionType::UserToVault => &intent.source_chain.to_lowercase(),
         crate::types::TransactionType::NetworkToTarget => &intent.target_chain.to_lowercase(),
         crate::types::TransactionType::Refund => &intent.source_chain.to_lowercase(), // Refund goes back to source chain
+        crate::types::TransactionType::IntentStatusUpdate => "qubetics", // IntentStatusUpdate is a contract call on Qubetics chain
         crate::types::TransactionType::RewardTxn => {
             // RewardTxn is not valid for intent flow
             return Err(anyhow::anyhow!(
@@ -1130,6 +1131,12 @@ async fn create_chain_transaction_from_deposit_intent_internal(
                 );
                 (network_address.clone(), intent.target_address.clone())
             }
+            crate::types::TransactionType::IntentStatusUpdate => {
+                // IntentStatusUpdate is a contract call on Qubetics chain
+                // It doesn't need from/to addresses as it's a contract call, not a transfer
+                // Return empty addresses (not used for contract calls)
+                ("".to_string(), "".to_string())
+            }
             crate::types::TransactionType::Refund => {
                 // Refund: FROM network address TO user's source address
                 // Group public key is required to derive the network address
@@ -1205,6 +1212,13 @@ async fn create_chain_transaction_from_deposit_intent_internal(
                     intent.target_address
                 );
                 (btc_network_address.clone(), intent.target_address.clone())
+            }
+            crate::types::TransactionType::IntentStatusUpdate => {
+                // IntentStatusUpdate is a contract call on Qubetics chain (not Bitcoin)
+                // This should not be called for Bitcoin transactions
+                return Err(anyhow::anyhow!(
+                    "IntentStatusUpdate is not valid for Bitcoin transactions"
+                ));
             }
             crate::types::TransactionType::Refund => {
                 // Refund: FROM network bitcoin address TO user's source address
@@ -1288,6 +1302,7 @@ pub async fn create_chain_transaction_from_contract_call(
     let batch_type = match transaction_type {
         crate::types::TransactionType::UserToVault => BatchType::BTC,
         crate::types::TransactionType::NetworkToTarget => BatchType::TICS,
+        crate::types::TransactionType::IntentStatusUpdate => BatchType::BTC, // IntentStatusUpdate is for BTC contract updates
         crate::types::TransactionType::Refund => {
             // Refund transactions don't need contract calls - they're just fund transfers
             // The refund intent contract call is handled separately after the refund transaction completes

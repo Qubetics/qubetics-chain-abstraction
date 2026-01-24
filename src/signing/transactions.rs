@@ -231,6 +231,7 @@ impl SigningNode {
                     Some(crate::types::TransactionType::UserToVault) => "user_to_vault",
                     Some(crate::types::TransactionType::NetworkToTarget) => "network_to_target",
                     Some(crate::types::TransactionType::Refund) => "refund",
+                    Some(crate::types::TransactionType::IntentStatusUpdate) => "intent_status_update",
                     Some(crate::types::TransactionType::WithdrawLiquidity) => {
                         // Withdraw liquidity transactions should never have an intent_hash
                         error!(
@@ -711,6 +712,13 @@ impl SigningNode {
                             tx_id, intent_hash, round
                         );
                         "network_to_target"
+                    }
+                    Some(crate::types::TransactionType::IntentStatusUpdate) => {
+                        info!(
+                            "📡 [SIGNING] Broadcasting intent-status-update transaction ID {} for intent {} (round {}) - will mark intent as Solved",
+                            tx_id, intent_hash, round
+                        );
+                        "intent_status_update"
                     }
                     Some(crate::types::TransactionType::Refund) => {
                         info!(

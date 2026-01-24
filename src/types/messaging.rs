@@ -72,6 +72,22 @@ pub enum ChannelMessage {
         /// Node ID of the final node broadcasting this batch
         node_id: String,
     },
+    /// BTC Intent Manager contract update batch
+    /// Used to update network-to-target tx-id on contract for BTC intents
+    BtcIntentManagerTxUpdate {
+        /// List of intent hashes to update on contract
+        intent_hashes: Vec<String>,
+        /// BTC batch transaction ID that was finalized
+        btc_txid: String,
+        /// Round number of the BTC batch
+        btc_batch_round: u64,
+        /// Round number for the contract update batch
+        update_round: u64,
+        /// Timestamp when batch was created
+        timestamp: String,
+        /// Node ID broadcasting this batch
+        node_id: String,
+    },
     TransactionIdBroadcast {
         /// One or more intent hashes associated with this transaction ID.
         /// For single transactions, this will contain exactly one hash.
@@ -275,5 +291,21 @@ pub enum GossipsubMessage {
         error: String,
         /// Original request for guaranteed retry (even if cache is empty)
         original_request: Option<()>,
+    },
+    /// BTC Intent Manager contract update batch
+    /// Used to update network-to-target tx-id on contract for BTC intents
+    BtcIntentManagerTxUpdate {
+        /// List of intent hashes to update on contract
+        intent_hashes: Vec<String>,
+        /// BTC batch transaction ID that was finalized
+        btc_txid: String,
+        /// Round number of the BTC batch
+        btc_batch_round: u64,
+        /// Round number for the contract update batch
+        update_round: u64,
+        /// Timestamp when batch was created
+        timestamp: String,
+        /// Node ID broadcasting this batch
+        node_id: String,
     },
 }

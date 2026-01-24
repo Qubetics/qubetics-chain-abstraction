@@ -1,5 +1,5 @@
 use super::*;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 impl UserIntentManager {
     /// Store transaction ID for user_aggregated_address -> network_aggregated_address
@@ -47,6 +47,7 @@ impl UserIntentManager {
         info!("  📥 Transaction ID: {}", tx_id);
         info!("  🔄 Transaction type: network_aggregated_address -> user_target_address");
 
+        // Store the transaction ID first
         match self
             .intent_storage
             .store_network_to_target_tx_id(intent_hash, tx_id, solver_id.map(|s| s.to_string()))
@@ -56,16 +57,68 @@ impl UserIntentManager {
                 info!("✅ [DB_USER_REGISTRY] Successfully stored network_to_target_tx_id");
                 info!("  🎯 Intent: {}", intent_hash);
                 info!("  📥 TX ID: {}", tx_id);
-                Ok(())
             }
             Err(e) => {
                 error!("❌ [DB_USER_REGISTRY] Failed to store network_to_target_tx_id");
                 error!("  🔗 Intent hash: {}", intent_hash);
                 error!("  📥 Transaction ID: {}", tx_id);
                 error!("  💥 Error: {}", e);
-                Err(e.to_string())
+                return Err(e.to_string());
             }
         }
+
+        // Check if this is a TICS transaction and mark intent as Solved
+        // Get the intent to check target_chain
+        if let Ok(Some(intent)) = self.intent_storage.get_intent(intent_hash).await {
+            let target_chain_lower = intent.target_chain.to_lowercase();
+            let is_tics = target_chain_lower == "qubetics" || target_chain_lower == "tics";
+            
+            if is_tics {
+                info!(
+                    "💎 [DB_USER_REGISTRY] TICS transaction detected (target_chain: {}), marking intent as Solved",
+                    intent.target_chain
+                );
+                
+                // Find the user who owns this intent
+                if let Ok(Some(user)) = self.user_storage.get_user_by_intent_hash(intent_hash).await {
+                    // Update intent status to Solved
+                    if let Err(e) = self
+                        .user_storage
+                        .update_intent_status(&user.ethereum_address, intent_hash, IntentStatus::Solved)
+                        .await
+                    {
+                        error!(
+                            "⚠️ [DB_USER_REGISTRY] Failed to update intent status to Solved for TICS transaction: {}",
+                            e
+                        );
+                        // Don't fail the whole operation, just log the error
+                    } else {
+                        info!(
+                            "✅ [DB_USER_REGISTRY] Marked intent {} as Solved for user {} (TICS transaction)",
+                            intent_hash,
+                            user.ethereum_address
+                        );
+                    }
+                } else {
+                    warn!(
+                        "⚠️ [DB_USER_REGISTRY] Could not find user for intent {} to update status to Solved",
+                        intent_hash
+                    );
+                }
+            } else {
+                info!(
+                    "₿ [DB_USER_REGISTRY] BTC transaction detected (target_chain: {}), NOT marking intent as Solved",
+                    intent.target_chain
+                );
+            }
+        } else {
+            warn!(
+                "⚠️ [DB_USER_REGISTRY] Could not retrieve intent {} to check target_chain",
+                intent_hash
+            );
+        }
+
+        Ok(())
     }
 
     /// Store or update the final solver for an intent

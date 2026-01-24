@@ -1687,6 +1687,43 @@ impl MpcNetworkLayer {
                     warn!("❌ [BATCH] User intent manager not available");
                 }
             }
+            GossipsubMessage::BtcIntentManagerTxUpdate {
+                intent_hashes,
+                btc_txid,
+                btc_batch_round,
+                update_round,
+                timestamp,
+                node_id,
+            } => {
+                info!(
+                    "🔄 [BTC_INTENT_MANAGER] Received BTC intent manager update batch from node {} (round {})",
+                    node_id, update_round
+                );
+                info!(
+                    "🔄 [BTC_INTENT_MANAGER] {} intents, BTC batch round: {}, BTC txid: {}",
+                    intent_hashes.len(), btc_batch_round, btc_txid
+                );
+
+                // Process the batch - create contract call
+                // handle_btc_intent_manager_update_batch is a method on MpcNetworkLayer (in channel_handler.rs)
+                // Since both are impl MpcNetworkLayer, we can call it directly
+                if let Err(e) = self
+                    .handle_btc_intent_manager_update_batch(
+                        intent_hashes,
+                        btc_txid,
+                        btc_batch_round,
+                        update_round,
+                        timestamp,
+                        node_id,
+                    )
+                    .await
+                {
+                    error!(
+                        "❌ [BTC_INTENT_MANAGER] Failed to handle contract update batch: {}",
+                        e
+                    );
+                }
+            }
             GossipsubMessage::TransactionFailure {
                 sequencer_request_id,
                 blockchain_tx_hash,

@@ -82,6 +82,7 @@ pub const TOPIC_LEGACY_DKG: &str = "dkg";
 pub const TOPIC_TRANSACTION_BROADCAST: &str = "transaction-broadcast";
 pub const TOPIC_TRANSACTION_FAILURE: &str = "transaction-failure";
 pub const TOPIC_INTENT_BATCH_BROADCAST: &str = "intent-batch-broadcast";
+pub const TOPIC_BTC_INTENT_MANAGER_TX_UPDATE: &str = "btc-intent-manager-tx-update";
 
 /// Typed view of the gossipsub topics this MPC node participates in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -106,6 +107,7 @@ pub enum GossipTopic {
     LegacyDkg,
     TransactionBroadcast,
     TransactionFailure,
+    BtcIntentManagerTxUpdate,
 }
 
 impl GossipTopic {
@@ -130,6 +132,7 @@ impl GossipTopic {
         GossipTopic::LegacyDkg,
         GossipTopic::TransactionBroadcast,
         GossipTopic::TransactionFailure,
+        GossipTopic::BtcIntentManagerTxUpdate,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -154,6 +157,7 @@ impl GossipTopic {
             GossipTopic::LegacyDkg => TOPIC_LEGACY_DKG,
             GossipTopic::TransactionBroadcast => TOPIC_TRANSACTION_BROADCAST,
             GossipTopic::TransactionFailure => TOPIC_TRANSACTION_FAILURE,
+            GossipTopic::BtcIntentManagerTxUpdate => TOPIC_BTC_INTENT_MANAGER_TX_UPDATE,
         }
     }
 }

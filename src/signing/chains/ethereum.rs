@@ -840,11 +840,25 @@ impl SigningNode {
         // Store original transaction for reconstruction after aggregation (contract-specific path)
         let mut pending_transactions = self.pending.pending_transactions.write().await;
         let primary_intent_hash = intent_hashes.first().cloned();
-        // If this contract transaction is associated with one or more intents (e.g. batch transfer),
-        // mark its transaction_type as NetworkToTarget so downstream storage/broadcast logic treats
-        // it as a NetworkToTarget fulfillment.
+        
+        // Determine transaction type based on operation_type for this round
+        // For BTC contract update, use IntentStatusUpdate (only marks intent as Solved, doesn't update network_to_target_tx_id)
+        // For other batch transactions (TICS), use NetworkToTarget (updates network_to_target_tx_id and marks as Solved)
         let tx_type_for_round = if !intent_hashes.is_empty() {
-            Some(TransactionType::NetworkToTarget)
+            // Check if this round is for BTC contract update
+            let is_btc_contract_update = if let Some(consensus_node) = self.coordination.consensus_node() {
+                consensus_node.get_operation_type_for_round(round)
+                    .map(|op| op == "btc_contract_update")
+                    .unwrap_or(false)
+            } else {
+                false
+            };
+            
+            if is_btc_contract_update {
+                Some(TransactionType::IntentStatusUpdate)
+            } else {
+                Some(TransactionType::NetworkToTarget)
+            }
         } else {
             None
         };
@@ -997,13 +1011,14 @@ impl SigningNode {
                         }
                     }
                     Some(crate::types::TransactionType::NetworkToTarget)
-                    | Some(crate::types::TransactionType::Refund) => {
-                        // Refund uses network group key (same as NetworkToTarget)
+                    | Some(crate::types::TransactionType::Refund)
+                    | Some(crate::types::TransactionType::IntentStatusUpdate) => {
+                        // Refund and IntentStatusUpdate use network group key (same as NetworkToTarget)
                         let group_key = self.get_network_group_public_key().await?;
                         let group_address = get_eth_address_from_group_key(group_key);
 
                         let nonce = Self::fetch_ethereum_nonce(&group_address, chain_id).await?;
-                        info!("🔢 [SIGNING] NetworkToTarget/Refund transaction: fetching nonce {} from network group address {}", nonce, group_address);
+                        info!("🔢 [SIGNING] NetworkToTarget/Refund/IntentStatusUpdate transaction: fetching nonce {} from network group address {}", nonce, group_address);
                         group_address
                     }
                     Some(crate::types::TransactionType::RewardTxn) => {

@@ -162,18 +162,18 @@ impl KeyStore {
                     Err(anyhow!("UserToVault transaction requires user_eth_address"))
                 }
             }
-            Some(TransactionType::NetworkToTarget) | Some(TransactionType::Refund) => {
-                // Refund uses network group key (same as NetworkToTarget)
+            Some(TransactionType::NetworkToTarget) | Some(TransactionType::Refund) | Some(TransactionType::IntentStatusUpdate) => {
+                // Refund and IntentStatusUpdate use network group key (same as NetworkToTarget)
                 if let Some(group_key) = self.group_public_key {
                     let affine_point = group_key.to_affine();
                     let encoded_point = EncodedPoint::from(affine_point);
                     let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
 
-                    info!("🔑 [SIGNING] NetworkToTarget/Refund: Using DKG group public key");
+                    info!("🔑 [SIGNING] NetworkToTarget/Refund/IntentStatusUpdate: Using DKG group public key");
                     Ok(compressed_bytes)
                 } else {
                     Err(anyhow!(
-                        "DKG group public key not available for NetworkToTarget/Refund transaction - ensure DKG process is completed"
+                        "DKG group public key not available for NetworkToTarget/Refund/IntentStatusUpdate transaction - ensure DKG process is completed"
                     ))
                 }
             }

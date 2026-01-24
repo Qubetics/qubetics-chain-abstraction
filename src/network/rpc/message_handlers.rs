@@ -21,6 +21,7 @@ impl MpcNetworkLayer {
             "reward_txn" => Ok(TransactionType::RewardTxn),
             "withdraw_liquidity" | "withdrawLiquidity" => Ok(TransactionType::WithdrawLiquidity),
             "refund" => Ok(TransactionType::Refund),
+            "intent_status_update" => Ok(TransactionType::IntentStatusUpdate),
             _ => Err(anyhow::anyhow!("Unknown transaction type: {}", tx_type_str)),
         }
     }
@@ -56,6 +57,41 @@ impl MpcNetworkLayer {
                     "⚠️ [SIGNING] Received withdraw-liquidity transaction ID for intent {} but this flow is not implemented yet",
                     intent_hash
                 );
+                Ok(())
+            }
+            "intent_status_update" => {
+                // For intent status update, only mark intent as Solved
+                // Do NOT update network_to_target_tx_id (it's already set)
+                info!(
+                    "✅ [INTENT_STATUS_UPDATE] Marking intent {} as Solved (contract update completed)",
+                    intent_hash
+                );
+                
+                if let Some(user) = user_intent_manager.get_user_by_intent_hash(intent_hash).await {
+                    if let Err(e) = user_intent_manager
+                        .update_intent_status(&user.ethereum_address, intent_hash, crate::types::IntentStatus::Solved)
+                        .await
+                    {
+                        error!(
+                            "⚠️ [INTENT_STATUS_UPDATE] Failed to update intent status to Solved: {}",
+                            e
+                        );
+                        return Err(anyhow::anyhow!("Failed to update intent status: {}", e));
+                    } else {
+                        info!(
+                            "✅ [INTENT_STATUS_UPDATE] Marked intent {} as Solved for user {}",
+                            intent_hash,
+                            user.ethereum_address
+                        );
+                    }
+                } else {
+                    warn!(
+                        "⚠️ [INTENT_STATUS_UPDATE] Could not find user for intent {} to update status",
+                        intent_hash
+                    );
+                    return Err(anyhow::anyhow!("User not found for intent {}", intent_hash));
+                }
+                
                 Ok(())
             }
             _ => Err(anyhow::anyhow!(
