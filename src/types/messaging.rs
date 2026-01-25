@@ -227,7 +227,8 @@ pub enum GossipsubMessage {
         node_id: String,
     },
     TransactionErrorBroadcast {
-        intent_hash: Option<String>,
+        /// Intent hashes that failed. Empty for reward/withdraw.
+        intent_hashes: Vec<String>,
         error_message: String,
         /// "user_to_network", "network_to_target", or reward types
         transaction_type: String,

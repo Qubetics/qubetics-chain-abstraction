@@ -2819,10 +2819,10 @@ impl MpcNetworkLayer {
                                                         );
                                                     }
                                                     
-                                                    // Broadcast the error
+                                                    // Broadcast the error (batch-aware: single intent as one-element vec)
                                                     if let Some(signing_node) = &self.signing_node {
                                                         signing_node.broadcast_transaction_error(
-                                                            Some(&intent_hash),
+                                                            Some(vec![intent_hash.clone()]),
                                                             &error_message,
                                                             "network_to_target",
                                                             None,
@@ -2954,7 +2954,7 @@ impl MpcNetworkLayer {
                                     };
                                     
                                     signing_node.broadcast_transaction_error(
-                                        Some(&intent_hash),
+                                        Some(vec![intent_hash.clone()]),
                                         &error_message,
                                         transaction_type_str,
                                         None,

@@ -497,7 +497,7 @@ impl MpcNetworkLayer {
                 }
             }
             GossipsubMessage::TransactionErrorBroadcast {
-                intent_hash,
+                intent_hashes,
                 error_message,
                 transaction_type: _transaction_type,
                 solver_address,
@@ -507,43 +507,32 @@ impl MpcNetworkLayer {
                     "📡 [NETWORK] Received transaction error broadcast from node {}",
                     node_id
                 );
-                if let Some(hash) = &intent_hash {
-                    info!("🔗 [NETWORK] Intent hash: {}", hash);
+                if !intent_hashes.is_empty() {
+                    info!("🔗 [NETWORK] Intent hashes: {} intent(s)", intent_hashes.len());
                 } else if let Some(solver) = &solver_address {
                     info!("🧩 [NETWORK] Solver address: {}", solver);
                 } else {
-                    info!("ℹ️ [NETWORK] No intent hash or solver address supplied with transaction error broadcast");
+                    info!("ℹ️ [NETWORK] No intent hashes or solver address supplied with transaction error broadcast");
                 }
 
-                // Store the error message in our local user registry
+                // Store the error in our local user registry (one store per intent)
                 if let Some(user_intent_manager) = &self.user_intent_manager {
-                    match (intent_hash.as_ref(), solver_address.as_ref()) {
-                        (Some(intent_hash), _) => {
-                            // Regular transaction error - store with intent hash
-                            match user_intent_manager
-                                .store_transaction_error(
-                                    intent_hash,
-                                    &error_message,
-                                    Some(&node_id),
-                                )
+                    if !intent_hashes.is_empty() {
+                        for h in &intent_hashes {
+                            if let Err(e) = user_intent_manager
+                                .store_transaction_error(h, &error_message, Some(&node_id))
                                 .await
                             {
-                                Ok(()) => {}
-                                Err(e) => {
-                                    error!(
-                                        "❌ [NETWORK] Failed to store synchronized transaction error: {}",
-                                        e
-                                    );
-                                }
+                                error!(
+                                    "❌ [NETWORK] Failed to store synchronized transaction error for {}: {}",
+                                    h, e
+                                );
                             }
                         }
-                        (None, Some(_solver_addr)) => {
-                            // Reward transaction error - just log for now
-                            // The user_intent_manager might need a method to store reward transaction errors
-                        }
-                        _ => {
-                            warn!("⚠️ [NETWORK] Transaction error broadcast missing both intent hash and solver address");
-                        }
+                    } else if solver_address.is_some() {
+                        // Reward/withdraw transaction error - just log for now
+                    } else {
+                        warn!("⚠️ [NETWORK] Transaction error broadcast missing both intent hashes and solver address");
                     }
                 } else {
                     warn!("❌ [NETWORK] No user registry available to store synchronized transaction error");
