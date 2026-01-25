@@ -1556,32 +1556,34 @@ impl SigningNode {
                 );
             }
 
-            // PARALLEL: If BTC batch, also trigger contract update round in parallel
-            if batch_type == crate::types::BatchType::BTC {
-                info!(
-                    "🔄 [CLOCK] BTC batch detected, triggering parallel contract update round..."
-                );
-                
-                // Spawn async task to trigger contract update round (don't block batch processing)
-                let signing_node_clone = self.clone();
-                
-                tokio::spawn(async move {
-                    if let Err(e) = signing_node_clone
-                        .trigger_btc_contract_update_round_parallel()
-                        .await
-                    {
-                        error!(
-                            "❌ [CLOCK] Failed to trigger BTC contract update round: {}",
-                            e
-                        );
-                    }
-                });
-            }
         } else {
             info!(
                 "ℹ️  [CLOCK] No {} intents ready for processing in this cycle",
                 target_chain.to_uppercase()
             );
+        }
+
+        // PARALLEL: If BTC batch cycle (even if no new BTC intents), also trigger contract update round
+        // This ensures pending contract updates are processed even if no new BTC transfers occur
+        if batch_type == crate::types::BatchType::BTC {
+            info!(
+                "🔄 [CLOCK] BTC cycle detected, triggering parallel contract update round..."
+            );
+            
+            // Spawn async task to trigger contract update round (don't block batch processing)
+            let signing_node_clone = self.clone();
+            
+            tokio::spawn(async move {
+                if let Err(e) = signing_node_clone
+                    .trigger_btc_contract_update_round_parallel()
+                    .await
+                {
+                    error!(
+                        "❌ [CLOCK] Failed to trigger BTC contract update round: {}",
+                        e
+                    );
+                }
+            });
         }
         
         Ok(())
@@ -1671,19 +1673,16 @@ impl SigningNode {
             .as_ref()
             .ok_or_else(|| anyhow!("User intent manager not available"))?;
 
-        // Get intents with network_to_target_tx_id but NOT Solved
-        let pending_intents = user_intent_manager
-            .get_intents_awaiting_network_fulfillment(None)
-            .await;
+        // Get database to access IntentStorage directly
+        let database = user_intent_manager.get_database();
+        let intent_storage = crate::database::storage::IntentStorage::new(database.clone());
 
-        // Filter: must have network_to_target_tx_id, status NOT Solved, and BTC target chain
+        // Get intents with BOTH user_to_network_tx_id AND network_to_target_tx_id (completed intents)
+        let completed_intents = intent_storage.get_completed_intents().await?;
+
+        // Filter: must be BTC target chain AND status NOT Solved
         let mut eligible_intents = Vec::new();
-        for (intent_hash, intent, tx_ids) in pending_intents {
-            // Must have network_to_target_tx_id
-            if tx_ids.network_to_target_tx_id.is_none() {
-                continue;
-            }
-
+        for (intent_hash, intent, tx_ids) in completed_intents {
             // Must be BTC target chain
             let target_chain_lower = intent.target_chain.to_lowercase();
             if target_chain_lower != "bitcoin" && target_chain_lower != "btc" {
@@ -1776,19 +1775,16 @@ impl SigningNode {
             .as_ref()
             .ok_or_else(|| anyhow!("User intent manager not available"))?;
 
-        // Get intents with network_to_target_tx_id but NOT Solved
-        let pending_intents = user_intent_manager
-            .get_intents_awaiting_network_fulfillment(None)
-            .await;
+        // Get database to access IntentStorage directly
+        let database = user_intent_manager.get_database();
+        let intent_storage = crate::database::storage::IntentStorage::new(database.clone());
 
-        // Filter: must have network_to_target_tx_id but status is NOT Solved
+        // Get intents with BOTH user_to_network_tx_id AND network_to_target_tx_id (completed intents)
+        let completed_intents = intent_storage.get_completed_intents().await?;
+
+        // Filter: must have BOTH TXIDs, BTC target chain, and status NOT Solved
         let mut eligible_intents = Vec::new();
-        for (intent_hash, intent, tx_ids) in pending_intents {
-            // Must have network_to_target_tx_id
-            if tx_ids.network_to_target_tx_id.is_none() {
-                continue;
-            }
-
+        for (intent_hash, intent, tx_ids) in completed_intents {
             // Check if intent status is NOT Solved
             if let Some(user) = user_intent_manager
                 .get_user_by_intent_hash(&intent_hash)
