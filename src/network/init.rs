@@ -53,7 +53,7 @@ impl MpcNetworkLayer {
         // Formula: (users * avg_messages_per_user * burst_factor) + retry_buffer
         // For high load: (50 * 15 * 3) + 2000 = 2250 + large safety margin
         // Increased significantly to handle parallel burst traffic without channel blocking
-         // Increased to 50000 to prevent channel overflow and message loss under extreme load
+        // Increased to 50000 to prevent channel overflow and message loss under extreme load
         let (tx, rx) = mpsc::channel(50000); // Increased from 10000 to 50000 to prevent overflow and message loss
         let tx_for_retry = tx.clone();
 
@@ -88,6 +88,8 @@ impl MpcNetworkLayer {
             // Removed: deterministic_selection field
             retry_manager: Some(RetryManager::new(tx_for_retry)),
             channel_health,
+            outbound_inflight: Arc::new(Mutex::new(HashMap::new())),
+            outbound_retry: Arc::new(Mutex::new(HashMap::new())),
         };
 
         this.bootstrap_peer_ids = this
@@ -208,8 +210,8 @@ impl MpcNetworkLayer {
                 };
 
                 let gossipsub_config = gossipsub::ConfigBuilder::default()
-                    .heartbeat_interval(Duration::from_secs(1))  // Default heartbeat interval (1s)
-                    .validation_mode(gossipsub::ValidationMode::Strict)  // Faster validation (changed from Strict)
+                    .heartbeat_interval(Duration::from_secs(1)) // Default heartbeat interval (1s)
+                    .validation_mode(gossipsub::ValidationMode::Strict) // Faster validation (changed from Strict)
                     .message_id_fn(message_id_fn)
                     .flood_publish(false)
                     .fanout_ttl(Duration::from_secs(60))

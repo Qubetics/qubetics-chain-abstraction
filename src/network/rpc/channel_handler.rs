@@ -1376,6 +1376,44 @@ impl MpcNetworkLayer {
                     );
                 }
 
+                // PACING: Check per-peer in-flight count before sending
+                {
+                    use crate::network::rpc::MAX_OUTBOUND_INFLIGHT_PER_PEER;
+                    let mut inflight = self.outbound_inflight.lock().await;
+                    let count = inflight.get(&peer_id).copied().unwrap_or(0);
+                    
+                    if count >= MAX_OUTBOUND_INFLIGHT_PER_PEER {
+                        // At capacity - re-queue with delay
+                        info!(
+                            "⏸️ [DKG-SECURE] Peer {} at capacity ({}/{}), re-queuing share {}",
+                            target_peer_id, count, MAX_OUTBOUND_INFLIGHT_PER_PEER, share_index
+                        );
+                        let tx = self.message_tx.clone();
+                        let msg = ChannelMessage::UnicastShareDKG {
+                            target_peer_id: target_peer_id.clone(),
+                            from_node_id: from_node_id.clone(),
+                            share_index,
+                            share_value: share_value.clone(),
+                            commitments: commitments.clone(),
+                            round,
+                            retry_count,
+                        };
+                        tokio::spawn(async move {
+                            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                            let _ = tx.send(msg).await;
+                        });
+                        return Ok(());
+                    }
+                    
+                    // Increment in-flight count
+                    *inflight.entry(peer_id).or_insert(0) += 1;
+                }
+
+                // Clone values for retry registry before creating RPC request
+                let from_node_id_clone = from_node_id.clone();
+                let share_value_clone = share_value.clone();
+                let commitments_clone = commitments.clone();
+
                 // Create the RPC request
                 let request = RPCRequest::SendDKGShare {
                     from_node_id,
@@ -1390,6 +1428,25 @@ impl MpcNetworkLayer {
                     .behaviour_mut()
                     .request_response
                     .send_request(&peer_id, request);
+
+                // RETRY: Insert into outbound_retry registry
+                {
+                    use crate::network::rpc::{OutboundRetryEntry, RetryableUnicast};
+                    let retry_msg = RetryableUnicast::UnicastShareDKG {
+                        target_peer_id: target_peer_id.clone(),
+                        from_node_id: from_node_id_clone,
+                        share_index,
+                        share_value: share_value_clone,
+                        commitments: commitments_clone,
+                        round,
+                    };
+                    let entry = OutboundRetryEntry {
+                        peer: peer_id,
+                        retry_count,
+                        msg: retry_msg,
+                    };
+                    self.outbound_retry.lock().await.insert(request_id, entry);
+                }
 
                 info!(
                     "✅ [DKG-SECURE] Share index {} sent via P2P RPC to {} (request_id: {:?}, connected: {})",
@@ -1512,6 +1569,43 @@ impl MpcNetworkLayer {
                     );
                 }
 
+                // PACING: Check per-peer in-flight count before sending
+                {
+                    use crate::network::rpc::MAX_OUTBOUND_INFLIGHT_PER_PEER;
+                    let mut inflight = self.outbound_inflight.lock().await;
+                    let count = inflight.get(&peer_id).copied().unwrap_or(0);
+                    
+                    if count >= MAX_OUTBOUND_INFLIGHT_PER_PEER {
+                        // At capacity - re-queue with delay
+                        info!(
+                            "⏸️ [REFRESH-SECURE] Peer {} at capacity ({}/{}), re-queuing share {}",
+                            target_peer_id, count, MAX_OUTBOUND_INFLIGHT_PER_PEER, share_index
+                        );
+                        let tx = self.message_tx.clone();
+                        let msg = ChannelMessage::UnicastRefreshShare {
+                            target_peer_id: target_peer_id.clone(),
+                            from_node_id: from_node_id.clone(),
+                            share_index,
+                            share_value: share_value.clone(),
+                            commitments: commitments.clone(),
+                            retry_count,
+                        };
+                        tokio::spawn(async move {
+                            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                            let _ = tx.send(msg).await;
+                        });
+                        return Ok(());
+                    }
+                    
+                    // Increment in-flight count
+                    *inflight.entry(peer_id).or_insert(0) += 1;
+                }
+
+                // Clone values for retry registry before creating RPC request
+                let from_node_id_clone = from_node_id.clone();
+                let share_value_clone = share_value.clone();
+                let commitments_clone = commitments.clone();
+
                 // Create the RPC request
                 let request = RPCRequest::SendRefreshShare {
                     from_node_id,
@@ -1525,6 +1619,24 @@ impl MpcNetworkLayer {
                     .behaviour_mut()
                     .request_response
                     .send_request(&peer_id, request);
+
+                // RETRY: Insert into outbound_retry registry
+                {
+                    use crate::network::rpc::{OutboundRetryEntry, RetryableUnicast};
+                    let retry_msg = RetryableUnicast::UnicastRefreshShare {
+                        target_peer_id: target_peer_id.clone(),
+                        from_node_id: from_node_id_clone,
+                        share_index,
+                        share_value: share_value_clone,
+                        commitments: commitments_clone,
+                    };
+                    let entry = OutboundRetryEntry {
+                        peer: peer_id,
+                        retry_count,
+                        msg: retry_msg,
+                    };
+                    self.outbound_retry.lock().await.insert(request_id, entry);
+                }
 
                 info!(
                     "✅ [REFRESH-SECURE] Refresh share index {} sent via P2P RPC to {} (request_id: {:?}, connected: {})",
@@ -1651,17 +1763,67 @@ impl MpcNetworkLayer {
                     return Ok(());
                 }
 
+                // PACING: Check per-peer in-flight count before sending
+                {
+                    use crate::network::rpc::MAX_OUTBOUND_INFLIGHT_PER_PEER;
+                    let mut inflight = self.outbound_inflight.lock().await;
+                    let count = inflight.get(&peer_id).copied().unwrap_or(0);
+                    
+                    if count >= MAX_OUTBOUND_INFLIGHT_PER_PEER {
+                        // At capacity - re-queue with delay
+                        info!(
+                            "⏸️ [CRITICAL-UNICAST] Peer {} at capacity ({}/{}), re-queuing message",
+                            target_peer_id, count, MAX_OUTBOUND_INFLIGHT_PER_PEER
+                        );
+                        let tx = self.message_tx.clone();
+                        let msg = ChannelMessage::UnicastCritical {
+                            target_peer_id: target_peer_id.clone(),
+                            topic,
+                            data,
+                            message_type,
+                            message_id,
+                            retry_count,
+                        };
+                        tokio::spawn(async move {
+                            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                            let _ = tx.send(msg).await;
+                        });
+                        return Ok(());
+                    }
+                    
+                    // Increment in-flight count
+                    *inflight.entry(peer_id).or_insert(0) += 1;
+                }
+
                 let request = RPCRequest::DeliverCriticalGossip {
-                    topic,
-                    data,
-                    message_type,
-                    message_id,
+                    topic: topic.clone(),
+                    data: data.clone(),
+                    message_type: message_type.clone(),
+                    message_id: message_id.clone(),
                 };
 
                 let request_id = swarm
                     .behaviour_mut()
                     .request_response
                     .send_request(&peer_id, request);
+
+                // RETRY: Insert into outbound_retry registry
+                {
+                    use crate::network::rpc::{OutboundRetryEntry, RetryableUnicast};
+                    let retry_msg = RetryableUnicast::UnicastCritical {
+                        target_peer_id: target_peer_id.clone(),
+                        topic,
+                        data,
+                        message_type,
+                        message_id,
+                    };
+                    let entry = OutboundRetryEntry {
+                        peer: peer_id,
+                        retry_count,
+                        msg: retry_msg,
+                    };
+                    self.outbound_retry.lock().await.insert(request_id, entry);
+                }
 
                 info!(
                     "✅ [CRITICAL-UNICAST] Critical message sent to {} (request_id: {:?}, connected: {})",
@@ -1783,9 +1945,40 @@ impl MpcNetworkLayer {
                     );
                 }
 
+                // PACING: Check per-peer in-flight count before sending
+                {
+                    use crate::network::rpc::MAX_OUTBOUND_INFLIGHT_PER_PEER;
+                    let mut inflight = self.outbound_inflight.lock().await;
+                    let count = inflight.get(&peer_id).copied().unwrap_or(0);
+                    
+                    if count >= MAX_OUTBOUND_INFLIGHT_PER_PEER {
+                        // At capacity - re-queue with delay
+                        info!(
+                            "⏸️ [SIGNING-SECURE] Peer {} at capacity ({}/{}), re-queuing ECDSA signature for round {}",
+                            target_peer_id, count, MAX_OUTBOUND_INFLIGHT_PER_PEER, round
+                        );
+                        let tx = self.message_tx.clone();
+                        let msg = ChannelMessage::UnicastECDSASignature {
+                            target_peer_id: target_peer_id.clone(),
+                            from_node_id,
+                            signature_data,
+                            round,
+                            retry_count,
+                        };
+                        tokio::spawn(async move {
+                            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                            let _ = tx.send(msg).await;
+                        });
+                        return Ok(());
+                    }
+                    
+                    // Increment in-flight count
+                    *inflight.entry(peer_id).or_insert(0) += 1;
+                }
+
                 let request = RPCRequest::SendECDSASignature {
-                    from_node_id,
-                    signature_data,
+                    from_node_id: from_node_id.clone(),
+                    signature_data: signature_data.clone(),
                     round,
                 };
 
@@ -1793,6 +1986,23 @@ impl MpcNetworkLayer {
                     .behaviour_mut()
                     .request_response
                     .send_request(&peer_id, request);
+
+                // RETRY: Insert into outbound_retry registry
+                {
+                    use crate::network::rpc::{OutboundRetryEntry, RetryableUnicast};
+                    let retry_msg = RetryableUnicast::UnicastECDSASignature {
+                        target_peer_id: target_peer_id.clone(),
+                        from_node_id,
+                        signature_data,
+                        round,
+                    };
+                    let entry = OutboundRetryEntry {
+                        peer: peer_id,
+                        retry_count,
+                        msg: retry_msg,
+                    };
+                    self.outbound_retry.lock().await.insert(request_id, entry);
+                }
 
                 info!(
                     "✅ [SIGNING-SECURE] ECDSA signature for round {} sent via P2P RPC to {} (request_id: {:?}, connected: {})",
@@ -1915,9 +2125,40 @@ impl MpcNetworkLayer {
                     );
                 }
 
+                // PACING: Check per-peer in-flight count before sending
+                {
+                    use crate::network::rpc::MAX_OUTBOUND_INFLIGHT_PER_PEER;
+                    let mut inflight = self.outbound_inflight.lock().await;
+                    let count = inflight.get(&peer_id).copied().unwrap_or(0);
+                    
+                    if count >= MAX_OUTBOUND_INFLIGHT_PER_PEER {
+                        // At capacity - re-queue with delay
+                        info!(
+                            "⏸️ [SIGNING-SECURE] Peer {} at capacity ({}/{}), re-queuing BTC signatures for round {}",
+                            target_peer_id, count, MAX_OUTBOUND_INFLIGHT_PER_PEER, round
+                        );
+                        let tx = self.message_tx.clone();
+                        let msg = ChannelMessage::UnicastBtcSignatures {
+                            target_peer_id: target_peer_id.clone(),
+                            from_node_id,
+                            signature_data,
+                            round,
+                            retry_count,
+                        };
+                        tokio::spawn(async move {
+                            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                            let _ = tx.send(msg).await;
+                        });
+                        return Ok(());
+                    }
+                    
+                    // Increment in-flight count
+                    *inflight.entry(peer_id).or_insert(0) += 1;
+                }
+
                 let request = RPCRequest::SendBtcSignatures {
-                    from_node_id,
-                    signature_data,
+                    from_node_id: from_node_id.clone(),
+                    signature_data: signature_data.clone(),
                     round,
                 };
 
@@ -1925,6 +2166,23 @@ impl MpcNetworkLayer {
                     .behaviour_mut()
                     .request_response
                     .send_request(&peer_id, request);
+
+                // RETRY: Insert into outbound_retry registry
+                {
+                    use crate::network::rpc::{OutboundRetryEntry, RetryableUnicast};
+                    let retry_msg = RetryableUnicast::UnicastBtcSignatures {
+                        target_peer_id: target_peer_id.clone(),
+                        from_node_id,
+                        signature_data,
+                        round,
+                    };
+                    let entry = OutboundRetryEntry {
+                        peer: peer_id,
+                        retry_count,
+                        msg: retry_msg,
+                    };
+                    self.outbound_retry.lock().await.insert(request_id, entry);
+                }
 
                 info!(
                     "✅ [SIGNING-SECURE] BTC signatures for round {} sent via P2P RPC to {} (request_id: {:?}, connected: {})",
@@ -2044,9 +2302,40 @@ impl MpcNetworkLayer {
                     );
                 }
 
+                // PACING: Check per-peer in-flight count before sending
+                {
+                    use crate::network::rpc::MAX_OUTBOUND_INFLIGHT_PER_PEER;
+                    let mut inflight = self.outbound_inflight.lock().await;
+                    let count = inflight.get(&peer_id).copied().unwrap_or(0);
+                    
+                    if count >= MAX_OUTBOUND_INFLIGHT_PER_PEER {
+                        // At capacity - re-queue with delay
+                        info!(
+                            "⏸️ [SIGNING-SECURE] Peer {} at capacity ({}/{}), re-queuing transaction data for round {}",
+                            target_peer_id, count, MAX_OUTBOUND_INFLIGHT_PER_PEER, round
+                        );
+                        let tx = self.message_tx.clone();
+                        let msg = ChannelMessage::UnicastTransactionData {
+                            target_peer_id: target_peer_id.clone(),
+                            from_node_id,
+                            transaction_data,
+                            round,
+                            retry_count,
+                        };
+                        tokio::spawn(async move {
+                            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                            let _ = tx.send(msg).await;
+                        });
+                        return Ok(());
+                    }
+                    
+                    // Increment in-flight count
+                    *inflight.entry(peer_id).or_insert(0) += 1;
+                }
+
                 let request = RPCRequest::SendTransactionData {
-                    from_node_id,
-                    transaction_data,
+                    from_node_id: from_node_id.clone(),
+                    transaction_data: transaction_data.clone(),
                     round,
                 };
 
@@ -2054,6 +2343,23 @@ impl MpcNetworkLayer {
                     .behaviour_mut()
                     .request_response
                     .send_request(&peer_id, request);
+
+                // RETRY: Insert into outbound_retry registry
+                {
+                    use crate::network::rpc::{OutboundRetryEntry, RetryableUnicast};
+                    let retry_msg = RetryableUnicast::UnicastTransactionData {
+                        target_peer_id: target_peer_id.clone(),
+                        from_node_id,
+                        transaction_data,
+                        round,
+                    };
+                    let entry = OutboundRetryEntry {
+                        peer: peer_id,
+                        retry_count,
+                        msg: retry_msg,
+                    };
+                    self.outbound_retry.lock().await.insert(request_id, entry);
+                }
 
                 info!(
                     "✅ [SIGNING-SECURE] Transaction data for round {} sent via P2P RPC to {} (request_id: {:?}, connected: {})",

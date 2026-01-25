@@ -198,6 +198,18 @@ pub struct MpcNetworkLayer {
     /// Retry manager for critical messages with exponential backoff
     pub(crate) retry_manager: Option<RetryManager>,
     pub(crate) channel_health: Arc<crate::network::rpc::channel_monitor::ChannelHealthMonitor>,
+
+    /// Per-peer in-flight request counter for sender pacing (outbound timeout mitigation)
+    pub(crate) outbound_inflight: Arc<Mutex<HashMap<PeerId, u32>>>,
+    /// Outbound retry registry for timeout retry mechanism
+    pub(crate) outbound_retry: Arc<
+        Mutex<
+            HashMap<
+                libp2p::request_response::OutboundRequestId,
+                crate::network::rpc::outbound_retry::OutboundRetryEntry,
+            >,
+        >,
+    >,
 }
 
 impl MpcNetworkLayer {
