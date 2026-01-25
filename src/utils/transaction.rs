@@ -1518,12 +1518,11 @@ pub async fn create_solver_remove_liquidity_transaction(
     let calldata =
         encode_remove_liquidity_calldata(solver_id, asset_chain_id, amount, transaction_hash)
             .ok_or_else(|| anyhow::anyhow!("Failed to encode removeLiquidity calldata"))?;
-    let calldata_hex = format!("0x{}", hex::encode(&calldata));
     info!(
-        "🔧 [CONTRACT][LIQ] removeLiquidity calldata: {} ({} bytes)",
-        calldata_hex,
+        "🔧 [CONTRACT][LIQ] removeLiquidity calldata encoded ({} bytes)",
         calldata.len()
     );
+    let calldata_hex = format!("0x{}", hex::encode(&calldata));
 
     let estimated_gas = estimate_gas_for_deposit_intent(
         from_address,
@@ -2176,10 +2175,6 @@ pub fn create_transaction_for_signing(tx: &EthereumTransaction) -> Vec<u8> {
     final_encoder.data.extend_from_slice(&content);
 
     let final_bytes = final_encoder.finalize();
-    info!(
-        "🎁 [RLP_DUMP] Transaction RLP Bytes: {}",
-        hex::encode(&final_bytes)
-    );
     final_bytes
 }
 

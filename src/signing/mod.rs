@@ -337,12 +337,6 @@ impl SigningNode {
     }
 
     pub async fn broadcast(&self, topic: &str, data: &[u8]) -> Result<()> {
-        info!(
-            "📤 [SIGNING] Node {} broadcasting to topic: {}",
-            self.id, topic
-        );
-        info!("📊 [SIGNING] Message size: {} bytes", data.len());
-
         self.message_tx
             .send(ChannelMessage::Broadcast {
                 topic: topic.to_string(),
@@ -350,10 +344,6 @@ impl SigningNode {
             })
             .await?;
 
-        info!(
-            "✅ [SIGNING] Node {} successfully queued broadcast message for topic: {}",
-            self.id, topic
-        );
         Ok(())
     }
 
@@ -1984,8 +1974,8 @@ impl SigningNode {
         
         if let Some((_, tx_bytes, intent_hash, transaction_type, request_id, _original_request)) = pending_transactions.get(&round) {
             info!(
-                "📤 [SIGNING] Sending transaction data for round {} to final node {} (tx_bytes: {} bytes, request_id: {:?})",
-                round, final_node_id, tx_bytes.len(), request_id
+                "📤 [SIGNING] Sending transaction data for round {} to final node {}",
+                round, final_node_id
             );
             
             let tx_data_msg = SigningMessage::TransactionDataForFinalNode {
@@ -3279,8 +3269,8 @@ impl SigningNode {
         request_id: Option<String>,
     ) -> Result<()> {
         info!(
-            "📥 [SIGNING] Final node {} received transaction data from {} for round {} (tx_bytes: {} bytes)",
-            self.id, from, round, tx_bytes.len()
+            "📥 [SIGNING] Final node {} received transaction data from {} for round {}",
+            self.id, from, round
         );
 
         // Check if this node is the final node for the specific round

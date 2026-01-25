@@ -158,11 +158,6 @@ impl MpcNetworkLayer {
 
                 // ALWAYS send ACK for critical messages - this is critical for retry mechanism
                 // Send acknowledgment BEFORE processing to ensure it's sent even if processing fails
-                info!(
-                    "📤 [RETRY] Sending ACK for VrfSelectedNodes round {} from selector {} (this node: {})",
-                    round, selector_node_id, local_node_id
-                );
-
                 // Generate message ID to verify it matches what sender expects
                 let msg_id_result =
                     crate::network::rpc::retry_manager::RetryManager::generate_message_id(
@@ -171,12 +166,7 @@ impl MpcNetworkLayer {
                     );
 
                 match &msg_id_result {
-                    Ok(msg_id) => {
-                        info!(
-                            "🔑 [RETRY] Generated message ID for ACK: {:?} (round={}, selector={})",
-                            msg_id, round, selector_node_id
-                        );
-                    }
+                    Ok(_msg_id) => {}
                     Err(e) => {
                         error!(
                             "❌ [RETRY] CRITICAL: Failed to generate message ID for ACK: {}",
@@ -193,10 +183,6 @@ impl MpcNetworkLayer {
                     &GossipsubMessage::VrfSelectedNodes(broadcast_msg.clone()),
                 )
                 .await;
-                info!(
-                    "✅ [RETRY] send_critical_message_ack completed for round {} from selector {}",
-                    round, selector_node_id
-                );
 
                 // Store the received VRF selection in the signing node's VRF selector
                 if let Some(signing_node) = &mut self.signing_node {
@@ -418,7 +404,7 @@ impl MpcNetworkLayer {
                     node_id
                 );
                 if !intent_hashes.is_empty() {
-                    info!("🔗 [NETWORK] Intent hashes: {:?}", intent_hashes);
+                    info!("🔗 [NETWORK] Intent hashes: {} intent(s)", intent_hashes.len());
                 } else if let Some(solver) = &solver_address {
                     info!("🧩 [NETWORK] Solver address: {}", solver);
                 } else {
@@ -777,8 +763,6 @@ impl MpcNetworkLayer {
                                         crate::utils::transaction::create_transaction_for_signing(
                                             eth_tx,
                                         );
-                                    debug!("→ RLP payload: 0x{}", hex::encode(&tx_bytes));
-
                                     // Use the signing_key that was already fetched earlier to avoid redundant fetching
                                     let user_tweaked_share = signing_key;
 
@@ -1001,11 +985,6 @@ impl MpcNetworkLayer {
                 message_id,
                 node_id,
             } => {
-                info!(
-                    "✅ [RETRY] Received ACK for message type {} (id: {}) from {}",
-                    message_type, message_id, node_id
-                );
-
                 // Parse message type and create message ID
                 let msg_type = match message_type.as_str() {
                     "TransactionIdBroadcast" => crate::network::rpc::retry_manager::CriticalMessageType::TransactionIdBroadcast,
@@ -1021,11 +1000,6 @@ impl MpcNetworkLayer {
                     unique_id: message_id.clone(),
                 };
 
-                info!(
-                    "🔍 [RETRY] Processing ACK: type={:?}, id={}, from={}",
-                    msg_type, message_id, node_id
-                );
-
                 // Record acknowledgment
                 if let Some(retry_mgr) = &self.retry_manager {
                     match retry_mgr
@@ -1035,9 +1009,7 @@ impl MpcNetworkLayer {
                         Ok(true) => {
                             info!("🎉 [RETRY] ACK recorded - all nodes have acknowledged!");
                         }
-                        Ok(false) => {
-                            info!("📝 [RETRY] ACK recorded - still waiting for more nodes");
-                        }
+                        Ok(false) => {}
                         Err(e) => {
                             error!("❌ [RETRY] Failed to record acknowledgment: {}", e);
                             error!(
@@ -1103,11 +1075,6 @@ impl MpcNetworkLayer {
                     timestamp,
                     intent_hashes.len()
                 );
-
-                // Log the intent hashes
-                for (i, hash) in intent_hashes.iter().enumerate() {
-                    info!("  📋 [BATCH] Intent {}: {}", i + 1, hash);
-                }
 
                 // SHARED: Fetch intent details from database (same for BTC and TICS)
                 let mut intent_data = Vec::new();

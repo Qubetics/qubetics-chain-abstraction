@@ -639,31 +639,13 @@ impl MpcNetworkLayer {
                         .map(|d| format!("0x{}", hex::encode(d)))
                         .unwrap_or_else(|| "0x".to_string()),
                 };
-                info!(
-                    "🔧 [CONTRACT] Contract transaction: {:?}",
-                    contract_tx.clone()
-                );
-                info!(
-                    "🔧 [CONTRACT] Contract transaction data: {:?}",
-                    contract_tx.data
-                );
-                info!(
-                    "🔧 [CONTRACT] Contract transaction data hex: {:?}",
-                    hex::encode(contract_tx.data.clone())
-                );
-                // info!("🔧 [CONTRACT] Contract transaction data length: {:?}", contract_tx.data.len());
-                // info!("🔧 [COONTRACT] Contract transaction data as ref: {:?}", contract_tx.data.as_ref());
-                // info!("🔧 [CNTRACT] Contract transaction data as ref hex: {:?}", hex::encode(contract_tx.data.as_ref()));
-                // info!("🔧 [CONTRACT] Contract transaction data as ref as ref: {:?}", contract_tx.data.as_ref().as_ref());
-                // info!("🔧 [CONTRACT] Contract transaction data as ref as ref hex: {:?}", hex::encode(contract_tx.data.as_ref().as_ref()));
                 let contract_tx_bytes =
                     crate::utils::transaction::create_transaction_for_signing_contract(
                         &contract_tx,
                     );
                 info!(
-                    "🔐 [SOLVER] Starting contract update signing for {}: 0x{}",
-                    solver_address,
-                    hex::encode(&contract_tx_bytes)
+                    "🔐 [SOLVER] Starting contract update signing for {}",
+                    solver_address
                 );
 
                 let contract_chain_handler = signing_node.get_contract_chain_handler().clone();
@@ -1006,11 +988,7 @@ impl MpcNetworkLayer {
                             if let Some(msg_type) = crate::network::rpc::retry_manager::RetryManager::is_critical_message(&gossip_msg) {
                                 // Generate message ID to check if already tracked
                                 if let Ok(message_id) = crate::network::rpc::retry_manager::RetryManager::generate_message_id(msg_type, &gossip_msg) {
-                                    // Check if already being tracked (this is a retry, skip registration)
-                                    if retry_mgr.is_message_tracked(&message_id).await {
-                                        info!("🔄 [RETRY] Message {:?} already tracked, skipping registration (this is a retry)", message_id);
-                                    } else {
-                                        // Get expected nodes (all active nodes except ourselves)
+                                    if !retry_mgr.is_message_tracked(&message_id).await {
                                         let expected_nodes: std::collections::HashSet<PeerId> = self
                                             .node_manager
                                             .get_active_nodes()
@@ -1019,26 +997,13 @@ impl MpcNetworkLayer {
                                             .collect();
 
                                         if !expected_nodes.is_empty() {
-                                            // Check if already tracked (retry case)
-                                            if retry_mgr.is_message_tracked(&message_id).await {
-                                                info!("🔄 [RETRY] Message {:?} already tracked, skipping registration (this is a retry)", message_id);
-                                            } else {
-                                                // Log expected nodes for debugging
-                                                let expected_list: Vec<String> = expected_nodes.iter().map(|p| p.to_string()).collect();
-                                                info!(
-                                                    "📋 [RETRY] Registering message {:?} - expecting ACKs from {} nodes: {:?}",
-                                                    message_id, expected_nodes.len(), expected_list
-                                                );
-                                                
-                                                // Register with retry manager (first time only)
-                                                if let Err(e) = retry_mgr.register_message(
-                                                    message_id.clone(),
-                                                    topic.clone(),
-                                                    data.clone(),
-                                                    expected_nodes.clone(),
-                                                ).await {
-                                                    error!("❌ [RETRY] Failed to register critical message for retry: {}", e);
-                                                }
+                                            if let Err(e) = retry_mgr.register_message(
+                                                message_id.clone(),
+                                                topic.clone(),
+                                                data.clone(),
+                                                expected_nodes.clone(),
+                                            ).await {
+                                                error!("❌ [RETRY] Failed to register critical message for retry: {}", e);
                                             }
                                         } else {
                                             warn!("⚠️ [RETRY] No expected nodes - skipping retry registration for {:?}", message_id);
@@ -1337,8 +1302,8 @@ impl MpcNetworkLayer {
                 if !is_connected && retry_count < MAX_RETRIES {
                     // Not connected - schedule retry with exponential backoff
                     let delay_ms = 1000 * (1 << retry_count.min(5)); // 1s, 2s, 4s, 8s, 16s, 32s max
-                    info!(
-                        "🔄 [DKG-SECURE] Peer send {} not connected - scheduling retry {} in {}ms",
+                    debug!(
+                        "🔄 [DKG-SECURE] Peer {} not connected - scheduling retry {} in {}ms",
                         target_peer_id,
                         retry_count + 1,
                         delay_ms
@@ -1532,7 +1497,7 @@ impl MpcNetworkLayer {
 
                 if !is_connected && retry_count < MAX_RETRIES {
                     let delay_ms = 1000 * (1 << retry_count.min(5));
-                    info!(
+                    debug!(
                         "🔄 [REFRESH-SECURE] Peer {} not connected - scheduling retry {} in {}ms",
                         target_peer_id,
                         retry_count + 1,
@@ -1723,7 +1688,7 @@ impl MpcNetworkLayer {
                 }
 
                 if !is_connected && retry_count < MAX_RETRIES {
-                    info!(
+                    debug!(
                         "🔄 [CRITICAL-UNICAST] Peer {} not connected - scheduling quick retry {} in {}ms",
                         target_peer_id,
                         retry_count + 1,
@@ -1908,7 +1873,7 @@ impl MpcNetworkLayer {
 
                 if !is_connected && retry_count < MAX_RETRIES {
                     let delay_ms = 1000 * (1 << retry_count.min(5));
-                    info!(
+                    debug!(
                         "🔄 [SIGNING-SECURE] Peer {} not connected - scheduling retry {} in {}ms",
                         target_peer_id,
                         retry_count + 1,
@@ -2088,7 +2053,7 @@ impl MpcNetworkLayer {
 
                 if !is_connected && retry_count < MAX_RETRIES {
                     let delay_ms = 1000 * (1 << retry_count.min(5));
-                    info!(
+                    debug!(
                         "🔄 [SIGNING-SECURE] Peer {} not connected - scheduling retry {} in {}ms",
                         target_peer_id,
                         retry_count + 1,
@@ -2766,7 +2731,6 @@ impl MpcNetworkLayer {
                                         crate::utils::transaction::create_transaction_for_signing(
                                             eth_tx,
                                         );
-                                    debug!("→ RLP payload: 0x{}", hex::encode(&tx_bytes));
 
                                     // Use the signing_key that was already fetched earlier to avoid redundant fetching
                                     let user_tweaked_share = signing_key;
@@ -3138,13 +3102,6 @@ impl MpcNetworkLayer {
                                     .collect();
 
                                 if !expected_nodes.is_empty() {
-                                    let expected_list: Vec<String> = expected_nodes.iter().map(|p| p.to_string()).collect();
-                                    info!(
-                                        "📋 [RETRY] Registering TransactionIdBroadcast {:?} - expecting ACKs from {} nodes: {:?}",
-                                        message_id, expected_nodes.len(), expected_list
-                                    );
-                                    
-                                    // Register with retry manager (first time only)
                                     if let Err(e) = retry_mgr.register_message(
                                         message_id.clone(),
                                         topic_str.to_string(),
@@ -3152,14 +3109,10 @@ impl MpcNetworkLayer {
                                         expected_nodes.clone(),
                                     ).await {
                                         error!("❌ [RETRY] Failed to register TransactionIdBroadcast for retry: {}", e);
-                                    } else {
-                                        info!("✅ [RETRY] Successfully registered TransactionIdBroadcast {:?} for retry tracking", message_id);
                                     }
                                 } else {
                                     warn!("⚠️ [RETRY] No expected nodes - skipping retry registration for TransactionIdBroadcast {:?}", message_id);
                                 }
-                            } else {
-                                info!("🔄 [RETRY] TransactionIdBroadcast {:?} already tracked, skipping registration (this is a retry)", message_id);
                             }
                         }
                     }
@@ -3177,8 +3130,8 @@ impl MpcNetworkLayer {
                 } else {
                     if !intent_hashes.is_empty() {
                         info!(
-                            "📡 [NETWORK] Gossiped transaction ID {} for intents {:?} (type: {}) to other peers",
-                            transaction_id, intent_hashes, transaction_type
+                            "📡 [NETWORK] Gossiped transaction ID {} for {} intent(s) (type: {}) to other peers",
+                            transaction_id, intent_hashes.len(), transaction_type
                         );
                     } else if let Some(solver) = &solver_address {
                         info!(

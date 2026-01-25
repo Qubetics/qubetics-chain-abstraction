@@ -141,19 +141,6 @@ impl RetryManager {
 
         retries.insert(message_id.clone(), state);
 
-        info!(
-            "🔄 [RETRY] Registered critical message for retry: {:?} (expecting {} nodes)",
-            message_id,
-            expected_nodes.len()
-        );
-
-        // Log which nodes we're expecting ACKs from
-        let expected_list: Vec<String> = expected_nodes.iter().map(|p| p.to_string()).collect();
-        info!(
-            "📋 [RETRY] Expected nodes for {:?}: {:?}",
-            message_id, expected_list
-        );
-
         // Start the retry monitoring task
         let retries_clone = self.active_retries.clone();
         let message_tx_clone = self.message_tx.clone();
@@ -203,25 +190,6 @@ impl RetryManager {
             if state.acknowledged_nodes.insert(node_id) {
                 let acked_count = state.acknowledged_nodes.len();
                 let expected_count = state.expected_nodes.len();
-                let missing_count = expected_count - acked_count;
-
-                info!(
-                    "✅ [RETRY] Received ACK for {:?} from {} ({}/{})",
-                    message_id, node_id, acked_count, expected_count
-                );
-
-                // Log which nodes are still missing
-                if missing_count > 0 {
-                    let missing_nodes: Vec<String> = state
-                        .expected_nodes
-                        .difference(&state.acknowledged_nodes)
-                        .map(|p| p.to_string())
-                        .collect();
-                    warn!(
-                        "⏳ [RETRY] Still waiting for ACKs from {} nodes: {:?}",
-                        missing_count, missing_nodes
-                    );
-                }
 
                 // Check if all nodes have acknowledged
                 if acked_count >= expected_count {
@@ -384,14 +352,7 @@ impl RetryManager {
                 return;
             }
 
-            if let Some((state, missing_count)) = state_opt {
-                warn!(
-                    "⚠️ [RETRY] Retry attempt {} for {:?}: {} nodes still missing ACKs",
-                    retry_attempt + 1,
-                    message_id,
-                    missing_count
-                );
-
+            if let Some((state, _missing_count)) = state_opt {
                 // Update retry state
                 let retry_count = {
                     let mut retries_guard = retries.write().await;
@@ -411,15 +372,6 @@ impl RetryManager {
                     .cloned()
                     .collect();
 
-                info!(
-                    "🔄 [RETRY] Sending {} retry unicast for {:?} (attempt {}/{}) to {} peers",
-                    msg_type_str,
-                    message_id,
-                    retry_attempt + 1,
-                    max_retries,
-                    missing_peers.len()
-                );
-
                 let message_type = format!("{:?}", state.message_id.message_type);
                 let message_id_str = state.message_id.unique_id.clone();
 
@@ -434,15 +386,7 @@ impl RetryManager {
                     };
 
                     match message_tx.try_send(retry_msg) {
-                        Ok(_) => {
-                            info!(
-                                "✅ [RETRY] Unicast retry sent to {} for {:?} (attempt {}/{})",
-                                peer_id,
-                                message_id,
-                                retry_attempt + 1,
-                                max_retries
-                            );
-                        }
+                        Ok(_) => {}
                         Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
                             warn!("⚠️ [RETRY] Channel full - retry queued for next cycle");
                         }
@@ -484,11 +428,6 @@ impl RetryManager {
                     (base_delay.as_millis() as f64 * jitter_factor) as u64
                 };
                 let delay_with_jitter = base_delay + Duration::from_millis(jitter_ms);
-
-                info!(
-                        "⏳ [RETRY] {} waiting {:?} (base: {:?} + jitter: {}ms) before retry {} for {:?}",
-                        msg_type_str, delay_with_jitter, base_delay, jitter_ms, retry_attempt + 2, message_id
-                    );
                 tokio::time::sleep(delay_with_jitter).await;
             }
         }
@@ -537,7 +476,7 @@ impl RetryManager {
 
                 // Log acknowledged nodes for comparison
                 let acked_nodes: Vec<_> = state.acknowledged_nodes.iter().collect();
-                info!(
+                debug!(
                     "✅ [RETRY] Successfully received ACKs from {} nodes: {:?}",
                     acked_nodes.len(),
                     acked_nodes
