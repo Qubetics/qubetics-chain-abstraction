@@ -2,15 +2,15 @@
   {
     "userId": 1,
     "walletAddress": "0x7F8F576E4d4Af41aED5D6398c462E9901c2bda46",
-    "derivedEthAddress": "0x2524abc9ef721f54dfc6a612a8e219cbe7a1223e",
-    "derivedBtcAddress": "mj5woJrTd5KDVJyFcTVXjvMSKN9aD4UUCX",
+    "derivedEthAddress": "0xc6e8e47c581e52b59f3c47ff81ef239cdd4845db",
+    "derivedBtcAddress": "mxBZCoTg8pD5vDRgPJUzf4Q6THzqT5LMW9",
     "hasUserGroupKey": true
   },
   {
     "userId": 2,
     "walletAddress": "0xfF747859A6730D5c75131abf18aAF0Bc690569dd",
-    "derivedEthAddress": "0x07b308d36ea3632bd7ebcc92b39543145b7bf4ce",
-    "derivedBtcAddress": "mkostwkDtHsJZzsjXemZK2TztTQXXMwpcD",
+    "derivedEthAddress": "0x25e9b18fb7b630f5793bcb51d779d1804aff07cb",
+    "derivedBtcAddress": "muYK4k3McnnPgvKcY64rcYa7F6TLqFSY2c",
     "hasUserGroupKey": true
   }
 ]
