@@ -39,8 +39,6 @@ pub const CLAIMED_REQUEST_AMOUNT: &str = "claimed_request_amount:";
 pub const INTENT_REWARD_STATUS: &str = "intent_reward_status:";
 pub const SOLVER_TICS_TXN_HASHES: &str = "solver_tics_txn_hashes:";
 pub const SOLVER_BTC_TXN_HASHES: &str = "solver_btc_txn_hashes:";
-pub const SOLVER_ADD_LIQ_TICS_TXN: &str = "solver_add_liq_tics_txn:";
-pub const SOLVER_ADD_LIQ_BTC_TXN: &str = "solver_add_liq_btc_txn:";
 pub const SOLVER_REMOVE_LIQ_TICS_TXN: &str = "solver_remove_liq_tics_txn:";
 pub const SOLVER_REMOVE_LIQ_BTC_TXN: &str = "solver_remove_liq_btc_txn:";
 pub const PEER_KEYPAIR: &str = "peer_keypair";
@@ -50,3 +48,5 @@ pub const VRF_PEER_ROUND: &str = "vrf_peer_round:";
 pub const NODE_SHARE_PUBKEY_NETWORK: &str = "node_share_pubkey_network:";
 pub const NODE_SHARE_PUBKEY_VAULT: &str = "node_share_pubkey_vault:";
 pub const NODE_SHARE_PUBKEY_USER: &str = "node_share_pubkey_user:";
+/// Reverse index: intent_hash -> ethereum_address for O(1) get_user_by_intent_hash
+pub const INTENT_HASH_TO_USER: &str = "intent_to_user:";

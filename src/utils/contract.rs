@@ -170,6 +170,7 @@ pub async fn execute_refund_intent_contract_call(
             &contract_tx,
             vault_tweaked_share,
             None,
+            vec![],
             vault_tweaked_share,
             request_id,
             None,

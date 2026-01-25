@@ -207,25 +207,6 @@ pub struct WithdrawLiquidityResponse {
     pub error_message: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AddLiquidityRequest {
-    pub signature: String,
-    pub message: String,
-    pub solver_id: String,
-    pub amount_tics: Option<String>,
-    pub amount_btc: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AddLiquidityResponse {
-    pub status: String,
-    pub solver_address: String,
-    pub solver_id: String,
-    pub amount_tics: Option<String>,
-    pub amount_btc: Option<String>,
-    pub message: String,
-    pub error_message: Option<String>,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogPartialPubkeysRequest {
@@ -262,4 +243,10 @@ pub struct GetNetworkAddressesResponse {
 pub struct AddressInfo {
     pub eth_address: String,
     pub btc_address: String,
+}
+
+/// Response for GET /intents_solved_count
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IntentsSolvedCountResponse {
+    pub count: u64,
 }

@@ -20,8 +20,8 @@ impl MpcNetworkLayer {
             "network_to_target" => Ok(TransactionType::NetworkToTarget),
             "reward_txn" => Ok(TransactionType::RewardTxn),
             "withdraw_liquidity" | "withdrawLiquidity" => Ok(TransactionType::WithdrawLiquidity),
-            "add_liquidity" | "addLiquidity" => Ok(TransactionType::AddLiquidity),
             "refund" => Ok(TransactionType::Refund),
+            "intent_status_update" => Ok(TransactionType::IntentStatusUpdate),
             _ => Err(anyhow::anyhow!("Unknown transaction type: {}", tx_type_str)),
         }
     }
@@ -57,6 +57,41 @@ impl MpcNetworkLayer {
                     "⚠️ [SIGNING] Received withdraw-liquidity transaction ID for intent {} but this flow is not implemented yet",
                     intent_hash
                 );
+                Ok(())
+            }
+            "intent_status_update" => {
+                // For intent status update, only mark intent as Solved
+                // Do NOT update network_to_target_tx_id (it's already set)
+                info!(
+                    "✅ [INTENT_STATUS_UPDATE] Marking intent {} as Solved (contract update completed)",
+                    intent_hash
+                );
+                
+                if let Some(user) = user_intent_manager.get_user_by_intent_hash(intent_hash).await {
+                    if let Err(e) = user_intent_manager
+                        .update_intent_status(&user.ethereum_address, intent_hash, crate::types::IntentStatus::Solved)
+                        .await
+                    {
+                        error!(
+                            "⚠️ [INTENT_STATUS_UPDATE] Failed to update intent status to Solved: {}",
+                            e
+                        );
+                        return Err(anyhow::anyhow!("Failed to update intent status: {}", e));
+                    } else {
+                        info!(
+                            "✅ [INTENT_STATUS_UPDATE] Marked intent {} as Solved for user {}",
+                            intent_hash,
+                            user.ethereum_address
+                        );
+                    }
+                } else {
+                    warn!(
+                        "⚠️ [INTENT_STATUS_UPDATE] Could not find user for intent {} to update status",
+                        intent_hash
+                    );
+                    return Err(anyhow::anyhow!("User not found for intent {}", intent_hash));
+                }
+                
                 Ok(())
             }
             _ => Err(anyhow::anyhow!(
@@ -243,87 +278,7 @@ impl MpcNetworkLayer {
                                     "❌ [CONTRACT] No vault group key available for refund contract call execution"
                                 );
                             }
-                        } else {
-                            // Execute contract call only after consensus is reached (for non-refund transactions)
-                            if let Some(intent) =
-                                user_intent_manager.get_intent(intent_hash).await
-                            {
-                                let tx_type_enum =
-                                    Self::parse_transaction_type(transaction_type)?;
-
-                                // Skip contract call entirely for UserToVault transactions
-                                if matches!(tx_type_enum, crate::types::TransactionType::UserToVault)
-                                {
-                                    info!(
-                                        "⏭️ [CONTRACT] Skipping contract call for UserToVault tx_id={} intent_hash={}",
-                                        transaction_id, intent_hash
-                                    );
-                                    return Ok(());
-                                }
-
-                                let vault_group_key = if let Some(dkg_node) = &self.dkg_node {
-                                    dkg_node.get_vault_group_key().await
-                                } else {
-                                    None
-                                };
-
-                                if let Some(vault_group_key) = vault_group_key {
-                                    // Parse intent amount (stored as string) into u128
-                                    let intent_amount = match intent.amount.parse::<u128>() {
-                                        Ok(v) => v,
-                                        Err(e) => {
-                                            warn!(
-                                                "❌ [CONTRACT] Invalid intent amount '{}' for {}: {}. Skipping contract call.",
-                                                intent.amount, intent_hash, e
-                                            );
-                                            return Ok(());
-                                        }
-                                    };
-
-                                if let Some(signing_node) = &mut self.signing_node {
-                                    if let Err(e) = crate::chain_abstraction::MpcChainExecutor::execute_contract_call(
-                                        signing_node,
-                                        self.node_manager.as_ref(),
-                                        self.dkg_node.as_ref(),
-                                        &intent,
-                                        intent_hash,
-                                        tx_type_enum,
-                                        Some(vault_group_key),
-                                        intent_amount,
-                                        transaction_id,
-                                        None, // No request_id
-                                        None, // No original_request
-                                    )
-                                    .await
-                                    {
-                                        warn!(
-                                            "❌ [CONTRACT] Failed to submitted contract call for transaction ID {}: {}",
-                                            transaction_id, e
-                                        );
-                                    } else {
-                                        info!(
-                                            "✅ [CONTRACT] Successfully submitted contract call for transaction ID {} (after consensus verification)",
-                                            transaction_id
-                                        );
-                                    }
-                                } else {
-                                    warn!(
-                                        "❌ [CONTRACT] Signing node not available for contract call execution (tx_id={}, intent_hash={})",
-                                        transaction_id, intent_hash
-                                    );
-                                }
-                                } else {
-                                    warn!(
-                                        "❌ [CONTRACT] No vault group key available for contract call execution"
-                                    );
-                                }
-                            } else {
-                                warn!(
-                                    "❌ [CONTRACT] Could not retrieve intent {} for contract call execution",
-                                    intent_hash
-                                );
-                            }
-                        }
+                        } 
                     }
                 }
                 Err(e) => {
@@ -486,20 +441,6 @@ impl MpcNetworkLayer {
                             transaction_id, solver_address, network
                         );
                     } else {
-                        if let Err(e) = user_intent_manager
-                            .set_solver_add_liquidity_txn_hash(
-                                solver_address,
-                                network,
-                                transaction_id.to_string(),
-                            )
-                            .await
-                        {
-                            warn!(
-                                "⚠️ [NETWORK] Failed to store add-liquidity txn hash for solver {}: {}",
-                                solver_address, e
-                            );
-                        }
-
                         // Update claimed amounts and reduce rewards
                         if let Some(amount) = self
                             .update_reward_claims(solver_address, network, transaction_id)

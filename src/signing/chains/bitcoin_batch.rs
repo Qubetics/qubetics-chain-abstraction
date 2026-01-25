@@ -1,6 +1,5 @@
 use anyhow::{anyhow, bail, Result};
 use bitcoin::{
-    hashes::msg_digest::Hash as _,
     hashes::Hash, // For as_byte_array
     secp256k1::{self, ecdsa::RecoverableSignature, Secp256k1},
     Address,
@@ -86,6 +85,17 @@ pub fn select_utxos_for_batch(
     let estimated_fee_per_output = 34;
     let base_overhead = 100;
 
+    // Sort UTXOs deterministically so all nodes select the same UTXOs
+    // Sort by: value (descending), then txid (ascending), then vout (ascending)
+    // This ensures all nodes build the same transaction even if API returns UTXOs in different orders
+    let mut sorted_utxos: Vec<BatchUtxo> = available_utxos.to_vec();
+    sorted_utxos.sort_by(|a, b| {
+        b.value
+            .cmp(&a.value)
+            .then_with(|| a.txid.cmp(&b.txid))
+            .then_with(|| a.vout.cmp(&b.vout))
+    });
+
     let mut selected = Vec::new();
     let mut total_input_value = 0;
 
@@ -93,8 +103,8 @@ pub fn select_utxos_for_batch(
     let initial_fee_overhead = base_overhead + (estimated_fee_per_output * output_count as u64);
     let mut current_fee_estimate = initial_fee_overhead;
 
-    // Greedy/FIFO selection as per script
-    for utxo in available_utxos {
+    // Greedy selection from sorted UTXOs (ensures deterministic selection across all nodes)
+    for utxo in sorted_utxos {
         selected.push(utxo.clone());
         total_input_value += utxo.value;
         current_fee_estimate += estimated_fee_per_input;
@@ -273,26 +283,39 @@ pub fn attach_signatures_and_finalize(
     let pubkey_bytes = public_key.inner.serialize(); // Compressed 33 bytes
 
     for (i, sig) in signatures.iter().enumerate() {
-        // Convert recoverable sig to DER
+        // Convert recoverable sig to DER + SIGHASH_ALL
         let mut standard_sig = sig.to_standard();
         standard_sig.normalize_s();
         let mut sig_der = standard_sig.serialize_der().to_vec();
         sig_der.push(0x01); // SIGHASH_ALL type byte
 
-        // Build scriptSig: <sig> <pubkey>
-        let mut script_sig = ScriptBuf::new();
-        let sig_push = bitcoin::script::PushBytes::from_slice(&sig_der)
-            .map_err(|e| anyhow!("Failed to create PushBytes for sig: {}", e))?;
-        script_sig.push_slice(sig_push);
+        // Build scriptSig bytes: <PUSH(sig_der+01)> <PUSH(pubkey33)>
+        let mut script_bytes = Vec::new();
+        push_data(&mut script_bytes, &sig_der);
+        push_data(&mut script_bytes, &pubkey_bytes);
 
-        let pk_push = bitcoin::script::PushBytes::from_slice(&pubkey_bytes)
-            .map_err(|e| anyhow!("Failed to create PushBytes for pubkey: {}", e))?;
-        script_sig.push_slice(pk_push);
-
-        tx.input[i].script_sig = script_sig;
+        tx.input[i].script_sig = ScriptBuf::from_bytes(script_bytes);
     }
 
     Ok(tx)
+}
+
+/// Minimal helper to push data as script bytes (PUSHDATA opcodes + raw bytes).
+fn push_data(dst: &mut Vec<u8>, data: &[u8]) {
+    let len = data.len();
+    if len < 0x4c {
+        dst.push(len as u8);
+    } else if len <= 0xff {
+        dst.push(0x4c); // OP_PUSHDATA1
+        dst.push(len as u8);
+    } else if len <= 0xffff {
+        dst.push(0x4d); // OP_PUSHDATA2
+        dst.extend_from_slice(&(len as u16).to_le_bytes());
+    } else {
+        dst.push(0x4e); // OP_PUSHDATA4
+        dst.extend_from_slice(&(len as u32).to_le_bytes());
+    }
+    dst.extend_from_slice(data);
 }
 
 #[cfg(test)]

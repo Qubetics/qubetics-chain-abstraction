@@ -154,6 +154,18 @@ impl UserStorage {
         intent_hash: &str,
         status: IntentStatus,
     ) -> Result<()> {
+        // Write intent_hash -> user reverse index first so get_user_by_intent_hash can find
+        // the user immediately without scanning. Reduces races and signature verification
+        // failures when multiple UserToVault deposits are processed concurrently.
+        let index_key = key_utils::intent_hash_to_user_key(intent_hash);
+        if let Err(e) = self.db.put_string(&index_key, &ethereum_address.to_string()) {
+            error!(
+                "❌ [USER_STORAGE] Failed to write intent_hash->user index for {}: {}",
+                intent_hash, e
+            );
+            return Err(e);
+        }
+
         let key = key_utils::user_intent_key(ethereum_address, intent_hash);
 
         info!("💾 [USER_STORAGE] Starting to store user intent:");
@@ -231,16 +243,27 @@ impl UserStorage {
         }
     }
     /// Get user details by intent hash
+    ///
+    /// Uses intent_hash -> user reverse index for O(1) lookup when available, avoiding
+    /// a full scan over all users. Falls back to scanning if the index is missing
+    /// (e.g. legacy data from before the index existed). The fast path greatly reduces
+    /// races and intermittent signature verification failures under concurrent UserToVault load.
     pub async fn get_user_by_intent_hash(
         &self,
         intent_hash: &str,
     ) -> Result<Option<UserRegistration>> {
-        // Use the USER_REGISTRATION prefix from the keys module
+        // Fast path: O(1) lookup via intent_hash -> ethereum_address index
+        let index_key = key_utils::intent_hash_to_user_key(intent_hash);
+        if let Ok(Some(address)) = self.db.get_string::<String>(&index_key) {
+            if let user @ Some(_) = self.get_user(&address).await? {
+                return Ok(user);
+            }
+        }
+
+        // Fallback: scan all users (for legacy DBs without the index)
         let user_prefix = crate::database::keys::USER_REGISTRATION;
-        // List all user keys (assuming db has a list_keys method)
         let user_keys = self.db.get_keys_with_prefix(user_prefix)?;
         for user_key in user_keys {
-            // user_key is like "user:0xabc...", so strip the prefix to get the address
             let address = user_key.strip_prefix(user_prefix).unwrap_or(&user_key);
             if let Some(user) = self.get_user(address).await? {
                 if user.intent_hashes.contains_key(intent_hash) {

@@ -453,23 +453,6 @@ impl UserIntentManager {
             })
     }
 
-    pub async fn set_solver_add_liquidity_txn_hash(
-        &self,
-        solver_address: &str,
-        network: TransactionNetwork,
-        tx_id: String,
-    ) -> Result<(), String> {
-        self.liquidity_storage
-            .set_add_liquidity_tx_id(solver_address, network, tx_id)
-            .await
-            .map_err(|e| {
-                error!(
-                    "❌ [DB_USER_REGISTRY] Failed to store add-liquidity txn hash for solver {}: {}",
-                    solver_address, e
-                );
-                e.to_string()
-            })
-    }
 
     pub async fn get_solver_remove_liquidity_txn_hash(
         &self,

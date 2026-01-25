@@ -18,6 +18,12 @@ pub fn user_intent_key(ethereum_address: &str, intent_hash: &str) -> String {
     )
 }
 
+/// Reverse index key: intent_hash -> ethereum_address. Enables O(1) get_user_by_intent_hash
+/// instead of scanning all users, reducing races and signature verification failures under load.
+pub fn intent_hash_to_user_key(intent_hash: &str) -> String {
+    format!("{}{}", keys::INTENT_HASH_TO_USER, intent_hash)
+}
+
 pub fn intent_transaction_ids_key(intent_hash: &str) -> String {
     format!("{}{}", keys::INTENT_TRANSACTION_IDS, intent_hash)
 }
@@ -126,21 +132,6 @@ pub fn solver_btc_txn_hashes_key(solver_address: &str) -> String {
     )
 }
 
-pub fn solver_add_liquidity_tics_txn_key(solver_address: &str) -> String {
-    format!(
-        "{}{}",
-        keys::SOLVER_ADD_LIQ_TICS_TXN,
-        solver_address.to_lowercase()
-    )
-}
-
-pub fn solver_add_liquidity_btc_txn_key(solver_address: &str) -> String {
-    format!(
-        "{}{}",
-        keys::SOLVER_ADD_LIQ_BTC_TXN,
-        solver_address.to_lowercase()
-    )
-}
 
 pub fn solver_remove_liquidity_tics_txn_key(solver_address: &str) -> String {
     format!(

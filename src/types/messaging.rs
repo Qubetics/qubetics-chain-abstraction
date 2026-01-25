@@ -36,11 +36,6 @@ pub enum ChannelMessage {
         transaction_type: TransactionType,
         amount: u128,
     },
-    IntentHash {
-        intent_hash: Vec<u8>,
-        signer: String,
-        intent: DepositIntent,
-    },
     ClaimReward {
         solver_address: String,
         btc_address: Option<String>,
@@ -48,13 +43,6 @@ pub enum ChannelMessage {
         reward_btc: Option<String>,
         reward_tics: Option<String>,
         transaction_type: String,
-    },
-    AddLiquidity {
-        solver_address: String,
-        solver_id: String,
-        amount_btc: Option<String>,
-        amount_tics: Option<String>,
-        request_id: String,
     },
     WithdrawLiquidity {
         solver_address: String,
@@ -71,8 +59,40 @@ pub enum ChannelMessage {
         error: String,
         original_request: Option<()>,
     },
+    /// Internal signal to broadcast and locally process an intent batch
+    IntentBatchBroadcast {
+        /// List of intent hashes to process
+        intent_hashes: Vec<String>,
+        /// Batch type: "BTC" or "TICS"
+        batch_type: String,
+        /// Timestamp when batch was created
+        timestamp: String,
+        /// Round number that triggered this batch
+        round: u64,
+        /// Node ID of the final node broadcasting this batch
+        node_id: String,
+    },
+    /// BTC Intent Manager contract update batch
+    /// Used to update network-to-target tx-id on contract for BTC intents
+    BtcIntentManagerTxUpdate {
+        /// List of intent hashes to update on contract
+        intent_hashes: Vec<String>,
+        /// BTC batch transaction ID that was finalized
+        btc_txid: String,
+        /// Round number of the BTC batch
+        btc_batch_round: u64,
+        /// Round number for the contract update batch
+        update_round: u64,
+        /// Timestamp when batch was created
+        timestamp: String,
+        /// Node ID broadcasting this batch
+        node_id: String,
+    },
     TransactionIdBroadcast {
-        intent_hash: Option<String>,
+        /// One or more intent hashes associated with this transaction ID.
+        /// For single transactions, this will contain exactly one hash.
+        /// For batch transactions, this will include all intent hashes in the batch.
+        intent_hashes: Vec<String>,
         transaction_id: String,
         transaction_type: String,
         solver_address: Option<String>,
@@ -80,10 +100,6 @@ pub enum ChannelMessage {
     },
     UserRegistration {
         ethereum_address: String,
-        node_id: String,
-    },
-    IntentHashBroadcast {
-        intent_hash: String,
         node_id: String,
     },
     RefundInitiation {
@@ -177,11 +193,6 @@ pub enum GossipsubMessage {
         /// Note: Gossiped DepositIntent is always processed as UserToVault
         amount: u128,
     },
-    IntentHash {
-        intent_hash: String,
-        signer: String,
-        intent: DepositIntent,
-    },
     ClaimReward {
         solver_address: String,
         btc_address: Option<String>,
@@ -189,13 +200,6 @@ pub enum GossipsubMessage {
         reward_btc: Option<String>,
         reward_tics: Option<String>,
         transaction_type: String,
-    },
-    AddLiquidity {
-        solver_address: String,
-        solver_id: String,
-        amount_btc: Option<String>,
-        amount_tics: Option<String>,
-        request_id: String,
     },
     WithdrawLiquidity {
         solver_address: String,
@@ -211,7 +215,10 @@ pub enum GossipsubMessage {
         node_id: String,
     },
     TransactionIdBroadcast {
-        intent_hash: Option<String>,
+        /// One or more intent hashes associated with this transaction ID.
+        /// For single transactions, this will contain exactly one hash.
+        /// For batch transactions, this will include all intent hashes in the batch.
+        intent_hashes: Vec<String>,
         transaction_id: String,
         /// "user_to_network", "network_to_target", or reward types
         transaction_type: String,
@@ -220,16 +227,13 @@ pub enum GossipsubMessage {
         node_id: String,
     },
     TransactionErrorBroadcast {
-        intent_hash: Option<String>,
+        /// Intent hashes that failed. Empty for reward/withdraw.
+        intent_hashes: Vec<String>,
         error_message: String,
         /// "user_to_network", "network_to_target", or reward types
         transaction_type: String,
         solver_address: Option<String>,
         /// Node that encountered the error
-        node_id: String,
-    },
-    IntentHashBroadcast {
-        intent_hash: String,
         node_id: String,
     },
     /// Acknowledgment messages for critical message retry mechanism
@@ -264,6 +268,20 @@ pub enum GossipsubMessage {
         /// Chain ID where the transaction was broadcasted
         chain_id: u64,
     },
+    /// Batch of intent hashes for processing by all nodes
+    /// Sent by final node after global clock trigger
+    IntentBatchBroadcast {
+        /// List of intent hashes to process
+        intent_hashes: Vec<String>,
+        /// Batch type: "BTC" or "TICS"
+        batch_type: String,
+        /// Timestamp when batch was created
+        timestamp: String,
+        /// Round number that triggered this batch
+        round: u64,
+        /// Node ID of the final node broadcasting this batch
+        node_id: String,
+    },
     /// Notification that a transaction failed (signature verification, broadcasting, etc.)
     TransactionFailure {
         /// Sequencer request ID
@@ -274,5 +292,21 @@ pub enum GossipsubMessage {
         error: String,
         /// Original request for guaranteed retry (even if cache is empty)
         original_request: Option<()>,
+    },
+    /// BTC Intent Manager contract update batch
+    /// Used to update network-to-target tx-id on contract for BTC intents
+    BtcIntentManagerTxUpdate {
+        /// List of intent hashes to update on contract
+        intent_hashes: Vec<String>,
+        /// BTC batch transaction ID that was finalized
+        btc_txid: String,
+        /// Round number of the BTC batch
+        btc_batch_round: u64,
+        /// Round number for the contract update batch
+        update_round: u64,
+        /// Timestamp when batch was created
+        timestamp: String,
+        /// Node ID broadcasting this batch
+        node_id: String,
     },
 }

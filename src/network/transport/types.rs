@@ -69,12 +69,11 @@ pub const TOPIC_COMMANDS: &str = "commands";
 pub const TOPIC_VRF_SELECTION: &str = "vrf-selection";
 pub const TOPIC_TRANSACTIONS: &str = "transactions";
 pub const TOPIC_DEPOSIT_INTENTS: &str = "deposit-intents";
-pub const TOPIC_INTENT_HASHES: &str = "intent-hashes";
+pub const TOPIC_INTENT_HASH_BROADCAST: &str = "intent-hash-broadcast";
 pub const TOPIC_DKG_COMMANDS: &str = "dkg-commands";
 pub const TOPIC_USER_REGISTRATIONS: &str = "user-registrations";
 pub const TOPIC_SOLVER_REWARDS: &str = "solver-rewards";
 pub const TOPIC_CLAIM_REWARDS: &str = "claim-rewards";
-pub const TOPIC_ADD_LIQUIDITY: &str = "add-liquidity";
 pub const TOPIC_WITHDRAW_LIQUIDITY: &str = "withdraw-liquidity";
 pub const TOPIC_TRANSACTION_ID_SYNC: &str = "transaction-id-sync";
 pub const TOPIC_CONSENSUS_RESULT: &str = "consensus-result";
@@ -82,6 +81,8 @@ pub const TOPIC_TRANSACTION_ERROR_SYNC: &str = "transaction-error-sync";
 pub const TOPIC_LEGACY_DKG: &str = "dkg";
 pub const TOPIC_TRANSACTION_BROADCAST: &str = "transaction-broadcast";
 pub const TOPIC_TRANSACTION_FAILURE: &str = "transaction-failure";
+pub const TOPIC_INTENT_BATCH_BROADCAST: &str = "intent-batch-broadcast";
+pub const TOPIC_BTC_INTENT_MANAGER_TX_UPDATE: &str = "btc-intent-manager-tx-update";
 
 /// Typed view of the gossipsub topics this MPC node participates in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -94,12 +95,11 @@ pub enum GossipTopic {
     VrfSelection,
     Transactions,
     DepositIntents,
-    IntentHashes,
+    IntentBatchBroadcast,
     DkgCommands,
     UserRegistrations,
     SolverRewards,
     ClaimRewards,
-    AddLiquidity,
     WithdrawLiquidity,
     TransactionIdSync,
     ConsensusResult,
@@ -107,6 +107,7 @@ pub enum GossipTopic {
     LegacyDkg,
     TransactionBroadcast,
     TransactionFailure,
+    BtcIntentManagerTxUpdate,
 }
 
 impl GossipTopic {
@@ -119,12 +120,11 @@ impl GossipTopic {
         GossipTopic::VrfSelection,
         GossipTopic::Transactions,
         GossipTopic::DepositIntents,
-        GossipTopic::IntentHashes,
         GossipTopic::DkgCommands,
+        GossipTopic::IntentBatchBroadcast,
         GossipTopic::UserRegistrations,
         GossipTopic::SolverRewards,
         GossipTopic::ClaimRewards,
-        GossipTopic::AddLiquidity,
         GossipTopic::WithdrawLiquidity,
         GossipTopic::TransactionIdSync,
         GossipTopic::ConsensusResult,
@@ -132,6 +132,7 @@ impl GossipTopic {
         GossipTopic::LegacyDkg,
         GossipTopic::TransactionBroadcast,
         GossipTopic::TransactionFailure,
+        GossipTopic::BtcIntentManagerTxUpdate,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -144,12 +145,11 @@ impl GossipTopic {
             GossipTopic::VrfSelection => TOPIC_VRF_SELECTION,
             GossipTopic::Transactions => TOPIC_TRANSACTIONS,
             GossipTopic::DepositIntents => TOPIC_DEPOSIT_INTENTS,
-            GossipTopic::IntentHashes => TOPIC_INTENT_HASHES,
+            GossipTopic::IntentBatchBroadcast => TOPIC_INTENT_BATCH_BROADCAST,
             GossipTopic::DkgCommands => TOPIC_DKG_COMMANDS,
             GossipTopic::UserRegistrations => TOPIC_USER_REGISTRATIONS,
             GossipTopic::SolverRewards => TOPIC_SOLVER_REWARDS,
             GossipTopic::ClaimRewards => TOPIC_CLAIM_REWARDS,
-            GossipTopic::AddLiquidity => TOPIC_ADD_LIQUIDITY,
             GossipTopic::WithdrawLiquidity => TOPIC_WITHDRAW_LIQUIDITY,
             GossipTopic::TransactionIdSync => TOPIC_TRANSACTION_ID_SYNC,
             GossipTopic::ConsensusResult => TOPIC_CONSENSUS_RESULT,
@@ -157,6 +157,7 @@ impl GossipTopic {
             GossipTopic::LegacyDkg => TOPIC_LEGACY_DKG,
             GossipTopic::TransactionBroadcast => TOPIC_TRANSACTION_BROADCAST,
             GossipTopic::TransactionFailure => TOPIC_TRANSACTION_FAILURE,
+            GossipTopic::BtcIntentManagerTxUpdate => TOPIC_BTC_INTENT_MANAGER_TX_UPDATE,
         }
     }
 }
@@ -197,6 +198,18 @@ pub struct MpcNetworkLayer {
     /// Retry manager for critical messages with exponential backoff
     pub(crate) retry_manager: Option<RetryManager>,
     pub(crate) channel_health: Arc<crate::network::rpc::channel_monitor::ChannelHealthMonitor>,
+
+    /// Per-peer in-flight request counter for sender pacing (outbound timeout mitigation)
+    pub(crate) outbound_inflight: Arc<Mutex<HashMap<PeerId, u32>>>,
+    /// Outbound retry registry for timeout retry mechanism
+    pub(crate) outbound_retry: Arc<
+        Mutex<
+            HashMap<
+                libp2p::request_response::OutboundRequestId,
+                crate::network::rpc::outbound_retry::OutboundRetryEntry,
+            >,
+        >,
+    >,
 }
 
 impl MpcNetworkLayer {

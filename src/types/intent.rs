@@ -6,8 +6,8 @@ pub enum TransactionType {
     NetworkToTarget,
     RewardTxn,
     WithdrawLiquidity,
-    AddLiquidity,
     Refund,
+    IntentStatusUpdate,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -86,7 +86,7 @@ pub struct BatchIntentInput {
     pub target_token: String,
     pub intent_id: String,
     pub withdraw_tx_hash: String,
-    pub deposit_tx_hash: String,
+    pub deposit_tx_hash: Option<String>,
 }
 
 /// Batch type for processBatchIntents: 0 = BTC, 1 = TICS

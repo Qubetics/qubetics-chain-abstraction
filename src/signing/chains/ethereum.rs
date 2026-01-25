@@ -46,7 +46,7 @@ impl<'a> EthereumSigner<'a> {
         transaction: &EthereumTransaction,
         user_tweaked_share: Option<Scalar>,
         user_eth_address: Option<String>,
-        intent_hash: Option<String>,
+        intent_hashes: Vec<String>,
         transaction_type: Option<TransactionType>,
         solver_address: Option<String>,
         signing_key_override: Option<Scalar>,
@@ -58,7 +58,7 @@ impl<'a> EthereumSigner<'a> {
                 transaction,
                 user_tweaked_share,
                 user_eth_address,
-                intent_hash,
+                intent_hashes,
                 transaction_type,
                 solver_address,
                 signing_key_override,
@@ -73,6 +73,7 @@ impl<'a> EthereumSigner<'a> {
         contract_tx: &ContractTransaction,
         user_tweaked_share: Option<Scalar>,
         user_eth_address: Option<String>,
+        intent_hashes: Vec<String>,
         signing_key_override: Option<Scalar>,
         request_id: Option<String>,
         original_request: Option<()>,
@@ -84,6 +85,7 @@ impl<'a> EthereumSigner<'a> {
                 contract_tx,
                 user_tweaked_share,
                 user_eth_address,
+                intent_hashes,
                 signing_key_override,
                 request_id,
                 original_request,
@@ -317,7 +319,7 @@ impl SigningNode {
         transaction: &EthereumTransaction,
         user_tweaked_share: Option<Scalar>,
         user_eth_address: Option<String>,
-        intent_hash: Option<String>,
+        intent_hashes: Vec<String>,
         transaction_type: Option<TransactionType>,
         solver_address: Option<String>,
         signing_key_override: Option<Scalar>,
@@ -626,20 +628,26 @@ impl SigningNode {
                     data: None,
                     chain_id: transaction.chain_id,
                 });
+            let primary_intent_hash = intent_hashes.first().cloned();
             pending_transactions.insert(
                 round,
                 (
                     chain_tx,
                     tx_bytes.clone(),
-                    intent_hash.clone(),
+                    primary_intent_hash.clone(),
                     transaction_type,
                     None, // No request_id for this path
                     None, // No original_request for this path
                 ),
             );
+            // Track intent hash scope (single intent = vec![hash], none = empty)
+            {
+                let mut intent_map = self.pending.intent_hashes_by_round.write().await;
+                intent_map.insert(round, intent_hashes.clone());
+            }
             info!(
                 "💾 [SIGNING] Node {} stored intent-based transaction for round {} reconstruction (intent_hash: {:?})",
-                self.id, round, intent_hash
+                self.id, round, primary_intent_hash
             );
         }
 
@@ -655,6 +663,7 @@ impl SigningNode {
         transaction: &ContractTransaction,
         user_tweaked_share: Option<Scalar>,
         user_eth_address: Option<String>,
+        intent_hashes: Vec<String>,
         signing_key_override: Option<Scalar>,
         request_id: Option<String>,
         original_request: Option<()>,
@@ -830,17 +839,44 @@ impl SigningNode {
 
         // Store original transaction for reconstruction after aggregation (contract-specific path)
         let mut pending_transactions = self.pending.pending_transactions.write().await;
+        let primary_intent_hash = intent_hashes.first().cloned();
+        
+        // Determine transaction type based on operation_type for this round
+        // For BTC contract update, use IntentStatusUpdate (only marks intent as Solved, doesn't update network_to_target_tx_id)
+        // For other batch transactions (TICS), use NetworkToTarget (updates network_to_target_tx_id and marks as Solved)
+        let tx_type_for_round = if !intent_hashes.is_empty() {
+            // Check if this round is for BTC contract update
+            let is_btc_contract_update = if let Some(consensus_node) = self.coordination.consensus_node() {
+                consensus_node.get_operation_type_for_round(round)
+                    .map(|op| op == "btc_contract_update")
+                    .unwrap_or(false)
+            } else {
+                false
+            };
+            
+            if is_btc_contract_update {
+                Some(TransactionType::IntentStatusUpdate)
+            } else {
+                Some(TransactionType::NetworkToTarget)
+            }
+        } else {
+            None
+        };
         pending_transactions.insert(
             round,
             (
                 chain_transaction,
                 tx_bytes.clone(),
-                None, // No intent hash for direct contract calls
-                None,
+                primary_intent_hash.clone(),
+                tx_type_for_round,
                 request_id, // Store request_id for retry tracking
                 original_request, // Store original_request for guaranteed retry
             ),
         );
+        {
+            let mut intent_map = self.pending.intent_hashes_by_round.write().await;
+            intent_map.insert(round, intent_hashes.clone());
+        }
         info!(
             "💾 [SIGNING] Node {} stored contract transaction for round {} reconstruction",
             self.id, round
@@ -975,13 +1011,14 @@ impl SigningNode {
                         }
                     }
                     Some(crate::types::TransactionType::NetworkToTarget)
-                    | Some(crate::types::TransactionType::Refund) => {
-                        // Refund uses network group key (same as NetworkToTarget)
+                    | Some(crate::types::TransactionType::Refund)
+                    | Some(crate::types::TransactionType::IntentStatusUpdate) => {
+                        // Refund and IntentStatusUpdate use network group key (same as NetworkToTarget)
                         let group_key = self.get_network_group_public_key().await?;
                         let group_address = get_eth_address_from_group_key(group_key);
 
                         let nonce = Self::fetch_ethereum_nonce(&group_address, chain_id).await?;
-                        info!("🔢 [SIGNING] NetworkToTarget/Refund transaction: fetching nonce {} from network group address {}", nonce, group_address);
+                        info!("🔢 [SIGNING] NetworkToTarget/Refund/IntentStatusUpdate transaction: fetching nonce {} from network group address {}", nonce, group_address);
                         group_address
                     }
                     Some(crate::types::TransactionType::RewardTxn) => {
@@ -1001,11 +1038,6 @@ impl SigningNode {
                         let nonce = Self::fetch_ethereum_nonce(&group_address, chain_id).await?;
                         info!("🔢 [SIGNING] WithdrawLiquidity transaction: fetching nonce {} from network group address {}", nonce, group_address);
                         group_address
-                    }
-                    Some(crate::types::TransactionType::AddLiquidity) => {
-                        return Err(anyhow!(
-                            "AddLiquidity transactions are not supported in the Ethereum signing path"
-                        ));
                     }
                     None => {
                         if let Some(user_addr) = &user_eth_address {

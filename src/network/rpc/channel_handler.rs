@@ -139,7 +139,6 @@ impl MpcNetworkLayer {
         match context {
             "withdraw_liquidity" => crate::types::TransactionType::WithdrawLiquidity,
             "claim_reward" | "reward_txn" => crate::types::TransactionType::RewardTxn,
-            "add_liquidity" => crate::types::TransactionType::AddLiquidity,
             _ => crate::types::TransactionType::RewardTxn,
         }
     }
@@ -299,7 +298,7 @@ impl MpcNetworkLayer {
                     &eth_tx,
                     None,
                     None,
-                    None,
+                    vec![],
                     Some(tx_type),
                     Some(solver_address.to_string()),
                     Some(secret_share),
@@ -426,7 +425,7 @@ impl MpcNetworkLayer {
                 &chain_handler,
                 Some(btc_tx),
                 None,
-                None,
+                vec![],
                 Some(tx_type),
                 None,
                 Some(solver_address.to_string()),
@@ -676,6 +675,7 @@ impl MpcNetworkLayer {
                         &contract_tx,
                         vault_tweaked_share,
                         None,
+                        vec![],
                         vault_tweaked_share,
                         request_id, // Pass request_id from sequencer
                         original_request, // Pass original_request for retry support
@@ -847,6 +847,7 @@ impl MpcNetworkLayer {
                         &contract_tx,
                         vault_tweaked_share,
                         None,
+                        vec![],
                         vault_tweaked_share,
                         request_id, // Pass request_id from sequencer
                         original_request, // No original_request available in this context
@@ -874,259 +875,6 @@ impl MpcNetworkLayer {
         Ok(())
     }
 
-    pub(crate) async fn submit_solver_add_liquidity_contract_update(
-        &mut self,
-        solver_address: &str,
-        solver_id: &str,
-        asset_chain_name: &str,
-        amount: u128,
-        request_id: Option<String>,
-        original_request: Option<()>,
-    ) -> Result<()> {
-        if amount == 0 {
-            return Ok(());
-        }
-
-        let contract_address = std::env::var("SOLVER_CONTRACT_ADDRESS")
-            .unwrap_or_else(|_| "0x0000000000000000000000000000000000000000".to_string());
-        if contract_address == "0x0000000000000000000000000000000000000000" {
-            info!(
-                "⏭️ [SOLVER] Skipping contract add-liquidity for {} - solver contract address not configured",
-                solver_address
-            );
-            return Ok(());
-        }
-
-        let contract_chain_id = std::env::var("SOLVER_CONTRACT_CHAIN_ID")
-            .unwrap_or_else(|_| "9029".to_string())
-            .parse::<u64>()
-            .unwrap_or(9029);
-        let contract_chain_name = if contract_chain_id == 9029 {
-            "qubetics"
-        } else {
-            "ethereum"
-        };
-
-        let asset_chain_id_value =
-            crate::utils::transaction::get_chain_id_from_name(asset_chain_name).unwrap_or(0);
-        let asset_chain_id_u256 = U256::from(asset_chain_id_value);
-        let amount_u256 = U256::from(amount);
-
-        if amount_u256.is_zero() {
-            return Ok(());
-        }
-
-        let dkg_node = if let Some(node) = &self.dkg_node {
-            node
-        } else {
-            warn!(
-                "❌ [SOLVER] Cannot add liquidity on contract for {} - DKG node unavailable",
-                solver_address
-            );
-            return Ok(());
-        };
-
-        let group_public_key = if let Some(key) = dkg_node.get_vault_group_key().await {
-            key
-        } else {
-            warn!(
-                "❌ [SOLVER] Cannot add liquidity on contract for {} - vault group key unavailable",
-                solver_address
-            );
-            return Ok(());
-        };
-
-        let liquidity_operator_address = crate::utils::get_eth_address_from_group_key(group_public_key);
-        info!(
-            "🧾 [SOLVER] Submitting addLiquidity for solver {} (solver_id={}, chain_id={}, amount={}, contract={}, from={})",
-            solver_address,
-            solver_id,
-            asset_chain_id_value,
-            amount,
-            contract_address,
-            liquidity_operator_address
-        );
-
-        let chain_tx = crate::utils::transaction::create_solver_add_liquidity_transaction(
-            &liquidity_operator_address,
-            solver_id,
-            asset_chain_id_u256,
-            amount_u256,
-            &contract_address,
-            contract_chain_id,
-            contract_chain_name,
-        )
-        .await?;
-
-        let eth_tx = match chain_tx {
-            ChainTransaction::Ethereum(tx) => tx,
-            ChainTransaction::Bitcoin(_) => {
-                warn!(
-                    "⚠️ [SOLVER] addLiquidity contract call only supported on EVM chains; skipping solver {}",
-                    solver_address
-                );
-                return Ok(());
-            }
-        };
-
-        if let Some(signing_node) = &mut self.signing_node {
-            let available_nodes: Vec<PeerId> =
-                self.node_manager.get_active_nodes().into_iter().collect();
-            signing_node.set_available_nodes(available_nodes);
-            signing_node.set_chain_handler(
-                crate::chain_abstraction::ChainHandlerFactory::create_ethereum_handler(
-                    eth_tx.chain_id,
-                )
-                .into(),
-            );
-
-            let vault_tweaked_share = dkg_node.get_vault_tweaked_secret_share().await;
-
-            if let Some(ref _secret_share) = vault_tweaked_share {
-                // signing_node.set_group_public_key(group_public_key);
-                signing_node.set_vault_group_key(group_public_key);
-
-                let contract_tx = crate::types::intent::ContractTransaction {
-                    to: eth_tx.to.clone(),
-                    value: eth_tx.value.clone(),
-                    nonce: eth_tx.nonce,
-                    gas_limit: eth_tx.gas_limit,
-                    gas_price: eth_tx.gas_price.clone(),
-                    chain_id: eth_tx.chain_id,
-                    data: eth_tx
-                        .data
-                        .as_ref()
-                        .map(|d| format!("0x{}", hex::encode(d)))
-                        .unwrap_or_else(|| "0x".to_string()),
-                };
-
-                let tx_bytes = crate::utils::transaction::create_transaction_for_signing_contract(
-                    &contract_tx,
-                );
-                info!(
-                    "🔐 [SOLVER] Starting contract add-liquidity signing for {} on {} (amount: {})",
-                    solver_address, asset_chain_name, amount
-                );
-                let contract_chain_handler = signing_node.get_contract_chain_handler().clone();
-                let mut eth_signer = EthereumSigner::new(signing_node);
-                eth_signer
-                    .sign_contract_message(
-                        tx_bytes,
-                        &contract_chain_handler,
-                        &contract_tx,
-                        vault_tweaked_share,
-                        None,
-                        vault_tweaked_share,
-                        request_id, // Pass request_id from sequencer
-                        original_request, // Pass original_request for retry support
-                    )
-                    .await?;
-                info!(
-                    "✅ [SOLVER] Contract add-liquidity transaction signed for solver {} (chain: {}, amount: {})",
-                    solver_address, asset_chain_id_value, amount
-                );
-            } else {
-                warn!(
-                    "⚠️ [SOLVER] Skipping contract add-liquidity for {} - missing vault secret share",
-                    solver_address
-                );
-            }
-        } else {
-            warn!(
-                "❌ [SOLVER] Signing node unavailable for contract add-liquidity for {}",
-                solver_address
-            );
-        }
-
-        Ok(())
-    }
-
-    fn parse_liquidity_amount_value(amount_str: &str, asset_label: &str) -> Option<u128> {
-        match U256::from_dec_str(amount_str) {
-            Ok(value) => {
-                if value.is_zero() {
-                    warn!(
-                        "⚠️ [ADD-LIQ] {} add-liquidity amount is zero; skipping contract submission",
-                        asset_label
-                    );
-                    None
-                } else if value.bits() > 128 {
-                    warn!(
-                        "⚠️ [ADD-LIQ] {} add-liquidity amount {} exceeds u128 bounds; skipping",
-                        asset_label, amount_str
-                    );
-                    None
-                } else {
-                    Some(value.low_u128())
-                }
-            }
-            Err(e) => {
-                warn!(
-                    "⚠️ [ADD-LIQ] Failed to parse {} add-liquidity amount '{}': {}",
-                    asset_label, amount_str, e
-                );
-                None
-            }
-        }
-    }
-
-    pub(crate) async fn handle_add_liquidity_contract_calls(
-        &mut self,
-        solver_address: &str,
-        solver_id: &str,
-        amount_btc: &Option<String>,
-        amount_tics: &Option<String>,
-        request_id: &str,
-    ) -> Result<()> {
-        let mut dispatched = false;
-
-        if let Some(amount_str) = amount_tics.as_ref() {
-            if let Some(amount) = Self::parse_liquidity_amount_value(amount_str, "TICS") {
-                info!(
-                    "💧 [ADD-LIQ] Dispatching contract update for solver {} on qubetics (amount: {})",
-                    solver_address, amount_str
-                );
-                // Submit via transaction helper (sequencer removed, pool approach pending)
-                self.submit_solver_add_liquidity_to_sequencer(
-                    solver_address,
-                    solver_id,
-                    "qubetics",
-                    amount,
-                    request_id,
-                )
-                .await?;
-                dispatched = true;
-            }
-        }
-
-        if let Some(amount_str) = amount_btc.as_ref() {
-            if let Some(amount) = Self::parse_liquidity_amount_value(amount_str, "BTC") {
-                info!(
-                    "💧 [ADD-LIQ] Dispatching contract update for solver {} on btc (amount: {})",
-                    solver_address, amount_str
-                );
-                // Submit via transaction helper (sequencer removed, pool approach pending)
-                self.submit_solver_add_liquidity_to_sequencer(
-                    solver_address,
-                    solver_id,
-                    "btc",
-                    amount,
-                    request_id,
-                )
-                .await?;
-                dispatched = true;
-            }
-        }
-
-        if !dispatched {
-            info!(
-                "ℹ️ [ADD-LIQ] No valid add-liquidity amounts provided for solver {}; skipping contract update",
-                solver_address
-            );
-        }
-
-        Ok(())
-    }
 }
 
 #[cfg(test)]
@@ -1246,7 +994,7 @@ impl MpcNetworkLayer {
                 let topic_hash = gossipsub::IdentTopic::new(topic.clone());
 
                 // Production: Check channel capacity and log warnings for monitoring
-                let channel_capacity_warning_threshold = 0.8; // Warn at 80% full
+                let _channel_capacity_warning_threshold = 0.8; // Warn at 80% full
                 // Note: We can't directly check channel capacity, but we can monitor via try_send failures
                 
                 // Check if this is a critical message that needs retry tracking
@@ -1367,6 +1115,149 @@ impl MpcNetworkLayer {
                     }
                 }
             }
+            // Local + network handling for intent batches:
+            // - Origin node sends ChannelMessage::IntentBatchBroadcast
+            // - We:
+            //   1) Build the corresponding GossipsubMessage::IntentBatchBroadcast
+            //   2) Call handle_gossipsub_message locally so this node processes its own batch
+            //   3) Publish the message over gossipsub so other peers process it too
+            ChannelMessage::IntentBatchBroadcast {
+                intent_hashes,
+                batch_type,
+                timestamp,
+                round,
+                node_id,
+            } => {
+                use libp2p::gossipsub::{IdentTopic, Message as GossipMessage};
+
+                let gossip_msg = crate::types::GossipsubMessage::IntentBatchBroadcast {
+                    intent_hashes,
+                    batch_type,
+                    timestamp,
+                    round,
+                    node_id,
+                };
+
+                let data = match serde_json::to_vec(&gossip_msg) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        warn!(
+                            "❌ [INTENT_BATCH] Failed to serialize IntentBatchBroadcast: {}",
+                            e
+                        );
+                        return Ok(());
+                    }
+                };
+
+                // 1) Process locally by calling the main gossipsub handler
+                let topic = "intent-batch-broadcast".to_string();
+                let topic_hash = IdentTopic::new(topic.clone());
+                let local_msg = GossipMessage {
+                    source: Some(self.local_peer_id),
+                    data: data.clone(),
+                    sequence_number: None,
+                    topic: topic_hash.hash(),
+                };
+
+                if let Err(e) = self.handle_gossipsub_message(&local_msg).await {
+                    warn!(
+                        "❌ [INTENT_BATCH] Failed to process local IntentBatchBroadcast: {}",
+                        e
+                    );
+                }
+
+                // 2) Publish to other peers via gossipsub
+                let swarm_mut = swarm.behaviour_mut();
+                let peer_count = swarm_mut.gossipsub.all_peers().count();
+
+                if peer_count > 0 {
+                    if let Err(e) = swarm_mut.gossipsub.publish(topic_hash, data) {
+                        warn!(
+                            "❌ [INTENT_BATCH] Failed to publish IntentBatchBroadcast to topic {}: {:?}",
+                            topic, e
+                        );
+                    }
+                } else {
+                    warn!(
+                        "⚠️ [INTENT_BATCH] No peers available for broadcasting IntentBatchBroadcast"
+                    );
+                }
+            }
+            // BTC Intent Manager Contract Update Batch
+            // - Origin node sends ChannelMessage::BtcIntentManagerTxUpdate
+            //   1) Build the corresponding GossipsubMessage::BtcIntentManagerTxUpdate
+            //   2) Process locally by calling the main gossipsub handler
+            //   3) Publish to other peers via gossipsub
+            ChannelMessage::BtcIntentManagerTxUpdate {
+                intent_hashes,
+                btc_txid,
+                btc_batch_round,
+                update_round,
+                timestamp,
+                node_id,
+            } => {
+                use libp2p::gossipsub::{IdentTopic, Message as GossipMessage};
+
+                let gossip_msg = crate::types::GossipsubMessage::BtcIntentManagerTxUpdate {
+                    intent_hashes: intent_hashes.clone(),
+                    btc_txid: btc_txid.clone(),
+                    btc_batch_round,
+                    update_round,
+                    timestamp: timestamp.clone(),
+                    node_id: node_id.clone(),
+                };
+
+                let data = match serde_json::to_vec(&gossip_msg) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        warn!(
+                            "❌ [BTC_INTENT_MANAGER] Failed to serialize BtcIntentManagerTxUpdate: {}",
+                            e
+                        );
+                        return Ok(());
+                    }
+                };
+
+                // 1) Process locally by calling the main gossipsub handler
+                let topic = "btc-intent-manager-tx-update".to_string();
+                let topic_hash = IdentTopic::new(topic.clone());
+                let local_msg = GossipMessage {
+                    source: Some(self.local_peer_id),
+                    data: data.clone(),
+                    sequence_number: None,
+                    topic: topic_hash.hash(),
+                };
+
+                if let Err(e) = self.handle_gossipsub_message(&local_msg).await {
+                    warn!(
+                        "❌ [BTC_INTENT_MANAGER] Failed to process local BtcIntentManagerTxUpdate: {}",
+                        e
+                    );
+                }
+
+                // 2) Publish to other peers via gossipsub
+                let swarm_mut = swarm.behaviour_mut();
+                let peer_count = swarm_mut.gossipsub.all_peers().count();
+
+                if peer_count > 0 {
+                    if let Err(e) = swarm_mut.gossipsub.publish(topic_hash, data) {
+                        warn!(
+                            "❌ [BTC_INTENT_MANAGER] Failed to publish BtcIntentManagerTxUpdate to topic {}: {:?}",
+                            topic, e
+                        );
+                    } else {
+                        info!(
+                            "✅ [BTC_INTENT_MANAGER] Published BtcIntentManagerTxUpdate to {} peers ({} intents)",
+                            peer_count,
+                            intent_hashes.len()
+                        );
+                    }
+                } else {
+                    warn!(
+                        "⚠️ [BTC_INTENT_MANAGER] No peers available for broadcasting BtcIntentManagerTxUpdate"
+                    );
+                }
+            }
             // SECURE DKG SHARE DISTRIBUTION - sends share to specific peer via P2P RPC
             ChannelMessage::UnicastShareDKG {
                 target_peer_id,
@@ -1485,6 +1376,44 @@ impl MpcNetworkLayer {
                     );
                 }
 
+                // PACING: Check per-peer in-flight count before sending
+                {
+                    use crate::network::rpc::MAX_OUTBOUND_INFLIGHT_PER_PEER;
+                    let mut inflight = self.outbound_inflight.lock().await;
+                    let count = inflight.get(&peer_id).copied().unwrap_or(0);
+                    
+                    if count >= MAX_OUTBOUND_INFLIGHT_PER_PEER {
+                        // At capacity - re-queue with delay
+                        info!(
+                            "⏸️ [DKG-SECURE] Peer {} at capacity ({}/{}), re-queuing share {}",
+                            target_peer_id, count, MAX_OUTBOUND_INFLIGHT_PER_PEER, share_index
+                        );
+                        let tx = self.message_tx.clone();
+                        let msg = ChannelMessage::UnicastShareDKG {
+                            target_peer_id: target_peer_id.clone(),
+                            from_node_id: from_node_id.clone(),
+                            share_index,
+                            share_value: share_value.clone(),
+                            commitments: commitments.clone(),
+                            round,
+                            retry_count,
+                        };
+                        tokio::spawn(async move {
+                            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                            let _ = tx.send(msg).await;
+                        });
+                        return Ok(());
+                    }
+                    
+                    // Increment in-flight count
+                    *inflight.entry(peer_id).or_insert(0) += 1;
+                }
+
+                // Clone values for retry registry before creating RPC request
+                let from_node_id_clone = from_node_id.clone();
+                let share_value_clone = share_value.clone();
+                let commitments_clone = commitments.clone();
+
                 // Create the RPC request
                 let request = RPCRequest::SendDKGShare {
                     from_node_id,
@@ -1499,6 +1428,25 @@ impl MpcNetworkLayer {
                     .behaviour_mut()
                     .request_response
                     .send_request(&peer_id, request);
+
+                // RETRY: Insert into outbound_retry registry
+                {
+                    use crate::network::rpc::{OutboundRetryEntry, RetryableUnicast};
+                    let retry_msg = RetryableUnicast::UnicastShareDKG {
+                        target_peer_id: target_peer_id.clone(),
+                        from_node_id: from_node_id_clone,
+                        share_index,
+                        share_value: share_value_clone,
+                        commitments: commitments_clone,
+                        round,
+                    };
+                    let entry = OutboundRetryEntry {
+                        peer: peer_id,
+                        retry_count,
+                        msg: retry_msg,
+                    };
+                    self.outbound_retry.lock().await.insert(request_id, entry);
+                }
 
                 info!(
                     "✅ [DKG-SECURE] Share index {} sent via P2P RPC to {} (request_id: {:?}, connected: {})",
@@ -1621,6 +1569,43 @@ impl MpcNetworkLayer {
                     );
                 }
 
+                // PACING: Check per-peer in-flight count before sending
+                {
+                    use crate::network::rpc::MAX_OUTBOUND_INFLIGHT_PER_PEER;
+                    let mut inflight = self.outbound_inflight.lock().await;
+                    let count = inflight.get(&peer_id).copied().unwrap_or(0);
+                    
+                    if count >= MAX_OUTBOUND_INFLIGHT_PER_PEER {
+                        // At capacity - re-queue with delay
+                        info!(
+                            "⏸️ [REFRESH-SECURE] Peer {} at capacity ({}/{}), re-queuing share {}",
+                            target_peer_id, count, MAX_OUTBOUND_INFLIGHT_PER_PEER, share_index
+                        );
+                        let tx = self.message_tx.clone();
+                        let msg = ChannelMessage::UnicastRefreshShare {
+                            target_peer_id: target_peer_id.clone(),
+                            from_node_id: from_node_id.clone(),
+                            share_index,
+                            share_value: share_value.clone(),
+                            commitments: commitments.clone(),
+                            retry_count,
+                        };
+                        tokio::spawn(async move {
+                            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                            let _ = tx.send(msg).await;
+                        });
+                        return Ok(());
+                    }
+                    
+                    // Increment in-flight count
+                    *inflight.entry(peer_id).or_insert(0) += 1;
+                }
+
+                // Clone values for retry registry before creating RPC request
+                let from_node_id_clone = from_node_id.clone();
+                let share_value_clone = share_value.clone();
+                let commitments_clone = commitments.clone();
+
                 // Create the RPC request
                 let request = RPCRequest::SendRefreshShare {
                     from_node_id,
@@ -1634,6 +1619,24 @@ impl MpcNetworkLayer {
                     .behaviour_mut()
                     .request_response
                     .send_request(&peer_id, request);
+
+                // RETRY: Insert into outbound_retry registry
+                {
+                    use crate::network::rpc::{OutboundRetryEntry, RetryableUnicast};
+                    let retry_msg = RetryableUnicast::UnicastRefreshShare {
+                        target_peer_id: target_peer_id.clone(),
+                        from_node_id: from_node_id_clone,
+                        share_index,
+                        share_value: share_value_clone,
+                        commitments: commitments_clone,
+                    };
+                    let entry = OutboundRetryEntry {
+                        peer: peer_id,
+                        retry_count,
+                        msg: retry_msg,
+                    };
+                    self.outbound_retry.lock().await.insert(request_id, entry);
+                }
 
                 info!(
                     "✅ [REFRESH-SECURE] Refresh share index {} sent via P2P RPC to {} (request_id: {:?}, connected: {})",
@@ -1760,17 +1763,67 @@ impl MpcNetworkLayer {
                     return Ok(());
                 }
 
+                // PACING: Check per-peer in-flight count before sending
+                {
+                    use crate::network::rpc::MAX_OUTBOUND_INFLIGHT_PER_PEER;
+                    let mut inflight = self.outbound_inflight.lock().await;
+                    let count = inflight.get(&peer_id).copied().unwrap_or(0);
+                    
+                    if count >= MAX_OUTBOUND_INFLIGHT_PER_PEER {
+                        // At capacity - re-queue with delay
+                        info!(
+                            "⏸️ [CRITICAL-UNICAST] Peer {} at capacity ({}/{}), re-queuing message",
+                            target_peer_id, count, MAX_OUTBOUND_INFLIGHT_PER_PEER
+                        );
+                        let tx = self.message_tx.clone();
+                        let msg = ChannelMessage::UnicastCritical {
+                            target_peer_id: target_peer_id.clone(),
+                            topic,
+                            data,
+                            message_type,
+                            message_id,
+                            retry_count,
+                        };
+                        tokio::spawn(async move {
+                            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                            let _ = tx.send(msg).await;
+                        });
+                        return Ok(());
+                    }
+                    
+                    // Increment in-flight count
+                    *inflight.entry(peer_id).or_insert(0) += 1;
+                }
+
                 let request = RPCRequest::DeliverCriticalGossip {
-                    topic,
-                    data,
-                    message_type,
-                    message_id,
+                    topic: topic.clone(),
+                    data: data.clone(),
+                    message_type: message_type.clone(),
+                    message_id: message_id.clone(),
                 };
 
                 let request_id = swarm
                     .behaviour_mut()
                     .request_response
                     .send_request(&peer_id, request);
+
+                // RETRY: Insert into outbound_retry registry
+                {
+                    use crate::network::rpc::{OutboundRetryEntry, RetryableUnicast};
+                    let retry_msg = RetryableUnicast::UnicastCritical {
+                        target_peer_id: target_peer_id.clone(),
+                        topic,
+                        data,
+                        message_type,
+                        message_id,
+                    };
+                    let entry = OutboundRetryEntry {
+                        peer: peer_id,
+                        retry_count,
+                        msg: retry_msg,
+                    };
+                    self.outbound_retry.lock().await.insert(request_id, entry);
+                }
 
                 info!(
                     "✅ [CRITICAL-UNICAST] Critical message sent to {} (request_id: {:?}, connected: {})",
@@ -1892,9 +1945,40 @@ impl MpcNetworkLayer {
                     );
                 }
 
+                // PACING: Check per-peer in-flight count before sending
+                {
+                    use crate::network::rpc::MAX_OUTBOUND_INFLIGHT_PER_PEER;
+                    let mut inflight = self.outbound_inflight.lock().await;
+                    let count = inflight.get(&peer_id).copied().unwrap_or(0);
+                    
+                    if count >= MAX_OUTBOUND_INFLIGHT_PER_PEER {
+                        // At capacity - re-queue with delay
+                        info!(
+                            "⏸️ [SIGNING-SECURE] Peer {} at capacity ({}/{}), re-queuing ECDSA signature for round {}",
+                            target_peer_id, count, MAX_OUTBOUND_INFLIGHT_PER_PEER, round
+                        );
+                        let tx = self.message_tx.clone();
+                        let msg = ChannelMessage::UnicastECDSASignature {
+                            target_peer_id: target_peer_id.clone(),
+                            from_node_id,
+                            signature_data,
+                            round,
+                            retry_count,
+                        };
+                        tokio::spawn(async move {
+                            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                            let _ = tx.send(msg).await;
+                        });
+                        return Ok(());
+                    }
+                    
+                    // Increment in-flight count
+                    *inflight.entry(peer_id).or_insert(0) += 1;
+                }
+
                 let request = RPCRequest::SendECDSASignature {
-                    from_node_id,
-                    signature_data,
+                    from_node_id: from_node_id.clone(),
+                    signature_data: signature_data.clone(),
                     round,
                 };
 
@@ -1902,6 +1986,23 @@ impl MpcNetworkLayer {
                     .behaviour_mut()
                     .request_response
                     .send_request(&peer_id, request);
+
+                // RETRY: Insert into outbound_retry registry
+                {
+                    use crate::network::rpc::{OutboundRetryEntry, RetryableUnicast};
+                    let retry_msg = RetryableUnicast::UnicastECDSASignature {
+                        target_peer_id: target_peer_id.clone(),
+                        from_node_id,
+                        signature_data,
+                        round,
+                    };
+                    let entry = OutboundRetryEntry {
+                        peer: peer_id,
+                        retry_count,
+                        msg: retry_msg,
+                    };
+                    self.outbound_retry.lock().await.insert(request_id, entry);
+                }
 
                 info!(
                     "✅ [SIGNING-SECURE] ECDSA signature for round {} sent via P2P RPC to {} (request_id: {:?}, connected: {})",
@@ -2024,9 +2125,40 @@ impl MpcNetworkLayer {
                     );
                 }
 
+                // PACING: Check per-peer in-flight count before sending
+                {
+                    use crate::network::rpc::MAX_OUTBOUND_INFLIGHT_PER_PEER;
+                    let mut inflight = self.outbound_inflight.lock().await;
+                    let count = inflight.get(&peer_id).copied().unwrap_or(0);
+                    
+                    if count >= MAX_OUTBOUND_INFLIGHT_PER_PEER {
+                        // At capacity - re-queue with delay
+                        info!(
+                            "⏸️ [SIGNING-SECURE] Peer {} at capacity ({}/{}), re-queuing BTC signatures for round {}",
+                            target_peer_id, count, MAX_OUTBOUND_INFLIGHT_PER_PEER, round
+                        );
+                        let tx = self.message_tx.clone();
+                        let msg = ChannelMessage::UnicastBtcSignatures {
+                            target_peer_id: target_peer_id.clone(),
+                            from_node_id,
+                            signature_data,
+                            round,
+                            retry_count,
+                        };
+                        tokio::spawn(async move {
+                            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                            let _ = tx.send(msg).await;
+                        });
+                        return Ok(());
+                    }
+                    
+                    // Increment in-flight count
+                    *inflight.entry(peer_id).or_insert(0) += 1;
+                }
+
                 let request = RPCRequest::SendBtcSignatures {
-                    from_node_id,
-                    signature_data,
+                    from_node_id: from_node_id.clone(),
+                    signature_data: signature_data.clone(),
                     round,
                 };
 
@@ -2034,6 +2166,23 @@ impl MpcNetworkLayer {
                     .behaviour_mut()
                     .request_response
                     .send_request(&peer_id, request);
+
+                // RETRY: Insert into outbound_retry registry
+                {
+                    use crate::network::rpc::{OutboundRetryEntry, RetryableUnicast};
+                    let retry_msg = RetryableUnicast::UnicastBtcSignatures {
+                        target_peer_id: target_peer_id.clone(),
+                        from_node_id,
+                        signature_data,
+                        round,
+                    };
+                    let entry = OutboundRetryEntry {
+                        peer: peer_id,
+                        retry_count,
+                        msg: retry_msg,
+                    };
+                    self.outbound_retry.lock().await.insert(request_id, entry);
+                }
 
                 info!(
                     "✅ [SIGNING-SECURE] BTC signatures for round {} sent via P2P RPC to {} (request_id: {:?}, connected: {})",
@@ -2153,9 +2302,40 @@ impl MpcNetworkLayer {
                     );
                 }
 
+                // PACING: Check per-peer in-flight count before sending
+                {
+                    use crate::network::rpc::MAX_OUTBOUND_INFLIGHT_PER_PEER;
+                    let mut inflight = self.outbound_inflight.lock().await;
+                    let count = inflight.get(&peer_id).copied().unwrap_or(0);
+                    
+                    if count >= MAX_OUTBOUND_INFLIGHT_PER_PEER {
+                        // At capacity - re-queue with delay
+                        info!(
+                            "⏸️ [SIGNING-SECURE] Peer {} at capacity ({}/{}), re-queuing transaction data for round {}",
+                            target_peer_id, count, MAX_OUTBOUND_INFLIGHT_PER_PEER, round
+                        );
+                        let tx = self.message_tx.clone();
+                        let msg = ChannelMessage::UnicastTransactionData {
+                            target_peer_id: target_peer_id.clone(),
+                            from_node_id,
+                            transaction_data,
+                            round,
+                            retry_count,
+                        };
+                        tokio::spawn(async move {
+                            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                            let _ = tx.send(msg).await;
+                        });
+                        return Ok(());
+                    }
+                    
+                    // Increment in-flight count
+                    *inflight.entry(peer_id).or_insert(0) += 1;
+                }
+
                 let request = RPCRequest::SendTransactionData {
-                    from_node_id,
-                    transaction_data,
+                    from_node_id: from_node_id.clone(),
+                    transaction_data: transaction_data.clone(),
                     round,
                 };
 
@@ -2164,43 +2344,27 @@ impl MpcNetworkLayer {
                     .request_response
                     .send_request(&peer_id, request);
 
+                // RETRY: Insert into outbound_retry registry
+                {
+                    use crate::network::rpc::{OutboundRetryEntry, RetryableUnicast};
+                    let retry_msg = RetryableUnicast::UnicastTransactionData {
+                        target_peer_id: target_peer_id.clone(),
+                        from_node_id,
+                        transaction_data,
+                        round,
+                    };
+                    let entry = OutboundRetryEntry {
+                        peer: peer_id,
+                        retry_count,
+                        msg: retry_msg,
+                    };
+                    self.outbound_retry.lock().await.insert(request_id, entry);
+                }
+
                 info!(
                     "✅ [SIGNING-SECURE] Transaction data for round {} sent via P2P RPC to {} (request_id: {:?}, connected: {})",
                     round, target_peer_id, request_id, is_connected
                 );
-            }
-            ChannelMessage::IntentHash {
-                intent_hash,
-                signer,
-                intent,
-            } => {
-                info!("📝 [NETWORK] Storing intent hash from signer {}", signer);
-
-                if let Some(user_intent_manager) = &self.user_intent_manager {
-                    if let Err(e) = user_intent_manager
-                        .store_intent_hash(intent_hash.clone(), &signer, &intent)
-                        .await
-                    {
-                        warn!("❌ [NETWORK] Failed to store intent hash: {}", e);
-                    } else {
-                        info!("✅ [NETWORK] Intent hash stored locally");
-                    }
-                } else {
-                    warn!("❌ [NETWORK] No user registry available to store intent hash");
-                }
-
-                let intent_hash_hex = hex::encode(&intent_hash);
-                let gossip_msg = GossipsubMessage::IntentHash {
-                    intent_hash: intent_hash_hex.clone(),
-                    signer: signer.clone(),
-                    intent: intent.clone(),
-                };
-                let msg_bytes = serde_json::to_vec(&gossip_msg).map_err(|e| {
-                    anyhow::anyhow!("Failed to serialize intent hash message: {}", e)
-                })?;
-                let topic = gossipsub::IdentTopic::new("intent-hashes");
-                swarm.behaviour_mut().gossipsub.publish(topic, msg_bytes)?;
-                info!("📡 [NETWORK] Broadcasted intent hash {}", intent_hash_hex);
             }
             ChannelMessage::DepositIntent {
                 intent,
@@ -2269,6 +2433,10 @@ impl MpcNetworkLayer {
                     crate::types::TransactionType::Refund => {
                         &intent.source_chain.to_lowercase() // Refund goes back to source chain
                     }
+                    crate::types::TransactionType::IntentStatusUpdate => {
+                        // IntentStatusUpdate is a contract call on Qubetics chain (TICS)
+                        "qubetics"
+                    }
                     crate::types::TransactionType::RewardTxn => {
                         // RewardTxn is not valid for intent flow
                         warn!("❌ [LOCAL] RewardTxn is not valid for deposit intent flow");
@@ -2278,10 +2446,6 @@ impl MpcNetworkLayer {
                         warn!(
                             "❌ [LOCAL] WithdrawLiquidity is not supported in deposit intent flow"
                         );
-                        return Ok(());
-                    }
-                    crate::types::TransactionType::AddLiquidity => {
-                        warn!("❌ [LOCAL] AddLiquidity is not supported in deposit intent flow");
                         return Ok(());
                     }
                 };
@@ -2313,6 +2477,14 @@ impl MpcNetworkLayer {
                             None
                         }
                     }
+                    crate::types::TransactionType::IntentStatusUpdate => {
+                        // For intent status update, use network's DKG secret share (same as NetworkToTarget)
+                        if let Some(dkg_node) = &self.dkg_node {
+                            dkg_node.get_final_secret_share().await
+                        } else {
+                            None
+                        }
+                    }
                     crate::types::TransactionType::RewardTxn => {
                         // RewardTxn is not valid for intent flow
                         None
@@ -2320,12 +2492,6 @@ impl MpcNetworkLayer {
                     crate::types::TransactionType::WithdrawLiquidity => {
                         warn!(
                             "❌ [LOCAL] WithdrawLiquidity is not supported for deposit intent signing"
-                        );
-                        None
-                    }
-                    crate::types::TransactionType::AddLiquidity => {
-                        warn!(
-                            "❌ [LOCAL] AddLiquidity is not supported for deposit intent signing"
                         );
                         None
                     }
@@ -2417,8 +2583,9 @@ impl MpcNetworkLayer {
                                     }
                                 }
                                 crate::types::TransactionType::NetworkToTarget
-                                | crate::types::TransactionType::Refund => {
-                                    // For network withdrawals and refunds, use network's DKG group key
+                                | crate::types::TransactionType::Refund
+                                | crate::types::TransactionType::IntentStatusUpdate => {
+                                    // For network withdrawals, refunds, and intent status updates, use network's DKG group key
                                     if let Some(dkg_node) = &self.dkg_node {
                                         if let Some(group_key) =
                                             dkg_node.get_final_public_key().await
@@ -2445,11 +2612,6 @@ impl MpcNetworkLayer {
                                 crate::types::TransactionType::WithdrawLiquidity => {
                                     warn!(
                                         "❌ [LOCAL] WithdrawLiquidity is not supported for Bitcoin group key selection"
-                                    );
-                                }
-                                crate::types::TransactionType::AddLiquidity => {
-                                    warn!(
-                                        "❌ [LOCAL] AddLiquidity is not supported for Bitcoin group key selection"
                                     );
                                 }
                             }
@@ -2490,8 +2652,9 @@ impl MpcNetworkLayer {
                             }
                         }
                         crate::types::TransactionType::NetworkToTarget
-                        | crate::types::TransactionType::Refund => {
-                            // For network withdrawals and refunds, no derived addresses needed
+                        | crate::types::TransactionType::Refund
+                        | crate::types::TransactionType::IntentStatusUpdate => {
+                            // For network withdrawals, refunds, and intent status updates, no derived addresses needed
                             (None, None)
                         }
                         crate::types::TransactionType::RewardTxn => {
@@ -2501,12 +2664,6 @@ impl MpcNetworkLayer {
                         crate::types::TransactionType::WithdrawLiquidity => {
                             warn!(
                                 "❌ [LOCAL] WithdrawLiquidity transaction type not supported for derived addresses"
-                            );
-                            (None, None)
-                        }
-                        crate::types::TransactionType::AddLiquidity => {
-                            warn!(
-                                "❌ [LOCAL] AddLiquidity is not supported for derived address lookup"
                             );
                             (None, None)
                         }
@@ -2593,7 +2750,7 @@ impl MpcNetworkLayer {
                                                 &chain_handler,
                                                 Some(btc_tx.clone()),
                                                 Some(user_eth_address.clone()),
-                                                Some(intent_hash.clone()),
+                                                vec![intent_hash.clone()],
                                                 Some(transaction_type.clone()),
                                                 signing_key,
                                                 None,
@@ -2662,10 +2819,10 @@ impl MpcNetworkLayer {
                                                         );
                                                     }
                                                     
-                                                    // Broadcast the error
+                                                    // Broadcast the error (batch-aware: single intent as one-element vec)
                                                     if let Some(signing_node) = &self.signing_node {
                                                         signing_node.broadcast_transaction_error(
-                                                            Some(&intent_hash),
+                                                            Some(vec![intent_hash.clone()]),
                                                             &error_message,
                                                             "network_to_target",
                                                             None,
@@ -2753,7 +2910,7 @@ impl MpcNetworkLayer {
                                                 eth_tx,
                                                 user_tweaked_share,
                                                 Some(user_eth_address.clone()),
-                                                Some(intent_hash.clone()),
+                                                vec![intent_hash.clone()],
                                                 Some(transaction_type.clone()),
                                                 None,
                                                 signing_key,
@@ -2791,13 +2948,13 @@ impl MpcNetworkLayer {
                                         crate::types::TransactionType::UserToVault => "user_to_vault",
                                         crate::types::TransactionType::NetworkToTarget => "network_to_target",
                                         crate::types::TransactionType::Refund => "refund",
+                                        crate::types::TransactionType::IntentStatusUpdate => "intent_status_update",
                                         crate::types::TransactionType::RewardTxn => "reward_txn",
                                         crate::types::TransactionType::WithdrawLiquidity => "withdraw_liquidity",
-                                        crate::types::TransactionType::AddLiquidity => "add_liquidity",
                                     };
                                     
                                     signing_node.broadcast_transaction_error(
-                                        Some(&intent_hash),
+                                        Some(vec![intent_hash.clone()]),
                                         &error_message,
                                         transaction_type_str,
                                         None,
@@ -2925,7 +3082,7 @@ impl MpcNetworkLayer {
             }
 
             ChannelMessage::TransactionIdBroadcast {
-                intent_hash,
+                intent_hashes,
                 transaction_id,
                 transaction_type,
                 solver_address,
@@ -2937,17 +3094,17 @@ impl MpcNetworkLayer {
                 );
                 info!("💳 [NETWORK] Transaction ID: {}", transaction_id);
                 info!("🔄 [NETWORK] Transaction type: {}", transaction_type);
-                if let Some(hash) = &intent_hash {
-                    info!("🔗 [NETWORK] Intent hash: {}", hash);
+                if !intent_hashes.is_empty() {
+                    info!("🔗 [NETWORK] Intent hashes: {:?}", intent_hashes);
                 } else if let Some(solver) = &solver_address {
                     info!("🧩 [NETWORK] Solver address: {}", solver);
                 } else {
-                    info!("ℹ️ [NETWORK] No intent hash or solver address supplied with transaction ID broadcast");
+                    info!("ℹ️ [NETWORK] No intent hashes or solver address supplied with transaction ID broadcast");
                 }
 
                 // Gossip the transaction ID broadcast to other peers immediately so everyone can contribute their share in parallel
                 let gossip_message = GossipsubMessage::TransactionIdBroadcast {
-                    intent_hash: intent_hash.clone(),
+                    intent_hashes: intent_hashes.clone(),
                     transaction_id: transaction_id.clone(),
                     transaction_type: transaction_type.clone(),
                     solver_address: solver_address.clone(),
@@ -3018,30 +3175,32 @@ impl MpcNetworkLayer {
                         e
                     );
                 } else {
-                    match (intent_hash.as_ref(), solver_address.as_ref()) {
-                        (Some(hash), _) => {
-                            info!("📡 [NETWORK] Gossiped transaction ID {} for intent {} (type: {}) to other peers", transaction_id, hash, transaction_type);
-                        }
-                        (None, Some(solver)) => {
-                            info!("📡 [NETWORK] Gossiped reward transaction ID {} for solver {} (type: {}) to other peers", transaction_id, solver, transaction_type);
-                        }
-                        _ => {
-                            info!(
-                                "📡 [NETWORK] Gossiped transaction ID {} (type: {}) to other peers",
-                                transaction_id, transaction_type
-                            );
-                        }
+                    if !intent_hashes.is_empty() {
+                        info!(
+                            "📡 [NETWORK] Gossiped transaction ID {} for intents {:?} (type: {}) to other peers",
+                            transaction_id, intent_hashes, transaction_type
+                        );
+                    } else if let Some(solver) = &solver_address {
+                        info!(
+                            "📡 [NETWORK] Gossiped reward transaction ID {} for solver {} (type: {}) to other peers",
+                            transaction_id, solver, transaction_type
+                        );
+                    } else {
+                        info!(
+                            "📡 [NETWORK] Gossiped transaction ID {} (type: {}) to other peers",
+                            transaction_id, transaction_type
+                        );
                     }
                 }
 
                 // Now process locally using shared handler
-                match (intent_hash.as_ref(), solver_address.as_ref()) {
-                    (Some(intent_hash), _) => {
-                        // Parse node_id to get PeerId for security check
-                        let sender_peer_id = node_id
-                            .parse::<libp2p::PeerId>()
-                            .unwrap_or_else(|_| libp2p::PeerId::random());
+                if !intent_hashes.is_empty() {
+                    // Parse node_id to get PeerId for security check
+                    let sender_peer_id = node_id
+                        .parse::<libp2p::PeerId>()
+                        .unwrap_or_else(|_| libp2p::PeerId::random());
 
+                    for intent_hash in intent_hashes.iter() {
                         if let Err(e) = self
                             .handle_transaction_id_storage(
                                 intent_hash,
@@ -3053,12 +3212,12 @@ impl MpcNetworkLayer {
                             .await
                         {
                             error!(
-                                "❌ [NETWORK] Failed to handle transaction ID storage: {}",
-                                e
+                                "❌ [NETWORK] Failed to handle transaction ID storage for intent {}: {}",
+                                intent_hash, e
                             );
                         }
                     }
-                    (None, Some(solver_addr)) => {
+                } else if let Some(solver_addr) = solver_address.as_ref() {
                         // Handle reward or withdraw liquidity transaction IDs
                         let storage_result = match transaction_type.as_str() {
                             "reward_txn" => {
@@ -3095,31 +3254,11 @@ impl MpcNetworkLayer {
                                 e
                             );
                         }
-                    }
-                    _ => {
-                        warn!("⚠️ [NETWORK] Transaction ID broadcast missing both intent hash and solver address");
-                    }
+                } else {
+                    warn!("⚠️ [NETWORK] Transaction ID broadcast missing both intent hashes and solver address");
                 }
             }
-            ChannelMessage::IntentHashBroadcast {
-                intent_hash,
-                node_id,
-            } => {
-                info!(
-                    "📡 [NETWORK] Broadcasting intent hash {} from node {}",
-                    intent_hash, node_id
-                );
-                let broadcast_msg = GossipsubMessage::IntentHashBroadcast {
-                    intent_hash: intent_hash.clone(),
-                    node_id: node_id.clone(),
-                };
-                let msg_bytes = serde_json::to_vec(&broadcast_msg).map_err(|e| {
-                    anyhow::anyhow!("Failed to serialize intent hash broadcast: {}", e)
-                })?;
-                let topic = gossipsub::IdentTopic::new("intent-hashes");
-                swarm.behaviour_mut().gossipsub.publish(topic, msg_bytes)?;
-                info!("📡 [NETWORK] Broadcasted intent hash to P2P network");
-            }
+            
             ChannelMessage::UserRegistration {
                 ethereum_address,
                 node_id,
@@ -3415,80 +3554,6 @@ impl MpcNetworkLayer {
                     )
                     .await?;
             }
-            ChannelMessage::AddLiquidity {
-                solver_address,
-                solver_id,
-                amount_btc,
-                amount_tics,
-                request_id,
-            } => {
-                info!(
-                    "💧 [NETWORK] Processing add liquidity for solver {} (solver_id: {})",
-                    solver_address, solver_id
-                );
-
-                let add_msg = GossipsubMessage::AddLiquidity {
-                    solver_address: solver_address.clone(),
-                    solver_id: solver_id.clone(),
-                    amount_btc: amount_btc.clone(),
-                    amount_tics: amount_tics.clone(),
-                    request_id: request_id.clone(),
-                };
-                let msg_bytes = serde_json::to_vec(&add_msg)
-                    .map_err(|e| anyhow::anyhow!("Failed to serialize add-liquidity msg: {}", e))?;
-                let topic = gossipsub::IdentTopic::new("add-liquidity");
-                swarm.behaviour_mut().gossipsub.publish(topic, msg_bytes)?;
-                info!(
-                    "📡 [NETWORK] Broadcasted add liquidity request for solver {}",
-                    solver_address
-                );
-                // 1) Dispatch contract calls from this local node (if applicable)
-                self.handle_add_liquidity_contract_calls(
-                    &solver_address,
-                    &solver_id,
-                    &amount_btc,
-                    &amount_tics,
-                    &request_id,
-                )
-                .await?;
-
-                // 2) Apply the liquidity delta locally based on the requested amount (avoid waiting
-                //    for on-chain confirmation to keep DB in sync).
-                if let Some(signing_node) = &self.signing_node {
-                    let delta_btc = amount_btc.as_ref().and_then(|v| U256::from_dec_str(v).ok());
-                    let delta_tics = amount_tics
-                        .as_ref()
-                        .and_then(|v| U256::from_dec_str(v).ok());
-                    match signing_node
-                        .apply_liquidity_delta(
-                            &solver_address,
-                            Some(&solver_id),
-                            delta_btc,
-                            delta_tics,
-                            true,
-                        )
-                        .await
-                    {
-                        Ok(()) => {
-                            info!(
-                                "✅ [NETWORK] Applied local liquidity add for {}",
-                                solver_address
-                            );
-                        }
-                        Err(e) => {
-                            warn!(
-                                "⚠️ [NETWORK] Failed to apply local liquidity add for {}: {}",
-                                solver_address, e
-                            );
-                        }
-                    }
-                } else {
-                    warn!(
-                        "⚠️ [NETWORK] Signing node unavailable; cannot apply local liquidity add for {}",
-                        solver_address
-                    );
-                }
-            }
             ChannelMessage::WithdrawLiquidity {
                 solver_address,
                 btc_address,
@@ -3587,6 +3652,279 @@ impl MpcNetworkLayer {
         Ok(())
     }
 
+    /// Handle BTC intent manager contract update batch
+    /// Processes intents with network_to_target_tx_id and makes contract call to update tx-id
+    pub(crate) async fn handle_btc_intent_manager_update_batch(
+        &mut self,
+        intent_hashes: Vec<String>,
+        btc_txid: String,
+        _btc_batch_round: u64,
+        update_round: u64,
+        timestamp: String,
+        _node_id: String,
+    ) -> Result<()> {
+        info!(
+            "🔄 [BTC_INTENT_MANAGER] Processing contract update batch: {} intents, BTC txid: {}",
+            intent_hashes.len(),
+            btc_txid
+        );
+
+        let user_intent_manager = self
+            .user_intent_manager
+            .as_ref()
+            .ok_or_else(|| anyhow!("User intent manager not available"))?;
+
+        // Fetch intent details from database
+        let mut batch_intents = Vec::new();
+        let mut batch_intent_inputs = Vec::new();
+
+        for intent_hash in &intent_hashes {
+            if let Some(intent) = user_intent_manager.get_intent(intent_hash).await {
+                let tx_ids = user_intent_manager
+                    .get_intent_transaction_ids(intent_hash)
+                    .await;
+
+                // Must have network_to_target_tx_id
+                if let Some(ref tx_ids) = tx_ids {
+                    if tx_ids.network_to_target_tx_id.is_none() {
+                        warn!(
+                            "⚠️ [BTC_INTENT_MANAGER] Intent {} missing network_to_target_tx_id, skipping",
+                            intent_hash
+                        );
+                        continue;
+                    }
+                } else {
+                    warn!(
+                        "⚠️ [BTC_INTENT_MANAGER] Intent {} has no transaction IDs, skipping",
+                        intent_hash
+                    );
+                    continue;
+                }
+
+                batch_intents.push((intent_hash.clone(), intent.clone()));
+            } else {
+                warn!("⚠️ [BTC_INTENT_MANAGER] Intent {} not found in database", intent_hash);
+            }
+        }
+
+        if batch_intents.is_empty() {
+            warn!("⚠️ [BTC_INTENT_MANAGER] No valid intents found for contract update batch");
+            return Ok(());
+        }
+
+        info!(
+            "✅ [BTC_INTENT_MANAGER] Fetched {} intents for contract update batch",
+            batch_intents.len()
+        );
+
+        // Prepare BatchIntentInput array for processBatchIntents contract call
+        for (intent_hash, intent) in &batch_intents {
+            let amount = match intent.amount.parse::<u128>() {
+                Ok(amt) => amt,
+                Err(e) => {
+                    warn!(
+                        "⚠️ [BTC_INTENT_MANAGER] Invalid amount for intent {}: {}",
+                        intent_hash, e
+                    );
+                    continue;
+                }
+            };
+
+            // Get transaction IDs
+            let tx_ids = user_intent_manager
+                .get_intent_transaction_ids(intent_hash)
+                .await;
+
+            // For BTC contract update:
+            // - withdraw_tx_hash = network_to_target_tx_id (the BTC transaction that was already executed)
+            // - deposit_tx_hash = btc_txid (the BTC batch transaction ID, if available, otherwise use network_to_target_tx_id)
+            let network_to_target_tx_id = tx_ids
+                .as_ref()
+                .and_then(|ids| ids.network_to_target_tx_id.clone())
+                .unwrap_or_else(|| {
+                    warn!(
+                        "⚠️ [BTC_INTENT_MANAGER] Intent {} missing network_to_target_tx_id",
+                        intent_hash
+                    );
+                    "N/A".to_string()
+                });
+
+            // Use BTC batch txid if available and not "pending", otherwise use network_to_target_tx_id
+            let deposit_tx_hash = if btc_txid != "pending" && !btc_txid.is_empty() {
+                Some(btc_txid.clone())
+            } else {
+                Some(network_to_target_tx_id.clone())
+            };
+
+            // Create BatchIntentInput for this intent
+            let batch_input = crate::types::BatchIntentInput {
+                source_address: intent.source_address.clone(),
+                target_address: intent.target_address.clone(),
+                source_chain: intent.source_chain.clone(),
+                target_chain: intent.target_chain.clone(),
+                amount,
+                source_token: intent.source_token.clone(),
+                target_token: intent.target_token.clone(),
+                intent_id: intent_hash.clone(),
+                withdraw_tx_hash: network_to_target_tx_id.clone(), // The BTC transaction that fulfilled the intent
+                deposit_tx_hash, // The BTC batch transaction ID (or network_to_target_tx_id if batch not finalized yet)
+            };
+
+            batch_intent_inputs.push(batch_input);
+        }
+
+        if batch_intent_inputs.is_empty() {
+            warn!("⚠️ [BTC_INTENT_MANAGER] No valid BatchIntentInput entries after filtering");
+            return Ok(());
+        }
+
+        info!(
+            "📤 [BTC_INTENT_MANAGER] Prepared {} BatchIntentInput entries",
+            batch_intent_inputs.len()
+        );
+
+        // Create processBatchIntents calldata with batchType = BTC (0)
+        if let Some(calldata) = crate::utils::transaction::encode_process_batch_intents_calldata(
+            &batch_intent_inputs,
+            crate::types::BatchType::BTC, // batchType = 0 for BTC
+            &timestamp,
+        ) {
+            info!(
+                "✅ [BTC_INTENT_MANAGER] Created processBatchIntents calldata ({} bytes) for BTC batch",
+                calldata.len()
+            );
+
+            // Create and submit an MPC-signed contract call transaction for processBatchIntents
+            // Use MAIN DKG group key (not vault key) for processBatchIntents
+            let group_public_key = if let Some(dkg_node) = &self.dkg_node {
+                dkg_node.get_final_public_key().await
+            } else {
+                None
+            };
+
+            let Some(group_public_key) = group_public_key else {
+                warn!("❌ [BTC_INTENT_MANAGER] Main DKG group key not available; cannot create contract call");
+                return Ok(());
+            };
+
+            // Contract address for IntentManager (processBatchIntents)
+            let contract_address_env =
+                std::env::var("INTENT_MANAGER_CONTRACT_ADDRESS").unwrap_or_else(|_| {
+                    "0x0000000000000000000000000000000000000000".to_string()
+                });
+            if contract_address_env == "0x0000000000000000000000000000000000000000" {
+                warn!("❌ [BTC_INTENT_MANAGER] INTENT_MANAGER_CONTRACT_ADDRESS not configured");
+                return Ok(());
+            }
+
+            // Use the MAIN group-derived EVM address as sender
+            let from_address =
+                crate::utils::get_eth_address_from_group_key(group_public_key);
+            let chain_id =
+                crate::utils::transaction::get_chain_id_from_name("qubetics").unwrap_or(9029);
+
+            // Estimate gas; abort if it would revert
+            let calldata_hex = format!("0x{}", hex::encode(&calldata));
+            let estimated_gas =
+                crate::utils::transaction::estimate_gas_for_deposit_intent(
+                    &from_address,
+                    &contract_address_env,
+                    &calldata_hex,
+                    chain_id,
+                )
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!("BTC contract update batch gas estimation failed: {}", e)
+                })?;
+            let gas_limit = estimated_gas + (estimated_gas / 10);
+
+            let nonce = crate::utils::transaction::fetch_ethereum_nonce(&from_address, chain_id)
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!("Failed to fetch nonce for {}: {}", from_address, e)
+                })?;
+
+            let gas_price =
+                crate::utils::transaction::get_gas_price_for_chain("qubetics", chain_id)
+                    .await
+                    .unwrap_or_else(|e| {
+                        warn!(
+                            "⚠️ [BTC_INTENT_MANAGER] Failed to get dynamic gas price: {}, using fallback",
+                            e
+                        );
+                        crate::utils::transaction::get_default_gas_price_for_chain("qubetics")
+                    });
+
+            let contract_tx = crate::types::ContractTransaction {
+                to: contract_address_env.clone(),
+                value: "0x0".to_string(),
+                nonce,
+                gas_limit,
+                gas_price,
+                chain_id,
+                data: calldata_hex,
+            };
+
+            // Start MPC signing
+            if let Some(signing_node) = &mut self.signing_node {
+                let available_nodes: Vec<PeerId> =
+                    self.node_manager.get_active_nodes().into_iter().collect();
+                signing_node.set_available_nodes(available_nodes);
+
+                // Ensure MAIN group key is available on signing node
+                signing_node.set_group_public_key(group_public_key);
+
+                // Use MAIN final secret share for signing (network group key path)
+                let secret_share = if let Some(dkg_node) = &self.dkg_node {
+                    dkg_node.get_final_secret_share().await
+                } else {
+                    None
+                };
+                if secret_share.is_none() {
+                    warn!("❌ [BTC_INTENT_MANAGER] Main DKG secret share not available; cannot sign contract tx");
+                    return Ok(());
+                }
+
+                let contract_tx_bytes =
+                    crate::utils::transaction::create_transaction_for_signing_contract(&contract_tx);
+                let contract_chain_handler =
+                    signing_node.get_contract_chain_handler().clone();
+                let mut eth_signer = crate::signing::EthereumSigner::new(signing_node);
+                eth_signer
+                    .sign_contract_message(
+                        contract_tx_bytes,
+                        &contract_chain_handler,
+                        &contract_tx,
+                        None,
+                        None, // user_eth_address (not applicable)
+                        intent_hashes.clone(),
+                        // Use the main DKG share as an explicit signing key override.
+                        secret_share,
+                        None,
+                        None,
+                    )
+                    .await?;
+
+                info!(
+                    "✅ [BTC_INTENT_MANAGER] Submitted processBatchIntents contract transaction into MPC signing flow ({} intents, batchType=BTC)",
+                    intent_hashes.len()
+                );
+                info!(
+                    "ℹ️  [BTC_INTENT_MANAGER] Signatures will be sent to final node for round {}",
+                    update_round
+                );
+            } else {
+                warn!(
+                    "❌ [BTC_INTENT_MANAGER] Signing node not available; cannot start MPC signing for batch contract call"
+                );
+            }
+        } else {
+            warn!("❌ [BTC_INTENT_MANAGER] Failed to encode processBatchIntents calldata");
+        }
+
+        Ok(())
+    }
+
     /// Calculate refund amount: if UserToVault transaction exists, include 5% extra
     async fn calculate_refund_amount(
         &self,
@@ -3626,4 +3964,5 @@ impl MpcNetworkLayer {
             intent_amount
         }
     }
+
 }

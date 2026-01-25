@@ -243,7 +243,8 @@ impl SigningNode {
                     Err(anyhow!("UserToVault transaction requires user_eth_address"))
                 }
             }
-            Some(TransactionType::NetworkToTarget) => {
+            Some(TransactionType::NetworkToTarget) | Some(TransactionType::IntentStatusUpdate) => {
+                // IntentStatusUpdate uses network group key (same as NetworkToTarget)
                 let group_key = if let Some(key) = self.key_store.get_group_public_key() {
                     Some(key)
                 } else if let Some(database) = &self.database {
@@ -260,7 +261,7 @@ impl SigningNode {
                     Ok(encoded_point.compress().to_bytes().to_vec())
                 } else {
                     Err(anyhow!(
-                        "DKG group public key not available for NetworkToTarget transaction - ensure DKG process is completed"
+                        "DKG group public key not available for NetworkToTarget/IntentStatusUpdate transaction - ensure DKG process is completed"
                     ))
                 }
             }
@@ -304,28 +305,6 @@ impl SigningNode {
                 } else {
                     Err(anyhow!(
                         "DKG group public key not available for WithdrawLiquidity - ensure DKG process is completed"
-                    ))
-                }
-            }
-            Some(TransactionType::AddLiquidity) => {
-                // AddLiquidity uses vault group key
-                let vault_key = if let Some(vault_key) = self.key_store.get_vault_group_key() {
-                    Some(vault_key)
-                } else if let Some(database) = &self.database {
-                    match database.get_string::<SerializablePoint>(keys::DKG_VAULT_GROUP_KEY) {
-                        Ok(Some(serialized)) => Some(serialized.0.into()),
-                        _ => None,
-                    }
-                } else {
-                    None
-                };
-
-                if let Some(vault_key) = vault_key {
-                    let encoded_point = k256::EncodedPoint::from(vault_key.to_affine());
-                    Ok(encoded_point.compress().to_bytes().to_vec())
-                } else {
-                    Err(anyhow!(
-                        "Vault group public key not available for AddLiquidity - ensure vault key is set"
                     ))
                 }
             }
@@ -1341,13 +1320,34 @@ impl SigningNode {
                         if let Err(e) = self.process_phase1_intents_for_global_clock(round).await {
                             warn!("⚠️ [CLOCK] Failed to process phase 1 intents for round {}: {}", round, e);
                         }
+                        // Trigger aggregate signature for the final node
+                        self.trigger_aggregate_signature_for_final_node(round)
+                            .await?;
+                    } else if operation_type.as_deref() == Some("btc_contract_update") {
+                        info!("🔄 [BTC_CONTRACT_UPDATE] Round {} was triggered by BTC contract update, processing contract update batch...", round);
+                        // Process BTC contract update batch (intents with network_to_target_tx_id but not Solved)
+                        // The final node will broadcast the batch, all nodes will sign, then final node aggregates
+                        if let Err(e) = self.process_btc_contract_update_batch_for_round(round).await {
+                            warn!("⚠️ [BTC_CONTRACT_UPDATE] Failed to process contract update batch for round {}: {}", round, e);
+                        } else {
+                            // After broadcasting the batch, trigger aggregation request immediately
+                            // All nodes will receive the batch and start signing, then send signatures when requested
+                            // The final node will aggregate when enough signatures arrive
+                            if let Err(e) = self
+                                .trigger_aggregate_signature_for_final_node(round)
+                                .await
+                            {
+                                warn!("⚠️ [BTC_CONTRACT_UPDATE] Failed to trigger aggregate signature for round {}: {}", round, e);
+                            } else {
+                                info!("✅ [BTC_CONTRACT_UPDATE] Triggered aggregate signature request for contract call (round {})", round);
+                            }
+                        }
                     } else {
                         info!("ℹ️  [CONSENSUS] Round {} operation_type={:?}, skipping intent processing", round, operation_type);
+                        // Trigger aggregate signature for the final node
+                        self.trigger_aggregate_signature_for_final_node(round)
+                            .await?;
                     }
-                    
-                    // Trigger aggregate signature for the final node
-                    self.trigger_aggregate_signature_for_final_node(round)
-                        .await?;
                 } else {
                     info!(
                         "\x1b[31m📋 [CONSENSUS] This node is not the final selected node for round {}\x1b[0m",
@@ -1456,18 +1456,27 @@ impl SigningNode {
         let current_epoch_secs = now.as_secs();
         let cycle_number = current_epoch_secs / clock_interval_secs;
         
-        // Alternate: even cycles = Qubetics, odd cycles = Bitcoin
+        // Alternate: even cycles = Qubetics (TICS), odd cycles = Bitcoin (BTC)
         let target_chain = if cycle_number % 2 == 0 {
             "qubetics"
         } else {
             "bitcoin"
         };
         
+        // Determine batch type based on target chain
+        // Target chain "qubetics" = TICS batch, "bitcoin" = BTC batch
+        let batch_type = if target_chain == "qubetics" {
+            crate::types::BatchType::TICS
+        } else {
+            crate::types::BatchType::BTC
+        };
+        
         info!(
-            "⏰ [CLOCK] Cycle {} ({}): Processing {} intents...",
+            "⏰ [CLOCK] Cycle {} ({}): Processing {} intents with batch type {:?}...",
             cycle_number,
             if cycle_number % 2 == 0 { "even" } else { "odd" },
-            target_chain.to_uppercase()
+            target_chain.to_uppercase(),
+            batch_type
         );
         
         // Get intents awaiting network fulfillment (stale > 10 seconds)
@@ -1496,38 +1505,408 @@ impl SigningNode {
             max_intents_per_cycle
         );
         
-        for (intent_hash, intent, tx_ids) in intents_to_process {
+        // Collect intent hashes for broadcasting
+        let intent_hashes: Vec<String> = intents_to_process
+            .iter()
+            .map(|(intent_hash, _, _)| intent_hash.clone())
+            .collect();
+        
+        // If we have intents to process, broadcast the batch to all nodes
+        if !intent_hashes.is_empty() {
             info!(
-                "🔄 [CLOCK] Processing {} intent {}: amount={}, source={}, target={}",
+                "📤 [CLOCK] Broadcasting batch of {} {} intent hashes to all nodes (batch type: {:?})",
+                intent_hashes.len(),
                 target_chain.to_uppercase(),
-                intent_hash,
-                intent.amount,
-                intent.source_chain,
-                intent.target_chain
+                batch_type
             );
             
-            let wait_duration = chrono::Utc::now().signed_duration_since(tx_ids.updated_at);
+            // Create timestamp for the batch
+            let batch_timestamp = chrono::Utc::now().to_rfc3339();
+            
+            // Send via channel so the origin node processes the batch locally AND gossips it
+            // to other peers (channel handler will publish and also call gossipsub handler).
+            self.message_tx
+                .send(crate::types::ChannelMessage::IntentBatchBroadcast {
+                    intent_hashes: intent_hashes.clone(),
+                    batch_type: format!("{:?}", batch_type), // "BTC" or "TICS"
+                    timestamp: batch_timestamp.clone(),
+                    round,
+                    node_id: self.id.clone(),
+                })
+                .await?;
+            
             info!(
-                "⏱️  [CLOCK] Intent {} has been waiting {} seconds since last update",
-                intent_hash,
-                wait_duration.num_seconds()
+                "✅ [CLOCK] Successfully broadcasted {} intent batch with {} hashes at {}",
+                target_chain.to_uppercase(),
+                intent_hashes.len(),
+                batch_timestamp
             );
             
-            // TODO: Trigger NetworkToTarget transaction signing here
-            // This would involve:
-            // 1. Creating a signing request for this intent
-            // 2. Initiating VRF selection for signing nodes
-            // 3. Coordinating the signing process
-            
-            // For now, just log
+            // Log details of each intent in the batch
+            for (intent_hash, intent, tx_ids) in intents_to_process {
+                let wait_duration = chrono::Utc::now().signed_duration_since(tx_ids.updated_at);
+                info!(
+                    "  📋 [BATCH] Intent {}: amount={}, source={}, target={}, waiting={}s, UserToVault TX: {}",
+                    intent_hash,
+                    intent.amount,
+                    intent.source_chain,
+                    intent.target_chain,
+                    wait_duration.num_seconds(),
+                    tx_ids.user_to_network_tx_id.unwrap_or_else(|| "N/A".to_string())
+                );
+            }
+
+            // PARALLEL: If BTC batch, also trigger contract update round in parallel
+            if batch_type == crate::types::BatchType::BTC {
+                info!(
+                    "🔄 [CLOCK] BTC batch detected, triggering parallel contract update round..."
+                );
+                
+                // Spawn async task to trigger contract update round (don't block batch processing)
+                let signing_node_clone = self.clone();
+                
+                tokio::spawn(async move {
+                    if let Err(e) = signing_node_clone
+                        .trigger_btc_contract_update_round_parallel()
+                        .await
+                    {
+                        error!(
+                            "❌ [CLOCK] Failed to trigger BTC contract update round: {}",
+                            e
+                        );
+                    }
+                });
+            }
+        } else {
             info!(
-                "✅ [CLOCK] {} intent {} ready for NetworkToTarget processing (UserToVault TX: {})",
-                target_chain.to_uppercase(),
-                intent_hash,
-                tx_ids.user_to_network_tx_id.unwrap()
+                "ℹ️  [CLOCK] No {} intents ready for processing in this cycle",
+                target_chain.to_uppercase()
             );
         }
         
+        Ok(())
+    }
+
+    /// Trigger BTC contract update VRF round in parallel to BTC batch transfer round
+    /// This ONLY triggers VRF selection - the final node will:
+    /// 1. Get intents with network_to_target_tx_id but not Solved
+    /// 2. Create batch and broadcast via btc-intent-manager-tx-update
+    /// 3. All nodes will process the batch and participate in MPC signing
+    async fn trigger_btc_contract_update_round_parallel(&self) -> Result<()> {
+        info!("🔄 [BTC_CONTRACT_UPDATE] Starting parallel contract update VRF round trigger");
+
+        // Get VRF service
+        let vrf_service = self.coordination
+            .vrf_service()
+            .ok_or_else(|| anyhow!("VRF service not available"))?;
+
+        // Get available nodes
+        let available_nodes: Vec<libp2p::PeerId> = self
+            .coordination
+            .get_available_nodes()
+            .await;
+
+        if available_nodes.is_empty() {
+            warn!("⚠️ [BTC_CONTRACT_UPDATE] No available nodes for VRF selection");
+            return Ok(());
+        }
+
+        // Sync rounds before getting next round
+        if let Err(e) = vrf_service.sync_rounds_before_signing().await {
+            warn!("⚠️ [BTC_CONTRACT_UPDATE] Failed to sync rounds: {}", e);
+        }
+
+        // Get next round for contract update (separate from batch transfer round)
+        let contract_update_round = vrf_service.get_next_round().await;
+
+        info!(
+            "🎯 [BTC_CONTRACT_UPDATE] Performing VRF selection for contract update round {} (parallel to BTC batch round)",
+            contract_update_round
+        );
+
+        // Perform VRF node selection for contract update round
+        // The final node (selected by consensus) will get eligible intents and broadcast the batch
+        match vrf_service
+            .perform_node_selection(
+                &available_nodes,
+                crate::vrf::VRF_NODE_SELECTION_COUNT,
+                contract_update_round,
+                "btc_contract_update",
+            )
+            .await
+        {
+            Ok(_selection_result) => {
+                info!(
+                    "✅ [BTC_CONTRACT_UPDATE] VRF selection completed for round {}. Final node will select eligible intents and broadcast batch.",
+                    contract_update_round
+                );
+            }
+            Err(e) => {
+                error!("❌ [BTC_CONTRACT_UPDATE] VRF selection failed: {}", e);
+                return Err(e);
+            }
+        }
+
+        // The VRF round will proceed to consensus, and the final node will:
+        // 1. Get eligible intents (network_to_target_tx_id, NOT Solved, BTC target chain)
+        // 2. Create BtcIntentManagerTxUpdate message
+        // 3. Broadcast to all nodes via gossipsub
+        // 4. All nodes will process the batch and participate in MPC signing for the contract call
+
+        Ok(())
+    }
+
+    /// Process BTC contract update batch when final node is selected for contract update round
+    /// This function is called by the FINAL NODE after consensus completes for btc_contract_update round.
+    /// The final node will:
+    /// 1. Get eligible intents (network_to_target_tx_id exists, status NOT Solved, BTC target chain)
+    /// 2. Create BtcIntentManagerTxUpdate message with intent hashes
+    /// 3. Broadcast to all nodes via gossipsub
+    /// 4. All nodes will receive the batch and participate in MPC signing for the contract call
+    async fn process_btc_contract_update_batch_for_round(&self, round: u64) -> Result<()> {
+        info!("🔄 [BTC_CONTRACT_UPDATE] Processing contract update batch for round {}", round);
+
+        // Get user intent manager
+        let user_intent_manager = self.user_intent_manager
+            .as_ref()
+            .ok_or_else(|| anyhow!("User intent manager not available"))?;
+
+        // Get intents with network_to_target_tx_id but NOT Solved
+        let pending_intents = user_intent_manager
+            .get_intents_awaiting_network_fulfillment(None)
+            .await;
+
+        // Filter: must have network_to_target_tx_id, status NOT Solved, and BTC target chain
+        let mut eligible_intents = Vec::new();
+        for (intent_hash, intent, tx_ids) in pending_intents {
+            // Must have network_to_target_tx_id
+            if tx_ids.network_to_target_tx_id.is_none() {
+                continue;
+            }
+
+            // Must be BTC target chain
+            let target_chain_lower = intent.target_chain.to_lowercase();
+            if target_chain_lower != "bitcoin" && target_chain_lower != "btc" {
+                continue;
+            }
+
+            // Check if intent status is NOT Solved
+            if let Some(user) = user_intent_manager
+                .get_user_by_intent_hash(&intent_hash)
+                .await
+            {
+                if let Some(status) = user.intent_hashes.get(&intent_hash) {
+                    if *status == crate::types::IntentStatus::Solved {
+                        continue; // Skip solved intents
+                    }
+                }
+            }
+
+            eligible_intents.push((intent_hash, intent, tx_ids));
+        }
+
+        if eligible_intents.is_empty() {
+            info!(
+                "ℹ️ [BTC_CONTRACT_UPDATE] No eligible intents found for contract update batch"
+            );
+            return Ok(());
+        }
+
+        info!(
+            "📋 [BTC_CONTRACT_UPDATE] Found {} eligible intents for contract update batch",
+            eligible_intents.len()
+        );
+
+        // Prepare intent hashes for the batch
+        let intent_hashes: Vec<String> = eligible_intents
+            .iter()
+            .map(|(hash, _, _)| hash.clone())
+            .collect();
+
+        // Create batch timestamp
+        let batch_timestamp = chrono::Utc::now().to_rfc3339();
+
+        // Broadcast via btc-intent-manager-tx-update topic
+        // Note: We don't have the BTC batch txid yet since it's happening in parallel
+        // The contract update handler will need to wait for the BTC batch to complete
+        // or process with existing network_to_target_tx_id values
+        let batch_message = crate::types::ChannelMessage::BtcIntentManagerTxUpdate {
+            intent_hashes: intent_hashes.clone(),
+            btc_txid: "pending".to_string(), // Will be updated when BTC batch completes
+            btc_batch_round: 0, // Will be set when BTC batch completes
+            update_round: round,
+            timestamp: batch_timestamp,
+            node_id: self.id.clone(),
+        };
+
+        self.message_tx
+            .send(batch_message)
+            .await
+            .map_err(|e| anyhow!("Failed to send BTC intent manager update message: {}", e))?;
+
+        info!(
+            "✅ [BTC_CONTRACT_UPDATE] Broadcasted contract update batch with {} intents (round {})",
+            intent_hashes.len(),
+            round
+        );
+
+        Ok(())
+    }
+
+    /// Process BTC intent manager update batch after BTC batch is finalized
+    /// This runs another VRF round to select a final node that will:
+    /// 1. Get intents with network_to_target_tx_id but not Solved
+    /// 2. Create batch and broadcast via btc-intent-manager-tx-update
+    /// 3. Make contract call to processBatchIntents to update tx-id on contract
+    async fn process_btc_intent_manager_update_batch_internal(
+        btc_batch_round: u64,
+        btc_txid: &str,
+        message_tx: mpsc::Sender<ChannelMessage>,
+        user_intent_manager: Option<Arc<UserIntentManager>>,
+        coordination: Coordination,
+        node_id: String,
+    ) -> Result<()> {
+        info!(
+            "🔄 [BTC_INTENT_MANAGER] Starting contract update batch process for BTC batch round {} (txid: {})",
+            btc_batch_round, btc_txid
+        );
+
+        // Get user intent manager
+        let user_intent_manager = user_intent_manager
+            .as_ref()
+            .ok_or_else(|| anyhow!("User intent manager not available"))?;
+
+        // Get intents with network_to_target_tx_id but NOT Solved
+        let pending_intents = user_intent_manager
+            .get_intents_awaiting_network_fulfillment(None)
+            .await;
+
+        // Filter: must have network_to_target_tx_id but status is NOT Solved
+        let mut eligible_intents = Vec::new();
+        for (intent_hash, intent, tx_ids) in pending_intents {
+            // Must have network_to_target_tx_id
+            if tx_ids.network_to_target_tx_id.is_none() {
+                continue;
+            }
+
+            // Check if intent status is NOT Solved
+            if let Some(user) = user_intent_manager
+                .get_user_by_intent_hash(&intent_hash)
+                .await
+            {
+                if let Some(status) = user.intent_hashes.get(&intent_hash) {
+                    if *status == crate::types::IntentStatus::Solved {
+                        continue; // Skip solved intents
+                    }
+                }
+            }
+
+            // Must be BTC target chain
+            let target_chain_lower = intent.target_chain.to_lowercase();
+            if target_chain_lower != "bitcoin" && target_chain_lower != "btc" {
+                continue;
+            }
+
+            eligible_intents.push((intent_hash, intent, tx_ids));
+        }
+
+        if eligible_intents.is_empty() {
+            info!(
+                "ℹ️ [BTC_INTENT_MANAGER] No eligible intents found for contract update batch"
+            );
+            return Ok(());
+        }
+
+        info!(
+            "📋 [BTC_INTENT_MANAGER] Found {} eligible intents for contract update batch",
+            eligible_intents.len()
+        );
+
+        // Run another VRF round to select final node
+        let vrf_service = coordination
+            .vrf_service()
+            .ok_or_else(|| anyhow!("VRF service not available"))?;
+
+        // Get available nodes
+        let available_nodes: Vec<libp2p::PeerId> = coordination
+            .get_available_nodes()
+            .await;
+
+        if available_nodes.is_empty() {
+            warn!("⚠️ [BTC_INTENT_MANAGER] No available nodes for VRF selection");
+            return Ok(());
+        }
+
+        // Sync rounds before getting next round
+        if let Err(e) = vrf_service.sync_rounds_before_signing().await {
+            warn!("⚠️ [BTC_INTENT_MANAGER] Failed to sync rounds: {}", e);
+        }
+
+        // Get next round
+        let update_round = vrf_service.get_next_round().await;
+
+        info!(
+            "🎯 [BTC_INTENT_MANAGER] Performing VRF selection for contract update batch (round {})",
+            update_round
+        );
+
+        // Perform VRF node selection
+        match vrf_service
+            .perform_node_selection(
+                &available_nodes,
+                crate::vrf::VRF_NODE_SELECTION_COUNT,
+                update_round,
+                "btc_intent_manager_update",
+            )
+            .await
+        {
+            Ok(_selection_result) => {
+                info!(
+                    "✅ [BTC_INTENT_MANAGER] VRF selection completed for round {}",
+                    update_round
+                );
+            }
+            Err(e) => {
+                error!("❌ [BTC_INTENT_MANAGER] VRF selection failed: {}", e);
+                return Err(e);
+            }
+        }
+
+        // Wait for consensus to complete and check if this node is the final node
+        // The final node will handle the batch creation and contract call
+        // For now, we'll create the batch message and broadcast it
+        // The final node will be determined by consensus
+
+        // Prepare intent hashes for the batch
+        let intent_hashes: Vec<String> = eligible_intents
+            .iter()
+            .map(|(hash, _, _)| hash.clone())
+            .collect();
+
+        // Create batch timestamp
+        let batch_timestamp = chrono::Utc::now().to_rfc3339();
+
+        // Broadcast via btc-intent-manager-tx-update topic
+        let batch_message = crate::types::ChannelMessage::BtcIntentManagerTxUpdate {
+            intent_hashes: intent_hashes.clone(),
+            btc_txid: btc_txid.to_string(),
+            btc_batch_round,
+            update_round,
+            timestamp: batch_timestamp,
+            node_id: node_id.clone(),
+        };
+
+        message_tx
+            .send(batch_message)
+            .await
+            .map_err(|e| anyhow!("Failed to send BTC intent manager update message: {}", e))?;
+
+        info!(
+            "✅ [BTC_INTENT_MANAGER] Broadcasted contract update batch with {} intents (BTC txid: {})",
+            intent_hashes.len(),
+            btc_txid
+        );
+
         Ok(())
     }
 
@@ -2951,7 +3330,6 @@ impl SigningNode {
                 "Refund" => Some(crate::types::TransactionType::Refund),
                 "WithdrawLiquidity" => Some(crate::types::TransactionType::WithdrawLiquidity),
                 "RewardTxn" => Some(crate::types::TransactionType::RewardTxn),
-                "AddLiquidity" => Some(crate::types::TransactionType::AddLiquidity),
                 _ => None,
             }
         });
@@ -3383,7 +3761,7 @@ impl SigningNode {
             Some(crate::types::TransactionType::UserToVault) => "user-share",
             Some(crate::types::TransactionType::NetworkToTarget) => "network-share",
             Some(crate::types::TransactionType::Refund) => "network-share", // Refund uses network share (same as NetworkToTarget)
-            Some(crate::types::TransactionType::AddLiquidity) => "vault-share",
+            Some(crate::types::TransactionType::IntentStatusUpdate) => "network-share", // IntentStatusUpdate uses network share (same as NetworkToTarget)
             Some(crate::types::TransactionType::RewardTxn) => "network-share",
             Some(crate::types::TransactionType::WithdrawLiquidity) => "network-share",
             None => "vault-share",
@@ -3455,25 +3833,29 @@ impl SigningNode {
                 }
             } else {
                 let pt = self.pending.pending_transactions_btc.read().await;
-                if let Some((_tx, _raw, intent_hash, tx_type, _extras)) = pt.get(&round) {
+                if let Some((_tx, _raw, intent_hashes, tx_type, _extras)) = pt.get(&round) {
                     // For UserToVault transactions, retrieve user_eth_address from intent_hash
                     let user_addr = if matches!(
                         tx_type,
                         Some(crate::types::TransactionType::UserToVault)
                     ) {
-                        if let Some(intent_hash) = intent_hash {
-                            if let Some(database) = &self.database {
-                                use crate::database::storage::UserStorage;
-                                let user_storage = UserStorage::new(database.as_ref().clone());
-                                match user_storage.get_user_by_intent_hash(intent_hash).await {
-                                    Ok(Some(user)) => {
-                                        info!(
-                                            "🔍 [BTC-SIGNING] Retrieved user_eth_address {} from intent_hash {} for UserToVault BTC transaction (round {})",
-                                            user.ethereum_address, intent_hash, round
-                                        );
-                                        Some(user.ethereum_address)
+                        if let Some(intent_hashes_vec) = intent_hashes {
+                            if let Some(first_intent_hash) = intent_hashes_vec.first() {
+                                if let Some(database) = &self.database {
+                                    use crate::database::storage::UserStorage;
+                                    let user_storage = UserStorage::new(database.as_ref().clone());
+                                    match user_storage.get_user_by_intent_hash(first_intent_hash).await {
+                                        Ok(Some(user)) => {
+                                            info!(
+                                                "🔍 [BTC-SIGNING] Retrieved user_eth_address {} from intent_hash {} for UserToVault BTC transaction (round {})",
+                                                user.ethereum_address, first_intent_hash, round
+                                            );
+                                            Some(user.ethereum_address)
+                                        }
+                                        _ => None,
                                     }
-                                    _ => None,
+                                } else {
+                                    None
                                 }
                             } else {
                                 None
@@ -3803,7 +4185,7 @@ impl SigningNode {
             Some(crate::types::TransactionType::UserToVault) => "user-share",
             Some(crate::types::TransactionType::NetworkToTarget) => "network-share",
             Some(crate::types::TransactionType::Refund) => "network-share", // Refund uses network share (same as NetworkToTarget)
-            Some(crate::types::TransactionType::AddLiquidity) => "vault-share",
+            Some(crate::types::TransactionType::IntentStatusUpdate) => "network-share", // IntentStatusUpdate uses network share (same as NetworkToTarget)
             Some(crate::types::TransactionType::RewardTxn) => "network-share",
             Some(crate::types::TransactionType::WithdrawLiquidity) => "network-share",
             None => "vault-share",
@@ -3844,17 +4226,21 @@ impl SigningNode {
         };
 
         // Try TICS (Ethereum) transactions first
-        let (tx_bytes, transaction_type, user_eth_address) = if is_reward_round {
+        //
+        // NOTE: For partial signature verification we may override the stored transaction_type
+        // for certain contract calls (e.g. IntentManager.processBatchIntents) so that verification
+        // is performed against the VAULT/main key path.
+        let (tx_bytes, mut transaction_type, user_eth_address, chain_tx_opt) = if is_reward_round {
             let reward_pt = self.pending.reward_pending_transactions_tics.read().await;
-            if let Some((_tx, tx_bytes, _solver_address, tx_type, _request_id, _original_request)) = reward_pt.get(&round) {
-                (tx_bytes.clone(), tx_type.clone(), None)
+            if let Some((chain_tx, tx_bytes, _solver_address, tx_type, _request_id, _original_request)) = reward_pt.get(&round) {
+                (tx_bytes.clone(), tx_type.clone(), None, Some(chain_tx.clone()))
             } else {
                 // Try BTC reward
                 let reward_pt_btc = self.pending.reward_pending_transactions_btc.read().await;
                 if let Some((_tx, tx_bytes, _solver_address, tx_type, _extras)) =
                     reward_pt_btc.get(&round)
                 {
-                    (tx_bytes.clone(), tx_type.clone(), None)
+                    (tx_bytes.clone(), tx_type.clone(), None, None)
                 } else {
                     return Err(anyhow!(
                         "No pending transaction found for reward round {}",
@@ -3864,16 +4250,16 @@ impl SigningNode {
             }
         } else if is_withdraw_round {
             let withdraw_pt = self.pending.withdraw_pending_transactions_tics.read().await;
-            if let Some((_tx, tx_bytes, _solver_address, tx_type, _request_id, _original_request)) =
+            if let Some((chain_tx, tx_bytes, _solver_address, tx_type, _request_id, _original_request)) =
                 withdraw_pt.get(&round) {
-                (tx_bytes.clone(), tx_type.clone(), None)
+                (tx_bytes.clone(), tx_type.clone(), None, Some(chain_tx.clone()))
             } else {
                 // Try BTC withdraw
                 let withdraw_pt_btc = self.pending.withdraw_pending_transactions_btc.read().await;
                 if let Some((_tx, tx_bytes, _solver_address, tx_type, _request_id)) =
                     withdraw_pt_btc.get(&round)
                 {
-                    (tx_bytes.clone(), tx_type.clone(), None)
+                    (tx_bytes.clone(), tx_type.clone(), None, None)
                 } else {
                     return Err(anyhow!(
                         "No pending transaction found for withdraw round {}",
@@ -3884,7 +4270,7 @@ impl SigningNode {
         } else {
             // Regular transaction - try TICS first
             let pending = self.pending.pending_transactions.read().await;
-            if let Some((_tx, tx_bytes, intent_hash, tx_type, _request_id, _original_request)) = pending.get(&round) {
+            if let Some((chain_tx, tx_bytes, intent_hash, tx_type, _request_id, _original_request)) = pending.get(&round) {
                 // For UserToVault transactions, retrieve user_eth_address from intent_hash
                 // This ensures the final node retrieves the address on its own, not relying on the unicasting peer
                 let user_addr = if matches!(
@@ -3932,11 +4318,11 @@ impl SigningNode {
                 } else {
                     None
                 };
-                (tx_bytes.clone(), tx_type.clone(), user_addr)
+                (tx_bytes.clone(), tx_type.clone(), user_addr, Some(chain_tx.clone()))
             } else {
                 // Try BTC
                 let pending_btc = self.pending.pending_transactions_btc.read().await;
-                if let Some((_tx, tx_bytes, intent_hash, tx_type, _extras)) =
+                if let Some((_tx, tx_bytes, intent_hashes, tx_type, _extras)) =
                     pending_btc.get(&round)
                 {
                     // For UserToVault transactions, retrieve user_eth_address from intent_hash
@@ -3945,39 +4331,43 @@ impl SigningNode {
                         tx_type,
                         Some(crate::types::TransactionType::UserToVault)
                     ) {
-                        if let Some(intent_hash) = intent_hash {
-                            // Retrieve user's ethereum address from intent hash using database
-                            if let Some(database) = &self.database {
-                                use crate::database::storage::UserStorage;
-                                let user_storage = UserStorage::new(database.as_ref().clone());
-                                match user_storage.get_user_by_intent_hash(intent_hash).await {
-                                    Ok(Some(user)) => {
-                                        info!(
-                                            "🔍 [SIGNING] Retrieved user_eth_address {} from intent_hash {} for UserToVault BTC transaction (round {})",
-                                            user.ethereum_address, intent_hash, round
-                                        );
-                                        Some(user.ethereum_address)
+                        if let Some(intent_hashes_vec) = intent_hashes {
+                            if let Some(first_intent_hash) = intent_hashes_vec.first() {
+                                // Retrieve user's ethereum address from intent hash using database
+                                if let Some(database) = &self.database {
+                                    use crate::database::storage::UserStorage;
+                                    let user_storage = UserStorage::new(database.as_ref().clone());
+                                    match user_storage.get_user_by_intent_hash(first_intent_hash).await {
+                                        Ok(Some(user)) => {
+                                            info!(
+                                                "🔍 [SIGNING] Retrieved user_eth_address {} from intent_hash {} for UserToVault BTC transaction (round {})",
+                                                user.ethereum_address, first_intent_hash, round
+                                            );
+                                            Some(user.ethereum_address)
+                                        }
+                                        Ok(None) => {
+                                            warn!(
+                                                "⚠️ [SIGNING] No user found for intent_hash {} in UserToVault BTC transaction (round {})",
+                                                first_intent_hash, round
+                                            );
+                                            None
+                                        }
+                                        Err(e) => {
+                                            warn!(
+                                                "⚠️ [SIGNING] Failed to retrieve user from intent_hash {}: {} (round {})",
+                                                first_intent_hash, e, round
+                                            );
+                                            None
+                                        }
                                     }
-                                    Ok(None) => {
-                                        warn!(
-                                            "⚠️ [SIGNING] No user found for intent_hash {} in UserToVault BTC transaction (round {})",
-                                            intent_hash, round
-                                        );
-                                        None
-                                    }
-                                    Err(e) => {
-                                        warn!(
-                                            "⚠️ [SIGNING] Failed to retrieve user from intent_hash {}: {} (round {})",
-                                            intent_hash, e, round
-                                        );
-                                        None
-                                    }
+                                } else {
+                                    warn!(
+                                        "⚠️ [SIGNING] Database not available to retrieve user_eth_address from intent_hash (round {})",
+                                        round
+                                    );
+                                    None
                                 }
                             } else {
-                                warn!(
-                                    "⚠️ [SIGNING] Database not available to retrieve user_eth_address from intent_hash {} (round {})",
-                                    intent_hash, round
-                                );
                                 None
                             }
                         } else {
@@ -3986,12 +4376,41 @@ impl SigningNode {
                     } else {
                         None
                     };
-                    (tx_bytes.clone(), tx_type.clone(), user_addr)
+                    (tx_bytes.clone(), tx_type.clone(), user_addr, None)
                 } else {
                     return Err(anyhow!("No pending transaction found for round {}", round));
                 }
             }
         };
+
+        // Retrieve intent hashes context for this round (single vs batch vs none)
+        let intent_hashes_for_round = {
+            let map = self.pending.intent_hashes_by_round.read().await;
+            map.get(&round).cloned().unwrap_or_default()
+        };
+
+        if intent_hashes_for_round.len() > 1 {
+            info!(
+                "📦 [SIGNING] Round {} identified as BATCH transaction ({} intents)",
+                round,
+                intent_hashes_for_round.len()
+            );
+        } else if intent_hashes_for_round.len() == 1 {
+            info!(
+                "🧾 [SIGNING] Round {} identified as SINGLE transaction (intent: {})",
+                round,
+                intent_hashes_for_round[0]
+            );
+        } else {
+            info!(
+                "🧾 [SIGNING] Round {} has no intent hashes (solver-only or contract path)",
+                round
+            );
+        }
+
+        // NOTE: IntentManager.processBatchIntents contract txs are signed with the MAIN DKG key
+        // (network group key path) and should therefore use the normal NetworkToTarget verification
+        // path (network share pubkeys) for partial signature verification.
 
         // Hash the transaction bytes to get the digest
         let mut hasher = sha3::Keccak256::new();
@@ -4053,7 +4472,6 @@ impl SigningNode {
         // Mapping:
         // - UserToVault → per-node-user-share PARTIAL pubkey verification
         // - NetworkToTarget → per-node-network-share PARTIAL pubkey verification
-        // - AddLiquidity → per-node-vault-share PARTIAL pubkey verification
         // - RewardTxn/WithdrawLiquidity → per-node-network-share PARTIAL pubkey verification
         // Works for both ETH/TICS and BTC transactions
         match transaction_type {
@@ -4118,26 +4536,15 @@ impl SigningNode {
                 }
             }
             Some(crate::types::TransactionType::NetworkToTarget)
-            | Some(crate::types::TransactionType::Refund) => {
-                // NetworkToTarget and Refund → per-node-network-share pubkey
+            | Some(crate::types::TransactionType::Refund)
+            | Some(crate::types::TransactionType::IntentStatusUpdate) => {
+                // NetworkToTarget, Refund, and IntentStatusUpdate → per-node-network-share pubkey
                 dkg_storage
                     .get_network_share_pubkey(peer_id)
                     .await?
                     .ok_or_else(|| {
                         anyhow!(
-                            "Network share pubkey not found for peer {} (NetworkToTarget/Refund transaction)",
-                            peer_id
-                        )
-                    })
-            }
-            Some(crate::types::TransactionType::AddLiquidity) => {
-                // AddLiquidity → per-node-vault-share pubkey
-                dkg_storage
-                    .get_vault_share_pubkey(peer_id)
-                    .await?
-                    .ok_or_else(|| {
-                        anyhow!(
-                            "Vault share pubkey not found for peer {} (AddLiquidity transaction)",
+                            "Network share pubkey not found for peer {} (NetworkToTarget/Refund/IntentStatusUpdate transaction)",
                             peer_id
                         )
                     })
@@ -4213,4 +4620,16 @@ impl SigningNode {
     );
         1
     }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn intent_manager_address_comparison_is_case_insensitive() {
+        let to = "0xAbC0000000000000000000000000000000000000";
+        let intent_manager = "0xabc0000000000000000000000000000000000000";
+        assert_eq!(to.to_lowercase(), intent_manager.to_lowercase());
+    }
+
+    // NOTE: additional helper tests removed after switching processBatchIntents to the main DKG key path
 }

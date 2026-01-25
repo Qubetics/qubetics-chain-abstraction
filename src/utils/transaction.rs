@@ -640,7 +640,7 @@ pub async fn create_ethereum_transaction(
     let ethereum_tx = EthereumTransaction {
         to: to_address.to_string(),
         value: amount_to_hex_string(amount),
-        gas_limit: 21000, // Standard ETH transfer gas limit
+        gas_limit: 300000, // Standard ETH transfer gas limit
         gas_price,
         nonce,
         data: None, // No calldata for simple ETH transfer
@@ -1039,6 +1039,7 @@ async fn create_chain_transaction_from_deposit_intent_internal(
         crate::types::TransactionType::UserToVault => &intent.source_chain.to_lowercase(),
         crate::types::TransactionType::NetworkToTarget => &intent.target_chain.to_lowercase(),
         crate::types::TransactionType::Refund => &intent.source_chain.to_lowercase(), // Refund goes back to source chain
+        crate::types::TransactionType::IntentStatusUpdate => "qubetics", // IntentStatusUpdate is a contract call on Qubetics chain
         crate::types::TransactionType::RewardTxn => {
             // RewardTxn is not valid for intent flow
             return Err(anyhow::anyhow!(
@@ -1048,11 +1049,6 @@ async fn create_chain_transaction_from_deposit_intent_internal(
         crate::types::TransactionType::WithdrawLiquidity => {
             return Err(anyhow::anyhow!(
                 "WithdrawLiquidity is not valid for deposit intent flow"
-            ));
-        }
-        crate::types::TransactionType::AddLiquidity => {
-            return Err(anyhow::anyhow!(
-                "AddLiquidity is not valid for deposit intent flow"
             ));
         }
     };
@@ -1075,15 +1071,46 @@ async fn create_chain_transaction_from_deposit_intent_internal(
         // network address. We only unwrap and compute network_address when it's actually needed.
         let (from_address, to_address) = match transaction_type {
             crate::types::TransactionType::UserToVault => {
-                // User deposit: FROM derived ethereum address TO vault address
-                // Group public key is not needed for UserToVault on EVM chains
+                // User deposit: FROM derived ethereum address
+                // - On TICS/qubetics: TO IntentManager contract (from env)
+                // - On other EVM chains: TO liquidity operator address
                 if let Some(derived_addr) = derived_eth_addr {
-                    tracing::info!(
-                        "💰 [TRANSACTION] User to liquidity operator: {} -> {}",
-                        derived_addr,
-                        liquidity_operator_address
-                    );
-                    (derived_addr.clone(), liquidity_operator_address.clone())
+                    // Default target is liquidity operator
+                    let mut target_address = liquidity_operator_address.clone();
+
+                    // For TICS/qubetics source chain, override with Treasury Vault contract if configured
+                    if chain_to_use.eq_ignore_ascii_case("tics")
+                        || chain_to_use.eq_ignore_ascii_case("qubetics")
+                    {
+                        let contract_address_env = std::env::var("TREASURY_VAULT_CONTRACT_ADDRESS")
+                            .unwrap_or_else(|_| "0x0000000000000000000000000000000000000000".to_string());
+                        if contract_address_env
+                            != "0x0000000000000000000000000000000000000000"
+                        {
+                            tracing::info!(
+                                "💰 [TRANSACTION] UserToVault on {}: {} -> TreasuryVault contract {}",
+                                chain_to_use,
+                                derived_addr,
+                                contract_address_env
+                            );
+                            target_address = contract_address_env;
+                        } else {
+                            tracing::warn!(
+                                "⚠️ [TRANSACTION] TREASURY_VAULT_CONTRACT_ADDRESS not configured; using liquidity operator {} for UserToVault on {}",
+                                liquidity_operator_address,
+                                chain_to_use
+                            );
+                        }
+                    } else {
+                        tracing::info!(
+                            "💰 [TRANSACTION] User to liquidity operator: {} -> {} on chain {}",
+                            derived_addr,
+                            liquidity_operator_address,
+                            chain_to_use
+                        );
+                    }
+
+                    (derived_addr.clone(), target_address)
                 } else {
                     return Err(anyhow::anyhow!(
                         "UserToVault transaction requires derived_eth_address"
@@ -1103,6 +1130,12 @@ async fn create_chain_transaction_from_deposit_intent_internal(
                     intent.target_address
                 );
                 (network_address.clone(), intent.target_address.clone())
+            }
+            crate::types::TransactionType::IntentStatusUpdate => {
+                // IntentStatusUpdate is a contract call on Qubetics chain
+                // It doesn't need from/to addresses as it's a contract call, not a transfer
+                // Return empty addresses (not used for contract calls)
+                ("".to_string(), "".to_string())
             }
             crate::types::TransactionType::Refund => {
                 // Refund: FROM network address TO user's source address
@@ -1127,11 +1160,6 @@ async fn create_chain_transaction_from_deposit_intent_internal(
             crate::types::TransactionType::WithdrawLiquidity => {
                 return Err(anyhow::anyhow!(
                     "WithdrawLiquidity is not valid for deposit intent flow"
-                ));
-            }
-            crate::types::TransactionType::AddLiquidity => {
-                return Err(anyhow::anyhow!(
-                    "AddLiquidity is not valid for deposit intent flow"
                 ));
             }
         };
@@ -1185,6 +1213,13 @@ async fn create_chain_transaction_from_deposit_intent_internal(
                 );
                 (btc_network_address.clone(), intent.target_address.clone())
             }
+            crate::types::TransactionType::IntentStatusUpdate => {
+                // IntentStatusUpdate is a contract call on Qubetics chain (not Bitcoin)
+                // This should not be called for Bitcoin transactions
+                return Err(anyhow::anyhow!(
+                    "IntentStatusUpdate is not valid for Bitcoin transactions"
+                ));
+            }
             crate::types::TransactionType::Refund => {
                 // Refund: FROM network bitcoin address TO user's source address
                 // Group public key is required to derive the network address
@@ -1208,11 +1243,6 @@ async fn create_chain_transaction_from_deposit_intent_internal(
             crate::types::TransactionType::WithdrawLiquidity => {
                 return Err(anyhow::anyhow!(
                     "WithdrawLiquidity is not valid for deposit intent flow"
-                ));
-            }
-            crate::types::TransactionType::AddLiquidity => {
-                return Err(anyhow::anyhow!(
-                    "AddLiquidity is not valid for deposit intent flow"
                 ));
             }
         };
@@ -1246,6 +1276,7 @@ pub async fn create_chain_transaction_from_contract_call(
         .ok_or_else(|| anyhow::anyhow!("Unknown EVM chain: {}", "eth"))?;
 
     // Get contract address from environment variable and normalize to 0x-prefixed
+    // For processBatchIntents / intent management, use the IntentManager contract
     let contract_address_env = std::env::var("INTENT_MANAGER_CONTRACT_ADDRESS")
         .unwrap_or_else(|_| "0x0000000000000000000000000000000000000000".to_string());
 
@@ -1271,6 +1302,7 @@ pub async fn create_chain_transaction_from_contract_call(
     let batch_type = match transaction_type {
         crate::types::TransactionType::UserToVault => BatchType::BTC,
         crate::types::TransactionType::NetworkToTarget => BatchType::TICS,
+        crate::types::TransactionType::IntentStatusUpdate => BatchType::BTC, // IntentStatusUpdate is for BTC contract updates
         crate::types::TransactionType::Refund => {
             // Refund transactions don't need contract calls - they're just fund transfers
             // The refund intent contract call is handled separately after the refund transaction completes
@@ -1287,11 +1319,6 @@ pub async fn create_chain_transaction_from_contract_call(
         crate::types::TransactionType::WithdrawLiquidity => {
             return Err(anyhow::anyhow!(
                 "WithdrawLiquidity is not valid for deposit intent flow"
-            ));
-        }
-        crate::types::TransactionType::AddLiquidity => {
-            return Err(anyhow::anyhow!(
-                "AddLiquidity is not valid for deposit intent flow"
             ));
         }
     };
@@ -1329,7 +1356,7 @@ pub async fn create_chain_transaction_from_contract_call(
         target_token: intent.target_token.clone(),
         intent_id: intent_hash.to_string(),
         withdraw_tx_hash,
-        deposit_tx_hash,
+        deposit_tx_hash: Some(deposit_tx_hash),
     };
 
     let calldata = encode_process_batch_intents_calldata(
@@ -1534,76 +1561,6 @@ pub async fn create_solver_remove_liquidity_transaction(
     Ok(ethereum_tx)
 }
 
-pub async fn create_solver_add_liquidity_transaction(
-    from_address: &str,
-    solver_id: &str,
-    asset_chain_id: U256,
-    amount: U256,
-    contract_address: &str,
-    chain_id: u64,
-    chain_name: &str,
-) -> Result<ChainTransaction> {
-    let normalized_contract_address = if contract_address.starts_with("0x") {
-        contract_address.to_string()
-    } else {
-        format!("0x{contract_address}")
-    };
-
-    info!(
-        "🔧 [CONTRACT][LIQ] Preparing addLiquidity(solver_id={}, asset_chain_id={}, amount={}) call on {} (chain_id={}, chain_name={}, from={})",
-        solver_id,
-        asset_chain_id,
-        amount,
-        normalized_contract_address,
-        chain_id,
-        chain_name,
-        from_address
-    );
-
-    let calldata = encode_add_liquidity_calldata(solver_id, asset_chain_id, amount)
-        .ok_or_else(|| anyhow::anyhow!("Failed to encode addLiquidity calldata"))?;
-    let calldata_hex = format!("0x{}", hex::encode(&calldata));
-    info!(
-        "🔧 [CONTRACT][LIQ] addLiquidity calldata: {} ({} bytes)",
-        calldata_hex,
-        calldata.len()
-    );
-
-    let estimated_gas = estimate_gas_for_deposit_intent(
-        from_address,
-        &normalized_contract_address,
-        &calldata_hex,
-        chain_id,
-    )
-    .await?; // Abort if gas estimation fails - indicates transaction would revert
-    let gas_limit = estimated_gas + (estimated_gas / 5).max(25_000);
-    info!(
-        "🔧 [CONTRACT][LIQ] Estimated gas={} -> gas_limit={}",
-        estimated_gas, gas_limit
-    );
-
-    let gas_price = get_gas_price_for_chain(chain_name, chain_id)
-        .await
-        .unwrap_or_else(|_| get_default_gas_price_for_chain(chain_name));
-    info!("🔧 [CONTRACT][LIQ] Gas price (wei): {}", gas_price);
-    let nonce = fetch_ethereum_nonce(from_address, chain_id).await?;
-    info!(
-        "🔧 [CONTRACT][LIQ] Nonce for {} on chain {}: {}",
-        from_address, chain_id, nonce
-    );
-
-    let ethereum_tx = EthereumTransaction {
-        to: normalized_contract_address,
-        value: "0x0".to_string(),
-        gas_limit,
-        gas_price,
-        nonce,
-        data: Some(calldata),
-        chain_id,
-    };
-
-    Ok(ChainTransaction::Ethereum(ethereum_tx))
-}
 
 pub fn encode_refund_intent_calldata(
     intent_id: &str,
@@ -1711,7 +1668,7 @@ pub fn encode_process_batch_intents_calldata(
                 Token::String(intent.target_token.clone()),
                 Token::String(intent.intent_id.clone()),
                 Token::String(intent.withdraw_tx_hash.clone()),
-                Token::String(intent.deposit_tx_hash.clone()),
+                Token::String(intent.deposit_tx_hash.clone().unwrap_or_else(|| "NULL".to_string())),
             ])
         })
         .collect();
@@ -1817,44 +1774,6 @@ pub fn encode_remove_liquidity_calldata(
     f.encode_input(&tokens).ok()
 }
 
-pub fn encode_add_liquidity_calldata(
-    solver_id: &str,
-    chain_id: U256,
-    amount: U256,
-) -> Option<Vec<u8>> {
-    #[allow(deprecated)]
-    let f = Function {
-        name: "addLiquidity".to_owned(),
-        inputs: vec![
-            Param {
-                name: "solverId".into(),
-                kind: ParamType::String,
-                internal_type: None,
-            },
-            Param {
-                name: "chainId".into(),
-                kind: ParamType::Uint(256),
-                internal_type: None,
-            },
-            Param {
-                name: "amount".into(),
-                kind: ParamType::Uint(256),
-                internal_type: None,
-            },
-        ],
-        outputs: vec![],
-        constant: None,
-        state_mutability: StateMutability::NonPayable,
-    };
-
-    let tokens = vec![
-        Token::String(solver_id.to_owned()),
-        Token::Uint(chain_id),
-        Token::Uint(amount),
-    ];
-
-    f.encode_input(&tokens).ok()
-}
 
 /// Fetch current gas price from RPC for Qubetics chain
 /// Only supports Qubetics (chain ID 9029)

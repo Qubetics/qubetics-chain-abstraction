@@ -3,8 +3,7 @@
 use anyhow::Result;
 use libp2p::swarm::{ConnectionError, SwarmEvent};
 use libp2p::{
-    gossipsub, kad::Event as KademliaEvent,
-    request_response::Message as ReqRespMessage, PeerId,
+    gossipsub, kad::Event as KademliaEvent, request_response::Message as ReqRespMessage, PeerId,
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{error, info, warn};
@@ -243,18 +242,168 @@ impl MpcNetworkLayer {
                         }
                     }
                     ReqRespMessage::Response {
-                        request_id: _,
+                        request_id,
                         response,
                     } => {
+                        // Decrement in-flight count for this peer
+                        {
+                            let mut inflight = self.outbound_inflight.lock().await;
+                            if let Some(count) = inflight.get_mut(&peer) {
+                                *count = count.saturating_sub(1);
+                                if *count == 0 {
+                                    inflight.remove(&peer);
+                                }
+                            }
+                        }
+
+                        // Remove from retry registry (successful response)
+                        self.outbound_retry.lock().await.remove(&request_id);
+
+                        // Handle the response
                         self.handle_rpc_response(swarm, peer, response).await?;
                     }
                 }
             }
-            ReqRespEvent::OutboundFailure { peer, error, .. } => {
-                warn!("Outbound failure to peer {}: {:?}", peer, error);
-                // if let Some(retry_mgr) = &self.retry_manager {
-                //     retry_mgr.mark_peer_unreachable(peer).await;
-                // }
+            ReqRespEvent::OutboundFailure {
+                peer,
+                error,
+                request_id,
+                ..
+            } => {
+                use crate::network::rpc::{RetryableUnicast, MAX_OUTBOUND_RETRIES};
+                use crate::types::ChannelMessage;
+                use std::time::Duration;
+
+                // Decrement in-flight count for this peer
+                {
+                    let mut inflight = self.outbound_inflight.lock().await;
+                    if let Some(count) = inflight.get_mut(&peer) {
+                        *count = count.saturating_sub(1);
+                        if *count == 0 {
+                            inflight.remove(&peer);
+                        }
+                    }
+                }
+
+                // Detect timeout and retry if applicable
+                let error_str = format!("{:?}", error).to_lowercase();
+                let is_timeout = error_str.contains("timeout");
+
+                if is_timeout {
+                    // Try to retrieve and retry the request
+                    if let Some(entry) = self.outbound_retry.lock().await.remove(&request_id) {
+                        if entry.retry_count < MAX_OUTBOUND_RETRIES {
+                            let delay_ms = 2000 + (entry.retry_count as u64) * 1500;
+                            info!(
+                                "🔄 [RETRY] Timeout on request {:?} to {}, retry {} in {}ms",
+                                request_id,
+                                peer,
+                                entry.retry_count + 1,
+                                delay_ms
+                            );
+
+                            // Convert RetryableUnicast back to ChannelMessage with incremented retry_count
+                            let msg = match entry.msg {
+                                RetryableUnicast::UnicastShareDKG {
+                                    target_peer_id,
+                                    from_node_id,
+                                    share_index,
+                                    share_value,
+                                    commitments,
+                                    round,
+                                } => ChannelMessage::UnicastShareDKG {
+                                    target_peer_id,
+                                    from_node_id,
+                                    share_index,
+                                    share_value,
+                                    commitments,
+                                    round,
+                                    retry_count: entry.retry_count + 1,
+                                },
+                                RetryableUnicast::UnicastRefreshShare {
+                                    target_peer_id,
+                                    from_node_id,
+                                    share_index,
+                                    share_value,
+                                    commitments,
+                                } => ChannelMessage::UnicastRefreshShare {
+                                    target_peer_id,
+                                    from_node_id,
+                                    share_index,
+                                    share_value,
+                                    commitments,
+                                    retry_count: entry.retry_count + 1,
+                                },
+                                RetryableUnicast::UnicastCritical {
+                                    target_peer_id,
+                                    topic,
+                                    data,
+                                    message_type,
+                                    message_id,
+                                } => ChannelMessage::UnicastCritical {
+                                    target_peer_id,
+                                    topic,
+                                    data,
+                                    message_type,
+                                    message_id,
+                                    retry_count: entry.retry_count + 1,
+                                },
+                                RetryableUnicast::UnicastECDSASignature {
+                                    target_peer_id,
+                                    from_node_id,
+                                    signature_data,
+                                    round,
+                                } => ChannelMessage::UnicastECDSASignature {
+                                    target_peer_id,
+                                    from_node_id,
+                                    signature_data,
+                                    round,
+                                    retry_count: entry.retry_count + 1,
+                                },
+                                RetryableUnicast::UnicastBtcSignatures {
+                                    target_peer_id,
+                                    from_node_id,
+                                    signature_data,
+                                    round,
+                                } => ChannelMessage::UnicastBtcSignatures {
+                                    target_peer_id,
+                                    from_node_id,
+                                    signature_data,
+                                    round,
+                                    retry_count: entry.retry_count + 1,
+                                },
+                                RetryableUnicast::UnicastTransactionData {
+                                    target_peer_id,
+                                    from_node_id,
+                                    transaction_data,
+                                    round,
+                                } => ChannelMessage::UnicastTransactionData {
+                                    target_peer_id,
+                                    from_node_id,
+                                    transaction_data,
+                                    round,
+                                    retry_count: entry.retry_count + 1,
+                                },
+                            };
+
+                            // Re-enqueue with delay
+                            let tx = self.message_tx.clone();
+                            tokio::spawn(async move {
+                                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                                if let Err(e) = tx.send(msg).await {
+                                    warn!("❌ [RETRY] Failed to re-enqueue message: {}", e);
+                                }
+                            });
+                        } else {
+                            warn!(
+                                "❌ [RETRY] Max retries ({}) exceeded for request {:?} to {}",
+                                MAX_OUTBOUND_RETRIES, request_id, peer
+                            );
+                        }
+                    }
+                } else {
+                    warn!("❌ Outbound failure to peer {}: {:?}", peer, error);
+                }
             }
             ReqRespEvent::InboundFailure { peer, error, .. } => {
                 warn!("Inbound failure to peer {}: {:?}", peer, error);
@@ -299,7 +448,6 @@ impl MpcNetworkLayer {
     ) -> Result<()> {
         // If this is the peer discovery topic, we can now safely broadcast our presence
         if topic.as_str() == MSG_TOPIC_PEER_DISCOVERY {
-
             let active_nodes = self.node_manager.get_active_nodes();
             let other_peers_in_manager: Vec<_> = active_nodes
                 .iter()
@@ -351,10 +499,10 @@ impl MpcNetworkLayer {
         let mut tcp_port: Option<u16> = None;
         let mut udp_port: Option<u16> = None;
         let mut protocol = "unknown";
-        
+
         // Parse multiaddr to extract port information
         let addr_str = address.to_string();
-        
+
         // Check for TCP port
         if let Some(tcp_part) = addr_str.split("/tcp/").nth(1) {
             if let Some(port_str) = tcp_part.split('/').next() {
@@ -364,7 +512,7 @@ impl MpcNetworkLayer {
                 }
             }
         }
-        
+
         // Check for UDP/QUIC port
         if let Some(udp_part) = addr_str.split("/udp/").nth(1) {
             if let Some(port_str) = udp_part.split('/').next() {
@@ -378,7 +526,7 @@ impl MpcNetworkLayer {
                 }
             }
         }
-        
+
         // Log P2P server information
         if let Some(port) = tcp_port {
             info!(

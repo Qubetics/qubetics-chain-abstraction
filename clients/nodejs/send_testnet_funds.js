@@ -16,10 +16,10 @@ const api = axios.create({
 // Configuration
 const CONFIG = {
     network: bitcoin.networks.testnet,
-    targetAddress: 'mjckTtE8E5pdwma1a2aBbPAPzjVM5Grx65',
+    targetAddress: 'mrMcVTioKMP5KTw4vkMaKmzQ8mgDDtwmYw',
     privateKeyWIF: 'cScjg3oChv5iK4xuxUc8n4nGMQBTouNtmbhsQF7qjFcahyLjGZ13',
     rpcEndpoint: 'https://mempool.space/testnet4/api',
-    amountPerTx: 1500, // satoshis
+    amountPerTx: 1000, // satoshis
     numberOfTx: 10,
     delayBetweenTx: 2000 // 2 seconds delay between transactions
 };
@@ -95,7 +95,7 @@ async function sendTransaction(keyPair, fromAddress, toAddress, amount, utxos) {
             hash: utxo.txid,
             index: utxo.vout,
             witnessUtxo: {
-                script: Buffer.from('0014' + bitcoin.crypto.hash160(keyPair.publicKey).toString('hex'), 'hex'),
+                script: Buffer.from('0014' + Buffer.from(bitcoin.crypto.hash160(keyPair.publicKey)).toString('hex'), 'hex'),
                 value: utxo.value
             }
         });
@@ -159,8 +159,12 @@ async function main() {
 
     // Initialize key pair
     const keyPair = ECPair.fromWIF(CONFIG.privateKeyWIF, CONFIG.network);
+    const wrappedKeyPair = {
+        publicKey: Buffer.from(keyPair.publicKey),
+        sign: (hash) => Buffer.from(keyPair.sign(hash))
+    };
     const { address: fromAddress } = bitcoin.payments.p2wpkh({
-        pubkey: keyPair.publicKey,
+        pubkey: wrappedKeyPair.publicKey,
         network: CONFIG.network
     });
 
@@ -182,7 +186,7 @@ async function main() {
 
             // Send transaction
             const result = await sendTransaction(
-                keyPair,
+                wrappedKeyPair,
                 fromAddress,
                 CONFIG.targetAddress,
                 CONFIG.amountPerTx,
