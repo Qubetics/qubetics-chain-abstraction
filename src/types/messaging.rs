@@ -2,7 +2,7 @@ use crate::{
     commands::Command,
     protocols::{DKGMessage, VrfSelectedNodesBroadcast, VrfSelectionMessage},
     types::{
-        intent::{DepositIntent, TransactionType},
+        intent::{BatchType, DepositIntent, TransactionType},
         rpc::RPCRequest,
         rpc_server::NodeStatus,
         secp::{SerializablePoint, SerializableScalar},
@@ -63,8 +63,8 @@ pub enum ChannelMessage {
     IntentBatchBroadcast {
         /// List of intent hashes to process
         intent_hashes: Vec<String>,
-        /// Batch type: "BTC" or "TICS"
-        batch_type: String,
+        /// Batch type: BTC or TICS
+        batch_type: BatchType,
         /// Timestamp when batch was created
         timestamp: String,
         /// Round number that triggered this batch
@@ -170,6 +170,100 @@ pub enum ChannelMessage {
     },
 }
 
+impl ChannelMessage {
+    /// Try to convert ChannelMessage to RetryableUnicast
+    /// Returns Some(RetryableUnicast) for the 6 unicast variants, None for others
+    pub fn try_to_retryable_unicast(
+        self,
+    ) -> Option<crate::network::rpc::outbound_retry::RetryableUnicast> {
+        use crate::network::rpc::outbound_retry::RetryableUnicast;
+
+        match self {
+            ChannelMessage::UnicastShareDKG {
+                target_peer_id,
+                from_node_id,
+                share_index,
+                share_value,
+                commitments,
+                round,
+                retry_count: _,
+            } => Some(RetryableUnicast::UnicastShareDKG {
+                target_peer_id,
+                from_node_id,
+                share_index,
+                share_value,
+                commitments,
+                round,
+            }),
+            ChannelMessage::UnicastRefreshShare {
+                target_peer_id,
+                from_node_id,
+                share_index,
+                share_value,
+                commitments,
+                retry_count: _,
+            } => Some(RetryableUnicast::UnicastRefreshShare {
+                target_peer_id,
+                from_node_id,
+                share_index,
+                share_value,
+                commitments,
+            }),
+            ChannelMessage::UnicastCritical {
+                target_peer_id,
+                topic,
+                data,
+                message_type,
+                message_id,
+                retry_count: _,
+            } => Some(RetryableUnicast::UnicastCritical {
+                target_peer_id,
+                topic,
+                data,
+                message_type,
+                message_id,
+            }),
+            ChannelMessage::UnicastECDSASignature {
+                target_peer_id,
+                from_node_id,
+                signature_data,
+                round,
+                retry_count: _,
+            } => Some(RetryableUnicast::UnicastECDSASignature {
+                target_peer_id,
+                from_node_id,
+                signature_data,
+                round,
+            }),
+            ChannelMessage::UnicastBtcSignatures {
+                target_peer_id,
+                from_node_id,
+                signature_data,
+                round,
+                retry_count: _,
+            } => Some(RetryableUnicast::UnicastBtcSignatures {
+                target_peer_id,
+                from_node_id,
+                signature_data,
+                round,
+            }),
+            ChannelMessage::UnicastTransactionData {
+                target_peer_id,
+                from_node_id,
+                transaction_data,
+                round,
+                retry_count: _,
+            } => Some(RetryableUnicast::UnicastTransactionData {
+                target_peer_id,
+                from_node_id,
+                transaction_data,
+                round,
+            }),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum GossipsubMessage {
     DKG(DKGMessage),
@@ -273,8 +367,8 @@ pub enum GossipsubMessage {
     IntentBatchBroadcast {
         /// List of intent hashes to process
         intent_hashes: Vec<String>,
-        /// Batch type: "BTC" or "TICS"
-        batch_type: String,
+        /// Batch type: BTC or TICS
+        batch_type: BatchType,
         /// Timestamp when batch was created
         timestamp: String,
         /// Round number that triggered this batch

@@ -13,38 +13,25 @@ use crate::{
 use crate::network::transport::types::MpcNetworkLayer;
 
 impl MpcNetworkLayer {
-    /// Convert transaction type string to enum
-    pub(crate) fn parse_transaction_type(tx_type_str: &str) -> Result<TransactionType> {
-        match tx_type_str {
-            "user_to_vault" => Ok(TransactionType::UserToVault),
-            "network_to_target" => Ok(TransactionType::NetworkToTarget),
-            "reward_txn" => Ok(TransactionType::RewardTxn),
-            "withdraw_liquidity" | "withdrawLiquidity" => Ok(TransactionType::WithdrawLiquidity),
-            "refund" => Ok(TransactionType::Refund),
-            "intent_status_update" => Ok(TransactionType::IntentStatusUpdate),
-            _ => Err(anyhow::anyhow!("Unknown transaction type: {}", tx_type_str)),
-        }
-    }
-
     /// Store transaction ID based on transaction type
     pub(crate) async fn store_transaction_id_by_type(
         &self,
         user_intent_manager: &crate::user_intent_manager::UserIntentManager,
         intent_hash: &str,
         transaction_id: &str,
-        transaction_type: &str,
+        transaction_type: &TransactionType,
         node_id: Option<&str>,
     ) -> Result<()> {
         match transaction_type {
-            "user_to_vault" => user_intent_manager
+            TransactionType::UserToVault => user_intent_manager
                 .store_user_to_vault_tx_id(intent_hash, transaction_id, node_id)
                 .await
                 .map_err(|e| anyhow::anyhow!("{}", e)),
-            "network_to_target" => user_intent_manager
+            TransactionType::NetworkToTarget => user_intent_manager
                 .store_network_to_target_tx_id(intent_hash, transaction_id, node_id)
                 .await
                 .map_err(|e| anyhow::anyhow!("{}", e)),
-            "refund" => {
+            TransactionType::Refund => {
                 // Store refund transaction ID (refund transactions go from network to user's source address)
                 // We store it as network_to_target since it's the same flow
                 user_intent_manager
@@ -52,24 +39,31 @@ impl MpcNetworkLayer {
                     .await
                     .map_err(|e| anyhow::anyhow!("{}", e))
             }
-            "withdraw_liquidity" | "withdrawLiquidity" => {
+            TransactionType::WithdrawLiquidity => {
                 warn!(
                     "⚠️ [SIGNING] Received withdraw-liquidity transaction ID for intent {} but this flow is not implemented yet",
                     intent_hash
                 );
                 Ok(())
             }
-            "intent_status_update" => {
+            TransactionType::IntentStatusUpdate => {
                 // For intent status update, only mark intent as Solved
                 // Do NOT update network_to_target_tx_id (it's already set)
                 info!(
                     "✅ [INTENT_STATUS_UPDATE] Marking intent {} as Solved (contract update completed)",
                     intent_hash
                 );
-                
-                if let Some(user) = user_intent_manager.get_user_by_intent_hash(intent_hash).await {
+
+                if let Some(user) = user_intent_manager
+                    .get_user_by_intent_hash(intent_hash)
+                    .await
+                {
                     if let Err(e) = user_intent_manager
-                        .update_intent_status(&user.ethereum_address, intent_hash, crate::types::IntentStatus::Solved)
+                        .update_intent_status(
+                            &user.ethereum_address,
+                            intent_hash,
+                            crate::types::IntentStatus::Solved,
+                        )
                         .await
                     {
                         error!(
@@ -80,8 +74,7 @@ impl MpcNetworkLayer {
                     } else {
                         info!(
                             "✅ [INTENT_STATUS_UPDATE] Marked intent {} as Solved for user {}",
-                            intent_hash,
-                            user.ethereum_address
+                            intent_hash, user.ethereum_address
                         );
                     }
                 } else {
@@ -91,11 +84,46 @@ impl MpcNetworkLayer {
                     );
                     return Err(anyhow::anyhow!("User not found for intent {}", intent_hash));
                 }
-                
+
                 Ok(())
             }
+            TransactionType::RewardTxn => {
+                warn!(
+                    "⚠️ [SIGNING] Received reward transaction ID for intent {} but this should be handled by handle_reward_transaction_id_storage",
+                    intent_hash
+                );
+                Ok(())
+            }
+        }
+    }
+
+    /// Dispatch transaction ID storage based on transaction type
+    /// This centralizes the pattern of routing to reward/withdraw/regular handlers
+    pub(crate) async fn dispatch_transaction_id_storage(
+        &mut self,
+        transaction_type: &TransactionType,
+        solver_address: &str,
+        transaction_id: &str,
+    ) -> Result<()> {
+        match transaction_type {
+            TransactionType::RewardTxn => {
+                self.handle_reward_transaction_id_storage(
+                    solver_address,
+                    transaction_id,
+                    transaction_type.as_str(),
+                )
+                .await
+            }
+            TransactionType::WithdrawLiquidity => {
+                self.handle_withdraw_liquidity_transaction_id_storage(
+                    solver_address,
+                    transaction_id,
+                    transaction_type.as_str(),
+                )
+                .await
+            }
             _ => Err(anyhow::anyhow!(
-                "Unknown transaction type: {}",
+                "Unexpected transaction type for solver: {:?}",
                 transaction_type
             )),
         }
@@ -115,6 +143,11 @@ impl MpcNetworkLayer {
         node_id: &str,
         sender_peer_id: &libp2p::PeerId,
     ) -> Result<()> {
+        // Parse transaction_type string to enum for type safety
+        let tx_type = transaction_type.parse::<TransactionType>().map_err(|e| {
+            anyhow::anyhow!("Invalid transaction type '{}': {}", transaction_type, e)
+        })?;
+
         if let Some(user_intent_manager) = &self.user_intent_manager {
             // SECURITY FIX 2: Check if this transaction ID was already processed (rate limiting)
             let was_already_processed = {
@@ -122,12 +155,12 @@ impl MpcNetworkLayer {
                     .get_intent_transaction_ids(intent_hash)
                     .await
                 {
-                    match transaction_type {
-                        "user_to_vault" => {
+                    match &tx_type {
+                        TransactionType::UserToVault => {
                             existing_tx_ids.user_to_network_tx_id.as_ref()
                                 == Some(&transaction_id.to_string())
                         }
-                        "network_to_target" | "refund" => {
+                        TransactionType::NetworkToTarget | TransactionType::Refund => {
                             existing_tx_ids.network_to_target_tx_id.as_ref()
                                 == Some(&transaction_id.to_string())
                         }
@@ -144,7 +177,7 @@ impl MpcNetworkLayer {
                     user_intent_manager,
                     intent_hash,
                     transaction_id,
-                    transaction_type,
+                    &tx_type,
                     Some(node_id),
                 )
                 .await
@@ -200,10 +233,10 @@ impl MpcNetworkLayer {
                         );
 
                         // Handle refund transactions differently - they use refundIntent contract method
-                        if transaction_type == "refund" {
+                        if matches!(tx_type, TransactionType::Refund) {
                             // Extract the original intent_hash from "refund-{intent_hash}"
                             let original_intent_hash =
-                                intent_hash.strip_prefix("refund-").unwrap_or(intent_hash);
+                                crate::utils::parse_original_from_refund_id(intent_hash);
 
                             // Get transaction IDs to extract error message (try this first, works even if intent is missing)
                             let tx_ids = user_intent_manager
@@ -278,7 +311,7 @@ impl MpcNetworkLayer {
                                     "❌ [CONTRACT] No vault group key available for refund contract call execution"
                                 );
                             }
-                        } 
+                        }
                     }
                 }
                 Err(e) => {
@@ -303,6 +336,18 @@ impl MpcNetworkLayer {
         transaction_type: &str,
         sender_peer_id: &PeerId,
     ) -> bool {
+        // Parse transaction_type to enum
+        let tx_type = match transaction_type.parse::<TransactionType>() {
+            Ok(t) => t,
+            Err(e) => {
+                warn!(
+                    "⚠️ [SECURITY] Invalid transaction type '{}': {}",
+                    transaction_type, e
+                );
+                return false;
+            }
+        };
+
         // Get total number of active nodes
         let total_nodes = self.node_manager.get_total_nodes();
         if total_nodes < 2 {
@@ -325,11 +370,11 @@ impl MpcNetworkLayer {
                 .await
             {
                 // Check if the transaction_id matches for this transaction type
-                let matches = match transaction_type {
-                    "user_to_vault" => {
+                let matches = match tx_type {
+                    TransactionType::UserToVault => {
                         tx_ids.user_to_network_tx_id.as_ref() == Some(&transaction_id.to_string())
                     }
-                    "network_to_target" | "refund" => {
+                    TransactionType::NetworkToTarget | TransactionType::Refund => {
                         // Refund transactions are stored as network_to_target_tx_id
                         tx_ids.network_to_target_tx_id.as_ref() == Some(&transaction_id.to_string())
                     }
@@ -708,8 +753,8 @@ fn reward_network_from_tx_id(
     transaction_type: &str,
     transaction_id: &str,
 ) -> Option<TransactionNetwork> {
-    match transaction_type {
-        "reward_txn" => {
+    match transaction_type.parse::<TransactionType>() {
+        Ok(TransactionType::RewardTxn) => {
             if transaction_id.starts_with("0x") {
                 Some(TransactionNetwork::TICS)
             } else {
@@ -724,8 +769,9 @@ fn withdraw_liquidity_network_from_tx_id(
     transaction_type: &str,
     transaction_id: &str,
 ) -> Option<TransactionNetwork> {
-    match transaction_type {
-        "withdraw_liquidity" | "withdrawLiquidity" => {
+    // Parse transaction type using FromStr
+    match transaction_type.parse::<TransactionType>() {
+        Ok(TransactionType::WithdrawLiquidity) => {
             if transaction_id.starts_with("0x") {
                 Some(TransactionNetwork::TICS)
             } else {

@@ -217,3 +217,14 @@ mod tests {
         }
     }
 }
+
+/// Create a refund intent ID from an original intent hash
+pub fn refund_intent_id(original: &str) -> String {
+    format!("refund-{}", original)
+}
+
+/// Parse the original intent hash from a refund intent ID
+/// Returns the original hash if it has the "refund-" prefix, otherwise returns the input unchanged
+pub fn parse_original_from_refund_id(id: &str) -> &str {
+    id.strip_prefix("refund-").unwrap_or(id)
+}

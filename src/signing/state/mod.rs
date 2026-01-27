@@ -3,7 +3,7 @@ use crate::signing::config::BroadcastConfig;
 use crate::signing::coordination::{self, Coordination};
 use crate::types::signing::ECDSASignature;
 use crate::types::TransactionType;
-use crate::types::{ChannelMessage, SpendKind};
+use crate::types::{ChannelMessage, SpendKind, TransactionNetwork};
 use secp256k1::{ecdsa::RecoverableSignature, PublicKey};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -130,6 +130,105 @@ impl PendingStore {
             intent_hashes_by_round: Arc::new(RwLock::new(HashMap::new())),
         }
     }
+
+    /// Check if a round is a reward transaction round
+    pub async fn is_reward_round(&self, round: u64) -> bool {
+        let reward_rounds = self.reward_rounds.read().await;
+        reward_rounds.contains(&round)
+    }
+
+    /// Check if a round is a withdraw liquidity transaction round
+    pub async fn is_withdraw_round(&self, round: u64) -> bool {
+        let withdraw_rounds = self.withdraw_rounds.read().await;
+        withdraw_rounds.contains(&round)
+    }
+
+    /// Get the appropriate pending transaction map for a given round and transaction network
+    /// Returns a reference to the correct map based on round type (reward/withdraw/regular)
+    /// and transaction network (TICS/BTC)
+    pub fn get_pending_for_round_btc(
+        &self,
+        is_reward: bool,
+        is_withdraw: bool,
+    ) -> Arc<RwLock<HashMap<u64, PendingValue>>> {
+        if is_reward {
+            self.reward_pending_transactions_btc.clone()
+        } else if is_withdraw {
+            self.withdraw_pending_transactions_btc.clone()
+        } else {
+            self.pending_transactions_btc.clone()
+        }
+    }
+
+    /// Get the appropriate TICS pending transaction map for a given round
+    /// Returns a reference to the correct map based on round type (reward/withdraw/regular)
+    pub fn get_pending_for_round_tics(
+        &self,
+        is_reward: bool,
+        is_withdraw: bool,
+    ) -> Arc<
+        RwLock<
+            HashMap<
+                u64,
+                (
+                    ChainTransaction,
+                    Vec<u8>,
+                    Option<String>,
+                    Option<TransactionType>,
+                    Option<String>,
+                    Option<()>,
+                ),
+            >,
+        >,
+    > {
+        if is_reward {
+            self.reward_pending_transactions_tics.clone()
+        } else if is_withdraw {
+            self.withdraw_pending_transactions_tics.clone()
+        } else {
+            self.pending_transactions.clone()
+        }
+    }
+
+    /// Get the appropriate pending map for a round and transaction network.
+    /// Uses `is_reward_round`/`is_withdraw_round` and selects reward/withdraw/pending for TICS or BTC.
+    pub async fn get_pending_for_round(
+        &self,
+        round: u64,
+        txn_network: TransactionNetwork,
+    ) -> PendingMapForRound {
+        let is_reward = self.is_reward_round(round).await;
+        let is_withdraw = self.is_withdraw_round(round).await;
+        match txn_network {
+            TransactionNetwork::TICS => {
+                PendingMapForRound::Tics(self.get_pending_for_round_tics(is_reward, is_withdraw))
+            }
+            TransactionNetwork::BTC => {
+                PendingMapForRound::Btc(self.get_pending_for_round_btc(is_reward, is_withdraw))
+            }
+        }
+    }
+}
+
+/// Pending map reference for a round and network.
+/// Use with `PendingStore::get_pending_for_round(round, txn_network).await` then match and call `.read().await` / `.write().await` on the inner `Arc`.
+pub enum PendingMapForRound {
+    Tics(Arc<
+        RwLock<
+            HashMap<
+                u64,
+                (
+                    ChainTransaction,
+                    Vec<u8>,
+                    Option<String>,
+                    Option<TransactionType>,
+                    Option<String>,
+                    Option<()>,
+                ),
+            >,
+        >,
+    >),
+    Btc(Arc<RwLock<HashMap<u64, PendingValue>>>),
 }
 
 #[cfg(test)]

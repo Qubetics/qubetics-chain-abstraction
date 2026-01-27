@@ -404,7 +404,10 @@ impl MpcNetworkLayer {
                     node_id
                 );
                 if !intent_hashes.is_empty() {
-                    info!("🔗 [NETWORK] Intent hashes: {} intent(s)", intent_hashes.len());
+                    info!(
+                        "🔗 [NETWORK] Intent hashes: {} intent(s)",
+                        intent_hashes.len()
+                    );
                 } else if let Some(solver) = &solver_address {
                     info!("🧩 [NETWORK] Solver address: {}", solver);
                 } else {
@@ -439,36 +442,27 @@ impl MpcNetworkLayer {
                         {
                             error!(
                                 "❌ [NETWORK] Failed to handle transaction ID storage for intent {}: {}",
-                                intent_hash, e
+                        intent_hash, e
                             );
                         }
                     }
                 } else if let Some(solver_addr) = solver_address.as_ref() {
-                    let storage_result = match transaction_type.as_str() {
-                        "reward_txn" => {
-                            self.handle_reward_transaction_id_storage(
-                                solver_addr,
-                                &transaction_id,
-                                &transaction_type,
-                            )
-                            .await
-                        }
-                        "withdraw_liquidity" | "withdrawLiquidity" => {
-                            self.handle_withdraw_liquidity_transaction_id_storage(
-                                solver_addr,
-                                &transaction_id,
-                                &transaction_type,
-                            )
-                            .await
-                        }
-                        _ => {
+                    // Parse transaction type string to enum
+                    let tx_type = match transaction_type.parse::<crate::types::TransactionType>() {
+                        Ok(t) => t,
+                        Err(e) => {
                             warn!(
-                                "❌ [NETWORK] Unknown transaction type: {}",
-                                transaction_type
+                                "❌ [NETWORK] Unknown transaction type: {} - {}",
+                                transaction_type, e
                             );
                             return Err(anyhow!("Unknown transaction type: {}", transaction_type));
                         }
                     };
+
+                    // Use centralized dispatch helper for reward/withdraw transactions
+                    let storage_result = self
+                        .dispatch_transaction_id_storage(&tx_type, solver_addr, &transaction_id)
+                        .await;
 
                     if let Err(e) = storage_result {
                         error!(
@@ -494,7 +488,10 @@ impl MpcNetworkLayer {
                     node_id
                 );
                 if !intent_hashes.is_empty() {
-                    info!("🔗 [NETWORK] Intent hashes: {} intent(s)", intent_hashes.len());
+                    info!(
+                        "🔗 [NETWORK] Intent hashes: {} intent(s)",
+                        intent_hashes.len()
+                    );
                 } else if let Some(solver) = &solver_address {
                     info!("🧩 [NETWORK] Solver address: {}", solver);
                 } else {
@@ -1070,7 +1067,7 @@ impl MpcNetworkLayer {
                     node_id, round
                 );
                 info!(
-                    "📦 [INTENT_BATCH] Batch type: {}, timestamp: {}, {} intent hashes",
+                    "📦 [INTENT_BATCH] Batch type: {:?}, timestamp: {}, {} intent hashes",
                     batch_type,
                     timestamp,
                     intent_hashes.len()
@@ -1111,11 +1108,11 @@ impl MpcNetworkLayer {
                     info!(
                         "✅ [BATCH] Fetched {} intents for {} batch processing",
                         batch_intents.len(),
-                        batch_type
+                        batch_type.as_str()
                     );
 
                     // DIFFERENT: Process based on batch type
-                    if batch_type == "BTC" {
+                    if matches!(batch_type, crate::types::BatchType::BTC) {
                         // BITCOIN BATCH TRANSACTION FLOW
                         info!(
                             "₿ [BATCH] Processing Bitcoin batch transaction for {} intents",
@@ -1431,7 +1428,7 @@ impl MpcNetworkLayer {
                         } else {
                             error!("❌ [BATCH] Signing node not available");
                         }
-                    } else if batch_type == "TICS" {
+                    } else if matches!(batch_type, crate::types::BatchType::TICS) {
                         info!(
                             "💎 [TICS_BATCH] Creating TICS batch transaction with {} intents",
                             batch_intents.len()
@@ -1637,7 +1634,7 @@ impl MpcNetworkLayer {
                             warn!("❌ [TICS_BATCH] Failed to encode processBatchIntents calldata");
                         }
                     } else {
-                        warn!("⚠️ [INTENT_BATCH] Unknown batch type: {}", batch_type);
+                            warn!("⚠️ [INTENT_BATCH] Unknown batch type: {}", batch_type.as_str());
                     }
                 } else {
                     warn!("❌ [BATCH] User intent manager not available");
@@ -1657,7 +1654,9 @@ impl MpcNetworkLayer {
                 );
                 info!(
                     "🔄 [BTC_INTENT_MANAGER] {} intents, BTC batch round: {}, BTC txid: {}",
-                    intent_hashes.len(), btc_batch_round, btc_txid
+                    intent_hashes.len(),
+                    btc_batch_round,
+                    btc_txid
                 );
 
                 // Process the batch - create contract call

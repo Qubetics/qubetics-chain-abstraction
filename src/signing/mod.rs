@@ -1518,7 +1518,7 @@ impl SigningNode {
             self.message_tx
                 .send(crate::types::ChannelMessage::IntentBatchBroadcast {
                     intent_hashes: intent_hashes.clone(),
-                    batch_type: format!("{:?}", batch_type), // "BTC" or "TICS"
+                    batch_type,
                     timestamp: batch_timestamp.clone(),
                     round,
                     node_id: self.id.clone(),
@@ -2344,14 +2344,8 @@ impl SigningNode {
                         // 🚀 NEW: Reconstruct and broadcast signed transaction based on actual transaction type
                         // Check the actual transaction stored for this round to determine the correct chain type
                         // First check if this is a reward round
-                        let is_reward_round = {
-                            let reward_rounds = self.pending.reward_rounds.read().await;
-                            reward_rounds.contains(&round)
-                        };
-                        let is_withdraw_round = {
-                            let withdraw_rounds = self.pending.withdraw_rounds.read().await;
-                            withdraw_rounds.contains(&round)
-                        };
+                        let is_reward_round = self.pending.is_reward_round(round).await;
+                        let is_withdraw_round = self.pending.is_withdraw_round(round).await;
 
                         let (is_contract_tx, maybe_chain_id) = if is_reward_round {
                             // This is a reward transaction - check reward pending transactions for TICS (Ethereum)
@@ -2615,14 +2609,8 @@ impl SigningNode {
         }
 
         // ---- 1) Pull unsigned tx + BTC extras from the correct pending store (needed for verification) ----
-        let is_reward_round = {
-            let reward_rounds = self.pending.reward_rounds.read().await;
-            reward_rounds.contains(&round)
-        };
-        let is_withdraw_round = {
-            let withdraw_rounds = self.pending.withdraw_rounds.read().await;
-            withdraw_rounds.contains(&round)
-        };
+        let is_reward_round = self.pending.is_reward_round(round).await;
+        let is_withdraw_round = self.pending.is_withdraw_round(round).await;
 
         let (unsigned_tx, extras, total_inputs) = {
             let (chain_tx, extras_opt) = if is_reward_round {
@@ -3796,14 +3784,8 @@ impl SigningNode {
 
         // Get transaction type and user_eth_address for this round
         let (transaction_type, user_eth_address) = {
-            let is_reward_round = {
-                let reward_rounds = self.pending.reward_rounds.read().await;
-                reward_rounds.contains(&round)
-            };
-            let is_withdraw_round = {
-                let withdraw_rounds = self.pending.withdraw_rounds.read().await;
-                withdraw_rounds.contains(&round)
-            };
+            let is_reward_round = self.pending.is_reward_round(round).await;
+            let is_withdraw_round = self.pending.is_withdraw_round(round).await;
 
             if is_reward_round {
                 let reward_pt = self.pending.reward_pending_transactions_btc.read().await;
@@ -3865,14 +3847,8 @@ impl SigningNode {
 
         // Get Bitcoin transaction and compute digest for this input
         let unsigned_tx = {
-            let is_reward_round = {
-                let reward_rounds = self.pending.reward_rounds.read().await;
-                reward_rounds.contains(&round)
-            };
-            let is_withdraw_round = {
-                let withdraw_rounds = self.pending.withdraw_rounds.read().await;
-                withdraw_rounds.contains(&round)
-            };
+            let is_reward_round = self.pending.is_reward_round(round).await;
+            let is_withdraw_round = self.pending.is_withdraw_round(round).await;
 
             let (chain_tx, extras_opt) = if is_reward_round {
                 let reward_pt = self.pending.reward_pending_transactions_btc.read().await;
@@ -4205,15 +4181,8 @@ impl SigningNode {
     ) -> Result<(Vec<u8>, Option<TransactionType>, Option<String>)> {
 
         // Check if it's a reward or withdraw round
-        let is_reward_round = {
-            let reward_rounds = self.pending.reward_rounds.read().await;
-            reward_rounds.contains(&round)
-        };
-
-        let is_withdraw_round = {
-            let withdraw_rounds = self.pending.withdraw_rounds.read().await;
-            withdraw_rounds.contains(&round)
-        };
+        let is_reward_round = self.pending.is_reward_round(round).await;
+        let is_withdraw_round = self.pending.is_withdraw_round(round).await;
 
         // Try TICS (Ethereum) transactions first
         //

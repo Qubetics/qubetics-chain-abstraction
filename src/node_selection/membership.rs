@@ -25,6 +25,15 @@ pub trait NodeMembership: Send + Sync {
     /// Get all active node IDs
     fn get_active_nodes(&self) -> HashSet<PeerId>;
 
+    /// Get all active nodes except the specified one
+    /// This is a convenience method to avoid duplicating the filter pattern
+    fn get_other_active_nodes(&self, exclude: PeerId) -> Vec<PeerId> {
+        self.get_active_nodes()
+            .into_iter()
+            .filter(|&pid| pid != exclude)
+            .collect()
+    }
+
     /// Get reference to self as Any for downcasting
     fn as_any(&self) -> &dyn Any;
 

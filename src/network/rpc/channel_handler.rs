@@ -355,10 +355,7 @@ impl MpcNetworkLayer {
                     context, e
                 );
                 // Return error to propagate insufficient UTXO and other transaction creation errors
-                return Err(anyhow::anyhow!(
-                    "Failed to create BTC transaction: {}",
-                    e
-                ));
+                return Err(anyhow::anyhow!("Failed to create BTC transaction: {}", e));
             }
         };
 
@@ -581,7 +578,8 @@ impl MpcNetworkLayer {
             return Ok(());
         };
 
-        let liquidity_operator_address = crate::utils::get_eth_address_from_group_key(group_public_key);
+        let liquidity_operator_address =
+            crate::utils::get_eth_address_from_group_key(group_public_key);
         info!(
             "🧾 [SOLVER] Submitting reward update for {} via liquidity operator address {}",
             solver_address, liquidity_operator_address
@@ -659,7 +657,7 @@ impl MpcNetworkLayer {
                         None,
                         vec![],
                         vault_tweaked_share,
-                        request_id, // Pass request_id from sequencer
+                        request_id,       // Pass request_id from sequencer
                         original_request, // Pass original_request for retry support
                     )
                     .await?;
@@ -758,7 +756,8 @@ impl MpcNetworkLayer {
             return Ok(());
         };
 
-        let liquidity_operator_address = crate::utils::get_eth_address_from_group_key(group_public_key);
+        let liquidity_operator_address =
+            crate::utils::get_eth_address_from_group_key(group_public_key);
         info!(
             "🧾 [SOLVER] Submitting removeLiquidity for solver {} (solver_id={}, chain_id={}, amount={}, contract={}, from={})",
             solver_address,
@@ -831,7 +830,7 @@ impl MpcNetworkLayer {
                         None,
                         vec![],
                         vault_tweaked_share,
-                        request_id, // Pass request_id from sequencer
+                        request_id,       // Pass request_id from sequencer
                         original_request, // No original_request available in this context
                     )
                     .await?;
@@ -856,7 +855,6 @@ impl MpcNetworkLayer {
 
         Ok(())
     }
-
 }
 
 #[cfg(test)]
@@ -977,8 +975,8 @@ impl MpcNetworkLayer {
 
                 // Production: Check channel capacity and log warnings for monitoring
                 let _channel_capacity_warning_threshold = 0.8; // Warn at 80% full
-                // Note: We can't directly check channel capacity, but we can monitor via try_send failures
-                
+                                                               // Note: We can't directly check channel capacity, but we can monitor via try_send failures
+
                 // Check if this is a critical message that needs retry tracking
                 // Only register if retry manager is available and message deserializes correctly
                 // Skip registration if message is already being tracked (e.g., from a retry)
@@ -991,9 +989,8 @@ impl MpcNetworkLayer {
                                     if !retry_mgr.is_message_tracked(&message_id).await {
                                         let expected_nodes: std::collections::HashSet<PeerId> = self
                                             .node_manager
-                                            .get_active_nodes()
+                                            .get_other_active_nodes(self.local_peer_id)
                                             .into_iter()
-                                            .filter(|&pid| pid != self.local_peer_id)
                                             .collect();
 
                                         if !expected_nodes.is_empty() {
@@ -1235,7 +1232,6 @@ impl MpcNetworkLayer {
             } => {
                 const MAX_RETRIES: u8 = 10;
 
-
                 // Parse the target peer ID
                 let peer_id = match target_peer_id.parse::<PeerId>() {
                     Ok(pid) => pid,
@@ -1346,7 +1342,7 @@ impl MpcNetworkLayer {
                     use crate::network::rpc::MAX_OUTBOUND_INFLIGHT_PER_PEER;
                     let mut inflight = self.outbound_inflight.lock().await;
                     let count = inflight.get(&peer_id).copied().unwrap_or(0);
-                    
+
                     if count >= MAX_OUTBOUND_INFLIGHT_PER_PEER {
                         // At capacity - re-queue with delay
                         info!(
@@ -1369,7 +1365,7 @@ impl MpcNetworkLayer {
                         });
                         return Ok(());
                     }
-                    
+
                     // Increment in-flight count
                     *inflight.entry(peer_id).or_insert(0) += 1;
                 }
@@ -1396,15 +1392,18 @@ impl MpcNetworkLayer {
 
                 // RETRY: Insert into outbound_retry registry
                 {
-                    use crate::network::rpc::{OutboundRetryEntry, RetryableUnicast};
-                    let retry_msg = RetryableUnicast::UnicastShareDKG {
+                    use crate::network::rpc::OutboundRetryEntry;
+                    let retry_msg = ChannelMessage::UnicastShareDKG {
                         target_peer_id: target_peer_id.clone(),
                         from_node_id: from_node_id_clone,
                         share_index,
                         share_value: share_value_clone,
                         commitments: commitments_clone,
                         round,
-                    };
+                        retry_count,
+                    }
+                    .try_to_retryable_unicast()
+                    .expect("UnicastShareDKG");
                     let entry = OutboundRetryEntry {
                         peer: peer_id,
                         retry_count,
@@ -1539,7 +1538,7 @@ impl MpcNetworkLayer {
                     use crate::network::rpc::MAX_OUTBOUND_INFLIGHT_PER_PEER;
                     let mut inflight = self.outbound_inflight.lock().await;
                     let count = inflight.get(&peer_id).copied().unwrap_or(0);
-                    
+
                     if count >= MAX_OUTBOUND_INFLIGHT_PER_PEER {
                         // At capacity - re-queue with delay
                         info!(
@@ -1561,7 +1560,7 @@ impl MpcNetworkLayer {
                         });
                         return Ok(());
                     }
-                    
+
                     // Increment in-flight count
                     *inflight.entry(peer_id).or_insert(0) += 1;
                 }
@@ -1587,14 +1586,17 @@ impl MpcNetworkLayer {
 
                 // RETRY: Insert into outbound_retry registry
                 {
-                    use crate::network::rpc::{OutboundRetryEntry, RetryableUnicast};
-                    let retry_msg = RetryableUnicast::UnicastRefreshShare {
+                    use crate::network::rpc::OutboundRetryEntry;
+                    let retry_msg = ChannelMessage::UnicastRefreshShare {
                         target_peer_id: target_peer_id.clone(),
                         from_node_id: from_node_id_clone,
                         share_index,
                         share_value: share_value_clone,
                         commitments: commitments_clone,
-                    };
+                        retry_count,
+                    }
+                    .try_to_retryable_unicast()
+                    .expect("UnicastRefreshShare");
                     let entry = OutboundRetryEntry {
                         peer: peer_id,
                         retry_count,
@@ -1706,7 +1708,8 @@ impl MpcNetworkLayer {
                     };
 
                     tokio::spawn(async move {
-                        tokio::time::sleep(tokio::time::Duration::from_millis(RETRY_DELAY_MS)).await;
+                        tokio::time::sleep(tokio::time::Duration::from_millis(RETRY_DELAY_MS))
+                            .await;
                         if let Err(e) = tx.send(retry_msg).await {
                             tracing::warn!(
                                 "❌ [CRITICAL-UNICAST] Failed to schedule retry for {}:{}: {}",
@@ -1733,7 +1736,7 @@ impl MpcNetworkLayer {
                     use crate::network::rpc::MAX_OUTBOUND_INFLIGHT_PER_PEER;
                     let mut inflight = self.outbound_inflight.lock().await;
                     let count = inflight.get(&peer_id).copied().unwrap_or(0);
-                    
+
                     if count >= MAX_OUTBOUND_INFLIGHT_PER_PEER {
                         // At capacity - re-queue with delay
                         info!(
@@ -1755,7 +1758,7 @@ impl MpcNetworkLayer {
                         });
                         return Ok(());
                     }
-                    
+
                     // Increment in-flight count
                     *inflight.entry(peer_id).or_insert(0) += 1;
                 }
@@ -1774,14 +1777,17 @@ impl MpcNetworkLayer {
 
                 // RETRY: Insert into outbound_retry registry
                 {
-                    use crate::network::rpc::{OutboundRetryEntry, RetryableUnicast};
-                    let retry_msg = RetryableUnicast::UnicastCritical {
+                    use crate::network::rpc::OutboundRetryEntry;
+                    let retry_msg = ChannelMessage::UnicastCritical {
                         target_peer_id: target_peer_id.clone(),
                         topic,
                         data,
                         message_type,
                         message_id,
-                    };
+                        retry_count,
+                    }
+                    .try_to_retryable_unicast()
+                    .expect("UnicastCritical");
                     let entry = OutboundRetryEntry {
                         peer: peer_id,
                         retry_count,
@@ -1915,7 +1921,7 @@ impl MpcNetworkLayer {
                     use crate::network::rpc::MAX_OUTBOUND_INFLIGHT_PER_PEER;
                     let mut inflight = self.outbound_inflight.lock().await;
                     let count = inflight.get(&peer_id).copied().unwrap_or(0);
-                    
+
                     if count >= MAX_OUTBOUND_INFLIGHT_PER_PEER {
                         // At capacity - re-queue with delay
                         info!(
@@ -1936,7 +1942,7 @@ impl MpcNetworkLayer {
                         });
                         return Ok(());
                     }
-                    
+
                     // Increment in-flight count
                     *inflight.entry(peer_id).or_insert(0) += 1;
                 }
@@ -1954,13 +1960,16 @@ impl MpcNetworkLayer {
 
                 // RETRY: Insert into outbound_retry registry
                 {
-                    use crate::network::rpc::{OutboundRetryEntry, RetryableUnicast};
-                    let retry_msg = RetryableUnicast::UnicastECDSASignature {
+                    use crate::network::rpc::OutboundRetryEntry;
+                    let retry_msg = ChannelMessage::UnicastECDSASignature {
                         target_peer_id: target_peer_id.clone(),
                         from_node_id,
                         signature_data,
                         round,
-                    };
+                        retry_count,
+                    }
+                    .try_to_retryable_unicast()
+                    .expect("UnicastECDSASignature");
                     let entry = OutboundRetryEntry {
                         peer: peer_id,
                         retry_count,
@@ -2095,7 +2104,7 @@ impl MpcNetworkLayer {
                     use crate::network::rpc::MAX_OUTBOUND_INFLIGHT_PER_PEER;
                     let mut inflight = self.outbound_inflight.lock().await;
                     let count = inflight.get(&peer_id).copied().unwrap_or(0);
-                    
+
                     if count >= MAX_OUTBOUND_INFLIGHT_PER_PEER {
                         // At capacity - re-queue with delay
                         info!(
@@ -2116,7 +2125,7 @@ impl MpcNetworkLayer {
                         });
                         return Ok(());
                     }
-                    
+
                     // Increment in-flight count
                     *inflight.entry(peer_id).or_insert(0) += 1;
                 }
@@ -2134,13 +2143,16 @@ impl MpcNetworkLayer {
 
                 // RETRY: Insert into outbound_retry registry
                 {
-                    use crate::network::rpc::{OutboundRetryEntry, RetryableUnicast};
-                    let retry_msg = RetryableUnicast::UnicastBtcSignatures {
+                    use crate::network::rpc::OutboundRetryEntry;
+                    let retry_msg = ChannelMessage::UnicastBtcSignatures {
                         target_peer_id: target_peer_id.clone(),
                         from_node_id,
                         signature_data,
                         round,
-                    };
+                        retry_count,
+                    }
+                    .try_to_retryable_unicast()
+                    .expect("UnicastBtcSignatures");
                     let entry = OutboundRetryEntry {
                         peer: peer_id,
                         retry_count,
@@ -2272,7 +2284,7 @@ impl MpcNetworkLayer {
                     use crate::network::rpc::MAX_OUTBOUND_INFLIGHT_PER_PEER;
                     let mut inflight = self.outbound_inflight.lock().await;
                     let count = inflight.get(&peer_id).copied().unwrap_or(0);
-                    
+
                     if count >= MAX_OUTBOUND_INFLIGHT_PER_PEER {
                         // At capacity - re-queue with delay
                         info!(
@@ -2293,7 +2305,7 @@ impl MpcNetworkLayer {
                         });
                         return Ok(());
                     }
-                    
+
                     // Increment in-flight count
                     *inflight.entry(peer_id).or_insert(0) += 1;
                 }
@@ -2311,13 +2323,16 @@ impl MpcNetworkLayer {
 
                 // RETRY: Insert into outbound_retry registry
                 {
-                    use crate::network::rpc::{OutboundRetryEntry, RetryableUnicast};
-                    let retry_msg = RetryableUnicast::UnicastTransactionData {
+                    use crate::network::rpc::OutboundRetryEntry;
+                    let retry_msg = ChannelMessage::UnicastTransactionData {
                         target_peer_id: target_peer_id.clone(),
                         from_node_id,
                         transaction_data,
                         round,
-                    };
+                        retry_count,
+                    }
+                    .try_to_retryable_unicast()
+                    .expect("UnicastTransactionData");
                     let entry = OutboundRetryEntry {
                         peer: peer_id,
                         retry_count,
@@ -2367,11 +2382,14 @@ impl MpcNetworkLayer {
                 // CRITICAL FIX: For refund transactions, use the ORIGINAL intent_hash from intent_id
                 // Refund intents have modified target_address/target_chain, so calculating hash from
                 // the modified intent would produce a different hash than the original intent
-                let intent_hash = if matches!(transaction_type, crate::types::TransactionType::Refund) 
-                    && intent_id.starts_with("refund-") 
+                let intent_hash = if matches!(
+                    transaction_type,
+                    crate::types::TransactionType::Refund
+                ) && intent_id.starts_with("refund-")
                 {
                     // Extract original intent_hash from "refund-{original_intent_hash}"
-                    let original_intent_hash = intent_id.strip_prefix("refund-").unwrap_or(&intent_id);
+                    let original_intent_hash =
+                        crate::utils::parse_original_from_refund_id(&intent_id);
                     info!("🔐 [LOCAL] Refund transaction detected - using ORIGINAL intent hash: {} (from intent_id: {})", original_intent_hash, intent_id);
                     original_intent_hash.to_string()
                 } else {
@@ -2385,31 +2403,13 @@ impl MpcNetworkLayer {
                 // Prepare unsigned transaction for on-chain deposit intent recording
                 // self.prepare_deposit_intent_tx(&intent, &intent_hash).await;
 
-                // Determine chain type based on transaction type:
-                // - UserToVault: use source_chain (user is depositing FROM this chain)
-                // - NetworkToTarget: use target_chain (network is withdrawing TO this chain)
-                let chain_to_use = match transaction_type {
-                    crate::types::TransactionType::UserToVault => {
-                        &intent.source_chain.to_lowercase()
-                    }
-                    crate::types::TransactionType::NetworkToTarget => {
-                        &intent.target_chain.to_lowercase()
-                    }
-                    crate::types::TransactionType::Refund => {
-                        &intent.source_chain.to_lowercase() // Refund goes back to source chain
-                    }
-                    crate::types::TransactionType::IntentStatusUpdate => {
-                        // IntentStatusUpdate is a contract call on Qubetics chain (TICS)
-                        "qubetics"
-                    }
-                    crate::types::TransactionType::RewardTxn => {
-                        // RewardTxn is not valid for intent flow
-                        warn!("❌ [LOCAL] RewardTxn is not valid for deposit intent flow");
-                        return Ok(());
-                    }
-                    crate::types::TransactionType::WithdrawLiquidity => {
+                // Determine chain type based on transaction type (centralized on TransactionType::chain_for_signing)
+                let chain_to_use = match transaction_type.chain_for_signing(&intent) {
+                    Some(c) => c.to_lowercase(),
+                    None => {
                         warn!(
-                            "❌ [LOCAL] WithdrawLiquidity is not supported in deposit intent flow"
+                            "❌ [LOCAL] {:?} is not supported in deposit intent flow",
+                            transaction_type
                         );
                         return Ok(());
                     }
@@ -2423,8 +2423,7 @@ impl MpcNetworkLayer {
                 let signing_key: Option<k256::Scalar> = match transaction_type {
                     crate::types::TransactionType::UserToVault => {
                         // For user deposits, use user's tweaked secret share
-                        self.get_signing_key_for_user(Some(&user_eth_address))
-                            .await
+                        self.get_signing_key_for_user(Some(&user_eth_address)).await
                     }
                     crate::types::TransactionType::NetworkToTarget => {
                         // For network withdrawals, use network's DKG secret share
@@ -2477,8 +2476,8 @@ impl MpcNetworkLayer {
                 // Process locally first (this node will sign it)
                 if let Some(signing_node) = &mut self.signing_node {
                     let chain_handler: Option<Arc<dyn crate::chain_abstraction::ChainHandler>> =
-                        if crate::utils::transaction::is_evm_chain(chain_to_use) {
-                            crate::utils::transaction::get_chain_id_from_name(chain_to_use)
+                        if crate::utils::transaction::is_evm_chain(&chain_to_use) {
+                            crate::utils::transaction::get_chain_id_from_name(&chain_to_use)
                                 .map(|chain_id| {
                                     info!(
                                         "🔗 [LOCAL] Using Ethereum chain handler for chain: {} (ID: {})",
@@ -2645,11 +2644,15 @@ impl MpcNetworkLayer {
                         if let Some(registry) = &self.user_intent_manager {
                             let database = registry.get_database();
                             let liquidity_operator_eth = database
-                                .get_string(crate::database::keys::DKG_LIQUIDITY_OPERATOR_ETH_ADDRESS)
+                                .get_string(
+                                    crate::database::keys::DKG_LIQUIDITY_OPERATOR_ETH_ADDRESS,
+                                )
                                 .ok()
                                 .flatten();
                             let liquidity_operator_btc = database
-                                .get_string(crate::database::keys::DKG_LIQUIDITY_OPERATOR_BTC_ADDRESS)
+                                .get_string(
+                                    crate::database::keys::DKG_LIQUIDITY_OPERATOR_BTC_ADDRESS,
+                                )
                                 .ok()
                                 .flatten();
                             (liquidity_operator_eth, liquidity_operator_btc)
@@ -2744,16 +2747,17 @@ impl MpcNetworkLayer {
                                             "📝 [LOCAL] NetworkToTarget (EVM) detected - using transaction helper (sequencer removed, pool approach pending) (intent_hash={})",
                                             intent_hash
                                         );
-                                        match self.submit_network_to_target_to_sequencer(
-                                            &intent,
-                                            &intent_hash,
-                                            amount,
-                                            tx_bytes.clone(),
-                                            eth_tx.clone(),
-                                            user_tweaked_share,
-                                            Some(user_eth_address.clone()),
-                                        )
-                                        .await
+                                        match self
+                                            .submit_network_to_target_to_sequencer(
+                                                &intent,
+                                                &intent_hash,
+                                                amount,
+                                                tx_bytes.clone(),
+                                                eth_tx.clone(),
+                                                user_tweaked_share,
+                                                Some(user_eth_address.clone()),
+                                            )
+                                            .await
                                         {
                                             Ok(()) => {
                                                 return Ok(());
@@ -2764,12 +2768,18 @@ impl MpcNetworkLayer {
                                                     e
                                                 );
                                                 error!("❌ [LOCAL] {}", error_message);
-                                                
+
                                                 // Store transaction error and trigger refund
-                                                if let Some(user_intent_manager) = &self.user_intent_manager {
+                                                if let Some(user_intent_manager) =
+                                                    &self.user_intent_manager
+                                                {
                                                     // Store the error
                                                     if let Err(store_err) = user_intent_manager
-                                                        .store_transaction_error(&intent_hash, &error_message, None)
+                                                        .store_transaction_error(
+                                                            &intent_hash,
+                                                            &error_message,
+                                                            None,
+                                                        )
                                                         .await
                                                     {
                                                         warn!(
@@ -2782,33 +2792,38 @@ impl MpcNetworkLayer {
                                                             intent_hash, error_message
                                                         );
                                                     }
-                                                    
+
                                                     // Broadcast the error (batch-aware: single intent as one-element vec)
                                                     if let Some(signing_node) = &self.signing_node {
-                                                        signing_node.broadcast_transaction_error(
-                                                            Some(vec![intent_hash.clone()]),
-                                                            &error_message,
-                                                            "network_to_target",
-                                                            None,
-                                                        )
-                                                        .await;
+                                                        signing_node
+                                                            .broadcast_transaction_error(
+                                                                Some(vec![intent_hash.clone()]),
+                                                                &error_message,
+                                                                "network_to_target",
+                                                                None,
+                                                            )
+                                                            .await;
                                                     }
-                                                    
+
                                                     // Trigger refund for NetworkToTarget transactions
                                                     info!(
                                                         "💸 [LOCAL] Network-to-target transaction failed, initiating refund for intent: {}",
                                                         intent_hash
                                                     );
-                                                    
+
                                                     // Get the intent for refund calculation
-                                                    if let Some(intent) = user_intent_manager.get_intent(&intent_hash).await {
-                                                        let refund_amount = self.calculate_refund_amount(
-                                                            user_intent_manager,
-                                                            &intent_hash,
-                                                            &intent,
-                                                        )
-                                                        .await;
-                                                        
+                                                    if let Some(intent) = user_intent_manager
+                                                        .get_intent(&intent_hash)
+                                                        .await
+                                                    {
+                                                        let refund_amount = self
+                                                            .calculate_refund_amount(
+                                                                user_intent_manager,
+                                                                &intent_hash,
+                                                                &intent,
+                                                            )
+                                                            .await;
+
                                                         // Broadcast refund initiation directly through message channel
                                                         let refund_msg = serde_json::json!({
                                                             "type": "refund_initiation",
@@ -2822,8 +2837,10 @@ impl MpcNetworkLayer {
                                                                 .unwrap()
                                                                 .as_millis()
                                                         });
-                                                        
-                                                        let msg_bytes = match serde_json::to_vec(&refund_msg) {
+
+                                                        let msg_bytes = match serde_json::to_vec(
+                                                            &refund_msg,
+                                                        ) {
                                                             Ok(bytes) => bytes,
                                                             Err(serialize_err) => {
                                                                 error!(
@@ -2833,13 +2850,16 @@ impl MpcNetworkLayer {
                                                                 return Ok(());
                                                             }
                                                         };
-                                                        
-                                                        let channel_msg = ChannelMessage::RefundInitiation {
-                                                            intent_hash: intent_hash.clone(),
-                                                            data: msg_bytes,
-                                                        };
-                                                        
-                                                        if let Err(send_err) = self.message_tx.send(channel_msg).await {
+
+                                                        let channel_msg =
+                                                            ChannelMessage::RefundInitiation {
+                                                                intent_hash: intent_hash.clone(),
+                                                                data: msg_bytes,
+                                                            };
+
+                                                        if let Err(send_err) =
+                                                            self.message_tx.send(channel_msg).await
+                                                        {
                                                             error!(
                                                                 "❌ [LOCAL] Failed to send refund initiation message: {}",
                                                                 send_err
@@ -2859,7 +2879,7 @@ impl MpcNetworkLayer {
                                                 } else {
                                                     warn!("❌ [LOCAL] User intent manager not available to handle transaction error");
                                                 }
-                                                
+
                                                 return Ok(());
                                             }
                                         }
@@ -2885,9 +2905,12 @@ impl MpcNetworkLayer {
                             }
                         }
                         Err(e) => {
-                            let error_message = format!("Failed to create chain transaction from deposit intent: {}", e);
+                            let error_message = format!(
+                                "Failed to create chain transaction from deposit intent: {}",
+                                e
+                            );
                             error!("❌ [LOCAL] {}", error_message);
-                            
+
                             // Store transaction error and trigger refund for NetworkToTarget transactions
                             if let Some(user_intent_manager) = &self.user_intent_manager {
                                 // Store the error
@@ -2905,27 +2928,19 @@ impl MpcNetworkLayer {
                                         intent_hash, error_message
                                     );
                                 }
-                                
+
                                 // Broadcast the error
                                 if let Some(signing_node) = &self.signing_node {
-                                    let transaction_type_str = match transaction_type {
-                                        crate::types::TransactionType::UserToVault => "user_to_vault",
-                                        crate::types::TransactionType::NetworkToTarget => "network_to_target",
-                                        crate::types::TransactionType::Refund => "refund",
-                                        crate::types::TransactionType::IntentStatusUpdate => "intent_status_update",
-                                        crate::types::TransactionType::RewardTxn => "reward_txn",
-                                        crate::types::TransactionType::WithdrawLiquidity => "withdraw_liquidity",
-                                    };
-                                    
-                                    signing_node.broadcast_transaction_error(
-                                        Some(vec![intent_hash.clone()]),
-                                        &error_message,
-                                        transaction_type_str,
-                                        None,
-                                    )
-                                    .await;
+                                    signing_node
+                                        .broadcast_transaction_error(
+                                            Some(vec![intent_hash.clone()]),
+                                            &error_message,
+                                            transaction_type.as_str(),
+                                            None,
+                                        )
+                                        .await;
                                 }
-                                
+
                                 // Trigger refund for NetworkToTarget transactions
                                 if matches!(
                                     transaction_type,
@@ -2935,16 +2950,19 @@ impl MpcNetworkLayer {
                                         "💸 [LOCAL] Network-to-target transaction failed, initiating refund for intent: {}",
                                         intent_hash
                                     );
-                                    
+
                                     // Get the intent for refund calculation
-                                    if let Some(intent) = user_intent_manager.get_intent(&intent_hash).await {
-                                        let refund_amount = self.calculate_refund_amount(
-                                            user_intent_manager,
-                                            &intent_hash,
-                                            &intent,
-                                        )
-                                        .await;
-                                        
+                                    if let Some(intent) =
+                                        user_intent_manager.get_intent(&intent_hash).await
+                                    {
+                                        let refund_amount = self
+                                            .calculate_refund_amount(
+                                                user_intent_manager,
+                                                &intent_hash,
+                                                &intent,
+                                            )
+                                            .await;
+
                                         // Broadcast refund initiation directly through message channel
                                         let refund_msg = serde_json::json!({
                                             "type": "refund_initiation",
@@ -2958,7 +2976,7 @@ impl MpcNetworkLayer {
                                                 .unwrap()
                                                 .as_millis()
                                         });
-                                        
+
                                         let msg_bytes = match serde_json::to_vec(&refund_msg) {
                                             Ok(bytes) => bytes,
                                             Err(e) => {
@@ -2969,12 +2987,12 @@ impl MpcNetworkLayer {
                                                 return Ok(());
                                             }
                                         };
-                                        
+
                                         let channel_msg = ChannelMessage::RefundInitiation {
                                             intent_hash: intent_hash.clone(),
                                             data: msg_bytes,
                                         };
-                                        
+
                                         if let Err(e) = self.message_tx.send(channel_msg).await {
                                             error!(
                                                 "❌ [LOCAL] Failed to send refund initiation message: {}",
@@ -3037,9 +3055,10 @@ impl MpcNetworkLayer {
                     error: error.clone(),
                     original_request,
                 };
-                let msg_bytes = serde_json::to_vec(&failure_msg)
-                    .map_err(|e| anyhow::anyhow!("Failed to serialize transaction failure: {}", e))?;
-                
+                let msg_bytes = serde_json::to_vec(&failure_msg).map_err(|e| {
+                    anyhow::anyhow!("Failed to serialize transaction failure: {}", e)
+                })?;
+
                 let topic = gossipsub::IdentTopic::new("transaction-failure");
                 swarm.behaviour_mut().gossipsub.publish(topic, msg_bytes)?;
                 info!("📡 [NETWORK] Broadcasted transaction failure to P2P network");
@@ -3089,25 +3108,36 @@ impl MpcNetworkLayer {
                 // CRITICAL FIX: Register TransactionIdBroadcast for retry tracking
                 // This ensures all nodes receive transaction IDs even if initial broadcast fails
                 if let Some(retry_mgr) = &self.retry_manager {
-                    if let Some(msg_type) = crate::network::rpc::retry_manager::RetryManager::is_critical_message(&gossip_message) {
-                        if let Ok(message_id) = crate::network::rpc::retry_manager::RetryManager::generate_message_id(msg_type, &gossip_message) {
+                    if let Some(msg_type) =
+                        crate::network::rpc::retry_manager::RetryManager::is_critical_message(
+                            &gossip_message,
+                        )
+                    {
+                        if let Ok(message_id) =
+                            crate::network::rpc::retry_manager::RetryManager::generate_message_id(
+                                msg_type,
+                                &gossip_message,
+                            )
+                        {
                             // Check if already being tracked (this is a retry, skip registration)
                             if !retry_mgr.is_message_tracked(&message_id).await {
                                 // Get expected nodes (all active nodes except ourselves)
                                 let expected_nodes: std::collections::HashSet<PeerId> = self
                                     .node_manager
-                                    .get_active_nodes()
+                                    .get_other_active_nodes(self.local_peer_id)
                                     .into_iter()
-                                    .filter(|&pid| pid != self.local_peer_id)
                                     .collect();
 
                                 if !expected_nodes.is_empty() {
-                                    if let Err(e) = retry_mgr.register_message(
-                                        message_id.clone(),
-                                        topic_str.to_string(),
-                                        msg_bytes.clone(),
-                                        expected_nodes.clone(),
-                                    ).await {
+                                    if let Err(e) = retry_mgr
+                                        .register_message(
+                                            message_id.clone(),
+                                            topic_str.to_string(),
+                                            msg_bytes.clone(),
+                                            expected_nodes.clone(),
+                                        )
+                                        .await
+                                    {
                                         error!("❌ [RETRY] Failed to register TransactionIdBroadcast for retry: {}", e);
                                     }
                                 } else {
@@ -3171,47 +3201,48 @@ impl MpcNetworkLayer {
                         }
                     }
                 } else if let Some(solver_addr) = solver_address.as_ref() {
-                        // Handle reward or withdraw liquidity transaction IDs
-                        let storage_result = match transaction_type.as_str() {
-                            "reward_txn" => {
-                                self.handle_reward_transaction_id_storage(
-                                    solver_addr,
-                                    &transaction_id,
-                                    &transaction_type,
-                                )
-                                .await
-                            }
-                            "withdraw_liquidity" | "withdrawLiquidity" => {
-                                self.handle_withdraw_liquidity_transaction_id_storage(
-                                    solver_addr,
-                                    &transaction_id,
-                                    &transaction_type,
-                                )
-                                .await
-                            }
-                            _ => {
-                                warn!(
-                                    "❌ [NETWORK] Unknown transaction type: {}",
-                                    transaction_type
-                                );
-                                return Err(anyhow!(
-                                    "Unknown transaction type: {}",
-                                    transaction_type
-                                ));
-                            }
-                        };
-
-                        if let Err(e) = storage_result {
-                            error!(
-                                "❌ [NETWORK] Failed to handle transaction ID storage: {}",
-                                e
+                    // Handle reward or withdraw liquidity transaction IDs
+                    // Parse transaction type string to enum
+                    let tx_type = match transaction_type.parse::<crate::types::TransactionType>() {
+                        Ok(t) => t,
+                        Err(e) => {
+                            warn!(
+                                "❌ [NETWORK] Unknown transaction type: {} - {}",
+                                transaction_type, e
                             );
+                            return Err(anyhow!("Unknown transaction type: {}", transaction_type));
                         }
+                    };
+
+                    // Only reward and withdraw liquidity are handled here; reject others
+                    if !matches!(
+                        tx_type,
+                        crate::types::TransactionType::RewardTxn
+                            | crate::types::TransactionType::WithdrawLiquidity
+                    ) {
+                        warn!(
+                            "❌ [NETWORK] Unexpected transaction type for solver: {}",
+                            transaction_type
+                        );
+                        return Err(anyhow!(
+                            "Unexpected transaction type: {}",
+                            transaction_type
+                        ));
+                    }
+                    let storage_result = self
+                        .dispatch_transaction_id_storage(&tx_type, solver_addr, &transaction_id)
+                        .await;
+                    if let Err(e) = storage_result {
+                        error!(
+                            "❌ [NETWORK] Failed to handle transaction ID storage: {}",
+                            e
+                        );
+                    }
                 } else {
                     warn!("⚠️ [NETWORK] Transaction ID broadcast missing both intent hashes and solver address");
                 }
             }
-            
+
             ChannelMessage::UserRegistration {
                 ethereum_address,
                 node_id,
@@ -3311,9 +3342,8 @@ impl MpcNetworkLayer {
                                 user_intent_manager.get_intent(&intent_hash).await
                             {
                                 // Calculate refund amount: prefer refund_amount from message, otherwise calculate it
-                                let refund_amount = if let Some(refund_amount_str) = refund_data
-                                    .get("refund_amount")
-                                    .and_then(|v| v.as_str())
+                                let refund_amount = if let Some(refund_amount_str) =
+                                    refund_data.get("refund_amount").and_then(|v| v.as_str())
                                 {
                                     // Use refund amount from message (already includes 5% extra if applicable)
                                     if let Ok(amount) = refund_amount_str.parse::<u128>() {
@@ -3327,12 +3357,22 @@ impl MpcNetworkLayer {
                                             "⚠️ [NETWORK-REFUND] Failed to parse refund_amount from message, calculating..."
                                         );
                                         // Fall back to calculation
-                                        self.calculate_refund_amount(user_intent_manager, &intent_hash, &intent).await
+                                        self.calculate_refund_amount(
+                                            user_intent_manager,
+                                            &intent_hash,
+                                            &intent,
+                                        )
+                                        .await
                                     }
                                 } else {
                                     // No refund_amount in message, calculate it
                                     info!("💰 [NETWORK-REFUND] No refund_amount in message, calculating...");
-                                    self.calculate_refund_amount(user_intent_manager, &intent_hash, &intent).await
+                                    self.calculate_refund_amount(
+                                        user_intent_manager,
+                                        &intent_hash,
+                                        &intent,
+                                    )
+                                    .await
                                 };
 
                                 info!("🔄 [NETWORK-REFUND] Creating refund transaction from network to user's source address");
@@ -3361,7 +3401,8 @@ impl MpcNetworkLayer {
 
                                 // Create a refund transaction from network to user's source address
                                 // Use Refund type specifically for refund transactions
-                                let refund_intent_id = format!("refund-{intent_hash}");
+                                let refund_intent_id =
+                                    crate::utils::refund_intent_id(&intent_hash);
                                 // Parse amount for refund ChannelMessage
                                 let refund_amount = match refund_amount {
                                     amount if amount > 0 => amount,
@@ -3656,7 +3697,10 @@ impl MpcNetworkLayer {
 
                 batch_intents.push((intent_hash.clone(), intent.clone()));
             } else {
-                warn!("⚠️ [BTC_INTENT_MANAGER] Intent {} not found in database", intent_hash);
+                warn!(
+                    "⚠️ [BTC_INTENT_MANAGER] Intent {} not found in database",
+                    intent_hash
+                );
             }
         }
 
@@ -3761,34 +3805,30 @@ impl MpcNetworkLayer {
             };
 
             // Contract address for IntentManager (processBatchIntents)
-            let contract_address_env =
-                std::env::var("INTENT_MANAGER_CONTRACT_ADDRESS").unwrap_or_else(|_| {
-                    "0x0000000000000000000000000000000000000000".to_string()
-                });
+            let contract_address_env = std::env::var("INTENT_MANAGER_CONTRACT_ADDRESS")
+                .unwrap_or_else(|_| "0x0000000000000000000000000000000000000000".to_string());
             if contract_address_env == "0x0000000000000000000000000000000000000000" {
                 warn!("❌ [BTC_INTENT_MANAGER] INTENT_MANAGER_CONTRACT_ADDRESS not configured");
                 return Ok(());
             }
 
             // Use the MAIN group-derived EVM address as sender
-            let from_address =
-                crate::utils::get_eth_address_from_group_key(group_public_key);
+            let from_address = crate::utils::get_eth_address_from_group_key(group_public_key);
             let chain_id =
                 crate::utils::transaction::get_chain_id_from_name("qubetics").unwrap_or(9029);
 
             // Estimate gas; abort if it would revert
             let calldata_hex = format!("0x{}", hex::encode(&calldata));
-            let estimated_gas =
-                crate::utils::transaction::estimate_gas_for_deposit_intent(
-                    &from_address,
-                    &contract_address_env,
-                    &calldata_hex,
-                    chain_id,
-                )
-                .await
-                .map_err(|e| {
-                    anyhow::anyhow!("BTC contract update batch gas estimation failed: {}", e)
-                })?;
+            let estimated_gas = crate::utils::transaction::estimate_gas_for_deposit_intent(
+                &from_address,
+                &contract_address_env,
+                &calldata_hex,
+                chain_id,
+            )
+            .await
+            .map_err(|e| {
+                anyhow::anyhow!("BTC contract update batch gas estimation failed: {}", e)
+            })?;
             let gas_limit = estimated_gas + (estimated_gas / 10);
 
             let nonce = crate::utils::transaction::fetch_ethereum_nonce(&from_address, chain_id)
@@ -3802,9 +3842,9 @@ impl MpcNetworkLayer {
                     .await
                     .unwrap_or_else(|e| {
                         warn!(
-                            "⚠️ [BTC_INTENT_MANAGER] Failed to get dynamic gas price: {}, using fallback",
-                            e
-                        );
+                    "⚠️ [BTC_INTENT_MANAGER] Failed to get dynamic gas price: {}, using fallback",
+                    e
+                );
                         crate::utils::transaction::get_default_gas_price_for_chain("qubetics")
                     });
 
@@ -3839,9 +3879,10 @@ impl MpcNetworkLayer {
                 }
 
                 let contract_tx_bytes =
-                    crate::utils::transaction::create_transaction_for_signing_contract(&contract_tx);
-                let contract_chain_handler =
-                    signing_node.get_contract_chain_handler().clone();
+                    crate::utils::transaction::create_transaction_for_signing_contract(
+                        &contract_tx,
+                    );
+                let contract_chain_handler = signing_node.get_contract_chain_handler().clone();
                 let mut eth_signer = crate::signing::EthereumSigner::new(signing_node);
                 eth_signer
                     .sign_contract_message(
@@ -3887,7 +3928,7 @@ impl MpcNetworkLayer {
     ) -> u128 {
         // Parse intent amount from string
         let intent_amount = intent.amount.parse::<u128>().unwrap_or(0);
-        
+
         if let Some(tx_ids) = user_intent_manager
             .get_intent_transaction_ids(intent_hash)
             .await
@@ -3917,5 +3958,4 @@ impl MpcNetworkLayer {
             intent_amount
         }
     }
-
 }

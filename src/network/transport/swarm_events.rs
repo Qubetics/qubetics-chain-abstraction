@@ -270,8 +270,7 @@ impl MpcNetworkLayer {
                 request_id,
                 ..
             } => {
-                use crate::network::rpc::{RetryableUnicast, MAX_OUTBOUND_RETRIES};
-                use crate::types::ChannelMessage;
+                use crate::network::rpc::MAX_OUTBOUND_RETRIES;
                 use std::time::Duration;
 
                 // Decrement in-flight count for this peer
@@ -296,88 +295,9 @@ impl MpcNetworkLayer {
                             let delay_ms = 2000 + (entry.retry_count as u64) * 1500;
 
                             // Convert RetryableUnicast back to ChannelMessage with incremented retry_count
-                            let msg = match entry.msg {
-                                RetryableUnicast::UnicastShareDKG {
-                                    target_peer_id,
-                                    from_node_id,
-                                    share_index,
-                                    share_value,
-                                    commitments,
-                                    round,
-                                } => ChannelMessage::UnicastShareDKG {
-                                    target_peer_id,
-                                    from_node_id,
-                                    share_index,
-                                    share_value,
-                                    commitments,
-                                    round,
-                                    retry_count: entry.retry_count + 1,
-                                },
-                                RetryableUnicast::UnicastRefreshShare {
-                                    target_peer_id,
-                                    from_node_id,
-                                    share_index,
-                                    share_value,
-                                    commitments,
-                                } => ChannelMessage::UnicastRefreshShare {
-                                    target_peer_id,
-                                    from_node_id,
-                                    share_index,
-                                    share_value,
-                                    commitments,
-                                    retry_count: entry.retry_count + 1,
-                                },
-                                RetryableUnicast::UnicastCritical {
-                                    target_peer_id,
-                                    topic,
-                                    data,
-                                    message_type,
-                                    message_id,
-                                } => ChannelMessage::UnicastCritical {
-                                    target_peer_id,
-                                    topic,
-                                    data,
-                                    message_type,
-                                    message_id,
-                                    retry_count: entry.retry_count + 1,
-                                },
-                                RetryableUnicast::UnicastECDSASignature {
-                                    target_peer_id,
-                                    from_node_id,
-                                    signature_data,
-                                    round,
-                                } => ChannelMessage::UnicastECDSASignature {
-                                    target_peer_id,
-                                    from_node_id,
-                                    signature_data,
-                                    round,
-                                    retry_count: entry.retry_count + 1,
-                                },
-                                RetryableUnicast::UnicastBtcSignatures {
-                                    target_peer_id,
-                                    from_node_id,
-                                    signature_data,
-                                    round,
-                                } => ChannelMessage::UnicastBtcSignatures {
-                                    target_peer_id,
-                                    from_node_id,
-                                    signature_data,
-                                    round,
-                                    retry_count: entry.retry_count + 1,
-                                },
-                                RetryableUnicast::UnicastTransactionData {
-                                    target_peer_id,
-                                    from_node_id,
-                                    transaction_data,
-                                    round,
-                                } => ChannelMessage::UnicastTransactionData {
-                                    target_peer_id,
-                                    from_node_id,
-                                    transaction_data,
-                                    round,
-                                    retry_count: entry.retry_count + 1,
-                                },
-                            };
+                            let msg = entry
+                                .msg
+                                .into_channel_message(entry.retry_count + 1);
 
                             // Re-enqueue with delay
                             let tx = self.message_tx.clone();
@@ -442,10 +362,9 @@ impl MpcNetworkLayer {
         // If this is the peer discovery topic, we can now safely broadcast our presence
         if topic.as_str() == MSG_TOPIC_PEER_DISCOVERY {
             let active_nodes = self.node_manager.get_active_nodes();
-            let other_peers_in_manager: Vec<_> = active_nodes
-                .iter()
-                .filter(|&pid| pid != self.get_local_peer_id())
-                .collect();
+            let other_peers_in_manager: Vec<_> = self
+                .node_manager
+                .get_other_active_nodes(*self.get_local_peer_id());
 
             // Also check database for other peers
             let mut other_peers_in_db = 0;

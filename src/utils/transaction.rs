@@ -1032,33 +1032,22 @@ async fn create_chain_transaction_from_deposit_intent_internal(
     liquidity_operator_btc_address: Option<&String>,
     amount: u128,
 ) -> Result<ChainTransaction> {
-    // Determine chain type based on transaction type:
-    // - UserToVault: use source_chain (user is depositing FROM this chain)
-    // - NetworkToTarget: use target_chain (network is withdrawing TO this chain)
-    let chain_to_use = match transaction_type {
-        crate::types::TransactionType::UserToVault => &intent.source_chain.to_lowercase(),
-        crate::types::TransactionType::NetworkToTarget => &intent.target_chain.to_lowercase(),
-        crate::types::TransactionType::Refund => &intent.source_chain.to_lowercase(), // Refund goes back to source chain
-        crate::types::TransactionType::IntentStatusUpdate => "qubetics", // IntentStatusUpdate is a contract call on Qubetics chain
-        crate::types::TransactionType::RewardTxn => {
-            // RewardTxn is not valid for intent flow
-            return Err(anyhow::anyhow!(
-                "RewardTxn is not valid for deposit intent flow"
-            ));
-        }
-        crate::types::TransactionType::WithdrawLiquidity => {
-            return Err(anyhow::anyhow!(
-                "WithdrawLiquidity is not valid for deposit intent flow"
-            ));
-        }
-    };
+    // Determine chain type based on transaction type (centralized on TransactionType::chain_for_signing)
+    let chain_to_use = transaction_type
+        .chain_for_signing(intent)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "RewardTxn and WithdrawLiquidity are not valid for deposit intent flow"
+            )
+        })?
+        .to_lowercase();
 
     info!(
         "🎁 [CHAIN_TX] Processing DepositIntent - IntentID: {}, Type: {:?}, Amount: {}, Chain: {}",
         intent.source_address, transaction_type, amount, chain_to_use
     );
 
-    if is_evm_chain(chain_to_use) {
+    if is_evm_chain(&chain_to_use) {
         // Get liquidity operator address from parameter
         let liquidity_operator_address = liquidity_operator_eth_address
             .ok_or_else(|| anyhow::anyhow!("Liquidity operator ETH address not provided"))?;
@@ -1165,7 +1154,7 @@ async fn create_chain_transaction_from_deposit_intent_internal(
         };
 
         let ethereum_tx =
-            create_ethereum_transaction(&from_address, &to_address, amount, chain_to_use).await?;
+            create_ethereum_transaction(&from_address, &to_address, amount, &chain_to_use).await?;
 
         Ok(ChainTransaction::Ethereum(ethereum_tx))
     } else if chain_to_use == "bitcoin" || chain_to_use == "btc" {
@@ -1296,32 +1285,13 @@ pub async fn create_chain_transaction_from_contract_call(
     info!("🔧 [CONTRACT] Network address: {}", network_address);
     info!("🔧 [CONTRACT] Chain ID: {}", chain_id);
 
-    // Determine batch type based on transaction type
-    // UserToVault = BTC (deposits from Bitcoin to vault)
-    // NetworkToTarget = TICS (fulfillments from vault to target chain)
-    let batch_type = match transaction_type {
-        crate::types::TransactionType::UserToVault => BatchType::BTC,
-        crate::types::TransactionType::NetworkToTarget => BatchType::TICS,
-        crate::types::TransactionType::IntentStatusUpdate => BatchType::BTC, // IntentStatusUpdate is for BTC contract updates
-        crate::types::TransactionType::Refund => {
-            // Refund transactions don't need contract calls - they're just fund transfers
-            // The refund intent contract call is handled separately after the refund transaction completes
-            return Err(anyhow::anyhow!(
-                "Refund transactions do not require contract call calldata - they are direct fund transfers"
-            ));
-        }
-        crate::types::TransactionType::RewardTxn => {
-            // RewardTxn is not valid for intent flow
-            return Err(anyhow::anyhow!(
-                "RewardTxn is not valid for deposit intent flow"
-            ));
-        }
-        crate::types::TransactionType::WithdrawLiquidity => {
-            return Err(anyhow::anyhow!(
-                "WithdrawLiquidity is not valid for deposit intent flow"
-            ));
-        }
-    };
+    // Determine batch type based on transaction type (centralized on TransactionType::to_batch_type)
+    let batch_type = transaction_type.to_batch_type().ok_or_else(|| {
+        anyhow::anyhow!(
+            "Transaction type {:?} does not require contract call calldata",
+            transaction_type
+        )
+    })?;
 
     info!(
         "🔧 [CONTRACT] Using processBatchIntents with batch_type {:?} for {:?} transaction",
