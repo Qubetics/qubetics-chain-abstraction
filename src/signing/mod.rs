@@ -1356,8 +1356,8 @@ impl SigningNode {
                         // Trigger aggregate signature for the final node
                         self.trigger_aggregate_signature_for_final_node(round)
                             .await?;
-                    } else if operation_type.as_deref() == Some("btc_contract_update") {
-                        info!("🔄 [BTC_CONTRACT_UPDATE] Round {} was triggered by BTC contract update, processing contract update batch...", round);
+                    } else if operation_type.as_deref() == Some("btc_intent_manager_update") {
+                        info!("🔄 [BTC_CONTRACT_UPDATE] Round {} was triggered by BTC intent manager update, processing contract update batch...", round);
                         // Process BTC contract update batch (intents with network_to_target_tx_id but not Solved)
                         // The final node will broadcast the batch, all nodes will sign, then final node aggregates
                         if let Err(e) = self.process_btc_contract_update_batch_for_round(round).await {
@@ -1636,14 +1636,14 @@ impl SigningNode {
             contract_update_round
         );
 
-        // Perform VRF node selection for contract update round
+        // Perform VRF node selection for BTC intent manager update round
         // The final node (selected by consensus) will get eligible intents and broadcast the batch
         match vrf_service
             .perform_node_selection(
                 &available_nodes,
                 crate::vrf::VRF_NODE_SELECTION_COUNT,
                 contract_update_round,
-                "btc_contract_update",
+                "btc_intent_manager_update",
             )
             .await
         {

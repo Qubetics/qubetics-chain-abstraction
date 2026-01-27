@@ -842,19 +842,20 @@ impl SigningNode {
         let primary_intent_hash = intent_hashes.first().cloned();
         
         // Determine transaction type based on operation_type for this round
-        // For BTC contract update, use IntentStatusUpdate (only marks intent as Solved, doesn't update network_to_target_tx_id)
+        // For BTC intent manager update, use IntentStatusUpdate (only marks intent as Solved, doesn't update network_to_target_tx_id)
         // For other batch transactions (TICS), use NetworkToTarget (updates network_to_target_tx_id and marks as Solved)
         let tx_type_for_round = if !intent_hashes.is_empty() {
-            // Check if this round is for BTC contract update
-            let is_btc_contract_update = if let Some(consensus_node) = self.coordination.consensus_node() {
-                consensus_node.get_operation_type_for_round(round)
-                    .map(|op| op == "btc_contract_update")
+            // Check if this round is for BTC intent manager update.
+            let is_btc_intent_manager_update = if let Some(consensus_node) = self.coordination.consensus_node() {
+                consensus_node
+                    .get_operation_type_for_round(round)
+                    .map(|op| op == "btc_intent_manager_update")
                     .unwrap_or(false)
             } else {
                 false
             };
-            
-            if is_btc_contract_update {
+
+            if is_btc_intent_manager_update {
                 Some(TransactionType::IntentStatusUpdate)
             } else {
                 Some(TransactionType::NetworkToTarget)
