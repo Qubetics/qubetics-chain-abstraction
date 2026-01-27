@@ -16,7 +16,7 @@ const api = axios.create({
 // Configuration
 const CONFIG = {
     network: bitcoin.networks.testnet,
-    targetAddress: 'mhidaBqadeN6yqWLHFgFN8hhdZpYVDCkTZ',
+    targetAddress: 'my33riGzyzfdGPaC1P56aS7fuurUSaWz8J',
     privateKeyWIF: 'cScjg3oChv5iK4xuxUc8n4nGMQBTouNtmbhsQF7qjFcahyLjGZ13',
     rpcEndpoint: 'https://mempool.space/testnet4/api',
     amountPerTx: 1000, // satoshis
@@ -77,7 +77,7 @@ async function sendTransaction(keyPair, fromAddress, toAddress, amount, utxos) {
     const psbt = new bitcoin.Psbt({ network: CONFIG.network });
 
     // Calculate required amount (amount + estimated fee)
-    const estimatedFee = 1000; // Conservative estimate - 1000 sats
+    const estimatedFee = 2000; // Conservative estimate - 1000 sats
     const requiredAmount = amount + estimatedFee;
 
     // Select UTXOs

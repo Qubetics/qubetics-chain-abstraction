@@ -290,7 +290,11 @@ impl MpcNetworkLayer {
         // Get VRF service - prefer signing_node, fall back to db_signing_node
         // This matches the pattern used in rpc_handlers.rs
         // Try signing_node first
-        if let Some(signing_node) = &self.signing_node {
+        if let Some(signing_node) = &mut self.signing_node {
+            // Update signing node with latest available nodes
+            // This is critical for async tasks (like parallel contract update) that read from signing_node state later
+            signing_node.set_available_nodes(available_nodes.clone());
+
             if let Some(vrf_service) = signing_node.vrf_service() {
                 // Sync rounds before getting next round (like bitcoin signing does)
                 if let Err(e) = vrf_service.sync_rounds_before_signing().await {

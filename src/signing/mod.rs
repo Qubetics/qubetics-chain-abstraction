@@ -1306,6 +1306,39 @@ impl SigningNode {
                     );
                 }
 
+                // Trigger parallel BTC contract update round on ALL nodes if this is a BTC cycle
+                // Matches logic in process_phase1_intents_for_global_clock: Odd cycles = Bitcoin
+                if operation_type.as_deref() == Some("global_clock") {
+                    // Read clock interval to calculate cycle
+                    let clock_interval_secs = std::env::var("GLOBAL_CLOCK_INTERVAL_SECONDS")
+                        .ok()
+                        .and_then(|val| val.parse::<u64>().ok())
+                        .unwrap_or(60);
+                    
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default();
+                    let current_epoch_secs = now.as_secs();
+                    let cycle_number = current_epoch_secs / clock_interval_secs;
+
+                    // Odd cycles are Bitcoin (see process_phase1_intents_for_global_clock)
+                    if cycle_number % 2 != 0 { 
+                        info!("🔄 [CLOCK] BTC cycle detected (all nodes), triggering parallel contract update round...");
+                        let signing_node_clone = self.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = signing_node_clone
+                                .trigger_btc_contract_update_round_parallel()
+                                .await
+                            {
+                                error!(
+                                    "❌ [CLOCK] Failed to trigger BTC contract update round: {}",
+                                    e
+                                );
+                            }
+                        });
+                    }
+                }
+
                 // Check if this node is the final selected node
                 if is_final_node {
                     info!(
@@ -1561,29 +1594,6 @@ impl SigningNode {
                 "ℹ️  [CLOCK] No {} intents ready for processing in this cycle",
                 target_chain.to_uppercase()
             );
-        }
-
-        // PARALLEL: If BTC batch cycle (even if no new BTC intents), also trigger contract update round
-        // This ensures pending contract updates are processed even if no new BTC transfers occur
-        if batch_type == crate::types::BatchType::BTC {
-            info!(
-                "🔄 [CLOCK] BTC cycle detected, triggering parallel contract update round..."
-            );
-            
-            // Spawn async task to trigger contract update round (don't block batch processing)
-            let signing_node_clone = self.clone();
-            
-            tokio::spawn(async move {
-                if let Err(e) = signing_node_clone
-                    .trigger_btc_contract_update_round_parallel()
-                    .await
-                {
-                    error!(
-                        "❌ [CLOCK] Failed to trigger BTC contract update round: {}",
-                        e
-                    );
-                }
-            });
         }
         
         Ok(())
