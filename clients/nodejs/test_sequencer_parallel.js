@@ -390,7 +390,7 @@ async function step2_SubmitTransactions() {
 
   // Submit all transactions in parallel
   const depositPromises = wallets.map(({ wallet, userId }) => {
-    const amount = "32000000000000000000";  // Use same amount as test_register_user.js
+    const amount = "44000000000000000000";  // Use same amount as test_register_user.js
     return testUserMpcDeposit({ wallet, amount, userId });
   });
 

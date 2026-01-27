@@ -1655,13 +1655,13 @@ impl MpcNetworkLayer {
                 const MAX_RETRIES: u8 = 1;
                 const RETRY_DELAY_MS: u64 = 200;
 
-                info!(
-                    "📨 [CRITICAL-UNICAST] Sending critical message {}:{} to peer {} (attempt {})",
-                    message_type,
-                    message_id,
-                    target_peer_id,
-                    retry_count + 1
-                );
+                // info!(
+                //     "📨 [CRITICAL-UNICAST] Sending critical message {}:{} to peer {} (attempt {})",
+                //     message_type,
+                //     message_id,
+                //     target_peer_id,
+                //     retry_count + 1
+                // );
 
                 let peer_id = match target_peer_id.parse::<PeerId>() {
                     Ok(pid) => pid,
@@ -1675,10 +1675,10 @@ impl MpcNetworkLayer {
                 };
 
                 let mut is_connected = swarm.is_connected(&peer_id);
-                info!(
-                    "📨 [CRITICAL-UNICAST] Target Peer {} connected: {}",
-                    target_peer_id, is_connected
-                );
+                // info!(
+                //     "📨 [CRITICAL-UNICAST] Target Peer {} connected: {}",
+                //     target_peer_id, is_connected
+                // );
 
                 if !is_connected {
                     if let Some(addr) = self
@@ -1709,10 +1709,10 @@ impl MpcNetworkLayer {
                         } else {
                             tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
                             is_connected = swarm.is_connected(&peer_id);
-                            info!(
-                                "📨 [CRITICAL-UNICAST] Dial to {} successful: {}",
-                                target_peer_id, is_connected
-                            );
+                            // info!(
+                            //     "📨 [CRITICAL-UNICAST] Dial to {} successful: {}",
+                            //     target_peer_id, is_connected
+                            // );
                         }
                     } else {
                         warn!(
@@ -1771,10 +1771,10 @@ impl MpcNetworkLayer {
                     
                     if count >= MAX_OUTBOUND_INFLIGHT_PER_PEER {
                         // At capacity - re-queue with delay
-                        info!(
-                            "⏸️ [CRITICAL-UNICAST] Peer {} at capacity ({}/{}), re-queuing message",
-                            target_peer_id, count, MAX_OUTBOUND_INFLIGHT_PER_PEER
-                        );
+                        // info!(
+                        //     "⏸️ [CRITICAL-UNICAST] Peer {} at capacity ({}/{}), re-queuing message",
+                        //     target_peer_id, count, MAX_OUTBOUND_INFLIGHT_PER_PEER
+                        // );
                         let tx = self.message_tx.clone();
                         let msg = ChannelMessage::UnicastCritical {
                             target_peer_id: target_peer_id.clone(),
