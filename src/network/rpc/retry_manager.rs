@@ -111,7 +111,7 @@ impl RetryManager {
         }
         if expected_nodes.is_empty() {
             // No nodes to wait for, consider it successful immediately
-            info!(
+            debug!(
                 "ℹ️ [RETRY] No expected nodes for {:?}, skipping retry registration",
                 message_id
             );
@@ -133,7 +133,7 @@ impl RetryManager {
 
         // Check if message is already being tracked (shouldn't happen, but be safe)
         if retries.contains_key(&message_id) {
-            warn!(
+            debug!(
                 "⚠️ [RETRY] Message {:?} already registered, updating state",
                 message_id
             );
@@ -141,7 +141,7 @@ impl RetryManager {
 
         retries.insert(message_id.clone(), state);
 
-        info!(
+        debug!(
             "🔄 [RETRY] Registered critical message for retry: {:?} (expecting {} nodes)",
             message_id,
             expected_nodes.len()
@@ -149,7 +149,7 @@ impl RetryManager {
 
         // Log which nodes we're expecting ACKs from
         let expected_list: Vec<String> = expected_nodes.iter().map(|p| p.to_string()).collect();
-        info!(
+        debug!(
             "📋 [RETRY] Expected nodes for {:?}: {:?}",
             message_id, expected_list
         );
@@ -181,11 +181,11 @@ impl RetryManager {
         {
             Ok(guard) => guard,
             Err(_) => {
-                error!(
+                debug!(
                     "❌ [RETRY] CRITICAL: Timeout acquiring write lock for ACK recording (>{}s)",
                     lock_timeout.as_secs()
                 );
-                error!("❌ [RETRY] This indicates lock contention or deadlock - investigate immediately");
+                debug!("❌ [RETRY] This indicates lock contention or deadlock - investigate immediately");
                 return Err(anyhow!("Timeout acquiring retry state lock"));
             }
         };
@@ -193,7 +193,7 @@ impl RetryManager {
         if let Some(state) = retries.get_mut(message_id) {
             // Verify the node is actually expected (security check)
             if !state.expected_nodes.contains(&node_id) {
-                warn!(
+                debug!(
                     "⚠️ [RETRY] Received ACK from unexpected node {} for {:?}",
                     node_id, message_id
                 );
@@ -205,7 +205,7 @@ impl RetryManager {
                 let expected_count = state.expected_nodes.len();
                 let missing_count = expected_count - acked_count;
 
-                info!(
+                debug!(
                     "✅ [RETRY] Received ACK for {:?} from {} ({}/{})",
                     message_id, node_id, acked_count, expected_count
                 );
@@ -217,7 +217,7 @@ impl RetryManager {
                         .difference(&state.acknowledged_nodes)
                         .map(|p| p.to_string())
                         .collect();
-                    warn!(
+                    debug!(
                         "⏳ [RETRY] Still waiting for ACKs from {} nodes: {:?}",
                         missing_count, missing_nodes
                     );
@@ -225,7 +225,7 @@ impl RetryManager {
 
                 // Check if all nodes have acknowledged
                 if acked_count >= expected_count {
-                    info!(
+                    debug!(
                         "🎉 [RETRY] All nodes acknowledged {:?}, removing from retry queue",
                         message_id
                     );
@@ -252,7 +252,7 @@ impl RetryManager {
     pub async fn mark_peer_unreachable(&self, peer_id: PeerId) {
         let removed_count = Self::remove_peer_from_retries(&self.active_retries, &peer_id).await;
         if removed_count > 0 {
-            warn!(
+            debug!(
                 "⚠️ [RETRY] Marked peer {} unreachable for {} active retries",
                 peer_id, removed_count
             );

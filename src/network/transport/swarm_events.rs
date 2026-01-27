@@ -294,7 +294,7 @@ impl MpcNetworkLayer {
                     if let Some(entry) = self.outbound_retry.lock().await.remove(&request_id) {
                         if entry.retry_count < MAX_OUTBOUND_RETRIES {
                             let delay_ms = 2000 + (entry.retry_count as u64) * 1500;
-                            info!(
+                            debug!(
                                 "🔄 [RETRY] Timeout on request {:?} to {}, retry {} in {}ms",
                                 request_id,
                                 peer,
@@ -391,11 +391,11 @@ impl MpcNetworkLayer {
                             tokio::spawn(async move {
                                 tokio::time::sleep(Duration::from_millis(delay_ms)).await;
                                 if let Err(e) = tx.send(msg).await {
-                                    warn!("❌ [RETRY] Failed to re-enqueue message: {}", e);
+                                    debug!("❌ [RETRY] Failed to re-enqueue message: {}", e);
                                 }
                             });
                         } else {
-                            warn!(
+                            debug!(
                                 "❌ [RETRY] Max retries ({}) exceeded for request {:?} to {}",
                                 MAX_OUTBOUND_RETRIES, request_id, peer
                             );

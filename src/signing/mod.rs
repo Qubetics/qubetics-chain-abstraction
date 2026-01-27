@@ -374,7 +374,7 @@ impl SigningNode {
             })
             .await?;
 
-        info!(
+        debug!(
             "📤 [SIGNING-SECURE] Queued unicast ECDSA signature for round {} to final node {}",
             round, final_node_id
         );
@@ -398,7 +398,7 @@ impl SigningNode {
             })
             .await?;
 
-        info!(
+        debug!(
             "📤 [SIGNING-SECURE] Queued unicast transaction data for round {} to final node {}",
             round, final_node_id
         );
@@ -422,7 +422,7 @@ impl SigningNode {
             })
             .await?;
 
-        info!(
+        debug!(
             "📤 [SIGNING-SECURE] Queued unicast BTC signatures for round {} to final node {}",
             round, final_node_id
         );

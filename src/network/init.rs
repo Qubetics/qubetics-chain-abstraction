@@ -217,14 +217,27 @@ impl MpcNetworkLayer {
                     .fanout_ttl(Duration::from_secs(60))
                     .prune_peers(10)
                     .prune_backoff(Duration::from_secs(60))
-                    // CRITICAL FIX: Increase limits for high parallel load (25+ transactions)
-                    // .history_length(100)  // Keep much more message history (default: 5)
-                    // .history_gossip(50)  // Send more historical messages in IHAVE (default: 3)
-                    // .max_transmit_size(10_000_000)  // 10MB max message size (default: 65KB)
-                    // .mesh_n_low(2)  // Min peers in mesh (default: 3) - keep it low for small network
-                    // .mesh_n(3)  // Target peers in mesh (default: 6)
-                    // .mesh_n_high(4)  // Max peers in mesh (default: 12)
-                    // .mesh_outbound_min(1)  // Min outbound connections (default: 2)
+                    // Increase internal gossipsub connection handler queue to match
+                    // the external mpsc channel capacity (50_000). This reduces the
+                    // chance of hitting PublishError::AllQueuesFull(...) under high load.
+                    .connection_handler_queue_len(50_000)
+                    // Heavy-load tuning:
+                    // Allow publish/forward queues to buffer longer before dropping,
+                    // to give slow peers time to drain under bursty load.
+                    .publish_queue_duration(Duration::from_secs(10))
+                    .forward_queue_duration(Duration::from_secs(5))
+                    // Increase history so high-throughput topics (vrf-selection, transactions)
+                    // are still gossipable even with many messages per heartbeat.
+                    .history_length(100)
+                    .history_gossip(50)
+                    // Allow larger messages / batches if needed.
+                    .max_transmit_size(10_000_000) // 10 MB
+                    // For small-ish networks, slightly lower mesh_n_* to keep mesh stable
+                    // but not too sparse; can be tuned further if needed.
+                    .mesh_n_low(2)
+                    .mesh_n(4)
+                    .mesh_n_high(8)
+                    .mesh_outbound_min(1)
                     // .validate_messages()  // Enable async validation to prevent blocking
                     .build()
                     .map_err(io::Error::other)

@@ -1008,7 +1008,7 @@ impl MpcNetworkLayer {
                                 if let Ok(message_id) = crate::network::rpc::retry_manager::RetryManager::generate_message_id(msg_type, &gossip_msg) {
                                     // Check if already being tracked (this is a retry, skip registration)
                                     if retry_mgr.is_message_tracked(&message_id).await {
-                                        info!("🔄 [RETRY] Message {:?} already tracked, skipping registration (this is a retry)", message_id);
+                                        debug!("🔄 [RETRY] Message {:?} already tracked, skipping registration (this is a retry)", message_id);
                                     } else {
                                         // Get expected nodes (all active nodes except ourselves)
                                         let expected_nodes: std::collections::HashSet<PeerId> = self
@@ -1021,11 +1021,11 @@ impl MpcNetworkLayer {
                                         if !expected_nodes.is_empty() {
                                             // Check if already tracked (retry case)
                                             if retry_mgr.is_message_tracked(&message_id).await {
-                                                info!("🔄 [RETRY] Message {:?} already tracked, skipping registration (this is a retry)", message_id);
+                                                debug!("🔄 [RETRY] Message {:?} already tracked, skipping registration (this is a retry)", message_id);
                                             } else {
                                                 // Log expected nodes for debugging
                                                 let expected_list: Vec<String> = expected_nodes.iter().map(|p| p.to_string()).collect();
-                                                info!(
+                                                debug!(
                                                     "📋 [RETRY] Registering message {:?} - expecting ACKs from {} nodes: {:?}",
                                                     message_id, expected_nodes.len(), expected_list
                                                 );
@@ -1037,11 +1037,11 @@ impl MpcNetworkLayer {
                                                     data.clone(),
                                                     expected_nodes.clone(),
                                                 ).await {
-                                                    error!("❌ [RETRY] Failed to register critical message for retry: {}", e);
+                                                    debug!("❌ [RETRY] Failed to register critical message for retry: {}", e);
                                                 }
                                             }
                                         } else {
-                                            warn!("⚠️ [RETRY] No expected nodes - skipping retry registration for {:?}", message_id);
+                                            debug!("⚠️ [RETRY] No expected nodes - skipping retry registration for {:?}", message_id);
                                         }
                                     }
                                 }
@@ -1087,11 +1087,11 @@ impl MpcNetworkLayer {
                         Ok(_) => {}
                         Err(e) => {
                             if is_retry {
-                                error!(
+                                debug!(
                                     "❌ [RETRY] CRITICAL: Failed to publish retry message to topic {}: {:?}",
                                     topic, e
                                 );
-                                // For retries, this is critical - log as error
+                                // For retries, this is critical - log as debug (retry path)
                             } else {
                                 warn!(
                                     "❌ [BROADCAST] Failed to publish message to topic {}: {:?}",
@@ -1103,7 +1103,7 @@ impl MpcNetworkLayer {
                     }
                 } else {
                     if is_retry {
-                        error!(
+                        debug!(
                             "❌ [RETRY] No peers available for retry broadcast to topic: {}",
                             topic
                         );
@@ -1840,7 +1840,7 @@ impl MpcNetworkLayer {
             } => {
                 const MAX_RETRIES: u8 = 10;
 
-                info!(
+                debug!(
                     "🔐 [SIGNING-SECURE] Sending ECDSA signature for round {} via UNICAST to peer {} (attempt {})",
                     round,
                     target_peer_id,
@@ -1859,7 +1859,7 @@ impl MpcNetworkLayer {
                 };
 
                 let mut is_connected = swarm.is_connected(&peer_id);
-                info!(
+                debug!(
                     "🔐 [SIGNING-SECURE] Target Peer {} connected: {}",
                     target_peer_id, is_connected
                 );
@@ -1871,7 +1871,7 @@ impl MpcNetworkLayer {
                         .get(&peer_id)
                         .cloned()
                     {
-                        info!(
+                        debug!(
                             "📞 [SIGNING-SECURE] Not connected to {}, dialing before send: {}",
                             target_peer_id, addr
                         );
@@ -1893,7 +1893,7 @@ impl MpcNetworkLayer {
                         } else {
                             tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
                             is_connected = swarm.is_connected(&peer_id);
-                            info!(
+                            debug!(
                                 "🔐 [SIGNING-SECURE] Dial to connect to {} successful {}",
                                 target_peer_id, is_connected
                             );
@@ -1908,7 +1908,7 @@ impl MpcNetworkLayer {
 
                 if !is_connected && retry_count < MAX_RETRIES {
                     let delay_ms = 1000 * (1 << retry_count.min(5));
-                    info!(
+                    debug!(
                         "🔄 [SIGNING-SECURE] Peer {} not connected - scheduling retry {} in {}ms",
                         target_peer_id,
                         retry_count + 1,
@@ -1953,7 +1953,7 @@ impl MpcNetworkLayer {
                     
                     if count >= MAX_OUTBOUND_INFLIGHT_PER_PEER {
                         // At capacity - re-queue with delay
-                        info!(
+                        debug!(
                             "⏸️ [SIGNING-SECURE] Peer {} at capacity ({}/{}), re-queuing ECDSA signature for round {}",
                             target_peer_id, count, MAX_OUTBOUND_INFLIGHT_PER_PEER, round
                         );
@@ -2004,7 +2004,7 @@ impl MpcNetworkLayer {
                     self.outbound_retry.lock().await.insert(request_id, entry);
                 }
 
-                info!(
+                debug!(
                     "✅ [SIGNING-SECURE] ECDSA signature for round {} sent via P2P RPC to {} (request_id: {:?}, connected: {})",
                     round, target_peer_id, request_id, is_connected
                 );
@@ -2020,7 +2020,7 @@ impl MpcNetworkLayer {
             } => {
                 const MAX_RETRIES: u8 = 10;
 
-                info!(
+                debug!(
                     "🔐 [SIGNING-SECURE] Sending BTC signatures for round {} via UNICAST to peer {} (attempt {})",
                     round,
                     target_peer_id,
@@ -2039,7 +2039,7 @@ impl MpcNetworkLayer {
                 };
 
                 let mut is_connected = swarm.is_connected(&peer_id);
-                info!(
+                debug!(
                     "🔐 [SIGNING-SECURE] Target Peer {} connected: {}",
                     target_peer_id, is_connected
                 );
@@ -2051,7 +2051,7 @@ impl MpcNetworkLayer {
                         .get(&peer_id)
                         .cloned()
                     {
-                        info!(
+                        debug!(
                             "📞 [SIGNING-SECURE] Not connected to {}, dialing before send: {}",
                             target_peer_id, addr
                         );
@@ -2073,7 +2073,7 @@ impl MpcNetworkLayer {
                         } else {
                             tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
                             is_connected = swarm.is_connected(&peer_id);
-                            info!(
+                            debug!(
                                 "🔐 [SIGNING-SECURE] Dial to connect to {} successful {}",
                                 target_peer_id, is_connected
                             );
@@ -2088,7 +2088,7 @@ impl MpcNetworkLayer {
 
                 if !is_connected && retry_count < MAX_RETRIES {
                     let delay_ms = 1000 * (1 << retry_count.min(5));
-                    info!(
+                    debug!(
                         "🔄 [SIGNING-SECURE] Peer {} not connected - scheduling retry {} in {}ms",
                         target_peer_id,
                         retry_count + 1,
@@ -2133,7 +2133,7 @@ impl MpcNetworkLayer {
                     
                     if count >= MAX_OUTBOUND_INFLIGHT_PER_PEER {
                         // At capacity - re-queue with delay
-                        info!(
+                        debug!(
                             "⏸️ [SIGNING-SECURE] Peer {} at capacity ({}/{}), re-queuing BTC signatures for round {}",
                             target_peer_id, count, MAX_OUTBOUND_INFLIGHT_PER_PEER, round
                         );
@@ -2184,7 +2184,7 @@ impl MpcNetworkLayer {
                     self.outbound_retry.lock().await.insert(request_id, entry);
                 }
 
-                info!(
+                debug!(
                     "✅ [SIGNING-SECURE] BTC signatures for round {} sent via P2P RPC to {} (request_id: {:?}, connected: {})",
                     round, target_peer_id, request_id, is_connected
                 );
@@ -2198,7 +2198,7 @@ impl MpcNetworkLayer {
             } => {
                 const MAX_RETRIES: u8 = 10;
 
-                info!(
+                debug!(
                     "📦 [SIGNING-SECURE] Sending transaction data for round {} via UNICAST to peer {} (attempt {})",
                     round,
                     target_peer_id,
@@ -2217,7 +2217,7 @@ impl MpcNetworkLayer {
                 };
 
                 let mut is_connected = swarm.is_connected(&peer_id);
-                info!(
+                debug!(
                     "📦 [SIGNING-SECURE] Target Peer {} connected: {}",
                     target_peer_id, is_connected
                 );
@@ -2229,7 +2229,7 @@ impl MpcNetworkLayer {
                         .get(&peer_id)
                         .cloned()
                     {
-                        info!(
+                        debug!(
                             "📞 [SIGNING-SECURE] Not connected to {}, dialing before send: {}",
                             target_peer_id, addr
                         );
@@ -2249,7 +2249,7 @@ impl MpcNetworkLayer {
                                 target_peer_id, e
                             );
                         } else {
-                            info!("✅ [SIGNING-SECURE] Dialing {}", target_peer_id);
+                            debug!("✅ [SIGNING-SECURE] Dialing {}", target_peer_id);
                             tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
                         }
                         is_connected = swarm.is_connected(&peer_id);
@@ -2310,7 +2310,7 @@ impl MpcNetworkLayer {
                     
                     if count >= MAX_OUTBOUND_INFLIGHT_PER_PEER {
                         // At capacity - re-queue with delay
-                        info!(
+                        debug!(
                             "⏸️ [SIGNING-SECURE] Peer {} at capacity ({}/{}), re-queuing transaction data for round {}",
                             target_peer_id, count, MAX_OUTBOUND_INFLIGHT_PER_PEER, round
                         );
@@ -2361,7 +2361,7 @@ impl MpcNetworkLayer {
                     self.outbound_retry.lock().await.insert(request_id, entry);
                 }
 
-                info!(
+                debug!(
                     "✅ [SIGNING-SECURE] Transaction data for round {} sent via P2P RPC to {} (request_id: {:?}, connected: {})",
                     round, target_peer_id, request_id, is_connected
                 );
@@ -3139,7 +3139,7 @@ impl MpcNetworkLayer {
 
                                 if !expected_nodes.is_empty() {
                                     let expected_list: Vec<String> = expected_nodes.iter().map(|p| p.to_string()).collect();
-                                    info!(
+                                    debug!(
                                         "📋 [RETRY] Registering TransactionIdBroadcast {:?} - expecting ACKs from {} nodes: {:?}",
                                         message_id, expected_nodes.len(), expected_list
                                     );
@@ -3151,15 +3151,15 @@ impl MpcNetworkLayer {
                                         msg_bytes.clone(),
                                         expected_nodes.clone(),
                                     ).await {
-                                        error!("❌ [RETRY] Failed to register TransactionIdBroadcast for retry: {}", e);
+                                        debug!("❌ [RETRY] Failed to register TransactionIdBroadcast for retry: {}", e);
                                     } else {
-                                        info!("✅ [RETRY] Successfully registered TransactionIdBroadcast {:?} for retry tracking", message_id);
+                                        debug!("✅ [RETRY] Successfully registered TransactionIdBroadcast {:?} for retry tracking", message_id);
                                     }
                                 } else {
-                                    warn!("⚠️ [RETRY] No expected nodes - skipping retry registration for TransactionIdBroadcast {:?}", message_id);
+                                    debug!("⚠️ [RETRY] No expected nodes - skipping retry registration for TransactionIdBroadcast {:?}", message_id);
                                 }
                             } else {
-                                info!("🔄 [RETRY] TransactionIdBroadcast {:?} already tracked, skipping registration (this is a retry)", message_id);
+                                debug!("🔄 [RETRY] TransactionIdBroadcast {:?} already tracked, skipping registration (this is a retry)", message_id);
                             }
                         }
                     }
