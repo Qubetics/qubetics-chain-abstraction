@@ -17,7 +17,7 @@ use crate::{
 use super::{
     errors::RpcError,
     handlers::{
-        handle_claim_reward, handle_get_dkg_status,
+        handle_add_liquidity, handle_claim_reward, handle_get_dkg_status,
         handle_get_intents_solved_count, handle_get_network_addresses, handle_get_node_id,
         handle_get_node_info, handle_get_reward_solver, handle_get_solver_liquidity,
         handle_get_status, handle_get_uptime, handle_get_user_info, handle_heartbeat,
@@ -32,7 +32,7 @@ use super::{
     },
 };
 use crate::types::rpc_server::{
-    ClaimRewardRequest, GetRewardSolverRequest, RequestContext,
+    AddLiquidityRequest, ClaimRewardRequest, GetRewardSolverRequest, RequestContext,
     SolverLiquidityRequest, UserMpcDepositRequest, UserMpcDepositVerifyResponse,
     UserRegistrationRequest, WithdrawLiquidityRequest,
 };
@@ -162,6 +162,14 @@ pub async fn start_http_server(
         .and(with_auth())
         .and_then(handle_claim_reward);
 
+    let add_liquidity = warp::path("solver_add_liquidity")
+        .and(warp::post())
+        .and(with_rate_limit(rate_limiter.clone()))
+        .and(limited_json_body::<AddLiquidityRequest>())
+        .and(with_message_tx(message_tx.clone()))
+        .and(with_auth())
+        .and_then(handle_add_liquidity);
+
     let withdraw_liquidity = warp::path("withdraw_liquidity")
         .and(warp::post())
         .and(with_rate_limit(rate_limiter.clone()))
@@ -279,6 +287,7 @@ pub async fn start_http_server(
         .or(get_reward_solver)
         .or(get_solver_liquidity)
         .or(claim_reward)
+        .or(add_liquidity)
         .or(withdraw_liquidity)
         .or(heartbeat)
         .or(uptime)

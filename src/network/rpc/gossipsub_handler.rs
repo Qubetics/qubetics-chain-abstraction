@@ -8,6 +8,7 @@ use ff::PrimeField;
 use libp2p::{gossipsub::Message, PeerId};
 use std::sync::Arc;
 use std::time::Duration;
+use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info, warn};
 
 use crate::{
@@ -21,6 +22,23 @@ use crate::{
 };
 
 use crate::network::transport::types::{MpcNetworkLayer, VrfDomain, TOPIC_CONSENSUS};
+
+/// RocksDB record for pending solver_add_liquidity requests.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PendingAddLiquidityRecord {
+    request_id: String,
+    solver_id: String,
+    solver_address: String,
+    amount: String,
+    chain_id: u64,
+    signature: String,
+    signed_payload: String,
+    timestamp_ms: i64,
+    /// Status: "Pending" (initial), "Batched" (included in a batch), "Completed" (tx submitted).
+    status: String,
+}
+
+const ADD_LIQUIDITY_DB_PREFIX: &str = "solver_add_liquidity:";
 
 impl MpcNetworkLayer {
     /// Main gossipsub message handler - delegates to specific message type handlers
@@ -934,6 +952,122 @@ impl MpcNetworkLayer {
                     );
                 }
             }
+            GossipsubMessage::SolverAddLiquidity {
+                request_id,
+                solver_id,
+                solver_address,
+                amount,
+                chain_id,
+                signature,
+                signed_payload,
+                timestamp_ms,
+                status,
+            } => {
+                info!(
+                    "💧 [ADD_LIQUIDITY] Received solver_add_liquidity gossip: request_id={}, solver_id={}, solver_address={}, amount={}, chain_id={}",
+                    request_id, solver_id, solver_address, amount, chain_id
+                );
+
+                // Re-verify signature using VERIFICATION_ADDRESS before accepting into local queue.
+                use crate::rpc_server::utils::{normalize_eth_signature, recover_eth_address_secp};
+                let verification_address = std::env::var("VERIFICATION_ADDRESS")
+                    .unwrap_or_else(|_| "".to_string());
+                if verification_address.is_empty() {
+                    warn!("⚠️ [ADD_LIQUIDITY] VERIFICATION_ADDRESS not configured; dropping request");
+                    return Ok(());
+                }
+
+                // Validate request_id is non-empty
+                if request_id.trim().is_empty() {
+                    warn!(
+                        "⚠️ [ADD_LIQUIDITY] Empty request_id in gossip, dropping",
+                    );
+                    return Ok(());
+                }
+
+                // Expect the signed_payload to be the raw message bytes that were signed.
+                let msg_bytes = signed_payload.as_bytes();
+                if msg_bytes.is_empty() {
+                    warn!(
+                        "⚠️ [ADD_LIQUIDITY] Empty signed_payload for request_id={}, dropping",
+                        request_id
+                    );
+                    return Ok(());
+                }
+
+                if amount.trim().is_empty() || amount == "0" {
+                    warn!(
+                        "⚠️ [ADD_LIQUIDITY] Zero or empty amount for request_id={}, dropping",
+                        request_id
+                    );
+                    return Ok(());
+                }
+
+                // Fully re-verify signature: recovered signer must match VERIFICATION_ADDRESS.
+                let (compact, v) = match normalize_eth_signature(&signature) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        warn!(
+                            "⚠️ [ADD_LIQUIDITY] Invalid signature format in gossip for request_id={}: {}",
+                            request_id, e
+                        );
+                        return Ok(());
+                    }
+                };
+
+                let recovered_address =
+                    match recover_eth_address_secp(msg_bytes, &compact, v, true) {
+                        Ok(addr) => addr,
+                        Err(e1) => match recover_eth_address_secp(msg_bytes, &compact, v, false) {
+                            Ok(addr) => addr,
+                            Err(e2) => {
+                                warn!(
+                                    "⚠️ [ADD_LIQUIDITY] Failed to recover signer for request_id={}: personal_sign={}, raw={}",
+                                    request_id, e1, e2
+                                );
+                                return Ok(());
+                            }
+                        },
+                    };
+
+                if recovered_address.to_lowercase() != verification_address.to_lowercase() {
+                    warn!(
+                        "⚠️ [ADD_LIQUIDITY] Gossip verification failed for request_id={}: recovered={}, expected={}",
+                        request_id, recovered_address, verification_address
+                    );
+                    return Ok(());
+                }
+
+                // Persist to RocksDB as a pending add-liquidity record.
+                // Use the status from the message (should be "Pending" for new requests).
+                let record = PendingAddLiquidityRecord {
+                    request_id: request_id.clone(),
+                    solver_id: solver_id.clone(),
+                    solver_address: solver_address.clone(),
+                    amount: amount.clone(),
+                    chain_id,
+                    signature: signature.clone(),
+                    signed_payload: signed_payload.clone(),
+                    timestamp_ms,
+                    status: status.clone(),
+                };
+
+                // Use request_id as the unique key identifier
+                let key = format!("{}{}", ADD_LIQUIDITY_DB_PREFIX, request_id);
+
+                if let Err(e) = self.db.put_string_async(&key, &record).await {
+                    warn!(
+                        "⚠️ [ADD_LIQUIDITY] Failed to persist pending record for request_id={} to RocksDB: {}",
+                        request_id, e
+                    );
+                    return Ok(());
+                }
+
+                info!(
+                    "✅ [ADD_LIQUIDITY] Accepted solver_add_liquidity request into pending queue (request_id={}, status={}, ts={})",
+                    request_id, status, timestamp_ms
+                );
+            }
             GossipsubMessage::PeerDiscovered {
                 peer,
                 sequence,
@@ -1709,6 +1843,37 @@ impl MpcNetworkLayer {
                 {
                     error!(
                         "❌ [BTC_INTENT_MANAGER] Failed to handle contract update batch: {}",
+                        e
+                    );
+                }
+            }
+            GossipsubMessage::SolverAddLiquidityBatch {
+                request_ids,
+                round,
+                timestamp,
+                node_id,
+            } => {
+                info!(
+                    "💧 [ADD_LIQUIDITY_BATCH] Received solver_add_liquidity batch from node {} (round {})",
+                    node_id, round
+                );
+                info!(
+                    "💧 [ADD_LIQUIDITY_BATCH] {} requests to process (will look up from RocksDB), timestamp: {}",
+                    request_ids.len(), timestamp
+                );
+
+                // Process the batch - all nodes look up full details from RocksDB and participate in signing
+                if let Err(e) = self
+                    .handle_solver_add_liquidity_batch(
+                        request_ids,
+                        round,
+                        timestamp,
+                        node_id,
+                    )
+                    .await
+                {
+                    error!(
+                        "❌ [ADD_LIQUIDITY_BATCH] Failed to handle solver add_liquidity batch: {}",
                         e
                     );
                 }

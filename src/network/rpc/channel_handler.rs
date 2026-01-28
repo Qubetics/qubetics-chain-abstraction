@@ -1258,6 +1258,78 @@ impl MpcNetworkLayer {
                     );
                 }
             }
+            // Solver Add Liquidity Batch
+            // - Final node sends ChannelMessage::SolverAddLiquidityBatch (only request_ids)
+            //   1) Build the corresponding GossipsubMessage::SolverAddLiquidityBatch
+            //   2) Process locally by calling the main gossipsub handler
+            //   3) Publish to other peers via gossipsub
+            // All nodes already have full records in RocksDB, so we only send request_ids
+            ChannelMessage::SolverAddLiquidityBatch {
+                request_ids,
+                round,
+                timestamp,
+                node_id,
+            } => {
+                use libp2p::gossipsub::{IdentTopic, Message as GossipMessage};
+
+                let gossip_msg = crate::types::GossipsubMessage::SolverAddLiquidityBatch {
+                    request_ids: request_ids.clone(),
+                    round,
+                    timestamp: timestamp.clone(),
+                    node_id: node_id.clone(),
+                };
+
+                let data = match serde_json::to_vec(&gossip_msg) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        warn!(
+                            "❌ [ADD_LIQUIDITY_BATCH] Failed to serialize SolverAddLiquidityBatch: {}",
+                            e
+                        );
+                        return Ok(());
+                    }
+                };
+
+                // 1) Process locally by calling the main gossipsub handler
+                let topic = "solver-add-liquidity-batch".to_string();
+                let topic_hash = IdentTopic::new(topic.clone());
+                let local_msg = GossipMessage {
+                    source: Some(self.local_peer_id),
+                    data: data.clone(),
+                    sequence_number: None,
+                    topic: topic_hash.hash(),
+                };
+
+                if let Err(e) = self.handle_gossipsub_message(&local_msg).await {
+                    warn!(
+                        "❌ [ADD_LIQUIDITY_BATCH] Failed to process local SolverAddLiquidityBatch: {}",
+                        e
+                    );
+                }
+
+                // 2) Publish to other peers via gossipsub
+                let swarm_mut = swarm.behaviour_mut();
+                let peer_count = swarm_mut.gossipsub.all_peers().count();
+
+                if peer_count > 0 {
+                    if let Err(e) = swarm_mut.gossipsub.publish(topic_hash, data) {
+                        warn!(
+                            "❌ [ADD_LIQUIDITY_BATCH] Failed to publish SolverAddLiquidityBatch to topic {}: {:?}",
+                            topic, e
+                        );
+                    } else {
+                        info!(
+                            "✅ [ADD_LIQUIDITY_BATCH] Published SolverAddLiquidityBatch to {} peers ({} requests)",
+                            peer_count,
+                            request_ids.len()
+                        );
+                    }
+                } else {
+                    warn!(
+                        "⚠️ [ADD_LIQUIDITY_BATCH] No peers available for broadcasting SolverAddLiquidityBatch"
+                    );
+                }
+            }
             // SECURE DKG SHARE DISTRIBUTION - sends share to specific peer via P2P RPC
             ChannelMessage::UnicastShareDKG {
                 target_peer_id,
@@ -3648,6 +3720,90 @@ impl MpcNetworkLayer {
                     );
                 }
             }
+            ChannelMessage::SolverAddLiquidity {
+                request_id,
+                solver_id,
+                solver_address,
+                amount,
+                chain_id,
+                signature,
+                signed_payload,
+                timestamp_ms,
+                status,
+            } => {
+                use libp2p::gossipsub::IdentTopic;
+
+                info!(
+                    "💧 [ADD_LIQUIDITY] Processing solver_add_liquidity request for request_id={} solver_id={} solver_address={} amount={} chain_id={}",
+                    request_id, solver_id, solver_address, amount, chain_id
+                );
+
+                // Also persist locally to RocksDB so the origin node has the same pending view.
+                #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+                struct PendingAddLiquidityRecord {
+                    request_id: String,
+                    solver_id: String,
+                    solver_address: String,
+                    amount: String,
+                    chain_id: u64,
+                    signature: String,
+                    signed_payload: String,
+                    timestamp_ms: i64,
+                    status: String,
+                }
+
+                const ADD_LIQUIDITY_DB_PREFIX: &str = "solver_add_liquidity:";
+
+                let record = PendingAddLiquidityRecord {
+                    request_id: request_id.clone(),
+                    solver_id: solver_id.clone(),
+                    solver_address: solver_address.clone(),
+                    amount: amount.clone(),
+                    chain_id,
+                    signature: signature.clone(),
+                    signed_payload: signed_payload.clone(),
+                    timestamp_ms,
+                    status: status.clone(),
+                };
+
+                // Use request_id as the unique key identifier
+                let key = format!("{}{}", ADD_LIQUIDITY_DB_PREFIX, request_id);
+
+                if let Err(e) = self.db.put_string_async(&key, &record).await {
+                    warn!(
+                        "⚠️ [ADD_LIQUIDITY] Failed to persist pending record for request_id={} at origin: {}",
+                        request_id, e
+                    );
+                }
+
+                // Broadcast to peers via gossipsub so everyone keeps a consistent pending view.
+                let gossip_msg = crate::types::GossipsubMessage::SolverAddLiquidity {
+                    request_id: request_id.clone(),
+                    solver_id: solver_id.clone(),
+                    solver_address: solver_address.clone(),
+                    amount: amount.clone(),
+                    chain_id,
+                    signature: signature.clone(),
+                    signed_payload: signed_payload.clone(),
+                    timestamp_ms,
+                    status: status.clone(),
+                };
+
+                let msg_bytes =
+                    serde_json::to_vec(&gossip_msg).map_err(|e| anyhow::anyhow!(e.to_string()))?;
+
+                let topic =
+                    IdentTopic::new(crate::network::transport::types::TOPIC_SOLVER_ADD_LIQUIDITY);
+                swarm
+                    .behaviour_mut()
+                    .gossipsub
+                    .publish(topic, msg_bytes)?;
+
+                info!(
+                    "📡 [ADD_LIQUIDITY] Broadcasted solver_add_liquidity request for request_id={} solver_id={} solver_address={}",
+                    request_id, solver_id, solver_address
+                );
+            }
         }
         Ok(())
     }
@@ -3920,6 +4076,231 @@ impl MpcNetworkLayer {
             }
         } else {
             warn!("❌ [BTC_INTENT_MANAGER] Failed to encode processBatchIntents calldata");
+        }
+
+        Ok(())
+    }
+
+    /// Handle solver add_liquidity batch
+    /// All nodes verify the batch and participate in distributed signing of batchTransfer tx
+    /// All nodes already have the full records in RocksDB, so we only need request_ids
+    pub(crate) async fn handle_solver_add_liquidity_batch(
+        &mut self,
+        request_ids: Vec<String>,
+        round: u64,
+        _timestamp: String,
+        node_id: String,
+    ) -> Result<()> {
+        info!(
+            "💧 [ADD_LIQUIDITY_BATCH] Processing batch: {} requests, round {}, from node {}",
+            request_ids.len(),
+            round,
+            node_id
+        );
+
+        if request_ids.is_empty() {
+            warn!("⚠️ [ADD_LIQUIDITY_BATCH] Empty batch received");
+            return Ok(());
+        }
+
+        // Look up all records from RocksDB and extract data
+        const ADD_LIQUIDITY_DB_PREFIX: &str = "solver_add_liquidity:";
+        
+        #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+        struct PendingAddLiquidityRecord {
+            request_id: String,
+            solver_id: String,
+            solver_address: String,
+            amount: String,
+            chain_id: u64,
+            signature: String,
+            signed_payload: String,
+            timestamp_ms: i64,
+            status: String,
+        }
+
+        let mut solver_addresses: Vec<String> = Vec::new();
+        let mut amounts: Vec<String> = Vec::new();
+        let mut chain_ids: Vec<u64> = Vec::new();
+
+        for request_id in &request_ids {
+            let key = format!("{}{}", ADD_LIQUIDITY_DB_PREFIX, request_id);
+            if let Ok(Some(mut record)) =
+                self.db
+                    .get_string_async::<PendingAddLiquidityRecord>(&key)
+                    .await
+            {
+                // Extract data for transaction
+                solver_addresses.push(record.solver_address.clone());
+                amounts.push(record.amount.clone());
+                chain_ids.push(record.chain_id);
+
+                // Mark as Batched if still Pending
+                if record.status == "Pending" {
+                    record.status = "Batched".to_string();
+                    let _ = self.db.put_string_async(&key, &record).await;
+                    info!("✅ [ADD_LIQUIDITY_BATCH] Marked request {} as Batched", request_id);
+                }
+            } else {
+                warn!("⚠️ [ADD_LIQUIDITY_BATCH] Request {} not found in RocksDB, skipping", request_id);
+            }
+        }
+
+        // Verify we found all requests
+        if solver_addresses.len() != request_ids.len() {
+            error!("❌ [ADD_LIQUIDITY_BATCH] Some requests not found in RocksDB");
+            return Err(anyhow!("Some requests not found in RocksDB"));
+        }
+
+        // For now, assume all requests in a batch are for the same chain
+        // (can be extended to process per-chain sub-batches later)
+        let chain_id = chain_ids[0];
+        info!("💧 [ADD_LIQUIDITY_BATCH] Target chain_id: {}", chain_id);
+
+        // Parse amounts to U256
+        let amounts_u256: Vec<U256> = amounts
+            .iter()
+            .filter_map(|a| U256::from_dec_str(a).ok())
+            .collect();
+
+        if amounts_u256.len() != amounts.len() {
+            error!("❌ [ADD_LIQUIDITY_BATCH] Failed to parse some amounts");
+            return Err(anyhow!("Failed to parse amounts"));
+        }
+
+        // Get solver contract address from ENV
+        let solver_contract_address = std::env::var("SOLVER_CONTRACT_ADDRESS")
+            .unwrap_or_else(|_| "".to_string());
+        if solver_contract_address.is_empty() {
+            error!("❌ [ADD_LIQUIDITY_BATCH] SOLVER_CONTRACT_ADDRESS not configured");
+            return Err(anyhow!("SOLVER_CONTRACT_ADDRESS not configured"));
+        }
+
+        // Derive liquidity operator address from vault group key (same as rewards/remove_liquidity)
+        let dkg_node = if let Some(node) = &self.dkg_node {
+            node
+        } else {
+            warn!(
+                "❌ [ADD_LIQUIDITY_BATCH] Cannot process batch - DKG node unavailable"
+            );
+            return Ok(());
+        };
+
+        let group_public_key = if let Some(key) = dkg_node.get_vault_group_key().await {
+            key
+        } else {
+            warn!(
+                "❌ [ADD_LIQUIDITY_BATCH] Vault group key unavailable; cannot derive liquidity operator address"
+            );
+            return Ok(());
+        };
+
+        let liquidity_operator_address =
+            crate::utils::get_eth_address_from_group_key(group_public_key);
+
+        info!(
+            "💧 [ADD_LIQUIDITY_BATCH] Building batchTransfer tx: from={}, to={}, {} recipients",
+            liquidity_operator_address,
+            solver_contract_address,
+            solver_addresses.len()
+        );
+
+        // Build the batchTransfer transaction using helper from utils/transaction.rs
+        let chain_tx = crate::utils::transaction::create_solver_add_liquidity_batch_transaction(
+            &liquidity_operator_address,
+            &solver_addresses,
+            &amounts_u256,
+            &solver_contract_address,
+            chain_id,
+        )
+        .await?;
+
+        // Expect an Ethereum transaction
+        let eth_tx = match chain_tx {
+            crate::chain_abstraction::ChainTransaction::Ethereum(tx) => tx,
+            _ => {
+                warn!(
+                    "❌ [ADD_LIQUIDITY_BATCH] Batch transaction is not an Ethereum transaction"
+                );
+                return Ok(());
+            }
+        };
+
+        info!(
+            "✅ [ADD_LIQUIDITY_BATCH] Built batchTransfer Ethereum transaction: nonce={}, gas_limit={}",
+            eth_tx.nonce, eth_tx.gas_limit
+        );
+
+        // Start MPC signing using vault (liquidity operator) DKG key
+        if let Some(signing_node) = &mut self.signing_node {
+            let available_nodes: Vec<PeerId> =
+                self.node_manager.get_active_nodes().into_iter().collect();
+            signing_node.set_available_nodes(available_nodes);
+            signing_node.set_chain_handler(
+                crate::chain_abstraction::ChainHandlerFactory::create_ethereum_handler(
+                    eth_tx.chain_id,
+                )
+                .into(),
+            );
+
+            let vault_tweaked_share = dkg_node.get_vault_tweaked_secret_share().await;
+
+            if let Some(ref _secret_share) = vault_tweaked_share {
+                // Use vault key as liquidity operator key
+                signing_node.set_vault_group_key(group_public_key);
+
+                let contract_tx = crate::types::intent::ContractTransaction {
+                    to: eth_tx.to.clone(),
+                    value: eth_tx.value.clone(),
+                    nonce: eth_tx.nonce,
+                    gas_limit: eth_tx.gas_limit,
+                    gas_price: eth_tx.gas_price.clone(),
+                    chain_id: eth_tx.chain_id,
+                    data: eth_tx
+                        .data
+                        .as_ref()
+                        .map(|d| format!("0x{}", hex::encode(d)))
+                        .unwrap_or_else(|| "0x".to_string()),
+                };
+
+                let contract_tx_bytes =
+                    crate::utils::transaction::create_transaction_for_signing_contract(
+                        &contract_tx,
+                    );
+                let contract_chain_handler = signing_node.get_contract_chain_handler().clone();
+                let mut eth_signer = crate::signing::EthereumSigner::new(signing_node);
+
+                eth_signer
+                    .sign_contract_message(
+                        contract_tx_bytes,
+                        &contract_chain_handler,
+                        &contract_tx,
+                        vault_tweaked_share.clone(),
+                        None,     // user_eth_address (not applicable)
+                        vec![],   // intent_hashes (not applicable for add_liquidity)
+                        vault_tweaked_share,
+                        None,     // request_id
+                        None,     // original_request
+                    )
+                    .await?;
+
+                info!(
+                    "✅ [ADD_LIQUIDITY_BATCH] Submitted batchTransfer transaction into MPC signing flow ({} requests)",
+                    request_ids.len()
+                );
+                info!(
+                    "ℹ️  [ADD_LIQUIDITY_BATCH] Signatures will be sent to final node for round {}",
+                    round
+                );
+            } else {
+                warn!(
+                    "⚠️ [ADD_LIQUIDITY_BATCH] Skipping batch - missing vault secret share (liquidity operator key)"
+                );
+            }
+        } else {
+            warn!(
+                "❌ [ADD_LIQUIDITY_BATCH] Signing node not available; cannot start MPC signing for batch"
+            );
         }
 
         Ok(())

@@ -207,6 +207,22 @@ pub struct WithdrawLiquidityResponse {
     pub error_message: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AddLiquidityRequest {
+    /// Signature created by VERIFICATION_ADDRESS over the raw `message` bytes.
+    pub signature: String,
+    /// Opaque payload string that was signed. Expected to be a JSON string containing:
+    /// { "solverId": string, "solverAddress": string, "amount": string, "chainId": number }.
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AddLiquidityResponse {
+    pub status: String,
+    pub message: String,
+    pub error_message: Option<String>,
+}
+
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogPartialPubkeysRequest {

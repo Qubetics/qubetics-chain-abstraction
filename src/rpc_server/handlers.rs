@@ -17,7 +17,7 @@ use crate::{
         messaging::ChannelMessage,
         rpc::RPCRequest,
         rpc_server::{
-            ClaimRewardRequest, ClaimRewardResponse,
+            AddLiquidityRequest, AddLiquidityResponse, ClaimRewardRequest, ClaimRewardResponse,
             DKGStatusResponse, EnhancedUserRegistrationResponse, GetNetworkAddressesResponse,
             GetRewardSolverRequest, GetRewardSolverResponse, HeartbeatResponse,
             IntentsSolvedCountResponse, LogPartialPubkeysRequest, NodeIdResponse, RequestContext,
@@ -2601,6 +2601,182 @@ pub(crate) async fn handle_withdraw_liquidity(
         tics_withdraw_tx_id,
         btc_withdraw_tx_id,
         message,
+        error_message: None,
+    }))
+}
+
+/// Handle solver_add_liquidity RPC.
+///
+/// This endpoint:
+/// - Verifies that the signed payload was signed by VERIFICATION_ADDRESS.
+/// - Parses the payload fields (solverId, solverAddress, amount, chainId).
+/// - Pushes a ChannelMessage::SolverAddLiquidity into the internal channel.
+/// - Does NOT persist anything to DB and does NOT track status.
+pub(crate) async fn handle_add_liquidity(
+    req: AddLiquidityRequest,
+    message_tx: Arc<Mutex<mpsc::Sender<ChannelMessage>>>,
+) -> Result<impl warp::Reply, warp::Rejection> {
+    use crate::rpc_server::utils::{normalize_eth_signature, recover_eth_address_secp};
+
+    info!("💧 HTTP: add_liquidity request with message: {}", req.message);
+
+    // 1) Load VERIFICATION_ADDRESS from env (must NOT be hardcoded).
+    let verification_address_raw =
+        std::env::var("VERIFICATION_ADDRESS").unwrap_or_else(|_| "".to_string());
+    if verification_address_raw.trim().is_empty() {
+        warn!("❌ [ADD_LIQUIDITY] VERIFICATION_ADDRESS not configured");
+        return Ok(warp::reply::json(&AddLiquidityResponse {
+            status: "error".to_string(),
+            message: "VERIFICATION_ADDRESS not configured".to_string(),
+            error_message: Some("VERIFICATION_ADDRESS env var is missing".to_string()),
+        }));
+    }
+
+    // 2) Recover signer from signature over the raw `message` bytes.
+    let (compact, v) = match normalize_eth_signature(&req.signature) {
+        Ok(t) => t,
+        Err(e) => {
+            warn!("❌ [ADD_LIQUIDITY] Invalid signature format: {}", e);
+            return Ok(warp::reply::json(&AddLiquidityResponse {
+                status: "error".to_string(),
+                message: "Invalid signature format".to_string(),
+                error_message: Some(format!("Invalid signature: {e:?}")),
+            }));
+        }
+    };
+
+    let msg_bytes = req.message.as_bytes();
+    let recovered_address = match recover_eth_address_secp(msg_bytes, &compact, v, true) {
+        Ok(addr) => addr,
+        Err(e1) => match recover_eth_address_secp(msg_bytes, &compact, v, false) {
+            Ok(addr) => addr,
+            Err(e2) => {
+                error!(
+                    "❌ [ADD_LIQUIDITY] Failed to recover verification address: personal_sign={}, raw={}",
+                    e1, e2
+                );
+                return Ok(warp::reply::json(&AddLiquidityResponse {
+                    status: "error".to_string(),
+                    message: "Failed to recover signature".to_string(),
+                    error_message: Some(format!(
+                        "Failed to recover signature: personal_sign={e1}, raw={e2}"
+                    )),
+                }));
+            }
+        },
+    };
+
+    // Normalize both recovered and env addresses for comparison.
+    let recovered_lower = recovered_address.to_lowercase();
+    let verification_lower = verification_address_raw.to_lowercase();
+
+    if recovered_lower != verification_lower {
+        warn!(
+            "❌ [ADD_LIQUIDITY] Verification failed: recovered_signer={}, expected={}",
+            recovered_address, verification_address_raw
+        );
+        return Ok(warp::reply::json(&AddLiquidityResponse {
+            status: "error".to_string(),
+            message: "Unauthorized add_liquidity request".to_string(),
+            error_message: Some("Recovered signer does not match VERIFICATION_ADDRESS".to_string()),
+        }));
+    }
+
+    // 3) Parse signed payload.
+    // NOTE: request_id is NOT supplied by the external user; it is generated
+    // internally by this node (see below) and then propagated via messaging.
+    #[derive(serde::Deserialize)]
+    struct AddLiquidityPayload {
+        #[serde(rename = "solverId")]
+        solver_id: String,
+        #[serde(rename = "solverAddress")]
+        solver_address: String,
+        amount: String,
+        #[serde(rename = "chainId")]
+        chain_id: u64,
+    }
+
+    let payload: AddLiquidityPayload = match serde_json::from_str(&req.message) {
+        Ok(p) => p,
+        Err(e) => {
+            warn!(
+                "❌ [ADD_LIQUIDITY] Failed to parse signed payload JSON: {}",
+                e
+            );
+            return Ok(warp::reply::json(&AddLiquidityResponse {
+                status: "error".to_string(),
+                message: "Invalid signed payload format".to_string(),
+                error_message: Some(format!("Failed to parse payload JSON: {e}")),
+            }));
+        }
+    };
+
+    if payload.amount.trim().is_empty() || payload.amount == "0" {
+        return Ok(warp::reply::json(&AddLiquidityResponse {
+            status: "error".to_string(),
+            message: "Amount must be greater than zero".to_string(),
+            error_message: Some("amount must be non-zero".to_string()),
+        }));
+    }
+
+    // Basic chainId validation (0 = BTC, 9029 = EVM / Qubetics).
+    if payload.chain_id != 0 && payload.chain_id != 9029 {
+        return Ok(warp::reply::json(&AddLiquidityResponse {
+            status: "error".to_string(),
+            message: "Unsupported chainId".to_string(),
+            error_message: Some("chainId must be 0 (BTC) or 9029 (EVM)".to_string()),
+        }));
+    }
+
+    info!(
+        "✅ [ADD_LIQUIDITY] Verified request for solver_id={} solver_address={} amount={} chain_id={}",
+        payload.solver_id, payload.solver_address, payload.amount, payload.chain_id
+    );
+
+    // 4) Enqueue as ChannelMessage so the network layer can gossip + batch later.
+    let timestamp_ms = chrono::Utc::now().timestamp_millis();
+
+    // Generate an internal request_id that is *not* user-controlled.
+    // This is deterministic for this node and then propagated via ChannelMessage/gossip.
+    let request_id = format!(
+        "addliq:{}:{}:{}:{}",
+        payload.solver_id,
+        payload.solver_address.to_lowercase(),
+        payload.chain_id,
+        timestamp_ms
+    );
+
+    {
+        let tx = message_tx.lock().await;
+        if let Err(e) = tx
+            .send(ChannelMessage::SolverAddLiquidity {
+                request_id: request_id.clone(),
+                solver_id: payload.solver_id.clone(),
+                solver_address: payload.solver_address.clone(),
+                amount: payload.amount.clone(),
+                chain_id: payload.chain_id,
+                signature: req.signature.clone(),
+                signed_payload: req.message.clone(),
+                timestamp_ms,
+                status: "Pending".to_string(),
+            })
+            .await
+        {
+            error!(
+                "❌ [ADD_LIQUIDITY] Failed to enqueue SolverAddLiquidity message: {}",
+                e
+            );
+            return Ok(warp::reply::json(&AddLiquidityResponse {
+                status: "error".to_string(),
+                message: "Failed to enqueue add_liquidity request".to_string(),
+                error_message: Some(format!("Channel error: {e}")),
+            }));
+        }
+    }
+
+    Ok(warp::reply::json(&AddLiquidityResponse {
+        status: "success".to_string(),
+        message: "add_liquidity request accepted.".to_string(),
         error_message: None,
     }))
 }

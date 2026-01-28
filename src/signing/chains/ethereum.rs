@@ -840,21 +840,23 @@ impl SigningNode {
         // Store original transaction for reconstruction after aggregation (contract-specific path)
         let mut pending_transactions = self.pending.pending_transactions.write().await;
         let primary_intent_hash = intent_hashes.first().cloned();
-        
+
         // Determine transaction type based on operation_type for this round
-        // For BTC contract update, use IntentStatusUpdate (only marks intent as Solved, doesn't update network_to_target_tx_id)
+        // For BTC intent manager update, use IntentStatusUpdate (only marks intent as Solved, doesn't update network_to_target_tx_id)
         // For other batch transactions (TICS), use NetworkToTarget (updates network_to_target_tx_id and marks as Solved)
         let tx_type_for_round = if !intent_hashes.is_empty() {
-            // Check if this round is for BTC contract update
-            let is_btc_contract_update = if let Some(consensus_node) = self.coordination.consensus_node() {
-                consensus_node.get_operation_type_for_round(round)
-                    .map(|op| op == "btc_contract_update")
-                    .unwrap_or(false)
-            } else {
-                false
-            };
-            
-            if is_btc_contract_update {
+            // Check if this round is for BTC intent manager update.
+            let is_btc_intent_manager_update =
+                if let Some(consensus_node) = self.coordination.consensus_node() {
+                    consensus_node
+                        .get_operation_type_for_round(round)
+                        .map(|op| op == "btc_intent_manager_update")
+                        .unwrap_or(false)
+                } else {
+                    false
+                };
+
+            if is_btc_intent_manager_update {
                 Some(TransactionType::IntentStatusUpdate)
             } else {
                 Some(TransactionType::NetworkToTarget)
@@ -869,7 +871,7 @@ impl SigningNode {
                 tx_bytes.clone(),
                 primary_intent_hash.clone(),
                 tx_type_for_round,
-                request_id, // Store request_id for retry tracking
+                request_id,       // Store request_id for retry tracking
                 original_request, // Store original_request for guaranteed retry
             ),
         );
@@ -919,8 +921,14 @@ impl SigningNode {
         let (chain_tx, transaction_type) = if is_reward_round {
             let reward_pending_transactions =
                 self.pending.reward_pending_transactions_tics.read().await;
-            if let Some((chain_tx, _tx_bytes, _solver_address, transaction_type, _request_id, _original_request)) =
-                reward_pending_transactions.get(&round)
+            if let Some((
+                chain_tx,
+                _tx_bytes,
+                _solver_address,
+                transaction_type,
+                _request_id,
+                _original_request,
+            )) = reward_pending_transactions.get(&round)
             {
                 (Some(chain_tx.clone()), transaction_type.clone())
             } else {
@@ -929,8 +937,14 @@ impl SigningNode {
         } else if is_withdraw_round {
             let withdraw_pending_transactions =
                 self.pending.withdraw_pending_transactions_tics.read().await;
-            if let Some((chain_tx, _tx_bytes, _solver_address, transaction_type, _request_id, _original_request)) =
-                withdraw_pending_transactions.get(&round)
+            if let Some((
+                chain_tx,
+                _tx_bytes,
+                _solver_address,
+                transaction_type,
+                _request_id,
+                _original_request,
+            )) = withdraw_pending_transactions.get(&round)
             {
                 (Some(chain_tx.clone()), transaction_type.clone())
             } else {
@@ -938,8 +952,14 @@ impl SigningNode {
             }
         } else {
             let pending_transactions = self.pending.pending_transactions.read().await;
-            if let Some((chain_tx, _tx_bytes, _intent_hash, transaction_type, _request_id, _original_request)) =
-                pending_transactions.get(&round)
+            if let Some((
+                chain_tx,
+                _tx_bytes,
+                _intent_hash,
+                transaction_type,
+                _request_id,
+                _original_request,
+            )) = pending_transactions.get(&round)
             {
                 (Some(chain_tx.clone()), transaction_type.clone())
             } else {

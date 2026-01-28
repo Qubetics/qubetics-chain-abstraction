@@ -53,6 +53,28 @@ pub enum ChannelMessage {
         /// "withdraw_liquidity"
         transaction_type: String,
     },
+    /// Inbound solver add-liquidity request (batched contract call, no DB state).
+    /// These requests are validated via VERIFICATION_ADDRESS and then gossiped to peers.
+    SolverAddLiquidity {
+        /// Unique request identifier (from backend's signed payload).
+        request_id: String,
+        /// Arbitrary solver identifier (off-chain semantics, used by backend).
+        solver_id: String,
+        /// Solver EVM address that will receive liquidity.
+        solver_address: String,
+        /// Amount as decimal string in smallest units for the target chain.
+        amount: String,
+        /// Target chain ID (0 = BTC, 9029 = EVM / Qubetics).
+        chain_id: u64,
+        /// Signature created by VERIFICATION_ADDRESS over `signed_payload`.
+        signature: String,
+        /// Original signed payload (for peer-side verification if needed).
+        signed_payload: String,
+        /// Timestamp (ms since epoch) when this node accepted the request.
+        timestamp_ms: i64,
+        /// Status: "Pending" (initial), "Batched" (included in a batch), "Completed" (tx submitted).
+        status: String,
+    },
     TransactionFailure {
         sequencer_request_id: String,
         blockchain_tx_hash: String,
@@ -86,6 +108,19 @@ pub enum ChannelMessage {
         /// Timestamp when batch was created
         timestamp: String,
         /// Node ID broadcasting this batch
+        node_id: String,
+    },
+    /// Solver add-liquidity batch broadcast
+    /// Final node broadcasts selected requests for distributed signing
+    /// All nodes already have the full records in RocksDB, so we only send IDs
+    SolverAddLiquidityBatch {
+        /// List of request IDs included in this batch (all nodes can look up details from RocksDB)
+        request_ids: Vec<String>,
+        /// Round number that selected this batch
+        round: u64,
+        /// Timestamp when batch was created
+        timestamp: String,
+        /// Node ID of the final node broadcasting this batch
         node_id: String,
     },
     TransactionIdBroadcast {
@@ -208,6 +243,30 @@ pub enum GossipsubMessage {
         amount_btc: Option<String>,
         amount_tics: Option<String>,
         transaction_type: String,
+    },
+    /// Gossip for solver add-liquidity requests (no DB status, batch-only).
+    SolverAddLiquidity {
+        /// Unique request identifier (from backend's signed payload).
+        request_id: String,
+        solver_id: String,
+        solver_address: String,
+        amount: String,
+        chain_id: u64,
+        /// Raw payload string that was signed.
+        signature: String,
+        signed_payload: String,
+        /// Timestamp (ms since epoch) when origin node accepted the request.
+        timestamp_ms: i64,
+        /// Status: "Pending" (initial), "Batched" (included in a batch), "Completed" (tx submitted).
+        status: String,
+    },
+    /// Gossip for solver add-liquidity batch (final node broadcasts for signing)
+    /// All nodes already have the full records in RocksDB, so we only send IDs
+    SolverAddLiquidityBatch {
+        request_ids: Vec<String>,
+        round: u64,
+        timestamp: String,
+        node_id: String,
     },
     UserRegistration {
         ethereum_address: String,

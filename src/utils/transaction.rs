@@ -1487,6 +1487,125 @@ pub async fn create_solver_rewards_update_transaction(
     Ok(ChainTransaction::Ethereum(ethereum_tx))
 }
 
+/// Encode calldata for SolverManager.batchTransfer(recipients, amounts).
+pub fn encode_batch_transfer_calldata(
+    recipients: &[String],
+    amounts: &[U256],
+) -> Option<Vec<u8>> {
+    #[allow(deprecated)]
+    let f = Function {
+        name: "batchTransfer".to_owned(),
+        inputs: vec![
+            Param {
+                name: "recipients".into(),
+                kind: ParamType::Array(Box::new(ParamType::Address)),
+                internal_type: None,
+            },
+            Param {
+                name: "amounts".into(),
+                kind: ParamType::Array(Box::new(ParamType::Uint(256))),
+                internal_type: None,
+            },
+        ],
+        outputs: vec![],
+        constant: None,
+        state_mutability: StateMutability::NonPayable,
+    };
+
+    if recipients.len() != amounts.len() {
+        return None;
+    }
+
+    let recipient_tokens: Vec<Token> = recipients
+        .iter()
+        .filter_map(|addr| addr.parse::<ethers::types::Address>().ok())
+        .map(Token::Address)
+        .collect();
+
+    // If any address failed to parse, lengths will mismatch – reject.
+    if recipient_tokens.len() != recipients.len() {
+        return None;
+    }
+
+    let amount_tokens: Vec<Token> = amounts.iter().map(|v| Token::Uint(*v)).collect();
+
+    let tokens = vec![
+        Token::Array(recipient_tokens),
+        Token::Array(amount_tokens),
+    ];
+
+    f.encode_input(&tokens).ok()
+}
+
+/// Create a ChainTransaction for a batch add-liquidity call to SolverManager.batchTransfer.
+///
+/// - `from_address` should be the liquidity operator address (derived from group key).
+/// - `recipients` and `amounts` must have the same length.
+/// - `contract_address` is SOLVER_CONTRACT_ADDRESS (env-provided, may or may not have 0x prefix).
+pub async fn create_solver_add_liquidity_batch_transaction(
+    from_address: &str,
+    recipients: &[String],
+    amounts: &[U256],
+    contract_address: &str,
+    chain_id: u64,
+) -> Result<ChainTransaction> {
+    let normalized_contract_address = if contract_address.starts_with("0x") {
+        contract_address.to_string()
+    } else {
+        format!("0x{contract_address}")
+    };
+
+    info!(
+        "🔧 [CONTRACT] Creating batchTransfer for {} recipients on chain {} via {}",
+        recipients.len(),
+        chain_id,
+        normalized_contract_address
+    );
+
+    let calldata = encode_batch_transfer_calldata(recipients, amounts);
+    let calldata_hex = calldata
+        .as_ref()
+        .map(|d| format!("0x{}", hex::encode(d)))
+        .unwrap_or_else(|| "0x".to_string());
+
+    info!("🔧 [CONTRACT] batchTransfer calldata prepared (len={} bytes)", calldata.as_ref().map(|c| c.len()).unwrap_or(0));
+
+    let estimated_gas = estimate_gas_for_deposit_intent(
+        from_address,
+        &normalized_contract_address,
+        &calldata_hex,
+        chain_id,
+    )
+    .await?; // Abort if gas estimation fails - indicates transaction would revert
+    let gas_limit = estimated_gas + (estimated_gas / 10);
+
+    let gas_price = get_gas_price_for_chain("qubetics", chain_id)
+        .await
+        .unwrap_or_else(|e| {
+            warn!(
+                "⚠️ Failed to get dynamic gas price for batchTransfer: {}, using fallback",
+                e
+            );
+            get_default_gas_price_for_chain("qubetics")
+        });
+
+    info!("🔧 [CONTRACT] batchTransfer gas price: {}", gas_price);
+    info!("🔧 [CONTRACT] batchTransfer gas limit: {}", gas_limit);
+    let nonce = fetch_ethereum_nonce(from_address, chain_id).await?;
+
+    let ethereum_tx = EthereumTransaction {
+        to: normalized_contract_address,
+        value: "0x0".to_string(),
+        gas_limit,
+        gas_price,
+        nonce,
+        data: calldata,
+        chain_id,
+    };
+
+    Ok(ChainTransaction::Ethereum(ethereum_tx))
+}
+
 pub async fn create_solver_remove_liquidity_transaction(
     from_address: &str,
     solver_id: &str,

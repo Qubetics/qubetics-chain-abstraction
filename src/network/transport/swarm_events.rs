@@ -15,6 +15,7 @@ use crate::types::p2p::SerializablePeerId;
 use crate::types::rpc::RPCRequest;
 use crate::types::vrf::VrfRoundSyncRequest;
 use crate::types::{ChannelMessage, GossipsubMessage};
+use tracing::debug;
 
 use super::types::{MpcNetworkBehaviour, MpcNetworkLayer, NetworkEvent, VrfDomain};
 

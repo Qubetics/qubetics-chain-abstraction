@@ -1353,11 +1353,18 @@ impl SigningNode {
                         if let Err(e) = self.process_phase1_intents_for_global_clock(round).await {
                             warn!("⚠️ [CLOCK] Failed to process phase 1 intents for round {}: {}", round, e);
                         }
+                        
+                        // Also process pending solver_add_liquidity requests in batch
+                        info!("💧 [ADD_LIQUIDITY] Processing pending add_liquidity requests for round {}...", round);
+                        if let Err(e) = self.process_solver_add_liquidity_batch_for_round(round).await {
+                            warn!("⚠️ [ADD_LIQUIDITY] Failed to process add_liquidity batch for round {}: {}", round, e);
+                        }
+                        
                         // Trigger aggregate signature for the final node
                         self.trigger_aggregate_signature_for_final_node(round)
                             .await?;
-                    } else if operation_type.as_deref() == Some("btc_contract_update") {
-                        info!("🔄 [BTC_CONTRACT_UPDATE] Round {} was triggered by BTC contract update, processing contract update batch...", round);
+                    } else if operation_type.as_deref() == Some("btc_intent_manager_update") {
+                        info!("🔄 [BTC_CONTRACT_UPDATE] Round {} was triggered by BTC intent manager update, processing contract update batch...", round);
                         // Process BTC contract update batch (intents with network_to_target_tx_id but not Solved)
                         // The final node will broadcast the batch, all nodes will sign, then final node aggregates
                         if let Err(e) = self.process_btc_contract_update_batch_for_round(round).await {
@@ -1636,14 +1643,14 @@ impl SigningNode {
             contract_update_round
         );
 
-        // Perform VRF node selection for contract update round
+        // Perform VRF node selection for BTC intent manager update round
         // The final node (selected by consensus) will get eligible intents and broadcast the batch
         match vrf_service
             .perform_node_selection(
                 &available_nodes,
                 crate::vrf::VRF_NODE_SELECTION_COUNT,
                 contract_update_round,
-                "btc_contract_update",
+                "btc_intent_manager_update",
             )
             .await
         {
@@ -1758,6 +1765,154 @@ impl SigningNode {
             intent_hashes.len(),
             round
         );
+
+        Ok(())
+    }
+
+    /// Process pending solver_add_liquidity requests in batch
+    /// Called by the final node selected via global_clock VRF round.
+    /// The final node will:
+    /// 1. Query RocksDB for pending add_liquidity requests (status="Pending", age >= 10s)
+    /// 2. Sort by timestamp (oldest first), limit to MAX_ADD_LIQUIDITY_BATCH
+    /// 3. Atomically mark selected requests as "Batched" in RocksDB
+    /// 4. Broadcast the batch via ChannelMessage::SolverAddLiquidityBatch
+    /// 5. All nodes will verify, generate partial signatures (liquidity_operator key)
+    /// 6. Final node aggregates and submits batchTransfer tx to contract
+    async fn process_solver_add_liquidity_batch_for_round(&self, round: u64) -> Result<()> {
+        info!("💧 [ADD_LIQUIDITY] Processing solver_add_liquidity batch for round {}", round);
+
+        // Get database reference
+        let database = self.database.as_ref()
+            .ok_or_else(|| anyhow!("Database not available"))?;
+
+        // Read configuration
+        let max_batch_size = std::env::var("MAX_ADD_LIQUIDITY_BATCH")
+            .ok()
+            .and_then(|val| val.parse::<usize>().ok())
+            .unwrap_or(10);
+
+        let min_age_seconds = 10; // Minimum age in seconds before batching
+
+        // Query all pending add_liquidity requests from RocksDB
+        const ADD_LIQUIDITY_DB_PREFIX: &str = "solver_add_liquidity:";
+        
+        #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+        struct PendingAddLiquidityRecord {
+            request_id: String,
+            solver_id: String,
+            solver_address: String,
+            amount: String,
+            chain_id: u64,
+            signature: String,
+            signed_payload: String,
+            timestamp_ms: i64,
+            status: String,
+        }
+
+        // Scan RocksDB for all keys with the prefix (async wrapper)
+        let all_keys = database
+            .get_keys_with_prefix_async(ADD_LIQUIDITY_DB_PREFIX)
+            .await?;
+        
+        let mut pending_requests = Vec::new();
+        let now_ms = chrono::Utc::now().timestamp_millis();
+
+        for key in all_keys {
+            if let Ok(Some(record)) = database
+                .get_string_async::<PendingAddLiquidityRecord>(&key)
+                .await
+            {
+                // Filter: status must be "Pending" and age >= min_age_seconds
+                if record.status == "Pending" {
+                    let age_ms = now_ms - record.timestamp_ms;
+                    let age_secs = age_ms / 1000;
+                    
+                    if age_secs >= min_age_seconds {
+                        pending_requests.push((key, record));
+                    }
+                }
+            }
+        }
+
+        if pending_requests.is_empty() {
+            info!("ℹ️  [ADD_LIQUIDITY] No pending requests eligible for batching (age >= {}s)", min_age_seconds);
+            return Ok(());
+        }
+
+        // Sort by timestamp (oldest first)
+        pending_requests.sort_by(|a, b| a.1.timestamp_ms.cmp(&b.1.timestamp_ms));
+
+        // Limit to max_batch_size
+        let mut requests_to_batch: Vec<_> = pending_requests
+            .into_iter()
+            .take(max_batch_size)
+            .collect();
+
+        info!(
+            "📋 [ADD_LIQUIDITY] Selected {} requests for batching (max: {}, min_age: {}s)",
+            requests_to_batch.len(),
+            max_batch_size,
+            min_age_seconds
+        );
+
+        // Atomically mark all selected requests as "Batched" in RocksDB
+        for (key, record) in &mut requests_to_batch {
+            record.status = "Batched".to_string();
+            if let Err(e) = database.put_string_async(key, record).await {
+                warn!(
+                    "⚠️  [ADD_LIQUIDITY] Failed to mark request {} as Batched: {}",
+                    record.request_id, e
+                );
+            }
+        }
+
+        // Prepare batch data for broadcast
+        let batch_entries: Vec<(String, String, String, u64)> = requests_to_batch
+            .iter()
+            .map(|(_, record)| {
+                (
+                    record.request_id.clone(),
+                    record.solver_address.clone(),
+                    record.amount.clone(),
+                    record.chain_id,
+                )
+            })
+            .collect();
+
+        // Broadcast the batch to all nodes via ChannelMessage
+        let batch_timestamp = chrono::Utc::now().to_rfc3339();
+        // Only send request_ids - all nodes have the full records in RocksDB
+        let batch_message = ChannelMessage::SolverAddLiquidityBatch {
+            request_ids: batch_entries.iter().map(|(id, _, _, _)| id.clone()).collect(),
+            round,
+            timestamp: batch_timestamp.clone(),
+            node_id: self.id.clone(),
+        };
+
+        self.message_tx
+            .send(batch_message)
+            .await
+            .map_err(|e| anyhow!("Failed to send SolverAddLiquidityBatch message: {}", e))?;
+
+        info!(
+            "✅ [ADD_LIQUIDITY] Broadcasted batch with {} requests for round {} at {}",
+            batch_entries.len(),
+            round,
+            batch_timestamp
+        );
+
+        // Log details of each request in the batch
+        for (_key, record) in &requests_to_batch {
+            let wait_duration_secs = (now_ms - record.timestamp_ms) / 1000;
+            info!(
+                "  💧 [BATCH] Request {}: solver={}, amount={}, chain={}, waiting={}s",
+                record.request_id,
+                record.solver_address,
+                record.amount,
+                record.chain_id,
+                wait_duration_secs
+            );
+        }
 
         Ok(())
     }

@@ -16,9 +16,9 @@ const api = axios.create({
 // Configuration
 const CONFIG = {
     network: bitcoin.networks.testnet,
-    targetAddress: 'my33riGzyzfdGPaC1P56aS7fuurUSaWz8J',
-    privateKeyWIF: 'cScjg3oChv5iK4xuxUc8n4nGMQBTouNtmbhsQF7qjFcahyLjGZ13',
-    rpcEndpoint: 'https://mempool.space/testnet4/api',
+    targetAddress: 'mv58mmobqpUkjNrPYJN4nfLeRS6YQmm3df',
+    privateKeyWIF: 'cSQR4rCmfeUrwFu6apsMXY3T9jeYYmB16AKZ1dz5zoGRpdocB1P3',
+    rpcEndpoint: 'https://mempool.space/testnet/api',
     amountPerTx: 1000, // satoshis
     numberOfTx: 10,
     delayBetweenTx: 2000 // 2 seconds delay between transactions
@@ -77,7 +77,7 @@ async function sendTransaction(keyPair, fromAddress, toAddress, amount, utxos) {
     const psbt = new bitcoin.Psbt({ network: CONFIG.network });
 
     // Calculate required amount (amount + estimated fee)
-    const estimatedFee = 2000; // Conservative estimate - 1000 sats
+    const estimatedFee = 1000; // Conservative estimate - 1000 sats
     const requiredAmount = amount + estimatedFee;
 
     // Select UTXOs
@@ -145,7 +145,7 @@ async function sendTransaction(keyPair, fromAddress, toAddress, amount, utxos) {
  * Main function to send funds multiple times
  */
 async function main() {
-    console.log('🚀 Starting Bitcoin Testnet4 Fund Transfer Script\n');
+    console.log('🚀 Starting Bitcoin Testnet3 Fund Transfer Script\n');
     console.log(`Target Address: ${CONFIG.targetAddress}`);
     console.log(`Amount per transaction: ${CONFIG.amountPerTx} satoshis`);
     console.log(`Number of transactions: ${CONFIG.numberOfTx}`);
