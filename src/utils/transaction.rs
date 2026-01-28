@@ -1806,23 +1806,22 @@ pub fn encode_update_solver_rewards_calldata(
     rewards: &[U256],
     transaction_hash: &str,
 ) -> Option<Vec<u8>> {
+    // New ABI: claimRewardsBatch((address solver, uint256 amount)[] claims, uint8 chainType)
     #[allow(deprecated)]
     let f = Function {
-        name: "updateSolverRewards".to_owned(),
+        name: "claimRewardsBatch".to_owned(),
         inputs: vec![
             Param {
-                name: "solverAddress".into(),
-                kind: ParamType::Address,
+                name: "claims".into(),
+                kind: ParamType::Array(Box::new(ParamType::Tuple(vec![
+                    ParamType::Address,
+                    ParamType::Uint(256),
+                ]))),
                 internal_type: None,
             },
             Param {
-                name: "rewards".into(),
-                kind: ParamType::Array(Box::new(ParamType::Uint(256))),
-                internal_type: None,
-            },
-            Param {
-                name: "transactionHash".into(),
-                kind: ParamType::String,
+                name: "chainType".into(),
+                kind: ParamType::Uint(8),
                 internal_type: None,
             },
         ],
@@ -1833,15 +1832,27 @@ pub fn encode_update_solver_rewards_calldata(
 
     let solver_addr = solver_address.parse::<ethers::types::Address>().ok()?;
 
-    let tokens = vec![
+    // Existing flow passes rewards as [btc, tics]; HTTP layer enforces only one side
+    // is claimed at a time. Map non-zero entry to amount and chainType.
+    let (amount, chain_type_u8) = if !rewards.is_empty() && !rewards[0].is_zero() {
+        // BTC rewards
+        (rewards[0], 0u8)
+    } else if rewards.len() > 1 && !rewards[1].is_zero() {
+        // TICS rewards
+        (rewards[1], 1u8)
+    } else {
+        // No non-zero rewards – let the call encode but it will be a no-op on-chain
+        (U256::zero(), 0u8)
+    };
+
+    let claims = vec![Token::Tuple(vec![
         Token::Address(solver_addr),
-        Token::Array(
-            rewards
-                .iter()
-                .map(|value| Token::Uint(*value))
-                .collect::<Vec<_>>(),
-        ),
-        Token::String(transaction_hash.to_owned()),
+        Token::Uint(amount),
+    ])];
+
+    let tokens = vec![
+        Token::Array(claims),
+        Token::Uint(U256::from(chain_type_u8)),
     ];
 
     f.encode_input(&tokens).ok()
@@ -1855,40 +1866,48 @@ pub fn encode_remove_liquidity_calldata(
 ) -> Option<Vec<u8>> {
     #[allow(deprecated)]
     let f = Function {
+        // New ABI: removeLiquidity((string solverId, uint256 amount, uint8 chainType, string transactionHash)[] requests)
         name: "removeLiquidity".to_owned(),
-        inputs: vec![
-            Param {
-                name: "solverId".into(),
-                kind: ParamType::String,
-                internal_type: None,
-            },
-            Param {
-                name: "chainId".into(),
-                kind: ParamType::Uint(256),
-                internal_type: None,
-            },
-            Param {
-                name: "amount".into(),
-                kind: ParamType::Uint(256),
-                internal_type: None,
-            },
-            Param {
-                name: "transactionHash".into(),
-                kind: ParamType::String,
-                internal_type: None,
-            },
-        ],
+        inputs: vec![Param {
+            name: "requests".into(),
+            kind: ParamType::Array(Box::new(ParamType::Tuple(vec![
+                ParamType::String,
+                ParamType::Uint(256),
+                ParamType::Uint(8),
+                ParamType::String,
+            ]))),
+            internal_type: None,
+        }],
         outputs: vec![],
         constant: None,
         state_mutability: StateMutability::NonPayable,
     };
 
-    let tokens = vec![
+    // Map existing chain_id (asset chain ID) to enum ChainType (uint8).
+    // Until call sites are updated to pass an explicit chain type, default to:
+    // - 0 for BTC if chain_id is non-zero and not equal to the primary TICS chain
+    // - 1 for TICS otherwise.
+    // This heuristic matches the current two-asset setup and can be tightened later.
+    let chain_type_u8 = if chain_id.is_zero() {
+        1u8
+    } else {
+        // Heuristic: treat large chain IDs (e.g. 9029) as TICS (1), smaller as BTC (0)
+        let chain_id_u128: u128 = chain_id.low_u128();
+        if chain_id_u128 > 255 {
+            1u8
+        } else {
+            0u8
+        }
+    };
+
+    let request_tuple = Token::Tuple(vec![
         Token::String(solver_id.to_owned()),
-        Token::Uint(chain_id),
         Token::Uint(amount),
+        Token::Uint(U256::from(chain_type_u8)),
         Token::String(transaction_hash.to_owned()),
-    ];
+    ]);
+
+    let tokens = vec![Token::Array(vec![request_tuple])];
 
     f.encode_input(&tokens).ok()
 }
