@@ -459,20 +459,36 @@ impl MpcNetworkLayer {
                 // Process using shared handler
                 if !intent_hashes.is_empty() {
                     for intent_hash in intent_hashes.iter() {
-                        if let Err(e) = self
-                            .handle_transaction_id_storage(
-                                intent_hash,
-                                &transaction_id,
-                                &transaction_type,
-                                &node_id,
-                                &sender_peer_id,
-                            )
-                            .await
-                        {
-                            error!(
-                                "❌ [NETWORK] Failed to handle transaction ID storage for intent {}: {}",
-                                intent_hash, e
-                            );
+                        // Check if this is an add_liquidity request_id (starts with "addliq:")
+                        if intent_hash.starts_with("addliq:") {
+                            // This is an add_liquidity request, mark as Completed
+                            let key = format!("{}{}", ADD_LIQUIDITY_DB_PREFIX, intent_hash);
+                            if let Ok(Some(mut record)) =
+                                self.db
+                                    .get_string_async::<PendingAddLiquidityRecord>(&key)
+                                    .await
+                            {
+                                record.status = "Completed".to_string();
+                                let _ = self.db.put_string_async(&key, &record).await;
+                                info!("✅ [ADD_LIQUIDITY] Marked request {} as Completed (tx: {})", intent_hash, transaction_id);
+                            }
+                        } else {
+                            // Regular intent, use existing handler
+                            if let Err(e) = self
+                                .handle_transaction_id_storage(
+                                    intent_hash,
+                                    &transaction_id,
+                                    &transaction_type,
+                                    &node_id,
+                                    &sender_peer_id,
+                                )
+                                .await
+                            {
+                                error!(
+                                    "❌ [NETWORK] Failed to handle transaction ID storage for intent {}: {}",
+                                    intent_hash, e
+                                );
+                            }
                         }
                     }
                 } else if let Some(solver_addr) = solver_address.as_ref() {
@@ -533,10 +549,30 @@ impl MpcNetworkLayer {
                     info!("ℹ️ [NETWORK] No intent hashes or solver address supplied with transaction error broadcast");
                 }
 
+                // Handle add_liquidity failures - no status update needed
+                // Since we only have "Pending" and "Completed", failed requests are already "Pending"
+                // They will automatically retry in the next TICS cycle
+                if !intent_hashes.is_empty() {
+                    for h in &intent_hashes {
+                        // Check if this is an add_liquidity request_id (starts with "addliq:")
+                        if h.starts_with("addliq:") {
+                            warn!(
+                                "⚠️ [ADD_LIQUIDITY] Request {} failed (error: {}), will retry in next cycle (status remains 'Pending')",
+                                h, error_message
+                            );
+                        }
+                    }
+                }
+
                 // Store the error in our local user registry (one store per intent)
                 if let Some(user_intent_manager) = &self.user_intent_manager {
                     if !intent_hashes.is_empty() {
                         for h in &intent_hashes {
+                            // Skip add_liquidity request_ids (already handled above)
+                            if h.starts_with("addliq:") {
+                                continue;
+                            }
+                            
                             if let Err(e) = user_intent_manager
                                 .store_transaction_error(h, &error_message, Some(&node_id))
                                 .await
@@ -1219,6 +1255,7 @@ impl MpcNetworkLayer {
                 if let Some(request_id) = sequencer_request_id {
                     info!("📝 [TX_BROADCAST] Request ID: {}", request_id);
                 }
+                // Note: add_liquidity status tracking happens via TransactionIdBroadcast, not here
             }
             GossipsubMessage::IntentBatchBroadcast {
                 intent_hashes,
@@ -1876,6 +1913,8 @@ impl MpcNetworkLayer {
                         "❌ [ADD_LIQUIDITY_BATCH] Failed to handle solver add_liquidity batch: {}",
                         e
                     );
+                    // Don't mark as Pending - local processing errors indicate permanent issues
+                    // Only blockchain transaction failures (TransactionErrorBroadcast) trigger retry
                 }
             }
             GossipsubMessage::TransactionFailure {
@@ -1905,6 +1944,9 @@ impl MpcNetworkLayer {
                     "⚠️ [TX_FAILURE] Contract transaction {} failed: {}. Sequencer removed, no automatic retry.",
                     sequencer_request_id, error
                 );
+                
+                // Note: For add_liquidity, failed transactions won't reach here since gas estimation
+                // failures are caught earlier and marked as "Failed" in RocksDB
             }
         }
         Ok(())

@@ -233,8 +233,13 @@ impl SigningNode {
                         return;
                     }
                     None => {
-                        error!("❌ [SIGNING] Transaction type is None for intent batch");
-                        return;
+                        // Check if this is an add_liquidity request (request_id starts with "addliq:")
+                        if intent_hashes.iter().any(|h| h.starts_with("addliq:")) {
+                            "add_liquidity"
+                        } else {
+                            error!("❌ [SIGNING] Transaction type is None for intent batch and not add_liquidity");
+                            return;
+                        }
                     }
                 };
 
@@ -744,11 +749,20 @@ impl SigningNode {
                         return;
                     }
                     None => {
-                        // This shouldn't happen if we already handled reward transactions above
-                        error!(
-                            "❌ [SIGNING] Transaction type is None but no solver address available"
-                        );
-                        return;
+                        // Check if this is an add_liquidity request (request_id starts with "addliq:")
+                        if intent_hash.starts_with("addliq:") {
+                            info!(
+                                "📡 [SIGNING] Broadcasting add_liquidity transaction ID {} for request {} (round {}) - storage will be handled by message handler",
+                                tx_id, intent_hash, round
+                            );
+                            "add_liquidity"
+                        } else {
+                            // This shouldn't happen if we already handled reward transactions above
+                            error!(
+                                "❌ [SIGNING] Transaction type is None but no solver address available and not an add_liquidity request"
+                            );
+                            return;
+                        }
                     }
                 };
 

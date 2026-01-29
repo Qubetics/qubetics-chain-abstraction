@@ -3265,6 +3265,21 @@ impl MpcNetworkLayer {
                     }
                 }
 
+                // Define add_liquidity record structure and DB prefix
+                #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+                struct PendingAddLiquidityRecord {
+                    request_id: String,
+                    solver_id: String,
+                    solver_address: String,
+                    amount: String,
+                    chain_id: u64,
+                    signature: String,
+                    signed_payload: String,
+                    timestamp_ms: i64,
+                    status: String,
+                }
+                const ADD_LIQUIDITY_DB_PREFIX: &str = "solver_add_liquidity:";
+
                 // Now process locally using shared handler
                 if !intent_hashes.is_empty() {
                     // Parse node_id to get PeerId for security check
@@ -3273,20 +3288,36 @@ impl MpcNetworkLayer {
                         .unwrap_or_else(|_| libp2p::PeerId::random());
 
                     for intent_hash in intent_hashes.iter() {
-                        if let Err(e) = self
-                            .handle_transaction_id_storage(
-                                intent_hash,
-                                &transaction_id,
-                                &transaction_type,
-                                &node_id,
-                                &sender_peer_id,
-                            )
-                            .await
-                        {
-                            error!(
-                                "❌ [NETWORK] Failed to handle transaction ID storage for intent {}: {}",
-                                intent_hash, e
-                            );
+                        // Check if this is an add_liquidity request_id (starts with "addliq:")
+                        if intent_hash.starts_with("addliq:") {
+                            // This is an add_liquidity request, mark as Completed
+                            let key = format!("{}{}", ADD_LIQUIDITY_DB_PREFIX, intent_hash);
+                            if let Ok(Some(mut record)) =
+                                self.db
+                                    .get_string_async::<PendingAddLiquidityRecord>(&key)
+                                    .await
+                            {
+                                record.status = "Completed".to_string();
+                                let _ = self.db.put_string_async(&key, &record).await;
+                                info!("✅ [ADD_LIQUIDITY] Marked request {} as Completed (tx: {})", intent_hash, transaction_id);
+                            }
+                        } else {
+                            // Regular intent, use existing handler
+                            if let Err(e) = self
+                                .handle_transaction_id_storage(
+                                    intent_hash,
+                                    &transaction_id,
+                                    &transaction_type,
+                                    &node_id,
+                                    &sender_peer_id,
+                                )
+                                .await
+                            {
+                                error!(
+                                    "❌ [NETWORK] Failed to handle transaction ID storage for intent {}: {}",
+                                    intent_hash, e
+                                );
+                            }
                         }
                     }
                 } else if let Some(solver_addr) = solver_address.as_ref() {
@@ -4119,43 +4150,62 @@ impl MpcNetworkLayer {
             status: String,
         }
 
-        let mut solver_addresses: Vec<String> = Vec::new();
+        let mut solver_ids: Vec<String> = Vec::new();
         let mut amounts: Vec<String> = Vec::new();
         let mut chain_ids: Vec<u64> = Vec::new();
+        let mut chain_types: Vec<u8> = Vec::new();
 
         for request_id in &request_ids {
             let key = format!("{}{}", ADD_LIQUIDITY_DB_PREFIX, request_id);
-            if let Ok(Some(mut record)) =
+            if let Ok(Some(record)) =
                 self.db
                     .get_string_async::<PendingAddLiquidityRecord>(&key)
                     .await
             {
                 // Extract data for transaction
-                solver_addresses.push(record.solver_address.clone());
+                solver_ids.push(record.solver_id.clone());
                 amounts.push(record.amount.clone());
                 chain_ids.push(record.chain_id);
+                
+                // Map chain_id to ChainType enum:
+                // 0 (BTC) -> ChainType::BTC (0)
+                // 9029 (EVM/Qubetics) -> ChainType::EVM (1)
+                let chain_type = match record.chain_id {
+                    0 => 0u8,     // BTC
+                    9029 => 1u8,  // EVM
+                    _ => {
+                        warn!(
+                            "⚠️ [ADD_LIQUIDITY_BATCH] Unsupported chain_id {} for request {}, defaulting to EVM",
+                            record.chain_id, request_id
+                        );
+                        1u8 // Default to EVM
+                    }
+                };
+                chain_types.push(chain_type);
 
-                // Mark as Batched if still Pending
-                if record.status == "Pending" {
-                    record.status = "Batched".to_string();
-                    let _ = self.db.put_string_async(&key, &record).await;
-                    info!("✅ [ADD_LIQUIDITY_BATCH] Marked request {} as Batched", request_id);
-                }
+                // Keep status as "Pending" - it will be marked "Completed" on success
+                info!("📦 [ADD_LIQUIDITY_BATCH] Processing request {} (status: {})", request_id, record.status);
             } else {
                 warn!("⚠️ [ADD_LIQUIDITY_BATCH] Request {} not found in RocksDB, skipping", request_id);
             }
         }
 
         // Verify we found all requests
-        if solver_addresses.len() != request_ids.len() {
+        if solver_ids.len() != request_ids.len() {
             error!("❌ [ADD_LIQUIDITY_BATCH] Some requests not found in RocksDB");
             return Err(anyhow!("Some requests not found in RocksDB"));
+        }
+
+        // Safety check: ensure we have at least one request with chain_id
+        if chain_ids.is_empty() {
+            error!("❌ [ADD_LIQUIDITY_BATCH] No chain_ids found in batch");
+            return Err(anyhow!("No chain_ids found in batch"));
         }
 
         // For now, assume all requests in a batch are for the same chain
         // (can be extended to process per-chain sub-batches later)
         let chain_id = chain_ids[0];
-        info!("💧 [ADD_LIQUIDITY_BATCH] Target chain_id: {}", chain_id);
+        info!("💧 [ADD_LIQUIDITY_BATCH] Target chain_id: {}, chain_type: {}", chain_id, chain_types[0]);
 
         // Parse amounts to U256
         let amounts_u256: Vec<U256> = amounts
@@ -4199,17 +4249,18 @@ impl MpcNetworkLayer {
             crate::utils::get_eth_address_from_group_key(group_public_key);
 
         info!(
-            "💧 [ADD_LIQUIDITY_BATCH] Building batchTransfer tx: from={}, to={}, {} recipients",
+            "💧 [ADD_LIQUIDITY_BATCH] Building addLiquidityBatch tx: from={}, to={}, {} deposits",
             liquidity_operator_address,
             solver_contract_address,
-            solver_addresses.len()
+            solver_ids.len()
         );
 
-        // Build the batchTransfer transaction using helper from utils/transaction.rs
+        // Build the addLiquidityBatch transaction using helper from utils/transaction.rs
         let chain_tx = crate::utils::transaction::create_solver_add_liquidity_batch_transaction(
             &liquidity_operator_address,
-            &solver_addresses,
+            &solver_ids,
             &amounts_u256,
+            &chain_types,
             &solver_contract_address,
             chain_id,
         )
@@ -4270,6 +4321,8 @@ impl MpcNetworkLayer {
                 let contract_chain_handler = signing_node.get_contract_chain_handler().clone();
                 let mut eth_signer = crate::signing::EthereumSigner::new(signing_node);
 
+                // Pass request_ids as intent_hashes for tracking through signing flow
+                // When transaction succeeds/fails, these IDs will be used to update status
                 eth_signer
                     .sign_contract_message(
                         contract_tx_bytes,
@@ -4277,16 +4330,20 @@ impl MpcNetworkLayer {
                         &contract_tx,
                         vault_tweaked_share.clone(),
                         None,     // user_eth_address (not applicable)
-                        vec![],   // intent_hashes (not applicable for add_liquidity)
+                        request_ids.clone(),   // Pass request_ids for tracking
                         vault_tweaked_share,
-                        None,     // request_id
+                        None,     // request_id (for sequencer)
                         None,     // original_request
                     )
                     .await?;
 
                 info!(
-                    "✅ [ADD_LIQUIDITY_BATCH] Submitted batchTransfer transaction into MPC signing flow ({} requests)",
+                    "✅ [ADD_LIQUIDITY_BATCH] Submitted addLiquidityBatch transaction into MPC signing flow ({} deposits)",
                     request_ids.len()
+                );
+                info!(
+                    "ℹ️  [ADD_LIQUIDITY_BATCH] Request IDs tracked: {:?}",
+                    request_ids
                 );
                 info!(
                     "ℹ️  [ADD_LIQUIDITY_BATCH] Signatures will be sent to final node for round {}",
@@ -4296,11 +4353,13 @@ impl MpcNetworkLayer {
                 warn!(
                     "⚠️ [ADD_LIQUIDITY_BATCH] Skipping batch - missing vault secret share (liquidity operator key)"
                 );
+                // Don't mark as Failed - this is a temporary condition, can be retried
             }
         } else {
             warn!(
                 "❌ [ADD_LIQUIDITY_BATCH] Signing node not available; cannot start MPC signing for batch"
             );
+            // Don't mark as Failed - this is a temporary condition, can be retried
         }
 
         Ok(())
