@@ -1372,8 +1372,7 @@ impl SigningNode {
                         "\x1b[32m🏆 [CONSENSUS] This node is the final selected node for round {}!\x1b[0m",
                         round
                     );
-                    
-                    // NEW: Dispatch by internal epoch operation type for this round.
+                  // NEW: Dispatch by internal epoch operation type for this round.
                     if operation_type.as_deref() == Some("epoch_1") {
                         info!(
                             "⏰ [CLOCK] Round {} is epoch_1 (TICS batch + add_liquidity), processing phase 1 intents...",
@@ -1989,16 +1988,11 @@ impl SigningNode {
             min_age_seconds
         );
 
-        // Atomically mark all selected requests as "Batched" in RocksDB
-        for (key, record) in &mut requests_to_batch {
-            record.status = "Batched".to_string();
-            if let Err(e) = database.put_string_async(key, record).await {
-                warn!(
-                    "⚠️  [ADD_LIQUIDITY] Failed to mark request {} as Batched: {}",
-                    record.request_id, e
-                );
-            }
-        }
+        // Keep all selected requests as "Pending" - they will be marked "Completed" on success
+        info!(
+            "📦 [ADD_LIQUIDITY] Selected {} requests for batching (keeping status as 'Pending')",
+            requests_to_batch.len()
+        );
 
         // Prepare batch data for broadcast
         let batch_entries: Vec<(String, String, String, u64)> = requests_to_batch

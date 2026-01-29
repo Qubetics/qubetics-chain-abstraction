@@ -1488,23 +1488,25 @@ pub async fn create_solver_rewards_update_transaction(
 }
 
 /// Encode calldata for SolverManager.batchTransfer(recipients, amounts).
-pub fn encode_batch_transfer_calldata(
-    recipients: &[String],
+/// Encode calldata for addLiquidityBatch(AddLiquidityBatch[] deposits)
+/// where AddLiquidityBatch is struct { string solverId, uint256 amount, uint8 chainType }
+pub fn encode_add_liquidity_batch_calldata(
+    solver_ids: &[String],
     amounts: &[U256],
+    chain_types: &[u8],
 ) -> Option<Vec<u8>> {
     #[allow(deprecated)]
     let f = Function {
-        name: "batchTransfer".to_owned(),
+        name: "addLiquidityBatch".to_owned(),
         inputs: vec![
             Param {
-                name: "recipients".into(),
-                kind: ParamType::Array(Box::new(ParamType::Address)),
-                internal_type: None,
-            },
-            Param {
-                name: "amounts".into(),
-                kind: ParamType::Array(Box::new(ParamType::Uint(256))),
-                internal_type: None,
+                name: "deposits".into(),
+                kind: ParamType::Array(Box::new(ParamType::Tuple(vec![
+                    ParamType::String,      // solverId
+                    ParamType::Uint(256),   // amount
+                    ParamType::Uint(8),     // chainType (enum as uint8)
+                ]))),
+                internal_type: Some("struct SolverManager.AddLiquidityBatch[]".into()),
             },
         ],
         outputs: vec![],
@@ -1512,40 +1514,39 @@ pub fn encode_batch_transfer_calldata(
         state_mutability: StateMutability::NonPayable,
     };
 
-    if recipients.len() != amounts.len() {
+    if solver_ids.len() != amounts.len() || solver_ids.len() != chain_types.len() {
         return None;
     }
 
-    let recipient_tokens: Vec<Token> = recipients
+    // Build array of tuples (solverId, amount, chainType)
+    let deposit_tuples: Vec<Token> = solver_ids
         .iter()
-        .filter_map(|addr| addr.parse::<ethers::types::Address>().ok())
-        .map(Token::Address)
+        .zip(amounts.iter())
+        .zip(chain_types.iter())
+        .map(|((solver_id, amount), chain_type)| {
+            Token::Tuple(vec![
+                Token::String(solver_id.clone()),
+                Token::Uint(*amount),
+                Token::Uint((*chain_type).into()),
+            ])
+        })
         .collect();
 
-    // If any address failed to parse, lengths will mismatch – reject.
-    if recipient_tokens.len() != recipients.len() {
-        return None;
-    }
-
-    let amount_tokens: Vec<Token> = amounts.iter().map(|v| Token::Uint(*v)).collect();
-
-    let tokens = vec![
-        Token::Array(recipient_tokens),
-        Token::Array(amount_tokens),
-    ];
+    let tokens = vec![Token::Array(deposit_tuples)];
 
     f.encode_input(&tokens).ok()
 }
 
-/// Create a ChainTransaction for a batch add-liquidity call to SolverManager.batchTransfer.
+/// Create a ChainTransaction for a batch add-liquidity call to SolverManager.addLiquidityBatch.
 ///
 /// - `from_address` should be the liquidity operator address (derived from group key).
-/// - `recipients` and `amounts` must have the same length.
+/// - `solver_ids`, `amounts`, and `chain_types` must have the same length.
 /// - `contract_address` is SOLVER_CONTRACT_ADDRESS (env-provided, may or may not have 0x prefix).
 pub async fn create_solver_add_liquidity_batch_transaction(
     from_address: &str,
-    recipients: &[String],
+    solver_ids: &[String],
     amounts: &[U256],
+    chain_types: &[u8],
     contract_address: &str,
     chain_id: u64,
 ) -> Result<ChainTransaction> {
@@ -1556,19 +1557,19 @@ pub async fn create_solver_add_liquidity_batch_transaction(
     };
 
     info!(
-        "🔧 [CONTRACT] Creating batchTransfer for {} recipients on chain {} via {}",
-        recipients.len(),
+        "🔧 [CONTRACT] Creating addLiquidityBatch for {} deposits on chain {} via {}",
+        solver_ids.len(),
         chain_id,
         normalized_contract_address
     );
 
-    let calldata = encode_batch_transfer_calldata(recipients, amounts);
+    let calldata = encode_add_liquidity_batch_calldata(solver_ids, amounts, chain_types);
     let calldata_hex = calldata
         .as_ref()
         .map(|d| format!("0x{}", hex::encode(d)))
         .unwrap_or_else(|| "0x".to_string());
 
-    info!("🔧 [CONTRACT] batchTransfer calldata prepared (len={} bytes)", calldata.as_ref().map(|c| c.len()).unwrap_or(0));
+    info!("🔧 [CONTRACT] addLiquidityBatch calldata prepared (len={} bytes)", calldata.as_ref().map(|c| c.len()).unwrap_or(0));
 
     let estimated_gas = estimate_gas_for_deposit_intent(
         from_address,

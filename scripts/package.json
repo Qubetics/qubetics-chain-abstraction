@@ -1,0 +1,15 @@
+{
+  "name": "qubetics-test-scripts",
+  "version": "1.0.0",
+  "description": "Test scripts for Qubetics Chain Abstraction",
+  "scripts": {
+    "test": "node test_add_liquidity.js",
+    "quick-test": "./quick_test.sh",
+    "monitor": "./monitor_add_liquidity.sh"
+  },
+  "dependencies": {
+    "ethers": "^5.7.2"
+  },
+  "author": "Qubetics Development Team",
+  "license": "UNLICENSED"
+}

@@ -94,6 +94,16 @@ impl MpcNetworkLayer {
                 
                 Ok(())
             }
+            "add_liquidity" => {
+                // add_liquidity is handled separately in RocksDB (not in user_intent_manager)
+                // This path should not typically be reached since add_liquidity is handled
+                // before calling this function, but we handle it gracefully here
+                info!(
+                    "ℹ️ [ADD_LIQUIDITY] Transaction ID {} for request {} (handled separately in RocksDB)",
+                    transaction_id, intent_hash
+                );
+                Ok(())
+            }
             _ => Err(anyhow::anyhow!(
                 "Unknown transaction type: {}",
                 transaction_type
