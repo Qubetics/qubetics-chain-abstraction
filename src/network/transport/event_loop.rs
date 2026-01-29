@@ -314,6 +314,7 @@ impl MpcNetworkLayer {
                 );
 
                 // Perform VRF node selection (selects 1 node) - ONLY ONCE
+                // Operation type "global_clock" = external trigger for epoch-based flows
                 match vrf_service
                     .perform_node_selection(
                         &available_nodes,

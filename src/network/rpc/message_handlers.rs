@@ -673,51 +673,145 @@ impl MpcNetworkLayer {
         }
 
         // TICS withdraw-liquidity:
-        // - Comes from
-        // Update queued TICS PendingWithdrawRequest records for this solver.
+        // - When request_id is Some: update only that key (batch tx-id broadcast).
+        // - When request_id is None: prefix-scan and update all pending TICS for this solver (legacy single-solver).
         {
             use crate::types::rpc_server::PendingWithdrawRequest;
 
             let db = &self.db;
-            let prefix = format!(
-                "pending_withdraw_liquidity:{}:",
-                solver_address.to_lowercase()
-            );
+            let solver_lower = solver_address.to_lowercase();
 
-            let entries: Vec<(String, PendingWithdrawRequest)> =
-                match db.get_values_with_prefix(&prefix) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        warn!(
-                            "⚠️ [TICS_WITHDRAW] Failed to load pending withdraws for solver {} when applying txid {}: {}",
-                            solver_address, transaction_id, e
-                        );
-                        return Ok(());
+            if let Some(req_id) = request_id {
+                // Batch: update only the specific request
+                let key = format!("pending_withdraw_liquidity:{}:{}", solver_lower, req_id);
+                let maybe_req: Option<PendingWithdrawRequest> =
+                    match db.get_string::<PendingWithdrawRequest>(&key) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            warn!(
+                                "⚠️ [TICS_WITHDRAW] Failed to load pending withdraw {} for solver {} when applying txid {}: {}",
+                                req_id, solver_address, transaction_id, e
+                            );
+                            return Ok(());
+                        }
+                    };
+
+                if let Some(mut req) = maybe_req {
+                    if req.asset.to_uppercase() == "TICS" {
+                        // TICS: set tx_id (EVM hash) and mark Completed
+                        if req.tx_id.is_some() {
+                            return Ok(());
+                        }
+                        req.tx_id = Some(transaction_id.to_string());
+                        req.status = "Completed".to_string();
+                        if let Err(e) = db.put_string(&key, &req) {
+                            warn!(
+                                "⚠️ [TICS_WITHDRAW] Failed to update tx_id/status for withdraw {} (solver {}): {}",
+                                req_id, solver_address, e
+                            );
+                        } else {
+                            info!(
+                                "💾 [TICS_WITHDRAW] Marked TICS withdraw {} (solver {}) as Completed with tx_id {}",
+                                req_id, solver_address, transaction_id
+                            );
+                        }
+                    } else if req.asset.to_uppercase() == "BTC" {
+                        // BTC in TICS batch: mark done only if request already has tx_id (BTC tx broadcast; contract now updated)
+                        if req.tx_id.is_none() {
+                            warn!(
+                                "⚠️ [TICS_WITHDRAW] Skipping BTC withdraw {} (solver {}): no tx_id yet; mark done only after BTC tx is set",
+                                req_id, solver_address
+                            );
+                            return Ok(());
+                        }
+                        req.status = "Completed".to_string();
+                        if let Err(e) = db.put_string(&key, &req) {
+                            warn!(
+                                "⚠️ [TICS_WITHDRAW] Failed to mark BTC withdraw {} (solver {}) as Completed: {}",
+                                req_id, solver_address, e
+                            );
+                        } else {
+                            info!(
+                                "💾 [TICS_WITHDRAW] Marked BTC withdraw {} (solver {}) as Completed (contract registration confirmed)",
+                                req_id, solver_address
+                            );
+                        }
                     }
-                };
-
-            for (key, mut req) in entries {
-                if req.asset.to_uppercase() != "TICS" || req.tx_id.is_some() {
-                    continue;
-                }
-
-                req.tx_id = Some(transaction_id.to_string());
-                req.status = "Completed".to_string();
-
-                if let Err(e) = db.put_string(&key, &req) {
-                    warn!(
-                        "⚠️ [TICS_WITHDRAW] Failed to update tx_id/status for withdraw {} (solver {}): {}",
-                        req.request_id, solver_address, e
-                    );
+                    // other assets: no-op
                 } else {
-                    info!(
-                        "💾 [TICS_WITHDRAW] Marked withdraw {} (solver {}) as Completed with tx_id {}",
-                        req.request_id, solver_address, transaction_id
+                    warn!(
+                        "⚠️ [TICS_WITHDRAW] Pending withdraw {} for solver {} not found when applying txid {}",
+                        req_id, solver_address, transaction_id
                     );
+                }
+            } else {
+                // Legacy: prefix-scan and update all pending TICS for this solver
+                let prefix = format!("pending_withdraw_liquidity:{}:", solver_lower);
+                let entries: Vec<(String, PendingWithdrawRequest)> =
+                    match db.get_values_with_prefix(&prefix) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            warn!(
+                                "⚠️ [TICS_WITHDRAW] Failed to load pending withdraws for solver {} when applying txid {}: {}",
+                                solver_address, transaction_id, e
+                            );
+                            return Ok(());
+                        }
+                    };
+
+                for (key, mut req) in entries {
+                    if req.asset.to_uppercase() != "TICS" || req.tx_id.is_some() {
+                        continue;
+                    }
+
+                    req.tx_id = Some(transaction_id.to_string());
+                    req.status = "Completed".to_string();
+
+                    if let Err(e) = db.put_string(&key, &req) {
+                        warn!(
+                            "⚠️ [TICS_WITHDRAW] Failed to update tx_id/status for withdraw {} (solver {}): {}",
+                            req.request_id, solver_address, e
+                        );
+                    } else {
+                        info!(
+                            "💾 [TICS_WITHDRAW] Marked withdraw {} (solver {}) as Completed with tx_id {}",
+                            req.request_id, solver_address, transaction_id
+                        );
+                    }
                 }
             }
         }
 
+        Ok(())
+    }
+
+    /// Handle withdraw liquidity transaction ID storage for multiple (request_id, solver_address) in one call.
+    /// Used when the broadcast path has multiple requests (multiple solvers/withdrawals in one batch).
+    pub(crate) async fn handle_withdraw_liquidity_transaction_id_storage_batch(
+        &mut self,
+        transaction_id: &str,
+        transaction_type: &str,
+        requests: &[(String, String)],
+    ) -> Result<()> {
+        if requests.is_empty() {
+            return Ok(());
+        }
+        for (request_id, solver_address) in requests {
+            if let Err(e) = self
+                .handle_withdraw_liquidity_transaction_id_storage(
+                    solver_address,
+                    transaction_id,
+                    transaction_type,
+                    Some(request_id.as_str()),
+                )
+                .await
+            {
+                warn!(
+                    "⚠️ [WITHDRAW_TXID] Failed to apply txid {} for withdraw {} (solver {}): {}",
+                    transaction_id, request_id, solver_address, e
+                );
+            }
+        }
         Ok(())
     }
 }

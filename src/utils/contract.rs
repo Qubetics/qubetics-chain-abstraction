@@ -174,6 +174,7 @@ pub async fn execute_refund_intent_contract_call(
             vault_tweaked_share,
             request_id,
             None,
+            None, // tics_withdraw_identifiers (not applicable)
         )
         .await?;
 

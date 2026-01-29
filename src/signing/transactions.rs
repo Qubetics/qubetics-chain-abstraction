@@ -50,15 +50,51 @@ impl SigningNode {
             (
                 chain_tx,
                 tx_bytes,
-                Some(solver_address),
+                Some(vec![solver_address]),
                 Some(TransactionType::WithdrawLiquidity),
-                None, // No request_id for withdraw liquidity
-                None, // No original_request for withdraw liquidity
+                None,
+                None,
             ),
         );
         info!(
             "💧 [SIGNING] Stored TICS withdraw-liquidity transaction for round {} with solver address",
             round
+        );
+    }
+
+    /// Store TICS withdraw batch (one EVM tx-id for multiple requests). identifiers are "request_id|solver_address".
+    pub(crate) async fn store_withdraw_transaction_tics_batch(
+        &self,
+        round: u64,
+        chain_tx: ChainTransaction,
+        tx_bytes: Vec<u8>,
+        identifiers: Vec<String>,
+    ) {
+        if identifiers.is_empty() {
+            return;
+        }
+        let mut pending = self
+            .pending
+            .withdraw_pending_transactions_tics
+            .write()
+            .await;
+        let count = identifiers.len();
+        pending.insert(
+            round,
+            (
+                chain_tx,
+                tx_bytes,
+                Some(identifiers),
+                Some(TransactionType::WithdrawLiquidity),
+                None,
+                None,
+            ),
+        );
+        let mut withdraw_rounds = self.pending.withdraw_rounds.write().await;
+        withdraw_rounds.insert(round);
+        info!(
+            "💧 [SIGNING] Stored TICS withdraw-liquidity batch for round {} with {} request(s)",
+            round, count
         );
     }
 
@@ -133,13 +169,20 @@ impl SigningNode {
                     if let Some((
                         _tx,
                         _tx_bytes,
-                        solver_address,
+                        identifiers,
                         transaction_type,
                         _request_id,
                         _original_request,
                     )) = withdraw_pending_transactions.get(&round)
                     {
-                        (vec![], transaction_type.clone(), solver_address.clone())
+                        let solver_address = identifiers.as_ref().and_then(|v| v.first()).map(|s| {
+                            if let Some((_, solver)) = s.split_once('|') {
+                                solver.to_string()
+                            } else {
+                                s.clone()
+                            }
+                        });
+                        (vec![], transaction_type.clone(), solver_address)
                     } else {
                         (vec![], None, None)
                     }
@@ -580,14 +623,21 @@ impl SigningNode {
                     if let Some((
                         _tx,
                         _tx_bytes,
-                        solver_address,
+                        identifiers,
                         transaction_type,
                         _request_id,
                         _original_request,
                     )) = withdraw_pending_transactions.get(&round)
                     {
-                        info!("[store_transaction_id_for_round] [TICS][Withdraw] Found withdraw_pending_transactions_tics entry for round {}: solver_address={:?}, transaction_type={:?}", round, solver_address, transaction_type);
-                        (None, transaction_type.clone(), solver_address.clone())
+                        let solver_address = identifiers.as_ref().and_then(|v| v.first()).map(|s| {
+                            if let Some((_, solver)) = s.split_once('|') {
+                                solver.to_string()
+                            } else {
+                                s.clone()
+                            }
+                        });
+                        info!("[store_transaction_id_for_round] [TICS][Withdraw] Found withdraw_pending_transactions_tics entry for round {}: identifiers={}, transaction_type={:?}", round, identifiers.as_ref().map(|v| v.len()).unwrap_or(0), transaction_type);
+                        (None, transaction_type.clone(), solver_address)
                     } else {
                         warn!("[store_transaction_id_for_round] [TICS][Withdraw] No entry in withdraw_pending_transactions_tics for round {}", round);
                         (None, None, None)
@@ -859,26 +909,72 @@ impl SigningNode {
                     Some(crate::types::TransactionType::WithdrawLiquidity)
                 ) {
                     // Withdraw liquidity:
-                    // - For TICS, we use the generic TransactionIdBroadcast ("withdraw_liquidity")
-                    // - For BTC, we use the dedicated BtcWithdrawTxIdBroadcast carrying full batch context
+                    // Use a unified WithdrawTxIdBroadcast message that the network layer
+                    // interprets for both BTC and TICS withdraws.
                     match txn_network {
                         crate::types::TransactionNetwork::TICS => {
-                            if let Some(solver_addr) = retrieved_solver_address.as_ref() {
+                            let network_label =
+                                crate::types::network::network_type().as_str().to_string();
+                            let withdraw_pending =
+                                self.pending.withdraw_pending_transactions_tics.read().await;
+                            let batch_requests: Vec<(String, String)> = withdraw_pending
+                                .get(&round)
+                                .and_then(|(_, _, identifiers, _, _, _)| identifiers.as_ref())
+                                .filter(|v| !v.is_empty())
+                                .map(|list| {
+                                    list.iter()
+                                        .filter_map(|encoded| {
+                                            encoded.split_once('|').map(|(req_id, solver)| {
+                                                (req_id.to_string(), solver.to_string())
+                                            })
+                                        })
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+
+                            if !batch_requests.is_empty() {
                                 info!(
-                                    "📡 [SIGNING] Broadcasting TICS withdraw liquidity transaction ID {} for solver {} (round {}) - storage will be handled by message handler",
+                                    "📡 [SIGNING] Broadcasting TICS withdraw-liquidity txid {} for {} request(s) (round {}) via WithdrawTxIdBroadcast",
+                                    tx_id, batch_requests.len(), round
+                                );
+                                let msg =
+                                    crate::types::ChannelMessage::WithdrawTxIdBroadcast {
+                                        txid: tx_id.to_string(),
+                                        network: network_label,
+                                        batch_id: format!("tics-withdraw-round-{}", round),
+                                        solver_address: None,
+                                        requests: batch_requests,
+                                        node_id: self.id.clone(),
+                                    };
+                                if let Err(e) = self.message_tx.send(msg).await {
+                                    error!(
+                                        "❌ [SIGNING] Failed to send WithdrawTxIdBroadcast (TICS batch) over channel for round {}: {}",
+                                        round, e
+                                    );
+                                }
+                            } else if let Some(solver_addr) = retrieved_solver_address.as_ref() {
+                                info!(
+                                    "📡 [SIGNING] Broadcasting TICS withdraw-liquidity txid {} for solver {} (round {}) via WithdrawTxIdBroadcast",
                                     tx_id, solver_addr, round
                                 );
-
-                                self.broadcast_transaction_id(
-                                    vec![],
-                                    tx_id,
-                                    "withdraw_liquidity",
-                                    Some(solver_addr),
-                                )
-                                .await;
+                                let msg =
+                                    crate::types::ChannelMessage::WithdrawTxIdBroadcast {
+                                        txid: tx_id.to_string(),
+                                        network: network_label,
+                                        batch_id: format!("tics-withdraw-round-{}", round),
+                                        solver_address: Some(solver_addr.to_string()),
+                                        requests: Vec::new(),
+                                        node_id: self.id.clone(),
+                                    };
+                                if let Err(e) = self.message_tx.send(msg).await {
+                                    error!(
+                                        "❌ [SIGNING] Failed to send WithdrawTxIdBroadcast (TICS) over channel for round {}: {}",
+                                        round, e
+                                    );
+                                }
                             } else {
                                 warn!(
-                                    "⚠️ [SIGNING] TICS WithdrawLiquidity transaction type requires solver_address, but none was found in round {} (tx_id={})",
+                                    "⚠️ [SIGNING] TICS WithdrawLiquidity round {} has no batch identifiers and no solver_address (tx_id={})",
                                     round, tx_id
                                 );
                             }
@@ -911,7 +1007,7 @@ impl SigningNode {
 
                                 if batch_requests.is_empty() {
                                     warn!(
-                                        "⚠️ [SIGNING] BTC WithdrawLiquidity round {} has no batch identifiers; skipping BtcWithdrawTxIdBroadcast for tx_id={}",
+                                        "⚠️ [SIGNING] BTC WithdrawLiquidity round {} has no batch identifiers; skipping WithdrawTxIdBroadcast for tx_id={}",
                                         round, tx_id
                                     );
                                     return;
@@ -920,24 +1016,26 @@ impl SigningNode {
                                 let network_label = crate::types::network::network_type().as_str();
 
                                 info!(
-                                    "📡 [SIGNING] Broadcasting BTC withdraw-liquidity txid {} for round {} with {} requests (network={})",
+                                    "📡 [SIGNING] Broadcasting BTC withdraw-liquidity txid {} for round {} with {} requests (network={}) via WithdrawTxIdBroadcast",
                                     tx_id,
                                     round,
                                     batch_requests.len(),
                                     network_label
                                 );
 
-                                let msg = crate::types::ChannelMessage::BtcWithdrawTxIdBroadcast {
-                                    btc_txid: tx_id.to_string(),
+                                let msg = crate::types::ChannelMessage::WithdrawTxIdBroadcast {
+                                    txid: tx_id.to_string(),
                                     network: network_label.to_string(),
                                     batch_id: format!("btc-withdraw-round-{}", round),
+                                    // BTC path uses per-request mapping; solver_address is optional
+                                    solver_address: None,
                                     requests: batch_requests,
                                     node_id: self.id.clone(),
                                 };
 
                                 if let Err(e) = self.message_tx.send(msg).await {
                                     error!(
-                                        "❌ [SIGNING] Failed to send BtcWithdrawTxIdBroadcast over channel for round {}: {}",
+                                        "❌ [SIGNING] Failed to send WithdrawTxIdBroadcast (BTC) over channel for round {}: {}",
                                         round, e
                                     );
                                 }

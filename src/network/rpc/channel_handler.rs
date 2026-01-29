@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 impl MpcNetworkLayer {
    
-    async fn fetch_solver_id_for_address(&self, solver_address: &str) -> Result<String> {
+    pub(crate) async fn fetch_solver_id_for_address(&self, solver_address: &str) -> Result<String> {
         let rpc_url = std::env::var("SOLVER_CONTRACT_RPC_URL")
             .unwrap_or_else(|_| "http://localhost:8545".to_string());
         let contract_address_env = std::env::var("SOLVER_CONTRACT_ADDRESS")
@@ -597,6 +597,7 @@ impl MpcNetworkLayer {
                         vault_tweaked_share,
                         request_id, // Pass request_id from sequencer
                         original_request, // Pass original_request for retry support
+                        None, // tics_withdraw_identifiers (not applicable)
                     )
                     .await?;
                 info!(
@@ -769,6 +770,7 @@ impl MpcNetworkLayer {
                         vault_tweaked_share,
                         request_id, // Pass request_id from sequencer
                         original_request, // No original_request available in this context
+                        None, // tics_withdraw_identifiers (not applicable)
                     )
                     .await?;
                 info!(
@@ -1239,20 +1241,20 @@ impl MpcNetworkLayer {
                     );
                 }
             }
-            ChannelMessage::BtcWithdrawTxIdBroadcast {
-                btc_txid,
-                network,
+            ChannelMessage::TicsWithdrawBatch {
                 batch_id,
                 requests,
+                round,
+                timestamp,
                 node_id,
             } => {
                 use libp2p::gossipsub::{IdentTopic, Message as GossipMessage};
 
-                let gossip_msg = crate::types::GossipsubMessage::BtcWithdrawTxIdBroadcast {
-                    btc_txid,
-                    network,
+                let gossip_msg = crate::types::GossipsubMessage::TicsWithdrawBatch {
                     batch_id,
                     requests,
+                    round,
+                    timestamp,
                     node_id,
                 };
 
@@ -1260,7 +1262,7 @@ impl MpcNetworkLayer {
                     Ok(d) => d,
                     Err(e) => {
                         warn!(
-                            "❌ [BTC_WITHDRAW] Failed to serialize BtcWithdrawTxIdBroadcast: {}",
+                            "❌ [TICS_WITHDRAW] Failed to serialize TicsWithdrawBatch: {}",
                             e
                         );
                         return Ok(());
@@ -1279,7 +1281,7 @@ impl MpcNetworkLayer {
 
                 if let Err(e) = self.handle_gossipsub_message(&local_msg).await {
                     warn!(
-                        "❌ [BTC_WITHDRAW] Failed to process local BtcWithdrawTxIdBroadcast: {}",
+                        "❌ [TICS_WITHDRAW] Failed to process local TicsWithdrawBatch: {}",
                         e
                     );
                 }
@@ -1291,13 +1293,87 @@ impl MpcNetworkLayer {
                 if peer_count > 0 {
                     if let Err(e) = swarm_mut.gossipsub.publish(topic_hash, data) {
                         warn!(
-                            "❌ [BTC_WITHDRAW] Failed to publish BtcWithdrawTxIdBroadcast to topic {}: {:?}",
+                            "❌ [TICS_WITHDRAW] Failed to publish TicsWithdrawBatch to topic {}: {:?}",
                             topic, e
                         );
                     }
                 } else {
                     warn!(
-                        "⚠️ [BTC_WITHDRAW] No peers available for broadcasting BtcWithdrawTxIdBroadcast"
+                        "⚠️ [TICS_WITHDRAW] No peers available for broadcasting TicsWithdrawBatch"
+                    );
+                }
+            }
+            ChannelMessage::WithdrawTxIdBroadcast {
+                txid,
+                network,
+                batch_id,
+                solver_address,
+                requests,
+                node_id,
+            } => {
+                use libp2p::gossipsub::{IdentTopic, Message as GossipMessage};
+
+                info!(
+                    "📡 [WITHDRAW_TXID] Received withdraw-liquidity txid broadcast from node {}: txid={}, batch_id={}, network={}, solver={:?}, requests={}",
+                    node_id,
+                    txid,
+                    batch_id,
+                    network,
+                    solver_address,
+                    requests.len()
+                );
+
+                let gossip_msg = crate::types::GossipsubMessage::WithdrawTxIdBroadcast {
+                    txid,
+                    network,
+                    batch_id,
+                    solver_address,
+                    requests,
+                    node_id,
+                };
+
+                let data = match serde_json::to_vec(&gossip_msg) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        warn!(
+                            "❌ [WITHDRAW_TXID] Failed to serialize WithdrawTxIdBroadcast: {}",
+                            e
+                        );
+                        return Ok(());
+                    }
+                };
+
+                // 1) Process locally by calling the main gossipsub handler
+                let topic = "withdraw-liquidity-batch".to_string();
+                let topic_hash = IdentTopic::new(topic.clone());
+                let local_msg = GossipMessage {
+                    source: Some(self.local_peer_id),
+                    data: data.clone(),
+                    sequence_number: None,
+                    topic: topic_hash.hash(),
+                };
+
+                if let Err(e) = self.handle_gossipsub_message(&local_msg).await {
+                    warn!(
+                        "❌ [WITHDRAW_TXID] Failed to process local WithdrawTxIdBroadcast: {}",
+                        e
+                    );
+                }
+
+                // 2) Publish to other peers via gossipsub
+                let swarm_mut = swarm.behaviour_mut();
+                let peer_count = swarm_mut.gossipsub.all_peers().count();
+
+                if peer_count > 0 {
+                    if let Err(e) = swarm_mut.gossipsub.publish(topic_hash, data) {
+                        warn!(
+                            "❌ [WITHDRAW_TXID] Failed to publish WithdrawTxIdBroadcast to topic {}: {:?}",
+                            topic, e
+                        );
+                    }
+                } else {
+                    warn!(
+                        "⚠️ [WITHDRAW_TXID] No peers available for broadcasting WithdrawTxIdBroadcast"
                     );
                 }
             }
@@ -4054,6 +4130,7 @@ impl MpcNetworkLayer {
                         secret_share,
                         None,
                         None,
+                        None, // tics_withdraw_identifiers (not applicable)
                     )
                     .await?;
 
@@ -4277,6 +4354,7 @@ impl MpcNetworkLayer {
                         vault_tweaked_share,
                         None,     // request_id
                         None,     // original_request
+                        None,     // tics_withdraw_identifiers (not applicable)
                     )
                     .await?;
 

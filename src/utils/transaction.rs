@@ -1912,6 +1912,104 @@ pub fn encode_remove_liquidity_calldata(
     f.encode_input(&tokens).ok()
 }
 
+/// One request entry for removeLiquidity batch: (solver_id, amount, chain_type, transaction_hash).
+pub type RemoveLiquidityBatchRequest = (String, U256, u8, String);
+
+/// Encode calldata for removeLiquidity with multiple requests (TICS + BTC) in one call.
+/// ABI: removeLiquidity((string solverId, uint256 amount, uint8 chainType, string transactionHash)[] requests)
+pub fn encode_remove_liquidity_batch_calldata(
+    requests: &[RemoveLiquidityBatchRequest],
+) -> Option<Vec<u8>> {
+    if requests.is_empty() {
+        return None;
+    }
+    #[allow(deprecated)]
+    let f = Function {
+        name: "removeLiquidity".to_owned(),
+        inputs: vec![Param {
+            name: "requests".into(),
+            kind: ParamType::Array(Box::new(ParamType::Tuple(vec![
+                ParamType::String,
+                ParamType::Uint(256),
+                ParamType::Uint(8),
+                ParamType::String,
+            ]))),
+            internal_type: None,
+        }],
+        outputs: vec![],
+        constant: None,
+        state_mutability: StateMutability::NonPayable,
+    };
+
+    let request_tokens: Vec<Token> = requests
+        .iter()
+        .map(|(solver_id, amount, chain_type, tx_hash)| {
+            Token::Tuple(vec![
+                Token::String(solver_id.clone()),
+                Token::Uint(*amount),
+                Token::Uint(U256::from(*chain_type)),
+                Token::String(tx_hash.clone()),
+            ])
+        })
+        .collect();
+
+    let tokens = vec![Token::Array(request_tokens)];
+    f.encode_input(&tokens).ok()
+}
+
+/// Build one Ethereum transaction for removeLiquidity batch (multiple solvers / TICS + BTC in one tx).
+pub async fn create_solver_remove_liquidity_batch_transaction(
+    from_address: &str,
+    requests: &[RemoveLiquidityBatchRequest],
+    _transaction_hash: &str,
+    contract_address: &str,
+    chain_id: u64,
+    chain_name: &str,
+) -> Result<EthereumTransaction> {
+    use crate::utils::transaction::encode_remove_liquidity_batch_calldata;
+
+    let normalized_contract_address = if contract_address.starts_with("0x") {
+        contract_address.to_string()
+    } else {
+        format!("0x{contract_address}")
+    };
+
+    let calldata = encode_remove_liquidity_batch_calldata(requests)
+        .ok_or_else(|| anyhow::anyhow!("Failed to encode removeLiquidity batch calldata"))?;
+    let calldata_hex = format!("0x{}", hex::encode(&calldata));
+
+    info!(
+        "🔧 [CONTRACT][LIQ] Preparing removeLiquidity batch: {} requests, {} bytes",
+        requests.len(),
+        calldata.len()
+    );
+
+    let estimated_gas = estimate_gas_for_deposit_intent(
+        from_address,
+        &normalized_contract_address,
+        &calldata_hex,
+        chain_id,
+    )
+    .await?;
+    let gas_limit = estimated_gas + (estimated_gas / 5).max(50_000);
+
+    let gas_price = get_gas_price_for_chain(chain_name, chain_id)
+        .await
+        .unwrap_or_else(|_| get_default_gas_price_for_chain(chain_name));
+    let nonce = fetch_ethereum_nonce(from_address, chain_id).await?;
+
+    let ethereum_tx = EthereumTransaction {
+        to: normalized_contract_address,
+        value: "0x0".to_string(),
+        gas_limit,
+        gas_price,
+        nonce,
+        data: Some(calldata),
+        chain_id,
+    };
+
+    Ok(ethereum_tx)
+}
 
 /// Fetch current gas price from RPC for Qubetics chain
 /// Only supports Qubetics (chain ID 9029)

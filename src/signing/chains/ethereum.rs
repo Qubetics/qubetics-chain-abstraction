@@ -77,6 +77,7 @@ impl<'a> EthereumSigner<'a> {
         signing_key_override: Option<Scalar>,
         request_id: Option<String>,
         original_request: Option<()>,
+        tics_withdraw_identifiers: Option<Vec<String>>,
     ) -> Result<()> {
         self.node
             .sign_contract_message(
@@ -89,6 +90,7 @@ impl<'a> EthereumSigner<'a> {
                 signing_key_override,
                 request_id,
                 original_request,
+                tics_withdraw_identifiers,
             )
             .await
     }
@@ -656,6 +658,7 @@ impl SigningNode {
     }
 
     /// Sign a contract transaction message (overload for ContractTransaction)
+    /// When tics_withdraw_identifiers is Some(non-empty), stores in withdraw_pending_transactions_tics for batch TICS withdraw.
     pub async fn sign_contract_message(
         &mut self,
         _message: Vec<u8>,
@@ -667,6 +670,7 @@ impl SigningNode {
         signing_key_override: Option<Scalar>,
         request_id: Option<String>,
         original_request: Option<()>,
+        tics_withdraw_identifiers: Option<Vec<String>>,
     ) -> Result<()> {
         // Determine which key to use for signing
         // Redacted user_tweaked_share from logs
@@ -838,6 +842,36 @@ impl SigningNode {
         }
 
         // Store original transaction for reconstruction after aggregation (contract-specific path)
+        // TICS withdraw batch: store in withdraw_pending_transactions_tics with identifiers for tx-id broadcast
+        if let Some(ref identifiers) = tics_withdraw_identifiers {
+            if !identifiers.is_empty() {
+                self.store_withdraw_transaction_tics_batch(
+                    round,
+                    chain_transaction.clone(),
+                    tx_bytes.clone(),
+                    identifiers.clone(),
+                )
+                .await;
+                {
+                    let mut withdraw_rounds = self.pending.withdraw_rounds.write().await;
+                    withdraw_rounds.insert(round);
+                    info!(
+                        "💧 [SIGNING] Node {} added round {} to withdraw_rounds (TICS batch, {} request(s))",
+                        self.id, round, identifiers.len()
+                    );
+                }
+                info!(
+                    "💾 [SIGNING] Node {} stored TICS withdraw batch contract transaction for round {} ({} request(s))",
+                    self.id, round, identifiers.len()
+                );
+                info!(
+                    "📤 [SIGNING] Node {} broadcasted Ethereum contract signature",
+                    self.id
+                );
+                return Ok(());
+            }
+        }
+
         let mut pending_transactions = self.pending.pending_transactions.write().await;
         let primary_intent_hash = intent_hashes.first().cloned();
 

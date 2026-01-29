@@ -22,6 +22,26 @@ pub struct KeyShare {
     pub value: SerializableScalar,
 }
 
+/// Per-request metadata included in TICS withdraw-liquidity batches.
+/// Carries enough information for all nodes to:
+/// - Look up the full PendingWithdrawRequest in RocksDB
+/// - Aggregate per-solver amounts for TICS (and optionally BTC) assets
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TicsWithdrawBatchRequest {
+    /// Unique withdraw-liquidity request identifier
+    pub request_id: String,
+    /// Solver EVM address associated with the request
+    pub solver_address: String,
+    /// Asset symbol, e.g. "TICS" or "BTC"
+    pub asset: String,
+    /// Amount as decimal string in smallest units for the asset chain
+    pub amount: String,
+    /// Asset chain identifier (e.g. 9029 for TICS, 0 for BTC placeholder)
+    pub chain_id: u64,
+    /// Optional on-chain transaction ID already associated with this request
+    pub tx_id: Option<String>,
+}
+
 #[derive(Debug)]
 pub enum ChannelMessage {
     Broadcast {
@@ -139,17 +159,46 @@ pub enum ChannelMessage {
         /// Node ID of the final node broadcasting this batch
         node_id: String,
     },
-    /// BTC withdraw-liquidity transaction ID broadcast
-    /// Sent AFTER the aggregated BTC transaction has been constructed and broadcast.
-    /// Associates a concrete btc_txid with the withdraw requests in the batch.
-    BtcWithdrawTxIdBroadcast {
-        /// BTC transaction ID that executed this withdraw-liquidity batch
-        btc_txid: String,
-        /// Network label, e.g. "bitcoin-mainnet" or "bitcoin-testnet"
-        network: String,
-        /// Unique batch identifier corresponding to the earlier BtcWithdrawBatch
+    /// TICS withdraw-liquidity batch broadcast.
+    /// Final node broadcasts selected TICS (and optionally BTC) withdraw requests
+    /// so all nodes can aggregate per-solver amounts and submit a single
+    /// removeLiquidity contract call via MPC signing.
+    TicsWithdrawBatch {
+        /// Unique batch identifier (e.g. derived from round + timestamp)
         batch_id: String,
-        /// List of (request_id, solver_address) that were included in this tx
+        /// Per-request metadata (TICS and optionally BTC) used for aggregation.
+        requests: Vec<TicsWithdrawBatchRequest>,
+        /// Round number that triggered this batch
+        round: u64,
+        /// Timestamp when batch was created
+        timestamp: String,
+        /// Node ID of the final node broadcasting this batch
+        node_id: String,
+    },
+    /// Unified withdraw-liquidity transaction ID broadcast for both BTC and TICS.
+    /// Sent AFTER the underlying transaction (BTC batch or TICS removeLiquidity) has
+    /// been constructed and broadcast.
+    /// This message is interpreted by the handler and routed to
+    /// handle_withdraw_liquidity_transaction_id_storage, which applies asset-specific
+    /// semantics based on the txid/network shape.
+    WithdrawTxIdBroadcast {
+        /// Transaction ID that executed this withdraw-liquidity operation.
+        /// - For BTC: raw bitcoin txid (non-0x).
+        /// - For TICS: EVM transaction hash (0x-prefixed).
+        txid: String,
+        /// Network label or chain identifier (for logging/traceability).
+        /// - For BTC: e.g. "bitcoin-mainnet" or "bitcoin-testnet".
+        /// - For TICS: e.g. "qubetics".
+        network: String,
+        /// Batch identifier corresponding to the withdraw batch (BTC or TICS).
+        batch_id: String,
+        /// Optional solver address.
+        /// - For BTC: usually None; individual requests are in `requests`.
+        /// - For TICS: solver address for which removeLiquidity was executed.
+        solver_address: Option<String>,
+        /// Optional list of (request_id, solver_address) included in this withdraw batch.
+        /// - For BTC: used to map a single btc_txid to many withdraw requests.
+        /// - For TICS: typically empty; mapping is done per-solver via solver_address.
         requests: Vec<(String, String)>,
         /// Node ID broadcasting the txid
         node_id: String,
@@ -329,11 +378,27 @@ pub enum GossipsubMessage {
         timestamp: String,
         node_id: String,
     },
-    /// BTC withdraw-liquidity transaction ID broadcast
-    BtcWithdrawTxIdBroadcast {
-        btc_txid: String,
+    /// TICS withdraw-liquidity batch broadcast.
+    /// Final node broadcasts selected TICS (and optionally BTC) withdraw requests
+    /// so all nodes can aggregate per-solver amounts and submit a single
+    /// removeLiquidity contract call via MPC signing.
+    TicsWithdrawBatch {
+        batch_id: String,
+        requests: Vec<TicsWithdrawBatchRequest>,
+        round: u64,
+        timestamp: String,
+        node_id: String,
+    },
+    /// Unified withdraw-liquidity transaction ID broadcast for both BTC and TICS.
+    /// Carries sufficient context (network, batch_id, solver, per-request mapping)
+    /// so that the handler can:
+    /// - For BTC: update tx_id for each (request_id, solver_address) pair.
+    /// - For TICS: set tx_id and mark TICS withdraw requests for the solver as Completed.
+    WithdrawTxIdBroadcast {
+        txid: String,
         network: String,
         batch_id: String,
+        solver_address: Option<String>,
         requests: Vec<(String, String)>,
         node_id: String,
     },
