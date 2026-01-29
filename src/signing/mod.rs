@@ -1380,8 +1380,8 @@ impl SigningNode {
                             round
                         );
 
-                        // Process phase 1 intents (UserToVault done, NetworkToTarget pending)
-                        if let Err(e) = self.process_phase1_intents_for_global_clock(round).await {
+                        // Process phase 1 intents (UserToVault done, NetworkToTarget pending) for TICS
+                        if let Err(e) = self.process_phase1_intents_for_global_clock(round, "qubetics").await {
                             warn!(
                                 "⚠️ [CLOCK] Failed to process phase 1 intents for round {}: {}",
                                 round, e
@@ -1411,8 +1411,8 @@ impl SigningNode {
                             round
                         );
 
-                        // Reuse global-clock phase 1 handler; it will pick BTC batch based on cycle.
-                        if let Err(e) = self.process_phase1_intents_for_global_clock(round).await {
+                        // Process phase 1 intents for BTC (passed explicitly by epoch).
+                        if let Err(e) = self.process_phase1_intents_for_global_clock(round, "bitcoin").await {
                             warn!(
                                 "⚠️ [CLOCK] Failed to process BTC phase 1 intents for round {}: {}",
                                 round, e
@@ -1536,17 +1536,14 @@ impl SigningNode {
         Ok(())
     }
 
-    /// Process phase 1 completed intents for global clock trigger
-    /// Phase 1 = UserToVault transaction complete, NetworkToTarget pending
-    /// Alternates between chains based on timestamp cycles
-    async fn process_phase1_intents_for_global_clock(&self, round: u64) -> Result<()> {
-        info!("🔍 [CLOCK] Processing phase 1 completed intents for round {}", round);
-        
-        // Read the global clock interval from environment
-        let clock_interval_secs = std::env::var("GLOBAL_CLOCK_INTERVAL_SECONDS")
-            .ok()
-            .and_then(|val| val.parse::<u64>().ok())
-            .unwrap_or(60);
+    /// Process phase 1 completed intents for global clock trigger.
+    /// Phase 1 = UserToVault transaction complete, NetworkToTarget pending.
+    /// `target_chain`: "qubetics" (TICS) or "bitcoin" (BTC) — passed by caller based on epoch; no re-calculation inside.
+    async fn process_phase1_intents_for_global_clock(&self, round: u64, target_chain: &str) -> Result<()> {
+        info!(
+            "🔍 [CLOCK] Processing phase 1 completed intents for round {} (target_chain={})",
+            round, target_chain
+        );
         
         // Read max intents per cycle from environment (configurable)
         let max_intents_per_cycle = std::env::var("MAX_INTENTS_PER_CYCLE")
@@ -1559,35 +1556,18 @@ impl SigningNode {
             .as_ref()
             .ok_or_else(|| anyhow!("User intent manager not available"))?;
         
-        // Determine chain based on timestamp cycles (not round number)
-        // Divide epoch by interval to get cycle number, then check even/odd
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default();
-        let current_epoch_secs = now.as_secs();
-        let cycle_number = current_epoch_secs / clock_interval_secs;
-        
-        // Alternate: even cycles = Qubetics (TICS), odd cycles = Bitcoin (BTC)
-        let target_chain = if cycle_number % 2 == 0 {
-            "qubetics"
-        } else {
-            "bitcoin"
-        };
-        
-        // Determine batch type based on target chain
-        // Target chain "qubetics" = TICS batch, "bitcoin" = BTC batch
-        let batch_type = if target_chain == "qubetics" {
+        // Batch type from passed target_chain (no cycle/timestamp logic here)
+        let batch_type = if target_chain.eq_ignore_ascii_case("qubetics") {
             crate::types::BatchType::TICS
         } else {
             crate::types::BatchType::BTC
         };
         
         info!(
-            "⏰ [CLOCK] Cycle {} ({}): Processing {} intents with batch type {:?}...",
-            cycle_number,
-            if cycle_number % 2 == 0 { "even" } else { "odd" },
+            "⏰ [CLOCK] Processing {} intents with batch type {:?} (round {})",
             target_chain.to_uppercase(),
-            batch_type
+            batch_type,
+            round
         );
         
         // Get intents awaiting network fulfillment (stale > 10 seconds)
@@ -1595,11 +1575,12 @@ impl SigningNode {
             .get_intents_awaiting_network_fulfillment(Some(10))
             .await;
         
-        // Filter by target chain
+        // Filter by target chain (case-insensitive; target_chain passed by caller)
+        let target_lower = target_chain.to_lowercase();
         let mut filtered_intents: Vec<_> = awaiting_intents
             .into_iter()
             .filter(|(_, intent, _)| {
-                intent.target_chain.to_lowercase() == target_chain
+                intent.target_chain.to_lowercase() == target_lower
             })
             .collect();
         
@@ -1674,11 +1655,10 @@ impl SigningNode {
             );
         }
 
-        // Additionally, on BTC cycles, select pending BTC withdraw-liquidity requests
-        // and broadcast a batch for distributed signing. This uses the same global
-        // clock as BTC intent batches but operates on PendingWithdrawRequest records
-        // stored under the "pending_withdraw_liquidity:" prefix.
-        if target_chain == "bitcoin" {
+        // Additionally, when target_chain is BTC, select pending BTC withdraw-liquidity requests
+        // and broadcast a batch for distributed signing (operates on PendingWithdrawRequest
+        // under "pending_withdraw_liquidity:").
+        if target_chain.eq_ignore_ascii_case("bitcoin") {
             use crate::types::rpc_server::PendingWithdrawRequest;
 
             // Limit number of BTC withdraw requests per cycle from env
@@ -1735,8 +1715,8 @@ impl SigningNode {
                     .collect();
 
                 if !requests.is_empty() {
-                    let batch_id = format!("btc_withdraw_batch:{}:{}", round, cycle_number);
                     let batch_timestamp = chrono::Utc::now().to_rfc3339();
+                    let batch_id = format!("btc_withdraw_batch:{}:{}", round, chrono::Utc::now().timestamp_millis());
 
                     info!(
                         "📤 [CLOCK][BTC_WITHDRAW] Broadcasting BTC withdraw batch {} with {} requests",
