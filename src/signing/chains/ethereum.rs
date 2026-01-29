@@ -854,7 +854,7 @@ impl SigningNode {
                 // This prevents the verification from using the wrong pubkey
                 None
             } else {
-                // Check if this round is for BTC intent manager update.
+                // Check if this round is for BTC intent manager update (marks intents as Solved only).
                 let is_btc_intent_manager_update =
                     if let Some(consensus_node) = self.coordination.consensus_node() {
                         consensus_node
@@ -868,7 +868,23 @@ impl SigningNode {
                 if is_btc_intent_manager_update {
                     Some(TransactionType::IntentStatusUpdate)
                 } else {
-                    Some(TransactionType::NetworkToTarget)
+                    // Fallback: contract rounds with intent_hashes (not addliq) that have no
+                    // operation_type set (e.g. timing/race) use IntentStatusUpdate so intents get
+                    // marked Solved and are not picked again. Prevents "intents not marked Solved"
+                    // loop when consensus operation_type was not yet stored.
+                    if let Some(consensus_node) = self.coordination.consensus_node() {
+                        if consensus_node.get_operation_type_for_round(round).is_none() {
+                            warn!(
+                                "⚠️ [SIGNING] Operation type missing for contract round {}, using IntentStatusUpdate so intents are marked Solved",
+                                round
+                            );
+                            Some(TransactionType::IntentStatusUpdate)
+                        } else {
+                            Some(TransactionType::NetworkToTarget)
+                        }
+                    } else {
+                        Some(TransactionType::NetworkToTarget)
+                    }
                 }
             }
         } else {
