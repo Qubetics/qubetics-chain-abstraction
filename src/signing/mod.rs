@@ -1349,20 +1349,37 @@ impl SigningNode {
                     // NEW: Check if this round was triggered by global clock (already extracted above)
                     if operation_type.as_deref() == Some("global_clock") {
                         info!("⏰ [CLOCK] Round {} was triggered by global clock, processing phase 1 intents...", round);
+                        
+                        // Calculate cycle number to determine if this is a TICS or BTC cycle
+                        let clock_interval_secs = std::env::var("GLOBAL_CLOCK_INTERVAL_SECONDS")
+                            .ok()
+                            .and_then(|val| val.parse::<u64>().ok())
+                            .unwrap_or(60);
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default();
+                        let current_epoch_secs = now.as_secs();
+                        let cycle_number = current_epoch_secs / clock_interval_secs;
+                        let is_tics_cycle = cycle_number % 2 == 0;
+                        
                         // Process phase 1 intents (UserToVault done, NetworkToTarget pending)
                         if let Err(e) = self.process_phase1_intents_for_global_clock(round).await {
                             warn!("⚠️ [CLOCK] Failed to process phase 1 intents for round {}: {}", round, e);
                         }
                         
-                        // Also process pending solver_add_liquidity requests in batch
-                        info!("💧 [ADD_LIQUIDITY] Processing pending add_liquidity requests for round {}...", round);
-                        if let Err(e) = self.process_solver_add_liquidity_batch_for_round(round).await {
-                            warn!("⚠️ [ADD_LIQUIDITY] Failed to process add_liquidity batch for round {}: {}", round, e);
+                        // Process pending solver_add_liquidity requests ONLY during TICS cycles (even cycle_number)
+                        if is_tics_cycle {
+                            info!("💧 [ADD_LIQUIDITY] TICS cycle {} detected, processing pending add_liquidity requests for round {}...", cycle_number, round);
+                            if let Err(e) = self.process_solver_add_liquidity_batch_for_round(round).await {
+                                warn!("⚠️ [ADD_LIQUIDITY] Failed to process add_liquidity batch for round {}: {}", round, e);
+                            }
+                        } else {
+                            info!("ℹ️  [ADD_LIQUIDITY] BTC cycle {} detected, skipping add_liquidity batching (only runs on TICS cycles)", cycle_number);
                         }
                         
                         // Trigger aggregate signature for the final node
-                        self.trigger_aggregate_signature_for_final_node(round)
-                            .await?;
+                        // self.trigger_aggregate_signature_for_final_node(round)
+                        //     .await?;
                     } else if operation_type.as_deref() == Some("btc_intent_manager_update") {
                         info!("🔄 [BTC_CONTRACT_UPDATE] Round {} was triggered by BTC intent manager update, processing contract update batch...", round);
                         // Process BTC contract update batch (intents with network_to_target_tx_id but not Solved)
@@ -1938,16 +1955,11 @@ impl SigningNode {
             min_age_seconds
         );
 
-        // Atomically mark all selected requests as "Batched" in RocksDB
-        for (key, record) in &mut requests_to_batch {
-            record.status = "Batched".to_string();
-            if let Err(e) = database.put_string_async(key, record).await {
-                warn!(
-                    "⚠️  [ADD_LIQUIDITY] Failed to mark request {} as Batched: {}",
-                    record.request_id, e
-                );
-            }
-        }
+        // Keep all selected requests as "Pending" - they will be marked "Completed" on success
+        info!(
+            "📦 [ADD_LIQUIDITY] Selected {} requests for batching (keeping status as 'Pending')",
+            requests_to_batch.len()
+        );
 
         // Prepare batch data for broadcast
         let batch_entries: Vec<(String, String, String, u64)> = requests_to_batch

@@ -843,23 +843,33 @@ impl SigningNode {
 
         // Determine transaction type based on operation_type for this round
         // For BTC intent manager update, use IntentStatusUpdate (only marks intent as Solved, doesn't update network_to_target_tx_id)
+        // For add_liquidity requests (prefix "addliq:"), use None (vault key, not NetworkToTarget)
         // For other batch transactions (TICS), use NetworkToTarget (updates network_to_target_tx_id and marks as Solved)
         let tx_type_for_round = if !intent_hashes.is_empty() {
-            // Check if this round is for BTC intent manager update.
-            let is_btc_intent_manager_update =
-                if let Some(consensus_node) = self.coordination.consensus_node() {
-                    consensus_node
-                        .get_operation_type_for_round(round)
-                        .map(|op| op == "btc_intent_manager_update")
-                        .unwrap_or(false)
-                } else {
-                    false
-                };
-
-            if is_btc_intent_manager_update {
-                Some(TransactionType::IntentStatusUpdate)
+            // Check if this is an add_liquidity transaction (request_id starts with "addliq:")
+            let is_add_liquidity = intent_hashes.iter().any(|h| h.starts_with("addliq:"));
+            
+            if is_add_liquidity {
+                // add_liquidity uses vault key - don't set transaction type
+                // This prevents the verification from using the wrong pubkey
+                None
             } else {
-                Some(TransactionType::NetworkToTarget)
+                // Check if this round is for BTC intent manager update.
+                let is_btc_intent_manager_update =
+                    if let Some(consensus_node) = self.coordination.consensus_node() {
+                        consensus_node
+                            .get_operation_type_for_round(round)
+                            .map(|op| op == "btc_intent_manager_update")
+                            .unwrap_or(false)
+                    } else {
+                        false
+                    };
+
+                if is_btc_intent_manager_update {
+                    Some(TransactionType::IntentStatusUpdate)
+                } else {
+                    Some(TransactionType::NetworkToTarget)
+                }
             }
         } else {
             None
