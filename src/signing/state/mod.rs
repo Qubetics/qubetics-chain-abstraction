@@ -89,6 +89,8 @@ pub struct PendingStore {
     >,
     pub reward_pending_transactions_btc: Arc<RwLock<HashMap<u64, PendingValue>>>, // round -> (original_tx, tx_bytes, solver_address, None, extras) for BTC rewards
     pub reward_rounds: Arc<RwLock<HashSet<u64>>>, // Set of rounds that are reward transactions
+    /// TICS withdraw: (chain_tx, tx_bytes, identifiers, tx_type, request_id, original_request).
+    /// identifiers: None or Some(vec!) for single-solver; Some(vec!["request_id|solver", ...]) for batch.
     pub withdraw_pending_transactions_tics: Arc<
         RwLock<
             HashMap<
@@ -96,7 +98,7 @@ pub struct PendingStore {
                 (
                     ChainTransaction,
                     Vec<u8>,
-                    Option<String>,
+                    Option<Vec<String>>,
                     Option<TransactionType>,
                     Option<String>, // request_id for retry tracking (contract_request removed)
                     Option<()>,     // deprecated original_request (unused)

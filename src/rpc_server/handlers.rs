@@ -21,7 +21,8 @@ use crate::{
             AddLiquidityRequest, AddLiquidityResponse, ClaimRewardRequest, ClaimRewardResponse,
             DKGStatusResponse, EnhancedUserRegistrationResponse, GetNetworkAddressesResponse,
             GetRewardSolverRequest, GetRewardSolverResponse, HeartbeatResponse,
-            IntentsSolvedCountResponse, LogPartialPubkeysRequest, NodeIdResponse, RequestContext,
+            IntentsSolvedCountResponse, LogPartialPubkeysRequest, NodeIdResponse,
+            PendingWithdrawRequest, RequestContext,
             SolverLiquidityRequest, SolverLiquidityResponse, UptimeResponse, UserInfoResponse,
             UserMpcDepositRequest, UserMpcDepositVerifyResponse, UserRegistrationRequest,
             WithdrawLiquidityRequest, WithdrawLiquidityResponse,
@@ -2039,7 +2040,7 @@ pub(crate) async fn handle_claim_reward(
 
 pub(crate) async fn handle_withdraw_liquidity(
     req: WithdrawLiquidityRequest,
-    _user_intent_manager: Arc<UserIntentManager>,
+    user_intent_manager: Arc<UserIntentManager>,
     message_tx: Arc<Mutex<mpsc::Sender<ChannelMessage>>>,
     dkg_storage: Arc<DkgStorage>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
@@ -2417,6 +2418,58 @@ pub(crate) async fn handle_withdraw_liquidity(
     // - the normalized solver address
     // - the validated destination address
     //
+    // Reject if this solver already has a withdraw request in Pending or Batched status
+    // (one in-flight withdraw per solver at a time; persists over gossip so no duplicate on any node).
+    {
+        let db = user_intent_manager.get_database();
+        let prefix = format!(
+            "pending_withdraw_liquidity:{}:",
+            normalized_address.to_lowercase()
+        );
+        let entries: Vec<(String, PendingWithdrawRequest)> = match db.get_values_with_prefix(&prefix) {
+            Ok(e) => e,
+            Err(e) => {
+                warn!(
+                    "⚠️ [WITHDRAW_LIQUIDITY] Failed to check existing withdraw requests for solver {}: {}",
+                    normalized_address, e
+                );
+                return Ok(warp::reply::json(&WithdrawLiquidityResponse {
+                    status: "error".to_string(),
+                    solver_address: normalized_address.clone(),
+                    liquidity_btc: liquidity_btc_str.clone(),
+                    liquidity_tics: liquidity_tics_str.clone(),
+                    ethereum_address: req.ethereum_address.clone(),
+                    btc_address: req.btc_address.clone(),
+                    tics_withdraw_tx_id: None,
+                    btc_withdraw_tx_id: None,
+                    message: "Failed to check existing withdraw requests".to_string(),
+                    error_message: Some("Database error".to_string()),
+                }));
+            }
+        };
+        let has_pending_or_batched = entries
+            .iter()
+            .any(|(_, r)| r.status == "Pending" || r.status == "Batched");
+        if has_pending_or_batched {
+            info!(
+                "🚫 [WITHDRAW_LIQUIDITY] Rejecting withdraw for solver {}: already has a request in Pending/Batched",
+                normalized_address
+            );
+            return Ok(warp::reply::json(&WithdrawLiquidityResponse {
+                status: "error".to_string(),
+                solver_address: normalized_address.clone(),
+                liquidity_btc: liquidity_btc_str.clone(),
+                liquidity_tics: liquidity_tics_str.clone(),
+                ethereum_address: req.ethereum_address.clone(),
+                btc_address: req.btc_address.clone(),
+                tics_withdraw_tx_id: None,
+                btc_withdraw_tx_id: None,
+                message: "You already have a withdraw request in progress (Pending or Batched). Wait for it to complete.".to_string(),
+                error_message: Some("One withdraw request at a time per solver".to_string()),
+            }));
+        }
+    }
+
     // Instead of initiating on-chain withdrawals immediately, we now enqueue a
     // pending withdraw request in the database to be processed later in batch.
 

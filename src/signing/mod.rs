@@ -1259,10 +1259,47 @@ impl SigningNode {
 
         // Add selected nodes to consensus
         consensus_node.add_selected_nodes(round, all_selected_nodes);
-        
-        // Store operation_type if available
+
+        // Store internal operation type for this round.
+        // External VRF triggers use high-level types like "global_clock" or "btc_intent_manager_update".
+        // For consensus / signing flows we normalize:
+        // - "global_clock" + cycle_number % 3 => "epoch_1" / "epoch_2" / "epoch_3"
+        //   (internal epochs for TICS batch, BTC batch, and withdraw settlement)
+        // - other operation types are stored as-is.
         if let Some(op_type) = operation_type {
-            consensus_node.set_operation_type_for_round(round, op_type);
+            let internal_op_type = if op_type == "global_clock" {
+                let clock_interval_secs = std::env::var("GLOBAL_CLOCK_INTERVAL_SECONDS")
+                    .ok()
+                    .and_then(|val| val.parse::<u64>().ok())
+                    .unwrap_or(60);
+
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default();
+                let current_epoch_secs = now.as_secs();
+                let cycle_number = current_epoch_secs / clock_interval_secs;
+
+                // Map global clock cycles into internal epochs:
+                // 0 mod 3 => epoch_1 (TICS batch + add_liquidity)
+                // 1 mod 3 => epoch_2 (BTC batch + BTC contract tx-id update + BTC withdraw)
+                // 2 mod 3 => epoch_3 (withdraw settlement / cleanup)
+                let epoch_type = match cycle_number % 3 {
+                    0 => "epoch_1".to_string(),
+                    1 => "epoch_2".to_string(),
+                    _ => "epoch_3".to_string(),
+                };
+
+                info!(
+                    "⏰ [CLOCK] Normalized operation type 'global_clock' to '{}' for round {} (cycle={}, interval={}s)",
+                    epoch_type, round, cycle_number, clock_interval_secs
+                );
+
+                epoch_type
+            } else {
+                op_type
+            };
+
+            consensus_node.set_operation_type_for_round(round, internal_op_type);
         }
 
         // Start consensus
@@ -1285,7 +1322,9 @@ impl SigningNode {
 
                 // Extract data before dropping consensus_node mutable borrow
                 let is_final_node = consensus_node.is_final_node(round, &own_node_id);
-                let operation_type = consensus_node.get_operation_type_for_round(round).cloned();
+                let operation_type = consensus_node
+                    .get_operation_type_for_round(round)
+                    .cloned();
                 drop(consensus_node); // Explicitly drop the mutable borrow
 
                 // Now we can safely borrow self immutably
@@ -1306,37 +1345,25 @@ impl SigningNode {
                     );
                 }
 
-                // Trigger parallel BTC contract update round on ALL nodes if this is a BTC cycle
-                // Matches logic in process_phase1_intents_for_global_clock: Odd cycles = Bitcoin
-                if operation_type.as_deref() == Some("global_clock") {
-                    // Read clock interval to calculate cycle
-                    let clock_interval_secs = std::env::var("GLOBAL_CLOCK_INTERVAL_SECONDS")
-                        .ok()
-                        .and_then(|val| val.parse::<u64>().ok())
-                        .unwrap_or(60);
-                    
-                    let now = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default();
-                    let current_epoch_secs = now.as_secs();
-                    let cycle_number = current_epoch_secs / clock_interval_secs;
-
-                    // Odd cycles are Bitcoin (see process_phase1_intents_for_global_clock)
-                    if cycle_number % 2 != 0 { 
-                        info!("🔄 [CLOCK] BTC cycle detected (all nodes), triggering parallel contract update round...");
-                        let signing_node_clone = self.clone();
-                        tokio::spawn(async move {
-                            if let Err(e) = signing_node_clone
-                                .trigger_btc_contract_update_round_parallel()
-                                .await
-                            {
-                                error!(
-                                    "❌ [CLOCK] Failed to trigger BTC contract update round: {}",
-                                    e
-                                );
-                            }
-                        });
-                    }
+                // Trigger parallel BTC contract update round on ALL nodes when this is a BTC epoch.
+                // Internal operation type:
+                // - "epoch_1" => TICS batch + add_liquidity
+                // - "epoch_2" => BTC batch + BTC contract tx-id update + BTC withdraw
+                // - "epoch_3" => withdraw settlement / cleanup (no new tx)
+                if operation_type.as_deref() == Some("epoch_2") {
+                    info!("🔄 [CLOCK] epoch_2 detected (all nodes), triggering parallel BTC contract update VRF round...");
+                    let signing_node_clone = self.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = signing_node_clone
+                            .trigger_btc_contract_update_round_parallel()
+                            .await
+                        {
+                            error!(
+                                "❌ [CLOCK] Failed to trigger BTC contract update round: {}",
+                                e
+                            );
+                        }
+                    });
                 }
 
                 // Check if this node is the final selected node
@@ -1345,41 +1372,67 @@ impl SigningNode {
                         "\x1b[32m🏆 [CONSENSUS] This node is the final selected node for round {}!\x1b[0m",
                         round
                     );
-                    
-                    // NEW: Check if this round was triggered by global clock (already extracted above)
-                    if operation_type.as_deref() == Some("global_clock") {
-                        info!("⏰ [CLOCK] Round {} was triggered by global clock, processing phase 1 intents...", round);
-                        
-                        // Calculate cycle number to determine if this is a TICS or BTC cycle
-                        let clock_interval_secs = std::env::var("GLOBAL_CLOCK_INTERVAL_SECONDS")
-                            .ok()
-                            .and_then(|val| val.parse::<u64>().ok())
-                            .unwrap_or(60);
-                        let now = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default();
-                        let current_epoch_secs = now.as_secs();
-                        let cycle_number = current_epoch_secs / clock_interval_secs;
-                        let is_tics_cycle = cycle_number % 2 == 0;
-                        
-                        // Process phase 1 intents (UserToVault done, NetworkToTarget pending)
-                        if let Err(e) = self.process_phase1_intents_for_global_clock(round).await {
-                            warn!("⚠️ [CLOCK] Failed to process phase 1 intents for round {}: {}", round, e);
+                  // NEW: Dispatch by internal epoch operation type for this round.
+                    if operation_type.as_deref() == Some("epoch_1") {
+                        info!(
+                            "⏰ [CLOCK] Round {} is epoch_1 (TICS batch + add_liquidity), processing phase 1 intents...",
+                            round
+                        );
+
+                        // Process phase 1 intents (UserToVault done, NetworkToTarget pending) for TICS
+                        if let Err(e) = self.process_phase1_intents_for_global_clock(round, "qubetics").await {
+                            warn!(
+                                "⚠️ [CLOCK] Failed to process phase 1 intents for round {}: {}",
+                                round, e
+                            );
                         }
-                        
-                        // Process pending solver_add_liquidity requests ONLY during TICS cycles (even cycle_number)
-                        if is_tics_cycle {
-                            info!("💧 [ADD_LIQUIDITY] TICS cycle {} detected, processing pending add_liquidity requests for round {}...", cycle_number, round);
-                            if let Err(e) = self.process_solver_add_liquidity_batch_for_round(round).await {
-                                warn!("⚠️ [ADD_LIQUIDITY] Failed to process add_liquidity batch for round {}: {}", round, e);
-                            }
-                        } else {
-                            info!("ℹ️  [ADD_LIQUIDITY] BTC cycle {} detected, skipping add_liquidity batching (only runs on TICS cycles)", cycle_number);
+
+                        // Also process pending solver_add_liquidity requests in batch
+                        info!(
+                            "💧 [ADD_LIQUIDITY] Processing pending add_liquidity requests for round {}...",
+                            round
+                        );
+                        if let Err(e) =
+                            self.process_solver_add_liquidity_batch_for_round(round).await
+                        {
+                            warn!(
+                                "⚠️ [ADD_LIQUIDITY] Failed to process add_liquidity batch for round {}: {}",
+                                round, e
+                            );
                         }
-                        
+
                         // Trigger aggregate signature for the final node
-                        // self.trigger_aggregate_signature_for_final_node(round)
-                        //     .await?;
+                        self.trigger_aggregate_signature_for_final_node(round)
+                            .await?;
+                    } else if operation_type.as_deref() == Some("epoch_2") {
+                        info!(
+                            "⏰ [CLOCK] Round {} is epoch_2 (BTC batch + contract updates + withdraw), processing phase 1 intents...",
+                            round
+                        );
+
+                        // Process phase 1 intents for BTC (passed explicitly by epoch).
+                        if let Err(e) = self.process_phase1_intents_for_global_clock(round, "bitcoin").await {
+                            warn!(
+                                "⚠️ [CLOCK] Failed to process BTC phase 1 intents for round {}: {}",
+                                round, e
+                            );
+                        }
+
+                        // Trigger aggregate signature for the final node
+                        self.trigger_aggregate_signature_for_final_node(round)
+                            .await?;
+                    } else if operation_type.as_deref() == Some("epoch_3") {
+                        info!(
+                            "⏰ [CLOCK] Round {} is epoch_3 (withdraw settlement), finalizing withdraw request statuses...",
+                            round
+                        );
+
+                        if let Err(e) = self.process_withdraw_settlement_epoch(round).await {
+                            warn!(
+                                "⚠️ [CLOCK] Failed to process withdraw settlement epoch for round {}: {}",
+                                round, e
+                            );
+                        }
                     } else if operation_type.as_deref() == Some("btc_intent_manager_update") {
                         info!("🔄 [BTC_CONTRACT_UPDATE] Round {} was triggered by BTC intent manager update, processing contract update batch...", round);
                         // Process BTC contract update batch (intents with network_to_target_tx_id but not Solved)
@@ -1482,17 +1535,14 @@ impl SigningNode {
         Ok(())
     }
 
-    /// Process phase 1 completed intents for global clock trigger
-    /// Phase 1 = UserToVault transaction complete, NetworkToTarget pending
-    /// Alternates between chains based on timestamp cycles
-    async fn process_phase1_intents_for_global_clock(&self, round: u64) -> Result<()> {
-        info!("🔍 [CLOCK] Processing phase 1 completed intents for round {}", round);
-        
-        // Read the global clock interval from environment
-        let clock_interval_secs = std::env::var("GLOBAL_CLOCK_INTERVAL_SECONDS")
-            .ok()
-            .and_then(|val| val.parse::<u64>().ok())
-            .unwrap_or(60);
+    /// Process phase 1 completed intents for global clock trigger.
+    /// Phase 1 = UserToVault transaction complete, NetworkToTarget pending.
+    /// `target_chain`: "qubetics" (TICS) or "bitcoin" (BTC) — passed by caller based on epoch; no re-calculation inside.
+    async fn process_phase1_intents_for_global_clock(&self, round: u64, target_chain: &str) -> Result<()> {
+        info!(
+            "🔍 [CLOCK] Processing phase 1 completed intents for round {} (target_chain={})",
+            round, target_chain
+        );
         
         // Read max intents per cycle from environment (configurable)
         let max_intents_per_cycle = std::env::var("MAX_INTENTS_PER_CYCLE")
@@ -1505,35 +1555,18 @@ impl SigningNode {
             .as_ref()
             .ok_or_else(|| anyhow!("User intent manager not available"))?;
         
-        // Determine chain based on timestamp cycles (not round number)
-        // Divide epoch by interval to get cycle number, then check even/odd
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default();
-        let current_epoch_secs = now.as_secs();
-        let cycle_number = current_epoch_secs / clock_interval_secs;
-        
-        // Alternate: even cycles = Qubetics (TICS), odd cycles = Bitcoin (BTC)
-        let target_chain = if cycle_number % 2 == 0 {
-            "qubetics"
-        } else {
-            "bitcoin"
-        };
-        
-        // Determine batch type based on target chain
-        // Target chain "qubetics" = TICS batch, "bitcoin" = BTC batch
-        let batch_type = if target_chain == "qubetics" {
+        // Batch type from passed target_chain (no cycle/timestamp logic here)
+        let batch_type = if target_chain.eq_ignore_ascii_case("qubetics") {
             crate::types::BatchType::TICS
         } else {
             crate::types::BatchType::BTC
         };
         
         info!(
-            "⏰ [CLOCK] Cycle {} ({}): Processing {} intents with batch type {:?}...",
-            cycle_number,
-            if cycle_number % 2 == 0 { "even" } else { "odd" },
+            "⏰ [CLOCK] Processing {} intents with batch type {:?} (round {})",
             target_chain.to_uppercase(),
-            batch_type
+            batch_type,
+            round
         );
         
         // Get intents awaiting network fulfillment (stale > 10 seconds)
@@ -1541,11 +1574,12 @@ impl SigningNode {
             .get_intents_awaiting_network_fulfillment(Some(10))
             .await;
         
-        // Filter by target chain
+        // Filter by target chain (case-insensitive; target_chain passed by caller)
+        let target_lower = target_chain.to_lowercase();
         let mut filtered_intents: Vec<_> = awaiting_intents
             .into_iter()
             .filter(|(_, intent, _)| {
-                intent.target_chain.to_lowercase() == target_chain
+                intent.target_chain.to_lowercase() == target_lower
             })
             .collect();
         
@@ -1620,11 +1654,10 @@ impl SigningNode {
             );
         }
 
-        // Additionally, on BTC cycles, select pending BTC withdraw-liquidity requests
-        // and broadcast a batch for distributed signing. This uses the same global
-        // clock as BTC intent batches but operates on PendingWithdrawRequest records
-        // stored under the "pending_withdraw_liquidity:" prefix.
-        if target_chain == "bitcoin" {
+        // Additionally, when target_chain is BTC, select pending BTC withdraw-liquidity requests
+        // and broadcast a batch for distributed signing (operates on PendingWithdrawRequest
+        // under "pending_withdraw_liquidity:").
+        if target_chain.eq_ignore_ascii_case("bitcoin") {
             use crate::types::rpc_server::PendingWithdrawRequest;
 
             // Limit number of BTC withdraw requests per cycle from env
@@ -1681,8 +1714,8 @@ impl SigningNode {
                     .collect();
 
                 if !requests.is_empty() {
-                    let batch_id = format!("btc_withdraw_batch:{}:{}", round, cycle_number);
                     let batch_timestamp = chrono::Utc::now().to_rfc3339();
+                    let batch_id = format!("btc_withdraw_batch:{}:{}", round, chrono::Utc::now().timestamp_millis());
 
                     info!(
                         "📤 [CLOCK][BTC_WITHDRAW] Broadcasting BTC withdraw batch {} with {} requests",
@@ -2008,6 +2041,153 @@ impl SigningNode {
                 wait_duration_secs
             );
         }
+
+        Ok(())
+    }
+
+    /// Epoch 3: Withdraw settlement / cleanup.
+    /// This epoch does NOT create new transactions; it finalizes the logical status
+    /// of withdraw-liquidity requests so they are not picked again in future epochs.
+    /// Rules:
+    /// - For TICS: Pending requests are batched into a TICS withdraw batch
+    ///   and marked as "Batched". The actual completion happens once the
+    ///   removeLiquidity contract transaction is mined and tx_id is stored.
+    /// - For BTC: any PendingWithdrawRequest with asset="BTC", status="Pending",
+    ///   and a non-empty tx_id is also marked status="Completed".
+    async fn process_withdraw_settlement_epoch(&self, round: u64) -> Result<()> {
+        use crate::types::rpc_server::PendingWithdrawRequest;
+        use crate::types::messaging::TicsWithdrawBatchRequest;
+
+        info!("🔍 [CLOCK] Processing withdraw settlement epoch (epoch_3)...");
+
+        // Get user intent manager and backing database
+        let user_intent_manager = self
+            .user_intent_manager
+            .as_ref()
+            .ok_or_else(|| anyhow!("User intent manager not available"))?;
+        let db = user_intent_manager.get_database();
+
+        // Load all pending withdraw requests across all solvers
+        let all_withdraws: Vec<(String, PendingWithdrawRequest)> =
+            match db.get_values_with_prefix("pending_withdraw_liquidity:") {
+                Ok(entries) => entries,
+                Err(e) => {
+                    warn!(
+                        "⚠️ [CLOCK][WITHDRAW_SETTLE] Failed to load pending withdraw requests: {}",
+                        e
+                    );
+                    return Ok(());
+                }
+            };
+
+        if all_withdraws.is_empty() {
+            info!(
+                "ℹ️  [CLOCK][WITHDRAW_SETTLE] No withdraw requests found for settlement epoch"
+            );
+            return Ok(());
+        }
+
+        let mut tics_batched = 0usize;
+        let mut btc_updated = 0usize;
+
+        let mut tics_batch_requests: Vec<TicsWithdrawBatchRequest> = Vec::new();
+
+        for (key, mut req) in all_withdraws {
+            if req.status != "Pending" {
+                continue;
+            }
+
+            let asset_upper = req.asset.to_uppercase();
+
+            // TICS: pick all Pending requests for settlement batch, mark as "Batched"
+            if asset_upper == "TICS" {
+                // Build batch metadata from the current record
+                tics_batch_requests.push(TicsWithdrawBatchRequest {
+                    request_id: req.request_id.clone(),
+                    solver_address: req.solver_address.clone(),
+                    asset: req.asset.clone(),
+                    amount: req.amount.clone(),
+                    // TICS withdraws are executed on the main TICS EVM chain (e.g. 9029).
+                    chain_id: std::env::var("SOLVER_CONTRACT_CHAIN_ID")
+                        .unwrap_or_else(|_| "9029".to_string())
+                        .parse::<u64>()
+                        .unwrap_or(9029),
+                    tx_id: req.tx_id.clone(),
+                });
+
+                req.status = "Batched".to_string();
+                if let Err(e) = db.put_string(&key, &req) {
+                    warn!(
+                        "⚠️ [CLOCK][WITHDRAW_SETTLE] Failed to mark TICS withdraw {} as Batched: {}",
+                        req.request_id, e
+                    );
+                } else {
+                    tics_batched += 1;
+                }
+                continue;
+            }
+
+            // BTC: pick Pending requests that already have an on-chain tx_id so they get
+            // registered on the contract in the same TICS withdraw batch (funds already sent).
+            let has_tx_id = req.tx_id.as_ref().map(|s| !s.is_empty()).unwrap_or(false);
+            if asset_upper == "BTC" && has_tx_id {
+                tics_batch_requests.push(TicsWithdrawBatchRequest {
+                    request_id: req.request_id.clone(),
+                    solver_address: req.solver_address.clone(),
+                    asset: req.asset.clone(),
+                    amount: req.amount.clone(),
+                    chain_id: 0, // BTC
+                    tx_id: req.tx_id.clone(),
+                });
+
+                req.status = "Batched".to_string();
+                if let Err(e) = db.put_string(&key, &req) {
+                    warn!(
+                        "⚠️ [CLOCK][WITHDRAW_SETTLE] Failed to mark BTC withdraw {} as Batched: {}",
+                        req.request_id, e
+                    );
+                } else {
+                    btc_updated += 1;
+                }
+            }
+        }
+
+        // If we have any TICS withdraws to settle, broadcast a TICS withdraw batch
+        if !tics_batch_requests.is_empty() {
+            let batch_timestamp = chrono::Utc::now().to_rfc3339();
+            let batch_id = format!(
+                "tics_withdraw_batch:{}:{}",
+                round,
+                chrono::Utc::now().timestamp_millis()
+            );
+
+            info!(
+                "📦 [CLOCK][WITHDRAW_SETTLE] Creating TICS withdraw batch {} with {} requests for round {}",
+                batch_id,
+                tics_batch_requests.len(),
+                round
+            );
+
+            let message = ChannelMessage::TicsWithdrawBatch {
+                batch_id,
+                requests: tics_batch_requests,
+                round,
+                timestamp: batch_timestamp,
+                node_id: self.id.clone(),
+            };
+
+            if let Err(e) = self.message_tx.send(message).await {
+                warn!(
+                    "⚠️ [CLOCK][WITHDRAW_SETTLE] Failed to send TicsWithdrawBatch channel message: {}",
+                    e
+                );
+            }
+        }
+
+        info!(
+            "✅ [CLOCK][WITHDRAW_SETTLE] Settlement epoch completed: {} TICS withdraws batched, {} BTC withdraws (with tx_id) batched for contract registration",
+            tics_batched, btc_updated
+        );
 
         Ok(())
     }

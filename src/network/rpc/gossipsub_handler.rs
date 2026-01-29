@@ -1727,6 +1727,7 @@ impl MpcNetworkLayer {
                                         secret_share,
                                         None,
                                         None,
+                                        None, // tics_withdraw_identifiers (not applicable)
                                     )
                                     .await?;
 
@@ -2095,31 +2096,378 @@ impl MpcNetworkLayer {
                     error!("❌ [BTC_WITHDRAW] Signing node not available");
                 }
             }
-            GossipsubMessage::BtcWithdrawTxIdBroadcast {
-                btc_txid,
+            GossipsubMessage::TicsWithdrawBatch {
+                batch_id,
+                requests,
+                round,
+                timestamp,
+                node_id,
+            } => {
+                use crate::types::rpc_server::PendingWithdrawRequest;
+                use crate::utils::transaction::RemoveLiquidityBatchRequest;
+                use ethers::types::U256;
+
+                info!(
+                    "📦 [TICS_WITHDRAW] Received TICS withdraw batch {} from node {} (round {}, timestamp {})",
+                    batch_id, node_id, round, timestamp
+                );
+
+                if requests.is_empty() {
+                    info!("ℹ️  [TICS_WITHDRAW] Empty TicsWithdrawBatch received, nothing to do");
+                    return Ok(());
+                }
+
+                // Load all pending withdraw records so we can look up each request
+                let db = &self.db;
+                let all_withdraws: Vec<(String, PendingWithdrawRequest)> =
+                    match db.get_values_with_prefix("pending_withdraw_liquidity:") {
+                        Ok(entries) => entries,
+                        Err(e) => {
+                            warn!(
+                                "⚠️ [TICS_WITHDRAW] Failed to load pending withdraw requests: {}",
+                                e
+                            );
+                            return Ok(());
+                        }
+                    };
+
+                // Build a lookup map keyed by (request_id, solver_address_lower)
+                let mut withdraw_map: std::collections::HashMap<(String, String), PendingWithdrawRequest> =
+                    std::collections::HashMap::new();
+                for (_key, req) in all_withdraws {
+                    let key = (req.request_id.clone(), req.solver_address.to_lowercase());
+                    withdraw_map.insert(key, req);
+                }
+
+                // Accept both Pending and Batched (epoch 3 marks as Batched before sending)
+                let is_pending_or_batched = |s: &str| s == "Pending" || s == "Batched";
+
+                // 1) Aggregate TICS withdraw amount per solver (all solvers in the batch)
+                let mut per_solver_tics: std::collections::HashMap<String, U256> =
+                    std::collections::HashMap::new();
+
+                // 2) Collect BTC requests that have tx_id (for contract registration)
+                let mut btc_entries: Vec<(String, String, U256)> = Vec::new(); // (solver_address_lower, tx_id, amount)
+                // 3) Collect "request_id|solver_address" for all requests included in this batch (for tx-id broadcast)
+                let mut used_identifiers: Vec<String> = Vec::new();
+
+                for entry in &requests {
+                    let key = (
+                        entry.request_id.clone(),
+                        entry.solver_address.to_lowercase(),
+                    );
+                    let req = match withdraw_map.get(&key) {
+                        Some(r) => r,
+                        None => {
+                            warn!(
+                                "⚠️ [TICS_WITHDRAW] Withdraw request {} for solver {} not found in DB",
+                                entry.request_id, entry.solver_address
+                            );
+                            continue;
+                        }
+                    };
+
+                    if !is_pending_or_batched(&req.status) {
+                        continue;
+                    }
+
+                    let amount_u256 = match U256::from_dec_str(&req.amount) {
+                        Ok(a) => a,
+                        Err(e) => {
+                            warn!(
+                                "⚠️ [TICS_WITHDRAW] Invalid amount for request {}: {}",
+                                req.request_id, e
+                            );
+                            continue;
+                        }
+                    };
+
+                    if req.asset.to_uppercase() == "TICS" {
+                        if amount_u256.is_zero() {
+                            continue;
+                        }
+                        used_identifiers.push(format!("{}|{}", entry.request_id, entry.solver_address));
+                        let solver_key = req.solver_address.to_lowercase();
+                        let agg = per_solver_tics.entry(solver_key.clone()).or_insert(U256::zero());
+                        *agg += amount_u256;
+                        info!(
+                            "💧 [TICS_WITHDRAW] Aggregated TICS {} for solver {} from request {}",
+                            amount_u256, solver_key, req.request_id
+                        );
+                    } else if req.asset.to_uppercase() == "BTC" {
+                        // Include BTC requests that already have tx_id (funds sent; register on contract)
+                        let tx_id = match &req.tx_id {
+                            Some(id) if !id.is_empty() => id.clone(),
+                            _ => continue,
+                        };
+                        used_identifiers.push(format!("{}|{}", entry.request_id, entry.solver_address));
+                        btc_entries.push((req.solver_address.to_lowercase(), tx_id, amount_u256));
+                        info!(
+                            "💧 [TICS_WITHDRAW] Including BTC request {} for solver {} (tx_id={}, amount={})",
+                            req.request_id, req.solver_address, req.tx_id.as_deref().unwrap_or(""), amount_u256
+                        );
+                    }
+                }
+
+                // Build single removeLiquidity batch: TICS entries (aggregated per solver) + BTC entries (one per request with tx_id)
+                let mut batch_requests: Vec<RemoveLiquidityBatchRequest> = Vec::new();
+
+                for (solver_address_lower, total_amount) in &per_solver_tics {
+                    if total_amount.is_zero() {
+                        continue;
+                    }
+                    let solver_id = match self.fetch_solver_id_for_address(solver_address_lower).await {
+                        Ok(id) => id,
+                        Err(e) => {
+                            warn!(
+                                "⚠️ [TICS_WITHDRAW] Unable to fetch solver ID for {}: {}; skipping",
+                                solver_address_lower, e
+                            );
+                            continue;
+                        }
+                    };
+                    batch_requests.push((
+                        solver_id,
+                        *total_amount,
+                        1u8, // chainType TICS
+                        batch_id.clone(),
+                    ));
+                }
+
+                for (solver_address_lower, tx_id, amount) in &btc_entries {
+                    let solver_id = match self.fetch_solver_id_for_address(solver_address_lower).await {
+                        Ok(id) => id,
+                        Err(e) => {
+                            warn!(
+                                "⚠️ [TICS_WITHDRAW] Unable to fetch solver ID for {} (BTC): {}; skipping",
+                                solver_address_lower, e
+                            );
+                            continue;
+                        }
+                    };
+                    batch_requests.push((
+                        solver_id,
+                        *amount,
+                        0u8, // chainType BTC
+                        tx_id.clone(),
+                    ));
+                }
+
+                if batch_requests.is_empty() {
+                    warn!(
+                        "⚠️ [TICS_WITHDRAW] No valid TICS or BTC withdraw entries to process for batch {}",
+                        batch_id
+                    );
+                    return Ok(());
+                }
+
+                info!(
+                    "📦 [TICS_WITHDRAW] Built removeLiquidity batch: {} entries (TICS solvers={}, BTC entries={})",
+                    batch_requests.len(),
+                    per_solver_tics.len(),
+                    btc_entries.len()
+                );
+
+                // Get DKG node and vault group key for liquidity operator address
+                let dkg_node = if let Some(node) = &self.dkg_node {
+                    node
+                } else {
+                    warn!(
+                        "❌ [TICS_WITHDRAW] Cannot process TICS withdraw batch - DKG node unavailable"
+                    );
+                    return Ok(());
+                };
+
+                let group_public_key = if let Some(key) = dkg_node.get_vault_group_key().await {
+                    key
+                } else {
+                    warn!(
+                        "❌ [TICS_WITHDRAW] Liquidity operator group key unavailable; cannot derive address"
+                    );
+                    return Ok(());
+                };
+
+                let liquidity_operator_address =
+                    crate::utils::get_eth_address_from_group_key(group_public_key);
+
+                let contract_address = std::env::var("SOLVER_CONTRACT_ADDRESS")
+                    .unwrap_or_else(|_| "0x0000000000000000000000000000000000000000".to_string());
+                if contract_address == "0x0000000000000000000000000000000000000000" {
+                    warn!(
+                        "⏭️ [TICS_WITHDRAW] Skipping TICS withdraw batch {} - solver contract address not configured",
+                        batch_id
+                    );
+                    return Ok(());
+                }
+
+                let contract_chain_id = std::env::var("SOLVER_CONTRACT_CHAIN_ID")
+                    .unwrap_or_else(|_| "9029".to_string())
+                    .parse::<u64>()
+                    .unwrap_or(9029);
+                let contract_chain_name = if contract_chain_id == 9029 {
+                    "qubetics"
+                } else {
+                    "ethereum"
+                };
+
+                // One removeLiquidity tx for the entire batch (all TICS + all BTC with tx_id)
+                let eth_tx = crate::utils::transaction::create_solver_remove_liquidity_batch_transaction(
+                    &liquidity_operator_address,
+                    &batch_requests,
+                    &batch_id,
+                    &contract_address,
+                    contract_chain_id,
+                    contract_chain_name,
+                )
+                .await?;
+
+                if let Some(signing_node) = &mut self.signing_node {
+                    let available_nodes: Vec<PeerId> =
+                        self.node_manager.get_active_nodes().into_iter().collect();
+                    signing_node.set_available_nodes(available_nodes);
+                    signing_node.set_chain_handler(
+                        crate::chain_abstraction::ChainHandlerFactory::create_ethereum_handler(
+                            eth_tx.chain_id,
+                        )
+                        .into(),
+                    );
+
+                    let vault_tweaked_share = dkg_node.get_vault_tweaked_secret_share().await;
+
+                    if let Some(ref _secret_share) = vault_tweaked_share {
+                        signing_node.set_vault_group_key(group_public_key);
+
+                        let contract_tx = crate::types::intent::ContractTransaction {
+                            to: eth_tx.to.clone(),
+                            value: eth_tx.value.clone(),
+                            nonce: eth_tx.nonce,
+                            gas_limit: eth_tx.gas_limit,
+                            gas_price: eth_tx.gas_price.clone(),
+                            chain_id: eth_tx.chain_id,
+                            data: eth_tx
+                                .data
+                                .as_ref()
+                                .map(|d| format!("0x{}", hex::encode(d)))
+                                .unwrap_or_else(|| "0x".to_string()),
+                        };
+
+                        let contract_tx_bytes =
+                            crate::utils::transaction::create_transaction_for_signing_contract(
+                                &contract_tx,
+                            );
+                        let contract_chain_handler =
+                            signing_node.get_contract_chain_handler().clone();
+                        let mut eth_signer =
+                            crate::signing::EthereumSigner::new(signing_node);
+
+                        eth_signer
+                            .sign_contract_message(
+                                contract_tx_bytes,
+                                &contract_chain_handler,
+                                &contract_tx,
+                                vault_tweaked_share.clone(),
+                                None,
+                                vec![],
+                                vault_tweaked_share,
+                                None,
+                                None,
+                                Some(used_identifiers.clone()), // for tx-id broadcast to update each request
+                            )
+                            .await?;
+
+                        info!(
+                            "✅ [TICS_WITHDRAW] Submitted single removeLiquidity batch transaction ({} entries) into MPC signing flow",
+                            batch_requests.len()
+                        );
+                    } else {
+                        warn!(
+                            "⚠️ [TICS_WITHDRAW] Skipping removeLiquidity batch - missing vault secret share"
+                        );
+                    }
+                } else {
+                    warn!("❌ [TICS_WITHDRAW] Signing node unavailable for TICS withdraw batch");
+                }
+            }
+            GossipsubMessage::WithdrawTxIdBroadcast {
+                txid,
                 network,
                 batch_id,
+                solver_address,
                 requests,
                 node_id,
             } => {
                 info!(
-                    "📡 [BTC_WITHDRAW] Received BTC withdraw txid broadcast from node {}: txid={}, batch_id={}, network={}",
-                    node_id, btc_txid, batch_id, network
+                    "📡 [WITHDRAW_TXID] Received withdraw-liquidity txid broadcast from node {}: txid={}, batch_id={}, network={}, solver={:?}, requests={}",
+                    node_id,
+                    txid,
+                    batch_id,
+                    network,
+                    solver_address,
+                    requests.len()
                 );
 
-                for (request_id, solver_address) in &requests {
-                    if let Err(e) = self
-                        .handle_withdraw_liquidity_transaction_id_storage(
-                            solver_address,
-                            &btc_txid,
+                let is_tics = txid.starts_with("0x");
+
+                if is_tics {
+                    // TICS withdraw-liquidity:
+                    // - txid is an EVM hash (0x...)
+                    // - When requests is non-empty: update all (request_id, solver) via batch handler (multiple solvers/requests).
+                    // - When requests is empty: single-solver legacy, solver_address must be present, call single-request handler with None.
+                    if !requests.is_empty() {
+                        if let Err(e) = self
+                            .handle_withdraw_liquidity_transaction_id_storage_batch(
+                                &txid,
+                                "withdraw_liquidity",
+                                &requests,
+                            )
+                            .await
+                        {
+                            warn!(
+                                "⚠️ [TICS_WITHDRAW] Batch storage failed for txid {} ({} requests): {}",
+                                txid, requests.len(), e
+                            );
+                        }
+                    } else if let Some(solver) = solver_address.as_ref() {
+                        if let Err(e) = self
+                            .handle_withdraw_liquidity_transaction_id_storage(
+                                solver,
+                                &txid,
+                                "withdraw_liquidity",
+                                None,
+                            )
+                            .await
+                        {
+                            warn!(
+                                "⚠️ [TICS_WITHDRAW] Failed to apply txid {} for solver {}: {}",
+                                txid, solver, e
+                            );
+                        }
+                    } else {
+                        warn!(
+                            "⚠️ [TICS_WITHDRAW] Missing solver_address and empty requests for TICS withdraw txid broadcast: txid={}, batch_id={}",
+                            txid, batch_id
+                        );
+                    }
+                } else {
+                    // BTC withdraw-liquidity:
+                    // - txid is a BTC transaction ID (non-0x)
+                    // - When requests is non-empty: update all (request_id, solver) via batch handler (multiple solvers/requests).
+                    if requests.is_empty() {
+                        warn!(
+                            "⚠️ [BTC_WITHDRAW] WithdrawTxIdBroadcast has no requests for BTC txid {} (batch_id={})",
+                            txid, batch_id
+                        );
+                    } else if let Err(e) = self
+                        .handle_withdraw_liquidity_transaction_id_storage_batch(
+                            &txid,
                             "withdraw_liquidity",
-                            Some(request_id),
+                            &requests,
                         )
                         .await
                     {
                         warn!(
-                            "⚠️ [BTC_WITHDRAW] Failed to apply txid {} for withdraw {} (solver {}): {}",
-                            btc_txid, request_id, solver_address, e
+                            "⚠️ [BTC_WITHDRAW] Batch storage failed for txid {} ({} requests): {}",
+                            txid, requests.len(), e
                         );
                     }
                 }
@@ -2199,14 +2547,41 @@ impl MpcNetworkLayer {
                 debug!("[WITHDRAW_LIQUIDITY] Ignoring legacy WithdrawLiquidity gossip message");
             }
             GossipsubMessage::PendingWithdrawRequestBroadcast { request } => {
+                use crate::types::rpc_server::PendingWithdrawRequest;
+
                 info!(
                     "💧 [WITHDRAW_LIQUIDITY] Received pending withdraw request from gossip: request_id={}, solver={}, asset={}",
                     request.request_id, request.solver_address, request.asset
                 );
 
+                // Persist only if this solver has no existing Pending/Batched request (one in-flight per solver).
+                let solver_lower = request.solver_address.to_lowercase();
+                let prefix = format!("pending_withdraw_liquidity:{}:", solver_lower);
+                let existing: Vec<(String, PendingWithdrawRequest)> =
+                    match self.db.get_values_with_prefix(&prefix) {
+                        Ok(e) => e,
+                        Err(e) => {
+                            warn!(
+                                "⚠️ [WITHDRAW_LIQUIDITY] Failed to check existing withdraws for solver {}: {}",
+                                request.solver_address, e
+                            );
+                            return Ok(());
+                        }
+                    };
+                let has_pending_or_batched = existing
+                    .iter()
+                    .any(|(_, r)| r.status == "Pending" || r.status == "Batched");
+                if has_pending_or_batched {
+                    info!(
+                        "🚫 [WITHDRAW_LIQUIDITY] Ignoring duplicate withdraw request {} for solver {}: already has Pending/Batched",
+                        request.request_id, request.solver_address
+                    );
+                    return Ok(());
+                }
+
                 let key = format!(
                     "pending_withdraw_liquidity:{}:{}",
-                    request.solver_address.to_lowercase(),
+                    solver_lower,
                     request.request_id
                 );
 
