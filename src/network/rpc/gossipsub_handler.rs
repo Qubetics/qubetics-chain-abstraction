@@ -2508,14 +2508,41 @@ impl MpcNetworkLayer {
                 debug!("[WITHDRAW_LIQUIDITY] Ignoring legacy WithdrawLiquidity gossip message");
             }
             GossipsubMessage::PendingWithdrawRequestBroadcast { request } => {
+                use crate::types::rpc_server::PendingWithdrawRequest;
+
                 info!(
                     "💧 [WITHDRAW_LIQUIDITY] Received pending withdraw request from gossip: request_id={}, solver={}, asset={}",
                     request.request_id, request.solver_address, request.asset
                 );
 
+                // Persist only if this solver has no existing Pending/Batched request (one in-flight per solver).
+                let solver_lower = request.solver_address.to_lowercase();
+                let prefix = format!("pending_withdraw_liquidity:{}:", solver_lower);
+                let existing: Vec<(String, PendingWithdrawRequest)> =
+                    match self.db.get_values_with_prefix(&prefix) {
+                        Ok(e) => e,
+                        Err(e) => {
+                            warn!(
+                                "⚠️ [WITHDRAW_LIQUIDITY] Failed to check existing withdraws for solver {}: {}",
+                                request.solver_address, e
+                            );
+                            return Ok(());
+                        }
+                    };
+                let has_pending_or_batched = existing
+                    .iter()
+                    .any(|(_, r)| r.status == "Pending" || r.status == "Batched");
+                if has_pending_or_batched {
+                    info!(
+                        "🚫 [WITHDRAW_LIQUIDITY] Ignoring duplicate withdraw request {} for solver {}: already has Pending/Batched",
+                        request.request_id, request.solver_address
+                    );
+                    return Ok(());
+                }
+
                 let key = format!(
                     "pending_withdraw_liquidity:{}:{}",
-                    request.solver_address.to_lowercase(),
+                    solver_lower,
                     request.request_id
                 );
 
