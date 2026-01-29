@@ -339,7 +339,7 @@ impl VrfNodeSelector {
         result: NodeSelectionResult,
         round: u64,
     ) -> Result<()> {
-        info!(
+        debug!(
             "Received selection result for round {}: {} nodes selected",
             round,
             result.selected_nodes.len()
@@ -348,7 +348,7 @@ impl VrfNodeSelector {
         self.results.insert(round, result);
 
         if self.is_selected(round) {
-            info!("This node is selected for MPC in round {}", round);
+            debug!("This node is selected for MPC in round {}", round);
         } else {
             debug!("This node is not selected for MPC in round {}", round);
         }

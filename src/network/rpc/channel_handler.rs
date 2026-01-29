@@ -2,89 +2,7 @@ use libp2p::Multiaddr;
 use std::sync::Arc;
 
 impl MpcNetworkLayer {
-    pub(crate) async fn record_pending_liquidity_contract_update(
-        &self,
-        solver_address: &str,
-        network: TransactionNetwork,
-        amount: u128,
-    ) {
-        if amount == 0 {
-            return;
-        }
-
-        if let Some(user_intent_manager) = &self.user_intent_manager {
-            if let Err(e) = user_intent_manager
-                .set_pending_remove_liquidity_amount(solver_address, network, amount.to_string())
-                .await
-            {
-                warn!(
-                    "⚠️ [NETWORK] Failed to persist pending liquidity amount for solver {} ({:?}): {}",
-                    solver_address, network, e
-                );
-            } else {
-                info!(
-                    "💾 [NETWORK] Cached pending withdraw amount {} for solver {} ({:?}) awaiting tx_id",
-                    amount, solver_address, network
-                );
-            }
-        } else {
-            warn!(
-                "⚠️ [NETWORK] UserIntentManager unavailable; cannot persist pending liquidity amount for {}",
-                solver_address
-            );
-        }
-    }
-
-    pub(crate) async fn take_pending_liquidity_contract_update_amount(
-        &self,
-        solver_address: &str,
-        network: TransactionNetwork,
-    ) -> Option<u128> {
-        if let Some(user_intent_manager) = &self.user_intent_manager {
-            match user_intent_manager
-                .take_pending_remove_liquidity_amount(solver_address, network)
-                .await
-            {
-                Ok(Some(amount_str)) => match amount_str.parse::<u128>() {
-                    Ok(value) => {
-                        info!(
-                            "💾 [NETWORK] Retrieved pending withdraw amount {} for solver {} ({:?})",
-                            value, solver_address, network
-                        );
-                        Some(value)
-                    }
-                    Err(e) => {
-                        warn!(
-                            "⚠️ [NETWORK] Failed to parse pending liquidity amount '{}' for solver {}: {}",
-                            amount_str, solver_address, e
-                        );
-                        None
-                    }
-                },
-                Ok(None) => {
-                    info!(
-                        "ℹ️ [NETWORK] No pending withdraw amount stored for solver {} ({:?})",
-                        solver_address, network
-                    );
-                    None
-                }
-                Err(e) => {
-                    warn!(
-                        "⚠️ [NETWORK] Failed to read pending liquidity amount for solver {}: {}",
-                        solver_address, e
-                    );
-                    None
-                }
-            }
-        } else {
-            warn!(
-                "⚠️ [NETWORK] UserIntentManager unavailable; cannot read pending liquidity amount for solver {}",
-                solver_address
-            );
-            None
-        }
-    }
-
+   
     async fn fetch_solver_id_for_address(&self, solver_address: &str) -> Result<String> {
         let rpc_url = std::env::var("SOLVER_CONTRACT_RPC_URL")
             .unwrap_or_else(|_| "http://localhost:8545".to_string());
@@ -434,14 +352,14 @@ impl MpcNetworkLayer {
             .await?;
 
         info!("✅ [{}] BTC payout signing completed", context);
-        if context == "withdraw_liquidity" {
-            self.record_pending_liquidity_contract_update(
-                solver_address,
-                TransactionNetwork::BTC,
-                amount,
-            )
-            .await;
-        }
+        // if context == "withdraw_liquidity" {
+        //     self.record_pending_liquidity_contract_update(
+        //         solver_address,
+        //         TransactionNetwork::BTC,
+        //         amount,
+        //     )
+        //     .await;
+        // }
         Ok(true)
     }
 
@@ -575,7 +493,7 @@ impl MpcNetworkLayer {
             key
         } else {
             warn!(
-                "❌ [SOLVER] Cannot update solver rewards for {} - vault group key unavailable",
+                "❌ [SOLVER] Cannot update solver rewards for {} - liquidity operator group key unavailable",
                 solver_address
             );
             return Ok(());
@@ -770,7 +688,7 @@ impl MpcNetworkLayer {
             key
         } else {
             warn!(
-                "❌ [SOLVER] Cannot update contract liquidity for {} - vault group key unavailable",
+                "❌ [SOLVER] Cannot update contract liquidity for {} - liquidity operator group key unavailable",
                 solver_address
             );
             return Ok(());
@@ -923,16 +841,17 @@ use libp2p::{gossipsub, PeerId};
 use tracing::{debug, error, info, warn};
 
 use crate::{
-    chain_abstraction::transactions::ChainTransaction,
     contract::{ContractClient, ContractConfig, SolverManagerContract},
     signing::{BitcoinSigner, EthereumSigner},
     types::{
-        intent::TransactionNetwork, rpc::RPCRequest, rpc_server::NodeStatus, ChannelMessage,
+        rpc::RPCRequest, rpc_server::NodeStatus, ChannelMessage,
         GossipsubMessage,
     },
 };
 
-use crate::network::transport::types::{MpcNetworkBehaviour, MpcNetworkLayer};
+use crate::network::transport::types::{
+    MpcNetworkBehaviour, MpcNetworkLayer, TOPIC_WITHDRAW_LIQUIDITY,
+};
 use crate::protocols::DKGStatus;
 
 impl MpcNetworkLayer {
@@ -1258,6 +1177,185 @@ impl MpcNetworkLayer {
                     );
                 }
             }
+            ChannelMessage::BtcWithdrawBatch {
+                batch_id,
+                requests,
+                round,
+                timestamp,
+                node_id,
+            } => {
+                use libp2p::gossipsub::{IdentTopic, Message as GossipMessage};
+
+                let gossip_msg = crate::types::GossipsubMessage::BtcWithdrawBatch {
+                    batch_id,
+                    requests,
+                    round,
+                    timestamp,
+                    node_id,
+                };
+
+                let data = match serde_json::to_vec(&gossip_msg) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        warn!(
+                            "❌ [BTC_WITHDRAW] Failed to serialize BtcWithdrawBatch: {}",
+                            e
+                        );
+                        return Ok(());
+                    }
+                };
+
+                // 1) Process locally by calling the main gossipsub handler
+                let topic = "withdraw-liquidity-batch".to_string();
+                let topic_hash = IdentTopic::new(topic.clone());
+                let local_msg = GossipMessage {
+                    source: Some(self.local_peer_id),
+                    data: data.clone(),
+                    sequence_number: None,
+                    topic: topic_hash.hash(),
+                };
+
+                if let Err(e) = self.handle_gossipsub_message(&local_msg).await {
+                    warn!(
+                        "❌ [BTC_WITHDRAW] Failed to process local BtcWithdrawBatch: {}",
+                        e
+                    );
+                }
+
+                // 2) Publish to other peers via gossipsub
+                let swarm_mut = swarm.behaviour_mut();
+                let peer_count = swarm_mut.gossipsub.all_peers().count();
+
+                if peer_count > 0 {
+                    if let Err(e) = swarm_mut.gossipsub.publish(topic_hash, data) {
+                        warn!(
+                            "❌ [BTC_WITHDRAW] Failed to publish BtcWithdrawBatch to topic {}: {:?}",
+                            topic, e
+                        );
+                    }
+                } else {
+                    warn!(
+                        "⚠️ [BTC_WITHDRAW] No peers available for broadcasting BtcWithdrawBatch"
+                    );
+                }
+            }
+            ChannelMessage::BtcWithdrawTxIdBroadcast {
+                btc_txid,
+                network,
+                batch_id,
+                requests,
+                node_id,
+            } => {
+                use libp2p::gossipsub::{IdentTopic, Message as GossipMessage};
+
+                let gossip_msg = crate::types::GossipsubMessage::BtcWithdrawTxIdBroadcast {
+                    btc_txid,
+                    network,
+                    batch_id,
+                    requests,
+                    node_id,
+                };
+
+                let data = match serde_json::to_vec(&gossip_msg) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        warn!(
+                            "❌ [BTC_WITHDRAW] Failed to serialize BtcWithdrawTxIdBroadcast: {}",
+                            e
+                        );
+                        return Ok(());
+                    }
+                };
+
+                // 1) Process locally by calling the main gossipsub handler
+                let topic = "withdraw-liquidity-batch".to_string();
+                let topic_hash = IdentTopic::new(topic.clone());
+                let local_msg = GossipMessage {
+                    source: Some(self.local_peer_id),
+                    data: data.clone(),
+                    sequence_number: None,
+                    topic: topic_hash.hash(),
+                };
+
+                if let Err(e) = self.handle_gossipsub_message(&local_msg).await {
+                    warn!(
+                        "❌ [BTC_WITHDRAW] Failed to process local BtcWithdrawTxIdBroadcast: {}",
+                        e
+                    );
+                }
+
+                // 2) Publish to other peers via gossipsub
+                let swarm_mut = swarm.behaviour_mut();
+                let peer_count = swarm_mut.gossipsub.all_peers().count();
+
+                if peer_count > 0 {
+                    if let Err(e) = swarm_mut.gossipsub.publish(topic_hash, data) {
+                        warn!(
+                            "❌ [BTC_WITHDRAW] Failed to publish BtcWithdrawTxIdBroadcast to topic {}: {:?}",
+                            topic, e
+                        );
+                    }
+                } else {
+                    warn!(
+                        "⚠️ [BTC_WITHDRAW] No peers available for broadcasting BtcWithdrawTxIdBroadcast"
+                    );
+                }
+            }
+            ChannelMessage::PendingWithdrawRequestBroadcast { request } => {
+                use libp2p::gossipsub::{IdentTopic, Message as GossipMessage};
+
+                let gossip_msg = crate::types::GossipsubMessage::PendingWithdrawRequestBroadcast {
+                    request: request.clone(),
+                };
+
+                let data = match serde_json::to_vec(&gossip_msg) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        warn!(
+                            "❌ [WITHDRAW_LIQUIDITY] Failed to serialize PendingWithdrawRequestBroadcast: {}",
+                            e
+                        );
+                        return Ok(());
+                    }
+                };
+
+                let topic = TOPIC_WITHDRAW_LIQUIDITY.to_string();
+                let topic_hash = IdentTopic::new(topic.clone());
+                let local_msg = GossipMessage {
+                    source: Some(self.local_peer_id),
+                    data: data.clone(),
+                    sequence_number: None,
+                    topic: topic_hash.hash(),
+                };
+
+                if let Err(e) = self.handle_gossipsub_message(&local_msg).await {
+                    warn!(
+                        "❌ [WITHDRAW_LIQUIDITY] Failed to process local PendingWithdrawRequestBroadcast: {}",
+                        e
+                    );
+                }
+
+                let swarm_mut = swarm.behaviour_mut();
+                let peer_count = swarm_mut.gossipsub.all_peers().count();
+
+                if peer_count > 0 {
+                    if let Err(e) = swarm_mut.gossipsub.publish(topic_hash, data) {
+                        warn!(
+                            "❌ [WITHDRAW_LIQUIDITY] Failed to publish PendingWithdrawRequestBroadcast to topic {}: {:?}",
+                            topic, e
+                        );
+                    } else {
+                        info!(
+                            "📡 [WITHDRAW_LIQUIDITY] Published PendingWithdrawRequestBroadcast (request_id={}) to {} peers",
+                            request.request_id, peer_count
+                        );
+                    }
+                } else {
+                    warn!(
+                        "⚠️ [WITHDRAW_LIQUIDITY] No peers available for broadcasting PendingWithdrawRequestBroadcast"
+                    );
+                }
+            }
             // Solver Add Liquidity Batch
             // - Final node sends ChannelMessage::SolverAddLiquidityBatch (only request_ids)
             //   1) Build the corresponding GossipsubMessage::SolverAddLiquidityBatch
@@ -1358,7 +1456,7 @@ impl MpcNetworkLayer {
                 // Attempt to dial if not connected and we have a listen address
                 let mut is_connected = swarm.is_connected(&peer_id);
                 let connected_peers = swarm.connected_peers().collect::<Vec<_>>();
-                info!("🔐 [DKG-SECURE]  Connected peers: {:?}", connected_peers);
+                debug!("🔐 [DKG-SECURE] Connected peers: {:?}", connected_peers);
 
                 info!(
                     "🔐 [DKG-SECURE]  Peer discovery {} address: {:?}",
@@ -1409,7 +1507,7 @@ impl MpcNetworkLayer {
                 if !is_connected && retry_count < MAX_RETRIES {
                     // Not connected - schedule retry with exponential backoff
                     let delay_ms = 1000 * (1 << retry_count.min(5)); // 1s, 2s, 4s, 8s, 16s, 32s max
-                    info!(
+                    debug!(
                         "🔄 [DKG-SECURE] Peer send {} not connected - scheduling retry {} in {}ms",
                         target_peer_id,
                         retry_count + 1,
@@ -1456,7 +1554,7 @@ impl MpcNetworkLayer {
                     
                     if count >= MAX_OUTBOUND_INFLIGHT_PER_PEER {
                         // At capacity - re-queue with delay
-                        info!(
+                        debug!(
                             "⏸️ [DKG-SECURE] Peer {} at capacity ({}/{}), re-queuing share {}",
                             target_peer_id, count, MAX_OUTBOUND_INFLIGHT_PER_PEER, share_index
                         );
@@ -2336,7 +2434,7 @@ impl MpcNetworkLayer {
                 if !is_connected && retry_count < MAX_RETRIES {
                     let tx = self.message_tx.clone();
                     let delay_ms = 2000 + (retry_count as u64 * 1000);
-                    warn!(
+                    debug!(
                         "⏰ [SIGNING-SECURE] Peer {} not connected, will retry transaction data for round {} in {}ms (attempt {}/{})",
                         target_peer_id,
                         round,
@@ -3300,14 +3398,6 @@ impl MpcNetworkLayer {
                                 )
                                 .await
                             }
-                            "withdraw_liquidity" | "withdrawLiquidity" => {
-                                self.handle_withdraw_liquidity_transaction_id_storage(
-                                    solver_addr,
-                                    &transaction_id,
-                                    &transaction_type,
-                                )
-                                .await
-                            }
                             _ => {
                                 warn!(
                                     "❌ [NETWORK] Unknown transaction type: {}",
@@ -3625,100 +3715,6 @@ impl MpcNetworkLayer {
                         &reward_tics,
                     )
                     .await?;
-            }
-            ChannelMessage::WithdrawLiquidity {
-                solver_address,
-                btc_address,
-                eth_address,
-                amount_btc,
-                amount_tics,
-                transaction_type,
-            } => {
-                info!(
-                    "💧 [NETWORK] Processing withdraw liquidity for solver {}",
-                    solver_address
-                );
-
-                let withdraw_msg = GossipsubMessage::WithdrawLiquidity {
-                    solver_address: solver_address.clone(),
-                    btc_address: btc_address.clone(),
-                    eth_address: eth_address.clone(),
-                    amount_btc: amount_btc.clone(),
-                    amount_tics: amount_tics.clone(),
-                    transaction_type: transaction_type.clone(),
-                };
-                let msg_bytes = serde_json::to_vec(&withdraw_msg)
-                    .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-                let topic = gossipsub::IdentTopic::new("withdraw-liquidity");
-                swarm.behaviour_mut().gossipsub.publish(topic, msg_bytes)?;
-                info!(
-                    "📡 [NETWORK] Broadcasted withdraw liquidity request for solver {}",
-                    solver_address
-                );
-
-                let (tics_payout_initiated, btc_payout_initiated) = self
-                    .process_payout(
-                        "withdraw_liquidity",
-                        &solver_address,
-                        &btc_address,
-                        &eth_address,
-                        &amount_btc,
-                        &amount_tics,
-                    )
-                    .await?;
-
-                // Apply the liquidity decrease locally only when the payout was actually initiated
-                // to avoid reducing liquidity for transactions that never reach storage (e.g., BTC dust).
-                if let Some(signing_node) = &self.signing_node {
-                    let delta_btc = if btc_payout_initiated {
-                        amount_btc.as_ref().and_then(|v| U256::from_dec_str(v).ok())
-                    } else {
-                        None
-                    };
-                    let delta_tics = if tics_payout_initiated {
-                        amount_tics
-                            .as_ref()
-                            .and_then(|v| U256::from_dec_str(v).ok())
-                    } else {
-                        None
-                    };
-
-                    if delta_btc.is_some() || delta_tics.is_some() {
-                        match signing_node
-                            .apply_liquidity_delta(
-                                &solver_address,
-                                None,
-                                delta_btc,
-                                delta_tics,
-                                false,
-                            )
-                            .await
-                        {
-                            Ok(()) => {
-                                info!(
-                                    "✅ [NETWORK] Applied local liquidity withdraw for {}",
-                                    solver_address
-                                );
-                            }
-                            Err(e) => {
-                                warn!(
-                                    "⚠️ [NETWORK] Failed to apply local liquidity withdraw for {}: {}",
-                                    solver_address, e
-                                );
-                            }
-                        }
-                    } else {
-                        info!(
-                            "⏭️ [NETWORK] Skipping local liquidity withdraw for {} because payout was not initiated",
-                            solver_address
-                        );
-                    }
-                } else {
-                    warn!(
-                        "⚠️ [NETWORK] Signing node unavailable; cannot apply local liquidity withdraw for {}",
-                        solver_address
-                    );
-                }
             }
             ChannelMessage::SolverAddLiquidity {
                 request_id,
@@ -4190,7 +4186,7 @@ impl MpcNetworkLayer {
             key
         } else {
             warn!(
-                "❌ [ADD_LIQUIDITY_BATCH] Vault group key unavailable; cannot derive liquidity operator address"
+                "❌ [ADD_LIQUIDITY_BATCH] Liquidity operator group key unavailable; cannot derive liquidity operator address"
             );
             return Ok(());
         };
@@ -4246,7 +4242,7 @@ impl MpcNetworkLayer {
             let vault_tweaked_share = dkg_node.get_vault_tweaked_secret_share().await;
 
             if let Some(ref _secret_share) = vault_tweaked_share {
-                // Use vault key as liquidity operator key
+                // Use liquidity operator (vault) key
                 signing_node.set_vault_group_key(group_public_key);
 
                 let contract_tx = crate::types::intent::ContractTransaction {
@@ -4294,7 +4290,7 @@ impl MpcNetworkLayer {
                 );
             } else {
                 warn!(
-                    "⚠️ [ADD_LIQUIDITY_BATCH] Skipping batch - missing vault secret share (liquidity operator key)"
+                    "⚠️ [ADD_LIQUIDITY_BATCH] Skipping batch - missing liquidity operator secret share"
                 );
             }
         } else {

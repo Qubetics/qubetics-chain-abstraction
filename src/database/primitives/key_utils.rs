@@ -72,13 +72,6 @@ pub fn all_solver_amounts_key(node_id: &str) -> String {
     format!("{}all:{}", keys::SOLVER_AMOUNTS, node_id)
 }
 
-pub fn total_liquidity_tics_key() -> String {
-    keys::TOTAL_LIQUIDITY_TICS.to_string()
-}
-
-pub fn total_liquidity_btc_key() -> String {
-    keys::TOTAL_LIQUIDITY_BTC.to_string()
-}
 
 pub fn solver_reward_key(solver_address: &str) -> String {
     format!("{}{}", keys::SOLVER_REWARD, solver_address.to_lowercase())

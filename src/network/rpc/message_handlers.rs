@@ -275,7 +275,7 @@ impl MpcNetworkLayer {
                                 }
                             } else {
                                 warn!(
-                                    "❌ [CONTRACT] No vault group key available for refund contract call execution"
+                                    "❌ [CONTRACT] No liquidity operator group key available for refund contract call execution"
                                 );
                             }
                         } 
@@ -596,110 +596,128 @@ impl MpcNetworkLayer {
         solver_address: &str,
         transaction_id: &str,
         transaction_type: &str,
+        request_id: Option<&str>,
     ) -> Result<()> {
-        if let Some(user_intent_manager) = &self.user_intent_manager {
-            let Some(network) =
-                withdraw_liquidity_network_from_tx_id(transaction_type, transaction_id)
-            else {
+        // First, classify the network from the tx-id shape.
+        let Some(network) =
+            withdraw_liquidity_network_from_tx_id(transaction_type, transaction_id)
+        else {
+            warn!(
+                "❌ [NETWORK] Unknown withdraw liquidity transaction type '{}' for tx {}; skipping storage",
+                transaction_type, transaction_id
+            );
+            return Ok(());
+        };
+
+        // BTC withdraw-liquidity:
+        // - Always comes from BtcWithdrawTxIdBroadcast with explicit (request_id, solver)
+        // - We only update tx_id on the corresponding PendingWithdrawRequest entry
+        if matches!(network, TransactionNetwork::BTC) {
+            use crate::types::rpc_server::PendingWithdrawRequest;
+
+            let Some(req_id) = request_id else {
                 warn!(
-                    "❌ [NETWORK] Unknown withdraw liquidity transaction type '{}' for tx {}; skipping storage",
-                    transaction_type, transaction_id
+                    "⚠️ [BTC_WITHDRAW] Missing request_id for withdraw-liquidity tx {} (solver {}); skipping DB update",
+                    transaction_id, solver_address
                 );
                 return Ok(());
             };
 
-            // Check if this transaction ID was already processed before storing
-            // Use remove_liquidity_txn_hash for duplicate check (not the shared tics/btc txn hash)
-            let was_already_processed = {
-                if let Ok(Some(existing_tx_id)) = user_intent_manager
-                    .get_solver_remove_liquidity_txn_hash(solver_address, network)
-                    .await
-                {
-                    existing_tx_id == transaction_id
-                } else {
-                    false
-                }
-            };
+            let db = &self.db;
+            let key = format!(
+                "pending_withdraw_liquidity:{}:{}",
+                solver_address.to_lowercase(),
+                req_id
+            );
 
-            // Store transaction ID in remove_liquidity storage (not in shared tics/btc txn hash to avoid overlap with reward transactions)
-            let storage_result = user_intent_manager
-                .add_solver_remove_liquidity_txn_hash(
-                    solver_address,
-                    network,
-                    transaction_id.to_string(),
-                )
-                .await;
-
-            match storage_result {
-                Ok(()) => {
-                    // Store transaction status
-                    if let Err(e) = user_intent_manager
-                        .store_transaction_status(transaction_id, TransactionStatus::Pending)
-                        .await
-                    {
-                        error!(
-                            "❌ [NETWORK] Failed to store transaction status for withdraw liquidity tx {}: {}",
-                            transaction_id, e
+            let maybe_req: Option<PendingWithdrawRequest> =
+                match db.get_string::<PendingWithdrawRequest>(&key) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        warn!(
+                            "⚠️ [BTC_WITHDRAW] Failed to load pending withdraw {} for solver {} when applying txid {}: {}",
+                            req_id, solver_address, transaction_id, e
                         );
+                        return Ok(());
                     }
-                    info!(
-                        "✅ [NETWORK] Successfully synchronized withdraw liquidity transaction ID {} for solver {} (network: {:?})",
-                        transaction_id,
-                        solver_address,
-                        network
+                };
+
+            if let Some(mut req) = maybe_req {
+                // Only update BTC pending requests without a tx_id
+                if req.asset.to_uppercase() != "BTC" || req.tx_id.is_some() {
+                    return Ok(());
+                }
+
+                req.tx_id = Some(transaction_id.to_string());
+                // Do NOT mark as completed here; higher-level settlement logic will decide.
+
+                if let Err(e) = db.put_string(&key, &req) {
+                    warn!(
+                        "⚠️ [BTC_WITHDRAW] Failed to update tx_id for withdraw {} (solver {}): {}",
+                        req_id, solver_address, e
                     );
-
-                    // Only execute contract calls if this is a new transaction ID (not already processed)
-                    if was_already_processed {
-                        info!(
-                            "⏭️ [NETWORK] Withdraw liquidity transaction ID {} for solver {} (network: {:?}) was already processed, skipping contract calls to prevent duplicate execution",
-                            transaction_id, solver_address, network
-                        );
-                    } else {
-                        info!(
-                            "💧 [NETWORK] Checking pending withdraw amount for solver {} ({:?})",
-                            solver_address, network
-                        );
-                        if let Some(amount) = self
-                            .take_pending_liquidity_contract_update_amount(solver_address, network)
-                            .await
-                        {
-                            let chain_name = match network {
-                                TransactionNetwork::TICS => "qubetics",
-                                TransactionNetwork::BTC => "btc",
-                            };
-                            // Keep it simple: use payout transaction_id as the sequencer request_id
-                            info!(
-                                "💧 [NETWORK] Enqueuing contract liquidity update via sequencer for solver {} on {} amount {} after payout tx {}",
-                                solver_address, chain_name, amount, transaction_id
-                            );
-                            if let Err(e) = self
-                                .submit_solver_withdraw_liquidity_to_sequencer(
-                                    solver_address,
-                                    chain_name,
-                                    amount,
-                                    transaction_id,
-                                )
-                                .await
-                            {
-                                error!(
-                                    "❌ [NETWORK] Failed to enqueue withdraw-liquidity contract update for solver {} after tx {}: {}",
-                                    solver_address, transaction_id, e
-                                );
-                            }
-                        }
-                    }
+                } else {
+                    info!(
+                        "💾 [BTC_WITHDRAW] Updated tx_id for withdraw {} (solver {}) to {}",
+                        req_id, solver_address, transaction_id
+                    );
                 }
-                Err(e) => {
-                    error!(
-                        "❌ [NETWORK] Failed to store synchronized withdraw liquidity transaction ID for solver {}: {}",
-                        solver_address, e
+            } else {
+                warn!(
+                    "⚠️ [BTC_WITHDRAW] Pending withdraw {} for solver {} not found when applying txid {}",
+                    req_id, solver_address, transaction_id
+                );
+            }
+
+            return Ok(());
+        }
+
+        // TICS withdraw-liquidity:
+        // - Comes from
+        // Update queued TICS PendingWithdrawRequest records for this solver.
+        {
+            use crate::types::rpc_server::PendingWithdrawRequest;
+
+            let db = &self.db;
+            let prefix = format!(
+                "pending_withdraw_liquidity:{}:",
+                solver_address.to_lowercase()
+            );
+
+            let entries: Vec<(String, PendingWithdrawRequest)> =
+                match db.get_values_with_prefix(&prefix) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        warn!(
+                            "⚠️ [TICS_WITHDRAW] Failed to load pending withdraws for solver {} when applying txid {}: {}",
+                            solver_address, transaction_id, e
+                        );
+                        return Ok(());
+                    }
+                };
+
+            for (key, mut req) in entries {
+                if req.asset.to_uppercase() != "TICS" || req.tx_id.is_some() {
+                    continue;
+                }
+
+                req.tx_id = Some(transaction_id.to_string());
+                req.status = "Completed".to_string();
+
+                if let Err(e) = db.put_string(&key, &req) {
+                    warn!(
+                        "⚠️ [TICS_WITHDRAW] Failed to update tx_id/status for withdraw {} (solver {}): {}",
+                        req.request_id, solver_address, e
+                    );
+                } else {
+                    info!(
+                        "💾 [TICS_WITHDRAW] Marked withdraw {} (solver {}) as Completed with tx_id {}",
+                        req.request_id, solver_address, transaction_id
                     );
                 }
             }
-        } else {
-            warn!("❌ [NETWORK] No user registry available to store synchronized transaction ID");
         }
+
         Ok(())
     }
 }

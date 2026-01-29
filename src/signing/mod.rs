@@ -341,7 +341,7 @@ impl SigningNode {
             "📤 [SIGNING] Node {} broadcasting to topic: {}",
             self.id, topic
         );
-        info!("📊 [SIGNING] Message size: {} bytes", data.len());
+        debug!("📊 [SIGNING] Message size: {} bytes", data.len());
 
         self.message_tx
             .send(ChannelMessage::Broadcast {
@@ -1048,7 +1048,7 @@ impl SigningNode {
         }
 
         Err(anyhow!(
-            "Vault group public key not available - ensure vault key is initialized",
+            "Liquidity operator group public key not available - ensure liquidity operator key is initialized",
         ))
     }
 
@@ -1601,6 +1601,89 @@ impl SigningNode {
                 "ℹ️  [CLOCK] No {} intents ready for processing in this cycle",
                 target_chain.to_uppercase()
             );
+        }
+
+        // Additionally, on BTC cycles, select pending BTC withdraw-liquidity requests
+        // and broadcast a batch for distributed signing. This uses the same global
+        // clock as BTC intent batches but operates on PendingWithdrawRequest records
+        // stored under the "pending_withdraw_liquidity:" prefix.
+        if target_chain == "bitcoin" {
+            use crate::types::rpc_server::PendingWithdrawRequest;
+
+            // Limit number of BTC withdraw requests per cycle from env
+            let max_btc_withdraw_per_cycle = std::env::var("MAX_BTC_WITHDRAW_PER_CYCLE")
+                .ok()
+                .and_then(|val| val.parse::<usize>().ok())
+                .unwrap_or(20);
+
+            let db = user_intent_manager.get_database();
+
+            // Load all pending withdraw requests
+            let all_withdraws: Vec<(String, PendingWithdrawRequest)> =
+                match db.get_values_with_prefix("pending_withdraw_liquidity:") {
+                    Ok(entries) => entries,
+                    Err(e) => {
+                        warn!(
+                            "⚠️ [CLOCK][BTC_WITHDRAW] Failed to load pending withdraw requests: {}",
+                            e
+                        );
+                        return Ok(());
+                    }
+                };
+
+            // Filter to BTC asset, still pending, and without tx_id
+            let mut btc_pending: Vec<(String, PendingWithdrawRequest)> = all_withdraws
+                .into_iter()
+                .filter(|(_, req)| {
+                    req.asset.to_uppercase() == "BTC"
+                        && req.status == "Pending"
+                        && req.tx_id.is_none()
+                })
+                .collect();
+
+            if btc_pending.is_empty() {
+                info!("ℹ️  [CLOCK][BTC_WITHDRAW] No BTC withdraw requests ready for processing in this cycle");
+            } else {
+                // Sort by request_id (stable) just to have deterministic ordering
+                btc_pending.sort_by(|a, b| a.1.request_id.cmp(&b.1.request_id));
+
+                // Limit to configured max per cycle
+                let btc_to_process: Vec<_> =
+                    btc_pending.into_iter().take(max_btc_withdraw_per_cycle).collect();
+
+                info!(
+                    "📊 [CLOCK][BTC_WITHDRAW] Selected {} BTC withdraw requests (limited to {})",
+                    btc_to_process.len(),
+                    max_btc_withdraw_per_cycle
+                );
+
+                // Build (request_id, solver_address) pairs for the batch message
+                let requests: Vec<(String, String)> = btc_to_process
+                    .iter()
+                    .map(|(_, req)| (req.request_id.clone(), req.solver_address.clone()))
+                    .collect();
+
+                if !requests.is_empty() {
+                    let batch_id = format!("btc_withdraw_batch:{}:{}", round, cycle_number);
+                    let batch_timestamp = chrono::Utc::now().to_rfc3339();
+
+                    info!(
+                        "📤 [CLOCK][BTC_WITHDRAW] Broadcasting BTC withdraw batch {} with {} requests",
+                        batch_id,
+                        requests.len()
+                    );
+
+                    self.message_tx
+                        .send(crate::types::ChannelMessage::BtcWithdrawBatch {
+                            batch_id,
+                            requests,
+                            round,
+                            timestamp: batch_timestamp,
+                            node_id: self.id.clone(),
+                        })
+                        .await?;
+                }
+            }
         }
         
         Ok(())
@@ -2497,19 +2580,9 @@ impl SigningNode {
                             s[32 - s_canonical.len()..].copy_from_slice(&s_canonical);
                         }
 
-                        info!(
-                            "🔐 [SIGNING] Aggregated signature components for round {}:",
-                            round
-                        );
-                        info!("  v: {}", v);
-                        info!("  r (canonical): 0x{}", hex::encode(r));
-                        info!("  s (canonical): 0x{}", hex::encode(s));
-                        info!("  recovery_id: {}", recovery_id.to_i32());
-                        info!("  original_signature: 0x{}", hex::encode(signature_bytes));
-                        info!(
-                            "  r_canonical_len: {}, s_canonical_len: {}",
-                            r_canonical.len(),
-                            s_canonical.len()
+                        debug!(
+                            "🔐 [SIGNING] Aggregated signature components for round {}: v={}, recovery_id={}",
+                            round, v, recovery_id.to_i32()
                         );
 
                         // 🚀 NEW: Reconstruct and broadcast signed transaction based on actual transaction type
@@ -4730,13 +4803,13 @@ impl SigningNode {
             None => {
                 // Contract transaction (transaction_type = None) → use vault share pubkey
                 info!(
-                    "🔑 [SIGNING] Contract transaction detected, using vault share pubkey for peer {}",
+                    "🔑 [SIGNING] Contract transaction detected, using liquidity operator share pubkey for peer {}",
                     peer_id
                 );
                 dkg_storage
                     .get_vault_share_pubkey(peer_id)
                     .await?
-                    .ok_or_else(|| anyhow!("Vault share pubkey not found for peer {} (contract transaction)", peer_id))
+                    .ok_or_else(|| anyhow!("Liquidity operator share pubkey not found for peer {} (contract transaction)", peer_id))
             }
         }
     }

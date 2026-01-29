@@ -67,22 +67,28 @@ impl SigningNode {
         round: u64,
         chain_tx: ChainTransaction,
         tx_bytes: Vec<u8>,
-        solver_address: String,
+        identifiers: Vec<String>,
         extras: crate::signing::state::BtcRoundExtras,
     ) {
+        // For BTC withdraws we repurpose the "intent_hashes" slot in PendingValue
+        // to carry the batch context: each entry is encoded as "request_id|solver_address".
         let mut pending = self.pending.withdraw_pending_transactions_btc.write().await;
         pending.insert(
             round,
             (
                 chain_tx,
                 tx_bytes,
-                Some(vec![solver_address]),
+                if identifiers.is_empty() {
+                    None
+                } else {
+                    Some(identifiers)
+                },
                 Some(TransactionType::WithdrawLiquidity),
                 Some(extras),
             ),
         );
         info!(
-            "💧 [SIGNING] Stored BTC withdraw-liquidity transaction for round {} with solver address",
+            "💧 [SIGNING] Stored BTC withdraw-liquidity transaction for round {} with batch metadata",
             round
         );
     }
@@ -623,11 +629,18 @@ impl SigningNode {
                 } else if is_withdraw_round {
                     let withdraw_pending_transactions_btc =
                         self.pending.withdraw_pending_transactions_btc.read().await;
-                    if let Some((_tx, _tx_bytes, solver_addresses, transaction_type, _extras)) =
+                    if let Some((_tx, _tx_bytes, identifiers, transaction_type, _extras)) =
                         withdraw_pending_transactions_btc.get(&round)
                     {
-                        let solver_address =
-                            solver_addresses.as_ref().and_then(|v| v.first().cloned());
+                        // For BTC withdraws, the "intent_hashes" slot is repurposed to carry
+                        // batch metadata encoded as "request_id|solver_address".
+                        let solver_address = identifiers.as_ref().and_then(|v| {
+                            v.iter().find_map(|encoded| {
+                                encoded
+                                    .split_once('|')
+                                    .map(|(_, solver)| solver.to_string())
+                            })
+                        });
                         info!("[store_transaction_id_for_round] [BTC][Withdraw] Found withdraw_pending_transactions_btc entry for round {}: solver_address={:?}, transaction_type={:?}", round, solver_address, transaction_type);
                         (None, transaction_type.clone(), solver_address)
                     } else {
@@ -845,26 +858,96 @@ impl SigningNode {
                     transaction_type,
                     Some(crate::types::TransactionType::WithdrawLiquidity)
                 ) {
-                    // Handle withdraw liquidity transactions similar to rewards
-                    // Don't store transaction ID here - let handle_withdraw_liquidity_transaction_id_storage handle it after broadcast
-                    if let Some(solver_addr) = retrieved_solver_address.as_ref() {
-                        info!(
-                            "📡 [SIGNING] Broadcasting withdraw liquidity transaction ID {} for solver {} (round {}) - storage will be handled by message handler",
-                            tx_id, solver_addr, round
-                        );
+                    // Withdraw liquidity:
+                    // - For TICS, we use the generic TransactionIdBroadcast ("withdraw_liquidity")
+                    // - For BTC, we use the dedicated BtcWithdrawTxIdBroadcast carrying full batch context
+                    match txn_network {
+                        crate::types::TransactionNetwork::TICS => {
+                            if let Some(solver_addr) = retrieved_solver_address.as_ref() {
+                                info!(
+                                    "📡 [SIGNING] Broadcasting TICS withdraw liquidity transaction ID {} for solver {} (round {}) - storage will be handled by message handler",
+                                    tx_id, solver_addr, round
+                                );
 
-                        self.broadcast_transaction_id(
-                            vec![],
-                            tx_id,
-                            "withdraw_liquidity",
-                            Some(solver_addr),
-                        )
-                        .await;
-                    } else {
-                        warn!(
-                            "⚠️ [SIGNING] WithdrawLiquidity transaction type requires solver_address, but none was found in round {} (tx_id={})",
-                            round, tx_id
-                        );
+                                self.broadcast_transaction_id(
+                                    vec![],
+                                    tx_id,
+                                    "withdraw_liquidity",
+                                    Some(solver_addr),
+                                )
+                                .await;
+                            } else {
+                                warn!(
+                                    "⚠️ [SIGNING] TICS WithdrawLiquidity transaction type requires solver_address, but none was found in round {} (tx_id={})",
+                                    round, tx_id
+                                );
+                            }
+                        }
+                        crate::types::TransactionNetwork::BTC => {
+                            // BTC withdraw: final node broadcasts txid + full batch mapping so
+                            // all nodes can update their PendingWithdrawRequest.tx_id entries.
+                            let withdraw_pending_transactions_btc =
+                                self.pending.withdraw_pending_transactions_btc.read().await;
+                            if let Some((_tx, _raw, identifiers, _tx_type, _extras)) =
+                                withdraw_pending_transactions_btc.get(&round)
+                            {
+                                let batch_requests: Vec<(String, String)> = identifiers
+                                    .as_ref()
+                                    .map(|list| {
+                                        list.iter()
+                                            .filter_map(|encoded| {
+                                                encoded.split_once('|').map(
+                                                    |(req_id, solver)| {
+                                                        (
+                                                            req_id.to_string(),
+                                                            solver.to_string(),
+                                                        )
+                                                    },
+                                                )
+                                            })
+                                            .collect()
+                                    })
+                                    .unwrap_or_default();
+
+                                if batch_requests.is_empty() {
+                                    warn!(
+                                        "⚠️ [SIGNING] BTC WithdrawLiquidity round {} has no batch identifiers; skipping BtcWithdrawTxIdBroadcast for tx_id={}",
+                                        round, tx_id
+                                    );
+                                    return;
+                                }
+
+                                let network_label = crate::types::network::network_type().as_str();
+
+                                info!(
+                                    "📡 [SIGNING] Broadcasting BTC withdraw-liquidity txid {} for round {} with {} requests (network={})",
+                                    tx_id,
+                                    round,
+                                    batch_requests.len(),
+                                    network_label
+                                );
+
+                                let msg = crate::types::ChannelMessage::BtcWithdrawTxIdBroadcast {
+                                    btc_txid: tx_id.to_string(),
+                                    network: network_label.to_string(),
+                                    batch_id: format!("btc-withdraw-round-{}", round),
+                                    requests: batch_requests,
+                                    node_id: self.id.clone(),
+                                };
+
+                                if let Err(e) = self.message_tx.send(msg).await {
+                                    error!(
+                                        "❌ [SIGNING] Failed to send BtcWithdrawTxIdBroadcast over channel for round {}: {}",
+                                        round, e
+                                    );
+                                }
+                            } else {
+                                warn!(
+                                    "⚠️ [SIGNING] BTC WithdrawLiquidity transaction type but no withdraw_pending_transactions_btc entry for round {} (tx_id={})",
+                                    round, tx_id
+                                );
+                            }
+                        }
                     }
                 }
             }

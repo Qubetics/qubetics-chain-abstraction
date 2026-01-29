@@ -462,12 +462,13 @@ impl SigningNode {
                     self.id, current_round, solver_addr, original_tx.inputs.len()
                 );
             } else if let Some(TransactionType::WithdrawLiquidity) = transaction_type {
-                let solver_addr = solver_address.expect("Solver address should be validated above");
+                // For BTC withdraws we expect `intent_hashes` to carry batch metadata,
+                // encoded as "request_id|solver_address" for each withdraw in the batch.
                 self.store_withdraw_transaction_btc(
                     current_round,
                     ChainTransaction::Bitcoin(original_tx.clone()),
                     tx_bytes.clone(),
-                    solver_addr.clone(),
+                    intent_hashes.clone(),
                     extras,
                 )
                 .await;
@@ -483,7 +484,7 @@ impl SigningNode {
 
                 info!(
                     "💾 [BTC-SIGNING] Node {} stored BTC withdraw-liquidity transaction for round {} with solver address: {} (inputs={})",
-                    self.id, current_round, solver_addr, original_tx.inputs.len()
+                    self.id, current_round, intent_hashes.len(), original_tx.inputs.len()
                 );
             } else {
                 // This is an intent-based transaction - store in regular pending transactions

@@ -75,6 +75,7 @@ pub const TOPIC_USER_REGISTRATIONS: &str = "user-registrations";
 pub const TOPIC_SOLVER_REWARDS: &str = "solver-rewards";
 pub const TOPIC_CLAIM_REWARDS: &str = "claim-rewards";
 pub const TOPIC_WITHDRAW_LIQUIDITY: &str = "withdraw-liquidity";
+pub const TOPIC_WITHDRAW_LIQUIDITY_BATCH: &str = "withdraw-liquidity-batch";
 pub const TOPIC_SOLVER_ADD_LIQUIDITY: &str = "solver-add-liquidity";
 pub const TOPIC_SOLVER_ADD_LIQUIDITY_BATCH: &str = "solver-add-liquidity-batch";
 pub const TOPIC_TRANSACTION_ID_SYNC: &str = "transaction-id-sync";
@@ -103,6 +104,7 @@ pub enum GossipTopic {
     SolverRewards,
     ClaimRewards,
     WithdrawLiquidity,
+    WithdrawLiquidityBatch,
     SolverAddLiquidity,
     SolverAddLiquidityBatch,
     TransactionIdSync,
@@ -130,6 +132,7 @@ impl GossipTopic {
         GossipTopic::SolverRewards,
         GossipTopic::ClaimRewards,
         GossipTopic::WithdrawLiquidity,
+        GossipTopic::WithdrawLiquidityBatch,
         GossipTopic::SolverAddLiquidity,
         GossipTopic::SolverAddLiquidityBatch,
         GossipTopic::TransactionIdSync,
@@ -157,6 +160,7 @@ impl GossipTopic {
             GossipTopic::SolverRewards => TOPIC_SOLVER_REWARDS,
             GossipTopic::ClaimRewards => TOPIC_CLAIM_REWARDS,
             GossipTopic::WithdrawLiquidity => TOPIC_WITHDRAW_LIQUIDITY,
+            GossipTopic::WithdrawLiquidityBatch => TOPIC_WITHDRAW_LIQUIDITY_BATCH,
             GossipTopic::SolverAddLiquidity => TOPIC_SOLVER_ADD_LIQUIDITY,
             GossipTopic::SolverAddLiquidityBatch => TOPIC_SOLVER_ADD_LIQUIDITY_BATCH,
             GossipTopic::TransactionIdSync => TOPIC_TRANSACTION_ID_SYNC,

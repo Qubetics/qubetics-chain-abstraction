@@ -355,7 +355,7 @@ impl RetryManager {
         };
 
         // Wait for initial ACKs
-        info!(
+        debug!(
             "⏰ [RETRY] Starting {} monitoring for {:?} - waiting {:?} for initial ACKs",
             msg_type_str, message_id, initial_wait
         );
@@ -435,7 +435,7 @@ impl RetryManager {
 
                     match message_tx.try_send(retry_msg) {
                         Ok(_) => {
-                            info!(
+                            debug!(
                                 "✅ [RETRY] Unicast retry sent to {} for {:?} (attempt {}/{})",
                                 peer_id,
                                 message_id,
@@ -537,14 +537,14 @@ impl RetryManager {
 
                 // Log acknowledged nodes for comparison
                 let acked_nodes: Vec<_> = state.acknowledged_nodes.iter().collect();
-                info!(
+                debug!(
                     "✅ [RETRY] Successfully received ACKs from {} nodes: {:?}",
                     acked_nodes.len(),
                     acked_nodes
                 );
             } else {
                 // All nodes acknowledged - success!
-                info!(
+                debug!(
                     "🎉 [RETRY] Successfully delivered {:?} to all {} nodes in {:?}",
                     message_id,
                     state.expected_nodes.len(),

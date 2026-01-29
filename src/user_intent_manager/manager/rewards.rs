@@ -3,79 +3,8 @@ use crate::types::intent::TransactionNetwork;
 use tracing::{error, info};
 
 impl UserIntentManager {
-    /// Store total liquidity in tics
-    pub async fn set_total_liquidity_tics(&self, tics: u64) -> Result<(), String> {
-        self.reward_storage
-            .set_total_liquidity_tics(tics)
-            .await
-            .map_err(|e| e.to_string())?;
-        info!("✅ [DB_USER_REGISTRY] Set total liquidity tics: {}", tics);
-        Ok(())
-    }
-
-    /// Get total liquidity in tics (as u64 legacy)
-    pub async fn get_total_liquidity_tics(&self) -> Option<u64> {
-        match self.reward_storage.get_total_liquidity_tics().await {
-            Ok(t) => t,
-            Err(e) => {
-                tracing::error!("Failed to get total liquidity TICS: {}", e);
-                None
-            }
-        }
-    }
-
-    /// Get total liquidity in TICS as U256 (string-backed)
-    pub async fn get_total_liquidity_tics_u256(&self) -> Option<U256> {
-        match self.reward_storage.get_total_liquidity_tics_u256().await {
-            Ok(v) => v.and_then(|x| U256::from_dec_str(&x.to_string()).ok()),
-            Err(e) => {
-                tracing::error!("Failed to get total liquidity TICS (u256): {}", e);
-                None
-            }
-        }
-    }
-
-    /// Get total liquidity in btc (legacy f64)
-    pub async fn get_total_liquidity_btc(&self) -> Option<f64> {
-        match self.reward_storage.get_total_liquidity_btc().await {
-            Ok(btc) => btc,
-            Err(e) => {
-                tracing::error!("Failed to get total liquidity BTC: {}", e);
-                None
-            }
-        }
-    }
-
-    /// Get total liquidity in BTC as U256 satoshis (string-backed)
-    pub async fn get_total_liquidity_btc_u256(&self) -> Option<U256> {
-        match self.reward_storage.get_total_liquidity_btc_u256().await {
-            Ok(v) => v.and_then(|x| U256::from_dec_str(&x.to_string()).ok()),
-            Err(e) => {
-                tracing::error!("Failed to get total liquidity BTC (u256): {}", e);
-                None
-            }
-        }
-    }
-
-    /// Delete total liquidity tics
-    pub async fn delete_total_liquidity_tics(&self) -> Result<(), String> {
-        self.reward_storage
-            .delete_total_liquidity_tics()
-            .await
-            .map_err(|e| e.to_string())?;
-        info!("✅ [DB_USER_REGISTRY] Deleted total liquidity tics");
-        Ok(())
-    }
-
-    /// Delete total liquidity btc
-    pub async fn delete_total_liquidity_btc(&self) -> Result<(), String> {
-        self.reward_storage
-            .delete_total_liquidity_btc()
-            .await
-            .map_err(|e| e.to_string())?;
-        info!("✅ [DB_USER_REGISTRY] Deleted total liquidity BTC");
-        Ok(())
-    }
+    // Total liquidity helpers (TICS/BTC) have been removed.
+    // Liquidity is now derived directly from the on-chain SolverManager contract.
 
     /// Store TICS reward for a specific solver
     pub async fn set_solver_reward_tics(
@@ -454,73 +383,7 @@ impl UserIntentManager {
     }
 
 
-    pub async fn get_solver_remove_liquidity_txn_hash(
-        &self,
-        solver_address: &str,
-        network: TransactionNetwork,
-    ) -> Result<Option<String>, String> {
-        self.liquidity_storage
-            .get_remove_liquidity_tx_id(solver_address, network)
-            .await
-            .map_err(|e| {
-                error!(
-                    "❌ [DB_USER_REGISTRY] Failed to get remove-liquidity txn hash for solver {}: {}",
-                    solver_address, e
-                );
-                e.to_string()
-            })
-    }
-
-    pub async fn add_solver_remove_liquidity_txn_hash(
-        &self,
-        solver_address: &str,
-        network: TransactionNetwork,
-        tx_id: String,
-    ) -> Result<(), String> {
-        self.liquidity_storage
-            .set_remove_liquidity_tx_id(solver_address, network, tx_id)
-            .await
-            .map_err(|e| {
-                error!(
-                    "❌ [DB_USER_REGISTRY] Failed to store remove-liquidity txn hash for solver {}: {}",
-                    solver_address, e
-                );
-                e.to_string()
-            })
-    }
-
-    pub async fn set_pending_remove_liquidity_amount(
-        &self,
-        solver_address: &str,
-        network: TransactionNetwork,
-        amount: String,
-    ) -> Result<(), String> {
-        self.liquidity_storage
-            .set_pending_remove_liquidity_amount(solver_address, network, amount)
-            .await
-            .map_err(|e| {
-                error!(
-                    "❌ [DB_USER_REGISTRY] Failed to store pending remove-liquidity amount for solver {}: {}",
-                    solver_address, e
-                );
-                e.to_string()
-            })
-    }
-
-    pub async fn take_pending_remove_liquidity_amount(
-        &self,
-        solver_address: &str,
-        network: TransactionNetwork,
-    ) -> Result<Option<String>, String> {
-        self.liquidity_storage
-            .take_pending_remove_liquidity_amount(solver_address, network)
-            .await
-            .map_err(|e| {
-                error!(
-                    "❌ [DB_USER_REGISTRY] Failed to read pending remove-liquidity amount for solver {}: {}",
-                    solver_address, e
-                );
-                e.to_string()
-            })
-    }
+    // Liquidity DB helpers for remove-liquidity flows have been removed.
+    // Liquidity state and related transaction IDs are now derived directly from the on-chain
+    // SolverManager contract, so no per-solver liquidity bookkeeping is persisted in RocksDB.
 }

@@ -9,6 +9,7 @@ use tokio::time::{sleep, Duration};
 use tracing::{error, info, info_span, warn};
 use uuid::Uuid;
 
+use crate::rpc_server::utils::get_actual_dkg_secret_share;
 use crate::{
     contract::{ContractClient, ContractConfig, SolverManagerContract},
     database::{DkgStorage, RewardStorage},
@@ -37,9 +38,8 @@ use super::{
     errors::{RpcError, TransactionError},
     utils::{
         convert_src_smallest_to_dst_smallest, fetch_crypto_prices, fetch_network_balance,
-        get_actual_dkg_secret_share, normalize_eth_signature, recover_eth_address_secp,
-        wait_for_reward_transaction_ids, wait_for_transaction_result,
-        wait_for_withdraw_liquidity_transaction_ids,
+        normalize_eth_signature, recover_eth_address_secp,
+        wait_for_reward_transaction_ids, wait_for_transaction_result
     },
 };
 
@@ -1538,6 +1538,83 @@ pub(crate) async fn handle_get_reward_solver(
     }))
 }
 
+/// Fetch solver liquidity directly from the on-chain SolverManager contract only (no DB).
+/// Uses SOLVER_CONTRACT_ADDRESS, SOLVER_CONTRACT_RPC_URL, SOLVER_CONTRACT_CHAIN_ID.
+/// Returns (liquidity_btc, liquidity_tics) as decimal strings if non-zero.
+async fn fetch_solver_liquidity_from_contract(
+    normalized_address: &str,
+) -> Result<(Option<String>, Option<String>), String> {
+    let rpc_url = std::env::var("SOLVER_CONTRACT_RPC_URL")
+        .unwrap_or_else(|_| "http://localhost:8545".to_string());
+    let contract_address = std::env::var("SOLVER_CONTRACT_ADDRESS")
+        .unwrap_or_else(|_| "0x0000000000000000000000000000000000000000".to_string());
+    let chain_id = std::env::var("SOLVER_CONTRACT_CHAIN_ID")
+        .unwrap_or_else(|_| "1".to_string())
+        .parse::<u64>()
+        .unwrap_or(1);
+
+    if contract_address == "0x0000000000000000000000000000000000000000" {
+        return Err("Solver contract address not configured".to_string());
+    }
+
+    let contract_addr = contract_address
+        .parse::<Address>()
+        .map_err(|e| format!("Invalid solver contract address: {e}"))?;
+
+    let config = ContractConfig {
+        rpc_url: rpc_url.clone(),
+        contract_address: contract_addr,
+        chain_id,
+    };
+
+    let client =
+        ContractClient::new(config.clone()).map_err(|e| format!("Failed to create contract client: {e}"))?;
+
+    let solver_contract = SolverManagerContract::new(&config, client.provider())
+        .map_err(|e| format!("Failed to create solver contract interface: {e}"))?;
+
+    let solver_addr = normalized_address
+        .parse::<Address>()
+        .map_err(|e| format!("Invalid solver EVM address {normalized_address}: {e}"))?;
+
+    // Resolve solver ID from EVM address (contract only; no DB)
+    let solver_id = solver_contract
+        .get_solver_id(solver_addr)
+        .await
+        .map_err(|e| format!("Failed to get solver ID: {e}"))?;
+
+    if solver_id.trim().is_empty() {
+        return Err("Address is not a registered solver on the contract".to_string());
+    }
+
+    // Fetch all chain amounts for this solver from contract
+    let amounts = solver_contract
+        .get_all_chain_amounts(&solver_id)
+        .await
+        .map_err(|e| format!("Failed to get solver chain amounts: {e}"))?;
+
+    if amounts.is_empty() {
+        return Ok((None, None));
+    }
+
+    let amount_strings: Vec<String> = amounts.iter().map(|u| u.to_string()).collect();
+
+    // By convention index 0 = BTC, index 1 = TICS (same order used in the old DB mirror).
+    let normalize_amount = |s: &String| {
+        let trimmed = s.trim();
+        if trimmed.is_empty() || trimmed == "0" {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    };
+
+    let liquidity_btc = amount_strings.get(0).and_then(normalize_amount);
+    let liquidity_tics = amount_strings.get(1).and_then(normalize_amount);
+
+    Ok((liquidity_btc, liquidity_tics))
+}
+
 pub(crate) async fn handle_get_solver_liquidity(
     req: SolverLiquidityRequest,
     user_intent_manager: Arc<UserIntentManager>,
@@ -1573,55 +1650,21 @@ pub(crate) async fn handle_get_solver_liquidity(
         }
     };
 
-    let database = user_intent_manager.get_database();
-    let solver_liquidity_key = format!("solver_liquidity:{}", normalized_address.to_lowercase());
-
-    let liquidity_amounts: Option<Vec<String>> =
-        match database.get_string::<Vec<String>>(&solver_liquidity_key) {
-            Ok(amounts) => amounts,
-            Err(e) => {
-                warn!("❌ Failed to get solver liquidity from database: {}", e);
-                return Ok(warp::reply::json(&SolverLiquidityResponse {
-                    status: "error".to_string(),
-                    solver_address: normalized_address,
-                    liquidity_btc: None,
-                    liquidity_tics: None,
-                    message: "Failed to fetch solver liquidity".to_string(),
-                    error_message: Some(format!("Database error: {e}")),
-                }));
-            }
-        };
-
-    if liquidity_amounts.is_none() {
-        warn!(
-            "❌ Address {} is not a valid solver (no liquidity entry found)",
-            normalized_address
-        );
-        return Ok(warp::reply::json(&SolverLiquidityResponse {
-            status: "error".to_string(),
-            solver_address: normalized_address,
-            liquidity_btc: None,
-            liquidity_tics: None,
-            message: "Address is not a valid solver".to_string(),
-            error_message: Some("No liquidity entry found for this address".to_string()),
-        }));
-    }
-
-    let amounts = liquidity_amounts.unwrap();
-    let liquidity_btc = amounts.first().and_then(|s| {
-        if s.trim().is_empty() || s == "0" {
-            None
-        } else {
-            Some(s.clone())
+    // Fetch liquidity directly from the SolverManager contract
+    let (liquidity_btc, liquidity_tics) = match fetch_solver_liquidity_from_contract(&normalized_address).await {
+        Ok((btc, tics)) => (btc, tics),
+        Err(e) => {
+            warn!("❌ Failed to get solver liquidity from contract: {}", e);
+            return Ok(warp::reply::json(&SolverLiquidityResponse {
+                status: "error".to_string(),
+                solver_address: normalized_address,
+                liquidity_btc: None,
+                liquidity_tics: None,
+                message: "Failed to fetch solver liquidity".to_string(),
+                error_message: Some(e),
+            }));
         }
-    });
-    let liquidity_tics = amounts.get(1).and_then(|s| {
-        if s.trim().is_empty() || s == "0" {
-            None
-        } else {
-            Some(s.clone())
-        }
-    });
+    };
 
     if liquidity_btc.is_none() && liquidity_tics.is_none() {
         warn!(
@@ -1639,7 +1682,7 @@ pub(crate) async fn handle_get_solver_liquidity(
     }
 
     info!(
-        "✅ Stored liquidity for solver {} - BTC: {:?}, TICS: {:?}",
+        "✅ On-chain liquidity for solver {} - BTC: {:?}, TICS: {:?}",
         normalized_address, liquidity_btc, liquidity_tics
     );
 
@@ -1996,7 +2039,7 @@ pub(crate) async fn handle_claim_reward(
 
 pub(crate) async fn handle_withdraw_liquidity(
     req: WithdrawLiquidityRequest,
-    user_intent_manager: Arc<UserIntentManager>,
+    _user_intent_manager: Arc<UserIntentManager>,
     message_tx: Arc<Mutex<mpsc::Sender<ChannelMessage>>>,
     dkg_storage: Arc<DkgStorage>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
@@ -2096,15 +2139,14 @@ pub(crate) async fn handle_withdraw_liquidity(
         }
     };
 
-    // Check if address is a valid solver by checking liquidity in database
-    let database = user_intent_manager.get_database();
-    let solver_liquidity_key = format!("solver_liquidity:{}", normalized_address.to_lowercase());
-
-    let liquidity_amounts: Option<Vec<String>> =
-        match database.get_string::<Vec<String>>(&solver_liquidity_key) {
-            Ok(amounts) => amounts,
+    // All solver and liquidity checks below use the SolverManager contract only (no DB).
+    // Contract config: SOLVER_CONTRACT_ADDRESS, SOLVER_CONTRACT_RPC_URL, SOLVER_CONTRACT_CHAIN_ID.
+    // Liquidity and minimums are fetched via get_solver_id, get_all_chain_amounts, get_minimum_liquidity_*.
+    let (liquidity_btc_str, liquidity_tics_str) =
+        match fetch_solver_liquidity_from_contract(&normalized_address).await {
+            Ok((btc, tics)) => (btc, tics),
             Err(e) => {
-                warn!("❌ Failed to get solver liquidity from database: {}", e);
+                warn!("❌ Failed to get solver liquidity from contract: {}", e);
                 return Ok(warp::reply::json(&WithdrawLiquidityResponse {
                     status: "error".to_string(),
                     solver_address: normalized_address,
@@ -2115,73 +2157,10 @@ pub(crate) async fn handle_withdraw_liquidity(
                     tics_withdraw_tx_id: None,
                     btc_withdraw_tx_id: None,
                     message: "Failed to check solver liquidity".to_string(),
-                    error_message: Some(format!("Database error: {e}")),
+                    error_message: Some(e),
                 }));
             }
         };
-
-    // Check if solver exists (has liquidity entry)
-    if liquidity_amounts.is_none() {
-        warn!(
-            "❌ Address {} is not a valid solver (no liquidity entry found)",
-            normalized_address
-        );
-        return Ok(warp::reply::json(&WithdrawLiquidityResponse {
-            status: "error".to_string(),
-            solver_address: normalized_address,
-            liquidity_btc: None,
-            liquidity_tics: None,
-            ethereum_address: req.ethereum_address.clone(),
-            btc_address: req.btc_address.clone(),
-            tics_withdraw_tx_id: None,
-            btc_withdraw_tx_id: None,
-            message: "Address is not a valid solver".to_string(),
-            error_message: Some("No liquidity entry found for this address".to_string()),
-        }));
-    }
-
-    // Extract liquidity amounts (BTC at index 0, TICS at index 1)
-    let amounts = liquidity_amounts.unwrap();
-    let liquidity_btc_str = amounts.first().and_then(|s| {
-        // Check if the string represents a non-zero value
-        if s.trim().is_empty() || s == "0" {
-            None
-        } else {
-            // Try to parse as U256 to validate, but keep original string
-            match s.parse::<u128>() {
-                Ok(val) if val > 0 => Some(s.clone()),
-                Err(_) => {
-                    // If it's too large for u128, check if it's not "0"
-                    if s != "0" {
-                        Some(s.clone())
-                    } else {
-                        None
-                    }
-                }
-                _ => None,
-            }
-        }
-    });
-    let liquidity_tics_str = amounts.get(1).and_then(|s| {
-        // Check if the string represents a non-zero value
-        if s.trim().is_empty() || s == "0" {
-            None
-        } else {
-            // Try to parse as U256 to validate, but keep original string
-            match s.parse::<u128>() {
-                Ok(val) if val > 0 => Some(s.clone()),
-                Err(_) => {
-                    // If it's too large for u128, check if it's not "0"
-                    if s != "0" {
-                        Some(s.clone())
-                    } else {
-                        None
-                    }
-                }
-                _ => None,
-            }
-        }
-    });
 
     // Check if any liquidity is available
     if liquidity_btc_str.is_none() && liquidity_tics_str.is_none() {
@@ -2208,7 +2187,7 @@ pub(crate) async fn handle_withdraw_liquidity(
         liquidity_btc_str, liquidity_tics_str
     );
 
-    // Fetch minimum liquidity thresholds only for the requested asset
+    // Fetch minimum liquidity thresholds from the same SolverManager contract (no DB)
     let wants_tics = req.amount_tics.is_some();
     let wants_btc = req.amount_btc.is_some();
 
@@ -2433,164 +2412,70 @@ pub(crate) async fn handle_withdraw_liquidity(
         }));
     }
 
-    // Initiate withdrawals for each provided address
-    let mut initiated_tics = false;
-    let mut initiated_btc = false;
+    // At this point all validations have passed and we know:
+    // - which asset (TICS or BTC) is being withdrawn
+    // - the normalized solver address
+    // - the validated destination address
+    //
+    // Instead of initiating on-chain withdrawals immediately, we now enqueue a
+    // pending withdraw request in the database to be processed later in batch.
 
-    if withdraw_tics_amount.is_some() {
-        let maybe_initiated = maybe_initiate_withdrawal(
-            "TICS",
-            withdraw_tics_amount.as_ref(),
-            liquidity_tics_str.as_ref(),
-            req.ethereum_address.as_ref(),
-            minimum_liquidity_tics.as_ref(),
-            &normalized_address,
-            &liquidity_btc_str,
-            &liquidity_tics_str,
-            &req,
-            &message_tx,
-            |solver, dest, amount| ChannelMessage::WithdrawLiquidity {
-                solver_address: solver,
-                btc_address: None,
-                eth_address: Some(dest),
-                amount_btc: None,
-                amount_tics: Some(amount),
-                transaction_type: "withdraw_liquidity".to_string(),
-            },
-            "Ethereum address is required for TICS withdrawal",
-        )
-        .await;
-
-        match maybe_initiated {
-            Ok(flag) => initiated_tics = flag,
-            Err(resp) => return Ok(warp::reply::json(&resp)),
-        }
-    }
-
-    if withdraw_btc_amount.is_some() {
-        let maybe_initiated = maybe_initiate_withdrawal(
-            "BTC",
-            withdraw_btc_amount.as_ref(),
-            liquidity_btc_str.as_ref(),
-            req.btc_address.as_ref(),
-            minimum_liquidity_btc.as_ref(),
-            &normalized_address,
-            &liquidity_btc_str,
-            &liquidity_tics_str,
-            &req,
-            &message_tx,
-            |solver, dest, amount| ChannelMessage::WithdrawLiquidity {
-                solver_address: solver,
-                btc_address: Some(dest),
-                eth_address: None,
-                amount_btc: Some(amount),
-                amount_tics: None,
-                transaction_type: "withdraw_liquidity".to_string(),
-            },
-            "BTC address is required for BTC withdrawal",
-        )
-        .await;
-
-        match maybe_initiated {
-            Ok(flag) => initiated_btc = flag,
-            Err(resp) => return Ok(warp::reply::json(&resp)),
-        }
-    }
-
-    // Get previous transaction IDs to detect new ones
-    // Use remove_liquidity storage (not the shared tics/btc txn hash to avoid overlap with reward transactions)
-    let previous_tics_tx_id = user_intent_manager
-        .get_solver_remove_liquidity_txn_hash(normalized_address.as_str(), TransactionNetwork::TICS)
-        .await
-        .ok()
-        .flatten();
-    let previous_btc_tx_id = user_intent_manager
-        .get_solver_remove_liquidity_txn_hash(normalized_address.as_str(), TransactionNetwork::BTC)
-        .await
-        .ok()
-        .flatten();
-
-    let wait_timeout_secs = 40;
-    let (tics_withdraw_tx_id, btc_withdraw_tx_id) = if initiated_tics || initiated_btc {
-        wait_for_withdraw_liquidity_transaction_ids(
-            &user_intent_manager,
-            normalized_address.as_str(),
-            initiated_tics,
-            initiated_btc,
-            previous_tics_tx_id,
-            previous_btc_tx_id,
-            wait_timeout_secs,
-        )
-        .await
+    // Determine which asset and amount are being withdrawn
+    let (asset, amount) = if let Some(amount) = &withdraw_tics_amount {
+        ("TICS".to_string(), amount.clone())
+    } else if let Some(amount) = &withdraw_btc_amount {
+        ("BTC".to_string(), amount.clone())
     } else {
-        (None, None)
-    };
-
-    if let Some(ref tx_id) = tics_withdraw_tx_id {
-        info!(
-            "✅ Recorded TICS withdraw liquidity transaction ID {} for solver {}",
-            tx_id, normalized_address
-        );
-    } else if initiated_tics {
-        warn!(
-            "⚠️ Timed out waiting for TICS withdraw liquidity transaction ID for solver {} after {} seconds",
-            normalized_address, wait_timeout_secs
-        );
-    }
-
-    if let Some(ref tx_id) = btc_withdraw_tx_id {
-        info!(
-            "✅ Recorded BTC withdraw liquidity transaction ID {} for solver {}",
-            tx_id, normalized_address
-        );
-    } else if initiated_btc {
-        warn!(
-            "⚠️ Timed out waiting for BTC withdraw liquidity transaction ID for solver {} after {} seconds",
-            normalized_address, wait_timeout_secs
-        );
-    }
-
-    let missing_tics_tx = initiated_tics && tics_withdraw_tx_id.is_none();
-    let missing_btc_tx = initiated_btc && btc_withdraw_tx_id.is_none();
-    if missing_tics_tx || missing_btc_tx {
-        let mut missing_networks = Vec::new();
-        if missing_tics_tx {
-            missing_networks.push("TICS");
-        }
-        if missing_btc_tx {
-            missing_networks.push("BTC");
-        }
-        let missing_list = missing_networks.join(" & ");
-        let msg = format!(
-            "Timed out waiting for {missing_list} withdraw liquidity transaction confirmation for solver {normalized_address}"
-        );
+        let msg = "No withdrawal amount provided after validation".to_string();
         return Ok(warp::reply::json(&WithdrawLiquidityResponse {
             status: "error".to_string(),
-            solver_address: normalized_address,
-            liquidity_btc: liquidity_btc_str,
-            liquidity_tics: liquidity_tics_str,
+            solver_address: normalized_address.clone(),
+            liquidity_btc: liquidity_btc_str.clone(),
+            liquidity_tics: liquidity_tics_str.clone(),
             ethereum_address: req.ethereum_address.clone(),
             btc_address: req.btc_address.clone(),
-            tics_withdraw_tx_id,
-            btc_withdraw_tx_id,
+            tics_withdraw_tx_id: None,
+            btc_withdraw_tx_id: None,
             message: msg.clone(),
             error_message: Some(msg),
         }));
-    }
-
-    let message = if initiated_tics {
-        "Liquidity withdrawal initiated for TICS".to_string()
-    } else if initiated_btc {
-        "Liquidity withdrawal initiated for BTC".to_string()
-    } else {
-        "No withdrawals were initiated (missing address or zero liquidity)".to_string()
     };
 
+    let request_id = Uuid::new_v4().to_string();
+    let pending = crate::types::rpc_server::PendingWithdrawRequest {
+        request_id: request_id.clone(),
+        solver_address: normalized_address.clone(),
+        asset: asset.clone(),
+        amount: amount.clone(),
+        ethereum_address: req.ethereum_address.clone(),
+        btc_address: req.btc_address.clone(),
+        message: req.message.clone(),
+        tx_id: None,
+        status: "Pending".to_string(),
+    };
+
+    // Broadcast via channel; storage happens only in gossip handler (for this node and all others).
+    let broadcast = ChannelMessage::PendingWithdrawRequestBroadcast {
+        request: pending.clone(),
+    };
+    if let Err(e) = message_tx.lock().await.send(broadcast).await {
+        warn!(
+            "⚠️ Failed to broadcast withdraw_liquidity request {} to other nodes: {}",
+            request_id, e
+        );
+    } else {
+        info!(
+            "📡 Broadcast withdraw_liquidity request {} to other nodes for DB sync",
+            request_id
+        );
+    }
+
     info!(
-        "✅ Withdraw liquidity processed successfully for solver: {}",
-        normalized_address
+        "✅ Enqueued withdraw_liquidity request {} for solver {} (asset={}, amount={})",
+        request_id, normalized_address, asset, amount
     );
 
+    // No on-chain transaction has been sent yet; we only acknowledge queuing.
     Ok(warp::reply::json(&WithdrawLiquidityResponse {
         status: "success".to_string(),
         solver_address: normalized_address,
@@ -2598,9 +2483,12 @@ pub(crate) async fn handle_withdraw_liquidity(
         liquidity_tics: liquidity_tics_str,
         ethereum_address: req.ethereum_address.clone(),
         btc_address: req.btc_address.clone(),
-        tics_withdraw_tx_id,
-        btc_withdraw_tx_id,
-        message,
+        tics_withdraw_tx_id: None,
+        btc_withdraw_tx_id: None,
+        message: format!(
+            "Withdraw request queued for batch processing (id: {}, asset: {}, amount: {})",
+            request_id, asset, amount
+        ),
         error_message: None,
     }))
 }
@@ -2810,7 +2698,7 @@ pub(crate) async fn handle_log_partial_pubkeys(
         }
     };
 
-    // Get vault share pubkey
+    // Get liquidity operator (vault) share pubkey
     let vault_share_pubkey = match dkg_storage.get_vault_share_pubkey(&request.peer_id).await {
         Ok(Some(pubkey)) => {
             let pubkey_bytes = pubkey.to_affine().to_encoded_point(true);
@@ -2818,13 +2706,13 @@ pub(crate) async fn handle_log_partial_pubkeys(
         }
         Ok(None) => {
             warn!(
-                "⚠️ [RPC] Vault share pubkey not found for peer: {}",
+                "⚠️ [RPC] Liquidity operator share pubkey not found for peer: {}",
                 request.peer_id
             );
             None
         }
         Err(e) => {
-            error!("❌ [RPC] Failed to get vault share pubkey: {}", e);
+            error!("❌ [RPC] Failed to get liquidity operator share pubkey: {}", e);
             None
         }
     };
@@ -2859,7 +2747,7 @@ pub(crate) async fn handle_log_partial_pubkeys(
         info!("  📍 Network Share Pubkey: 0x{}", network_pubkey);
     }
     if let Some(ref vault_pubkey) = vault_share_pubkey {
-        info!("  📍 Vault Share Pubkey: 0x{}", vault_pubkey);
+        info!("  📍 Liquidity operator share pubkey: 0x{}", vault_pubkey);
     }
     info!(
         "  📍 User Share Pubkeys ({} users):",
@@ -2891,7 +2779,7 @@ pub(crate) async fn handle_log_partial_pubkeys(
     ))
 }
 
-/// Get network and vault addresses (TICS/ETH and BTC)
+/// Get network and liquidity operator addresses (TICS/ETH and BTC)
 /// These addresses are the same across all nodes in the network
 /// Uses aggregated group keys, not individual share pubkeys
 pub(crate) async fn handle_get_network_addresses(
@@ -2919,22 +2807,22 @@ pub(crate) async fn handle_get_network_addresses(
         }
     };
 
-    // Get vault aggregated group key
+    // Get liquidity operator aggregated group key
     let liquidity_operator_addresses = match dkg_storage.get_vault_group_key().await {
-        Ok(Some(vault_group_key)) => {
-            let eth_addr = crate::utils::get_eth_address_from_group_key(vault_group_key);
-            let btc_addr = crate::utils::get_btc_address_from_group_key(vault_group_key);
+        Ok(Some(liquidity_operator_group_key)) => {
+            let eth_addr = crate::utils::get_eth_address_from_group_key(liquidity_operator_group_key);
+            let btc_addr = crate::utils::get_btc_address_from_group_key(liquidity_operator_group_key);
             Some(crate::types::rpc_server::AddressInfo {
                 eth_address: eth_addr,
                 btc_address: btc_addr,
             })
         }
         Ok(None) => {
-            warn!("⚠️ [RPC] Vault group key not found");
+            warn!("⚠️ [RPC] Liquidity operator group key not found");
             None
         }
         Err(e) => {
-            error!("❌ [RPC] Failed to get vault group key: {}", e);
+            error!("❌ [RPC] Failed to get liquidity operator group key: {}", e);
             None
         }
     };

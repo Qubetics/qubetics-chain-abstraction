@@ -207,6 +207,26 @@ pub struct WithdrawLiquidityResponse {
     pub error_message: Option<String>,
 }
 
+/// Internal representation of a queued withdraw-liquidity request.
+/// Stored in RocksDB under keys with prefix "pending_withdraw_liquidity:".
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingWithdrawRequest {
+    pub request_id: String,
+    pub solver_address: String,
+    /// "TICS" or "BTC"
+    pub asset: String,
+    /// Amount as decimal string in smallest units for the asset chain
+    pub amount: String,
+    pub ethereum_address: Option<String>,
+    pub btc_address: Option<String>,
+    /// Original signed message payload from the HTTP request
+    pub message: String,
+    /// Optional on-chain batch transaction ID once processed
+    pub tx_id: Option<String>,
+    /// Logical status of this withdraw request: "Pending", "Batched", "Completed", "Failed", etc.
+    pub status: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AddLiquidityRequest {
     /// Signature created by VERIFICATION_ADDRESS over the raw `message` bytes.

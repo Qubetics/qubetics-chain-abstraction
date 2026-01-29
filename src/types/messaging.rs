@@ -4,7 +4,7 @@ use crate::{
     types::{
         intent::{DepositIntent, TransactionType},
         rpc::RPCRequest,
-        rpc_server::NodeStatus,
+        rpc_server::{NodeStatus, PendingWithdrawRequest},
         secp::{SerializablePoint, SerializableScalar},
         signing::SigningMessage,
         vrf::{VrfRoundSyncRequest, VrfRoundSyncResponse},
@@ -42,15 +42,6 @@ pub enum ChannelMessage {
         eth_address: Option<String>,
         reward_btc: Option<String>,
         reward_tics: Option<String>,
-        transaction_type: String,
-    },
-    WithdrawLiquidity {
-        solver_address: String,
-        btc_address: Option<String>,
-        eth_address: Option<String>,
-        amount_btc: Option<String>,
-        amount_tics: Option<String>,
-        /// "withdraw_liquidity"
         transaction_type: String,
     },
     /// Inbound solver add-liquidity request (batched contract call, no DB state).
@@ -132,6 +123,41 @@ pub enum ChannelMessage {
         transaction_type: String,
         solver_address: Option<String>,
         node_id: String,
+    },
+    /// BTC withdraw-liquidity batch broadcast (definition only, no txid)
+    /// Final node broadcasts selected BTC withdraw requests for distributed signing.
+    /// All nodes already have the full records in RocksDB, so we only send IDs and solver addresses.
+    BtcWithdrawBatch {
+        /// Unique batch identifier (e.g. derived from round + timestamp)
+        batch_id: String,
+        /// List of (request_id, solver_address) included in this BTC withdraw batch
+        requests: Vec<(String, String)>,
+        /// Round number that triggered this batch
+        round: u64,
+        /// Timestamp when batch was created
+        timestamp: String,
+        /// Node ID of the final node broadcasting this batch
+        node_id: String,
+    },
+    /// BTC withdraw-liquidity transaction ID broadcast
+    /// Sent AFTER the aggregated BTC transaction has been constructed and broadcast.
+    /// Associates a concrete btc_txid with the withdraw requests in the batch.
+    BtcWithdrawTxIdBroadcast {
+        /// BTC transaction ID that executed this withdraw-liquidity batch
+        btc_txid: String,
+        /// Network label, e.g. "bitcoin-mainnet" or "bitcoin-testnet"
+        network: String,
+        /// Unique batch identifier corresponding to the earlier BtcWithdrawBatch
+        batch_id: String,
+        /// List of (request_id, solver_address) that were included in this tx
+        requests: Vec<(String, String)>,
+        /// Node ID broadcasting the txid
+        node_id: String,
+    },
+    /// Propagate a new pending withdraw-liquidity request to all nodes so they store it in DB.
+    /// Sent by the node that received the withdraw_liquidity RPC; peers store the same request.
+    PendingWithdrawRequestBroadcast {
+        request: PendingWithdrawRequest,
     },
     UserRegistration {
         ethereum_address: String,
@@ -294,6 +320,27 @@ pub enum GossipsubMessage {
         solver_address: Option<String>,
         /// Node that encountered the error
         node_id: String,
+    },
+    /// BTC withdraw-liquidity batch broadcast (definition only, no txid)
+    BtcWithdrawBatch {
+        batch_id: String,
+        requests: Vec<(String, String)>,
+        round: u64,
+        timestamp: String,
+        node_id: String,
+    },
+    /// BTC withdraw-liquidity transaction ID broadcast
+    BtcWithdrawTxIdBroadcast {
+        btc_txid: String,
+        network: String,
+        batch_id: String,
+        requests: Vec<(String, String)>,
+        node_id: String,
+    },
+    /// Propagate a new pending withdraw-liquidity request to all nodes so they store it in DB.
+    /// Sent by the node that received the withdraw_liquidity RPC; peers store the same request.
+    PendingWithdrawRequestBroadcast {
+        request: PendingWithdrawRequest,
     },
     /// Acknowledgment messages for critical message retry mechanism
     CriticalMessageAck {
