@@ -33,6 +33,7 @@ impl MpcChainExecutor {
         transaction_type: TransactionType,
         vault_group_key: Option<ProjectivePoint>,
         amount: u128,
+        target_amount: Option<u128>,
         tx_hash: &str,
         request_id: Option<String>,
         _original_request: Option<()>,
@@ -50,6 +51,7 @@ impl MpcChainExecutor {
             crate::utils::transaction::create_chain_transaction_from_contract_call(
                 vault_group_key,
                 amount,
+                target_amount,
                 intent,
                 intent_hash,
                 tx_hash,

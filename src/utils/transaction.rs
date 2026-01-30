@@ -1260,6 +1260,7 @@ async fn create_chain_transaction_from_deposit_intent_internal(
 pub async fn create_chain_transaction_from_contract_call(
     group_public_key: Option<k256::ProjectivePoint>,
     amount: u128,
+    target_amount: Option<u128>,
     intent: &DepositIntent,
     intent_hash: &str,
     tx_hash: &str,
@@ -1346,12 +1347,14 @@ pub async fn create_chain_transaction_from_contract_call(
         }
     };
 
+    let target_amt = target_amount.unwrap_or(amount);
     let batch_intent = BatchIntentInput {
         source_address: intent.source_address.clone(),
         target_address: intent.target_address.clone(),
         source_chain: intent.source_chain.clone(),
         target_chain: intent.target_chain.clone(),
-        amount,
+        source_amount: amount,
+        target_amount: target_amt,
         source_token: intent.source_token.clone(),
         target_token: intent.target_token.clone(),
         intent_id: intent_hash.to_string(),
@@ -1741,7 +1744,8 @@ pub fn encode_process_batch_intents_calldata(
         ParamType::String,    // targetAddress
         ParamType::String,    // sourceChain
         ParamType::String,    // targetChain
-        ParamType::Uint(128), // amount
+        ParamType::Uint(128), // sourceAmount
+        ParamType::Uint(128), // targetAmount
         ParamType::String,    // sourceToken
         ParamType::String,    // targetToken
         ParamType::String,    // intentId
@@ -1783,7 +1787,8 @@ pub fn encode_process_batch_intents_calldata(
                 Token::String(intent.target_address.clone()),
                 Token::String(intent.source_chain.clone()),
                 Token::String(intent.target_chain.clone()),
-                Token::Uint(U256::from(intent.amount)),
+                Token::Uint(U256::from(intent.source_amount)),
+                Token::Uint(U256::from(intent.target_amount)),
                 Token::String(intent.source_token.clone()),
                 Token::String(intent.target_token.clone()),
                 Token::String(intent.intent_id.clone()),

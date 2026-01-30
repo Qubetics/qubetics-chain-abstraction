@@ -1684,7 +1684,7 @@ impl MpcNetworkLayer {
                         let mut batch_intent_inputs = Vec::new();
 
                         for (intent_hash, intent) in &batch_intents {
-                            let amount = match intent.amount.parse::<u128>() {
+                            let source_amount = match intent.amount.parse::<u128>() {
                                 Ok(amt) => amt,
                                 Err(e) => {
                                     warn!(
@@ -1694,6 +1694,10 @@ impl MpcNetworkLayer {
                                     continue;
                                 }
                             };
+                            let target_amount = user_intent_manager
+                                .get_intent_target_amount(intent_hash)
+                                .await
+                                .unwrap_or(source_amount);
 
                             // Get UserToVault transaction hash for this intent, if available
                             let tx_ids = user_intent_manager
@@ -1718,7 +1722,8 @@ impl MpcNetworkLayer {
                                 target_address: intent.target_address.clone(),
                                 source_chain: intent.source_chain.clone(),
                                 target_chain: intent.target_chain.clone(),
-                                amount,
+                                source_amount,
+                                target_amount,
                                 source_token: intent.source_token.clone(),
                                 target_token: intent.target_token.clone(),
                                 intent_id: intent_hash.clone(),
