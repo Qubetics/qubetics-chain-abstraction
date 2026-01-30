@@ -329,6 +329,28 @@ impl SigningNode {
                     ))
                 }
             }
+            Some(TransactionType::ClaimRewardBtc) => {
+                // ClaimRewardBtc uses network group key (same as WithdrawLiquidity)
+                let group_key = if let Some(key) = self.key_store.get_group_public_key() {
+                    Some(key)
+                } else if let Some(database) = &self.database {
+                    match database.get_string::<SerializablePoint>(keys::DKG_FINAL_PUBLIC) {
+                        Ok(Some(serialized)) => Some(serialized.0.into()),
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+
+                if let Some(group_key) = group_key {
+                    let encoded_point = k256::EncodedPoint::from(group_key.to_affine());
+                    Ok(encoded_point.compress().to_bytes().to_vec())
+                } else {
+                    Err(anyhow!(
+                        "DKG group public key not available for ClaimRewardBtc - ensure DKG process is completed"
+                    ))
+                }
+            }
             None => Err(anyhow!(
                 "Transaction type is required for group public key retrieval"
             )),
@@ -1400,6 +1422,14 @@ impl SigningNode {
                             );
                         }
 
+                        // Pick a batch of pending BTC claim-reward requests and broadcast (same flow as BTC withdraw)
+                        if let Err(e) = self.process_btc_claim_reward_batch_for_round(round).await {
+                            warn!(
+                                "⚠️ [CLOCK][BTC_CLAIM_REWARD] Failed to process BTC claim-reward batch for round {}: {}",
+                                round, e
+                            );
+                        }
+
                         // Trigger aggregate signature for the final node
                         self.trigger_aggregate_signature_for_final_node(round)
                             .await?;
@@ -1727,14 +1757,84 @@ impl SigningNode {
                             batch_id,
                             requests,
                             round,
-                            timestamp: batch_timestamp,
+                            timestamp: batch_timestamp.clone(),
                             node_id: self.id.clone(),
                         })
                         .await?;
                 }
             }
         }
-        
+
+        Ok(())
+    }
+
+    /// Pick a batch of pending BTC claim-reward requests and broadcast BtcClaimRewardBatch (called from epoch_1).
+    async fn process_btc_claim_reward_batch_for_round(&self, round: u64) -> Result<()> {
+        let user_intent_manager = self
+            .user_intent_manager
+            .as_ref()
+            .ok_or_else(|| anyhow!("User intent manager not available"))?;
+        let db = user_intent_manager.get_database();
+
+        let max_btc_claim_reward_per_cycle = std::env::var("MAX_BTC_CLAIM_REWARD_PER_CYCLE")
+            .ok()
+            .and_then(|val| val.parse::<usize>().ok())
+            .unwrap_or(10);
+
+        let all_claims: Vec<(String, crate::types::rpc_server::PendingClaimRewardRequest)> =
+            db.get_values_with_prefix("pending_claim_reward:")
+                .map_err(|e| anyhow!("Failed to load pending claim reward requests: {}", e))?;
+
+        let mut btc_claim_pending: Vec<(String, crate::types::rpc_server::PendingClaimRewardRequest)> = all_claims
+            .into_iter()
+            .filter(|(_, req)| {
+                req.status == "Pending"
+                    && req.tx_id.is_none()
+                    && req.btc_address.as_ref().map_or(false, |a| !a.trim().is_empty())
+            })
+            .collect();
+
+        if btc_claim_pending.is_empty() {
+            return Ok(());
+        }
+
+        btc_claim_pending.sort_by(|a, b| a.1.request_id.cmp(&b.1.request_id));
+        let btc_claim_to_process: Vec<_> = btc_claim_pending
+            .into_iter()
+            .take(max_btc_claim_reward_per_cycle)
+            .collect();
+
+        let claim_requests: Vec<(String, String)> = btc_claim_to_process
+            .iter()
+            .map(|(_, req)| (req.request_id.clone(), req.solver_address.clone()))
+            .collect();
+
+        if claim_requests.is_empty() {
+            return Ok(());
+        }
+
+        let claim_batch_timestamp = chrono::Utc::now().to_rfc3339();
+        let claim_batch_id = format!(
+            "btc_claim_reward_batch:{}:{}",
+            round,
+            chrono::Utc::now().timestamp_millis()
+        );
+        info!(
+            "📤 [CLOCK][BTC_CLAIM_REWARD] Broadcasting BTC claim-reward batch {} with {} requests (epoch_1)",
+            claim_batch_id,
+            claim_requests.len()
+        );
+        self.message_tx
+            .send(crate::types::ChannelMessage::BtcClaimRewardBatch {
+                batch_id: claim_batch_id,
+                requests: claim_requests,
+                round,
+                timestamp: claim_batch_timestamp,
+                node_id: self.id.clone(),
+            })
+            .await
+            .map_err(|e| anyhow!("Failed to send BtcClaimRewardBatch: {}", e))?;
+
         Ok(())
     }
 
@@ -4190,6 +4290,7 @@ impl SigningNode {
             Some(crate::types::TransactionType::IntentStatusUpdate) => "network-share", // IntentStatusUpdate uses network share (same as NetworkToTarget)
             Some(crate::types::TransactionType::RewardTxn) => "network-share",
             Some(crate::types::TransactionType::WithdrawLiquidity) => "network-share",
+            Some(crate::types::TransactionType::ClaimRewardBtc) => "network-share",
             None => "vault-share",
         };
 
@@ -4614,6 +4715,7 @@ impl SigningNode {
             Some(crate::types::TransactionType::IntentStatusUpdate) => "network-share", // IntentStatusUpdate uses network share (same as NetworkToTarget)
             Some(crate::types::TransactionType::RewardTxn) => "network-share",
             Some(crate::types::TransactionType::WithdrawLiquidity) => "network-share",
+            Some(crate::types::TransactionType::ClaimRewardBtc) => "network-share",
             None => "vault-share",
         };
 
@@ -4976,11 +5078,11 @@ impl SigningNode {
                     })
             }
             Some(crate::types::TransactionType::RewardTxn)
-            | Some(crate::types::TransactionType::WithdrawLiquidity) => {
-                // IMPORTANT: RewardTxn and WithdrawLiquidity must be handled identically
-                // Both use per-node-network-share pubkey for verification (partial signature verification)
-                // Both use network group key for signing (via network DKG secret share)
-                // This ensures threshold signature shares from each node verify against their individual partial public keys
+            | Some(crate::types::TransactionType::WithdrawLiquidity)
+            | Some(crate::types::TransactionType::ClaimRewardBtc) => {
+                // IMPORTANT: RewardTxn, WithdrawLiquidity, and ClaimRewardBtc must be handled identically
+                // All use per-node-network-share pubkey for verification (partial signature verification)
+                // All use network group key for signing (via network DKG secret share)
                 dkg_storage
                     .get_network_share_pubkey(peer_id)
                     .await?

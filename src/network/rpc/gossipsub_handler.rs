@@ -2234,6 +2234,288 @@ impl MpcNetworkLayer {
                     error!("❌ [BTC_WITHDRAW] Signing node not available");
                 }
             }
+            GossipsubMessage::BtcClaimRewardBatch {
+                batch_id,
+                requests,
+                round: _round,
+                timestamp,
+                node_id,
+            } => {
+                use crate::signing::chains::bitcoin_batch::{BatchOutput, BatchUtxo, BatchPolicy};
+                use crate::signing::chains::bitcoin_batch::{build_batch_unsigned_tx, select_utxos_for_batch};
+                use crate::types::rpc_server::PendingClaimRewardRequest;
+                use crate::contract::{ContractClient, ContractConfig, SolverManagerContract};
+                use ethers::types::Address;
+
+                info!(
+                    "📦 [BTC_CLAIM_REWARD] Received BTC claim-reward batch {} from node {} (timestamp {})",
+                    batch_id, node_id, timestamp
+                );
+
+                let db = &self.db;
+                let all_claims: Vec<(String, PendingClaimRewardRequest)> =
+                    match db.get_values_with_prefix("pending_claim_reward:") {
+                        Ok(entries) => entries,
+                        Err(e) => {
+                            warn!(
+                                "⚠️ [BTC_CLAIM_REWARD] Failed to load pending claim reward requests: {}",
+                                e
+                            );
+                            return Ok(());
+                        }
+                    };
+
+                let mut claim_map: std::collections::HashMap<(String, String), PendingClaimRewardRequest> =
+                    std::collections::HashMap::new();
+                for (_key, req) in all_claims {
+                    let key = (req.request_id.clone(), req.solver_address.to_lowercase());
+                    claim_map.insert(key, req);
+                }
+
+                let mut batch_outputs: Vec<BatchOutput> = Vec::new();
+                let mut used_requests: Vec<(String, String)> = Vec::new();
+
+                for (request_id, solver_address) in &requests {
+                    let key = (request_id.clone(), solver_address.to_lowercase());
+                    let req = match claim_map.get(&key) {
+                        Some(r) => r,
+                        None => {
+                            warn!(
+                                "⚠️ [BTC_CLAIM_REWARD] Claim request {} for solver {} not found in DB",
+                                request_id, solver_address
+                            );
+                            continue;
+                        }
+                    };
+                    if req.status != "Pending" || req.tx_id.is_some() {
+                        continue;
+                    }
+                    let btc_addr = match &req.btc_address {
+                        Some(addr) if !addr.trim().is_empty() => addr.clone(),
+                        _ => {
+                            warn!(
+                                "⚠️ [BTC_CLAIM_REWARD] Missing BTC address for claim request {} (solver={})",
+                                request_id, solver_address
+                            );
+                            continue;
+                        }
+                    };
+
+                    let solver_addr = solver_address
+                        .parse::<Address>()
+                        .map_err(|_| anyhow::anyhow!("invalid solver address {}", solver_address));
+                    let solver_addr = match solver_addr {
+                        Ok(a) => a,
+                        Err(_) => continue,
+                    };
+
+                    let rpc_url = std::env::var("SOLVER_CONTRACT_RPC_URL")
+                        .unwrap_or_else(|_| "http://localhost:8545".to_string());
+                    let contract_address_env = std::env::var("SOLVER_CONTRACT_ADDRESS")
+                        .unwrap_or_else(|_| "0x0000000000000000000000000000000000000000".to_string());
+                    let chain_id = std::env::var("SOLVER_CONTRACT_CHAIN_ID")
+                        .ok()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(9029);
+                    if contract_address_env == "0x0000000000000000000000000000000000000000" {
+                        warn!("⚠️ [BTC_CLAIM_REWARD] Solver contract not configured; skipping unclaimed fetch");
+                        continue;
+                    }
+                    let contract_address = match contract_address_env.parse::<Address>() {
+                        Ok(a) => a,
+                        Err(_) => continue,
+                    };
+                    let config = ContractConfig {
+                        rpc_url: rpc_url.clone(),
+                        contract_address,
+                        chain_id,
+                    };
+                    let client = match ContractClient::new(config.clone()) {
+                        Ok(c) => c,
+                        Err(_) => continue,
+                    };
+                    let contract = match SolverManagerContract::new(&config, client.provider()) {
+                        Ok(c) => c,
+                        Err(_) => continue,
+                    };
+                    let solver_id = match contract.get_solver_id(solver_addr).await {
+                        Ok(id) if !id.trim().is_empty() => id,
+                        _ => continue,
+                    };
+                    let rewards = match contract.get_solvers_unclaimed_rewards(vec![solver_id.clone()]).await {
+                        Ok(r) => r,
+                        Err(_) => continue,
+                    };
+                    let btc_unclaimed = rewards.first().map(|r| r.1).unwrap_or(ethers::types::U256::zero());
+                    let amount_sats: u64 = btc_unclaimed.as_u64();
+                    if amount_sats < 546 {
+                        continue;
+                    }
+                    batch_outputs.push(BatchOutput {
+                        address: btc_addr.clone(),
+                        amount: amount_sats,
+                    });
+                    used_requests.push((request_id.clone(), solver_address.clone()));
+                }
+
+                if batch_outputs.is_empty() {
+                    warn!("⚠️ [BTC_CLAIM_REWARD] No valid claim-reward outputs after filtering");
+                    return Ok(());
+                }
+
+                let dkg_node = match &self.dkg_node {
+                    Some(node) => node,
+                    None => {
+                        error!("❌ [BTC_CLAIM_REWARD] DKG node not available");
+                        return Ok(());
+                    }
+                };
+                let group_key = match dkg_node.get_final_public_key().await {
+                    Some(key) => key,
+                    None => {
+                        error!("❌ [BTC_CLAIM_REWARD] Network group key not available");
+                        return Ok(());
+                    }
+                };
+                let network_btc_address = crate::utils::get_btc_address_from_group_key(group_key);
+
+                let is_testnet = crate::types::network::network_type().is_testnet();
+                let utxos = match crate::utils::transaction::fetch_bitcoin_utxos(
+                    &network_btc_address,
+                    is_testnet,
+                )
+                .await
+                {
+                    Ok(utxos) => utxos,
+                    Err(e) => {
+                        error!("❌ [BTC_CLAIM_REWARD] Failed to fetch UTXOs: {}", e);
+                        return Ok(());
+                    }
+                };
+
+                let mut batch_utxos: Vec<BatchUtxo> = Vec::new();
+                let network_script_pubkey =
+                    match crate::utils::transaction::create_bitcoin_script_pubkey(&network_btc_address) {
+                        Ok(spk) => spk,
+                        Err(e) => {
+                            error!("❌ [BTC_CLAIM_REWARD] Failed to create script pubkey: {}", e);
+                            return Ok(());
+                        }
+                    };
+                for utxo in utxos {
+                    if !utxo.status.confirmed {
+                        continue;
+                    }
+                    batch_utxos.push(BatchUtxo {
+                        txid: utxo.txid,
+                        vout: utxo.vout,
+                        value: utxo.value,
+                        script_pubkey: network_script_pubkey.clone(),
+                    });
+                }
+
+                let policy = BatchPolicy {
+                    fee_rate: std::env::var("BTC_FEE_RATE_SAT_VB")
+                        .ok()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(1),
+                    dust_threshold: 546,
+                    change_address: network_btc_address.clone(),
+                };
+
+                let selected = match select_utxos_for_batch(&batch_utxos, &batch_outputs, &policy) {
+                    Ok(sel) => sel,
+                    Err(e) => {
+                        error!("❌ [BTC_CLAIM_REWARD] UTXO selection failed: {}", e);
+                        return Ok(());
+                    }
+                };
+
+                let unsigned_tx =
+                    match build_batch_unsigned_tx(&selected, &batch_outputs, &policy) {
+                        Ok(tx) => tx,
+                        Err(e) => {
+                            error!("❌ [BTC_CLAIM_REWARD] Failed to build unsigned tx: {}", e);
+                            return Ok(());
+                        }
+                    };
+
+                let mut our_inputs = Vec::new();
+                for (i, tx_in) in unsigned_tx.input.iter().enumerate() {
+                    our_inputs.push(crate::types::BitcoinInput {
+                        txid: tx_in.previous_output.txid.to_string(),
+                        vout: tx_in.previous_output.vout,
+                        script_sig: vec![],
+                        sequence: tx_in.sequence.0,
+                        witness_utxo: Some(crate::types::BitcoinWitnessUtxo {
+                            value: selected.utxos[i].value,
+                            script_pubkey: selected.utxos[i].script_pubkey.clone(),
+                        }),
+                    });
+                }
+                let mut our_outputs = Vec::new();
+                for tx_out in &unsigned_tx.output {
+                    our_outputs.push(crate::types::BitcoinOutput {
+                        value: tx_out.value.to_sat(),
+                        script_pubkey: tx_out.script_pubkey.as_bytes().to_vec(),
+                    });
+                }
+                let our_btc_tx = crate::types::BitcoinTransaction {
+                    version: unsigned_tx.version.0 as u32,
+                    inputs: our_inputs,
+                    outputs: our_outputs,
+                    lock_time: unsigned_tx.lock_time.to_consensus_u32(),
+                    witness: None,
+                };
+
+                if let Some(signing_node) = &mut self.signing_node {
+                    let mut chain_handler_box = crate::chain_abstraction::ChainHandlerFactory::create_bitcoin_handler(
+                        crate::types::network::network_type().bitcoin_network_label().to_string()
+                    );
+                    if let Some(dkg_node) = &self.dkg_node {
+                        if let Some(group_key) = dkg_node.get_final_public_key().await {
+                            let affine_point = group_key.to_affine();
+                            let encoded_point = k256::EncodedPoint::from(affine_point);
+                            let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
+                            if let Some(btc_handler) = chain_handler_box.as_any_mut().downcast_mut::<crate::chain_abstraction::BitcoinChainHandler>() {
+                                btc_handler.set_group_public_key(compressed_bytes);
+                            }
+                        }
+                    }
+                    let chain_handler: std::sync::Arc<dyn crate::chain_abstraction::ChainHandler> =
+                        std::sync::Arc::from(chain_handler_box);
+                    let tx_bytes = chain_handler.create_transaction_bytes(
+                        &crate::chain_abstraction::ChainTransaction::Bitcoin(our_btc_tx.clone()),
+                    )?;
+                    let signing_key = if let Some(dkg_node) = &self.dkg_node {
+                        dkg_node.get_final_secret_share().await
+                    } else {
+                        None
+                    };
+                    let claim_reward_identifiers: Vec<String> = used_requests
+                        .iter()
+                        .map(|(req_id, solver_addr)| format!("{}|{}", req_id, solver_addr.to_lowercase()))
+                        .collect();
+                    use crate::signing::chains::BitcoinSigner;
+                    let mut btc_signer = BitcoinSigner::new(signing_node);
+                    btc_signer
+                        .sign_transaction(
+                            tx_bytes,
+                            &chain_handler,
+                            Some(our_btc_tx),
+                            None,
+                            claim_reward_identifiers,
+                            Some(crate::types::TransactionType::ClaimRewardBtc),
+                            signing_key,
+                            None,
+                            signing_key,
+                        )
+                        .await?;
+                    info!("✅ [BTC_CLAIM_REWARD] Bitcoin claim-reward batch signing initiated");
+                } else {
+                    error!("❌ [BTC_CLAIM_REWARD] Signing node not available");
+                }
+            }
             GossipsubMessage::TicsWithdrawBatch {
                 batch_id,
                 requests,
@@ -2610,6 +2892,29 @@ impl MpcNetworkLayer {
                     }
                 }
             }
+            GossipsubMessage::ClaimRewardTxIdBroadcast {
+                txid,
+                network: _network,
+                batch_id: _batch_id,
+                requests,
+                node_id,
+            } => {
+                info!(
+                    "📡 [CLAIM_REWARD_TXID] Received claim-reward txid broadcast from node {}: txid={}, requests={}",
+                    node_id, txid, requests.len()
+                );
+                if !requests.is_empty() {
+                    if let Err(e) = self
+                        .handle_claim_reward_transaction_id_storage_batch(&txid, &requests)
+                        .await
+                    {
+                        warn!(
+                            "⚠️ [CLAIM_REWARD_TXID] Batch storage failed for txid {} ({} requests): {}",
+                            txid, requests.len(), e
+                        );
+                    }
+                }
+            }
             GossipsubMessage::BtcIntentManagerTxUpdate {
                 intent_hashes,
                 btc_txid,
@@ -2731,6 +3036,56 @@ impl MpcNetworkLayer {
                 } else {
                     info!(
                         "✅ [WITHDRAW_LIQUIDITY] Stored PendingWithdrawRequest from gossip (request_id={}, solver={})",
+                        request.request_id, request.solver_address
+                    );
+                }
+            }
+            GossipsubMessage::PendingClaimRewardRequestBroadcast { request } => {
+                use crate::types::rpc_server::PendingClaimRewardRequest;
+
+                info!(
+                    "🎁 [CLAIM_REWARD] Received pending claim reward request from gossip: request_id={}, solver={}",
+                    request.request_id, request.solver_address
+                );
+
+                let solver_lower = request.solver_address.to_lowercase();
+                let prefix = format!("pending_claim_reward:{}:", solver_lower);
+                let existing: Vec<(String, PendingClaimRewardRequest)> =
+                    match self.db.get_values_with_prefix(&prefix) {
+                        Ok(e) => e,
+                        Err(e) => {
+                            warn!(
+                                "⚠️ [CLAIM_REWARD] Failed to check existing claim rewards for solver {}: {}",
+                                request.solver_address, e
+                            );
+                            return Ok(());
+                        }
+                    };
+                let has_pending_or_batched = existing
+                    .iter()
+                    .any(|(_, r)| r.status == "Pending" || r.status == "Batched");
+                if has_pending_or_batched {
+                    info!(
+                        "🚫 [CLAIM_REWARD] Ignoring duplicate claim reward request {} for solver {}: already has Pending/Batched",
+                        request.request_id, request.solver_address
+                    );
+                    return Ok(());
+                }
+
+                let key = format!(
+                    "pending_claim_reward:{}:{}",
+                    solver_lower,
+                    request.request_id
+                );
+
+                if let Err(e) = self.db.put_string_async(&key, &request).await {
+                    warn!(
+                        "⚠️ [CLAIM_REWARD] Failed to persist PendingClaimRewardRequest request_id={} from gossip: {}",
+                        request.request_id, e
+                    );
+                } else {
+                    info!(
+                        "✅ [CLAIM_REWARD] Stored PendingClaimRewardRequest from gossip (request_id={}, solver={})",
                         request.request_id, request.solver_address
                     );
                 }

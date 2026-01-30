@@ -396,209 +396,27 @@ impl MpcNetworkLayer {
                 return Ok(());
             };
 
-            // Check if this transaction ID was already processed before storing
-            let was_already_processed = {
-                let existing_tx_id = match network {
-                    TransactionNetwork::TICS => {
-                        user_intent_manager
-                            .get_solver_tics_txn_hash(solver_address)
-                            .await
-                    }
-                    TransactionNetwork::BTC => {
-                        user_intent_manager
-                            .get_solver_btc_txn_hash(solver_address)
-                            .await
-                    }
-                };
-                existing_tx_id.as_ref() == Some(&transaction_id.to_string())
-            };
-
-            let storage_result = match network {
-                TransactionNetwork::TICS => {
-                    user_intent_manager
-                        .add_solver_tics_txn_hash(solver_address, transaction_id.to_string())
-                        .await
-                }
-                TransactionNetwork::BTC => {
-                    user_intent_manager
-                        .add_solver_btc_txn_hash(solver_address, transaction_id.to_string())
-                        .await
-                }
-            };
-
-            match storage_result {
-                Ok(()) => {
-                    // Store transaction status
-                    if let Err(e) = user_intent_manager
-                        .store_transaction_status(transaction_id, TransactionStatus::Pending)
-                        .await
-                    {
-                        error!(
-                            "❌ [NETWORK] Failed to store transaction status for reward tx {}: {}",
-                            transaction_id, e
-                        );
-                    }
-                    info!(
-                        "✅ [NETWORK] Successfully synchronized reward transaction ID {} for solver {} (network: {:?})",
-                        transaction_id,
-                        solver_address,
-                        network
-                    );
-
-                    // Only execute contract calls if this is a new transaction ID (not already processed)
-                    if was_already_processed {
-                        info!(
-                            "⏭️ [NETWORK] Reward transaction ID {} for solver {} (network: {:?}) was already processed, skipping contract calls to prevent duplicate execution",
-                            transaction_id, solver_address, network
-                        );
-                    } else {
-                        // Update claimed amounts and reduce rewards
-                        if let Some(amount) = self
-                            .update_reward_claims(solver_address, network, transaction_id)
-                            .await?
-                        {
-                            let (btc_amount, tics_amount) = match network {
-                                TransactionNetwork::BTC => (Some(amount), None),
-                                TransactionNetwork::TICS => (None, Some(amount)),
-                            };
-
-                            let convert_amount =
-                                |value: Option<ethers::types::U256>| -> Option<u128> {
-                                    value.and_then(|v| {
-                                    if v.bits() > 128 {
-                                        warn!(
-                                            "⚠️ [NETWORK] Reward amount {} exceeds u128, skipping contract update",
-                                            v
-                                        );
-                                        None
-                                    } else {
-                                        Some(v.low_u128())
-                                    }
-                                })
-                                };
-
-                            let btc_u128 = convert_amount(btc_amount);
-                            let tics_u128 = convert_amount(tics_amount);
-
-                            if btc_u128.is_some() || tics_u128.is_some() {
-                                // Use sequencer to ensure sequential execution
-                                if let Err(e) = self
-                                    .submit_solver_claim_reward_to_sequencer(
-                                        solver_address,
-                                        btc_u128,
-                                        tics_u128,
-                                        transaction_id,
-                                    )
-                                    .await
-                                {
-                                    error!(
-                                        "❌ [NETWORK] Failed to enqueue claim-reward contract update for solver {} after tx {}: {}",
-                                        solver_address, transaction_id, e
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    error!(
-                        "❌ [NETWORK] Failed to store synchronized reward transaction ID for solver {}: {}",
-                        solver_address, e
-                    );
-                }
+            // Reward/liquidity and tx ids are from contract; only store tx status locally.
+            if let Err(e) = user_intent_manager
+                .store_transaction_status(transaction_id, TransactionStatus::Pending)
+                .await
+            {
+                error!(
+                    "❌ [NETWORK] Failed to store transaction status for reward tx {}: {}",
+                    transaction_id, e
+                );
+            } else {
+                info!(
+                    "✅ [NETWORK] Successfully synchronized reward transaction ID {} for solver {} (network: {:?})",
+                    transaction_id,
+                    solver_address,
+                    network
+                );
             }
         } else {
             warn!("❌ [NETWORK] No user registry available to store synchronized transaction ID");
         }
         Ok(())
-    }
-
-    /// Update reward claims after successful transaction
-    async fn update_reward_claims(
-        &self,
-        solver_address: &str,
-        reward_network: TransactionNetwork,
-        transaction_id: &str,
-    ) -> Result<Option<ethers::types::U256>> {
-        if let Some(user_intent_manager) = &self.user_intent_manager {
-            let (currency_label, current_reward) = match reward_network {
-                TransactionNetwork::TICS => (
-                    "tics",
-                    user_intent_manager
-                        .get_solver_reward_tics(solver_address)
-                        .await
-                        .unwrap_or_else(ethers::types::U256::zero),
-                ),
-                TransactionNetwork::BTC => (
-                    "btc",
-                    user_intent_manager
-                        .get_solver_reward_btc(solver_address)
-                        .await
-                        .unwrap_or_else(ethers::types::U256::zero),
-                ),
-            };
-
-            if current_reward > ethers::types::U256::zero() {
-                // Get current claimed amount
-                let current_claimed = user_intent_manager
-                    .get_solver_claimed_request_amount(solver_address)
-                    .await
-                    .unwrap_or_else(ethers::types::U256::zero);
-
-                // Update claimed amount
-                let new_claimed = current_claimed + current_reward;
-                if let Err(e) = user_intent_manager
-                    .set_solver_claimed_request_amount(solver_address, new_claimed)
-                    .await
-                {
-                    error!(
-                        "❌ [NETWORK-REWARD] Failed to update claimed amount for solver {}: {}",
-                        solver_address, e
-                    );
-                } else {
-                    info!(
-                        "✅ [NETWORK-REWARD] Updated claimed amount for solver {}: {} (was: {})",
-                        solver_address, new_claimed, current_claimed
-                    );
-                }
-
-                // Set reward to 0 (all rewards claimed)
-                let result = match reward_network {
-                    TransactionNetwork::TICS => {
-                        user_intent_manager
-                            .set_solver_reward_tics(solver_address, ethers::types::U256::zero())
-                            .await
-                    }
-                    TransactionNetwork::BTC => {
-                        user_intent_manager
-                            .set_solver_reward_btc(solver_address, ethers::types::U256::zero())
-                            .await
-                    }
-                };
-
-                match result {
-                    Ok(()) => {
-                        info!(
-                            "✅ [NETWORK-REWARD] Successfully processed {} reward transaction {} for solver {}: claimed={}, remaining_reward=0",
-                            currency_label, transaction_id, solver_address, new_claimed
-                        );
-                        return Ok(Some(current_reward));
-                    }
-                    Err(e) => {
-                        error!(
-                            "❌ [NETWORK-REWARD] Failed to reduce {} reward for solver {}: {}",
-                            currency_label, solver_address, e
-                        );
-                    }
-                }
-            } else {
-                info!(
-                    "ℹ️ [NETWORK-REWARD] No {} reward to claim for solver {} (already claimed or zero)",
-                    currency_label, solver_address
-                );
-            }
-        }
-        Ok(None)
     }
 
     /// Handle withdraw liquidity transaction ID storage
@@ -819,6 +637,86 @@ impl MpcNetworkLayer {
             {
                 warn!(
                     "⚠️ [WITHDRAW_TXID] Failed to apply txid {} for withdraw {} (solver {}): {}",
+                    transaction_id, request_id, solver_address, e
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Store claim-reward BTC transaction ID on each PendingClaimRewardRequest (do not mark done).
+    pub(crate) async fn handle_claim_reward_transaction_id_storage(
+        &mut self,
+        solver_address: &str,
+        transaction_id: &str,
+        request_id: &str,
+    ) -> Result<()> {
+        use crate::types::rpc_server::PendingClaimRewardRequest;
+
+        let db = &self.db;
+        let key = format!(
+            "pending_claim_reward:{}:{}",
+            solver_address.to_lowercase(),
+            request_id
+        );
+
+        let maybe_req: Option<PendingClaimRewardRequest> =
+            match db.get_string::<PendingClaimRewardRequest>(&key) {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!(
+                        "⚠️ [CLAIM_REWARD_TXID] Failed to load pending claim reward {} for solver {} when applying txid {}: {}",
+                        request_id, solver_address, transaction_id, e
+                    );
+                    return Ok(());
+                }
+            };
+
+        if let Some(mut req) = maybe_req {
+            if req.tx_id.is_some() {
+                return Ok(());
+            }
+            req.tx_id = Some(transaction_id.to_string());
+            if let Err(e) = db.put_string(&key, &req) {
+                warn!(
+                    "⚠️ [CLAIM_REWARD_TXID] Failed to update tx_id for claim reward {} (solver {}): {}",
+                    request_id, solver_address, e
+                );
+            } else {
+                info!(
+                    "💾 [CLAIM_REWARD_TXID] Updated tx_id for claim reward {} (solver {}) to {}",
+                    request_id, solver_address, transaction_id
+                );
+            }
+        } else {
+            warn!(
+                "⚠️ [CLAIM_REWARD_TXID] Pending claim reward {} for solver {} not found when applying txid {}",
+                request_id, solver_address, transaction_id
+            );
+        }
+        Ok(())
+    }
+
+    /// Store claim-reward BTC transaction ID on multiple PendingClaimRewardRequest entries (do not mark done).
+    pub(crate) async fn handle_claim_reward_transaction_id_storage_batch(
+        &mut self,
+        transaction_id: &str,
+        requests: &[(String, String)],
+    ) -> Result<()> {
+        if requests.is_empty() {
+            return Ok(());
+        }
+        for (request_id, solver_address) in requests {
+            if let Err(e) = self
+                .handle_claim_reward_transaction_id_storage(
+                    solver_address,
+                    transaction_id,
+                    request_id,
+                )
+                .await
+            {
+                warn!(
+                    "⚠️ [CLAIM_REWARD_TXID] Failed to apply txid {} for claim reward {} (solver {}): {}",
                     transaction_id, request_id, solver_address, e
                 );
             }

@@ -1119,6 +1119,10 @@ impl SigningNode {
                         info!("🔢 [SIGNING] WithdrawLiquidity transaction: fetching nonce {} from network group address {}", nonce, group_address);
                         group_address
                     }
+                    Some(crate::types::TransactionType::ClaimRewardBtc) => {
+                        // ClaimRewardBtc is BTC-only; not used in Ethereum signing path
+                        return Err(anyhow!("ClaimRewardBtc is not an Ethereum transaction type"));
+                    }
                     None => {
                         if let Some(user_addr) = &user_eth_address {
                             if let Some(user_intent_manager) = &self.user_intent_manager {

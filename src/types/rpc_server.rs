@@ -227,6 +227,24 @@ pub struct PendingWithdrawRequest {
     pub status: String,
 }
 
+/// Internal representation of a queued claim-reward request.
+/// Stored in RocksDB under keys with prefix "pending_claim_reward:".
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingClaimRewardRequest {
+    pub request_id: String,
+    pub solver_address: String,
+    pub ethereum_address: Option<String>,
+    pub btc_address: Option<String>,
+    /// Original signed message payload from the HTTP request
+    pub message: String,
+    pub signature: String,
+    /// Optional BTC transaction ID once the claim-reward BTC batch is broadcast (stored on tx-id broadcast; do not mark done).
+    #[serde(default)]
+    pub tx_id: Option<String>,
+    /// Logical status: "Pending", "Batched", "Completed", "Failed", etc.
+    pub status: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AddLiquidityRequest {
     /// Signature created by VERIFICATION_ADDRESS over the raw `message` bytes.

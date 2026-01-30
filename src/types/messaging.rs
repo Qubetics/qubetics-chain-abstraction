@@ -3,7 +3,7 @@ use crate::{
     protocols::{DKGMessage, VrfSelectedNodesBroadcast, VrfSelectionMessage},
     types::{
         intent::{DepositIntent, TransactionType},
-        rpc_server::{NodeStatus, PendingWithdrawRequest},
+        rpc_server::{NodeStatus, PendingClaimRewardRequest, PendingWithdrawRequest},
         secp::{SerializablePoint, SerializableScalar},
         signing::SigningMessage,
         vrf::{VrfRoundSyncRequest, VrfRoundSyncResponse},
@@ -62,6 +62,10 @@ pub enum ChannelMessage {
         reward_btc: Option<String>,
         reward_tics: Option<String>,
         transaction_type: String,
+    },
+    /// Propagate a new pending claim-reward request to all nodes so they store it in DB.
+    PendingClaimRewardRequestBroadcast {
+        request: PendingClaimRewardRequest,
     },
     /// Inbound solver add-liquidity request (batched contract call, no DB state).
     /// These requests are validated via VERIFICATION_ADDRESS and then gossiped to peers.
@@ -158,6 +162,15 @@ pub enum ChannelMessage {
         /// Node ID of the final node broadcasting this batch
         node_id: String,
     },
+    /// BTC claim-reward batch broadcast (same flow as BtcWithdrawBatch).
+    /// Final node broadcasts selected pending BTC claim-reward requests for distributed signing.
+    BtcClaimRewardBatch {
+        batch_id: String,
+        requests: Vec<(String, String)>,
+        round: u64,
+        timestamp: String,
+        node_id: String,
+    },
     /// TICS withdraw-liquidity batch broadcast.
     /// Final node broadcasts selected TICS (and optionally BTC) withdraw requests
     /// so all nodes can aggregate per-solver amounts and submit a single
@@ -200,6 +213,15 @@ pub enum ChannelMessage {
         /// - For TICS: typically empty; mapping is done per-solver via solver_address.
         requests: Vec<(String, String)>,
         /// Node ID broadcasting the txid
+        node_id: String,
+    },
+    /// Claim-reward BTC transaction ID broadcast.
+    /// Sent after the BTC claim-reward batch tx is broadcast; store tx_id on each PendingClaimRewardRequest (do not mark done).
+    ClaimRewardTxIdBroadcast {
+        txid: String,
+        network: String,
+        batch_id: String,
+        requests: Vec<(String, String)>,
         node_id: String,
     },
     /// Propagate a new pending withdraw-liquidity request to all nodes so they store it in DB.
@@ -310,6 +332,10 @@ pub enum GossipsubMessage {
         reward_tics: Option<String>,
         transaction_type: String,
     },
+    /// Propagate a new pending claim-reward request to all nodes so they store it in DB.
+    PendingClaimRewardRequestBroadcast {
+        request: PendingClaimRewardRequest,
+    },
     WithdrawLiquidity {
         solver_address: String,
         btc_address: Option<String>,
@@ -377,6 +403,14 @@ pub enum GossipsubMessage {
         timestamp: String,
         node_id: String,
     },
+    /// BTC claim-reward batch broadcast (same flow as BtcWithdrawBatch).
+    BtcClaimRewardBatch {
+        batch_id: String,
+        requests: Vec<(String, String)>,
+        round: u64,
+        timestamp: String,
+        node_id: String,
+    },
     /// TICS withdraw-liquidity batch broadcast.
     /// Final node broadcasts selected TICS (and optionally BTC) withdraw requests
     /// so all nodes can aggregate per-solver amounts and submit a single
@@ -398,6 +432,14 @@ pub enum GossipsubMessage {
         network: String,
         batch_id: String,
         solver_address: Option<String>,
+        requests: Vec<(String, String)>,
+        node_id: String,
+    },
+    /// Claim-reward BTC transaction ID broadcast; store tx_id on each PendingClaimRewardRequest (do not mark done).
+    ClaimRewardTxIdBroadcast {
+        txid: String,
+        network: String,
+        batch_id: String,
         requests: Vec<(String, String)>,
         node_id: String,
     },

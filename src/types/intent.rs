@@ -6,6 +6,8 @@ pub enum TransactionType {
     NetworkToTarget,
     RewardTxn,
     WithdrawLiquidity,
+    /// BTC claim-reward batch (same flow as WithdrawLiquidity for BTC; tx-id stored on PendingClaimRewardRequest).
+    ClaimRewardBtc,
     Refund,
     IntentStatusUpdate,
 }

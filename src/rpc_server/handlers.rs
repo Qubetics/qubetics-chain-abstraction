@@ -18,9 +18,9 @@ use crate::{
         messaging::ChannelMessage,
         rpc_server::{
             AddLiquidityRequest, AddLiquidityResponse, ClaimRewardRequest, ClaimRewardResponse,
-            DKGStatusResponse, EnhancedUserRegistrationResponse, GetRewardSolverRequest,
-            GetRewardSolverResponse, HeartbeatResponse, IntentsSolvedCountResponse, NodeIdResponse,
-            PendingWithdrawRequest, RequestContext,
+            DKGStatusResponse, EnhancedUserRegistrationResponse, HeartbeatResponse,
+            IntentsSolvedCountResponse, NodeIdResponse,
+            PendingClaimRewardRequest, PendingWithdrawRequest, RequestContext,
             SolverLiquidityRequest, SolverLiquidityResponse, UptimeResponse, UserInfoResponse,
             UserMpcDepositRequest, UserMpcDepositVerifyResponse, UserRegistrationRequest,
             WithdrawLiquidityRequest, WithdrawLiquidityResponse,
@@ -28,16 +28,12 @@ use crate::{
         IntentStatus,
     },
     user_intent_manager::{checksum_from_any, UserIntentManager},
-    utils::transaction::DUST_LIMIT_SATS,
 };
 use k256::elliptic_curve::sec1::ToEncodedPoint;
 
 use super::{
     errors::{RpcError, TransactionError},
-    utils::{
-        normalize_eth_signature, recover_eth_address_secp,
-        wait_for_reward_transaction_ids, wait_for_transaction_result
-    },
+    utils::{normalize_eth_signature, recover_eth_address_secp, wait_for_transaction_result},
 };
 
 pub(crate) async fn handle_deposit_intent(
@@ -1191,73 +1187,6 @@ pub(crate) async fn handle_get_dkg_status(
     }))
 }
 
-pub(crate) async fn handle_get_reward_solver(
-    req: GetRewardSolverRequest,
-    user_intent_manager: Arc<UserIntentManager>,
-) -> Result<impl warp::Reply, warp::Rejection> {
-    info!(
-        "🔍 HTTP: get_reward_solver request for solver: {}",
-        req.solver_address
-    );
-
-    if req.solver_address.trim().is_empty() {
-        return Ok(warp::reply::json(&GetRewardSolverResponse {
-            status: "error".to_string(),
-            solver_address: req.solver_address,
-            reward_btc: None,
-            reward_tics: None,
-            message: "Solver address cannot be empty".to_string(),
-            error_message: Some("Solver address is required".to_string()),
-        }));
-    }
-
-    let normalized_address = match checksum_from_any(&req.solver_address) {
-        Ok(addr) => addr,
-        Err(e) => {
-            warn!("❌ Invalid solver address format: {}", e);
-            return Ok(warp::reply::json(&GetRewardSolverResponse {
-                status: "error".to_string(),
-                solver_address: req.solver_address,
-                reward_btc: None,
-                reward_tics: None,
-                message: "Invalid solver address format".to_string(),
-                error_message: Some(format!("Invalid address format: {e}")),
-            }));
-        }
-    };
-
-    let reward_btc = user_intent_manager
-        .get_solver_reward_btc(&normalized_address)
-        .await;
-    let reward_tics = user_intent_manager
-        .get_solver_reward_tics(&normalized_address)
-        .await;
-
-    let reward_btc_str = reward_btc.as_ref().map(|v| v.to_string());
-    let reward_tics_str = reward_tics.as_ref().map(|v| v.to_string());
-
-    let _legacy_reward = match (reward_btc, reward_tics) {
-        (Some(btc), Some(tics)) => (btc + tics).to_string(),
-        (Some(btc), None) => btc.to_string(),
-        (None, Some(tics)) => tics.to_string(),
-        (None, None) => "0".to_string(),
-    };
-
-    info!(
-        "✅ Rewards for solver {} -> btc: {:?}, tics: {:?}",
-        normalized_address, reward_btc_str, reward_tics_str
-    );
-
-    Ok(warp::reply::json(&GetRewardSolverResponse {
-        status: "success".to_string(),
-        solver_address: normalized_address,
-        reward_btc: reward_btc_str,
-        reward_tics: reward_tics_str,
-        message: "Solver rewards retrieved successfully".to_string(),
-        error_message: None,
-    }))
-}
-
 /// Fetch solver liquidity directly from the on-chain SolverManager contract only (no DB).
 /// Uses SOLVER_CONTRACT_ADDRESS, SOLVER_CONTRACT_RPC_URL, SOLVER_CONTRACT_CHAIN_ID.
 /// Returns (liquidity_btc, liquidity_tics) as decimal strings if non-zero.
@@ -1421,13 +1350,12 @@ pub(crate) async fn handle_claim_reward(
     message_tx: Arc<Mutex<mpsc::Sender<ChannelMessage>>>,
     dkg_storage: Arc<DkgStorage>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
-    // Block reward claims while DKG shares are being refreshed
     if dkg_storage.is_refresh_in_progress().await.unwrap_or(false) {
         warn!("⚠️ HTTP: Blocking claim_reward - shares are getting refreshed");
         return Ok(warp::reply::json(&ClaimRewardResponse {
             status: "error".to_string(),
-            ethereum_address: req.ethereum_address,
-            btc_address: req.btc_address,
+            ethereum_address: req.ethereum_address.clone(),
+            btc_address: req.btc_address.clone(),
             reward_btc: None,
             reward_tics: None,
             message: "shares are getting refreshed".to_string(),
@@ -1442,7 +1370,6 @@ pub(crate) async fn handle_claim_reward(
         req.ethereum_address, req.btc_address
     );
     if req.ethereum_address.is_none() && req.btc_address.is_none() {
-        warn!("❌ Both addresses are None - at least one address must be provided");
         return Ok(warp::reply::json(&ClaimRewardResponse {
             status: "error".to_string(),
             ethereum_address: None,
@@ -1456,54 +1383,14 @@ pub(crate) async fn handle_claim_reward(
         }));
     }
 
-    let normalized_eth_address = if let Some(eth_addr) = &req.ethereum_address {
-        match super::errors::validate_ethereum_address(eth_addr) {
-            Ok(addr) => Some(addr),
-            Err(e) => {
-                warn!("❌ Invalid Ethereum address format: {:?}", e);
-                return Ok(warp::reply::json(&ClaimRewardResponse {
-                    status: "error".to_string(),
-                    ethereum_address: req.ethereum_address,
-                    btc_address: req.btc_address,
-                    reward_btc: None,
-                    reward_tics: None,
-                    message: "Invalid Ethereum address format".to_string(),
-                    error_message: Some(format!("Invalid Ethereum address: {e:?}")),
-                    tics_reward_tx_id: None,
-                    btc_reward_tx_id: None,
-                }));
-            }
-        }
-    } else {
-        None
-    };
-
-    let wants_tics = normalized_eth_address.is_some();
-    let wants_btc = req.btc_address.as_ref().is_some();
-
-    if wants_tics && wants_btc {
-        let msg = "Only one reward type can be claimed per request. Provide either ethereum_address or btc_address.".to_string();
-        return Ok(warp::reply::json(&ClaimRewardResponse {
-            status: "error".to_string(),
-            ethereum_address: normalized_eth_address,
-            btc_address: req.btc_address,
-            reward_btc: None,
-            reward_tics: None,
-            message: msg.clone(),
-            error_message: Some(msg),
-            tics_reward_tx_id: None,
-            btc_reward_tx_id: None,
-        }));
-    }
-
     let (compact, v) = match normalize_eth_signature(&req.signature) {
         Ok(t) => t,
         Err(e) => {
             warn!("❌ Invalid signature format: {}", e);
             return Ok(warp::reply::json(&ClaimRewardResponse {
                 status: "error".to_string(),
-                ethereum_address: normalized_eth_address,
-                btc_address: req.btc_address,
+                ethereum_address: req.ethereum_address.clone(),
+                btc_address: req.btc_address.clone(),
                 reward_btc: None,
                 reward_tics: None,
                 message: "Invalid signature format".to_string(),
@@ -1514,27 +1401,20 @@ pub(crate) async fn handle_claim_reward(
         }
     };
 
-    let msg_bytes = req.message.as_bytes();
-
-    let solver_address = match recover_eth_address_secp(msg_bytes, &compact, v, true) {
+    let solver_address = match recover_eth_address_secp(req.message.as_bytes(), &compact, v, true) {
         Ok(addr) => addr,
-        Err(e1) => match recover_eth_address_secp(msg_bytes, &compact, v, false) {
+        Err(e1) => match recover_eth_address_secp(req.message.as_bytes(), &compact, v, false) {
             Ok(addr) => addr,
             Err(e2) => {
-                error!(
-                    "❌ Failed to recover address: personal_sign={}, raw={}",
-                    e1, e2
-                );
+                error!("❌ Failed to recover address: personal_sign={}, raw={}", e1, e2);
                 return Ok(warp::reply::json(&ClaimRewardResponse {
                     status: "error".to_string(),
-                    ethereum_address: normalized_eth_address,
-                    btc_address: req.btc_address,
+                    ethereum_address: req.ethereum_address.clone(),
+                    btc_address: req.btc_address.clone(),
                     reward_btc: None,
                     reward_tics: None,
                     message: "Failed to recover signature".to_string(),
-                    error_message: Some(format!(
-                        "Failed to recover signature: personal_sign={e1}, raw={e2}"
-                    )),
+                    error_message: Some(format!("Failed to recover signature: personal_sign={e1}, raw={e2}")),
                     tics_reward_tx_id: None,
                     btc_reward_tx_id: None,
                 }));
@@ -1542,216 +1422,108 @@ pub(crate) async fn handle_claim_reward(
         },
     };
 
-    info!(
-        "🔐 Recovered solver address from signature: {}",
-        solver_address
-    );
-
-    let reward_btc = if wants_btc {
-        user_intent_manager
-            .get_solver_reward_btc(solver_address.as_str())
-            .await
-            .filter(|v| !v.is_zero())
-    } else {
-        None
-    };
-    let reward_tics = if wants_tics {
-        user_intent_manager
-            .get_solver_reward_tics(solver_address.as_str())
-            .await
-            .filter(|v| !v.is_zero())
-    } else {
-        None
+    let normalized_address = match checksum_from_any(&solver_address) {
+        Ok(addr) => addr,
+        Err(e) => {
+            warn!("❌ Invalid solver address format: {}", e);
+            return Ok(warp::reply::json(&ClaimRewardResponse {
+                status: "error".to_string(),
+                ethereum_address: req.ethereum_address.clone(),
+                btc_address: req.btc_address.clone(),
+                reward_btc: None,
+                reward_tics: None,
+                message: "Invalid solver address format".to_string(),
+                error_message: Some(format!("Invalid address format: {e}")),
+                tics_reward_tx_id: None,
+                btc_reward_tx_id: None,
+            }));
+        }
     };
 
-    // Check if BTC reward is below dust limit
-    if wants_btc {
-        if let Some(ref btc_reward) = reward_btc {
-            // Convert U256 to u64 for comparison (saturating to avoid overflow)
-            let btc_reward_u64 = btc_reward.as_u64();
-            if btc_reward_u64 > 0 && btc_reward_u64 < DUST_LIMIT_SATS {
-                let msg = format!(
-                    "BTC reward {} sats is below Bitcoin dust limit (minimum: {} sats). Transaction would be rejected by Bitcoin nodes.",
-                    btc_reward_u64,
-                    DUST_LIMIT_SATS
-                );
-                warn!("❌ {}", msg);
+    info!("🔐 Recovered solver address from signature: {}", normalized_address);
+
+    // Reject if this solver already has a claim reward request in Pending or Batched (one in-flight per solver).
+    {
+        let db = user_intent_manager.get_database();
+        let prefix = format!("pending_claim_reward:{}:", normalized_address.to_lowercase());
+        let entries: Vec<(String, PendingClaimRewardRequest)> = match db.get_values_with_prefix(&prefix) {
+            Ok(e) => e,
+            Err(e) => {
+                warn!("⚠️ [CLAIM_REWARD] Failed to check existing claim requests for solver {}: {}", normalized_address, e);
                 return Ok(warp::reply::json(&ClaimRewardResponse {
                     status: "error".to_string(),
-                    ethereum_address: normalized_eth_address,
-                    btc_address: req.btc_address,
+                    ethereum_address: req.ethereum_address.clone(),
+                    btc_address: req.btc_address.clone(),
                     reward_btc: None,
                     reward_tics: None,
-                    message: msg.clone(),
-                    error_message: Some(msg),
+                    message: "Failed to check existing claim requests".to_string(),
+                    error_message: Some("Database error".to_string()),
                     tics_reward_tx_id: None,
                     btc_reward_tx_id: None,
                 }));
             }
+        };
+        let has_pending_or_batched = entries
+            .iter()
+            .any(|(_, r)| r.status == "Pending" || r.status == "Batched");
+        if has_pending_or_batched {
+            info!(
+                "🚫 [CLAIM_REWARD] Rejecting claim for solver {}: already has a request in Pending/Batched",
+                normalized_address
+            );
+            return Ok(warp::reply::json(&ClaimRewardResponse {
+                status: "error".to_string(),
+                ethereum_address: req.ethereum_address.clone(),
+                btc_address: req.btc_address.clone(),
+                reward_btc: None,
+                reward_tics: None,
+                message: "You already have a claim reward request in progress (Pending or Batched). Wait for it to complete.".to_string(),
+                error_message: Some("One claim reward request at a time per solver".to_string()),
+                tics_reward_tx_id: None,
+                btc_reward_tx_id: None,
+            }));
         }
     }
 
-    let reward_btc_str = reward_btc.as_ref().map(|v| v.to_string());
-    let reward_tics_str = reward_tics.as_ref().map(|v| v.to_string());
-
-    let previous_tics_tx_id = user_intent_manager
-        .get_solver_tics_txn_hash(solver_address.as_str())
-        .await;
-    let previous_btc_tx_id = user_intent_manager
-        .get_solver_btc_txn_hash(solver_address.as_str())
-        .await;
-
-    let expect_tics_tx = wants_tics && reward_tics_str.is_some();
-    let expect_btc_tx = wants_btc && reward_btc_str.is_some();
-
-    if wants_tics && reward_tics_str.is_none() {
-        let msg = "No TICS rewards available to claim".to_string();
-        warn!("❌ {}", msg);
-        return Ok(warp::reply::json(&ClaimRewardResponse {
-            status: "error".to_string(),
-            ethereum_address: normalized_eth_address,
-            btc_address: req.btc_address,
-            reward_btc: None,
-            reward_tics: None,
-            message: msg.clone(),
-            error_message: Some(msg),
-            tics_reward_tx_id: None,
-            btc_reward_tx_id: None,
-        }));
-    }
-
-    if wants_btc && reward_btc_str.is_none() {
-        let msg = "No BTC rewards available to claim".to_string();
-        warn!("❌ {}", msg);
-        return Ok(warp::reply::json(&ClaimRewardResponse {
-            status: "error".to_string(),
-            ethereum_address: normalized_eth_address,
-            btc_address: req.btc_address,
-            reward_btc: None,
-            reward_tics: None,
-            message: msg.clone(),
-            error_message: Some(msg),
-            tics_reward_tx_id: None,
-            btc_reward_tx_id: None,
-        }));
-    }
-
-    let claim_msg = ChannelMessage::ClaimReward {
-        solver_address: solver_address.clone(),
+    let request_id = Uuid::new_v4().to_string();
+    let pending = PendingClaimRewardRequest {
+        request_id: request_id.clone(),
+        solver_address: normalized_address.clone(),
+        ethereum_address: req.ethereum_address.clone(),
         btc_address: req.btc_address.clone(),
-        eth_address: req.ethereum_address.clone(),
-        reward_btc: reward_btc_str.clone(),
-        reward_tics: reward_tics_str.clone(),
-        transaction_type: "reward_txn".to_string(),
+        message: req.message.clone(),
+        signature: req.signature.clone(),
+        tx_id: None,
+        status: "Pending".to_string(),
     };
 
-    let tx_sender = message_tx.lock().await;
-    if let Err(e) = tx_sender.send(claim_msg).await {
-        warn!("Failed to send claim reward message: {}", e);
-        return Ok(warp::reply::json(&ClaimRewardResponse {
-            status: "error".to_string(),
-            ethereum_address: normalized_eth_address,
-            btc_address: req.btc_address,
-            reward_btc: reward_btc_str,
-            reward_tics: reward_tics_str,
-            message: "Failed to process reward claim".to_string(),
-            error_message: Some(format!("Network error: {e}")),
-            tics_reward_tx_id: None,
-            btc_reward_tx_id: None,
-        }));
-    }
-
-    drop(tx_sender);
-
-    let wait_timeout_secs = 40;
-    let (tics_reward_tx_id, btc_reward_tx_id) = if expect_tics_tx || expect_btc_tx {
-        wait_for_reward_transaction_ids(
-            &user_intent_manager,
-            solver_address.as_str(),
-            expect_tics_tx,
-            expect_btc_tx,
-            previous_tics_tx_id,
-            previous_btc_tx_id,
-            wait_timeout_secs,
-        )
-        .await
+    let broadcast = ChannelMessage::PendingClaimRewardRequestBroadcast {
+        request: pending.clone(),
+    };
+    if let Err(e) = message_tx.lock().await.send(broadcast).await {
+        warn!("⚠️ Failed to broadcast claim_reward request {} to other nodes: {}", request_id, e);
     } else {
-        (None, None)
-    };
-
-    if let Some(ref tx_id) = tics_reward_tx_id {
-        info!(
-            "✅ Recorded TICS reward transaction ID {} for solver {}",
-            tx_id, solver_address
-        );
-    } else if expect_tics_tx {
-        warn!(
-            "⚠️ Timed out waiting for TICS reward transaction ID for solver {} after {} seconds",
-            solver_address, wait_timeout_secs
-        );
+        info!("📡 Broadcast claim_reward request {} to other nodes for DB sync", request_id);
     }
-
-    if let Some(ref tx_id) = btc_reward_tx_id {
-        info!(
-            "✅ Recorded BTC reward transaction ID {} for solver {}",
-            tx_id, solver_address
-        );
-    } else if expect_btc_tx {
-        warn!(
-            "⚠️ Timed out waiting for BTC reward transaction ID for solver {} after {} seconds",
-            solver_address, wait_timeout_secs
-        );
-    }
-
-    let missing_tics_tx = expect_tics_tx && tics_reward_tx_id.is_none();
-    let missing_btc_tx = expect_btc_tx && btc_reward_tx_id.is_none();
-    if missing_tics_tx || missing_btc_tx {
-        let mut missing_networks = Vec::new();
-        if missing_tics_tx {
-            missing_networks.push("TICS");
-        }
-        if missing_btc_tx {
-            missing_networks.push("BTC");
-        }
-        let missing_list = missing_networks.join(" & ");
-        let msg = format!(
-            "Timed out waiting for {missing_list} reward transaction confirmation for solver {solver_address}"
-        );
-        return Ok(warp::reply::json(&ClaimRewardResponse {
-            status: "error".to_string(),
-            ethereum_address: normalized_eth_address,
-            btc_address: req.btc_address,
-            reward_btc: reward_btc_str,
-            reward_tics: reward_tics_str,
-            message: msg.clone(),
-            error_message: Some(msg),
-            tics_reward_tx_id,
-            btc_reward_tx_id,
-        }));
-    }
-
-    let success_message = if wants_tics {
-        "TICS reward claim processed successfully".to_string()
-    } else {
-        "BTC reward claim processed successfully".to_string()
-    };
 
     info!(
-        "✅ Reward claim processed successfully for solver: {}, reward_type: {}",
-        solver_address,
-        if wants_tics { "TICS" } else { "BTC" }
+        "✅ Enqueued claim_reward request {} for solver {}",
+        request_id, normalized_address
     );
 
     Ok(warp::reply::json(&ClaimRewardResponse {
         status: "success".to_string(),
-        ethereum_address: normalized_eth_address,
-        btc_address: req.btc_address,
-        reward_btc: reward_btc_str,
-        reward_tics: reward_tics_str,
-        message: success_message,
+        ethereum_address: req.ethereum_address.clone(),
+        btc_address: req.btc_address.clone(),
+        reward_btc: None,
+        reward_tics: None,
+        message: format!(
+            "Claim reward request queued for processing (id: {})",
+            request_id
+        ),
         error_message: None,
-        tics_reward_tx_id,
-        btc_reward_tx_id,
+        tics_reward_tx_id: None,
+        btc_reward_tx_id: None,
     }))
 }
 

@@ -486,6 +486,21 @@ impl SigningNode {
                     "💾 [BTC-SIGNING] Node {} stored BTC withdraw-liquidity transaction for round {} with solver address: {} (inputs={})",
                     self.id, current_round, intent_hashes.len(), original_tx.inputs.len()
                 );
+            } else if let Some(TransactionType::ClaimRewardBtc) = transaction_type {
+                // BTC claim-reward batch: same encoding as withdraw ("request_id|solver_address").
+                self.store_claim_reward_transaction_btc(
+                    current_round,
+                    ChainTransaction::Bitcoin(original_tx.clone()),
+                    tx_bytes.clone(),
+                    intent_hashes.clone(),
+                    extras,
+                )
+                .await;
+
+                info!(
+                    "💾 [BTC-SIGNING] Node {} stored BTC claim-reward transaction for round {} with {} requests (inputs={})",
+                    self.id, current_round, intent_hashes.len(), original_tx.inputs.len()
+                );
             } else {
                 // This is an intent-based transaction - store in regular pending transactions
                 let mut pending = self.pending.pending_transactions_btc.write().await;

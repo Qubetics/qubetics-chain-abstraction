@@ -856,7 +856,7 @@ use crate::{
 };
 
 use crate::network::transport::types::{
-    MpcNetworkBehaviour, MpcNetworkLayer, TOPIC_WITHDRAW_LIQUIDITY,
+    MpcNetworkBehaviour, MpcNetworkLayer, TOPIC_CLAIM_REWARDS, TOPIC_WITHDRAW_LIQUIDITY,
 };
 use crate::protocols::DKGStatus;
 
@@ -1245,6 +1245,65 @@ impl MpcNetworkLayer {
                     );
                 }
             }
+            ChannelMessage::BtcClaimRewardBatch {
+                batch_id,
+                requests,
+                round,
+                timestamp,
+                node_id,
+            } => {
+                use libp2p::gossipsub::{IdentTopic, Message as GossipMessage};
+
+                let gossip_msg = crate::types::GossipsubMessage::BtcClaimRewardBatch {
+                    batch_id,
+                    requests,
+                    round,
+                    timestamp,
+                    node_id,
+                };
+
+                let data = match serde_json::to_vec(&gossip_msg) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        warn!(
+                            "❌ [BTC_CLAIM_REWARD] Failed to serialize BtcClaimRewardBatch: {}",
+                            e
+                        );
+                        return Ok(());
+                    }
+                };
+
+                let topic = TOPIC_CLAIM_REWARDS.to_string();
+                let topic_hash = IdentTopic::new(topic.clone());
+                let local_msg = GossipMessage {
+                    source: Some(self.local_peer_id),
+                    data: data.clone(),
+                    sequence_number: None,
+                    topic: topic_hash.hash(),
+                };
+
+                if let Err(e) = self.handle_gossipsub_message(&local_msg).await {
+                    warn!(
+                        "❌ [BTC_CLAIM_REWARD] Failed to process local BtcClaimRewardBatch: {}",
+                        e
+                    );
+                }
+
+                let swarm_mut = swarm.behaviour_mut();
+                let peer_count = swarm_mut.gossipsub.all_peers().count();
+                if peer_count > 0 {
+                    if let Err(e) = swarm_mut.gossipsub.publish(topic_hash, data) {
+                        warn!(
+                            "❌ [BTC_CLAIM_REWARD] Failed to publish BtcClaimRewardBatch to topic {}: {:?}",
+                            topic, e
+                        );
+                    }
+                } else {
+                    warn!(
+                        "⚠️ [BTC_CLAIM_REWARD] No peers available for broadcasting BtcClaimRewardBatch"
+                    );
+                }
+            }
             ChannelMessage::TicsWithdrawBatch {
                 batch_id,
                 requests,
@@ -1381,6 +1440,70 @@ impl MpcNetworkLayer {
                     );
                 }
             }
+            ChannelMessage::ClaimRewardTxIdBroadcast {
+                txid,
+                network,
+                batch_id,
+                requests,
+                node_id,
+            } => {
+                use libp2p::gossipsub::{IdentTopic, Message as GossipMessage};
+
+                info!(
+                    "📡 [CLAIM_REWARD_TXID] Received claim-reward txid broadcast from node {}: txid={}, batch_id={}, requests={}",
+                    node_id, txid, batch_id, requests.len()
+                );
+
+                let gossip_msg = crate::types::GossipsubMessage::ClaimRewardTxIdBroadcast {
+                    txid,
+                    network,
+                    batch_id,
+                    requests,
+                    node_id,
+                };
+
+                let data = match serde_json::to_vec(&gossip_msg) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        warn!(
+                            "❌ [CLAIM_REWARD_TXID] Failed to serialize ClaimRewardTxIdBroadcast: {}",
+                            e
+                        );
+                        return Ok(());
+                    }
+                };
+
+                let topic = TOPIC_CLAIM_REWARDS.to_string();
+                let topic_hash = IdentTopic::new(topic.clone());
+                let local_msg = GossipMessage {
+                    source: Some(self.local_peer_id),
+                    data: data.clone(),
+                    sequence_number: None,
+                    topic: topic_hash.hash(),
+                };
+
+                if let Err(e) = self.handle_gossipsub_message(&local_msg).await {
+                    warn!(
+                        "❌ [CLAIM_REWARD_TXID] Failed to process local ClaimRewardTxIdBroadcast: {}",
+                        e
+                    );
+                }
+
+                let swarm_mut = swarm.behaviour_mut();
+                let peer_count = swarm_mut.gossipsub.all_peers().count();
+                if peer_count > 0 {
+                    if let Err(e) = swarm_mut.gossipsub.publish(topic_hash, data) {
+                        warn!(
+                            "❌ [CLAIM_REWARD_TXID] Failed to publish ClaimRewardTxIdBroadcast to topic {}: {:?}",
+                            topic, e
+                        );
+                    }
+                } else {
+                    warn!(
+                        "⚠️ [CLAIM_REWARD_TXID] No peers available for broadcasting ClaimRewardTxIdBroadcast"
+                    );
+                }
+            }
             ChannelMessage::PendingWithdrawRequestBroadcast { request } => {
                 use libp2p::gossipsub::{IdentTopic, Message as GossipMessage};
 
@@ -1433,6 +1556,61 @@ impl MpcNetworkLayer {
                 } else {
                     warn!(
                         "⚠️ [WITHDRAW_LIQUIDITY] No peers available for broadcasting PendingWithdrawRequestBroadcast"
+                    );
+                }
+            }
+            ChannelMessage::PendingClaimRewardRequestBroadcast { request } => {
+                use libp2p::gossipsub::{IdentTopic, Message as GossipMessage};
+
+                let gossip_msg = crate::types::GossipsubMessage::PendingClaimRewardRequestBroadcast {
+                    request: request.clone(),
+                };
+
+                let data = match serde_json::to_vec(&gossip_msg) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        warn!(
+                            "❌ [CLAIM_REWARD] Failed to serialize PendingClaimRewardRequestBroadcast: {}",
+                            e
+                        );
+                        return Ok(());
+                    }
+                };
+
+                let topic = TOPIC_CLAIM_REWARDS.to_string();
+                let topic_hash = IdentTopic::new(topic.clone());
+                let local_msg = GossipMessage {
+                    source: Some(self.local_peer_id),
+                    data: data.clone(),
+                    sequence_number: None,
+                    topic: topic_hash.hash(),
+                };
+
+                if let Err(e) = self.handle_gossipsub_message(&local_msg).await {
+                    warn!(
+                        "❌ [CLAIM_REWARD] Failed to process local PendingClaimRewardRequestBroadcast: {}",
+                        e
+                    );
+                }
+
+                let swarm_mut = swarm.behaviour_mut();
+                let peer_count = swarm_mut.gossipsub.all_peers().count();
+
+                if peer_count > 0 {
+                    if let Err(e) = swarm_mut.gossipsub.publish(topic_hash, data) {
+                        warn!(
+                            "❌ [CLAIM_REWARD] Failed to publish PendingClaimRewardRequestBroadcast to topic {}: {:?}",
+                            topic, e
+                        );
+                    } else {
+                        info!(
+                            "📡 [CLAIM_REWARD] Published PendingClaimRewardRequestBroadcast (request_id={}) to {} peers",
+                            request.request_id, peer_count
+                        );
+                    }
+                } else {
+                    warn!(
+                        "⚠️ [CLAIM_REWARD] No peers available for broadcasting PendingClaimRewardRequestBroadcast"
                     );
                 }
             }
@@ -2846,6 +3024,12 @@ impl MpcNetworkLayer {
                         );
                         return Ok(());
                     }
+                    crate::types::TransactionType::ClaimRewardBtc => {
+                        warn!(
+                            "❌ [LOCAL] ClaimRewardBtc is not supported in deposit intent flow"
+                        );
+                        return Ok(());
+                    }
                 };
                 info!(
                     "🔗 [LOCAL] Processing deposit intent for chain: {} (transaction_type: {:?})",
@@ -2890,6 +3074,12 @@ impl MpcNetworkLayer {
                     crate::types::TransactionType::WithdrawLiquidity => {
                         warn!(
                             "❌ [LOCAL] WithdrawLiquidity is not supported for deposit intent signing"
+                        );
+                        None
+                    }
+                    crate::types::TransactionType::ClaimRewardBtc => {
+                        warn!(
+                            "❌ [LOCAL] ClaimRewardBtc is not supported for deposit intent signing"
                         );
                         None
                     }
@@ -3012,6 +3202,11 @@ impl MpcNetworkLayer {
                                         "❌ [LOCAL] WithdrawLiquidity is not supported for Bitcoin group key selection"
                                     );
                                 }
+                                crate::types::TransactionType::ClaimRewardBtc => {
+                                    warn!(
+                                        "❌ [LOCAL] ClaimRewardBtc is not supported for Bitcoin group key selection"
+                                    );
+                                }
                             }
 
                             Some(Arc::from(handler)
@@ -3062,6 +3257,12 @@ impl MpcNetworkLayer {
                         crate::types::TransactionType::WithdrawLiquidity => {
                             warn!(
                                 "❌ [LOCAL] WithdrawLiquidity transaction type not supported for derived addresses"
+                            );
+                            (None, None)
+                        }
+                        crate::types::TransactionType::ClaimRewardBtc => {
+                            warn!(
+                                "❌ [LOCAL] ClaimRewardBtc transaction type not supported for derived addresses"
                             );
                             (None, None)
                         }
@@ -3349,6 +3550,7 @@ impl MpcNetworkLayer {
                                         crate::types::TransactionType::IntentStatusUpdate => "intent_status_update",
                                         crate::types::TransactionType::RewardTxn => "reward_txn",
                                         crate::types::TransactionType::WithdrawLiquidity => "withdraw_liquidity",
+                                        crate::types::TransactionType::ClaimRewardBtc => "claim_reward_btc",
                                     };
                                     
                                     signing_node.broadcast_transaction_error(

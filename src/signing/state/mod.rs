@@ -108,6 +108,9 @@ pub struct PendingStore {
     >,
     pub withdraw_pending_transactions_btc: Arc<RwLock<HashMap<u64, PendingValue>>>,
     pub withdraw_rounds: Arc<RwLock<HashSet<u64>>>,
+    /// BTC claim-reward batch: same shape as withdraw_pending_transactions_btc; tx-id broadcast updates PendingClaimRewardRequest (do not mark done).
+    pub claim_reward_pending_transactions_btc: Arc<RwLock<HashMap<u64, PendingValue>>>,
+    pub claim_reward_rounds: Arc<RwLock<HashSet<u64>>>,
     /// Per-round list of intent hashes (single intent = len 1, batch = len >1, solver-only = empty)
     pub intent_hashes_by_round: Arc<RwLock<HashMap<u64, Vec<String>>>>,
 }
@@ -129,6 +132,8 @@ impl PendingStore {
             withdraw_pending_transactions_tics: Arc::new(RwLock::new(HashMap::new())),
             withdraw_pending_transactions_btc: Arc::new(RwLock::new(HashMap::new())),
             withdraw_rounds: Arc::new(RwLock::new(HashSet::new())),
+            claim_reward_pending_transactions_btc: Arc::new(RwLock::new(HashMap::new())),
+            claim_reward_rounds: Arc::new(RwLock::new(HashSet::new())),
             intent_hashes_by_round: Arc::new(RwLock::new(HashMap::new())),
         }
     }

@@ -129,6 +129,39 @@ impl SigningNode {
         );
     }
 
+    pub(crate) async fn store_claim_reward_transaction_btc(
+        &self,
+        round: u64,
+        chain_tx: ChainTransaction,
+        tx_bytes: Vec<u8>,
+        identifiers: Vec<String>,
+        extras: crate::signing::state::BtcRoundExtras,
+    ) {
+        let mut pending = self.pending.claim_reward_pending_transactions_btc.write().await;
+        pending.insert(
+            round,
+            (
+                chain_tx,
+                tx_bytes,
+                if identifiers.is_empty() {
+                    None
+                } else {
+                    Some(identifiers)
+                },
+                Some(TransactionType::ClaimRewardBtc),
+                Some(extras),
+            ),
+        );
+        {
+            let mut rounds = self.pending.claim_reward_rounds.write().await;
+            rounds.insert(round);
+        }
+        info!(
+            "🎁 [SIGNING] Stored BTC claim-reward transaction for round {} with batch metadata",
+            round
+        );
+    }
+
     pub(crate) async fn store_transaction_error_for_round(
         &self,
         round: u64,
@@ -279,6 +312,10 @@ impl SigningNode {
                     }
                     Some(crate::types::TransactionType::RewardTxn) => {
                         error!("❌ [SIGNING] RewardTxn with intent_hashes - invalid");
+                        return;
+                    }
+                    Some(crate::types::TransactionType::ClaimRewardBtc) => {
+                        error!("❌ [SIGNING] ClaimRewardBtc with intent_hashes - invalid");
                         return;
                     }
                     None => {
@@ -601,6 +638,11 @@ impl SigningNode {
             withdraw_rounds.contains(&round)
         };
         info!("💾 [SIGNING] Is withdraw round: {}", is_withdraw_round);
+        let is_claim_reward_round = {
+            let claim_reward_rounds = self.pending.claim_reward_rounds.read().await;
+            claim_reward_rounds.contains(&round)
+        };
+        info!("💾 [SIGNING] Is claim reward round: {}", is_claim_reward_round);
 
         let (intent_hash, transaction_type, retrieved_solver_address) = match txn_network {
             TransactionNetwork::TICS => {
@@ -700,6 +742,25 @@ impl SigningNode {
                         (None, transaction_type.clone(), solver_address)
                     } else {
                         warn!("[store_transaction_id_for_round] [BTC][Withdraw] No entry in withdraw_pending_transactions_btc for round {}", round);
+                        (None, None, None)
+                    }
+                } else if is_claim_reward_round {
+                    let claim_reward_pending_btc =
+                        self.pending.claim_reward_pending_transactions_btc.read().await;
+                    if let Some((_tx, _tx_bytes, identifiers, transaction_type, _extras)) =
+                        claim_reward_pending_btc.get(&round)
+                    {
+                        let solver_address = identifiers.as_ref().and_then(|v| {
+                            v.iter().find_map(|encoded| {
+                                encoded
+                                    .split_once('|')
+                                    .map(|(_, solver)| solver.to_string())
+                            })
+                        });
+                        info!("[store_transaction_id_for_round] [BTC][ClaimReward] Found claim_reward_pending_transactions_btc entry for round {}: transaction_type={:?}", round, transaction_type);
+                        (None, transaction_type.clone(), solver_address)
+                    } else {
+                        warn!("[store_transaction_id_for_round] [BTC][ClaimReward] No entry in claim_reward_pending_transactions_btc for round {}", round);
                         (None, None, None)
                     }
                 } else {
@@ -811,6 +872,13 @@ impl SigningNode {
                         );
                         return;
                     }
+                    Some(crate::types::TransactionType::ClaimRewardBtc) => {
+                        // ClaimRewardBtc transactions should never have an intent_hash
+                        error!(
+                            "❌ [SIGNING] ClaimRewardBtc transaction type found with intent_hash - this is invalid."
+                        );
+                        return;
+                    }
                     None => {
                         // Check if this is an add_liquidity request (request_id starts with "addliq:")
                         if intent_hash.starts_with("addliq:") {
@@ -916,6 +984,60 @@ impl SigningNode {
                         info!(
                             "ℹ️ [SIGNING] No solver address available for reward transaction in round {}",
                             round
+                        );
+                    }
+                } else if matches!(
+                    transaction_type,
+                    Some(crate::types::TransactionType::ClaimRewardBtc)
+                ) {
+                    // BTC claim-reward batch: send ClaimRewardTxIdBroadcast so handlers store tx_id on PendingClaimRewardRequest (do not mark done).
+                    let claim_reward_pending_btc =
+                        self.pending.claim_reward_pending_transactions_btc.read().await;
+                    if let Some((_tx, _tx_bytes, identifiers, _tx_type, _extras)) =
+                        claim_reward_pending_btc.get(&round)
+                    {
+                        let batch_requests: Vec<(String, String)> = identifiers
+                            .as_ref()
+                            .map(|list| {
+                                list.iter()
+                                    .filter_map(|encoded| {
+                                        encoded.split_once('|').map(|(req_id, solver)| {
+                                            (req_id.to_string(), solver.to_string())
+                                        })
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+
+                        if !batch_requests.is_empty() {
+                            let network_label = crate::types::network::network_type().as_str();
+                            info!(
+                                "📡 [SIGNING] Broadcasting BTC claim-reward txid {} for round {} with {} requests via ClaimRewardTxIdBroadcast",
+                                tx_id, round, batch_requests.len()
+                            );
+                            let msg = crate::types::ChannelMessage::ClaimRewardTxIdBroadcast {
+                                txid: tx_id.to_string(),
+                                network: network_label.to_string(),
+                                batch_id: format!("btc-claim-reward-round-{}", round),
+                                requests: batch_requests,
+                                node_id: self.id.clone(),
+                            };
+                            if let Err(e) = self.message_tx.send(msg).await {
+                                error!(
+                                    "❌ [SIGNING] Failed to send ClaimRewardTxIdBroadcast for round {}: {}",
+                                    round, e
+                                );
+                            }
+                        } else {
+                            warn!(
+                                "⚠️ [SIGNING] BTC ClaimReward round {} has no batch identifiers; skipping ClaimRewardTxIdBroadcast for tx_id={}",
+                                round, tx_id
+                            );
+                        }
+                    } else {
+                        warn!(
+                            "⚠️ [SIGNING] ClaimRewardBtc but no claim_reward_pending_transactions_btc entry for round {} (tx_id={})",
+                            round, tx_id
                         );
                     }
                 } else if matches!(

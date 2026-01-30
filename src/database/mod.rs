@@ -11,8 +11,8 @@ pub use keystore::KeyStore;
 pub use module::DatabaseModule;
 pub use primitives::{key_utils, keys};
 pub use storage::{
-    consensus_storage, dkg_storage, reward_storage, signing_storage, user_storage, vrf_storage,
-    ConsensusStats, ConsensusStorage, DkgStorage, IntentStorage, RewardStorage, SigningStorage,
+    consensus_storage, dkg_storage, signing_storage, user_storage, vrf_storage,
+    ConsensusStats, ConsensusStorage, DkgStorage, IntentStorage, SigningStorage,
     TransactionStatusStorage, UserStorage, VrfStorage,
 };
 pub use upgrade::{

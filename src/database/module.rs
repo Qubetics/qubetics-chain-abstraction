@@ -6,7 +6,6 @@ use tracing::{debug, info};
 use super::{
     consensus_storage::ConsensusStorage,
     dkg_storage::DkgStorage,
-    reward_storage::RewardStorage,
     signing_storage::SigningStorage,
     user_storage::{IntentStorage, TransactionStatusStorage, UserStorage},
     vrf_storage::VrfStorage,
@@ -26,7 +25,6 @@ struct DatabaseModuleInner {
     user_storage: UserStorage,
     intent_storage: IntentStorage,
     tx_status_storage: TransactionStatusStorage,
-    reward_storage: RewardStorage,
     consensus_storage: ConsensusStorage,
     dkg_storage: DkgStorage,
     signing_storage: SigningStorage,
@@ -54,7 +52,6 @@ impl DatabaseModule {
         let user_storage = UserStorage::new(database.clone());
         let intent_storage = IntentStorage::new(database.clone());
         let tx_status_storage = TransactionStatusStorage::new(database.clone());
-        let reward_storage = RewardStorage::new(database.clone());
         let consensus_storage = ConsensusStorage::new(database.clone());
         let dkg_storage = DkgStorage::new(database.clone());
         let signing_storage = SigningStorage::new(database.clone());
@@ -66,7 +63,6 @@ impl DatabaseModule {
             user_storage,
             intent_storage,
             tx_status_storage,
-            reward_storage,
             consensus_storage,
             dkg_storage,
             signing_storage,
@@ -99,10 +95,6 @@ impl DatabaseModule {
 
     pub fn transaction_status_storage(&self) -> TransactionStatusStorage {
         self.inner.tx_status_storage.clone()
-    }
-
-    pub fn reward_storage(&self) -> RewardStorage {
-        self.inner.reward_storage.clone()
     }
 
     pub fn consensus_storage(&self) -> ConsensusStorage {

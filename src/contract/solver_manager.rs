@@ -15,8 +15,9 @@ abigen!(
         function getActiveSolvers() view returns (string[] solverIds)
         function get_solver_evm_address(string solverId) view returns (address)
         function getSolverId(address solver) view returns (string)
-         function getMinimumLiquidityBTC() view returns (uint256)
+        function getMinimumLiquidityBTC() view returns (uint256)
         function getMinimumLiquidityTICS() view returns (uint256)
+        function getSolversUnclaimedRewards(string[] solverIds) view returns ((string solverId, uint256 btcUnclaimed, uint256 ticsUnclaimed)[] rewards)
     ]"#
 );
 
@@ -86,5 +87,23 @@ impl SolverManagerContract {
             .call()
             .await
             .map_err(|e| anyhow!("contract call failed: {}", e))
+    }
+
+    /// Returns (solver_id, btc_unclaimed, tics_unclaimed) per solver.
+    pub async fn get_solvers_unclaimed_rewards(
+        &self,
+        solver_ids: Vec<String>,
+    ) -> Result<Vec<(String, ethers::types::U256, ethers::types::U256)>> {
+        if solver_ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let rewards = self
+            .inner
+            .get_solvers_unclaimed_rewards(solver_ids)
+            .call()
+            .await
+            .map_err(|e| anyhow!("getSolversUnclaimedRewards failed: {}", e))?;
+        // ethers may return a single tuple for array of structs; normalize to Vec
+        Ok(vec![rewards])
     }
 }

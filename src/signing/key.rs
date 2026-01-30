@@ -211,6 +211,21 @@ impl KeyStore {
                     ))
                 }
             }
+            Some(TransactionType::ClaimRewardBtc) => {
+                // ClaimRewardBtc is BTC-only; use network group key (same as WithdrawLiquidity)
+                if let Some(group_key) = self.group_public_key {
+                    let affine_point = group_key.to_affine();
+                    let encoded_point = EncodedPoint::from(affine_point);
+                    let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
+
+                    info!("🔑 [SIGNING] ClaimRewardBtc: Using DKG group public key");
+                    Ok(compressed_bytes)
+                } else {
+                    Err(anyhow!(
+                        "DKG group public key not available for ClaimRewardBtc transaction - ensure DKG process is completed"
+                    ))
+                }
+            }
             None => {
                 if let Some(group_key) = self.group_public_key {
                     let affine_point = group_key.to_affine();
