@@ -122,28 +122,5 @@ impl DKGNode {
 
         Ok(share_pubkey)
     }
-
-    /// Derive share public key from commitments using polynomial evaluation
-    /// NOTE: This method is deprecated in favor of evaluate_aggregated_polynomial
-    /// which correctly aggregates all commitments first. This is kept for backward compatibility.
-    fn derive_share_pubkey_from_commitments(
-        &self,
-        commitments: &[k256::AffinePoint],
-        dkg_index: u32,
-    ) -> Result<ProjectivePoint> {
-        use k256::Scalar;
-        let x = Scalar::from(dkg_index as u64);
-        let mut share_pubkey = ProjectivePoint::IDENTITY;
-
-        for (j, commitment) in commitments.iter().enumerate() {
-            let mut x_pow = Scalar::ONE;
-            for _ in 0..j {
-                x_pow *= x;
-            }
-            share_pubkey += ProjectivePoint::from(*commitment) * x_pow;
-        }
-
-        Ok(share_pubkey)
-    }
 }
 

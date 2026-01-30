@@ -45,7 +45,6 @@ use crate::types::{
     TransactionType,
 };
 use crate::user_intent_manager::UserIntentManager;
-use anyhow::bail;
 use num_traits::Zero;
 
 
@@ -1325,7 +1324,7 @@ impl SigningNode {
                 let operation_type = consensus_node
                     .get_operation_type_for_round(round)
                     .cloned();
-                drop(consensus_node); // Explicitly drop the mutable borrow
+                let _ = consensus_node; // Release the mutable borrow
 
                 // Now we can safely borrow self immutably
                 self.broadcast("consensus-result", &broadcast_data).await?;
@@ -1976,7 +1975,7 @@ impl SigningNode {
         pending_requests.sort_by(|a, b| a.1.timestamp_ms.cmp(&b.1.timestamp_ms));
 
         // Limit to max_batch_size
-        let mut requests_to_batch: Vec<_> = pending_requests
+        let requests_to_batch: Vec<_> = pending_requests
             .into_iter()
             .take(max_batch_size)
             .collect();
@@ -2197,6 +2196,7 @@ impl SigningNode {
     /// 1. Get intents with network_to_target_tx_id but not Solved
     /// 2. Create batch and broadcast via btc-intent-manager-tx-update
     /// 3. Make contract call to processBatchIntents to update tx-id on contract
+    #[allow(dead_code)]
     async fn process_btc_intent_manager_update_batch_internal(
         btc_batch_round: u64,
         btc_txid: &str,
@@ -2883,7 +2883,7 @@ impl SigningNode {
                             );
                             
                             // Get request_id and original_request from pending transactions for sequencer tracking
-                            let (request_id, original_request) = {
+                            let (request_id, _original_request) = {
                                 let pending = self.pending.pending_transactions.read().await;
                                 pending.get(&round).map(|(_, _, _, _, req_id, orig_req)| {
                                     (req_id.clone(), orig_req.clone())
@@ -4310,7 +4310,7 @@ impl SigningNode {
                 withdraw_rounds.contains(&round)
             };
 
-            let (chain_tx, extras_opt) = if is_reward_round {
+            let (chain_tx, _extras_opt) = if is_reward_round {
                 let reward_pt = self.pending.reward_pending_transactions_btc.read().await;
                 let (chain_tx, _raw, _solver_address, _tx_type_opt, extras_opt) =
                     reward_pt.get(&round).ok_or_else(|| {
@@ -4656,7 +4656,7 @@ impl SigningNode {
         // NOTE: For partial signature verification we may override the stored transaction_type
         // for certain contract calls (e.g. IntentManager.processBatchIntents) so that verification
         // is performed against the VAULT/main key path.
-        let (tx_bytes, mut transaction_type, user_eth_address, chain_tx_opt) = if is_reward_round {
+        let (tx_bytes, transaction_type, user_eth_address, _chain_tx_opt) = if is_reward_round {
             let reward_pt = self.pending.reward_pending_transactions_tics.read().await;
             if let Some((chain_tx, tx_bytes, _solver_address, tx_type, _request_id, _original_request)) = reward_pt.get(&round) {
                 (tx_bytes.clone(), tx_type.clone(), None, Some(chain_tx.clone()))

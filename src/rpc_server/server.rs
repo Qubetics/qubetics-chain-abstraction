@@ -60,7 +60,7 @@ pub async fn start_http_server(
 
     let message_tx = Arc::new(Mutex::new(message_tx));
     let dkg_storage = Arc::new(dkg_storage);
-    let reward_storage = Arc::new(reward_storage);
+    let _reward_storage = Arc::new(reward_storage);
     let database = Arc::new(database);
     let start_time = Arc::new(start_time);
 
@@ -148,7 +148,6 @@ pub async fn start_http_server(
     let get_solver_liquidity = warp::path("solver_liquidity")
         .and(warp::get())
         .and(warp::query::<SolverLiquidityRequest>())
-        .and(with_user_intent_manager(user_intent_manager.clone()))
         .and_then(handle_get_solver_liquidity);
 
     let claim_reward = warp::path("claim_reward")
@@ -156,7 +155,6 @@ pub async fn start_http_server(
         .and(with_rate_limit(rate_limiter.clone()))
         .and(limited_json_body::<ClaimRewardRequest>())
         .and(with_user_intent_manager(user_intent_manager.clone()))
-        .and(with_reward_storage(reward_storage.clone()))
         .and(with_message_tx(message_tx.clone()))
         .and(with_dkg_storage(dkg_storage.clone()))
         .and(with_auth())
@@ -423,6 +421,7 @@ fn with_dkg_storage(
     warp::any().map(move || dkg_storage.clone())
 }
 
+#[allow(dead_code)]
 fn with_reward_storage(
     reward_storage: Arc<RewardStorage>,
 ) -> impl Filter<Extract = (Arc<RewardStorage>,), Error = Infallible> + Clone {

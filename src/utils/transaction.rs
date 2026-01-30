@@ -382,7 +382,7 @@ pub fn select_utxos_for_amount(
         selected.push(candidate);
 
         let n_inputs = selected.len();
-        let mut skip_no_change_path = false;
+        let skip_no_change_path = false;
 
         // Try change path first (2 outputs: recipient + change)
         let fee_with_change = estimate_fee_sat(kind, n_inputs, 2, fee_rate_sat_vb);
@@ -1805,7 +1805,7 @@ pub fn encode_process_batch_intents_calldata(
 pub fn encode_update_solver_rewards_calldata(
     solver_address: &str,
     rewards: &[U256],
-    transaction_hash: &str,
+    _transaction_hash: &str,
 ) -> Option<Vec<u8>> {
     // New ABI: claimRewardsBatch((address solver, uint256 amount)[] claims, uint8 chainType)
     #[allow(deprecated)]
@@ -2101,7 +2101,7 @@ pub fn get_default_gas_price_for_chain(chain_name: &str) -> String {
 
 /// Get gas price for Qubetics chain with dynamic fetching
 /// Only supports Qubetics as an EVM chain
-pub async fn get_gas_price_for_chain(chain_name: &str, chain_id: u64) -> Result<String> {
+pub async fn get_gas_price_for_chain(chain_name: &str, _chain_id: u64) -> Result<String> {
     // Reduced noisy stdout logging in production path
 
     match chain_name {

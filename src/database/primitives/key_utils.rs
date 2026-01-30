@@ -28,6 +28,11 @@ pub fn intent_transaction_ids_key(intent_hash: &str) -> String {
     format!("{}{}", keys::INTENT_TRANSACTION_IDS, intent_hash)
 }
 
+/// Key for storing target chain amount (u128 as string) by intent hash
+pub fn intent_target_amount_key(intent_hash: &str) -> String {
+    format!("{}{}", keys::INTENT_TARGET_AMOUNT, intent_hash)
+}
+
 pub fn transaction_status_key(tx_hash: &str) -> String {
     format!("{}{}", keys::TRANSACTION_STATUS, tx_hash)
 }

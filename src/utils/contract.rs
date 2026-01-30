@@ -64,7 +64,6 @@ pub async fn execute_refund_intent_contract_call(
     request_id: Option<String>,
     _original_request: Option<()>,
 ) -> Result<()> {
-    use crate::chain_abstraction::{ChainTransaction, EthereumTransaction};
     use crate::signing::EthereumSigner;
     use crate::utils::get_eth_address_from_group_key;
     use crate::utils::transaction::{

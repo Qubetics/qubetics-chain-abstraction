@@ -1,5 +1,4 @@
 use super::*;
-use crate::types::intent::TransactionNetwork;
 use tracing::{error, info};
 
 impl UserIntentManager {

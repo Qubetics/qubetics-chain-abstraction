@@ -1,4 +1,4 @@
-use crate::database::{key_utils, keys, Database};
+use crate::database::{key_utils, Database};
 use anyhow::Result;
 use ethers::types::U256;
 use serde_json;

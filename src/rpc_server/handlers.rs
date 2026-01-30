@@ -12,23 +12,20 @@ use uuid::Uuid;
 use crate::rpc_server::utils::get_actual_dkg_secret_share;
 use crate::{
     contract::{ContractClient, ContractConfig, SolverManagerContract},
-    database::{DkgStorage, RewardStorage},
+    database::DkgStorage,
     types::{
-        intent::{DepositIntent, DepositIntentResponse, TransactionResponse, TransactionType},
+        intent::{DepositIntent, DepositIntentResponse, TransactionType},
         messaging::ChannelMessage,
-        rpc::RPCRequest,
         rpc_server::{
             AddLiquidityRequest, AddLiquidityResponse, ClaimRewardRequest, ClaimRewardResponse,
-            DKGStatusResponse, EnhancedUserRegistrationResponse, GetNetworkAddressesResponse,
-            GetRewardSolverRequest, GetRewardSolverResponse, HeartbeatResponse,
-            IntentsSolvedCountResponse, LogPartialPubkeysRequest, NodeIdResponse,
+            DKGStatusResponse, EnhancedUserRegistrationResponse, GetRewardSolverRequest,
+            GetRewardSolverResponse, HeartbeatResponse, IntentsSolvedCountResponse, NodeIdResponse,
             PendingWithdrawRequest, RequestContext,
             SolverLiquidityRequest, SolverLiquidityResponse, UptimeResponse, UserInfoResponse,
             UserMpcDepositRequest, UserMpcDepositVerifyResponse, UserRegistrationRequest,
             WithdrawLiquidityRequest, WithdrawLiquidityResponse,
         },
         IntentStatus,
-        TransactionNetwork,
     },
     user_intent_manager::{checksum_from_any, UserIntentManager},
     utils::transaction::DUST_LIMIT_SATS,
@@ -38,13 +35,10 @@ use k256::elliptic_curve::sec1::ToEncodedPoint;
 use super::{
     errors::{RpcError, TransactionError},
     utils::{
-        convert_src_smallest_to_dst_smallest, fetch_crypto_prices, fetch_network_balance,
         normalize_eth_signature, recover_eth_address_secp,
         wait_for_reward_transaction_ids, wait_for_transaction_result
     },
 };
-
-const MIN_BTC_INTENT_SATS: u128 = 550;
 
 pub(crate) async fn handle_deposit_intent(
     intent: DepositIntent,
@@ -65,191 +59,8 @@ pub(crate) async fn handle_deposit_intent(
         )))
     })?;
 
-    // Helper closure to map chain names to the price symbols returned by
-    // the price API. Any non-Bitcoin chain is treated as TICS (our EVM token).
-    let chain_to_symbol = |chain: &str| match chain.to_lowercase().as_str() {
-        "btc" | "bitcoin" => "BTC",
-        _ => "TICS",
-    };
-
-    let required_amount_u128 = if matches!(transaction_type, TransactionType::NetworkToTarget) {
-        // For NetworkToTarget transactions, perform price conversion
-        let prices = fetch_crypto_prices()
-            .await
-            .map_err(|_| warp::reject::custom(TransactionError::NetworkError))?;
-
-        let source_symbol = chain_to_symbol(&intent.source_chain);
-        let target_symbol = chain_to_symbol(&intent.target_chain);
-
-        let source_price = *prices
-            .get(source_symbol)
-            .ok_or_else(|| warp::reject::custom(TransactionError::NetworkError))?;
-        let target_price = *prices
-            .get(target_symbol)
-            .ok_or_else(|| warp::reject::custom(TransactionError::NetworkError))?;
-
-        info!("💱 [NetworkToTarget] Conversion: computed source->target equivalence using current prices");
-        info!(
-            "💱 [NetworkToTarget] Prices - source: {}={}, target: {}={}",
-            source_symbol, source_price, target_symbol, target_price
-        );
-
-        let target_smallest = convert_src_smallest_to_dst_smallest(
-            parsed_amount,
-            &intent.source_chain,
-            &intent.target_chain,
-            &prices,
-        )?;
-
-        info!("💱 [NetworkToTarget] Conversion: source amount converted to target smallest units");
-        target_smallest
-    } else {
-        // Check if this is a TICS -> BTC conversion - validate immediately when RPC is hit
-        // This applies to ALL transaction types (UserToVault, NetworkToTarget)
-        let is_tics_to_btc = (intent.source_chain.eq_ignore_ascii_case("tics")
-            || intent.source_chain.eq_ignore_ascii_case("qubetics"))
-            && (intent.target_chain.eq_ignore_ascii_case("btc")
-                || intent.target_chain.eq_ignore_ascii_case("bitcoin"));
-
-        // For TICS -> BTC conversions, perform conversion and validation immediately
-        // This validation runs for ALL transaction types before any other processing
-        if is_tics_to_btc {
-            info!(
-            "💱 [VALIDATION] TICS->BTC conversion detected (transaction_type: {:?}), validating minimum amount...",
-            transaction_type
-        );
-
-            // Fetch current prices for BTC and TICS
-            let prices = fetch_crypto_prices()
-                .await
-                .map_err(|_| warp::reject::custom(TransactionError::NetworkError))?;
-
-            // Helper closure to map chain names to the price symbols
-            let chain_to_symbol = |chain: &str| match chain.to_lowercase().as_str() {
-                "btc" | "bitcoin" => "BTC",
-                _ => "TICS",
-            };
-
-            let source_symbol = chain_to_symbol(&intent.source_chain);
-            let target_symbol = chain_to_symbol(&intent.target_chain);
-
-            let source_price = *prices
-                .get(source_symbol)
-                .ok_or_else(|| warp::reject::custom(TransactionError::NetworkError))?;
-            let target_price = *prices
-                .get(target_symbol)
-                .ok_or_else(|| warp::reject::custom(TransactionError::NetworkError))?;
-
-            info!(
-                "💱 [VALIDATION] Prices - source: {}={}, target: {}={}",
-                source_symbol, source_price, target_symbol, target_price
-            );
-
-            // Convert TICS amount to BTC satoshis
-            let target_smallest = convert_src_smallest_to_dst_smallest(
-                parsed_amount,
-                &intent.source_chain,
-                &intent.target_chain,
-                &prices,
-            )?;
-
-            info!(
-                "💱 [VALIDATION] Converted {} TICS to {} satoshis",
-                parsed_amount, target_smallest
-            );
-
-            // Reject TICS -> BTC conversions that fall below the minimum BTC amount
-            // This applies to UserToVault and NetworkToTarget transactions
-            if target_smallest < MIN_BTC_INTENT_SATS {
-                let msg = format!(
-                "TICS to BTC conversion failed: converted amount {} satoshis is below the minimum required {} satoshis (original TICS amount: {}) [transaction_type: {:?}]",
-                target_smallest, MIN_BTC_INTENT_SATS, parsed_amount, transaction_type
-            );
-                warn!("❌ [INTENT] {}", msg);
-                return Err(warp::reject::custom(RpcError::InvalidRequest(msg)));
-            }
-
-            info!(
-            "✅ [VALIDATION] TICS->BTC conversion validated for {:?}: {} satoshis (minimum: {} satoshis)",
-            transaction_type, target_smallest, MIN_BTC_INTENT_SATS
-        );
-
-            // Check network address balance for the target chain
-            info!("💰 [VALIDATION] Checking network balance for target chain...");
-
-            // Get network addresses from DKG storage
-            let network_address = match _dkg_storage.get_final_public().await {
-                Ok(Some(final_public)) => {
-                    // Determine which address to use based on target chain
-                    if intent.target_chain.eq_ignore_ascii_case("btc")
-                        || intent.target_chain.eq_ignore_ascii_case("bitcoin")
-                    {
-                        crate::utils::get_btc_address_from_group_key(final_public)
-                    } else {
-                        crate::utils::get_eth_address_from_group_key(final_public)
-                    }
-                }
-                Ok(None) => {
-                    let msg = "Network address not available - DKG not initialized".to_string();
-                    warn!("❌ [VALIDATION] {}", msg);
-                    return Err(warp::reject::custom(RpcError::InvalidRequest(msg)));
-                }
-                Err(e) => {
-                    let msg = format!("Failed to get network address: {}", e);
-                    error!("❌ [VALIDATION] {}", msg);
-                    return Err(warp::reject::custom(RpcError::InvalidRequest(msg)));
-                }
-            };
-
-            // Determine blockchain parameter for API call
-            let blockchain = if intent.target_chain.eq_ignore_ascii_case("btc")
-                || intent.target_chain.eq_ignore_ascii_case("bitcoin")
-            {
-                "btc"
-            } else {
-                "eth"
-            };
-
-            info!(
-                "💰 [VALIDATION] Fetching balance for {} on blockchain {}",
-                network_address, blockchain
-            );
-
-            // Fetch network balance
-            let network_balance = fetch_network_balance(&network_address, blockchain)
-                .await
-                .map_err(|e| {
-                    let msg = format!("Failed to fetch network balance: {}", e);
-                    error!("❌ [VALIDATION] {}", msg);
-                    warp::reject::custom(RpcError::InvalidRequest(msg))
-                })?;
-
-            info!(
-                "💰 [VALIDATION] Network balance: {} (smallest units), required: {} (smallest units)",
-                network_balance, target_smallest
-            );
-
-            // Check if network has sufficient balance
-            if network_balance < target_smallest {
-                let msg = format!(
-                    "Insufficient network balance: available {} ",
-                    network_balance
-                );
-                warn!("❌ [VALIDATION] {}", msg);
-                return Err(warp::reject::custom(RpcError::InvalidRequest(msg)));
-            }
-
-            info!(
-                "✅ [VALIDATION] Network has sufficient balance: {}",
-                network_balance
-            );
-        }
-
-        // For other types, use the intent amount plus 5%
-        let base_amount = parsed_amount + (parsed_amount / 20);
-        info!("💱 No price conversion needed; using adjusted intent amount");
-        base_amount
-    };
+   
+    let required_amount_u128 = parsed_amount + (parsed_amount / 20);
 
     let intent_id = format!("intent-{}", Uuid::new_v4());
     let deposit_intent_msg = ChannelMessage::DepositIntent {
@@ -354,20 +165,6 @@ fn select_withdraw_amount(
     }
 }
 
-fn validate_liquidity_amount(
-    requested: Option<&String>,
-    asset_label: &str,
-) -> Result<Option<String>, String> {
-    match requested {
-        Some(value) => {
-            let parsed = parse_withdraw_amount(value, asset_label)?;
-            ensure_withdraw_amount_bounds(&parsed, asset_label)?;
-            Ok(Some(value.clone()))
-        }
-        None => Ok(None),
-    }
-}
-
 fn withdraw_error_response(
     solver_address: String,
     liquidity_btc: &Option<String>,
@@ -388,84 +185,6 @@ fn withdraw_error_response(
         message,
         error_message,
     }
-}
-
-async fn maybe_initiate_withdrawal(
-    asset_label: &str,
-    requested_amount: Option<&String>,
-    available_liquidity: Option<&String>,
-    destination: Option<&String>,
-    min_required: Option<&U256>,
-    solver_address: &str,
-    liquidity_btc: &Option<String>,
-    liquidity_tics: &Option<String>,
-    req: &WithdrawLiquidityRequest,
-    message_tx: &Arc<Mutex<mpsc::Sender<ChannelMessage>>>,
-    build_channel_msg: impl Fn(String, String, String) -> ChannelMessage,
-    missing_address_msg: &str,
-) -> Result<bool, WithdrawLiquidityResponse> {
-    let withdraw_amount = select_withdraw_amount(
-        requested_amount,
-        available_liquidity,
-        asset_label,
-        min_required,
-    )
-    .map_err(|msg| {
-        withdraw_error_response(
-            solver_address.to_string(),
-            liquidity_btc,
-            liquidity_tics,
-            req,
-            msg.clone(),
-            Some(msg),
-        )
-    })?;
-
-    let Some(amount_str) = withdraw_amount else {
-        return Ok(false);
-    };
-
-    let destination_addr = match destination {
-        Some(addr) => addr,
-        None => {
-            return Err(withdraw_error_response(
-                solver_address.to_string(),
-                liquidity_btc,
-                liquidity_tics,
-                req,
-                missing_address_msg.to_string(),
-                Some(missing_address_msg.to_string()),
-            ))
-        }
-    };
-
-    info!(
-        "🚰 [WITHDRAW] Initiating {asset_label} withdrawal for solver {} -> {} (amount: {})",
-        solver_address, destination_addr, amount_str
-    );
-
-    let msg = build_channel_msg(
-        solver_address.to_string(),
-        destination_addr.clone(),
-        amount_str.clone(),
-    );
-    let tx_sender = message_tx.lock().await;
-    if let Err(e) = tx_sender.send(msg).await {
-        error!(
-            "❌ Failed to dispatch {asset_label} withdraw message for solver {}: {}",
-            solver_address, e
-        );
-        return Err(withdraw_error_response(
-            solver_address.to_string(),
-            liquidity_btc,
-            liquidity_tics,
-            req,
-            format!("Failed to initiate {asset_label} withdrawal"),
-            Some(format!("Network error: {e}")),
-        ));
-    }
-
-    Ok(true)
 }
 
 pub(crate) async fn handle_register_user(
@@ -1618,7 +1337,6 @@ async fn fetch_solver_liquidity_from_contract(
 
 pub(crate) async fn handle_get_solver_liquidity(
     req: SolverLiquidityRequest,
-    user_intent_manager: Arc<UserIntentManager>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
     info!(
         "🔍 HTTP: get_solver_liquidity request for solver: {}",
@@ -1700,7 +1418,6 @@ pub(crate) async fn handle_get_solver_liquidity(
 pub(crate) async fn handle_claim_reward(
     req: ClaimRewardRequest,
     user_intent_manager: Arc<UserIntentManager>,
-    _reward_storage: Arc<RewardStorage>,
     message_tx: Arc<Mutex<mpsc::Sender<ChannelMessage>>>,
     dkg_storage: Arc<DkgStorage>,
 ) -> Result<impl warp::Reply, warp::Rejection> {

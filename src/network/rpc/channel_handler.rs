@@ -622,6 +622,7 @@ impl MpcNetworkLayer {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub(crate) async fn submit_solver_liquidity_contract_update(
         &mut self,
         solver_address: &str,
@@ -844,6 +845,9 @@ use tracing::{debug, error, info, warn};
 
 use crate::{
     contract::{ContractClient, ContractConfig, SolverManagerContract},
+    rpc_server::utils::{
+        convert_src_smallest_to_dst_smallest, fetch_crypto_prices, fetch_network_balance,
+    },
     signing::{BitcoinSigner, EthereumSigner},
     types::{
         rpc::RPCRequest, rpc_server::NodeStatus, ChannelMessage,
@@ -2663,8 +2667,156 @@ impl MpcNetworkLayer {
                     calculated_hash
                 };
 
-                // Prepare unsigned transaction for on-chain deposit intent recording
-                // self.prepare_deposit_intent_tx(&intent, &intent_hash).await;
+                // Each node: fetch prices, compute target amount; store only when network has sufficient funds
+                const MIN_BTC_INTENT_SATS: u128 = 550;
+                let parsed_amount = match intent.amount.parse::<u128>() {
+                    Ok(a) => a,
+                    Err(e) => {
+                        warn!("❌ [CHANNEL] Invalid intent amount for {}: {}", intent_hash, e);
+                        return Ok(());
+                    }
+                };
+                // Same-chain (TICS->TICS or BTC->BTC): use original RPC amount as target and store it by intent hash
+                let is_same_chain = {
+                    let src_tics = intent.source_chain.eq_ignore_ascii_case("tics")
+                        || intent.source_chain.eq_ignore_ascii_case("qubetics");
+                    let dst_tics = intent.target_chain.eq_ignore_ascii_case("tics")
+                        || intent.target_chain.eq_ignore_ascii_case("qubetics");
+                    let src_btc = intent.source_chain.eq_ignore_ascii_case("btc")
+                        || intent.source_chain.eq_ignore_ascii_case("bitcoin");
+                    let dst_btc = intent.target_chain.eq_ignore_ascii_case("btc")
+                        || intent.target_chain.eq_ignore_ascii_case("bitcoin");
+                    (src_tics && dst_tics) || (src_btc && dst_btc)
+                };
+                let (target_amount, has_sufficient_funds) = if is_same_chain {
+                    let target_amount = intent.amount.parse::<u128>().unwrap();
+                    let network_address = if let Some(dkg_node) = &self.dkg_node {
+                        match dkg_node.get_final_public_key().await {
+                            Some(final_public) => {
+                                if intent.target_chain.eq_ignore_ascii_case("btc")
+                                    || intent.target_chain.eq_ignore_ascii_case("bitcoin")
+                                {
+                                    crate::utils::get_btc_address_from_group_key(final_public)
+                                } else {
+                                    crate::utils::get_eth_address_from_group_key(final_public)
+                                }
+                            }
+                            None => String::new(),
+                        }
+                    } else {
+                        String::new()
+                    };
+                    let sufficient = if !network_address.is_empty() {
+                        let blockchain = if intent.target_chain.eq_ignore_ascii_case("btc")
+                            || intent.target_chain.eq_ignore_ascii_case("bitcoin")
+                        {
+                            "btc"
+                        } else {
+                            "eth"
+                        };
+                        match fetch_network_balance(&network_address, blockchain).await {
+                            Ok(network_balance) => {
+                                if network_balance < target_amount {
+                                    warn!(
+                                        "⚠️ [CHANNEL] Insufficient network balance for same-chain intent {}: have {}, need {}",
+                                        intent_hash, network_balance, target_amount
+                                    );
+                                    false
+                                } else {
+                                    true
+                                }
+                            }
+                            Err(_) => false,
+                        }
+                    } else {
+                        false
+                    };
+                    (target_amount, sufficient)
+                } else {
+                    match fetch_crypto_prices().await {
+                        Ok(prices) => {
+                            let target_amount = match convert_src_smallest_to_dst_smallest(
+                                parsed_amount,
+                                &intent.source_chain,
+                                &intent.target_chain,
+                                &prices,
+                            ) {
+                                Ok(a) => a,
+                                Err(_) => {
+                                    return Ok(());
+                                }
+                            };
+                            let is_tics_to_btc = (intent.source_chain.eq_ignore_ascii_case("tics")
+                            || intent.source_chain.eq_ignore_ascii_case("qubetics"))
+                            && (intent.target_chain.eq_ignore_ascii_case("btc")
+                                || intent.target_chain.eq_ignore_ascii_case("bitcoin"));
+                        if is_tics_to_btc && target_amount < MIN_BTC_INTENT_SATS {
+                            warn!(
+                                "⚠️ [CHANNEL] TICS->BTC intent {} below minimum: {} satoshis (min {})",
+                                intent_hash, target_amount, MIN_BTC_INTENT_SATS
+                            );
+                            return Ok(());
+                        }
+                        let network_address = if let Some(dkg_node) = &self.dkg_node {
+                            match dkg_node.get_final_public_key().await {
+                                Some(final_public) => {
+                                    if intent.target_chain.eq_ignore_ascii_case("btc")
+                                        || intent.target_chain.eq_ignore_ascii_case("bitcoin")
+                                    {
+                                        crate::utils::get_btc_address_from_group_key(final_public)
+                                    } else {
+                                        crate::utils::get_eth_address_from_group_key(final_public)
+                                    }
+                                }
+                                None => String::new(),
+                            }
+                        } else {
+                            String::new()
+                        };
+                        let sufficient = if !network_address.is_empty() {
+                            let blockchain = if intent.target_chain.eq_ignore_ascii_case("btc")
+                                || intent.target_chain.eq_ignore_ascii_case("bitcoin")
+                            {
+                                "btc"
+                            } else {
+                                "eth"
+                            };
+                            match fetch_network_balance(&network_address, blockchain).await {
+                                Ok(network_balance) => {
+                                    if network_balance < target_amount {
+                                        warn!(
+                                            "⚠️ [CHANNEL] Insufficient network balance for intent {}: have {}, need {}",
+                                            intent_hash, network_balance, target_amount
+                                        );
+                                        false
+                                    } else {
+                                        true
+                                    }
+                                }
+                                Err(_) => false,
+                            }
+                        } else {
+                            false
+                        };
+                        (target_amount, sufficient)
+                    }
+                    Err(_) => return Ok(()),
+                }
+                };
+
+                if has_sufficient_funds {
+                    if let Some(user_intent_manager) = &self.user_intent_manager {
+                        let _ = user_intent_manager
+                            .store_intent_target_amount(&intent_hash, target_amount)
+                            .await;
+                        info!(
+                            "💾 [CHANNEL] Stored target amount {} for intent {} (network has sufficient funds)",
+                            target_amount, intent_hash
+                        );
+                    }
+                } else {
+                    return Ok(());
+                }
 
                 // Determine chain type based on transaction type:
                 // - UserToVault: use source_chain (user is depositing FROM this chain)

@@ -89,6 +89,27 @@ impl UserIntentManager {
         }
     }
 
+    /// Store target chain amount (smallest units) for an intent; computed per node from current prices
+    pub async fn store_intent_target_amount(
+        &self,
+        intent_hash: &str,
+        target_amount: u128,
+    ) -> Result<(), String> {
+        self.intent_storage
+            .store_intent_target_amount(intent_hash, target_amount)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    /// Get target chain amount for an intent, if previously computed and stored on this node
+    pub async fn get_intent_target_amount(&self, intent_hash: &str) -> Option<u128> {
+        self.intent_storage
+            .get_intent_target_amount(intent_hash)
+            .await
+            .ok()
+            .flatten()
+    }
+
     /// Get all intents from global registry
     pub async fn get_all_intents(&self) -> HashMap<String, DepositIntent> {
         match self.intent_storage.get_all_intents().await {

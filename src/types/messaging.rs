@@ -3,7 +3,6 @@ use crate::{
     protocols::{DKGMessage, VrfSelectedNodesBroadcast, VrfSelectionMessage},
     types::{
         intent::{DepositIntent, TransactionType},
-        rpc::RPCRequest,
         rpc_server::{NodeStatus, PendingWithdrawRequest},
         secp::{SerializablePoint, SerializableScalar},
         signing::SigningMessage,

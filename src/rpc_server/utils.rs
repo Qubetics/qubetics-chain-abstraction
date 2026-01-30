@@ -16,9 +16,7 @@ use sha3::{Digest, Keccak256};
 use tokio::time::{Duration, Instant};
 use tracing::{debug, error, info, warn};
 
-use crate::{
-    database::DkgStorage, types::intent::TransactionNetwork, user_intent_manager::UserIntentManager,
-};
+use crate::{database::DkgStorage, user_intent_manager::UserIntentManager};
 
 use super::errors::TransactionError;
 

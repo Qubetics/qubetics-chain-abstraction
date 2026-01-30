@@ -13,7 +13,9 @@ use tracing::{debug, error, info, warn};
 
 use crate::{
     database::key_utils,
-    rpc_server::utils::{convert_src_smallest_to_dst_smallest, fetch_crypto_prices},
+    rpc_server::utils::{
+        convert_src_smallest_to_dst_smallest, fetch_crypto_prices, fetch_network_balance,
+    },
     signing::{BitcoinSigner, EthereumSigner},
     types::{
         p2p::SerializablePeerId, signing::SigningMessage, vrf::VrfRoundSyncResponse,
@@ -631,6 +633,137 @@ impl MpcNetworkLayer {
                     }
                 } else {
                     warn!("❌ [GOSSIPSUB] User intent manager not available to store intent");
+                    return Ok(());
+                }
+
+                // Each node: fetch prices, compute target amount; store only when network has sufficient funds
+                const MIN_BTC_INTENT_SATS: u128 = 550;
+                let parsed_amount = match intent.amount.parse::<u128>() {
+                    Ok(a) => a,
+                    Err(e) => {
+                        warn!("❌ [GOSSIPSUB] Invalid intent amount for {}: {}", intent_hash, e);
+                        return Ok(());
+                    }
+                };
+                // Same-chain (TICS->TICS or BTC->BTC): use original RPC amount as target and store it by intent hash
+                let is_same_chain = {
+                    let src_tics = intent.source_chain.eq_ignore_ascii_case("tics")
+                        || intent.source_chain.eq_ignore_ascii_case("qubetics");
+                    let dst_tics = intent.target_chain.eq_ignore_ascii_case("tics")
+                        || intent.target_chain.eq_ignore_ascii_case("qubetics");
+                    let src_btc = intent.source_chain.eq_ignore_ascii_case("btc")
+                        || intent.source_chain.eq_ignore_ascii_case("bitcoin");
+                    let dst_btc = intent.target_chain.eq_ignore_ascii_case("btc")
+                        || intent.target_chain.eq_ignore_ascii_case("bitcoin");
+                    (src_tics && dst_tics) || (src_btc && dst_btc)
+                };
+                let target_amount = if is_same_chain {
+                    intent.amount.parse::<u128>().unwrap()
+                } else {
+                    let prices = match fetch_crypto_prices().await {
+                        Ok(p) => p,
+                        Err(e) => {
+                            warn!("❌ [GOSSIPSUB] Failed to fetch prices for target amount: {}", e);
+                            return Ok(());
+                        }
+                    };
+                    match convert_src_smallest_to_dst_smallest(
+                        parsed_amount,
+                        &intent.source_chain,
+                        &intent.target_chain,
+                        &prices,
+                    ) {
+                        Ok(a) => a,
+                        Err(e) => {
+                            warn!(
+                                "❌ [GOSSIPSUB] Failed to convert target amount for {}: {:?}",
+                                intent_hash, e
+                            );
+                            return Ok(());
+                        }
+                    }
+                };
+
+                let is_tics_to_btc = (intent.source_chain.eq_ignore_ascii_case("tics")
+                    || intent.source_chain.eq_ignore_ascii_case("qubetics"))
+                    && (intent.target_chain.eq_ignore_ascii_case("btc")
+                        || intent.target_chain.eq_ignore_ascii_case("bitcoin"));
+                if is_tics_to_btc && target_amount < MIN_BTC_INTENT_SATS {
+                    warn!(
+                        "⚠️ [GOSSIPSUB] TICS->BTC intent {} below minimum: {} satoshis (min {})",
+                        intent_hash, target_amount, MIN_BTC_INTENT_SATS
+                    );
+                    return Ok(());
+                }
+
+                // Check network balance for target chain; store target amount only when sufficient
+                let network_address = if let Some(dkg_node) = &self.dkg_node {
+                    match dkg_node.get_final_public_key().await {
+                        Some(final_public) => {
+                            if intent.target_chain.eq_ignore_ascii_case("btc")
+                                || intent.target_chain.eq_ignore_ascii_case("bitcoin")
+                            {
+                                crate::utils::get_btc_address_from_group_key(final_public)
+                            } else {
+                                crate::utils::get_eth_address_from_group_key(final_public)
+                            }
+                        }
+                        None => String::new(),
+                    }
+                } else {
+                    String::new()
+                };
+
+                let has_sufficient_funds = if !network_address.is_empty() {
+                    let blockchain = if intent.target_chain.eq_ignore_ascii_case("btc")
+                        || intent.target_chain.eq_ignore_ascii_case("bitcoin")
+                    {
+                        "btc"
+                    } else {
+                        "eth"
+                    };
+                    match fetch_network_balance(&network_address, blockchain).await {
+                        Ok(network_balance) => {
+                            if network_balance < target_amount {
+                                warn!(
+                                    "⚠️ [GOSSIPSUB] Insufficient network balance for intent {}: have {}, need {}",
+                                    intent_hash, network_balance, target_amount
+                                );
+                                false
+                            } else {
+                                true
+                            }
+                        }
+                        Err(e) => {
+                            warn!(
+                                "❌ [GOSSIPSUB] Failed to fetch network balance for {}: {}",
+                                intent_hash, e
+                            );
+                            false
+                        }
+                    }
+                } else {
+                    false
+                };
+
+                if has_sufficient_funds {
+                    if let Some(user_intent_manager) = &self.user_intent_manager {
+                        if let Err(e) = user_intent_manager
+                            .store_intent_target_amount(&intent_hash, target_amount)
+                            .await
+                        {
+                            warn!(
+                                "❌ [GOSSIPSUB] Failed to store target amount for {}: {}",
+                                intent_hash, e
+                            );
+                        } else {
+                            info!(
+                                "💾 [GOSSIPSUB] Stored target amount {} for intent {} (network has sufficient funds)",
+                                target_amount, intent_hash
+                            );
+                        }
+                    }
+                } else {
                     return Ok(());
                 }
 

@@ -14,6 +14,7 @@ use crate::network::transport::types::MpcNetworkLayer;
 
 impl MpcNetworkLayer {
     /// Convert transaction type string to enum
+    #[allow(dead_code)]
     pub(crate) fn parse_transaction_type(tx_type_str: &str) -> Result<TransactionType> {
         match tx_type_str {
             "user_to_vault" => Ok(TransactionType::UserToVault),
@@ -311,7 +312,7 @@ impl MpcNetworkLayer {
         intent_hash: &str,
         transaction_id: &str,
         transaction_type: &str,
-        sender_peer_id: &PeerId,
+        _sender_peer_id: &PeerId,
     ) -> bool {
         // Get total number of active nodes
         let total_nodes = self.node_manager.get_total_nodes();

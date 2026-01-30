@@ -223,34 +223,6 @@ impl MpcNetworkLayer {
         Ok(())
     }
 
-    /// Submit a solver withdraw-liquidity contract update to the sequencer
-    pub(crate) async fn submit_solver_withdraw_liquidity_to_sequencer(
-        &mut self,
-        solver_address: &str,
-        asset_chain_name: &str,
-        amount: u128,
-        payout_tx_hash: &str,
-    ) -> Result<()> {
-        if amount == 0 {
-            info!(
-                "⏭️ [NETWORK] Skipping withdraw-liquidity sequencing for solver {} (amount=0)",
-                solver_address
-            );
-            return Ok(());
-        }
-
-        // Execute directly - sequencer removed
-        self.submit_solver_liquidity_contract_update(
-            solver_address,
-            asset_chain_name,
-            amount,
-            payout_tx_hash,
-            None, // No request_id
-            None, // No original_request
-        )
-        .await
-    }
-
     /// Submit a solver claim-reward contract update to the sequencer
     pub(crate) async fn submit_solver_claim_reward_to_sequencer(
         &mut self,
