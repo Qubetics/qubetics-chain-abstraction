@@ -1944,7 +1944,38 @@ pub fn encode_remove_liquidity_batch_calldata(
 
     let request_tokens: Vec<Token> = requests
         .iter()
-        .map(|(solver_id, amount, chain_type, tx_hash)| {
+        .enumerate()
+        .map(|(idx, (solver_id, amount, chain_type, tx_hash))| {
+            info!(
+                "🔧 [CONTRACT][LIQ] Request #{}: solver_id='{}', amount={}, chain_type={} ({}), tx_hash='{}'",
+                idx,
+                solver_id,
+                amount,
+                chain_type,
+                if *chain_type == 0 { "BTC" } else if *chain_type == 1 { "TICS" } else { "UNKNOWN" },
+                tx_hash
+            );
+            
+            // Validate solver_id is not empty
+            if solver_id.is_empty() {
+                warn!("⚠️ [CONTRACT][LIQ] Request #{}: Empty solver_id detected!", idx);
+            }
+            
+            // Validate amount is not zero
+            if amount.is_zero() {
+                warn!("⚠️ [CONTRACT][LIQ] Request #{}: Zero amount detected!", idx);
+            }
+            
+            // Validate chain_type is valid (0 or 1)
+            if *chain_type > 1 {
+                warn!("⚠️ [CONTRACT][LIQ] Request #{}: Invalid chain_type {} (expected 0 for BTC or 1 for TICS)", idx, chain_type);
+            }
+            
+            // Validate tx_hash is not empty
+            if tx_hash.is_empty() {
+                warn!("⚠️ [CONTRACT][LIQ] Request #{}: Empty transaction_hash detected!", idx);
+            }
+            
             Token::Tuple(vec![
                 Token::String(solver_id.clone()),
                 Token::Uint(*amount),
@@ -1953,6 +1984,11 @@ pub fn encode_remove_liquidity_batch_calldata(
             ])
         })
         .collect();
+
+    info!(
+        "🔧 [CONTRACT][LIQ] Encoded {} removeLiquidity requests into batch",
+        request_tokens.len()
+    );
 
     let tokens = vec![Token::Array(request_tokens)];
     f.encode_input(&tokens).ok()
