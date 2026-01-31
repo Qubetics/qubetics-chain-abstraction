@@ -114,9 +114,10 @@ impl MpcChainExecutor {
                                 None,
                                 vec![],
                                 vault_tweaked_share,
-                                request_id,
-                                None,
-                                None, // tics_withdraw_identifiers (not applicable)
+                            request_id,
+                            None,
+                            None, // tics_withdraw_identifiers (not applicable)
+                            None, // tics_claim_reward_identifiers (not applicable)
                             )
                             .await?;
                     }

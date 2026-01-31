@@ -493,31 +493,6 @@ impl MpcNetworkLayer {
                             }
                         }
                     }
-                } else if let Some(solver_addr) = solver_address.as_ref() {
-                    let storage_result = match transaction_type.as_str() {
-                        "reward_txn" => {
-                            self.handle_reward_transaction_id_storage(
-                                solver_addr,
-                                &transaction_id,
-                                &transaction_type,
-                            )
-                            .await
-                        }
-                        _ => {
-                            warn!(
-                                "❌ [NETWORK] Unknown transaction type: {}",
-                                transaction_type
-                            );
-                            return Err(anyhow!("Unknown transaction type: {}", transaction_type));
-                        }
-                    };
-
-                    if let Err(e) = storage_result {
-                        error!(
-                            "❌ [NETWORK] Failed to handle transaction ID storage: {}",
-                            e
-                        );
-                    }
                 } else {
                     warn!(
                         "⚠️ [NETWORK] Transaction ID broadcast missing both intent hashes and solver address"
@@ -994,38 +969,6 @@ impl MpcNetworkLayer {
                         "❌ [GOSSIPSUB] Signing node not available for deposit intent processing"
                     );
                 }
-            }
-            GossipsubMessage::ClaimReward {
-                solver_address,
-                btc_address,
-                eth_address,
-                reward_btc,
-                reward_tics,
-                transaction_type: _transaction_type,
-            } => {
-                info!(
-                    "🎁 [GOSSIPSUB] Processing claim reward received via gossipsub for solver: {}",
-                    solver_address
-                );
-                info!(
-                    "💰 [GOSSIPSUB] Reward details - BTC: {:?}, TICS: {:?}",
-                    reward_btc, reward_tics
-                );
-                info!(
-                    "📍 [GOSSIPSUB] Addresses - ETH: {:?}, BTC: {:?}",
-                    eth_address, btc_address
-                );
-
-                let _ = self
-                    .process_payout(
-                        "claim_reward",
-                        &solver_address,
-                        &btc_address,
-                        &eth_address,
-                        &reward_btc,
-                        &reward_tics,
-                    )
-                    .await?;
             }
             GossipsubMessage::SolverAddLiquidity {
                 request_id,
@@ -1866,6 +1809,7 @@ impl MpcNetworkLayer {
                                         None,
                                         None,
                                         None, // tics_withdraw_identifiers (not applicable)
+                                        None, // tics_claim_reward_identifiers (not applicable)
                                     )
                                     .await?;
 
@@ -2505,7 +2449,7 @@ impl MpcNetworkLayer {
                             Some(our_btc_tx),
                             None,
                             claim_reward_identifiers,
-                            Some(crate::types::TransactionType::ClaimRewardBtc),
+                            Some(crate::types::TransactionType::ClaimReward),
                             signing_key,
                             None,
                             signing_key,
@@ -2792,6 +2736,7 @@ impl MpcNetworkLayer {
                                 None,
                                 None,
                                 Some(used_identifiers.clone()), // for tx-id broadcast to update each request
+                                None, // tics_claim_reward_identifiers (not applicable)
                             )
                             .await?;
 
@@ -2806,6 +2751,304 @@ impl MpcNetworkLayer {
                     }
                 } else {
                     warn!("❌ [TICS_WITHDRAW] Signing node unavailable for TICS withdraw batch");
+                }
+            }
+            GossipsubMessage::TicsClaimRewardBatch {
+                batch_id,
+                requests,
+                round: _round,
+                timestamp,
+                node_id,
+            } => {
+                use crate::contract::{ContractClient, ContractConfig, SolverManagerContract};
+                use crate::types::rpc_server::PendingClaimRewardRequest;
+                use crate::utils::transaction::{create_solver_claim_rewards_batch_transaction, RewardClaimBatchEntry};
+                use ethers::types::{Address, U256};
+
+                info!(
+                    "📦 [TICS_CLAIM_REWARD] Received TICS claim-reward batch {} from node {} (timestamp {})",
+                    batch_id, node_id, timestamp
+                );
+
+                if requests.is_empty() {
+                    info!("ℹ️  [TICS_CLAIM_REWARD] Empty TicsClaimRewardBatch received, nothing to do");
+                    return Ok(());
+                }
+
+                let db = &self.db;
+                let all_claims: Vec<(String, PendingClaimRewardRequest)> =
+                    match db.get_values_with_prefix("pending_claim_reward:") {
+                        Ok(entries) => entries,
+                        Err(e) => {
+                            warn!(
+                                "⚠️ [TICS_CLAIM_REWARD] Failed to load pending claim reward requests: {}",
+                                e
+                            );
+                            return Ok(());
+                        }
+                    };
+
+                let mut claim_map: std::collections::HashMap<(String, String), PendingClaimRewardRequest> =
+                    std::collections::HashMap::new();
+                for (_key, req) in all_claims {
+                    let key = (req.request_id.clone(), req.solver_address.to_lowercase());
+                    claim_map.insert(key, req);
+                }
+
+                let is_pending_or_batched = |s: &str| s == "Pending" || s == "Batched";
+
+                // Aggregate TICS unclaimed per solver (solver_address -> amount)
+                let mut per_solver_tics: std::collections::HashMap<String, U256> =
+                    std::collections::HashMap::new();
+                // All request identifiers for tx-id broadcast (request_id|solver_address)
+                let mut used_identifiers: Vec<String> = Vec::new();
+
+                // Collect unique TICS solver addresses and their request identifiers
+                let mut tics_solver_addresses: std::collections::HashSet<String> =
+                    std::collections::HashSet::new();
+                for entry in &requests {
+                    let key = (
+                        entry.request_id.clone(),
+                        entry.solver_address.to_lowercase(),
+                    );
+                    let req = match claim_map.get(&key) {
+                        Some(r) => r,
+                        None => {
+                            warn!(
+                                "⚠️ [TICS_CLAIM_REWARD] Claim request {} for solver {} not found in DB",
+                                entry.request_id, entry.solver_address
+                            );
+                            continue;
+                        }
+                    };
+                    if !is_pending_or_batched(&req.status) {
+                        continue;
+                    }
+                    used_identifiers.push(format!("{}|{}", entry.request_id, entry.solver_address));
+
+                    let has_eth = req.ethereum_address.as_ref().map_or(false, |a| !a.trim().is_empty());
+                    if has_eth {
+                        tics_solver_addresses.insert(entry.solver_address.to_lowercase());
+                    }
+                }
+
+                if tics_solver_addresses.is_empty() {
+                    warn!(
+                        "⚠️ [TICS_CLAIM_REWARD] No TICS claim requests to process for batch {}",
+                        batch_id
+                    );
+                    return Ok(());
+                }
+
+                // Fetch unclaimed TICS per solver via contract
+                let rpc_url = std::env::var("SOLVER_CONTRACT_RPC_URL")
+                    .unwrap_or_else(|_| "http://localhost:8545".to_string());
+                let contract_address_env = std::env::var("SOLVER_CONTRACT_ADDRESS")
+                    .unwrap_or_else(|_| "0x0000000000000000000000000000000000000000".to_string());
+                let chain_id = std::env::var("SOLVER_CONTRACT_CHAIN_ID")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(9029);
+                if contract_address_env == "0x0000000000000000000000000000000000000000" {
+                    warn!("⚠️ [TICS_CLAIM_REWARD] Solver contract not configured; skipping");
+                    return Ok(());
+                }
+                let contract_address = match contract_address_env.parse::<Address>() {
+                    Ok(a) => a,
+                    Err(_) => {
+                        warn!("⚠️ [TICS_CLAIM_REWARD] Invalid solver contract address");
+                        return Ok(());
+                    }
+                };
+                let config = ContractConfig {
+                    rpc_url: rpc_url.clone(),
+                    contract_address,
+                    chain_id,
+                };
+                let client = match ContractClient::new(config.clone()) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        warn!("⚠️ [TICS_CLAIM_REWARD] Contract client failed: {}", e);
+                        return Ok(());
+                    }
+                };
+                let contract = match SolverManagerContract::new(&config, client.provider()) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        warn!("⚠️ [TICS_CLAIM_REWARD] SolverManagerContract::new failed: {}", e);
+                        return Ok(());
+                    }
+                };
+
+                for solver_address_lower in &tics_solver_addresses {
+                    let solver_id = match self.fetch_solver_id_for_address(solver_address_lower).await {
+                        Ok(id) => id,
+                        Err(e) => {
+                            warn!(
+                                "⚠️ [TICS_CLAIM_REWARD] Unable to fetch solver ID for {}: {}; skipping",
+                                solver_address_lower, e
+                            );
+                            continue;
+                        }
+                    };
+                    let rewards = match contract.get_solvers_unclaimed_rewards(vec![solver_id.clone()]).await {
+                        Ok(r) => r,
+                        Err(_) => continue,
+                    };
+                    let tics_unclaimed = rewards
+                        .first()
+                        .map(|r| r.2)
+                        .unwrap_or(U256::zero());
+                    if tics_unclaimed.is_zero() {
+                        continue;
+                    }
+                    per_solver_tics.insert(solver_address_lower.clone(), tics_unclaimed);
+                }
+
+                if per_solver_tics.is_empty() {
+                    warn!(
+                        "⚠️ [TICS_CLAIM_REWARD] No non-zero TICS unclaimed amounts for batch {}",
+                        batch_id
+                    );
+                    return Ok(());
+                }
+
+                let claims: Vec<RewardClaimBatchEntry> = per_solver_tics
+                    .iter()
+                    .filter(|(_, amt)| !amt.is_zero())
+                    .map(|(addr, amt)| (addr.clone(), *amt))
+                    .collect();
+
+                let dkg_node = if let Some(node) = &self.dkg_node {
+                    node
+                } else {
+                    warn!(
+                        "❌ [TICS_CLAIM_REWARD] Cannot process TICS claim-reward batch - DKG node unavailable"
+                    );
+                    return Ok(());
+                };
+
+                let group_public_key = if let Some(key) = dkg_node.get_vault_group_key().await {
+                    key
+                } else {
+                    warn!(
+                        "❌ [TICS_CLAIM_REWARD] Liquidity operator group key unavailable"
+                    );
+                    return Ok(());
+                };
+
+                let liquidity_operator_address =
+                    crate::utils::get_eth_address_from_group_key(group_public_key);
+
+                let contract_address_str = std::env::var("SOLVER_CONTRACT_ADDRESS")
+                    .unwrap_or_else(|_| "0x0000000000000000000000000000000000000000".to_string());
+                let contract_chain_id = std::env::var("SOLVER_CONTRACT_CHAIN_ID")
+                    .unwrap_or_else(|_| "9029".to_string())
+                    .parse::<u64>()
+                    .unwrap_or(9029);
+                let contract_chain_name = if contract_chain_id == 9029 {
+                    "qubetics"
+                } else {
+                    "ethereum"
+                };
+
+                let chain_tx = match create_solver_claim_rewards_batch_transaction(
+                    &liquidity_operator_address,
+                    &claims,
+                    1u8, // chainType TICS
+                    &contract_address_str,
+                    contract_chain_id,
+                    contract_chain_name,
+                )
+                .await
+                {
+                    Ok(tx) => tx,
+                    Err(e) => {
+                        warn!(
+                            "⚠️ [TICS_CLAIM_REWARD] Failed to create claimRewardsBatch tx: {}",
+                            e
+                        );
+                        return Ok(());
+                    }
+                };
+
+                let crate::chain_abstraction::ChainTransaction::Ethereum(eth_tx) = &chain_tx else {
+                    warn!("❌ [TICS_CLAIM_REWARD] Expected Ethereum transaction");
+                    return Ok(());
+                };
+
+                if let Some(signing_node) = &mut self.signing_node {
+                    let available_nodes: Vec<PeerId> =
+                        self.node_manager.get_active_nodes().into_iter().collect();
+                    signing_node.set_available_nodes(available_nodes);
+                    signing_node.set_chain_handler(
+                        crate::chain_abstraction::ChainHandlerFactory::create_ethereum_handler(
+                            eth_tx.chain_id,
+                        )
+                        .into(),
+                    );
+
+                    let vault_tweaked_share = dkg_node.get_vault_tweaked_secret_share().await;
+
+                    if let Some(ref _secret_share) = vault_tweaked_share {
+                        signing_node.set_vault_group_key(group_public_key);
+
+                        let contract_tx = crate::types::intent::ContractTransaction {
+                            to: eth_tx.to.clone(),
+                            value: eth_tx.value.clone(),
+                            nonce: eth_tx.nonce,
+                            gas_limit: eth_tx.gas_limit,
+                            gas_price: eth_tx.gas_price.clone(),
+                            chain_id: eth_tx.chain_id,
+                            data: eth_tx
+                                .data
+                                .as_ref()
+                                .map(|d| format!("0x{}", hex::encode(d)))
+                                .unwrap_or_else(|| "0x".to_string()),
+                        };
+
+                        let contract_tx_bytes =
+                            crate::utils::transaction::create_transaction_for_signing_contract(
+                                &contract_tx,
+                            );
+                        let contract_chain_handler =
+                            signing_node.get_contract_chain_handler().clone();
+                        let mut eth_signer =
+                            crate::signing::EthereumSigner::new(signing_node);
+
+                        if let Err(e) = eth_signer
+                            .sign_contract_message(
+                                contract_tx_bytes,
+                                &contract_chain_handler,
+                                &contract_tx,
+                                vault_tweaked_share.clone(),
+                                None,
+                                vec![],
+                                vault_tweaked_share,
+                                None,
+                                None,
+                                None, // tics_withdraw_identifiers (not applicable)
+                                Some(used_identifiers.clone()), // for tx-id broadcast: store tx_id on TICS, mark done for all
+                            )
+                            .await
+                        {
+                            warn!(
+                                "⚠️ [TICS_CLAIM_REWARD] sign_contract_message failed: {}",
+                                e
+                            );
+                        } else {
+                            info!(
+                                "✅ [TICS_CLAIM_REWARD] Submitted claimRewardsBatch (TICS) into MPC signing flow ({} claims)",
+                                claims.len()
+                            );
+                        }
+                    } else {
+                        warn!(
+                            "⚠️ [TICS_CLAIM_REWARD] Skipping claimRewardsBatch - missing vault secret share"
+                        );
+                    }
+                } else {
+                    warn!("❌ [TICS_CLAIM_REWARD] Signing node unavailable");
                 }
             }
             GossipsubMessage::WithdrawTxIdBroadcast {
@@ -2894,15 +3137,17 @@ impl MpcNetworkLayer {
             }
             GossipsubMessage::ClaimRewardTxIdBroadcast {
                 txid,
-                network: _network,
-                batch_id: _batch_id,
+                network,
+                batch_id,
+                solver_address,
                 requests,
                 node_id,
             } => {
                 info!(
-                    "📡 [CLAIM_REWARD_TXID] Received claim-reward txid broadcast from node {}: txid={}, requests={}",
-                    node_id, txid, requests.len()
+                    "📡 [CLAIM_REWARD_TXID] Received claim-reward txid broadcast from node {}: txid={}, network={}, batch_id={}, solver={:?}, requests={}",
+                    node_id, txid, network, batch_id, solver_address, requests.len()
                 );
+                // Unified handler: TICS vs BTC determined by txid (0x = TICS, else BTC), same as withdraw.
                 if !requests.is_empty() {
                     if let Err(e) = self
                         .handle_claim_reward_transaction_id_storage_batch(&txid, &requests)
@@ -2913,6 +3158,21 @@ impl MpcNetworkLayer {
                             txid, requests.len(), e
                         );
                     }
+                } else if let Some(solver) = solver_address.as_ref() {
+                    if let Err(e) = self
+                        .handle_claim_reward_transaction_id_storage(solver, &txid, None)
+                        .await
+                    {
+                        warn!(
+                            "⚠️ [CLAIM_REWARD_TXID] Single storage failed for txid {} (solver {}): {}",
+                            txid, solver, e
+                        );
+                    }
+                } else {
+                    warn!(
+                        "⚠️ [CLAIM_REWARD_TXID] Claim-reward txid broadcast has empty requests and no solver_address: txid={}, batch_id={}",
+                        txid, batch_id
+                    );
                 }
             }
             GossipsubMessage::BtcIntentManagerTxUpdate {

@@ -19,8 +19,8 @@ impl MpcNetworkLayer {
         match tx_type_str {
             "user_to_vault" => Ok(TransactionType::UserToVault),
             "network_to_target" => Ok(TransactionType::NetworkToTarget),
-            "reward_txn" => Ok(TransactionType::RewardTxn),
             "withdraw_liquidity" | "withdrawLiquidity" => Ok(TransactionType::WithdrawLiquidity),
+            "claim_reward" => Ok(TransactionType::ClaimReward),
             "refund" => Ok(TransactionType::Refund),
             "intent_status_update" => Ok(TransactionType::IntentStatusUpdate),
             _ => Err(anyhow::anyhow!("Unknown transaction type: {}", tx_type_str)),
@@ -379,46 +379,6 @@ impl MpcNetworkLayer {
         );
         false
     }
-
-    /// Handle reward transaction ID storage
-    pub(crate) async fn handle_reward_transaction_id_storage(
-        &mut self,
-        solver_address: &str,
-        transaction_id: &str,
-        transaction_type: &str,
-    ) -> Result<()> {
-        if let Some(user_intent_manager) = &self.user_intent_manager {
-            let Some(network) = reward_network_from_tx_id(transaction_type, transaction_id) else {
-                warn!(
-                    "❌ [NETWORK] Unknown reward transaction type '{}' for tx {}; skipping storage",
-                    transaction_type, transaction_id
-                );
-                return Ok(());
-            };
-
-            // Reward/liquidity and tx ids are from contract; only store tx status locally.
-            if let Err(e) = user_intent_manager
-                .store_transaction_status(transaction_id, TransactionStatus::Pending)
-                .await
-            {
-                error!(
-                    "❌ [NETWORK] Failed to store transaction status for reward tx {}: {}",
-                    transaction_id, e
-                );
-            } else {
-                info!(
-                    "✅ [NETWORK] Successfully synchronized reward transaction ID {} for solver {} (network: {:?})",
-                    transaction_id,
-                    solver_address,
-                    network
-                );
-            }
-        } else {
-            warn!("❌ [NETWORK] No user registry available to store synchronized transaction ID");
-        }
-        Ok(())
-    }
-
     /// Handle withdraw liquidity transaction ID storage
     pub(crate) async fn handle_withdraw_liquidity_transaction_id_storage(
         &mut self,
@@ -644,60 +604,154 @@ impl MpcNetworkLayer {
         Ok(())
     }
 
-    /// Store claim-reward BTC transaction ID on each PendingClaimRewardRequest (do not mark done).
+    /// Unified claim-reward transaction ID storage (TICS and BTC).
+    /// TICS vs BTC is determined by transaction_id: "0x..." = TICS (EVM), else = BTC.
+    /// - TICS: store tx_id on TICS requests and mark Completed; mark BTC requests in batch Completed only.
+    /// - BTC: store tx_id on each PendingClaimRewardRequest (do not mark done).
+    /// When request_id is None (single-solver legacy): prefix-scan all pending_claim_reward for solver (TICS path only).
     pub(crate) async fn handle_claim_reward_transaction_id_storage(
         &mut self,
         solver_address: &str,
         transaction_id: &str,
-        request_id: &str,
+        request_id: Option<&str>,
     ) -> Result<()> {
         use crate::types::rpc_server::PendingClaimRewardRequest;
 
+        let is_tics = transaction_id.starts_with("0x");
         let db = &self.db;
-        let key = format!(
-            "pending_claim_reward:{}:{}",
-            solver_address.to_lowercase(),
-            request_id
-        );
+        let solver_lower = solver_address.to_lowercase();
 
-        let maybe_req: Option<PendingClaimRewardRequest> =
-            match db.get_string::<PendingClaimRewardRequest>(&key) {
-                Ok(v) => v,
-                Err(e) => {
+        if is_tics {
+            // TICS claim-reward: store tx_id on TICS requests, mark all Completed (TICS get tx_id, BTC get done only).
+            if let Some(req_id) = request_id {
+                let key = format!("pending_claim_reward:{}:{}", solver_lower, req_id);
+                let maybe_req: Option<PendingClaimRewardRequest> =
+                    match db.get_string::<PendingClaimRewardRequest>(&key) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            warn!(
+                                "⚠️ [CLAIM_REWARD_TXID] Failed to load pending claim reward {} for solver {} when applying txid {}: {}",
+                                req_id, solver_address, transaction_id, e
+                            );
+                            return Ok(());
+                        }
+                    };
+                if let Some(mut req) = maybe_req {
+                    let is_tics_req = req.ethereum_address.as_ref().map_or(false, |a| !a.trim().is_empty());
+                    if is_tics_req {
+                        req.tx_id = Some(transaction_id.to_string());
+                    }
+                    req.status = "Completed".to_string();
+                    if let Err(e) = db.put_string(&key, &req) {
+                        warn!(
+                            "⚠️ [CLAIM_REWARD_TXID] Failed to update claim reward {} (solver {}): {}",
+                            req_id, solver_address, e
+                        );
+                    } else {
+                        info!(
+                            "💾 [CLAIM_REWARD_TXID] Marked claim reward {} (solver {}) as Completed{}",
+                            req_id,
+                            solver_address,
+                            if is_tics_req {
+                                format!(" and stored tx_id {}", transaction_id)
+                            } else {
+                                String::new()
+                            }
+                        );
+                    }
+                } else {
                     warn!(
-                        "⚠️ [CLAIM_REWARD_TXID] Failed to load pending claim reward {} for solver {} when applying txid {}: {}",
-                        request_id, solver_address, transaction_id, e
+                        "⚠️ [CLAIM_REWARD_TXID] Pending claim reward {} for solver {} not found when applying txid {}",
+                        req_id, solver_address, transaction_id
                     );
-                    return Ok(());
                 }
-            };
-
-        if let Some(mut req) = maybe_req {
-            if req.tx_id.is_some() {
-                return Ok(());
-            }
-            req.tx_id = Some(transaction_id.to_string());
-            if let Err(e) = db.put_string(&key, &req) {
-                warn!(
-                    "⚠️ [CLAIM_REWARD_TXID] Failed to update tx_id for claim reward {} (solver {}): {}",
-                    request_id, solver_address, e
-                );
             } else {
-                info!(
-                    "💾 [CLAIM_REWARD_TXID] Updated tx_id for claim reward {} (solver {}) to {}",
-                    request_id, solver_address, transaction_id
-                );
+                // Single-solver legacy: prefix-scan all pending claim rewards for this solver.
+                let prefix = format!("pending_claim_reward:{}:", solver_lower);
+                let entries: Vec<(String, PendingClaimRewardRequest)> =
+                    match db.get_values_with_prefix(&prefix) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            warn!(
+                                "⚠️ [CLAIM_REWARD_TXID] Failed to load pending claim rewards for solver {} when applying txid {}: {}",
+                                solver_address, transaction_id, e
+                            );
+                            return Ok(());
+                        }
+                    };
+                for (key, mut req) in entries {
+                    let is_tics_req = req.ethereum_address.as_ref().map_or(false, |a| !a.trim().is_empty());
+                    if is_tics_req {
+                        req.tx_id = Some(transaction_id.to_string());
+                    }
+                    req.status = "Completed".to_string();
+                    if let Err(e) = db.put_string(&key, &req) {
+                        warn!(
+                            "⚠️ [CLAIM_REWARD_TXID] Failed to update claim reward {} (solver {}): {}",
+                            req.request_id, solver_address, e
+                        );
+                    } else {
+                        info!(
+                            "💾 [CLAIM_REWARD_TXID] Marked claim reward {} (solver {}) as Completed{}",
+                            req.request_id,
+                            solver_address,
+                            if is_tics_req {
+                                format!(" and stored tx_id {}", transaction_id)
+                            } else {
+                                String::new()
+                            }
+                        );
+                    }
+                }
             }
         } else {
-            warn!(
-                "⚠️ [CLAIM_REWARD_TXID] Pending claim reward {} for solver {} not found when applying txid {}",
-                request_id, solver_address, transaction_id
-            );
+            // BTC claim-reward: store tx_id only (do not mark done). request_id required.
+            let Some(req_id) = request_id else {
+                warn!(
+                    "⚠️ [CLAIM_REWARD_TXID] BTC claim-reward txid requires request_id (solver {}, txid {})",
+                    solver_address, transaction_id
+                );
+                return Ok(());
+            };
+            let key = format!("pending_claim_reward:{}:{}", solver_lower, req_id);
+            let maybe_req: Option<PendingClaimRewardRequest> =
+                match db.get_string::<PendingClaimRewardRequest>(&key) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        warn!(
+                            "⚠️ [CLAIM_REWARD_TXID] Failed to load pending claim reward {} for solver {} when applying txid {}: {}",
+                            req_id, solver_address, transaction_id, e
+                        );
+                        return Ok(());
+                    }
+                };
+            if let Some(mut req) = maybe_req {
+                if req.tx_id.is_some() {
+                    return Ok(());
+                }
+                req.tx_id = Some(transaction_id.to_string());
+                if let Err(e) = db.put_string(&key, &req) {
+                    warn!(
+                        "⚠️ [CLAIM_REWARD_TXID] Failed to update tx_id for claim reward {} (solver {}): {}",
+                        req_id, solver_address, e
+                    );
+                } else {
+                    info!(
+                        "💾 [CLAIM_REWARD_TXID] Updated tx_id for claim reward {} (solver {}) to {}",
+                        req_id, solver_address, transaction_id
+                    );
+                }
+            } else {
+                warn!(
+                    "⚠️ [CLAIM_REWARD_TXID] Pending claim reward {} for solver {} not found when applying txid {}",
+                    req_id, solver_address, transaction_id
+                );
+            }
         }
         Ok(())
     }
 
-    /// Store claim-reward BTC transaction ID on multiple PendingClaimRewardRequest entries (do not mark done).
+    /// Claim-reward tx-id storage for multiple (request_id, solver_address). Calls the unified handler per request (same as withdraw batch).
     pub(crate) async fn handle_claim_reward_transaction_id_storage_batch(
         &mut self,
         transaction_id: &str,
@@ -711,7 +765,7 @@ impl MpcNetworkLayer {
                 .handle_claim_reward_transaction_id_storage(
                     solver_address,
                     transaction_id,
-                    request_id,
+                    Some(request_id.as_str()),
                 )
                 .await
             {
@@ -722,22 +776,6 @@ impl MpcNetworkLayer {
             }
         }
         Ok(())
-    }
-}
-
-fn reward_network_from_tx_id(
-    transaction_type: &str,
-    transaction_id: &str,
-) -> Option<TransactionNetwork> {
-    match transaction_type {
-        "reward_txn" => {
-            if transaction_id.starts_with("0x") {
-                Some(TransactionNetwork::TICS)
-            } else {
-                Some(TransactionNetwork::BTC)
-            }
-        }
-        _ => None,
     }
 }
 

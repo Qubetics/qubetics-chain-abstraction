@@ -1040,20 +1040,14 @@ async fn create_chain_transaction_from_deposit_intent_internal(
         crate::types::TransactionType::NetworkToTarget => &intent.target_chain.to_lowercase(),
         crate::types::TransactionType::Refund => &intent.source_chain.to_lowercase(), // Refund goes back to source chain
         crate::types::TransactionType::IntentStatusUpdate => "qubetics", // IntentStatusUpdate is a contract call on Qubetics chain
-        crate::types::TransactionType::RewardTxn => {
-            // RewardTxn is not valid for intent flow
-            return Err(anyhow::anyhow!(
-                "RewardTxn is not valid for deposit intent flow"
-            ));
-        }
         crate::types::TransactionType::WithdrawLiquidity => {
             return Err(anyhow::anyhow!(
                 "WithdrawLiquidity is not valid for deposit intent flow"
             ));
         }
-        crate::types::TransactionType::ClaimRewardBtc => {
+        crate::types::TransactionType::ClaimReward => {
             return Err(anyhow::anyhow!(
-                "ClaimRewardBtc is not valid for deposit intent flow"
+                "ClaimReward is not valid for deposit intent flow"
             ));
         }
     };
@@ -1156,20 +1150,14 @@ async fn create_chain_transaction_from_deposit_intent_internal(
                 );
                 (network_address.clone(), intent.source_address.clone())
             }
-            crate::types::TransactionType::RewardTxn => {
-                // RewardTxn is not valid for intent flow
-                return Err(anyhow::anyhow!(
-                    "RewardTxn is not valid for deposit intent flow"
-                ));
-            }
             crate::types::TransactionType::WithdrawLiquidity => {
                 return Err(anyhow::anyhow!(
                     "WithdrawLiquidity is not valid for deposit intent flow"
                 ));
             }
-            crate::types::TransactionType::ClaimRewardBtc => {
+            crate::types::TransactionType::ClaimReward => {
                 return Err(anyhow::anyhow!(
-                    "ClaimRewardBtc is not valid for deposit intent flow"
+                    "ClaimReward is not valid for deposit intent flow"
                 ));
             }
         };
@@ -1244,20 +1232,14 @@ async fn create_chain_transaction_from_deposit_intent_internal(
                 );
                 (btc_network_address.clone(), intent.source_address.clone())
             }
-            crate::types::TransactionType::RewardTxn => {
-                // RewardTxn is not valid for intent flow
-                return Err(anyhow::anyhow!(
-                    "RewardTxn is not valid for deposit intent flow"
-                ));
-            }
             crate::types::TransactionType::WithdrawLiquidity => {
                 return Err(anyhow::anyhow!(
                     "WithdrawLiquidity is not valid for deposit intent flow"
                 ));
             }
-            crate::types::TransactionType::ClaimRewardBtc => {
+            crate::types::TransactionType::ClaimReward => {
                 return Err(anyhow::anyhow!(
-                    "ClaimRewardBtc is not valid for deposit intent flow"
+                    "ClaimReward is not valid for deposit intent flow"
                 ));
             }
         };
@@ -1326,20 +1308,14 @@ pub async fn create_chain_transaction_from_contract_call(
                 "Refund transactions do not require contract call calldata - they are direct fund transfers"
             ));
         }
-        crate::types::TransactionType::RewardTxn => {
-            // RewardTxn is not valid for intent flow
-            return Err(anyhow::anyhow!(
-                "RewardTxn is not valid for deposit intent flow"
-            ));
-        }
         crate::types::TransactionType::WithdrawLiquidity => {
             return Err(anyhow::anyhow!(
                 "WithdrawLiquidity is not valid for deposit intent flow"
             ));
         }
-        crate::types::TransactionType::ClaimRewardBtc => {
+        crate::types::TransactionType::ClaimReward => {
             return Err(anyhow::anyhow!(
-                "ClaimRewardBtc is not valid for deposit intent flow"
+                "ClaimReward is not valid for deposit intent flow"
             ));
         }
     };

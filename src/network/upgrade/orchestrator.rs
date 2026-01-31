@@ -67,7 +67,6 @@ impl Default for UpgradeValidation {
 
 #[derive(Clone)]
 pub struct RollingUpgradeOrchestrator {
-    #[allow(dead_code)]
     node_id: PeerId,
     db: Database,
     state_manager: Arc<StatePreservationManager>,

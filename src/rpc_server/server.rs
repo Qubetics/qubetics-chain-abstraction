@@ -19,7 +19,7 @@ use super::{
     handlers::{
         handle_add_liquidity, handle_claim_reward, handle_get_dkg_status,
         handle_get_intents_solved_count, handle_get_network_addresses, handle_get_node_id,
-        handle_get_node_info, handle_get_solver_liquidity,
+        handle_get_node_info, handle_get_solver_liquidity, handle_get_solver_rewards,
         handle_get_status, handle_get_uptime, handle_get_user_info, handle_heartbeat,
         handle_log_partial_pubkeys, handle_register_user, handle_user_mpc_deposit,
         handle_withdraw_liquidity,
@@ -32,7 +32,7 @@ use super::{
     },
 };
 use crate::types::rpc_server::{
-    AddLiquidityRequest, ClaimRewardRequest, RequestContext,
+    AddLiquidityRequest, ClaimRewardRequest, GetSolverRewardsRequest, RequestContext,
     SolverLiquidityRequest, UserMpcDepositRequest, UserMpcDepositVerifyResponse,
     UserRegistrationRequest, WithdrawLiquidityRequest,
 };
@@ -141,6 +141,12 @@ pub async fn start_http_server(
         .and(warp::get())
         .and(warp::query::<SolverLiquidityRequest>())
         .and_then(handle_get_solver_liquidity);
+
+    let get_solver_rewards = warp::path("solver_rewards")
+        .and(warp::get())
+        .and(warp::query::<GetSolverRewardsRequest>())
+        .and(with_user_intent_manager(user_intent_manager.clone()))
+        .and_then(handle_get_solver_rewards);
 
     let claim_reward = warp::path("claim_reward")
         .and(warp::post())
@@ -275,6 +281,7 @@ pub async fn start_http_server(
         .or(get_dkg_status)
         .or(user_mpc_deposit)
         .or(get_solver_liquidity)
+        .or(get_solver_rewards)
         .or(claim_reward)
         .or(add_liquidity)
         .or(withdraw_liquidity)

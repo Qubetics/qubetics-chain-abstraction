@@ -4,10 +4,9 @@ use serde::{Deserialize, Serialize};
 pub enum TransactionType {
     UserToVault,
     NetworkToTarget,
-    RewardTxn,
     WithdrawLiquidity,
-    /// BTC claim-reward batch (same flow as WithdrawLiquidity for BTC; tx-id stored on PendingClaimRewardRequest).
-    ClaimRewardBtc,
+    /// Claim-reward batch (same as WithdrawLiquidity: TICS vs BTC determined at runtime from tx_id / pending store).
+    ClaimReward,
     Refund,
     IntentStatusUpdate,
 }

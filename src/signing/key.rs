@@ -177,25 +177,7 @@ impl KeyStore {
                     ))
                 }
             }
-            Some(TransactionType::RewardTxn) => {
-                // IMPORTANT: RewardTxn and WithdrawLiquidity must use the same network group public key
-                // Both transactions are signed by the network group key (via network DKG secret share)
-                // and verified against individual partial public keys (network share pubkeys)
-                if let Some(group_key) = self.group_public_key {
-                    let affine_point = group_key.to_affine();
-                    let encoded_point = EncodedPoint::from(affine_point);
-                    let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
-
-                    info!("🔑 [SIGNING] RewardTxn: Using DKG group public key");
-                    Ok(compressed_bytes)
-                } else {
-                    Err(anyhow!(
-                        "DKG group public key not available for RewardTxn transaction - ensure DKG process is completed"
-                    ))
-                }
-            }
             Some(TransactionType::WithdrawLiquidity) => {
-                // IMPORTANT: RewardTxn and WithdrawLiquidity must use the same network group public key
                 // Both transactions are signed by the network group key (via network DKG secret share)
                 // and verified against individual partial public keys (network share pubkeys)
                 if let Some(group_key) = self.group_public_key {
@@ -211,18 +193,18 @@ impl KeyStore {
                     ))
                 }
             }
-            Some(TransactionType::ClaimRewardBtc) => {
-                // ClaimRewardBtc is BTC-only; use network group key (same as WithdrawLiquidity)
+            Some(TransactionType::ClaimReward) => {
+                // ClaimReward: when called from BitcoinSigner we're always BTC (network key); TICS path uses vault elsewhere
                 if let Some(group_key) = self.group_public_key {
                     let affine_point = group_key.to_affine();
                     let encoded_point = EncodedPoint::from(affine_point);
                     let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
 
-                    info!("🔑 [SIGNING] ClaimRewardBtc: Using DKG group public key");
+                    info!("🔑 [SIGNING] ClaimReward (BTC): Using DKG group public key");
                     Ok(compressed_bytes)
                 } else {
                     Err(anyhow!(
-                        "DKG group public key not available for ClaimRewardBtc transaction - ensure DKG process is completed"
+                        "DKG group public key not available for ClaimReward (BTC) transaction - ensure DKG process is completed"
                     ))
                 }
             }

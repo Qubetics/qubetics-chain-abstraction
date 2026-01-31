@@ -53,749 +53,6 @@ impl MpcNetworkLayer {
         }
     }
 
-    fn get_transaction_type_from_context(context: &str) -> crate::types::TransactionType {
-        match context {
-            "withdraw_liquidity" => crate::types::TransactionType::WithdrawLiquidity,
-            "claim_reward" | "reward_txn" => crate::types::TransactionType::RewardTxn,
-            _ => crate::types::TransactionType::RewardTxn,
-        }
-    }
-
-    async fn process_eth_payout(
-        &mut self,
-        context: &str,
-        solver_address: &str,
-        eth_address: &str,
-        amount: u128,
-    ) -> Result<bool> {
-        let tx_type = Self::get_transaction_type_from_context(context);
-
-        info!(
-            "💧 [{}] Processing TICS payout: {} -> {} (amount: {})",
-            context, solver_address, eth_address, amount
-        );
-
-        let dkg_node = match &self.dkg_node {
-            Some(node) => node,
-            None => {
-                warn!("❌ [{}] DKG node not available for TICS payout", context);
-                return Ok(false);
-            }
-        };
-
-        let group_key = match dkg_node.get_final_public_key().await {
-            Some(key) => key,
-            None => {
-                warn!("❌ [{}] No group key available for TICS payout", context);
-                return Ok(false);
-            }
-        };
-
-        let network_address = crate::utils::get_eth_address_from_group_key(group_key);
-        let eth_tx = match crate::utils::transaction::create_ethereum_transaction(
-            &network_address,
-            eth_address,
-            amount,
-            "qubetics",
-        )
-        .await
-        {
-            Ok(tx) => tx,
-            Err(e) => {
-                error!(
-                    "❌ [{}] Failed to create TICS payout transaction: {}",
-                    context, e
-                );
-                return Ok(false);
-            }
-        };
-
-        info!(
-            "✅ [{}] Created TICS payout transaction: {:?}",
-            context, eth_tx
-        );
-
-        let signing_node = match &mut self.signing_node {
-            Some(node) => node,
-            None => {
-                warn!("❌ [{}] Signing node unavailable for TICS payout", context);
-                return Ok(false);
-            }
-        };
-
-        let available_nodes: Vec<PeerId> =
-            self.node_manager.get_active_nodes().into_iter().collect();
-        signing_node.set_available_nodes(available_nodes);
-        signing_node.set_chain_handler(
-            crate::chain_abstraction::ChainHandlerFactory::create_ethereum_handler(eth_tx.chain_id)
-                .into(),
-        );
-
-        let secret_share = match dkg_node.get_final_secret_share().await {
-            Some(share) => share,
-            None => {
-                info!(
-                    "⏳ [{}] DKG not completed yet, no secret share for TICS payout",
-                    context
-                );
-                return Ok(false);
-            }
-        };
-
-        if let Some(group_key) = dkg_node.get_final_public_key().await {
-            signing_node.set_group_public_key(group_key);
-        }
-
-        let tx_bytes = crate::utils::transaction::create_transaction_for_signing(&eth_tx);
-        info!(
-            "🔐 [{}] Starting TICS payout signing: 0x{}",
-            context,
-            hex::encode(tx_bytes.clone())
-        );
-
-        // For withdraw_liquidity and reward_txn, use transaction helper functions (sequencer removed, pool approach pending)
-        if context == "withdraw_liquidity" {
-            if let Err(e) = self
-                .submit_withdraw_liquidity_to_sequencer(
-                    solver_address,
-                    eth_address,
-                    amount,
-                    tx_bytes,
-                    eth_tx,
-                )
-                .await
-            {
-                error!(
-                    "❌ [{}] Failed to submit withdraw liquidity to sequencer: {}",
-                    context, e
-                );
-                return Err(e);
-            }
-
-            info!(
-                "✅ [{}] Submitted withdraw liquidity to network sequencer",
-                context
-            );
-            // Note: record_pending_liquidity_contract_update will be called after transaction is signed
-            Ok(true)
-        } else if context == "reward_txn" || context == "claim_reward" {
-            if let Err(e) = self
-                .submit_reward_payout_to_sequencer(
-                    solver_address,
-                    eth_address,
-                    amount,
-                    tx_bytes,
-                    eth_tx,
-                )
-                .await
-            {
-                error!(
-                    "❌ [{}] Failed to submit reward payout to sequencer: {}",
-                    context, e
-                );
-                return Err(e);
-            }
-
-            info!(
-                "✅ [{}] Submitted reward payout to network sequencer",
-                context
-            );
-            Ok(true)
-        } else {
-            // For other contexts, sign directly
-            let chain_handler: Arc<dyn crate::chain_abstraction::ChainHandler> =
-                crate::chain_abstraction::ChainHandlerFactory::create_ethereum_handler(
-                    eth_tx.chain_id,
-                )
-                .into();
-            let mut eth_signer = EthereumSigner::new(signing_node);
-            eth_signer
-                .sign_transaction(
-                    tx_bytes,
-                    &chain_handler,
-                    &eth_tx,
-                    None,
-                    None,
-                    vec![],
-                    Some(tx_type),
-                    Some(solver_address.to_string()),
-                    Some(secret_share),
-                )
-                .await?;
-
-            info!("✅ [{}] TICS payout signing completed", context);
-            Ok(true)
-        }
-    }
-
-    async fn process_btc_payout(
-        &mut self,
-        context: &str,
-        solver_address: &str,
-        btc_address: &str,
-        amount: u128,
-    ) -> Result<bool> {
-        let tx_type = Self::get_transaction_type_from_context(context);
-
-        info!(
-            "💧 [{}] Processing BTC payout: {} -> {} (amount: {})",
-            context, solver_address, btc_address, amount
-        );
-
-        let dkg_node = match &self.dkg_node {
-            Some(node) => node,
-            None => {
-                warn!("❌ [{}] DKG node not available for BTC payout", context);
-                return Ok(false);
-            }
-        };
-
-        let group_key = match dkg_node.get_final_public_key().await {
-            Some(key) => key,
-            None => {
-                warn!("❌ [{}] No group key available for BTC payout", context);
-                return Ok(false);
-            }
-        };
-
-        let network_btc_address = crate::utils::get_btc_address_from_group_key(group_key);
-        let btc_tx = match crate::utils::transaction::create_bitcoin_transaction(
-            &network_btc_address,
-            btc_address,
-            amount,
-        )
-        .await
-        {
-            Ok(tx) => tx,
-            Err(e) => {
-                error!(
-                    "❌ [{}] Failed to create BTC payout transaction: {}",
-                    context, e
-                );
-                // Return error to propagate insufficient UTXO and other transaction creation errors
-                return Err(anyhow::anyhow!(
-                    "Failed to create BTC transaction: {}",
-                    e
-                ));
-            }
-        };
-
-        info!(
-            "✅ [{}] Created BTC payout transaction: {:?}",
-            context, btc_tx
-        );
-
-        let signing_node = match &mut self.signing_node {
-            Some(node) => node,
-            None => {
-                warn!("❌ [{}] Signing node unavailable for BTC payout", context);
-                return Ok(false);
-            }
-        };
-
-        let available_nodes: Vec<PeerId> =
-            self.node_manager.get_active_nodes().into_iter().collect();
-        signing_node.set_available_nodes(available_nodes);
-        signing_node.set_chain_handler(
-            crate::chain_abstraction::ChainHandlerFactory::create_bitcoin_handler(
-                crate::types::network::network_type()
-                    .bitcoin_network_label()
-                    .to_string(),
-            )
-            .into(),
-        );
-
-        let secret_share = match dkg_node.get_final_secret_share().await {
-            Some(share) => share,
-            None => {
-                info!(
-                    "⏳ [{}] DKG not completed yet, no secret share for BTC payout",
-                    context
-                );
-                return Ok(false);
-            }
-        };
-
-        if let Some(group_key) = dkg_node.get_final_public_key().await {
-            signing_node.set_group_public_key(group_key);
-        }
-
-        let chain_handler: Arc<dyn crate::chain_abstraction::ChainHandler> =
-            crate::chain_abstraction::ChainHandlerFactory::create_bitcoin_handler(
-                crate::types::network::network_type()
-                    .bitcoin_network_label()
-                    .to_string(),
-            )
-            .into();
-        let chain_tx = crate::chain_abstraction::ChainTransaction::Bitcoin(btc_tx.clone());
-        let tx_bytes = chain_handler.create_transaction_bytes(&chain_tx).unwrap();
-
-        info!(
-            "🔐 [{}] Starting BTC payout signing: 0x{}",
-            context,
-            hex::encode(tx_bytes.clone())
-        );
-
-        let mut btc_signer = BitcoinSigner::new(signing_node);
-        btc_signer
-            .sign_transaction(
-                tx_bytes,
-                &chain_handler,
-                Some(btc_tx),
-                None,
-                vec![],
-                Some(tx_type),
-                None,
-                Some(solver_address.to_string()),
-                Some(secret_share),
-            )
-            .await?;
-
-        info!("✅ [{}] BTC payout signing completed", context);
-        // if context == "withdraw_liquidity" {
-        //     self.record_pending_liquidity_contract_update(
-        //         solver_address,
-        //         TransactionNetwork::BTC,
-        //         amount,
-        //     )
-        //     .await;
-        // }
-        Ok(true)
-    }
-
-    pub(crate) async fn process_payout(
-        &mut self,
-        context: &str,
-        solver_address: &str,
-        btc_address: &Option<String>,
-        eth_address: &Option<String>,
-        amount_btc: &Option<String>,
-        amount_tics: &Option<String>,
-    ) -> Result<(bool, bool)> {
-        let mut tics_payout_initiated = false;
-        let mut btc_payout_initiated = false;
-        if amount_btc.is_none() && amount_tics.is_none() {
-            warn!(
-                "❌ [{}] No BTC or TICS amount specified for solver {}",
-                context, solver_address
-            );
-            return Ok((tics_payout_initiated, btc_payout_initiated));
-        }
-
-        if let Some(amount_str) = amount_tics {
-            if let Some(eth_addr) = eth_address {
-                match amount_str.parse::<u128>() {
-                    Ok(tics_amount) => {
-                        tics_payout_initiated = self
-                            .process_eth_payout(context, solver_address, eth_addr, tics_amount)
-                            .await?;
-                    }
-                    Err(_) => {
-                        warn!(
-                            "❌ [{}] Invalid TICS payout amount: {}",
-                            context, amount_str
-                        );
-                    }
-                }
-            } else {
-                warn!(
-                    "❌ [{}] TICS payout requested but no ETH address provided",
-                    context
-                );
-            }
-        }
-
-        if let Some(amount_str) = amount_btc {
-            if let Some(btc_addr) = btc_address {
-                match amount_str.parse::<u128>() {
-                    Ok(btc_amount) => {
-                        btc_payout_initiated = self
-                            .process_btc_payout(context, solver_address, btc_addr, btc_amount)
-                            .await?;
-                    }
-                    Err(_) => {
-                        warn!("❌ [{}] Invalid BTC payout amount: {}", context, amount_str);
-                    }
-                }
-            } else {
-                warn!(
-                    "❌ [{}] BTC payout requested but no BTC address provided",
-                    context
-                );
-            }
-        }
-
-        info!(
-            "✅ [{}] Payout processing complete for solver {}",
-            context, solver_address
-        );
-        Ok((tics_payout_initiated, btc_payout_initiated))
-    }
-
-    pub(crate) async fn submit_solver_reward_contract_update(
-        &mut self,
-        solver_address: &str,
-        reward_btc: Option<u128>,
-        reward_tics: Option<u128>,
-        payout_tx_hash: &str,
-        request_id: Option<String>,
-        original_request: Option<()>,
-    ) -> Result<()> {
-        let contract_address = std::env::var("SOLVER_CONTRACT_ADDRESS")
-            .unwrap_or_else(|_| "0x0000000000000000000000000000000000000000".to_string());
-        if contract_address == "0x0000000000000000000000000000000000000000" {
-            info!(
-                "⏭️ [SOLVER] Skipping reward update for {} - solver contract address not configured",
-                solver_address
-            );
-            return Ok(());
-        }
-
-        let chain_id = std::env::var("SOLVER_CONTRACT_CHAIN_ID")
-            .unwrap_or_else(|_| "9029".to_string())
-            .parse::<u64>()
-            .unwrap_or(9029);
-        let chain_name = if chain_id == 9029 {
-            "qubetics"
-        } else {
-            "ethereum"
-        };
-
-        let rewards_payload = vec![
-            U256::from(reward_btc.unwrap_or(0)),
-            U256::from(reward_tics.unwrap_or(0)),
-        ];
-
-        if rewards_payload.iter().all(|value| value.is_zero()) {
-            info!(
-                "⏭️ [SOLVER] Skipping reward update for {} - both payout values are zero",
-                solver_address
-            );
-            return Ok(());
-        }
-
-        info!(
-            "🧮 [SOLVER] Reward payload for {} -> btc: {}, tics: {} (contract: {}, chain_id: {})",
-            solver_address, rewards_payload[0], rewards_payload[1], contract_address, chain_id
-        );
-
-        let dkg_node = if let Some(node) = &self.dkg_node {
-            node
-        } else {
-            warn!(
-                "❌ [SOLVER] Cannot update solver rewards for {} - DKG node unavailable",
-                solver_address
-            );
-            return Ok(());
-        };
-
-        let group_public_key = if let Some(key) = dkg_node.get_vault_group_key().await {
-            key
-        } else {
-            warn!(
-                "❌ [SOLVER] Cannot update solver rewards for {} - liquidity operator group key unavailable",
-                solver_address
-            );
-            return Ok(());
-        };
-
-        let liquidity_operator_address = crate::utils::get_eth_address_from_group_key(group_public_key);
-        info!(
-            "🧾 [SOLVER] Submitting reward update for {} via liquidity operator address {}",
-            solver_address, liquidity_operator_address
-        );
-
-        let chain_tx = crate::utils::transaction::create_solver_rewards_update_transaction(
-            &liquidity_operator_address,
-            solver_address,
-            &rewards_payload,
-            payout_tx_hash,
-            &contract_address,
-            chain_id,
-            chain_name,
-        )
-        .await?;
-
-        let eth_tx = match chain_tx {
-            crate::chain_abstraction::ChainTransaction::Ethereum(tx) => tx,
-            _ => {
-                warn!(
-                    "❌ [SOLVER] Reward update transaction for {} is not an Ethereum transaction",
-                    solver_address
-                );
-                return Ok(());
-            }
-        };
-
-        if let Some(signing_node) = &mut self.signing_node {
-            let available_nodes: Vec<PeerId> =
-                self.node_manager.get_active_nodes().into_iter().collect();
-            signing_node.set_available_nodes(available_nodes);
-            signing_node.set_chain_handler(
-                crate::chain_abstraction::ChainHandlerFactory::create_ethereum_handler(
-                    eth_tx.chain_id,
-                )
-                .into(),
-            );
-
-            let vault_tweaked_share = dkg_node.get_vault_tweaked_secret_share().await;
-
-            if let Some(ref _secret_share) = vault_tweaked_share {
-                // signing_node.set_group_public_key(group_public_key);
-                signing_node.set_vault_group_key(group_public_key);
-
-                let contract_tx = crate::types::intent::ContractTransaction {
-                    to: eth_tx.to.clone(),
-                    value: eth_tx.value.clone(),
-                    nonce: eth_tx.nonce,
-                    gas_limit: eth_tx.gas_limit,
-                    gas_price: eth_tx.gas_price.clone(),
-                    chain_id: eth_tx.chain_id,
-                    data: eth_tx
-                        .data
-                        .as_ref()
-                        .map(|d| format!("0x{}", hex::encode(d)))
-                        .unwrap_or_else(|| "0x".to_string()),
-                };
-                info!(
-                    "🔧 [CONTRACT] Contract transaction: {:?}",
-                    contract_tx.clone()
-                );
-                info!(
-                    "🔧 [CONTRACT] Contract transaction data: {:?}",
-                    contract_tx.data
-                );
-                info!(
-                    "🔧 [CONTRACT] Contract transaction data hex: {:?}",
-                    hex::encode(contract_tx.data.clone())
-                );
-                // info!("🔧 [CONTRACT] Contract transaction data length: {:?}", contract_tx.data.len());
-                // info!("🔧 [COONTRACT] Contract transaction data as ref: {:?}", contract_tx.data.as_ref());
-                // info!("🔧 [CNTRACT] Contract transaction data as ref hex: {:?}", hex::encode(contract_tx.data.as_ref()));
-                // info!("🔧 [CONTRACT] Contract transaction data as ref as ref: {:?}", contract_tx.data.as_ref().as_ref());
-                // info!("🔧 [CONTRACT] Contract transaction data as ref as ref hex: {:?}", hex::encode(contract_tx.data.as_ref().as_ref()));
-                let contract_tx_bytes =
-                    crate::utils::transaction::create_transaction_for_signing_contract(
-                        &contract_tx,
-                    );
-                info!(
-                    "🔐 [SOLVER] Starting contract update signing for {}: 0x{}",
-                    solver_address,
-                    hex::encode(&contract_tx_bytes)
-                );
-
-                let contract_chain_handler = signing_node.get_contract_chain_handler().clone();
-                let mut eth_signer = EthereumSigner::new(signing_node);
-                eth_signer
-                    .sign_contract_message(
-                        contract_tx_bytes,
-                        &contract_chain_handler,
-                        &contract_tx,
-                        vault_tweaked_share,
-                        None,
-                        vec![],
-                        vault_tweaked_share,
-                        request_id, // Pass request_id from sequencer
-                        original_request, // Pass original_request for retry support
-                        None, // tics_withdraw_identifiers (not applicable)
-                    )
-                    .await?;
-                info!(
-                    "✅ [SOLVER] Reward update transaction signed for solver {} (btc: {}, tics: {})",
-                    solver_address,
-                    rewards_payload[0],
-                    rewards_payload[1]
-                );
-            } else {
-                warn!(
-                    "⚠️ [SOLVER] Skipping reward update for {} - missing vault secret share",
-                    solver_address
-                );
-            }
-        } else {
-            warn!(
-                "❌ [SOLVER] Signing node unavailable for reward update for {}",
-                solver_address
-            );
-        }
-
-        Ok(())
-    }
-
-    #[allow(dead_code)]
-    pub(crate) async fn submit_solver_liquidity_contract_update(
-        &mut self,
-        solver_address: &str,
-        asset_chain_name: &str,
-        amount: u128,
-        payout_tx_hash: &str,
-        request_id: Option<String>,
-        original_request: Option<()>,
-    ) -> Result<()> {
-        if amount == 0 {
-            return Ok(());
-        }
-
-        let contract_address = std::env::var("SOLVER_CONTRACT_ADDRESS")
-            .unwrap_or_else(|_| "0x0000000000000000000000000000000000000000".to_string());
-        if contract_address == "0x0000000000000000000000000000000000000000" {
-            info!(
-                "⏭️ [SOLVER] Skipping contract liquidity update for {} - solver contract address not configured",
-                solver_address
-            );
-            return Ok(());
-        }
-
-        let contract_chain_id = std::env::var("SOLVER_CONTRACT_CHAIN_ID")
-            .unwrap_or_else(|_| "9029".to_string())
-            .parse::<u64>()
-            .unwrap_or(9029);
-        let contract_chain_name = if contract_chain_id == 9029 {
-            "qubetics"
-        } else {
-            "ethereum"
-        };
-
-        let asset_chain_id_value =
-            crate::utils::transaction::get_chain_id_from_name(asset_chain_name).unwrap_or(0);
-        let asset_chain_id_u256 = U256::from(asset_chain_id_value);
-        let amount_u256 = U256::from(amount);
-
-        if amount_u256.is_zero() {
-            return Ok(());
-        }
-
-        let solver_id = match self.fetch_solver_id_for_address(solver_address).await {
-            Ok(id) => id,
-            Err(e) => {
-                warn!(
-                    "⚠️ [SOLVER] Unable to fetch solver ID for {}: {}; skipping contract update",
-                    solver_address, e
-                );
-                return Ok(());
-            }
-        };
-
-        let dkg_node = if let Some(node) = &self.dkg_node {
-            node
-        } else {
-            warn!(
-                "❌ [SOLVER] Cannot update contract liquidity for {} - DKG node unavailable",
-                solver_address
-            );
-            return Ok(());
-        };
-
-        let group_public_key = if let Some(key) = dkg_node.get_vault_group_key().await {
-            key
-        } else {
-            warn!(
-                "❌ [SOLVER] Cannot update contract liquidity for {} - liquidity operator group key unavailable",
-                solver_address
-            );
-            return Ok(());
-        };
-
-        let liquidity_operator_address = crate::utils::get_eth_address_from_group_key(group_public_key);
-        info!(
-            "🧾 [SOLVER] Submitting removeLiquidity for solver {} (solver_id={}, chain_id={}, amount={}, contract={}, from={})",
-            solver_address,
-            solver_id,
-            asset_chain_id_value,
-            amount,
-            contract_address,
-            liquidity_operator_address
-        );
-
-        let eth_tx = crate::utils::transaction::create_solver_remove_liquidity_transaction(
-            &liquidity_operator_address,
-            &solver_id,
-            asset_chain_id_u256,
-            amount_u256,
-            payout_tx_hash,
-            &contract_address,
-            contract_chain_id,
-            contract_chain_name,
-        )
-        .await?;
-
-        if let Some(signing_node) = &mut self.signing_node {
-            let available_nodes: Vec<PeerId> =
-                self.node_manager.get_active_nodes().into_iter().collect();
-            signing_node.set_available_nodes(available_nodes);
-            signing_node.set_chain_handler(
-                crate::chain_abstraction::ChainHandlerFactory::create_ethereum_handler(
-                    eth_tx.chain_id,
-                )
-                .into(),
-            );
-
-            let vault_tweaked_share = dkg_node.get_vault_tweaked_secret_share().await;
-
-            if let Some(ref _secret_share) = vault_tweaked_share {
-                // signing_node.set_group_public_key(group_public_key);
-                signing_node.set_vault_group_key(group_public_key);
-
-                let contract_tx = crate::types::intent::ContractTransaction {
-                    to: eth_tx.to.clone(),
-                    value: eth_tx.value.clone(),
-                    nonce: eth_tx.nonce,
-                    gas_limit: eth_tx.gas_limit,
-                    gas_price: eth_tx.gas_price.clone(),
-                    chain_id: eth_tx.chain_id,
-                    data: eth_tx
-                        .data
-                        .as_ref()
-                        .map(|d| format!("0x{}", hex::encode(d)))
-                        .unwrap_or_else(|| "0x".to_string()),
-                };
-
-                let tx_bytes = crate::utils::transaction::create_transaction_for_signing_contract(
-                    &contract_tx,
-                );
-                info!(
-                    "🔐 [SOLVER] Starting contract liquidity update signing for {}: 0x{}",
-                    solver_address,
-                    hex::encode(&tx_bytes)
-                );
-                let contract_chain_handler = signing_node.get_contract_chain_handler().clone();
-                let mut eth_signer = EthereumSigner::new(signing_node);
-                eth_signer
-                    .sign_contract_message(
-                        tx_bytes,
-                        &contract_chain_handler,
-                        &contract_tx,
-                        vault_tweaked_share,
-                        None,
-                        vec![],
-                        vault_tweaked_share,
-                        request_id, // Pass request_id from sequencer
-                        original_request, // No original_request available in this context
-                        None, // tics_withdraw_identifiers (not applicable)
-                    )
-                    .await?;
-                info!(
-                    "✅ [SOLVER] Contract liquidity update transaction signed for solver {} (chain_id: {}, amount: {})",
-                    solver_address,
-                    asset_chain_id_value,
-                    amount
-                );
-            } else {
-                warn!(
-                    "⚠️ [SOLVER] Skipping contract liquidity update for {} - missing vault secret share",
-                    solver_address
-                );
-            }
-        } else {
-            warn!(
-                "❌ [SOLVER] Signing node unavailable for contract liquidity update for {}",
-                solver_address
-            );
-        }
-
-        Ok(())
-    }
-
 }
 
 #[cfg(test)]
@@ -1366,6 +623,133 @@ impl MpcNetworkLayer {
                     );
                 }
             }
+            ChannelMessage::TicsClaimRewardBatch {
+                batch_id,
+                requests,
+                round,
+                timestamp,
+                node_id,
+            } => {
+                use libp2p::gossipsub::{IdentTopic, Message as GossipMessage};
+
+                let gossip_msg = crate::types::GossipsubMessage::TicsClaimRewardBatch {
+                    batch_id,
+                    requests,
+                    round,
+                    timestamp,
+                    node_id,
+                };
+
+                let data = match serde_json::to_vec(&gossip_msg) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        warn!(
+                            "❌ [TICS_CLAIM_REWARD] Failed to serialize TicsClaimRewardBatch: {}",
+                            e
+                        );
+                        return Ok(());
+                    }
+                };
+
+                let topic = TOPIC_CLAIM_REWARDS.to_string();
+                let topic_hash = IdentTopic::new(topic.clone());
+                let local_msg = GossipMessage {
+                    source: Some(self.local_peer_id),
+                    data: data.clone(),
+                    sequence_number: None,
+                    topic: topic_hash.hash(),
+                };
+
+                if let Err(e) = self.handle_gossipsub_message(&local_msg).await {
+                    warn!(
+                        "❌ [TICS_CLAIM_REWARD] Failed to process local TicsClaimRewardBatch: {}",
+                        e
+                    );
+                }
+
+                let swarm_mut = swarm.behaviour_mut();
+                let peer_count = swarm_mut.gossipsub.all_peers().count();
+
+                if peer_count > 0 {
+                    if let Err(e) = swarm_mut.gossipsub.publish(topic_hash, data) {
+                        warn!(
+                            "❌ [TICS_CLAIM_REWARD] Failed to publish TicsClaimRewardBatch to topic {}: {:?}",
+                            topic, e
+                        );
+                    }
+                } else {
+                    warn!(
+                        "⚠️ [TICS_CLAIM_REWARD] No peers available for broadcasting TicsClaimRewardBatch"
+                    );
+                }
+            }
+            ChannelMessage::ClaimRewardTxIdBroadcast {
+                txid,
+                network,
+                batch_id,
+                solver_address,
+                requests,
+                node_id,
+            } => {
+                use libp2p::gossipsub::{IdentTopic, Message as GossipMessage};
+
+                info!(
+                    "📡 [CLAIM_REWARD_TXID] Received claim-reward txid broadcast: txid={}, network={}, batch_id={}, solver={:?}, requests={}",
+                    txid, network, batch_id, solver_address, requests.len()
+                );
+
+                let gossip_msg = crate::types::GossipsubMessage::ClaimRewardTxIdBroadcast {
+                    txid,
+                    network,
+                    batch_id,
+                    solver_address,
+                    requests,
+                    node_id,
+                };
+
+                let data = match serde_json::to_vec(&gossip_msg) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        warn!(
+                            "❌ [CLAIM_REWARD_TXID] Failed to serialize ClaimRewardTxIdBroadcast: {}",
+                            e
+                        );
+                        return Ok(());
+                    }
+                };
+
+                let topic = TOPIC_CLAIM_REWARDS.to_string();
+                let topic_hash = IdentTopic::new(topic.clone());
+                let local_msg = GossipMessage {
+                    source: Some(self.local_peer_id),
+                    data: data.clone(),
+                    sequence_number: None,
+                    topic: topic_hash.hash(),
+                };
+
+                if let Err(e) = self.handle_gossipsub_message(&local_msg).await {
+                    warn!(
+                        "❌ [CLAIM_REWARD_TXID] Failed to process local ClaimRewardTxIdBroadcast: {}",
+                        e
+                    );
+                }
+
+                let swarm_mut = swarm.behaviour_mut();
+                let peer_count = swarm_mut.gossipsub.all_peers().count();
+
+                if peer_count > 0 {
+                    if let Err(e) = swarm_mut.gossipsub.publish(topic_hash, data) {
+                        warn!(
+                            "❌ [CLAIM_REWARD_TXID] Failed to publish ClaimRewardTxIdBroadcast to topic {}: {:?}",
+                            topic, e
+                        );
+                    }
+                } else {
+                    warn!(
+                        "⚠️ [CLAIM_REWARD_TXID] No peers available for broadcasting ClaimRewardTxIdBroadcast"
+                    );
+                }
+            }
             ChannelMessage::WithdrawTxIdBroadcast {
                 txid,
                 network,
@@ -1437,70 +821,6 @@ impl MpcNetworkLayer {
                 } else {
                     warn!(
                         "⚠️ [WITHDRAW_TXID] No peers available for broadcasting WithdrawTxIdBroadcast"
-                    );
-                }
-            }
-            ChannelMessage::ClaimRewardTxIdBroadcast {
-                txid,
-                network,
-                batch_id,
-                requests,
-                node_id,
-            } => {
-                use libp2p::gossipsub::{IdentTopic, Message as GossipMessage};
-
-                info!(
-                    "📡 [CLAIM_REWARD_TXID] Received claim-reward txid broadcast from node {}: txid={}, batch_id={}, requests={}",
-                    node_id, txid, batch_id, requests.len()
-                );
-
-                let gossip_msg = crate::types::GossipsubMessage::ClaimRewardTxIdBroadcast {
-                    txid,
-                    network,
-                    batch_id,
-                    requests,
-                    node_id,
-                };
-
-                let data = match serde_json::to_vec(&gossip_msg) {
-                    Ok(d) => d,
-                    Err(e) => {
-                        warn!(
-                            "❌ [CLAIM_REWARD_TXID] Failed to serialize ClaimRewardTxIdBroadcast: {}",
-                            e
-                        );
-                        return Ok(());
-                    }
-                };
-
-                let topic = TOPIC_CLAIM_REWARDS.to_string();
-                let topic_hash = IdentTopic::new(topic.clone());
-                let local_msg = GossipMessage {
-                    source: Some(self.local_peer_id),
-                    data: data.clone(),
-                    sequence_number: None,
-                    topic: topic_hash.hash(),
-                };
-
-                if let Err(e) = self.handle_gossipsub_message(&local_msg).await {
-                    warn!(
-                        "❌ [CLAIM_REWARD_TXID] Failed to process local ClaimRewardTxIdBroadcast: {}",
-                        e
-                    );
-                }
-
-                let swarm_mut = swarm.behaviour_mut();
-                let peer_count = swarm_mut.gossipsub.all_peers().count();
-                if peer_count > 0 {
-                    if let Err(e) = swarm_mut.gossipsub.publish(topic_hash, data) {
-                        warn!(
-                            "❌ [CLAIM_REWARD_TXID] Failed to publish ClaimRewardTxIdBroadcast to topic {}: {:?}",
-                            topic, e
-                        );
-                    }
-                } else {
-                    warn!(
-                        "⚠️ [CLAIM_REWARD_TXID] No peers available for broadcasting ClaimRewardTxIdBroadcast"
                     );
                 }
             }
@@ -3013,20 +2333,15 @@ impl MpcNetworkLayer {
                         // IntentStatusUpdate is a contract call on Qubetics chain (TICS)
                         "qubetics"
                     }
-                    crate::types::TransactionType::RewardTxn => {
-                        // RewardTxn is not valid for intent flow
-                        warn!("❌ [LOCAL] RewardTxn is not valid for deposit intent flow");
-                        return Ok(());
-                    }
                     crate::types::TransactionType::WithdrawLiquidity => {
                         warn!(
                             "❌ [LOCAL] WithdrawLiquidity is not supported in deposit intent flow"
                         );
                         return Ok(());
                     }
-                    crate::types::TransactionType::ClaimRewardBtc => {
+                    crate::types::TransactionType::ClaimReward => {
                         warn!(
-                            "❌ [LOCAL] ClaimRewardBtc is not supported in deposit intent flow"
+                            "❌ [LOCAL] ClaimReward is not supported in deposit intent flow"
                         );
                         return Ok(());
                     }
@@ -3067,19 +2382,15 @@ impl MpcNetworkLayer {
                             None
                         }
                     }
-                    crate::types::TransactionType::RewardTxn => {
-                        // RewardTxn is not valid for intent flow
-                        None
-                    }
                     crate::types::TransactionType::WithdrawLiquidity => {
                         warn!(
                             "❌ [LOCAL] WithdrawLiquidity is not supported for deposit intent signing"
                         );
                         None
                     }
-                    crate::types::TransactionType::ClaimRewardBtc => {
+                    crate::types::TransactionType::ClaimReward => {
                         warn!(
-                            "❌ [LOCAL] ClaimRewardBtc is not supported for deposit intent signing"
+                            "❌ [LOCAL] ClaimReward is not supported for deposit intent signing"
                         );
                         None
                     }
@@ -3194,17 +2505,14 @@ impl MpcNetworkLayer {
                                         }
                                     }
                                 }
-                                crate::types::TransactionType::RewardTxn => {
-                                    // RewardTxn is not valid for intent flow
-                                }
                                 crate::types::TransactionType::WithdrawLiquidity => {
                                     warn!(
                                         "❌ [LOCAL] WithdrawLiquidity is not supported for Bitcoin group key selection"
                                     );
                                 }
-                                crate::types::TransactionType::ClaimRewardBtc => {
+                                crate::types::TransactionType::ClaimReward => {
                                     warn!(
-                                        "❌ [LOCAL] ClaimRewardBtc is not supported for Bitcoin group key selection"
+                                        "❌ [LOCAL] ClaimReward is not supported for Bitcoin group key selection"
                                     );
                                 }
                             }
@@ -3250,19 +2558,15 @@ impl MpcNetworkLayer {
                             // For network withdrawals, refunds, and intent status updates, no derived addresses needed
                             (None, None)
                         }
-                        crate::types::TransactionType::RewardTxn => {
-                            // RewardTxn is not valid for intent flow
-                            (None, None)
-                        }
                         crate::types::TransactionType::WithdrawLiquidity => {
                             warn!(
                                 "❌ [LOCAL] WithdrawLiquidity transaction type not supported for derived addresses"
                             );
                             (None, None)
                         }
-                        crate::types::TransactionType::ClaimRewardBtc => {
+                        crate::types::TransactionType::ClaimReward => {
                             warn!(
-                                "❌ [LOCAL] ClaimRewardBtc transaction type not supported for derived addresses"
+                                "❌ [LOCAL] ClaimReward transaction type not supported for derived addresses"
                             );
                             (None, None)
                         }
@@ -3548,9 +2852,8 @@ impl MpcNetworkLayer {
                                         crate::types::TransactionType::NetworkToTarget => "network_to_target",
                                         crate::types::TransactionType::Refund => "refund",
                                         crate::types::TransactionType::IntentStatusUpdate => "intent_status_update",
-                                        crate::types::TransactionType::RewardTxn => "reward_txn",
                                         crate::types::TransactionType::WithdrawLiquidity => "withdraw_liquidity",
-                                        crate::types::TransactionType::ClaimRewardBtc => "claim_reward_btc",
+                                        crate::types::TransactionType::ClaimReward => "claim_reward",
                                     };
                                     
                                     signing_node.broadcast_transaction_error(
@@ -3848,35 +3151,6 @@ impl MpcNetworkLayer {
                             }
                         }
                     }
-                } else if let Some(solver_addr) = solver_address.as_ref() {
-                        // Handle reward or withdraw liquidity transaction IDs
-                        let storage_result = match transaction_type.as_str() {
-                            "reward_txn" => {
-                                self.handle_reward_transaction_id_storage(
-                                    solver_addr,
-                                    &transaction_id,
-                                    &transaction_type,
-                                )
-                                .await
-                            }
-                            _ => {
-                                warn!(
-                                    "❌ [NETWORK] Unknown transaction type: {}",
-                                    transaction_type
-                                );
-                                return Err(anyhow!(
-                                    "Unknown transaction type: {}",
-                                    transaction_type
-                                ));
-                            }
-                        };
-
-                        if let Err(e) = storage_result {
-                            error!(
-                                "❌ [NETWORK] Failed to handle transaction ID storage: {}",
-                                e
-                            );
-                        }
                 } else {
                     warn!("⚠️ [NETWORK] Transaction ID broadcast missing both intent hashes and solver address");
                 }
@@ -4124,58 +3398,6 @@ impl MpcNetworkLayer {
                 } else {
                     warn!("❌ DKG node not initialized at scheduled start!");
                 }
-            }
-            ChannelMessage::ClaimReward {
-                solver_address,
-                btc_address,
-                eth_address,
-                reward_btc,
-                reward_tics,
-                transaction_type,
-            } => {
-                info!("🎁 [NETWORK] Processing reward claim for solver: {}, ETH address: {:?}, BTC address: {:?}", 
-                  solver_address, eth_address, btc_address);
-                info!(
-                    "💰 [NETWORK] Reward details - BTC: {:?}, TICS: {:?}",
-                    reward_btc, reward_tics
-                );
-
-                // Validate transaction type for reward flow
-                // Note: If TransactionType is added to ClaimReward message in the future,
-                // use: Self::validate_transaction_type_for_reward(&transaction_type)?;
-                // For now, reward flow only processes RewardTxn type transactions
-
-                // Broadcast the reward claim to other nodes via gossipsub immediately
-                let claim_reward_msg = GossipsubMessage::ClaimReward {
-                    solver_address: solver_address.clone(),
-                    btc_address: btc_address.clone(),
-                    eth_address: eth_address.clone(),
-                    reward_btc: reward_btc.clone(),
-                    reward_tics: reward_tics.clone(),
-                    transaction_type: transaction_type.clone(),
-                };
-                let msg_bytes = serde_json::to_vec(&claim_reward_msg).map_err(|e| {
-                    anyhow::anyhow!("Failed to serialize claim reward message: {}", e)
-                })?;
-
-                // Broadcast to all peers via gossipsub
-                let topic = gossipsub::IdentTopic::new("claim-rewards");
-                swarm.behaviour_mut().gossipsub.publish(topic, msg_bytes)?;
-                info!(
-                    "📡 [NETWORK] Broadcasted claim reward to P2P network for solver: {}",
-                    solver_address
-                );
-
-                let _ = self
-                    .process_payout(
-                        "claim_reward",
-                        &solver_address,
-                        &btc_address,
-                        &eth_address,
-                        &reward_btc,
-                        &reward_tics,
-                    )
-                    .await?;
             }
             ChannelMessage::SolverAddLiquidity {
                 request_id,
@@ -4521,6 +3743,7 @@ impl MpcNetworkLayer {
                         None,
                         None,
                         None, // tics_withdraw_identifiers (not applicable)
+                        None, // tics_claim_reward_identifiers (not applicable)
                     )
                     .await?;
 
@@ -4767,6 +3990,7 @@ impl MpcNetworkLayer {
                         None,     // request_id (for sequencer)
                         None,     // original_request
                         None,     // tics_withdraw_identifiers (not applicable)
+                        None,     // tics_claim_reward_identifiers (not applicable)
                     )
                     .await?;
 
