@@ -365,6 +365,31 @@ impl IntentStorage {
         Ok(intent)
     }
 
+    /// Store target chain amount (smallest units) for an intent, computed from current prices
+    pub async fn store_intent_target_amount(
+        &self,
+        intent_hash: &str,
+        target_amount: u128,
+    ) -> Result<()> {
+        let key = key_utils::intent_target_amount_key(intent_hash);
+        self.db.put_string(&key, &target_amount.to_string())?;
+        debug!(
+            "💾 [INTENT_STORAGE] Stored target amount {} for intent {}",
+            target_amount, intent_hash
+        );
+        Ok(())
+    }
+
+    /// Get target chain amount for an intent, if previously computed and stored
+    pub async fn get_intent_target_amount(
+        &self,
+        intent_hash: &str,
+    ) -> Result<Option<u128>> {
+        let key = key_utils::intent_target_amount_key(intent_hash);
+        let s: Option<String> = self.db.get_string(&key)?;
+        Ok(s.and_then(|s| s.parse::<u128>().ok()))
+    }
+
     /// Get all intents
     pub async fn get_all_intents(&self) -> Result<HashMap<String, DepositIntent>> {
         let prefix = crate::database::keys::INTENT_REGISTRY;

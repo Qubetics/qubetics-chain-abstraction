@@ -280,7 +280,7 @@ impl DatabaseSigningNode {
         let peer_id = PeerId::from_str(&self.id).unwrap_or_else(|_| PeerId::random());
 
         // Create VrfService with proper initial round
-        let mut vrf_service = VrfService::new_with_storage_and_context(
+        let vrf_service = VrfService::new_with_storage_and_context(
             peer_id,
             self.message_tx.clone(),
             self.vrf_storage.clone(),

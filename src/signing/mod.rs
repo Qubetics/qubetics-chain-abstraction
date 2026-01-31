@@ -45,7 +45,6 @@ use crate::types::{
     TransactionType,
 };
 use crate::user_intent_manager::UserIntentManager;
-use anyhow::bail;
 use num_traits::Zero;
 
 
@@ -265,29 +264,8 @@ impl SigningNode {
                     ))
                 }
             }
-            Some(TransactionType::RewardTxn) => {
-                let group_key = if let Some(key) = self.key_store.get_group_public_key() {
-                    Some(key)
-                } else if let Some(database) = &self.database {
-                    match database.get_string::<SerializablePoint>(keys::DKG_FINAL_PUBLIC) {
-                        Ok(Some(serialized)) => Some(serialized.0.into()),
-                        _ => None,
-                    }
-                } else {
-                    None
-                };
-
-                if let Some(group_key) = group_key {
-                    let encoded_point = k256::EncodedPoint::from(group_key.to_affine());
-                    Ok(encoded_point.compress().to_bytes().to_vec())
-                } else {
-                    Err(anyhow!(
-                        "DKG group public key not available for RewardTxn - ensure DKG process is completed"
-                    ))
-                }
-            }
             Some(TransactionType::WithdrawLiquidity) => {
-                // WithdrawLiquidity uses network group key (same as RewardTxn and NetworkToTarget)
+                // WithdrawLiquidity uses network group key (same as NetworkToTarget)
                 let group_key = if let Some(key) = self.key_store.get_group_public_key() {
                     Some(key)
                 } else if let Some(database) = &self.database {
@@ -327,6 +305,28 @@ impl SigningNode {
                 } else {
                     Err(anyhow!(
                         "DKG group public key not available for Refund transaction - ensure DKG process is completed"
+                    ))
+                }
+            }
+            Some(TransactionType::ClaimReward) => {
+                // ClaimReward: when called from Bitcoin path we use network key (BTC); TICS uses vault in Ethereum signer
+                let group_key = if let Some(key) = self.key_store.get_group_public_key() {
+                    Some(key)
+                } else if let Some(database) = &self.database {
+                    match database.get_string::<SerializablePoint>(keys::DKG_FINAL_PUBLIC) {
+                        Ok(Some(serialized)) => Some(serialized.0.into()),
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+
+                if let Some(group_key) = group_key {
+                    let encoded_point = k256::EncodedPoint::from(group_key.to_affine());
+                    Ok(encoded_point.compress().to_bytes().to_vec())
+                } else {
+                    Err(anyhow!(
+                        "DKG group public key not available for ClaimReward - ensure DKG process is completed"
                     ))
                 }
             }
@@ -1325,7 +1325,7 @@ impl SigningNode {
                 let operation_type = consensus_node
                     .get_operation_type_for_round(round)
                     .cloned();
-                drop(consensus_node); // Explicitly drop the mutable borrow
+                let _ = consensus_node; // Release the mutable borrow
 
                 // Now we can safely borrow self immutably
                 self.broadcast("consensus-result", &broadcast_data).await?;
@@ -1401,6 +1401,14 @@ impl SigningNode {
                             );
                         }
 
+                        // Pick a batch of pending BTC claim-reward requests and broadcast (same flow as BTC withdraw)
+                        if let Err(e) = self.process_btc_claim_reward_batch_for_round(round).await {
+                            warn!(
+                                "⚠️ [CLOCK][BTC_CLAIM_REWARD] Failed to process BTC claim-reward batch for round {}: {}",
+                                round, e
+                            );
+                        }
+
                         // Trigger aggregate signature for the final node
                         self.trigger_aggregate_signature_for_final_node(round)
                             .await?;
@@ -1430,6 +1438,12 @@ impl SigningNode {
                         if let Err(e) = self.process_withdraw_settlement_epoch(round).await {
                             warn!(
                                 "⚠️ [CLOCK] Failed to process withdraw settlement epoch for round {}: {}",
+                                round, e
+                            );
+                        }
+                        if let Err(e) = self.process_tics_claim_reward_settlement_epoch(round).await {
+                            warn!(
+                                "⚠️ [CLOCK] Failed to process TICS claim-reward settlement epoch for round {}: {}",
                                 round, e
                             );
                         }
@@ -1728,14 +1742,84 @@ impl SigningNode {
                             batch_id,
                             requests,
                             round,
-                            timestamp: batch_timestamp,
+                            timestamp: batch_timestamp.clone(),
                             node_id: self.id.clone(),
                         })
                         .await?;
                 }
             }
         }
-        
+
+        Ok(())
+    }
+
+    /// Pick a batch of pending BTC claim-reward requests and broadcast BtcClaimRewardBatch (called from epoch_1).
+    async fn process_btc_claim_reward_batch_for_round(&self, round: u64) -> Result<()> {
+        let user_intent_manager = self
+            .user_intent_manager
+            .as_ref()
+            .ok_or_else(|| anyhow!("User intent manager not available"))?;
+        let db = user_intent_manager.get_database();
+
+        let max_btc_claim_reward_per_cycle = std::env::var("MAX_BTC_CLAIM_REWARD_PER_CYCLE")
+            .ok()
+            .and_then(|val| val.parse::<usize>().ok())
+            .unwrap_or(10);
+
+        let all_claims: Vec<(String, crate::types::rpc_server::PendingClaimRewardRequest)> =
+            db.get_values_with_prefix("pending_claim_reward:")
+                .map_err(|e| anyhow!("Failed to load pending claim reward requests: {}", e))?;
+
+        let mut btc_claim_pending: Vec<(String, crate::types::rpc_server::PendingClaimRewardRequest)> = all_claims
+            .into_iter()
+            .filter(|(_, req)| {
+                req.status == "Pending"
+                    && req.tx_id.is_none()
+                    && req.btc_address.as_ref().map_or(false, |a| !a.trim().is_empty())
+            })
+            .collect();
+
+        if btc_claim_pending.is_empty() {
+            return Ok(());
+        }
+
+        btc_claim_pending.sort_by(|a, b| a.1.request_id.cmp(&b.1.request_id));
+        let btc_claim_to_process: Vec<_> = btc_claim_pending
+            .into_iter()
+            .take(max_btc_claim_reward_per_cycle)
+            .collect();
+
+        let claim_requests: Vec<(String, String)> = btc_claim_to_process
+            .iter()
+            .map(|(_, req)| (req.request_id.clone(), req.solver_address.clone()))
+            .collect();
+
+        if claim_requests.is_empty() {
+            return Ok(());
+        }
+
+        let claim_batch_timestamp = chrono::Utc::now().to_rfc3339();
+        let claim_batch_id = format!(
+            "btc_claim_reward_batch:{}:{}",
+            round,
+            chrono::Utc::now().timestamp_millis()
+        );
+        info!(
+            "📤 [CLOCK][BTC_CLAIM_REWARD] Broadcasting BTC claim-reward batch {} with {} requests (epoch_1)",
+            claim_batch_id,
+            claim_requests.len()
+        );
+        self.message_tx
+            .send(crate::types::ChannelMessage::BtcClaimRewardBatch {
+                batch_id: claim_batch_id,
+                requests: claim_requests,
+                round,
+                timestamp: claim_batch_timestamp,
+                node_id: self.id.clone(),
+            })
+            .await
+            .map_err(|e| anyhow!("Failed to send BtcClaimRewardBatch: {}", e))?;
+
         Ok(())
     }
 
@@ -1976,7 +2060,7 @@ impl SigningNode {
         pending_requests.sort_by(|a, b| a.1.timestamp_ms.cmp(&b.1.timestamp_ms));
 
         // Limit to max_batch_size
-        let mut requests_to_batch: Vec<_> = pending_requests
+        let requests_to_batch: Vec<_> = pending_requests
             .into_iter()
             .take(max_batch_size)
             .collect();
@@ -2192,11 +2276,146 @@ impl SigningNode {
         Ok(())
     }
 
+    /// TICS claim-reward settlement (same flow as withdraw settlement).
+    /// Picks TICS claim requests (pending, have ethereum_address) and BTC claim requests (pending, have tx_id) for contract.
+    /// On success: store TICS tx_id on TICS requests and mark done; mark BTC requests done only.
+    async fn process_tics_claim_reward_settlement_epoch(&self, round: u64) -> Result<()> {
+        use crate::types::messaging::TicsClaimRewardBatchRequest;
+        use crate::types::rpc_server::PendingClaimRewardRequest;
+
+        info!("🔍 [CLOCK] Processing TICS claim-reward settlement epoch (epoch_3)...");
+
+        let user_intent_manager = self
+            .user_intent_manager
+            .as_ref()
+            .ok_or_else(|| anyhow!("User intent manager not available"))?;
+        let db = user_intent_manager.get_database();
+
+        let all_claims: Vec<(String, PendingClaimRewardRequest)> =
+            match db.get_values_with_prefix("pending_claim_reward:") {
+                Ok(entries) => entries,
+                Err(e) => {
+                    warn!(
+                        "⚠️ [CLOCK][TICS_CLAIM] Failed to load pending claim reward requests: {}",
+                        e
+                    );
+                    return Ok(());
+                }
+            };
+
+        if all_claims.is_empty() {
+            info!(
+                "ℹ️  [CLOCK][TICS_CLAIM] No claim reward requests found for settlement epoch"
+            );
+            return Ok(());
+        }
+
+        let tics_chain_id = std::env::var("SOLVER_CONTRACT_CHAIN_ID")
+            .unwrap_or_else(|_| "9029".to_string())
+            .parse::<u64>()
+            .unwrap_or(9029);
+
+        let mut tics_batched = 0usize;
+        let mut btc_updated = 0usize;
+        let mut tics_claim_batch_requests: Vec<TicsClaimRewardBatchRequest> = Vec::new();
+
+        for (key, mut req) in all_claims {
+            if req.status != "Pending" {
+                continue;
+            }
+
+            // TICS: pick pending requests that have ethereum_address (claim TICS to that address)
+            let has_eth = req.ethereum_address.as_ref().map_or(false, |a| !a.trim().is_empty());
+            if has_eth {
+                tics_claim_batch_requests.push(TicsClaimRewardBatchRequest {
+                    request_id: req.request_id.clone(),
+                    solver_address: req.solver_address.clone(),
+                    asset: "TICS".to_string(),
+                    amount: "0".to_string(), // gossipsub will fetch from contract
+                    chain_id: tics_chain_id,
+                    tx_id: req.tx_id.clone(),
+                });
+                req.status = "Batched".to_string();
+                if let Err(e) = db.put_string(&key, &req) {
+                    warn!(
+                        "⚠️ [CLOCK][TICS_CLAIM] Failed to mark TICS claim {} as Batched: {}",
+                        req.request_id, e
+                    );
+                } else {
+                    tics_batched += 1;
+                }
+                continue;
+            }
+
+            // BTC: pick pending requests that already have tx_id (register on contract in same batch)
+            let has_tx_id = req.tx_id.as_ref().map_or(false, |s| !s.is_empty());
+            let has_btc = req.btc_address.as_ref().map_or(false, |a| !a.trim().is_empty());
+            if has_btc && has_tx_id {
+                tics_claim_batch_requests.push(TicsClaimRewardBatchRequest {
+                    request_id: req.request_id.clone(),
+                    solver_address: req.solver_address.clone(),
+                    asset: "BTC".to_string(),
+                    amount: "0".to_string(),
+                    chain_id: 0,
+                    tx_id: req.tx_id.clone(),
+                });
+                req.status = "Batched".to_string();
+                if let Err(e) = db.put_string(&key, &req) {
+                    warn!(
+                        "⚠️ [CLOCK][TICS_CLAIM] Failed to mark BTC claim {} as Batched: {}",
+                        req.request_id, e
+                    );
+                } else {
+                    btc_updated += 1;
+                }
+            }
+        }
+
+        if !tics_claim_batch_requests.is_empty() {
+            let batch_timestamp = chrono::Utc::now().to_rfc3339();
+            let batch_id = format!(
+                "tics_claim_reward_batch:{}:{}",
+                round,
+                chrono::Utc::now().timestamp_millis()
+            );
+
+            info!(
+                "📦 [CLOCK][TICS_CLAIM] Creating TICS claim-reward batch {} with {} requests for round {}",
+                batch_id,
+                tics_claim_batch_requests.len(),
+                round
+            );
+
+            let message = ChannelMessage::TicsClaimRewardBatch {
+                batch_id,
+                requests: tics_claim_batch_requests,
+                round,
+                timestamp: batch_timestamp,
+                node_id: self.id.clone(),
+            };
+
+            if let Err(e) = self.message_tx.send(message).await {
+                warn!(
+                    "⚠️ [CLOCK][TICS_CLAIM] Failed to send TicsClaimRewardBatch channel message: {}",
+                    e
+                );
+            }
+        }
+
+        info!(
+            "✅ [CLOCK][TICS_CLAIM] Settlement epoch completed: {} TICS claim requests batched, {} BTC claim requests (with tx_id) batched for contract",
+            tics_batched, btc_updated
+        );
+
+        Ok(())
+    }
+
     /// Process BTC intent manager update batch after BTC batch is finalized
     /// This runs another VRF round to select a final node that will:
     /// 1. Get intents with network_to_target_tx_id but not Solved
     /// 2. Create batch and broadcast via btc-intent-manager-tx-update
     /// 3. Make contract call to processBatchIntents to update tx-id on contract
+    #[allow(dead_code)]
     async fn process_btc_intent_manager_update_batch_internal(
         btc_batch_round: u64,
         btc_txid: &str,
@@ -2779,35 +2998,12 @@ impl SigningNode {
 
                         // 🚀 NEW: Reconstruct and broadcast signed transaction based on actual transaction type
                         // Check the actual transaction stored for this round to determine the correct chain type
-                        // First check if this is a reward round
-                        let is_reward_round = {
-                            let reward_rounds = self.pending.reward_rounds.read().await;
-                            reward_rounds.contains(&round)
-                        };
                         let is_withdraw_round = {
                             let withdraw_rounds = self.pending.withdraw_rounds.read().await;
                             withdraw_rounds.contains(&round)
                         };
 
-                        let (is_contract_tx, maybe_chain_id) = if is_reward_round {
-                            // This is a reward transaction - check reward pending transactions for TICS (Ethereum)
-                            let reward_pending_transactions =
-                                self.pending.reward_pending_transactions_tics.read().await;
-                            if let Some((chain_tx, _tx_bytes, _solver_address, _transaction_type, _request_id, _original_request)) =
-                                reward_pending_transactions.get(&round)
-                            {
-                                match chain_tx {
-                                    ChainTransaction::Ethereum(eth_tx) => {
-                                        let is_contract = eth_tx.data.is_some()
-                                            && !eth_tx.data.as_ref().unwrap().is_empty();
-                                        (is_contract, Some(eth_tx.chain_id))
-                                    }
-                                    _ => (false, None), // Only handle Ethereum transactions in this function
-                                }
-                            } else {
-                                (false, None)
-                            }
-                        } else if is_withdraw_round {
+                        let (is_contract_tx, maybe_chain_id) = if is_withdraw_round {
                             let withdraw_pending_transactions =
                                 self.pending.withdraw_pending_transactions_tics.read().await;
                             if let Some((chain_tx, _tx_bytes, _solver_address, _transaction_type, _request_id, _original_request)) =
@@ -2883,7 +3079,7 @@ impl SigningNode {
                             );
                             
                             // Get request_id and original_request from pending transactions for sequencer tracking
-                            let (request_id, original_request) = {
+                            let (request_id, _original_request) = {
                                 let pending = self.pending.pending_transactions.read().await;
                                 pending.get(&round).map(|(_, _, _, _, req_id, orig_req)| {
                                     (req_id.clone(), orig_req.clone())
@@ -3051,25 +3247,25 @@ impl SigningNode {
         }
 
         // ---- 1) Pull unsigned tx + BTC extras from the correct pending store (needed for verification) ----
-        let is_reward_round = {
-            let reward_rounds = self.pending.reward_rounds.read().await;
-            reward_rounds.contains(&round)
-        };
         let is_withdraw_round = {
             let withdraw_rounds = self.pending.withdraw_rounds.read().await;
             withdraw_rounds.contains(&round)
         };
+        let is_claim_reward_round = {
+            let claim_reward_rounds = self.pending.claim_reward_rounds.read().await;
+            claim_reward_rounds.contains(&round)
+        };
 
         let (unsigned_tx, extras, total_inputs) = {
-            let (chain_tx, extras_opt) = if is_reward_round {
-                let reward_pt = self.pending.reward_pending_transactions_btc.read().await;
+            let (chain_tx, extras_opt) = if is_claim_reward_round {
+                let claim_reward_pt = self.pending.claim_reward_pending_transactions_btc.read().await;
                 let (chain_tx, _raw, _solver_address, _tx_type_opt, extras_opt) =
-                    reward_pt.get(&round).ok_or_else(|| {
+                    claim_reward_pt.get(&round).ok_or_else(|| {
                         error!(
-                            "[handle_btc_signature_for_round] No reward pending tx for round {}",
+                            "[handle_btc_signature_for_round] No claim-reward pending tx for round {}",
                             round
                         );
-                        anyhow!("no reward pending tx for round {}", round)
+                        anyhow!("no claim-reward pending tx for round {}", round)
                     })?;
                 (chain_tx.clone(), extras_opt.clone())
             } else if is_withdraw_round {
@@ -3502,15 +3698,15 @@ impl SigningNode {
         // ---- 4) FINALIZE only when *all* inputs aggregated ----
         let (should_finalize, total_inputs2, unsigned_tx2) = {
             // Use the same round classification to pull the correct pending entry
-            let chain_tx = if is_reward_round {
-                let reward_pt = self.pending.reward_pending_transactions_btc.read().await;
+            let chain_tx = if is_claim_reward_round {
+                let claim_reward_pt = self.pending.claim_reward_pending_transactions_btc.read().await;
                 let (chain_tx, _raw, _solver_address, _tx_type_opt, _extras) =
-                    reward_pt.get(&round).ok_or_else(|| {
+                    claim_reward_pt.get(&round).ok_or_else(|| {
                         error!(
-                            "[handle_btc_signature_for_round] No reward pending tx for round {} (finalize step)",
+                            "[handle_btc_signature_for_round] No claim-reward pending tx for round {} (finalize step)",
                             round
                         );
-                        anyhow!("no reward pending tx for round {}", round)
+                        anyhow!("no claim-reward pending tx for round {}", round)
                     })?;
                 chain_tx.clone()
             } else if is_withdraw_round {
@@ -3755,7 +3951,6 @@ impl SigningNode {
                 "NetworkToTarget" => Some(crate::types::TransactionType::NetworkToTarget),
                 "Refund" => Some(crate::types::TransactionType::Refund),
                 "WithdrawLiquidity" => Some(crate::types::TransactionType::WithdrawLiquidity),
-                "RewardTxn" => Some(crate::types::TransactionType::RewardTxn),
                 _ => None,
             }
         });
@@ -3934,6 +4129,7 @@ impl SigningNode {
         let share_pubkey = self
             .get_share_pubkey_for_verification(
                 peer_id,
+                round,
                 &transaction_type,
                 user_eth_address.as_deref(),
             )
@@ -4188,8 +4384,16 @@ impl SigningNode {
             Some(crate::types::TransactionType::NetworkToTarget) => "network-share",
             Some(crate::types::TransactionType::Refund) => "network-share", // Refund uses network share (same as NetworkToTarget)
             Some(crate::types::TransactionType::IntentStatusUpdate) => "network-share", // IntentStatusUpdate uses network share (same as NetworkToTarget)
-            Some(crate::types::TransactionType::RewardTxn) => "network-share",
             Some(crate::types::TransactionType::WithdrawLiquidity) => "network-share",
+            Some(crate::types::TransactionType::ClaimReward) => {
+                // TICS round → vault-share; BTC round → network-share (same as WithdrawLiquidity)
+                let tics = self.pending.claim_reward_pending_transactions_tics.read().await;
+                if tics.contains_key(&round) {
+                    "vault-share"
+                } else {
+                    "network-share"
+                }
+            }
             None => "vault-share",
         };
 
@@ -4232,21 +4436,21 @@ impl SigningNode {
 
         // Get transaction type and user_eth_address for this round
         let (transaction_type, user_eth_address) = {
-            let is_reward_round = {
-                let reward_rounds = self.pending.reward_rounds.read().await;
-                reward_rounds.contains(&round)
-            };
             let is_withdraw_round = {
                 let withdraw_rounds = self.pending.withdraw_rounds.read().await;
                 withdraw_rounds.contains(&round)
             };
+            let is_claim_reward_round = {
+                let claim_reward_rounds = self.pending.claim_reward_rounds.read().await;
+                claim_reward_rounds.contains(&round)
+            };
 
-            if is_reward_round {
-                let reward_pt = self.pending.reward_pending_transactions_btc.read().await;
-                if let Some((_tx, _raw, _solver_address, tx_type, _extras)) = reward_pt.get(&round) {
+            if is_claim_reward_round {
+                let claim_reward_pt = self.pending.claim_reward_pending_transactions_btc.read().await;
+                if let Some((_tx, _raw, _solver_address, tx_type, _extras)) = claim_reward_pt.get(&round) {
                     (tx_type.clone(), None)
                 } else {
-                    return Err(anyhow!("No reward pending tx for round {}", round));
+                    return Err(anyhow!("No claim-reward pending tx for round {}", round));
                 }
             } else if is_withdraw_round {
                 let withdraw_pt = self.pending.withdraw_pending_transactions_btc.read().await;
@@ -4301,20 +4505,20 @@ impl SigningNode {
 
         // Get Bitcoin transaction and compute digest for this input
         let unsigned_tx = {
-            let is_reward_round = {
-                let reward_rounds = self.pending.reward_rounds.read().await;
-                reward_rounds.contains(&round)
-            };
             let is_withdraw_round = {
                 let withdraw_rounds = self.pending.withdraw_rounds.read().await;
                 withdraw_rounds.contains(&round)
             };
+            let is_claim_reward_round = {
+                let claim_reward_rounds = self.pending.claim_reward_rounds.read().await;
+                claim_reward_rounds.contains(&round)
+            };
 
-            let (chain_tx, extras_opt) = if is_reward_round {
-                let reward_pt = self.pending.reward_pending_transactions_btc.read().await;
+            let (chain_tx, _extras_opt) = if is_claim_reward_round {
+                let claim_reward_pt = self.pending.claim_reward_pending_transactions_btc.read().await;
                 let (chain_tx, _raw, _solver_address, _tx_type_opt, extras_opt) =
-                    reward_pt.get(&round).ok_or_else(|| {
-                        anyhow!("no reward pending tx for round {}", round)
+                    claim_reward_pt.get(&round).ok_or_else(|| {
+                        anyhow!("no claim-reward pending tx for round {}", round)
                     })?;
                 (chain_tx.clone(), extras_opt.clone())
             } else if is_withdraw_round {
@@ -4383,6 +4587,7 @@ impl SigningNode {
         let share_pubkey = self
             .get_share_pubkey_for_verification(
                 peer_id,
+                round,
                 &transaction_type,
                 user_eth_address.as_deref(),
             )
@@ -4612,8 +4817,8 @@ impl SigningNode {
             Some(crate::types::TransactionType::NetworkToTarget) => "network-share",
             Some(crate::types::TransactionType::Refund) => "network-share", // Refund uses network share (same as NetworkToTarget)
             Some(crate::types::TransactionType::IntentStatusUpdate) => "network-share", // IntentStatusUpdate uses network share (same as NetworkToTarget)
-            Some(crate::types::TransactionType::RewardTxn) => "network-share",
             Some(crate::types::TransactionType::WithdrawLiquidity) => "network-share",
+            Some(crate::types::TransactionType::ClaimReward) => "network-share", // BTC claim-reward (BitcoinSigner path)
             None => "vault-share",
         };
 
@@ -4640,10 +4845,10 @@ impl SigningNode {
         round: u64,
     ) -> Result<(Vec<u8>, Option<TransactionType>, Option<String>)> {
 
-        // Check if it's a reward or withdraw round
-        let is_reward_round = {
-            let reward_rounds = self.pending.reward_rounds.read().await;
-            reward_rounds.contains(&round)
+        // Check if it's a claim-reward, withdraw, or regular round
+        let is_claim_reward_round = {
+            let claim_reward_rounds = self.pending.claim_reward_rounds.read().await;
+            claim_reward_rounds.contains(&round)
         };
 
         let is_withdraw_round = {
@@ -4651,25 +4856,27 @@ impl SigningNode {
             withdraw_rounds.contains(&round)
         };
 
-        // Try TICS (Ethereum) transactions first
+        // Try TICS (Ethereum) transactions first, then BTC
         //
         // NOTE: For partial signature verification we may override the stored transaction_type
         // for certain contract calls (e.g. IntentManager.processBatchIntents) so that verification
         // is performed against the VAULT/main key path.
-        let (tx_bytes, mut transaction_type, user_eth_address, chain_tx_opt) = if is_reward_round {
-            let reward_pt = self.pending.reward_pending_transactions_tics.read().await;
-            if let Some((chain_tx, tx_bytes, _solver_address, tx_type, _request_id, _original_request)) = reward_pt.get(&round) {
+        let (tx_bytes, transaction_type, user_eth_address, _chain_tx_opt) = if is_claim_reward_round {
+            // Claim-reward: try TICS (contract) first, then BTC
+            let claim_reward_pt_tics = self.pending.claim_reward_pending_transactions_tics.read().await;
+            if let Some((chain_tx, tx_bytes, _identifiers, tx_type, _request_id, _original_request)) =
+                claim_reward_pt_tics.get(&round)
+            {
                 (tx_bytes.clone(), tx_type.clone(), None, Some(chain_tx.clone()))
             } else {
-                // Try BTC reward
-                let reward_pt_btc = self.pending.reward_pending_transactions_btc.read().await;
+                let claim_reward_pt_btc = self.pending.claim_reward_pending_transactions_btc.read().await;
                 if let Some((_tx, tx_bytes, _solver_address, tx_type, _extras)) =
-                    reward_pt_btc.get(&round)
+                    claim_reward_pt_btc.get(&round)
                 {
                     (tx_bytes.clone(), tx_type.clone(), None, None)
                 } else {
                     return Err(anyhow!(
-                        "No pending transaction found for reward round {}",
+                        "No pending transaction found for claim-reward round {}",
                         round
                     ));
                 }
@@ -4882,6 +5089,7 @@ impl SigningNode {
     async fn get_share_pubkey_for_verification(
         &self,
         peer_id: &str,
+        round: u64,
         transaction_type: &Option<TransactionType>,
         user_eth_address: Option<&str>,
     ) -> Result<k256::ProjectivePoint> {
@@ -4898,7 +5106,7 @@ impl SigningNode {
         // Mapping:
         // - UserToVault → per-node-user-share PARTIAL pubkey verification
         // - NetworkToTarget → per-node-network-share PARTIAL pubkey verification
-        // - RewardTxn/WithdrawLiquidity → per-node-network-share PARTIAL pubkey verification
+        // - WithdrawLiquidity/ClaimReward → per-node-network-share or vault-share (by round) PARTIAL pubkey verification
         // Works for both ETH/TICS and BTC transactions
         match transaction_type {
             Some(crate::types::TransactionType::UserToVault) => {
@@ -4975,22 +5183,70 @@ impl SigningNode {
                         )
                     })
             }
-            Some(crate::types::TransactionType::RewardTxn)
-            | Some(crate::types::TransactionType::WithdrawLiquidity) => {
-                // IMPORTANT: RewardTxn and WithdrawLiquidity must be handled identically
-                // Both use per-node-network-share pubkey for verification (partial signature verification)
-                // Both use network group key for signing (via network DKG secret share)
-                // This ensures threshold signature shares from each node verify against their individual partial public keys
-                dkg_storage
-                    .get_network_share_pubkey(peer_id)
-                    .await?
-                    .ok_or_else(|| {
-                        anyhow!(
-                            "Network share pubkey not found for peer {} ({:?} transaction)",
-                            peer_id,
-                            transaction_type
-                        )
-                    })
+            Some(crate::types::TransactionType::WithdrawLiquidity) => {
+                // TICS withdraw batch (contract removeLiquidity) is signed with vault (liquidity operator) key;
+                // BTC withdraw is signed with network key. Use vault-share when round is in withdraw_pending_transactions_tics.
+                let is_tics_withdraw_round = {
+                    let tics = self.pending.withdraw_pending_transactions_tics.read().await;
+                    tics.contains_key(&round)
+                };
+                if is_tics_withdraw_round {
+                    info!(
+                        "🔑 [SIGNING] WithdrawLiquidity round {} is TICS contract withdraw; using liquidity operator (vault) share pubkey for peer {}",
+                        round, peer_id
+                    );
+                    dkg_storage
+                        .get_vault_share_pubkey(peer_id)
+                        .await?
+                        .ok_or_else(|| {
+                            anyhow!(
+                                "Vault share pubkey not found for peer {} (TICS withdraw round {})",
+                                peer_id, round
+                            )
+                        })
+                } else {
+                    dkg_storage
+                        .get_network_share_pubkey(peer_id)
+                        .await?
+                        .ok_or_else(|| {
+                            anyhow!(
+                                "Network share pubkey not found for peer {} (BTC withdraw / WithdrawLiquidity)",
+                                peer_id
+                            )
+                        })
+                }
+            }
+            Some(crate::types::TransactionType::ClaimReward) => {
+                // ClaimReward: TICS vs BTC determined by which pending store has the round (same as WithdrawLiquidity)
+                let is_tics_claim_round = {
+                    let tics = self.pending.claim_reward_pending_transactions_tics.read().await;
+                    tics.contains_key(&round)
+                };
+                if is_tics_claim_round {
+                    info!(
+                        "🔑 [SIGNING] ClaimReward round {} is TICS; using liquidity operator (vault) share pubkey for peer {}",
+                        round, peer_id
+                    );
+                    dkg_storage
+                        .get_vault_share_pubkey(peer_id)
+                        .await?
+                        .ok_or_else(|| {
+                            anyhow!(
+                                "Vault share pubkey not found for peer {} (ClaimReward TICS round {})",
+                                peer_id, round
+                            )
+                        })
+                } else {
+                    dkg_storage
+                        .get_network_share_pubkey(peer_id)
+                        .await?
+                        .ok_or_else(|| {
+                            anyhow!(
+                                "Network share pubkey not found for peer {} (ClaimReward BTC round {})",
+                                peer_id, round
+                            )
+                        })
+                }
             }
             None => {
                 // Contract transaction (transaction_type = None) → use vault share pubkey

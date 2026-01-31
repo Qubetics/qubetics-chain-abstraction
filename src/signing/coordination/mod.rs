@@ -142,7 +142,7 @@ impl Coordination {
         }
 
         // Create VrfService with storage if available, otherwise without
-        let mut vrf_service = if let Some(ref storage) = self.vrf_storage {
+        let vrf_service = if let Some(ref storage) = self.vrf_storage {
             VrfService::new_with_storage_and_context(
                 peer_id,
                 message_tx,

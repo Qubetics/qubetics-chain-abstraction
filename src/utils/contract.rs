@@ -19,6 +19,7 @@ pub async fn execute_contract_call_for_transaction(
     transaction_type: TransactionType,
     vault_group_key: Option<ProjectivePoint>,
     amount: u128,
+    target_amount: Option<u128>,
     tx_hash: &[u8],
 ) -> Result<()> {
     // Convert tx_hash from bytes to hex string for the executor
@@ -33,6 +34,7 @@ pub async fn execute_contract_call_for_transaction(
         transaction_type,
         vault_group_key,
         amount,
+        target_amount,
         &tx_hash_str,
         None, // No request_id for non-sequencer call
         None, // No original_request for non-sequencer call
@@ -64,7 +66,6 @@ pub async fn execute_refund_intent_contract_call(
     request_id: Option<String>,
     _original_request: Option<()>,
 ) -> Result<()> {
-    use crate::chain_abstraction::{ChainTransaction, EthereumTransaction};
     use crate::signing::EthereumSigner;
     use crate::utils::get_eth_address_from_group_key;
     use crate::utils::transaction::{
@@ -175,6 +176,7 @@ pub async fn execute_refund_intent_contract_call(
             request_id,
             None,
             None, // tics_withdraw_identifiers (not applicable)
+            None, // tics_claim_reward_identifiers (not applicable)
         )
         .await?;
 

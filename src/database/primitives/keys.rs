@@ -30,15 +30,6 @@ pub const DKG_EXPECTED_SHARES: &str = "dkg_expected_shares";
 pub const DKG_REFRESH_IN_PROGRESS: &str = "dkg_refresh_in_progress";
 pub const PEER_INDEX: &str = "peer_index:";
 pub const SOLVER_AMOUNTS: &str = "solver_amounts:";
-pub const SOLVER_REWARD: &str = "solver_reward:";
-pub const SOLVER_REWARD_TICS: &str = "solver_reward_tics:";
-pub const SOLVER_REWARD_BTC: &str = "solver_reward_btc:";
-pub const CLAIMED_REQUEST_AMOUNT: &str = "claimed_request_amount:";
-pub const INTENT_REWARD_STATUS: &str = "intent_reward_status:";
-pub const SOLVER_TICS_TXN_HASHES: &str = "solver_tics_txn_hashes:";
-pub const SOLVER_BTC_TXN_HASHES: &str = "solver_btc_txn_hashes:";
-pub const SOLVER_REMOVE_LIQ_TICS_TXN: &str = "solver_remove_liq_tics_txn:";
-pub const SOLVER_REMOVE_LIQ_BTC_TXN: &str = "solver_remove_liq_btc_txn:";
 pub const PEER_KEYPAIR: &str = "peer_keypair";
 pub const PEER_ADDR: &str = "peer_addr:";
 pub const VRF_CURRENT_ROUND: &str = "vrf_current_round";
@@ -48,3 +39,5 @@ pub const NODE_SHARE_PUBKEY_VAULT: &str = "node_share_pubkey_vault:";
 pub const NODE_SHARE_PUBKEY_USER: &str = "node_share_pubkey_user:";
 /// Reverse index: intent_hash -> ethereum_address for O(1) get_user_by_intent_hash
 pub const INTENT_HASH_TO_USER: &str = "intent_to_user:";
+/// Target chain amount (in smallest units) for an intent, computed from prices per node
+pub const INTENT_TARGET_AMOUNT: &str = "intent_target_amount:";

@@ -382,7 +382,7 @@ pub fn select_utxos_for_amount(
         selected.push(candidate);
 
         let n_inputs = selected.len();
-        let mut skip_no_change_path = false;
+        let skip_no_change_path = false;
 
         // Try change path first (2 outputs: recipient + change)
         let fee_with_change = estimate_fee_sat(kind, n_inputs, 2, fee_rate_sat_vb);
@@ -1040,15 +1040,14 @@ async fn create_chain_transaction_from_deposit_intent_internal(
         crate::types::TransactionType::NetworkToTarget => &intent.target_chain.to_lowercase(),
         crate::types::TransactionType::Refund => &intent.source_chain.to_lowercase(), // Refund goes back to source chain
         crate::types::TransactionType::IntentStatusUpdate => "qubetics", // IntentStatusUpdate is a contract call on Qubetics chain
-        crate::types::TransactionType::RewardTxn => {
-            // RewardTxn is not valid for intent flow
-            return Err(anyhow::anyhow!(
-                "RewardTxn is not valid for deposit intent flow"
-            ));
-        }
         crate::types::TransactionType::WithdrawLiquidity => {
             return Err(anyhow::anyhow!(
                 "WithdrawLiquidity is not valid for deposit intent flow"
+            ));
+        }
+        crate::types::TransactionType::ClaimReward => {
+            return Err(anyhow::anyhow!(
+                "ClaimReward is not valid for deposit intent flow"
             ));
         }
     };
@@ -1151,15 +1150,14 @@ async fn create_chain_transaction_from_deposit_intent_internal(
                 );
                 (network_address.clone(), intent.source_address.clone())
             }
-            crate::types::TransactionType::RewardTxn => {
-                // RewardTxn is not valid for intent flow
-                return Err(anyhow::anyhow!(
-                    "RewardTxn is not valid for deposit intent flow"
-                ));
-            }
             crate::types::TransactionType::WithdrawLiquidity => {
                 return Err(anyhow::anyhow!(
                     "WithdrawLiquidity is not valid for deposit intent flow"
+                ));
+            }
+            crate::types::TransactionType::ClaimReward => {
+                return Err(anyhow::anyhow!(
+                    "ClaimReward is not valid for deposit intent flow"
                 ));
             }
         };
@@ -1234,15 +1232,14 @@ async fn create_chain_transaction_from_deposit_intent_internal(
                 );
                 (btc_network_address.clone(), intent.source_address.clone())
             }
-            crate::types::TransactionType::RewardTxn => {
-                // RewardTxn is not valid for intent flow
-                return Err(anyhow::anyhow!(
-                    "RewardTxn is not valid for deposit intent flow"
-                ));
-            }
             crate::types::TransactionType::WithdrawLiquidity => {
                 return Err(anyhow::anyhow!(
                     "WithdrawLiquidity is not valid for deposit intent flow"
+                ));
+            }
+            crate::types::TransactionType::ClaimReward => {
+                return Err(anyhow::anyhow!(
+                    "ClaimReward is not valid for deposit intent flow"
                 ));
             }
         };
@@ -1260,6 +1257,7 @@ async fn create_chain_transaction_from_deposit_intent_internal(
 pub async fn create_chain_transaction_from_contract_call(
     group_public_key: Option<k256::ProjectivePoint>,
     amount: u128,
+    target_amount: Option<u128>,
     intent: &DepositIntent,
     intent_hash: &str,
     tx_hash: &str,
@@ -1310,15 +1308,14 @@ pub async fn create_chain_transaction_from_contract_call(
                 "Refund transactions do not require contract call calldata - they are direct fund transfers"
             ));
         }
-        crate::types::TransactionType::RewardTxn => {
-            // RewardTxn is not valid for intent flow
-            return Err(anyhow::anyhow!(
-                "RewardTxn is not valid for deposit intent flow"
-            ));
-        }
         crate::types::TransactionType::WithdrawLiquidity => {
             return Err(anyhow::anyhow!(
                 "WithdrawLiquidity is not valid for deposit intent flow"
+            ));
+        }
+        crate::types::TransactionType::ClaimReward => {
+            return Err(anyhow::anyhow!(
+                "ClaimReward is not valid for deposit intent flow"
             ));
         }
     };
@@ -1346,12 +1343,14 @@ pub async fn create_chain_transaction_from_contract_call(
         }
     };
 
+    let target_amt = target_amount.unwrap_or(amount);
     let batch_intent = BatchIntentInput {
         source_address: intent.source_address.clone(),
         target_address: intent.target_address.clone(),
         source_chain: intent.source_chain.clone(),
         target_chain: intent.target_chain.clone(),
-        amount,
+        source_amount: amount,
+        target_amount: target_amt,
         source_token: intent.source_token.clone(),
         target_token: intent.target_token.clone(),
         intent_id: intent_hash.to_string(),
@@ -1481,6 +1480,69 @@ pub async fn create_solver_rewards_update_transaction(
         gas_price,
         nonce,
         data: calldata,
+        chain_id,
+    };
+
+    Ok(ChainTransaction::Ethereum(ethereum_tx))
+}
+
+/// Create a ChainTransaction for a batch claim-rewards call to SolverManager.claimRewardsBatch.
+/// - `claims`: slice of (solver_address, amount) for the same chain type.
+/// - `chain_type`: 0 = BTC, 1 = TICS (SolverManager.ChainType).
+pub async fn create_solver_claim_rewards_batch_transaction(
+    from_address: &str,
+    claims: &[RewardClaimBatchEntry],
+    chain_type: u8,
+    contract_address: &str,
+    chain_id: u64,
+    chain_name: &str,
+) -> Result<ChainTransaction> {
+    let normalized_contract_address = if contract_address.starts_with("0x") {
+        contract_address.to_string()
+    } else {
+        format!("0x{contract_address}")
+    };
+
+    let calldata = encode_claim_rewards_batch_calldata(claims, chain_type)
+        .ok_or_else(|| anyhow::anyhow!("Failed to encode claimRewardsBatch calldata"))?;
+    let calldata_hex = format!("0x{}", hex::encode(&calldata));
+
+    info!(
+        "🔧 [CONTRACT] Creating claimRewardsBatch for {} claims, chain_type={} on chain {} via {}",
+        claims.len(),
+        chain_type,
+        chain_id,
+        normalized_contract_address
+    );
+
+    let estimated_gas = estimate_gas_for_deposit_intent(
+        from_address,
+        &normalized_contract_address,
+        &calldata_hex,
+        chain_id,
+    )
+    .await?;
+    let gas_limit = estimated_gas + (estimated_gas / 10);
+
+    let gas_price = get_gas_price_for_chain(chain_name, chain_id)
+        .await
+        .unwrap_or_else(|e| {
+            warn!(
+                "⚠️ Failed to get dynamic gas price for claimRewardsBatch: {}, using fallback",
+                e
+            );
+            get_default_gas_price_for_chain(chain_name)
+        });
+
+    let nonce = fetch_ethereum_nonce(from_address, chain_id).await?;
+
+    let ethereum_tx = EthereumTransaction {
+        to: normalized_contract_address,
+        value: "0x0".to_string(),
+        gas_limit,
+        gas_price,
+        nonce,
+        data: Some(calldata),
         chain_id,
     };
 
@@ -1741,7 +1803,8 @@ pub fn encode_process_batch_intents_calldata(
         ParamType::String,    // targetAddress
         ParamType::String,    // sourceChain
         ParamType::String,    // targetChain
-        ParamType::Uint(128), // amount
+        ParamType::Uint(128), // sourceAmount
+        ParamType::Uint(128), // targetAmount
         ParamType::String,    // sourceToken
         ParamType::String,    // targetToken
         ParamType::String,    // intentId
@@ -1783,7 +1846,8 @@ pub fn encode_process_batch_intents_calldata(
                 Token::String(intent.target_address.clone()),
                 Token::String(intent.source_chain.clone()),
                 Token::String(intent.target_chain.clone()),
-                Token::Uint(U256::from(intent.amount)),
+                Token::Uint(U256::from(intent.source_amount)),
+                Token::Uint(U256::from(intent.target_amount)),
                 Token::String(intent.source_token.clone()),
                 Token::String(intent.target_token.clone()),
                 Token::String(intent.intent_id.clone()),
@@ -1802,12 +1866,20 @@ pub fn encode_process_batch_intents_calldata(
     f.encode_input(&tokens).ok()
 }
 
-pub fn encode_update_solver_rewards_calldata(
-    solver_address: &str,
-    rewards: &[U256],
-    transaction_hash: &str,
+/// One claim entry for claimRewardsBatch: (solver_address, amount).
+/// ABI: RewardClaim { address solver, uint256 amount }
+pub type RewardClaimBatchEntry = (String, U256);
+
+/// Encode calldata for claimRewardsBatch with multiple claims in one call.
+/// ABI: claimRewardsBatch(RewardClaim[] claims, ChainType chainType)
+/// where RewardClaim is struct { address solver, uint256 amount } and chainType is uint8 (0=BTC, 1=TICS).
+pub fn encode_claim_rewards_batch_calldata(
+    claims: &[RewardClaimBatchEntry],
+    chain_type: u8,
 ) -> Option<Vec<u8>> {
-    // New ABI: claimRewardsBatch((address solver, uint256 amount)[] claims, uint8 chainType)
+    if claims.is_empty() {
+        return None;
+    }
     #[allow(deprecated)]
     let f = Function {
         name: "claimRewardsBatch".to_owned(),
@@ -1818,12 +1890,12 @@ pub fn encode_update_solver_rewards_calldata(
                     ParamType::Address,
                     ParamType::Uint(256),
                 ]))),
-                internal_type: None,
+                internal_type: Some("struct SolverManager.RewardClaim[]".into()),
             },
             Param {
                 name: "chainType".into(),
                 kind: ParamType::Uint(8),
-                internal_type: None,
+                internal_type: Some("enum SolverManager.ChainType".into()),
             },
         ],
         outputs: vec![],
@@ -1831,32 +1903,46 @@ pub fn encode_update_solver_rewards_calldata(
         state_mutability: StateMutability::NonPayable,
     };
 
-    let solver_addr = solver_address.parse::<ethers::types::Address>().ok()?;
+    let claim_tokens: Vec<Token> = claims
+        .iter()
+        .filter_map(|(solver_addr_str, amount)| {
+            solver_addr_str
+                .parse::<ethers::types::Address>()
+                .ok()
+                .map(|addr| Token::Tuple(vec![Token::Address(addr), Token::Uint(*amount)]))
+        })
+        .collect();
 
-    // Existing flow passes rewards as [btc, tics]; HTTP layer enforces only one side
-    // is claimed at a time. Map non-zero entry to amount and chainType.
-    let (amount, chain_type_u8) = if !rewards.is_empty() && !rewards[0].is_zero() {
-        // BTC rewards
-        (rewards[0], 0u8)
-    } else if rewards.len() > 1 && !rewards[1].is_zero() {
-        // TICS rewards
-        (rewards[1], 1u8)
-    } else {
-        // No non-zero rewards – let the call encode but it will be a no-op on-chain
-        (U256::zero(), 0u8)
-    };
-
-    let claims = vec![Token::Tuple(vec![
-        Token::Address(solver_addr),
-        Token::Uint(amount),
-    ])];
+    if claim_tokens.len() != claims.len() {
+        return None;
+    }
 
     let tokens = vec![
-        Token::Array(claims),
-        Token::Uint(U256::from(chain_type_u8)),
+        Token::Array(claim_tokens),
+        Token::Uint(U256::from(chain_type)),
     ];
 
     f.encode_input(&tokens).ok()
+}
+
+/// Encode calldata for a single-solver claim (builds a one-element batch).
+/// Kept for backward compatibility; prefer encode_claim_rewards_batch_calldata for multiple claims.
+pub fn encode_update_solver_rewards_calldata(
+    solver_address: &str,
+    rewards: &[U256],
+    _transaction_hash: &str,
+) -> Option<Vec<u8>> {
+    // Existing flow passes rewards as [btc, tics]; HTTP layer enforces only one side
+    // is claimed at a time. Map non-zero entry to amount and chainType.
+    let (amount, chain_type_u8) = if !rewards.is_empty() && !rewards[0].is_zero() {
+        (rewards[0], 0u8)
+    } else if rewards.len() > 1 && !rewards[1].is_zero() {
+        (rewards[1], 1u8)
+    } else {
+        (U256::zero(), 0u8)
+    };
+    let claims: Vec<RewardClaimBatchEntry> = vec![(solver_address.to_owned(), amount)];
+    encode_claim_rewards_batch_calldata(&claims, chain_type_u8)
 }
 
 pub fn encode_remove_liquidity_calldata(
@@ -1944,7 +2030,38 @@ pub fn encode_remove_liquidity_batch_calldata(
 
     let request_tokens: Vec<Token> = requests
         .iter()
-        .map(|(solver_id, amount, chain_type, tx_hash)| {
+        .enumerate()
+        .map(|(idx, (solver_id, amount, chain_type, tx_hash))| {
+            info!(
+                "🔧 [CONTRACT][LIQ] Request #{}: solver_id='{}', amount={}, chain_type={} ({}), tx_hash='{}'",
+                idx,
+                solver_id,
+                amount,
+                chain_type,
+                if *chain_type == 0 { "BTC" } else if *chain_type == 1 { "TICS" } else { "UNKNOWN" },
+                tx_hash
+            );
+            
+            // Validate solver_id is not empty
+            if solver_id.is_empty() {
+                warn!("⚠️ [CONTRACT][LIQ] Request #{}: Empty solver_id detected!", idx);
+            }
+            
+            // Validate amount is not zero
+            if amount.is_zero() {
+                warn!("⚠️ [CONTRACT][LIQ] Request #{}: Zero amount detected!", idx);
+            }
+            
+            // Validate chain_type is valid (0 or 1)
+            if *chain_type > 1 {
+                warn!("⚠️ [CONTRACT][LIQ] Request #{}: Invalid chain_type {} (expected 0 for BTC or 1 for TICS)", idx, chain_type);
+            }
+            
+            // Validate tx_hash is not empty
+            if tx_hash.is_empty() {
+                warn!("⚠️ [CONTRACT][LIQ] Request #{}: Empty transaction_hash detected!", idx);
+            }
+            
             Token::Tuple(vec![
                 Token::String(solver_id.clone()),
                 Token::Uint(*amount),
@@ -1953,6 +2070,11 @@ pub fn encode_remove_liquidity_batch_calldata(
             ])
         })
         .collect();
+
+    info!(
+        "🔧 [CONTRACT][LIQ] Encoded {} removeLiquidity requests into batch",
+        request_tokens.len()
+    );
 
     let tokens = vec![Token::Array(request_tokens)];
     f.encode_input(&tokens).ok()
@@ -2065,7 +2187,7 @@ pub fn get_default_gas_price_for_chain(chain_name: &str) -> String {
 
 /// Get gas price for Qubetics chain with dynamic fetching
 /// Only supports Qubetics as an EVM chain
-pub async fn get_gas_price_for_chain(chain_name: &str, chain_id: u64) -> Result<String> {
+pub async fn get_gas_price_for_chain(chain_name: &str, _chain_id: u64) -> Result<String> {
     // Reduced noisy stdout logging in production path
 
     match chain_name {

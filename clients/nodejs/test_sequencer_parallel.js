@@ -178,12 +178,12 @@ async function testUserMpcDeposit({ wallet, amount, userId }) {
     // Construct DepositIntent (EXACTLY like test_register_user.js)
     const depositIntent = {
       source_address: userInfo.data.derived_eth_address,  // ETH address
-      target_address: "tb1q2nd0utgnrseanclhq2tr7hqhqtuc389mmjm2fs",
+      target_address: userInfo.data.derived_eth_address,
       source_chain: 'qubetics',
-      target_chain: 'bitcoin',
+      target_chain: 'qubetics',
       amount: amount,
       source_token: 'TICS',
-      target_token: 'BTC',
+      target_token: 'TICS',
       timestamp: new Date().getTime(),
     };
 

@@ -16,9 +16,7 @@ use sha3::{Digest, Keccak256};
 use tokio::time::{Duration, Instant};
 use tracing::{debug, error, info, warn};
 
-use crate::{
-    database::DkgStorage, types::intent::TransactionNetwork, user_intent_manager::UserIntentManager,
-};
+use crate::{database::DkgStorage, user_intent_manager::UserIntentManager};
 
 use super::errors::TransactionError;
 
@@ -354,124 +352,6 @@ pub(crate) async fn wait_for_transaction_result(
     // Return the best result we found, or None if we found nothing
     best_result
 }
-
-/// Wait for reward transaction IDs (BTC/TICS) associated with a solver.
-/// Compares against previously observed IDs to ensure we only return new values.
-pub(crate) async fn wait_for_reward_transaction_ids(
-    user_intent_manager: &UserIntentManager,
-    solver_address: &str,
-    expect_tics: bool,
-    expect_btc: bool,
-    previous_tics_tx_id: Option<String>,
-    previous_btc_tx_id: Option<String>,
-    timeout_secs: u64,
-) -> (Option<String>, Option<String>) {
-    if !expect_tics && !expect_btc {
-        return (None, None);
-    }
-
-    let start = Instant::now();
-    let poll_interval = Duration::from_millis(250);
-    let timeout = Duration::from_secs(timeout_secs);
-
-    let mut latest_tics_tx = None;
-    let mut latest_btc_tx = None;
-
-    loop {
-        if expect_tics && latest_tics_tx.is_none() {
-            if let Some(current) = user_intent_manager
-                .get_solver_tics_txn_hash(solver_address)
-                .await
-            {
-                if previous_tics_tx_id.as_ref() != Some(&current) {
-                    latest_tics_tx = Some(current);
-                }
-            }
-        }
-
-        if expect_btc && latest_btc_tx.is_none() {
-            if let Some(current) = user_intent_manager
-                .get_solver_btc_txn_hash(solver_address)
-                .await
-            {
-                if previous_btc_tx_id.as_ref() != Some(&current) {
-                    latest_btc_tx = Some(current);
-                }
-            }
-        }
-
-        if (!expect_tics || latest_tics_tx.is_some()) && (!expect_btc || latest_btc_tx.is_some()) {
-            break;
-        }
-
-        if start.elapsed() >= timeout {
-            break;
-        }
-
-        tokio::time::sleep(poll_interval).await;
-    }
-
-    (latest_tics_tx, latest_btc_tx)
-}
-
-// pub(crate) async fn wait_for_withdraw_liquidity_transaction_ids(
-//     user_intent_manager: &UserIntentManager,
-//     solver_address: &str,
-//     expect_tics: bool,
-//     expect_btc: bool,
-//     previous_tics_tx_id: Option<String>,
-//     previous_btc_tx_id: Option<String>,
-//     timeout_secs: u64,
-// ) -> (Option<String>, Option<String>) {
-//     if !expect_tics && !expect_btc {
-//         return (None, None);
-//     }
-
-//     let start = Instant::now();
-//     let poll_interval = Duration::from_millis(250);
-//     let timeout = Duration::from_secs(timeout_secs);
-
-//     let mut latest_tics_tx = None;
-//     let mut latest_btc_tx = None;
-
-//     loop {
-//         if expect_tics && latest_tics_tx.is_none() {
-//             // Use remove_liquidity storage (not the shared tics/btc txn hash)
-//             if let Ok(Some(current)) = user_intent_manager
-//                 .get_solver_remove_liquidity_txn_hash(solver_address, TransactionNetwork::TICS)
-//                 .await
-//             {
-//                 if previous_tics_tx_id.as_ref() != Some(&current) {
-//                     latest_tics_tx = Some(current);
-//                 }
-//             }
-//         }
-
-//         if expect_btc && latest_btc_tx.is_none() {
-//             // Use remove_liquidity storage (not the shared tics/btc txn hash)
-//             if let Ok(Some(current)) = user_intent_manager
-//                 .get_solver_remove_liquidity_txn_hash(solver_address, TransactionNetwork::BTC)
-//                 .await
-//             {
-//                 if previous_btc_tx_id.as_ref() != Some(&current) {
-//                     latest_btc_tx = Some(current);
-//                 }
-//             }
-//         }
-
-//         if (!expect_tics || latest_tics_tx.is_some()) && (!expect_btc || latest_btc_tx.is_some()) {
-//             break;
-//         }
-
-//         if start.elapsed() >= timeout {
-//             break;
-//         }
-
-//         tokio::time::sleep(poll_interval).await;
-//     }
-
-//     (latest_tics_tx, latest_btc_tx)
-// }
 
 // Helper function to get the actual DKG secret share from shared state
 pub(crate) async fn get_actual_dkg_secret_share(dkg_storage: Arc<DkgStorage>) -> Option<Scalar> {

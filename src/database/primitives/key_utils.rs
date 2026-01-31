@@ -28,6 +28,11 @@ pub fn intent_transaction_ids_key(intent_hash: &str) -> String {
     format!("{}{}", keys::INTENT_TRANSACTION_IDS, intent_hash)
 }
 
+/// Key for storing target chain amount (u128 as string) by intent hash
+pub fn intent_target_amount_key(intent_hash: &str) -> String {
+    format!("{}{}", keys::INTENT_TARGET_AMOUNT, intent_hash)
+}
+
 pub fn transaction_status_key(tx_hash: &str) -> String {
     format!("{}{}", keys::TRANSACTION_STATUS, tx_hash)
 }
@@ -70,76 +75,6 @@ pub fn solver_amounts_key(node_id: &str, solver_id: &str) -> String {
 
 pub fn all_solver_amounts_key(node_id: &str) -> String {
     format!("{}all:{}", keys::SOLVER_AMOUNTS, node_id)
-}
-
-
-pub fn solver_reward_key(solver_address: &str) -> String {
-    format!("{}{}", keys::SOLVER_REWARD, solver_address.to_lowercase())
-}
-
-pub fn solver_reward_tics_key(solver_address: &str) -> String {
-    format!(
-        "{}{}",
-        keys::SOLVER_REWARD_TICS,
-        solver_address.to_lowercase()
-    )
-}
-
-pub fn solver_reward_btc_key(solver_address: &str) -> String {
-    format!(
-        "{}{}",
-        keys::SOLVER_REWARD_BTC,
-        solver_address.to_lowercase()
-    )
-}
-
-pub fn claimed_request_amount_key(solver_address: &str) -> String {
-    format!(
-        "{}{}",
-        keys::CLAIMED_REQUEST_AMOUNT,
-        solver_address.to_lowercase()
-    )
-}
-
-pub fn intent_reward_status_key(intent_hash: &str) -> String {
-    format!(
-        "{}{}",
-        keys::INTENT_REWARD_STATUS,
-        intent_hash.to_lowercase()
-    )
-}
-
-pub fn solver_tics_txn_hashes_key(solver_address: &str) -> String {
-    format!(
-        "{}{}",
-        keys::SOLVER_TICS_TXN_HASHES,
-        solver_address.to_lowercase()
-    )
-}
-
-pub fn solver_btc_txn_hashes_key(solver_address: &str) -> String {
-    format!(
-        "{}{}",
-        keys::SOLVER_BTC_TXN_HASHES,
-        solver_address.to_lowercase()
-    )
-}
-
-
-pub fn solver_remove_liquidity_tics_txn_key(solver_address: &str) -> String {
-    format!(
-        "{}{}",
-        keys::SOLVER_REMOVE_LIQ_TICS_TXN,
-        solver_address.to_lowercase()
-    )
-}
-
-pub fn solver_remove_liquidity_btc_txn_key(solver_address: &str) -> String {
-    format!(
-        "{}{}",
-        keys::SOLVER_REMOVE_LIQ_BTC_TXN,
-        solver_address.to_lowercase()
-    )
 }
 
 pub fn peer_index_key(peer_id: &str) -> String {

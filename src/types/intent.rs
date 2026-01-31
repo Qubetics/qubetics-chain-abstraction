@@ -4,8 +4,9 @@ use serde::{Deserialize, Serialize};
 pub enum TransactionType {
     UserToVault,
     NetworkToTarget,
-    RewardTxn,
     WithdrawLiquidity,
+    /// Claim-reward batch (same as WithdrawLiquidity: TICS vs BTC determined at runtime from tx_id / pending store).
+    ClaimReward,
     Refund,
     IntentStatusUpdate,
 }
@@ -81,7 +82,8 @@ pub struct BatchIntentInput {
     pub target_address: String,
     pub source_chain: String,
     pub target_chain: String,
-    pub amount: u128,
+    pub source_amount: u128,
+    pub target_amount: u128,
     pub source_token: String,
     pub target_token: String,
     pub intent_id: String,

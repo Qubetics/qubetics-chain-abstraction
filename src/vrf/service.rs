@@ -663,9 +663,6 @@ impl VrfService {
         synchronized_round
     }
 
-    pub(crate) fn round_update_lock(&self) -> Arc<Mutex<()>> {
-        self.round_update_lock.clone()
-    }
 
     pub fn context(&self) -> &str {
         &self.context
