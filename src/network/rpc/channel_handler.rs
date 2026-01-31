@@ -2147,18 +2147,8 @@ impl MpcNetworkLayer {
                 swarm.behaviour_mut().gossipsub.publish(topic, msg_bytes)?;
                 info!("📡 [NETWORK] Broadcasted deposit intent to P2P network");
 
-                // CRITICAL FIX: For refund transactions, use the ORIGINAL intent_hash from intent_id
-                // Refund intents have modified target_address/target_chain, so calculating hash from
-                // the modified intent would produce a different hash than the original intent
-                let intent_hash = if matches!(transaction_type, crate::types::TransactionType::Refund) 
-                    && intent_id.starts_with("refund-") 
-                {
-                    // Extract original intent_hash from "refund-{original_intent_hash}"
-                    let original_intent_hash = intent_id.strip_prefix("refund-").unwrap_or(&intent_id);
-                    info!("🔐 [LOCAL] Refund transaction detected - using ORIGINAL intent hash: {} (from intent_id: {})", original_intent_hash, intent_id);
-                    original_intent_hash.to_string()
-                } else {
-                    // For non-refund transactions, calculate hash from the intent
+                // Calculate intent hash from the intent
+                let intent_hash = {
                     let calculated_hash = crate::utils::calculate_intent_hash(&intent)
                         .map_err(|e| anyhow::anyhow!("Failed to calculate intent hash: {}", e))?;
                     info!("🔐 [LOCAL] Calculated intent hash: {}", calculated_hash);
@@ -2326,9 +2316,7 @@ impl MpcNetworkLayer {
                     crate::types::TransactionType::NetworkToTarget => {
                         &intent.target_chain.to_lowercase()
                     }
-                    crate::types::TransactionType::Refund => {
-                        &intent.source_chain.to_lowercase() // Refund goes back to source chain
-                    }
+
                     crate::types::TransactionType::IntentStatusUpdate => {
                         // IntentStatusUpdate is a contract call on Qubetics chain (TICS)
                         "qubetics"
@@ -2366,14 +2354,7 @@ impl MpcNetworkLayer {
                             None
                         }
                     }
-                    crate::types::TransactionType::Refund => {
-                        // For refund transactions, use network's DKG secret share (same as NetworkToTarget)
-                        if let Some(dkg_node) = &self.dkg_node {
-                            dkg_node.get_final_secret_share().await
-                        } else {
-                            None
-                        }
-                    }
+
                     crate::types::TransactionType::IntentStatusUpdate => {
                         // For intent status update, use network's DKG secret share (same as NetworkToTarget)
                         if let Some(dkg_node) = &self.dkg_node {
@@ -2482,7 +2463,6 @@ impl MpcNetworkLayer {
                                     }
                                 }
                                 crate::types::TransactionType::NetworkToTarget
-                                | crate::types::TransactionType::Refund
                                 | crate::types::TransactionType::IntentStatusUpdate => {
                                     // For network withdrawals, refunds, and intent status updates, use network's DKG group key
                                     if let Some(dkg_node) = &self.dkg_node {
@@ -2553,7 +2533,6 @@ impl MpcNetworkLayer {
                             }
                         }
                         crate::types::TransactionType::NetworkToTarget
-                        | crate::types::TransactionType::Refund
                         | crate::types::TransactionType::IntentStatusUpdate => {
                             // For network withdrawals, refunds, and intent status updates, no derived addresses needed
                             (None, None)
@@ -2733,68 +2712,6 @@ impl MpcNetworkLayer {
                                                         .await;
                                                     }
                                                     
-                                                    // Trigger refund for NetworkToTarget transactions
-                                                    info!(
-                                                        "💸 [LOCAL] Network-to-target transaction failed, initiating refund for intent: {}",
-                                                        intent_hash
-                                                    );
-                                                    
-                                                    // Get the intent for refund calculation
-                                                    if let Some(intent) = user_intent_manager.get_intent(&intent_hash).await {
-                                                        let refund_amount = self.calculate_refund_amount(
-                                                            user_intent_manager,
-                                                            &intent_hash,
-                                                            &intent,
-                                                        )
-                                                        .await;
-                                                        
-                                                        // Broadcast refund initiation directly through message channel
-                                                        let refund_msg = serde_json::json!({
-                                                            "type": "refund_initiation",
-                                                            "intent_hash": intent_hash,
-                                                            "source_address": intent.source_address,
-                                                            "source_chain": intent.source_chain,
-                                                            "original_amount": intent.amount.to_string(),
-                                                            "refund_amount": refund_amount.to_string(),
-                                                            "timestamp": std::time::SystemTime::now()
-                                                                .duration_since(std::time::UNIX_EPOCH)
-                                                                .unwrap()
-                                                                .as_millis()
-                                                        });
-                                                        
-                                                        let msg_bytes = match serde_json::to_vec(&refund_msg) {
-                                                            Ok(bytes) => bytes,
-                                                            Err(serialize_err) => {
-                                                                error!(
-                                                                    "❌ [LOCAL] Failed to serialize refund initiation message: {}",
-                                                                    serialize_err
-                                                                );
-                                                                return Ok(());
-                                                            }
-                                                        };
-                                                        
-                                                        let channel_msg = ChannelMessage::RefundInitiation {
-                                                            intent_hash: intent_hash.clone(),
-                                                            data: msg_bytes,
-                                                        };
-                                                        
-                                                        if let Err(send_err) = self.message_tx.send(channel_msg).await {
-                                                            error!(
-                                                                "❌ [LOCAL] Failed to send refund initiation message: {}",
-                                                                send_err
-                                                            );
-                                                        } else {
-                                                            info!(
-                                                                "✅ [LOCAL] Successfully sent refund initiation for intent: {}",
-                                                                intent_hash
-                                                            );
-                                                        }
-                                                    } else {
-                                                        warn!(
-                                                            "❌ [LOCAL] Could not retrieve intent {} for refund initiation",
-                                                            intent_hash
-                                                        );
-                                                    }
                                                 } else {
                                                     warn!("❌ [LOCAL] User intent manager not available to handle transaction error");
                                                 }
@@ -2850,7 +2767,7 @@ impl MpcNetworkLayer {
                                     let transaction_type_str = match transaction_type {
                                         crate::types::TransactionType::UserToVault => "user_to_vault",
                                         crate::types::TransactionType::NetworkToTarget => "network_to_target",
-                                        crate::types::TransactionType::Refund => "refund",
+
                                         crate::types::TransactionType::IntentStatusUpdate => "intent_status_update",
                                         crate::types::TransactionType::WithdrawLiquidity => "withdraw_liquidity",
                                         crate::types::TransactionType::ClaimReward => "claim_reward",
@@ -2863,74 +2780,6 @@ impl MpcNetworkLayer {
                                         None,
                                     )
                                     .await;
-                                }
-                                
-                                // Trigger refund for NetworkToTarget transactions
-                                if matches!(
-                                    transaction_type,
-                                    crate::types::TransactionType::NetworkToTarget
-                                ) {
-                                    info!(
-                                        "💸 [LOCAL] Network-to-target transaction failed, initiating refund for intent: {}",
-                                        intent_hash
-                                    );
-                                    
-                                    // Get the intent for refund calculation
-                                    if let Some(intent) = user_intent_manager.get_intent(&intent_hash).await {
-                                        let refund_amount = self.calculate_refund_amount(
-                                            user_intent_manager,
-                                            &intent_hash,
-                                            &intent,
-                                        )
-                                        .await;
-                                        
-                                        // Broadcast refund initiation directly through message channel
-                                        let refund_msg = serde_json::json!({
-                                            "type": "refund_initiation",
-                                            "intent_hash": intent_hash,
-                                            "source_address": intent.source_address,
-                                            "source_chain": intent.source_chain,
-                                            "original_amount": intent.amount.to_string(),
-                                            "refund_amount": refund_amount.to_string(),
-                                            "timestamp": std::time::SystemTime::now()
-                                                .duration_since(std::time::UNIX_EPOCH)
-                                                .unwrap()
-                                                .as_millis()
-                                        });
-                                        
-                                        let msg_bytes = match serde_json::to_vec(&refund_msg) {
-                                            Ok(bytes) => bytes,
-                                            Err(e) => {
-                                                error!(
-                                                    "❌ [LOCAL] Failed to serialize refund initiation message: {}",
-                                                    e
-                                                );
-                                                return Ok(());
-                                            }
-                                        };
-                                        
-                                        let channel_msg = ChannelMessage::RefundInitiation {
-                                            intent_hash: intent_hash.clone(),
-                                            data: msg_bytes,
-                                        };
-                                        
-                                        if let Err(e) = self.message_tx.send(channel_msg).await {
-                                            error!(
-                                                "❌ [LOCAL] Failed to send refund initiation message: {}",
-                                                e
-                                            );
-                                        } else {
-                                            info!(
-                                                "✅ [LOCAL] Successfully sent refund initiation for intent: {}",
-                                                intent_hash
-                                            );
-                                        }
-                                    } else {
-                                        warn!(
-                                            "❌ [LOCAL] Could not retrieve intent {} for refund initiation",
-                                            intent_hash
-                                        );
-                                    }
                                 }
                             } else {
                                 warn!("❌ [LOCAL] User intent manager not available to handle transaction error");
@@ -3238,121 +3087,7 @@ impl MpcNetworkLayer {
                 swarm.behaviour_mut().gossipsub.publish(topic, msg_bytes)?;
                 info!("📡 [NETWORK] Broadcasted user registration to P2P network");
             }
-            ChannelMessage::RefundInitiation { intent_hash, data } => {
-                info!(
-                    "💸 [NETWORK] Received refund initiation for intent: {}",
-                    intent_hash
-                );
 
-                // Deserialize refund message to get details
-                match serde_json::from_slice::<serde_json::Value>(&data) {
-                    Ok(refund_data) => {
-                        info!("📋 [NETWORK] Refund details: {:?}", refund_data);
-
-                        // Get the intent to create the refund transaction
-                        if let Some(user_intent_manager) = &self.user_intent_manager {
-                            if let Some(mut intent) =
-                                user_intent_manager.get_intent(&intent_hash).await
-                            {
-                                // Calculate refund amount: prefer refund_amount from message, otherwise calculate it
-                                let refund_amount = if let Some(refund_amount_str) = refund_data
-                                    .get("refund_amount")
-                                    .and_then(|v| v.as_str())
-                                {
-                                    // Use refund amount from message (already includes 5% extra if applicable)
-                                    if let Ok(amount) = refund_amount_str.parse::<u128>() {
-                                        info!(
-                                            "💰 [NETWORK-REFUND] Using refund amount from message: {}",
-                                            amount
-                                        );
-                                        amount
-                                    } else {
-                                        warn!(
-                                            "⚠️ [NETWORK-REFUND] Failed to parse refund_amount from message, calculating..."
-                                        );
-                                        // Fall back to calculation
-                                        self.calculate_refund_amount(user_intent_manager, &intent_hash, &intent).await
-                                    }
-                                } else {
-                                    // No refund_amount in message, calculate it
-                                    info!("💰 [NETWORK-REFUND] No refund_amount in message, calculating...");
-                                    self.calculate_refund_amount(user_intent_manager, &intent_hash, &intent).await
-                                };
-
-                                info!("🔄 [NETWORK-REFUND] Creating refund transaction from network to user's source address");
-                                info!(
-                                    "💰 [NETWORK-REFUND] Refunding {} from network to source address: {} on {}",
-                                    intent.amount, intent.source_address, intent.source_chain
-                                );
-
-                                // Modify the intent to create a refund transaction:
-                                // - From: Network address (DKG group key)
-                                // - To: User's source address
-                                // - Chain: Source chain (where user originally sent from)
-                                let original_target = intent.target_address.clone();
-                                let original_target_chain = intent.target_chain.clone();
-
-                                // Set target to user's source address on source chain for the refund
-                                intent.target_address = intent.source_address.clone();
-                                intent.target_chain = intent.source_chain.clone();
-
-                                info!(
-                                    "🔄 [NETWORK-REFUND] Refund routing: Network → {} ({})",
-                                    intent.target_address, intent.target_chain
-                                );
-                                info!("🔄 [NETWORK-REFUND] Original failed transaction was to: {} ({})", 
-                                      original_target, original_target_chain);
-
-                                // Create a refund transaction from network to user's source address
-                                // Use Refund type specifically for refund transactions
-                                let refund_intent_id = format!("refund-{intent_hash}");
-                                // Parse amount for refund ChannelMessage
-                                let refund_amount = match refund_amount {
-                                    amount if amount > 0 => amount,
-                                    _ => {
-                                        // Fallback to intent amount if refund_amount is 0
-                                        match intent.amount.parse::<u128>() {
-                                            Ok(v) => v,
-                                            Err(e) => {
-                                                warn!(
-                                                    "❌ [NETWORK-REFUND] Invalid intent amount '{}' for refund {}: {}. Skipping refund.",
-                                                    intent.amount, intent_hash, e
-                                                );
-                                                return Ok(());
-                                            }
-                                        }
-                                    }
-                                };
-
-                                let refund_message = ChannelMessage::DepositIntent {
-                                    intent: intent.clone(),
-                                    intent_id: refund_intent_id,
-                                    user_eth_address: "network".to_string(), // Refund uses network's DKG key, placeholder address
-                                    transaction_type: crate::types::TransactionType::Refund,
-                                    amount: refund_amount,
-                                };
-
-                                // Send the refund message through the channel to be processed
-                                if let Err(e) = self.message_tx.send(refund_message).await {
-                                    error!("❌ [NETWORK-REFUND] Failed to send refund transaction message: {}", e);
-                                } else {
-                                    info!("✅ [NETWORK-REFUND] Successfully initiated refund transaction for intent: {}", intent_hash);
-                                }
-                            } else {
-                                warn!("❌ [NETWORK-REFUND] Intent not found: {}", intent_hash);
-                            }
-                        } else {
-                            warn!("❌ [NETWORK-REFUND] User registry not available");
-                        }
-                    }
-                    Err(e) => {
-                        error!(
-                            "❌ [NETWORK-REFUND] Failed to deserialize refund data: {}",
-                            e
-                        );
-                    }
-                }
-            }
             ChannelMessage::ScheduledDKGStart => {
                 let total = self.node_manager.get_total_nodes();
                 let threshold = self.node_manager.get_threshold();
@@ -4020,46 +3755,6 @@ impl MpcNetworkLayer {
         }
 
         Ok(())
-    }
-
-    /// Calculate refund amount: if UserToVault transaction exists, include 5% extra
-    async fn calculate_refund_amount(
-        &self,
-        user_intent_manager: &crate::user_intent_manager::UserIntentManager,
-        intent_hash: &str,
-        intent: &crate::types::intent::DepositIntent,
-    ) -> u128 {
-        // Parse intent amount from string
-        let intent_amount = intent.amount.parse::<u128>().unwrap_or(0);
-        
-        if let Some(tx_ids) = user_intent_manager
-            .get_intent_transaction_ids(intent_hash)
-            .await
-        {
-            if tx_ids.user_to_network_tx_id.is_some() {
-                // UserToVault transaction exists, refund original amount + 5% extra
-                let full_amount = intent_amount + (intent_amount / 20);
-                info!(
-                    "💰 [NETWORK-REFUND] UserToVault transaction found, refunding full amount: {} (original: {} + 5% extra: {})",
-                    full_amount, intent_amount, intent_amount / 20
-                );
-                full_amount
-            } else {
-                // No UserToVault transaction, refund original amount
-                info!(
-                    "💰 [NETWORK-REFUND] No UserToVault transaction found, refunding original amount: {}",
-                    intent_amount
-                );
-                intent_amount
-            }
-        } else {
-            // Couldn't check transaction IDs, refund original amount
-            warn!(
-                "⚠️ [NETWORK-REFUND] Could not check transaction IDs, refunding original amount: {}",
-                intent_amount
-            );
-            intent_amount
-        }
     }
 
 }

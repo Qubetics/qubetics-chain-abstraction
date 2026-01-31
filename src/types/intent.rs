@@ -7,7 +7,6 @@ pub enum TransactionType {
     WithdrawLiquidity,
     /// Claim-reward batch (same as WithdrawLiquidity: TICS vs BTC determined at runtime from tx_id / pending store).
     ClaimReward,
-    Refund,
     IntentStatusUpdate,
 }
 

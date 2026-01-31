@@ -144,6 +144,20 @@ impl SigningNode {
         }
     }
 
+    /// Helper: Fetch nonce for address and log with description
+    async fn fetch_nonce_and_log(
+        address: &str,
+        chain_id: u64,
+        description: &str,
+    ) -> Result<String> {
+        let nonce = Self::fetch_ethereum_nonce(address, chain_id).await?;
+        info!(
+            "🔢 [SIGNING] {}: fetching nonce {} from address {}",
+            description, nonce, address
+        );
+        Ok(address.to_string())
+    }
+
     /// Wait for transaction receipt with timeout
     async fn wait_for_transaction_receipt(
         tx_hash: &str,
@@ -859,7 +873,7 @@ impl SigningNode {
         let tx_type_for_round = if !intent_hashes.is_empty() {
             // Check if this is an add_liquidity transaction (request_id starts with "addliq:")
             let is_add_liquidity = intent_hashes.iter().any(|h| h.starts_with("addliq:"));
-            
+
             if is_add_liquidity {
                 // add_liquidity uses vault key - don't set transaction type
                 // This prevents the verification from using the wrong pubkey
@@ -1019,11 +1033,12 @@ impl SigningNode {
                                     user_intent_manager.get_user_by_address(user_addr).await
                                 {
                                     if let Some(derived_eth_addr) = &user.derived_eth_address {
-                                        let nonce =
-                                            Self::fetch_ethereum_nonce(derived_eth_addr, chain_id)
-                                                .await?;
-                                        info!("🔢 [SIGNING] UserToVault transaction: fetching nonce {} from user's derived address {}", nonce, derived_eth_addr);
-                                        derived_eth_addr.clone()
+                                        Self::fetch_nonce_and_log(
+                                            derived_eth_addr,
+                                            chain_id,
+                                            "UserToVault transaction",
+                                        )
+                                        .await?
                                     } else {
                                         return Err(anyhow!(
                                             "User {} has no derived Ethereum address",
@@ -1048,35 +1063,35 @@ impl SigningNode {
                         }
                     }
                     Some(crate::types::TransactionType::NetworkToTarget)
-                    | Some(crate::types::TransactionType::Refund)
                     | Some(crate::types::TransactionType::IntentStatusUpdate) => {
-                        // Refund and IntentStatusUpdate use network group key (same as NetworkToTarget)
                         let group_key = self.get_network_group_public_key().await?;
                         let group_address = get_eth_address_from_group_key(group_key);
-
-                        let nonce = Self::fetch_ethereum_nonce(&group_address, chain_id).await?;
-                        info!("🔢 [SIGNING] NetworkToTarget/Refund/IntentStatusUpdate transaction: fetching nonce {} from network group address {}", nonce, group_address);
-                        group_address
+                        Self::fetch_nonce_and_log(
+                            &group_address,
+                            chain_id,
+                            "NetworkToTarget/IntentStatusUpdate transaction",
+                        )
+                        .await?
                     }
                     Some(crate::types::TransactionType::WithdrawLiquidity) => {
-                        // TICS withdraw batch (removeLiquidity contract tx) is signed with vault (liquidity operator) key
-                        let group_key = self
-                            .get_vault_group_public_key()
-                            .await?;
+                        let group_key = self.get_vault_group_public_key().await?;
                         let group_address = get_eth_address_from_group_key(group_key);
-                        let nonce = Self::fetch_ethereum_nonce(&group_address, chain_id).await?;
-                        info!("🔢 [SIGNING] WithdrawLiquidity (TICS) transaction: fetching nonce {} from liquidity operator (vault) address {}", nonce, group_address);
-                        group_address
+                        Self::fetch_nonce_and_log(
+                            &group_address,
+                            chain_id,
+                            "WithdrawLiquidity (TICS) transaction",
+                        )
+                        .await?
                     }
                     Some(crate::types::TransactionType::ClaimReward) => {
-                        // ClaimReward on Ethereum path is TICS (claimRewardsBatch); use vault key like WithdrawLiquidity
-                        let group_key = self
-                            .get_vault_group_public_key()
-                            .await?;
+                        let group_key = self.get_vault_group_public_key().await?;
                         let group_address = get_eth_address_from_group_key(group_key);
-                        let nonce = Self::fetch_ethereum_nonce(&group_address, chain_id).await?;
-                        info!("🔢 [SIGNING] ClaimReward (TICS) transaction: fetching nonce {} from vault address {}", nonce, group_address);
-                        group_address
+                        Self::fetch_nonce_and_log(
+                            &group_address,
+                            chain_id,
+                            "ClaimReward (TICS) transaction",
+                        )
+                        .await?
                     }
                     None => {
                         if let Some(user_addr) = &user_eth_address {
@@ -1085,11 +1100,12 @@ impl SigningNode {
                                     user_intent_manager.get_user_by_address(user_addr).await
                                 {
                                     if let Some(derived_eth_addr) = &user.derived_eth_address {
-                                        let nonce =
-                                            Self::fetch_ethereum_nonce(derived_eth_addr, chain_id)
-                                                .await?;
-                                        info!("🔢 [SIGNING] User transaction (fallback): fetching nonce {} from user's derived address {}", nonce, derived_eth_addr);
-                                        derived_eth_addr.clone()
+                                        Self::fetch_nonce_and_log(
+                                            derived_eth_addr,
+                                            chain_id,
+                                            "User transaction (fallback)",
+                                        )
+                                        .await?
                                     } else {
                                         return Err(anyhow!(
                                             "User {} has no derived Ethereum address",
@@ -1111,11 +1127,12 @@ impl SigningNode {
                             let group_address = get_eth_address_from_group_key(
                                 self.get_network_group_public_key().await?,
                             );
-
-                            let nonce =
-                                Self::fetch_ethereum_nonce(&group_address, chain_id).await?;
-                            info!("🔢 [SIGNING] Network/Vault transaction (fallback): fetching nonce {} from group address {}", nonce, group_address);
-                            group_address
+                            Self::fetch_nonce_and_log(
+                                &group_address,
+                                chain_id,
+                                "Network/Vault transaction (fallback)",
+                            )
+                            .await?
                         }
                     }
                 };

@@ -1038,7 +1038,6 @@ async fn create_chain_transaction_from_deposit_intent_internal(
     let chain_to_use = match transaction_type {
         crate::types::TransactionType::UserToVault => &intent.source_chain.to_lowercase(),
         crate::types::TransactionType::NetworkToTarget => &intent.target_chain.to_lowercase(),
-        crate::types::TransactionType::Refund => &intent.source_chain.to_lowercase(), // Refund goes back to source chain
         crate::types::TransactionType::IntentStatusUpdate => "qubetics", // IntentStatusUpdate is a contract call on Qubetics chain
         crate::types::TransactionType::WithdrawLiquidity => {
             return Err(anyhow::anyhow!(
@@ -1136,20 +1135,7 @@ async fn create_chain_transaction_from_deposit_intent_internal(
                 // Return empty addresses (not used for contract calls)
                 ("".to_string(), "".to_string())
             }
-            crate::types::TransactionType::Refund => {
-                // Refund: FROM network address TO user's source address
-                // Group public key is required to derive the network address
-                let group_key = group_public_key.ok_or_else(|| {
-                    anyhow::anyhow!("Group public key required for Refund transactions")
-                })?;
-                let network_address = get_eth_address_from_group_key(group_key);
-                tracing::info!(
-                    "💰 [TRANSACTION] Refund: {} -> {}",
-                    network_address,
-                    intent.source_address
-                );
-                (network_address.clone(), intent.source_address.clone())
-            }
+
             crate::types::TransactionType::WithdrawLiquidity => {
                 return Err(anyhow::anyhow!(
                     "WithdrawLiquidity is not valid for deposit intent flow"
@@ -1218,20 +1204,7 @@ async fn create_chain_transaction_from_deposit_intent_internal(
                     "IntentStatusUpdate is not valid for Bitcoin transactions"
                 ));
             }
-            crate::types::TransactionType::Refund => {
-                // Refund: FROM network bitcoin address TO user's source address
-                // Group public key is required to derive the network address
-                let group_key = group_public_key.ok_or_else(|| {
-                    anyhow::anyhow!("Group public key required for Refund transactions")
-                })?;
-                let btc_network_address = crate::utils::get_btc_address_from_group_key(group_key);
-                tracing::info!(
-                    "💰 [TRANSACTION] Bitcoin refund: {} -> {}",
-                    btc_network_address,
-                    intent.source_address
-                );
-                (btc_network_address.clone(), intent.source_address.clone())
-            }
+
             crate::types::TransactionType::WithdrawLiquidity => {
                 return Err(anyhow::anyhow!(
                     "WithdrawLiquidity is not valid for deposit intent flow"
@@ -1301,13 +1274,7 @@ pub async fn create_chain_transaction_from_contract_call(
         crate::types::TransactionType::UserToVault => BatchType::BTC,
         crate::types::TransactionType::NetworkToTarget => BatchType::TICS,
         crate::types::TransactionType::IntentStatusUpdate => BatchType::BTC, // IntentStatusUpdate is for BTC contract updates
-        crate::types::TransactionType::Refund => {
-            // Refund transactions don't need contract calls - they're just fund transfers
-            // The refund intent contract call is handled separately after the refund transaction completes
-            return Err(anyhow::anyhow!(
-                "Refund transactions do not require contract call calldata - they are direct fund transfers"
-            ));
-        }
+
         crate::types::TransactionType::WithdrawLiquidity => {
             return Err(anyhow::anyhow!(
                 "WithdrawLiquidity is not valid for deposit intent flow"
@@ -1744,51 +1711,7 @@ pub async fn create_solver_remove_liquidity_transaction(
 }
 
 
-pub fn encode_refund_intent_calldata(
-    intent_id: &str,
-    transaction_hash: &str,
-    timestamp: &str,
-    reason: &str,
-) -> Option<Vec<u8>> {
-    #[allow(deprecated)]
-    let f = Function {
-        name: "refundIntent".to_owned(),
-        inputs: vec![
-            Param {
-                name: "intentId".into(),
-                kind: ParamType::String,
-                internal_type: None,
-            },
-            Param {
-                name: "transactionHash".into(),
-                kind: ParamType::String,
-                internal_type: None,
-            },
-            Param {
-                name: "timestamp".into(),
-                kind: ParamType::String,
-                internal_type: None,
-            },
-            Param {
-                name: "reason".into(),
-                kind: ParamType::String,
-                internal_type: None,
-            },
-        ],
-        outputs: vec![],
-        constant: None,
-        state_mutability: StateMutability::NonPayable,
-    };
 
-    let tokens = vec![
-        Token::String(intent_id.to_owned()),
-        Token::String(transaction_hash.to_owned()),
-        Token::String(timestamp.to_owned()),
-        Token::String(reason.to_owned()),
-    ];
-
-    f.encode_input(&tokens).ok()
-}
 
 /// Encode calldata for processBatchIntents contract call
 /// This replaces individual depositIntent and fulfillIntent calls with a single batch operation

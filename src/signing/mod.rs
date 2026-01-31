@@ -211,14 +211,37 @@ impl SigningNode {
 
         der
     }
+
+    /// Helper: Get network group key from key store or database
+    fn get_network_group_key_from_store_or_db(&self) -> Option<k256::ProjectivePoint> {
+        use crate::database::keys;
+        use crate::types::SerializablePoint;
+
+        if let Some(key) = self.key_store.get_group_public_key() {
+            Some(key)
+        } else if let Some(database) = &self.database {
+            match database.get_string::<SerializablePoint>(keys::DKG_FINAL_PUBLIC) {
+                Ok(Some(serialized)) => Some(serialized.0.into()),
+                _ => None,
+            }
+        } else {
+            None
+        }
+    }
+
+    /// Helper: Encode group key to compressed bytes
+    fn encode_group_key_to_compressed_bytes(group_key: k256::ProjectivePoint) -> Vec<u8> {
+        let encoded_point = k256::EncodedPoint::from(group_key.to_affine());
+        encoded_point.compress().to_bytes().to_vec()
+    }
+
     /// Get the appropriate public key bytes based on transaction type
     async fn get_group_public_key_bytes(
         &self,
         transaction_type: Option<crate::types::TransactionType>,
         user_eth_address: Option<String>,
     ) -> Result<Vec<u8>> {
-        use crate::database::keys;
-        use crate::types::{SerializablePoint, TransactionType};
+        use crate::types::TransactionType;
 
         match transaction_type {
             Some(TransactionType::UserToVault) => {
@@ -242,93 +265,17 @@ impl SigningNode {
                     Err(anyhow!("UserToVault transaction requires user_eth_address"))
                 }
             }
-            Some(TransactionType::NetworkToTarget) | Some(TransactionType::IntentStatusUpdate) => {
-                // IntentStatusUpdate uses network group key (same as NetworkToTarget)
-                let group_key = if let Some(key) = self.key_store.get_group_public_key() {
-                    Some(key)
-                } else if let Some(database) = &self.database {
-                    match database.get_string::<SerializablePoint>(keys::DKG_FINAL_PUBLIC) {
-                        Ok(Some(serialized)) => Some(serialized.0.into()),
-                        _ => None,
-                    }
-                } else {
-                    None
-                };
-
-                if let Some(group_key) = group_key {
-                    let encoded_point = k256::EncodedPoint::from(group_key.to_affine());
-                    Ok(encoded_point.compress().to_bytes().to_vec())
-                } else {
-                    Err(anyhow!(
-                        "DKG group public key not available for NetworkToTarget/IntentStatusUpdate transaction - ensure DKG process is completed"
+            Some(TransactionType::NetworkToTarget) 
+            | Some(TransactionType::IntentStatusUpdate)
+            | Some(TransactionType::WithdrawLiquidity)
+            | Some(TransactionType::ClaimReward) => {
+                // All these transaction types use network group key
+                self.get_network_group_key_from_store_or_db()
+                    .map(Self::encode_group_key_to_compressed_bytes)
+                    .ok_or_else(|| anyhow!(
+                        "DKG group public key not available for {:?} transaction - ensure DKG process is completed",
+                        transaction_type
                     ))
-                }
-            }
-            Some(TransactionType::WithdrawLiquidity) => {
-                // WithdrawLiquidity uses network group key (same as NetworkToTarget)
-                let group_key = if let Some(key) = self.key_store.get_group_public_key() {
-                    Some(key)
-                } else if let Some(database) = &self.database {
-                    match database.get_string::<SerializablePoint>(keys::DKG_FINAL_PUBLIC) {
-                        Ok(Some(serialized)) => Some(serialized.0.into()),
-                        _ => None,
-                    }
-                } else {
-                    None
-                };
-
-                if let Some(group_key) = group_key {
-                    let encoded_point = k256::EncodedPoint::from(group_key.to_affine());
-                    Ok(encoded_point.compress().to_bytes().to_vec())
-                } else {
-                    Err(anyhow!(
-                        "DKG group public key not available for WithdrawLiquidity - ensure DKG process is completed"
-                    ))
-                }
-            }
-            Some(TransactionType::Refund) => {
-                // Refund uses network group key (same as NetworkToTarget)
-                let group_key = if let Some(key) = self.key_store.get_group_public_key() {
-                    Some(key)
-                } else if let Some(database) = &self.database {
-                    match database.get_string::<SerializablePoint>(keys::DKG_FINAL_PUBLIC) {
-                        Ok(Some(serialized)) => Some(serialized.0.into()),
-                        _ => None,
-                    }
-                } else {
-                    None
-                };
-
-                if let Some(group_key) = group_key {
-                    let encoded_point = k256::EncodedPoint::from(group_key.to_affine());
-                    Ok(encoded_point.compress().to_bytes().to_vec())
-                } else {
-                    Err(anyhow!(
-                        "DKG group public key not available for Refund transaction - ensure DKG process is completed"
-                    ))
-                }
-            }
-            Some(TransactionType::ClaimReward) => {
-                // ClaimReward: when called from Bitcoin path we use network key (BTC); TICS uses vault in Ethereum signer
-                let group_key = if let Some(key) = self.key_store.get_group_public_key() {
-                    Some(key)
-                } else if let Some(database) = &self.database {
-                    match database.get_string::<SerializablePoint>(keys::DKG_FINAL_PUBLIC) {
-                        Ok(Some(serialized)) => Some(serialized.0.into()),
-                        _ => None,
-                    }
-                } else {
-                    None
-                };
-
-                if let Some(group_key) = group_key {
-                    let encoded_point = k256::EncodedPoint::from(group_key.to_affine());
-                    Ok(encoded_point.compress().to_bytes().to_vec())
-                } else {
-                    Err(anyhow!(
-                        "DKG group public key not available for ClaimReward - ensure DKG process is completed"
-                    ))
-                }
             }
             None => Err(anyhow!(
                 "Transaction type is required for group public key retrieval"
@@ -3190,12 +3137,6 @@ impl SigningNode {
                                 "💸 [SIGNING-REFUND] Insufficient valid signatures for aggregation in round {}, triggering refund",
                                 round
                             );
-                            // Trigger refund for NetworkToTarget transactions
-                            self.check_and_trigger_refund_on_verification_failure(
-                                round,
-                                crate::types::TransactionNetwork::TICS,
-                            )
-                            .await;
                         }
                         
                         return Err(e);
@@ -3650,12 +3591,6 @@ impl SigningNode {
                             "💸 [SIGNING-REFUND] Insufficient valid signatures for aggregation in round {} input {}, triggering refund",
                             round, idx
                         );
-                        // Trigger refund for NetworkToTarget transactions
-                        self.check_and_trigger_refund_on_verification_failure(
-                            round,
-                            crate::types::TransactionNetwork::BTC,
-                        )
-                        .await;
                     }
                     return Err(e);
                 }
@@ -3949,7 +3884,7 @@ impl SigningNode {
             match t.as_str() {
                 "UserToVault" => Some(crate::types::TransactionType::UserToVault),
                 "NetworkToTarget" => Some(crate::types::TransactionType::NetworkToTarget),
-                "Refund" => Some(crate::types::TransactionType::Refund),
+
                 "WithdrawLiquidity" => Some(crate::types::TransactionType::WithdrawLiquidity),
                 _ => None,
             }
@@ -4382,7 +4317,7 @@ impl SigningNode {
         let share_type = match transaction_type {
             Some(crate::types::TransactionType::UserToVault) => "user-share",
             Some(crate::types::TransactionType::NetworkToTarget) => "network-share",
-            Some(crate::types::TransactionType::Refund) => "network-share", // Refund uses network share (same as NetworkToTarget)
+
             Some(crate::types::TransactionType::IntentStatusUpdate) => "network-share", // IntentStatusUpdate uses network share (same as NetworkToTarget)
             Some(crate::types::TransactionType::WithdrawLiquidity) => "network-share",
             Some(crate::types::TransactionType::ClaimReward) => {
@@ -4815,7 +4750,7 @@ impl SigningNode {
         let share_type = match transaction_type {
             Some(crate::types::TransactionType::UserToVault) => "user-share",
             Some(crate::types::TransactionType::NetworkToTarget) => "network-share",
-            Some(crate::types::TransactionType::Refund) => "network-share", // Refund uses network share (same as NetworkToTarget)
+
             Some(crate::types::TransactionType::IntentStatusUpdate) => "network-share", // IntentStatusUpdate uses network share (same as NetworkToTarget)
             Some(crate::types::TransactionType::WithdrawLiquidity) => "network-share",
             Some(crate::types::TransactionType::ClaimReward) => "network-share", // BTC claim-reward (BitcoinSigner path)
@@ -5170,9 +5105,8 @@ impl SigningNode {
                 }
             }
             Some(crate::types::TransactionType::NetworkToTarget)
-            | Some(crate::types::TransactionType::Refund)
             | Some(crate::types::TransactionType::IntentStatusUpdate) => {
-                // NetworkToTarget, Refund, and IntentStatusUpdate → per-node-network-share pubkey
+                // NetworkToTarget and IntentStatusUpdate → per-node-network-share pubkey
                 dkg_storage
                     .get_network_share_pubkey(peer_id)
                     .await?

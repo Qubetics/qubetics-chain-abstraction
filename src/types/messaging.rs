@@ -254,10 +254,6 @@ pub enum ChannelMessage {
         ethereum_address: String,
         node_id: String,
     },
-    RefundInitiation {
-        intent_hash: String,
-        data: Vec<u8>,
-    },
     ScheduledDKGStart,
     PeerDiscoveryRetry {
         attempt: u8,

@@ -203,10 +203,9 @@ pub struct MpcNetworkLayer {
     /// Cache of currently connected peers (for fast address responses)
     pub(crate) connected_peers_cache: HashSet<PeerId>,
 
-    /// Mutex to ensure only one network transaction is processed at a time
-    pub(crate) network_transaction_processing_lock: Arc<Mutex<()>>,
     // Removed: deterministic_selection field
     // Final node selection is now integrated into NetworkTransactionSequencer
+    // Removed: network_transaction_processing_lock field (unused)
     /// Retry manager for critical messages with exponential backoff
     pub(crate) retry_manager: Option<RetryManager>,
     pub(crate) channel_health: Arc<crate::network::rpc::channel_monitor::ChannelHealthMonitor>,

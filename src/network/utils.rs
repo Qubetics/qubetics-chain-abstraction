@@ -165,7 +165,6 @@ impl MpcNetworkLayer {
 
     // Contract call helpers for user-to-vault have been removed; contract execution is skipped for that flow.
 
-
     // ----------------------------------------------------------------------------
     // Network transaction helper functions (sequencer removed, will be replaced with pool approach)
     // ----------------------------------------------------------------------------
@@ -189,45 +188,11 @@ impl MpcNetworkLayer {
         Ok(())
     }
 
-    /// Execute refund intent contract call directly (sequencer removed)
-    pub(crate) async fn submit_refund_intent_to_sequencer(
-        &mut self,
-        intent_id: &str,
-        transaction_hash: &str,
-        timestamp: &str,
-        reason: &str,
-        vault_group_key: Option<k256::ProjectivePoint>,
-    ) -> Result<()> {
-        // Execute refund intent contract call directly - sequencer removed
-        if let Some(signing_node) = &mut self.signing_node {
-            crate::utils::contract::execute_refund_intent_contract_call(
-                signing_node,
-                self.node_manager.as_ref(),
-                self.dkg_node.as_ref(),
-                intent_id,
-                transaction_hash,
-                timestamp,
-                reason,
-                vault_group_key,
-                None, // No request_id
-                None, // No original_request
-            )
-            .await
-        } else {
-            warn!("❌ [NETWORK] Signing node not available for refund intent contract call execution");
-            Ok(())
-        }
-    }
-
-
     /// Process a single contract transaction (sequencer removed - method kept for compatibility but unused)
     #[allow(dead_code)]
     /// Process a single contract transaction (sequencer removed - method kept for compatibility but unused)
     #[allow(dead_code)]
-    pub(crate) async fn process_contract_transaction(
-        &mut self,
-        _request: (),
-    ) -> Result<()> {
+    pub(crate) async fn process_contract_transaction(&mut self, _request: ()) -> Result<()> {
         // Contract sequencer removed - transactions are executed directly
         Ok(())
     }

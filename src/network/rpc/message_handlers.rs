@@ -21,7 +21,6 @@ impl MpcNetworkLayer {
             "network_to_target" => Ok(TransactionType::NetworkToTarget),
             "withdraw_liquidity" | "withdrawLiquidity" => Ok(TransactionType::WithdrawLiquidity),
             "claim_reward" => Ok(TransactionType::ClaimReward),
-            "refund" => Ok(TransactionType::Refund),
             "intent_status_update" => Ok(TransactionType::IntentStatusUpdate),
             _ => Err(anyhow::anyhow!("Unknown transaction type: {}", tx_type_str)),
         }
@@ -45,14 +44,6 @@ impl MpcNetworkLayer {
                 .store_network_to_target_tx_id(intent_hash, transaction_id, node_id)
                 .await
                 .map_err(|e| anyhow::anyhow!("{}", e)),
-            "refund" => {
-                // Store refund transaction ID (refund transactions go from network to user's source address)
-                // We store it as network_to_target since it's the same flow
-                user_intent_manager
-                    .store_network_to_target_tx_id(intent_hash, transaction_id, node_id)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("{}", e))
-            }
             "withdraw_liquidity" | "withdrawLiquidity" => {
                 warn!(
                     "⚠️ [SIGNING] Received withdraw-liquidity transaction ID for intent {} but this flow is not implemented yet",
@@ -67,10 +58,17 @@ impl MpcNetworkLayer {
                     "✅ [INTENT_STATUS_UPDATE] Marking intent {} as Solved (contract update completed)",
                     intent_hash
                 );
-                
-                if let Some(user) = user_intent_manager.get_user_by_intent_hash(intent_hash).await {
+
+                if let Some(user) = user_intent_manager
+                    .get_user_by_intent_hash(intent_hash)
+                    .await
+                {
                     if let Err(e) = user_intent_manager
-                        .update_intent_status(&user.ethereum_address, intent_hash, crate::types::IntentStatus::Solved)
+                        .update_intent_status(
+                            &user.ethereum_address,
+                            intent_hash,
+                            crate::types::IntentStatus::Solved,
+                        )
                         .await
                     {
                         error!(
@@ -81,8 +79,7 @@ impl MpcNetworkLayer {
                     } else {
                         info!(
                             "✅ [INTENT_STATUS_UPDATE] Marked intent {} as Solved for user {}",
-                            intent_hash,
-                            user.ethereum_address
+                            intent_hash, user.ethereum_address
                         );
                     }
                 } else {
@@ -92,7 +89,7 @@ impl MpcNetworkLayer {
                     );
                     return Err(anyhow::anyhow!("User not found for intent {}", intent_hash));
                 }
-                
+
                 Ok(())
             }
             "add_liquidity" => {
@@ -138,7 +135,7 @@ impl MpcNetworkLayer {
                             existing_tx_ids.user_to_network_tx_id.as_ref()
                                 == Some(&transaction_id.to_string())
                         }
-                        "network_to_target" | "refund" => {
+                        "network_to_target" => {
                             existing_tx_ids.network_to_target_tx_id.as_ref()
                                 == Some(&transaction_id.to_string())
                         }
@@ -209,87 +206,6 @@ impl MpcNetworkLayer {
                             "✅ [SECURITY] Consensus reached on transaction {} - proceeding with contract call",
                             transaction_id
                         );
-
-                        // Handle refund transactions differently - they use refundIntent contract method
-                        if transaction_type == "refund" {
-                            // Extract the original intent_hash from "refund-{intent_hash}"
-                            let original_intent_hash =
-                                intent_hash.strip_prefix("refund-").unwrap_or(intent_hash);
-
-                            // Get transaction IDs to extract error message (try this first, works even if intent is missing)
-                            let tx_ids = user_intent_manager
-                                .get_intent_transaction_ids(original_intent_hash)
-                                .await;
-
-                            // Use stored error message as reason, or fallback to default
-                            let reason =
-                                tx_ids.and_then(|ids| ids.error_message).unwrap_or_else(|| {
-                                    format!("Refund transaction completed: {}", transaction_id)
-                                });
-
-                            // Get timestamp from intent if available, otherwise use current timestamp
-                            let timestamp = if let Some(intent) =
-                                user_intent_manager.get_intent(original_intent_hash).await
-                            {
-                                intent.timestamp.to_string()
-                            } else {
-                                // Intent not found - this should not happen if intent was stored during user-to-vault
-                                // Log detailed warning to help diagnose the root cause
-                                warn!(
-                                    "⚠️ [CONTRACT] Could not retrieve intent {} for refund contract call",
-                                    original_intent_hash
-                                );
-                                warn!(
-                                    "🔍 [CONTRACT] Root cause investigation: Intent should have been stored during user-to-vault transaction"
-                                );
-                                warn!(
-                                    "🔍 [CONTRACT] Possible reasons: 1) Intent hash broadcast missed, 2) Node joined network after intent was created, 3) Database synchronization issue"
-                                );
-
-                                warn!(
-                                    "⚠️ [CONTRACT] Using current timestamp as fallback - refund contract call will proceed"
-                                );
-                                std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .unwrap()
-                                    .as_millis()
-                                    .to_string()
-                            };
-
-                            let vault_group_key = if let Some(dkg_node) = &self.dkg_node {
-                                dkg_node.get_vault_group_key().await
-                            } else {
-                                None
-                            };
-
-                            if let Some(vault_group_key) = vault_group_key {
-                                // Execute refund contract call using sequencer directly (doesn't require intent object)
-                                if let Err(e) = self
-                                    .submit_refund_intent_to_sequencer(
-                                        original_intent_hash,
-                                        transaction_id,
-                                        &timestamp,
-                                        &reason,
-                                        Some(vault_group_key),
-                                    )
-                                    .await
-                                {
-                                    warn!(
-                                        "❌ [CONTRACT] Failed to submit refund contract call for transaction ID {}: {}",
-                                        transaction_id, e
-                                    );
-                                } else {
-                                    info!(
-                                        "✅ [CONTRACT] Successfully submitted refund contract call for transaction ID {} (after consensus verification)",
-                                        transaction_id
-                                    );
-                                }
-                            } else {
-                                warn!(
-                                    "❌ [CONTRACT] No liquidity operator group key available for refund contract call execution"
-                                );
-                            }
-                        } 
                     }
                 }
                 Err(e) => {
@@ -340,8 +256,7 @@ impl MpcNetworkLayer {
                     "user_to_vault" => {
                         tx_ids.user_to_network_tx_id.as_ref() == Some(&transaction_id.to_string())
                     }
-                    "network_to_target" | "refund" => {
-                        // Refund transactions are stored as network_to_target_tx_id
+                    "network_to_target" => {
                         tx_ids.network_to_target_tx_id.as_ref() == Some(&transaction_id.to_string())
                     }
                     _ => false,
@@ -388,8 +303,7 @@ impl MpcNetworkLayer {
         request_id: Option<&str>,
     ) -> Result<()> {
         // First, classify the network from the tx-id shape.
-        let Some(network) =
-            withdraw_liquidity_network_from_tx_id(transaction_type, transaction_id)
+        let Some(network) = withdraw_liquidity_network_from_tx_id(transaction_type, transaction_id)
         else {
             warn!(
                 "❌ [NETWORK] Unknown withdraw liquidity transaction type '{}' for tx {}; skipping storage",
@@ -419,17 +333,18 @@ impl MpcNetworkLayer {
                 req_id
             );
 
-            let maybe_req: Option<PendingWithdrawRequest> =
-                match db.get_string::<PendingWithdrawRequest>(&key) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        warn!(
+            let maybe_req: Option<PendingWithdrawRequest> = match db
+                .get_string::<PendingWithdrawRequest>(&key)
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!(
                             "⚠️ [BTC_WITHDRAW] Failed to load pending withdraw {} for solver {} when applying txid {}: {}",
                             req_id, solver_address, transaction_id, e
                         );
-                        return Ok(());
-                    }
-                };
+                    return Ok(());
+                }
+            };
 
             if let Some(mut req) = maybe_req {
                 // Only update BTC pending requests without a tx_id
@@ -473,17 +388,18 @@ impl MpcNetworkLayer {
             if let Some(req_id) = request_id {
                 // Batch: update only the specific request
                 let key = format!("pending_withdraw_liquidity:{}:{}", solver_lower, req_id);
-                let maybe_req: Option<PendingWithdrawRequest> =
-                    match db.get_string::<PendingWithdrawRequest>(&key) {
-                        Ok(v) => v,
-                        Err(e) => {
-                            warn!(
+                let maybe_req: Option<PendingWithdrawRequest> = match db
+                    .get_string::<PendingWithdrawRequest>(&key)
+                {
+                    Ok(v) => v,
+                    Err(e) => {
+                        warn!(
                                 "⚠️ [TICS_WITHDRAW] Failed to load pending withdraw {} for solver {} when applying txid {}: {}",
                                 req_id, solver_address, transaction_id, e
                             );
-                            return Ok(());
-                        }
-                    };
+                        return Ok(());
+                    }
+                };
 
                 if let Some(mut req) = maybe_req {
                     if req.asset.to_uppercase() == "TICS" {
@@ -536,17 +452,18 @@ impl MpcNetworkLayer {
             } else {
                 // Legacy: prefix-scan and update all pending TICS for this solver
                 let prefix = format!("pending_withdraw_liquidity:{}:", solver_lower);
-                let entries: Vec<(String, PendingWithdrawRequest)> =
-                    match db.get_values_with_prefix(&prefix) {
-                        Ok(v) => v,
-                        Err(e) => {
-                            warn!(
+                let entries: Vec<(String, PendingWithdrawRequest)> = match db
+                    .get_values_with_prefix(&prefix)
+                {
+                    Ok(v) => v,
+                    Err(e) => {
+                        warn!(
                                 "⚠️ [TICS_WITHDRAW] Failed to load pending withdraws for solver {} when applying txid {}: {}",
                                 solver_address, transaction_id, e
                             );
-                            return Ok(());
-                        }
-                    };
+                        return Ok(());
+                    }
+                };
 
                 for (key, mut req) in entries {
                     if req.asset.to_uppercase() != "TICS" || req.tx_id.is_some() {
@@ -625,19 +542,23 @@ impl MpcNetworkLayer {
             // TICS claim-reward: store tx_id on TICS requests, mark all Completed (TICS get tx_id, BTC get done only).
             if let Some(req_id) = request_id {
                 let key = format!("pending_claim_reward:{}:{}", solver_lower, req_id);
-                let maybe_req: Option<PendingClaimRewardRequest> =
-                    match db.get_string::<PendingClaimRewardRequest>(&key) {
-                        Ok(v) => v,
-                        Err(e) => {
-                            warn!(
+                let maybe_req: Option<PendingClaimRewardRequest> = match db
+                    .get_string::<PendingClaimRewardRequest>(&key)
+                {
+                    Ok(v) => v,
+                    Err(e) => {
+                        warn!(
                                 "⚠️ [CLAIM_REWARD_TXID] Failed to load pending claim reward {} for solver {} when applying txid {}: {}",
                                 req_id, solver_address, transaction_id, e
                             );
-                            return Ok(());
-                        }
-                    };
+                        return Ok(());
+                    }
+                };
                 if let Some(mut req) = maybe_req {
-                    let is_tics_req = req.ethereum_address.as_ref().map_or(false, |a| !a.trim().is_empty());
+                    let is_tics_req = req
+                        .ethereum_address
+                        .as_ref()
+                        .map_or(false, |a| !a.trim().is_empty());
                     if is_tics_req {
                         req.tx_id = Some(transaction_id.to_string());
                     }
@@ -668,19 +589,23 @@ impl MpcNetworkLayer {
             } else {
                 // Single-solver legacy: prefix-scan all pending claim rewards for this solver.
                 let prefix = format!("pending_claim_reward:{}:", solver_lower);
-                let entries: Vec<(String, PendingClaimRewardRequest)> =
-                    match db.get_values_with_prefix(&prefix) {
-                        Ok(v) => v,
-                        Err(e) => {
-                            warn!(
+                let entries: Vec<(String, PendingClaimRewardRequest)> = match db
+                    .get_values_with_prefix(&prefix)
+                {
+                    Ok(v) => v,
+                    Err(e) => {
+                        warn!(
                                 "⚠️ [CLAIM_REWARD_TXID] Failed to load pending claim rewards for solver {} when applying txid {}: {}",
                                 solver_address, transaction_id, e
                             );
-                            return Ok(());
-                        }
-                    };
+                        return Ok(());
+                    }
+                };
                 for (key, mut req) in entries {
-                    let is_tics_req = req.ethereum_address.as_ref().map_or(false, |a| !a.trim().is_empty());
+                    let is_tics_req = req
+                        .ethereum_address
+                        .as_ref()
+                        .map_or(false, |a| !a.trim().is_empty());
                     if is_tics_req {
                         req.tx_id = Some(transaction_id.to_string());
                     }
@@ -714,17 +639,18 @@ impl MpcNetworkLayer {
                 return Ok(());
             };
             let key = format!("pending_claim_reward:{}:{}", solver_lower, req_id);
-            let maybe_req: Option<PendingClaimRewardRequest> =
-                match db.get_string::<PendingClaimRewardRequest>(&key) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        warn!(
+            let maybe_req: Option<PendingClaimRewardRequest> = match db
+                .get_string::<PendingClaimRewardRequest>(&key)
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!(
                             "⚠️ [CLAIM_REWARD_TXID] Failed to load pending claim reward {} for solver {} when applying txid {}: {}",
                             req_id, solver_address, transaction_id, e
                         );
-                        return Ok(());
-                    }
-                };
+                    return Ok(());
+                }
+            };
             if let Some(mut req) = maybe_req {
                 if req.tx_id.is_some() {
                     return Ok(());
