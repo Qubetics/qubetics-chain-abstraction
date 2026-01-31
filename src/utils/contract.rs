@@ -176,6 +176,7 @@ pub async fn execute_refund_intent_contract_call(
             request_id,
             None,
             None, // tics_withdraw_identifiers (not applicable)
+            None, // tics_claim_reward_identifiers (not applicable)
         )
         .await?;
 

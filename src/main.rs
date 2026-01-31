@@ -8,7 +8,7 @@ use mpc_node::node_selection::{DefaultThresholdCalculator, NodeMembership, VrfNo
 use mpc_node::{
     commands::CommandProcessor,
     consensus::{ConsensusNode, DatabaseConsensusNode},
-    database::{Database, DatabaseConfig, DatabaseModule, DkgStorage, RewardStorage},
+    database::{Database, DatabaseConfig, DatabaseModule, DkgStorage},
     network::transport::types::MpcNetworkLayer,
     protocols::DKGNode,
     rpc_server,
@@ -104,7 +104,6 @@ struct NodeContext {
     database: Option<Arc<Database>>,
     network: Option<MpcNetworkLayer>,
     dkg_storage: Option<DkgStorage>,
-    reward_storage: Option<RewardStorage>,
     user_intent_manager: Option<Arc<UserIntentManager>>,
     start_time: Instant,
 }
@@ -123,7 +122,6 @@ impl NodeContext {
             database: None,
             network: None,
             dkg_storage: None,
-            reward_storage: None,
             user_intent_manager: None,
             start_time: Instant::now(),
         })
@@ -185,12 +183,10 @@ impl NodeContext {
         let database_module = DatabaseModule::initialize(db_config)?;
         let database: Arc<Database> = Arc::new(database_module.database());
         let dkg_storage = database_module.dkg_storage();
-        let reward_storage = database_module.reward_storage();
 
         self.database_module = Some(database_module);
         self.database = Some(database);
         self.dkg_storage = Some(dkg_storage);
-        self.reward_storage = Some(reward_storage);
 
         info!("🗄️ [MAIN] Database initialized successfully");
         info!("🧩 [MAIN] Database module wired for dependent components");
@@ -282,7 +278,6 @@ impl NodeContext {
         )));
 
         let dkg_storage: DkgStorage = database_module.dkg_storage();
-        let reward_storage: RewardStorage = database_module.reward_storage();
         let chain_code = self.chain_code;
         let mut dkg_node = DKGNode::new(
             network.get_local_peer_id().to_string(),
@@ -324,7 +319,6 @@ impl NodeContext {
         self.user_intent_manager = Some(db_user_intent_manager);
         self.network = Some(network);
         self.dkg_storage = Some(dkg_storage);
-        self.reward_storage = Some(reward_storage);
 
         info!("📊 [MAIN] Database components initialized:");
         info!("  📝 DatabaseSigningNode: Available");
@@ -348,10 +342,6 @@ impl NodeContext {
             .dkg_storage
             .clone()
             .context("DKG storage must be initialized")?;
-        let reward_storage = self
-            .reward_storage
-            .clone()
-            .context("reward storage must be initialized")?;
         let database = self
             .database
             .clone()
@@ -373,7 +363,6 @@ impl NodeContext {
                 rpc_port,
                 user_intent_manager.clone(),
                 dkg_storage,
-                reward_storage,
                 (*database).clone(),
                 node_id,
                 start_time,
