@@ -4,11 +4,9 @@ use serde::{Deserialize, Serialize};
 pub enum TransactionType {
     UserToVault,
     NetworkToTarget,
-    RewardTxn,
     WithdrawLiquidity,
-    /// BTC claim-reward batch (same flow as WithdrawLiquidity for BTC; tx-id stored on PendingClaimRewardRequest).
-    ClaimRewardBtc,
-    Refund,
+    /// Claim-reward batch (same as WithdrawLiquidity: TICS vs BTC determined at runtime from tx_id / pending store).
+    ClaimReward,
     IntentStatusUpdate,
 }
 
@@ -30,6 +28,9 @@ pub struct DepositIntent {
     pub amount: String,
     pub source_token: String,
     pub target_token: String,
+    /// Timestamp (numeric only). Must be a number in JSON so intent hash matches client-signed payload.
+    /// Plain u128 so bincode (used when loading intents from storage) can deserialize; default
+    /// serde rejects JSON object for u128.
     pub timestamp: u128,
 }
 

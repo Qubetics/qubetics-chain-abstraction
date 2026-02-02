@@ -107,20 +107,10 @@ impl SigningNode {
         intent_hashes: Vec<String>,
         transaction_type: Option<TransactionType>,
         user_tweaked_share: Option<Scalar>,
-        solver_address: Option<String>,
+        _solver_address: Option<String>,
         signing_key_override: Option<Scalar>,
     ) -> Result<()> {
         use secp256k1::{ecdsa::RecoverableSignature, Message};
-
-        // Validate parameters: if transaction_type is RewardTxn, solver_address must be provided
-        if let Some(TransactionType::RewardTxn) = transaction_type {
-            if solver_address.is_none() {
-                error!("❌ [BTC-SIGNING] Invalid parameters: solver_address is required when transaction_type is RewardTxn");
-                return Err(anyhow!(
-                    "Solver address is required when transaction_type is RewardTxn"
-                ));
-            }
-        }
 
         info!(
             "📝 [SIGNING] Node {} starting Bitcoin transaction signing",
@@ -433,35 +423,7 @@ impl SigningNode {
 
         // Store tx + extras under this round (so final node can reconstruct without re-deriving)
         if let Some(original_tx) = &original_tx {
-            if let Some(TransactionType::RewardTxn) = transaction_type {
-                // This is a reward transaction - store in reward pending transactions
-                // solver_address is guaranteed to be Some due to validation above
-                let solver_addr = solver_address.expect("Solver address should be validated above");
-                // Store in BTC reward pending transactions
-                self.store_reward_transaction_btc(
-                    current_round,
-                    ChainTransaction::Bitcoin(original_tx.clone()),
-                    tx_bytes.clone(),
-                    solver_addr.clone(),
-                    extras,
-                )
-                .await;
-
-                // Insert round number into reward_rounds for reward transactions
-                {
-                    let mut reward_rounds = self.pending.reward_rounds.write().await;
-                    reward_rounds.insert(current_round);
-                    info!(
-                        "🎁 [BTC-SIGNING] Node {} added round {} to reward_rounds",
-                        self.id, current_round
-                    );
-                }
-
-                info!(
-                    "💾 [BTC-SIGNING] Node {} stored BTC reward transaction for round {} with solver address: {} (inputs={})",
-                    self.id, current_round, solver_addr, original_tx.inputs.len()
-                );
-            } else if let Some(TransactionType::WithdrawLiquidity) = transaction_type {
+            if let Some(TransactionType::WithdrawLiquidity) = transaction_type {
                 // For BTC withdraws we expect `intent_hashes` to carry batch metadata,
                 // encoded as "request_id|solver_address" for each withdraw in the batch.
                 self.store_withdraw_transaction_btc(
@@ -486,7 +448,7 @@ impl SigningNode {
                     "💾 [BTC-SIGNING] Node {} stored BTC withdraw-liquidity transaction for round {} with solver address: {} (inputs={})",
                     self.id, current_round, intent_hashes.len(), original_tx.inputs.len()
                 );
-            } else if let Some(TransactionType::ClaimRewardBtc) = transaction_type {
+            } else if let Some(TransactionType::ClaimReward) = transaction_type {
                 // BTC claim-reward batch: same encoding as withdraw ("request_id|solver_address").
                 self.store_claim_reward_transaction_btc(
                     current_round,

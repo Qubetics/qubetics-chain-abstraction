@@ -1,38 +1,11 @@
 use super::SigningNode;
 use crate::{
     chain_abstraction::ChainTransaction,
-    types::{intent::DepositIntent, ChannelMessage, TransactionNetwork, TransactionType},
+    types::{TransactionNetwork, TransactionType},
 };
-use anyhow::{anyhow, Result};
-use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{error, info, warn};
 
 impl SigningNode {
-    pub(crate) async fn store_reward_transaction_btc(
-        &self,
-        round: u64,
-        chain_tx: ChainTransaction,
-        tx_bytes: Vec<u8>,
-        solver_address: String,
-        extras: crate::signing::state::BtcRoundExtras,
-    ) {
-        let mut pending = self.pending.reward_pending_transactions_btc.write().await;
-        pending.insert(
-            round,
-            (
-                chain_tx,
-                tx_bytes,
-                Some(vec![solver_address]),
-                Some(TransactionType::RewardTxn),
-                Some(extras),
-            ),
-        );
-        info!(
-            "🎁 [SIGNING] Stored BTC reward transaction for round {} with solver address",
-            round
-        );
-    }
-
     pub(crate) async fn store_withdraw_transaction_tics(
         &self,
         round: u64,
@@ -98,6 +71,42 @@ impl SigningNode {
         );
     }
 
+    /// Store TICS claim-reward batch (one EVM tx-id for multiple requests); tx-id broadcast stores tx_id on TICS requests and marks done; marks BTC requests done only.
+    pub(crate) async fn store_claim_reward_transaction_tics_batch(
+        &self,
+        round: u64,
+        chain_tx: ChainTransaction,
+        tx_bytes: Vec<u8>,
+        identifiers: Vec<String>,
+    ) {
+        if identifiers.is_empty() {
+            return;
+        }
+        let count = identifiers.len();
+        let mut pending = self
+            .pending
+            .claim_reward_pending_transactions_tics
+            .write()
+            .await;
+        pending.insert(
+            round,
+            (
+                chain_tx,
+                tx_bytes,
+                Some(identifiers),
+                Some(TransactionType::ClaimReward),
+                None,
+                None,
+            ),
+        );
+        let mut claim_reward_rounds = self.pending.claim_reward_rounds.write().await;
+        claim_reward_rounds.insert(round);
+        info!(
+            "🎁 [SIGNING] Stored TICS claim-reward batch for round {} with {} request(s)",
+            round, count
+        );
+    }
+
     pub(crate) async fn store_withdraw_transaction_btc(
         &self,
         round: u64,
@@ -137,7 +146,11 @@ impl SigningNode {
         identifiers: Vec<String>,
         extras: crate::signing::state::BtcRoundExtras,
     ) {
-        let mut pending = self.pending.claim_reward_pending_transactions_btc.write().await;
+        let mut pending = self
+            .pending
+            .claim_reward_pending_transactions_btc
+            .write()
+            .await;
         pending.insert(
             round,
             (
@@ -148,7 +161,7 @@ impl SigningNode {
                 } else {
                     Some(identifiers)
                 },
-                Some(TransactionType::ClaimRewardBtc),
+                Some(TransactionType::ClaimReward),
                 Some(extras),
             ),
         );
@@ -169,8 +182,8 @@ impl SigningNode {
         txn_network: TransactionNetwork,
     ) {
         let is_reward_round = {
-            let reward_rounds = self.pending.reward_rounds.read().await;
-            reward_rounds.contains(&round)
+            let claim_reward_rounds = self.pending.claim_reward_rounds.read().await;
+            claim_reward_rounds.contains(&round)
         };
 
         let is_withdraw_round = {
@@ -178,21 +191,41 @@ impl SigningNode {
             withdraw_rounds.contains(&round)
         };
 
-        let (intent_hashes, transaction_type, retrieved_solver_address) = match txn_network {
+        let is_claim_reward_round = {
+            let claim_reward_rounds = self.pending.claim_reward_rounds.read().await;
+            claim_reward_rounds.contains(&round)
+        };
+
+        let (intent_hashes, transaction_type, retrieved_solver_address): (
+            Vec<String>,
+            Option<crate::types::TransactionType>,
+            Option<String>,
+        ) = match txn_network {
             TransactionNetwork::TICS => {
                 if is_reward_round {
-                    let reward_pending_transactions =
-                        self.pending.reward_pending_transactions_tics.read().await;
+                    let claim_reward_pending_tics = self
+                        .pending
+                        .claim_reward_pending_transactions_tics
+                        .read()
+                        .await;
                     if let Some((
                         _tx,
                         _tx_bytes,
-                        solver_address,
+                        identifiers,
                         transaction_type,
                         _request_id,
                         _original_request,
-                    )) = reward_pending_transactions.get(&round)
+                    )) = claim_reward_pending_tics.get(&round)
                     {
-                        (vec![], transaction_type.clone(), solver_address.clone())
+                        let solver_address: Option<String> =
+                            identifiers.as_ref().and_then(|v| v.first()).map(|s| {
+                                if let Some((_, solver)) = s.split_once('|') {
+                                    solver.to_string()
+                                } else {
+                                    s.clone()
+                                }
+                            });
+                        (vec![], transaction_type.clone(), solver_address)
                     } else {
                         (vec![], None, None)
                     }
@@ -208,13 +241,14 @@ impl SigningNode {
                         _original_request,
                     )) = withdraw_pending_transactions.get(&round)
                     {
-                        let solver_address = identifiers.as_ref().and_then(|v| v.first()).map(|s| {
-                            if let Some((_, solver)) = s.split_once('|') {
-                                solver.to_string()
-                            } else {
-                                s.clone()
-                            }
-                        });
+                        let solver_address =
+                            identifiers.as_ref().and_then(|v| v.first()).map(|s| {
+                                if let Some((_, solver)) = s.split_once('|') {
+                                    solver.to_string()
+                                } else {
+                                    s.clone()
+                                }
+                            });
                         (vec![], transaction_type.clone(), solver_address)
                     } else {
                         (vec![], None, None)
@@ -237,11 +271,14 @@ impl SigningNode {
                 }
             }
             TransactionNetwork::BTC => {
-                if is_reward_round {
-                    let reward_pending_transactions_btc =
-                        self.pending.reward_pending_transactions_btc.read().await;
+                if is_claim_reward_round {
+                    let claim_reward_pending_btc = self
+                        .pending
+                        .claim_reward_pending_transactions_btc
+                        .read()
+                        .await;
                     if let Some((_tx, _tx_bytes, solver_addresses, transaction_type, _extras)) =
-                        reward_pending_transactions_btc.get(&round)
+                        claim_reward_pending_btc.get(&round)
                     {
                         let solver_address =
                             solver_addresses.as_ref().and_then(|v| v.first().cloned());
@@ -271,9 +308,7 @@ impl SigningNode {
                     };
                     let list = {
                         let map = self.pending.intent_hashes_by_round.read().await;
-                        map.get(&round)
-                            .cloned()
-                            .unwrap_or_else(|| from_pending)
+                        map.get(&round).cloned().unwrap_or_else(|| from_pending)
                     };
                     let tx_type = {
                         let pending_btc = self.pending.pending_transactions_btc.read().await;
@@ -286,36 +321,22 @@ impl SigningNode {
             }
         };
 
-        if !intent_hashes.is_empty()
-            && matches!(
-                transaction_type,
-                Some(crate::types::TransactionType::RewardTxn)
-            )
-        {
-            warn!(
-                "⚠️ [SIGNING] RewardTxn with intent_hashes (round {}); clearing intent path",
-                round
-            );
-        }
-
         // Intent-based batch: store, refund, and broadcast for all intents (batch-aware, like tx-id)
         if !intent_hashes.is_empty() {
             if let Some(user_intent_manager) = &self.user_intent_manager {
                 let transaction_type_str = match transaction_type {
                     Some(crate::types::TransactionType::UserToVault) => "user_to_vault",
                     Some(crate::types::TransactionType::NetworkToTarget) => "network_to_target",
-                    Some(crate::types::TransactionType::Refund) => "refund",
-                    Some(crate::types::TransactionType::IntentStatusUpdate) => "intent_status_update",
+
+                    Some(crate::types::TransactionType::IntentStatusUpdate) => {
+                        "intent_status_update"
+                    }
                     Some(crate::types::TransactionType::WithdrawLiquidity) => {
                         error!("❌ [SIGNING] WithdrawLiquidity with intent_hashes - invalid");
                         return;
                     }
-                    Some(crate::types::TransactionType::RewardTxn) => {
-                        error!("❌ [SIGNING] RewardTxn with intent_hashes - invalid");
-                        return;
-                    }
-                    Some(crate::types::TransactionType::ClaimRewardBtc) => {
-                        error!("❌ [SIGNING] ClaimRewardBtc with intent_hashes - invalid");
+                    Some(crate::types::TransactionType::ClaimReward) => {
+                        error!("❌ [SIGNING] ClaimReward with intent_hashes - invalid");
                         return;
                     }
                     None => {
@@ -344,19 +365,6 @@ impl SigningNode {
                             intent_hash, round, error_message
                         );
                     }
-
-                    if matches!(
-                        transaction_type,
-                        Some(crate::types::TransactionType::NetworkToTarget)
-                    ) {
-                        info!(
-                            "💸 [SIGNING] Network-to-target failed, initiating refund for intent: {}",
-                            intent_hash
-                        );
-                        if let Err(e) = self.initiate_refund_transaction(intent_hash).await {
-                            error!("❌ [SIGNING] Failed to initiate refund for {}: {}", intent_hash, e);
-                        }
-                    }
                 }
 
                 self.broadcast_transaction_error(
@@ -383,52 +391,11 @@ impl SigningNode {
 
         match (&retrieved_solver_address, &self.user_intent_manager) {
             (Some(_), _) | (_, Some(_)) => {
-                if transaction_type.is_none() && retrieved_solver_address.is_some() {
-                    info!(
-                        "💥 [SIGNING] Broadcasting reward transaction error for solver {:?} (round {})",
-                        retrieved_solver_address, round
-                    );
-                    self.broadcast_transaction_error(
-                        None,
-                        error_message,
-                        "reward_txn",
-                        retrieved_solver_address.as_deref(),
-                    )
-                    .await;
-                    return;
-                }
-
                 if matches!(
-                    transaction_type,
-                    Some(crate::types::TransactionType::RewardTxn)
-                ) || (transaction_type.is_none() && retrieved_solver_address.is_some())
-                {
-                    if let Some(solver_addr) = retrieved_solver_address.as_ref() {
-                        info!(
-                            "💥 [SIGNING] Reward transaction error for solver {} (round {}): {}",
-                            solver_addr, round, error_message
-                        );
-                        self.broadcast_transaction_error(
-                            None,
-                            error_message,
-                            "reward_txn",
-                            Some(solver_addr.as_str()),
-                        )
-                        .await;
-                    } else if matches!(
-                        transaction_type,
-                        Some(crate::types::TransactionType::RewardTxn)
-                    ) {
-                        error!(
-                            "❌ [SIGNING] RewardTxn requires solver_address in round {}",
-                            round
-                        );
-                    }
-                } else if matches!(
                     transaction_type,
                     Some(crate::types::TransactionType::WithdrawLiquidity)
                 ) {
-                    if let Some(solver_addr) = retrieved_solver_address.as_ref() {
+                    if let Some(solver_addr) = retrieved_solver_address.as_deref() {
                         info!(
                             "💥 [SIGNING] Withdraw liquidity transaction error for solver {} (round {}): {}",
                             solver_addr, round, error_message
@@ -437,7 +404,7 @@ impl SigningNode {
                             None,
                             error_message,
                             "withdraw_liquidity",
-                            Some(solver_addr.as_str()),
+                            Some(solver_addr),
                         )
                         .await;
                     } else {
@@ -456,168 +423,6 @@ impl SigningNode {
         }
     }
 
-    pub(crate) async fn initiate_refund_transaction(&self, intent_hash: &str) -> Result<()> {
-        info!(
-            "🔄 [SIGNING-REFUND] Starting refund process for intent: {}",
-            intent_hash
-        );
-
-        let user_intent_manager = self
-            .user_intent_manager
-            .as_ref()
-            .ok_or_else(|| anyhow!("User registry not available for refund"))?;
-
-        let intent = user_intent_manager
-            .get_intent(intent_hash)
-            .await
-            .ok_or_else(|| anyhow!("Intent not found: {}", intent_hash))?;
-
-        // Parse intent amount from string
-        let intent_amount = intent.amount.parse::<u128>().unwrap_or(0);
-
-        // Calculate refund amount: if UserToVault transaction exists, include 5% extra
-        let refund_amount = if let Some(tx_ids) = user_intent_manager
-            .get_intent_transaction_ids(intent_hash)
-            .await
-        {
-            if tx_ids.user_to_network_tx_id.is_some() {
-                // UserToVault transaction exists, refund original amount + 5% extra
-                let full_amount = intent_amount + (intent_amount / 20);
-                info!(
-                    "💰 [SIGNING-REFUND] UserToVault transaction found, refunding full amount: {} (original: {} + 5% extra: {})",
-                    full_amount, intent_amount, intent_amount / 20
-                );
-                full_amount
-            } else {
-                // No UserToVault transaction, refund original amount
-                info!(
-                    "💰 [SIGNING-REFUND] No UserToVault transaction found, refunding original amount: {}",
-                    intent_amount
-                );
-                intent_amount
-            }
-        } else {
-            // Couldn't check transaction IDs, refund original amount
-            warn!(
-                "⚠️ [SIGNING-REFUND] Could not check transaction IDs, refunding original amount: {}",
-                intent_amount
-            );
-            intent_amount
-        };
-
-        info!(
-            "📋 [SIGNING-REFUND] Found intent - Original Amount: {}, Refund Amount: {}, Source: {} ({}), Target: {} ({})",
-            intent.amount,
-            refund_amount,
-            intent.source_address,
-            intent.source_chain,
-            intent.target_address,
-            intent.target_chain
-        );
-
-        if let Err(e) = self
-            .broadcast_refund_initiation(intent_hash, &intent, refund_amount)
-            .await
-        {
-            warn!(
-                "⚠️ [SIGNING-REFUND] Failed to broadcast refund initiation: {}",
-                e
-            );
-        }
-
-        Ok(())
-    }
-
-    /// Check if a round is a NetworkToTarget transaction and trigger refund if signature verification fails
-    pub(crate) async fn check_and_trigger_refund_on_verification_failure(
-        &self,
-        round: u64,
-        txn_network: TransactionNetwork,
-    ) {
-        let (intent_hash, transaction_type) = match txn_network {
-            TransactionNetwork::TICS => {
-                let pending = self.pending.pending_transactions.read().await;
-                if let Some((
-                    _tx,
-                    _tx_bytes,
-                    intent_hash,
-                    tx_type,
-                    _request_id,
-                    _original_request,
-                )) = pending.get(&round)
-                {
-                    (intent_hash.clone(), tx_type.clone())
-                } else {
-                    (None, None)
-                }
-            }
-            TransactionNetwork::BTC => {
-                let pending_btc = self.pending.pending_transactions_btc.read().await;
-                if let Some((_tx, _tx_bytes, intent_hashes, tx_type, _extras)) =
-                    pending_btc.get(&round)
-                {
-                    let intent_hash = intent_hashes.as_ref().and_then(|v| v.first().cloned());
-                    (intent_hash, tx_type.clone())
-                } else {
-                    (None, None)
-                }
-            }
-        };
-
-        // Only trigger refund for NetworkToTarget transactions with an intent_hash
-        if let (Some(intent_hash), Some(TransactionType::NetworkToTarget)) =
-            (intent_hash.as_ref(), transaction_type.as_ref())
-        {
-            info!(
-                "💸 [SIGNING-REFUND] Signature verification failed for NetworkToTarget transaction, initiating refund for intent: {}",
-                intent_hash
-            );
-            if let Err(e) = self.initiate_refund_transaction(intent_hash).await {
-                error!(
-                    "❌ [SIGNING-REFUND] Failed to initiate refund transaction: {}",
-                    e
-                );
-            }
-        }
-    }
-
-    async fn broadcast_refund_initiation(
-        &self,
-        intent_hash: &str,
-        intent: &DepositIntent,
-        refund_amount: u128,
-    ) -> Result<()> {
-        let refund_msg = serde_json::json!({
-            "type": "refund_initiation",
-            "intent_hash": intent_hash,
-            "source_address": intent.source_address,
-            "source_chain": intent.source_chain,
-            "original_amount": intent.amount.to_string(),
-            "refund_amount": refund_amount.to_string(),
-            "timestamp": SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_millis()
-        });
-
-        let msg_bytes = serde_json::to_vec(&refund_msg)?;
-        let channel_msg = ChannelMessage::RefundInitiation {
-            intent_hash: intent_hash.to_string(),
-            data: msg_bytes,
-        };
-
-        self.message_tx
-            .send(channel_msg)
-            .await
-            .map_err(|e| anyhow!("Failed to broadcast refund initiation: {}", e))?;
-
-        info!(
-            "📢 [SIGNING-REFUND] Broadcasted refund initiation for intent: {}",
-            intent_hash
-        );
-        Ok(())
-    }
-
     pub(crate) async fn store_transaction_id_for_round(
         &mut self,
         round: u64,
@@ -628,11 +433,6 @@ impl SigningNode {
             "💾 [SIGNING] Storing transaction ID for round {} (tx_id={}, txn_network={:?})",
             round, tx_id, txn_network
         );
-        let is_reward_round = {
-            let reward_rounds = self.pending.reward_rounds.read().await;
-            reward_rounds.contains(&round)
-        };
-        info!("💾 [SIGNING] Is reward round: {}", is_reward_round);
         let is_withdraw_round = {
             let withdraw_rounds = self.pending.withdraw_rounds.read().await;
             withdraw_rounds.contains(&round)
@@ -642,29 +442,14 @@ impl SigningNode {
             let claim_reward_rounds = self.pending.claim_reward_rounds.read().await;
             claim_reward_rounds.contains(&round)
         };
-        info!("💾 [SIGNING] Is claim reward round: {}", is_claim_reward_round);
+        info!(
+            "💾 [SIGNING] Is claim reward round: {}",
+            is_claim_reward_round
+        );
 
         let (intent_hash, transaction_type, retrieved_solver_address) = match txn_network {
             TransactionNetwork::TICS => {
-                if is_reward_round {
-                    let reward_pending_transactions =
-                        self.pending.reward_pending_transactions_tics.read().await;
-                    if let Some((
-                        _tx,
-                        _tx_bytes,
-                        solver_address,
-                        transaction_type,
-                        _request_id,
-                        _original_request,
-                    )) = reward_pending_transactions.get(&round)
-                    {
-                        info!("[store_transaction_id_for_round] [TICS][Reward] Found reward_pending_transactions_tics entry for round {}: solver_address={:?}, transaction_type={:?}", round, solver_address, transaction_type);
-                        (None, transaction_type.clone(), solver_address.clone())
-                    } else {
-                        warn!("[store_transaction_id_for_round] [TICS][Reward] No entry in reward_pending_transactions_tics for round {}", round);
-                        (None, None, None)
-                    }
-                } else if is_withdraw_round {
+                if is_withdraw_round {
                     let withdraw_pending_transactions =
                         self.pending.withdraw_pending_transactions_tics.read().await;
                     if let Some((
@@ -676,17 +461,39 @@ impl SigningNode {
                         _original_request,
                     )) = withdraw_pending_transactions.get(&round)
                     {
-                        let solver_address = identifiers.as_ref().and_then(|v| v.first()).map(|s| {
-                            if let Some((_, solver)) = s.split_once('|') {
-                                solver.to_string()
-                            } else {
-                                s.clone()
-                            }
-                        });
+                        let solver_address =
+                            identifiers.as_ref().and_then(|v| v.first()).map(|s| {
+                                if let Some((_, solver)) = s.split_once('|') {
+                                    solver.to_string()
+                                } else {
+                                    s.clone()
+                                }
+                            });
                         info!("[store_transaction_id_for_round] [TICS][Withdraw] Found withdraw_pending_transactions_tics entry for round {}: identifiers={}, transaction_type={:?}", round, identifiers.as_ref().map(|v| v.len()).unwrap_or(0), transaction_type);
                         (None, transaction_type.clone(), solver_address)
                     } else {
                         warn!("[store_transaction_id_for_round] [TICS][Withdraw] No entry in withdraw_pending_transactions_tics for round {}", round);
+                        (None, None, None)
+                    }
+                } else if is_claim_reward_round {
+                    let claim_reward_pending_tics = self
+                        .pending
+                        .claim_reward_pending_transactions_tics
+                        .read()
+                        .await;
+                    if let Some((
+                        _tx,
+                        _tx_bytes,
+                        _identifiers,
+                        transaction_type,
+                        _request_id,
+                        _original_request,
+                    )) = claim_reward_pending_tics.get(&round)
+                    {
+                        info!("[store_transaction_id_for_round] [TICS][ClaimReward] Found claim_reward_pending_transactions_tics entry for round {}: transaction_type={:?}", round, transaction_type);
+                        (None, transaction_type.clone(), None)
+                    } else {
+                        warn!("[store_transaction_id_for_round] [TICS][ClaimReward] No entry in claim_reward_pending_transactions_tics for round {}", round);
                         (None, None, None)
                     }
                 } else {
@@ -709,18 +516,26 @@ impl SigningNode {
                 }
             }
             TransactionNetwork::BTC => {
-                if is_reward_round {
-                    let reward_pending_transactions_btc =
-                        self.pending.reward_pending_transactions_btc.read().await;
-                    if let Some((_tx, _tx_bytes, solver_addresses, transaction_type, _extras)) =
-                        reward_pending_transactions_btc.get(&round)
+                if is_claim_reward_round {
+                    let claim_reward_pending_btc = self
+                        .pending
+                        .claim_reward_pending_transactions_btc
+                        .read()
+                        .await;
+                    if let Some((_tx, _tx_bytes, identifiers, transaction_type, _extras)) =
+                        claim_reward_pending_btc.get(&round)
                     {
-                        let solver_address =
-                            solver_addresses.as_ref().and_then(|v| v.first().cloned());
-                        info!("[store_transaction_id_for_round] [BTC][Reward] Found reward_pending_transactions_btc entry for round {}: solver_address={:?}, transaction_type={:?}", round, solver_address, transaction_type);
+                        let solver_address = identifiers.as_ref().and_then(|v| {
+                            v.iter().find_map(|encoded| {
+                                encoded
+                                    .split_once('|')
+                                    .map(|(_, solver)| solver.to_string())
+                            })
+                        });
+                        info!("[store_transaction_id_for_round] [BTC][ClaimReward] Found claim_reward_pending_transactions_btc entry for round {}: transaction_type={:?}", round, transaction_type);
                         (None, transaction_type.clone(), solver_address)
                     } else {
-                        warn!("[store_transaction_id_for_round] [BTC][Reward] No entry in reward_pending_transactions_btc for round {}", round);
+                        warn!("[store_transaction_id_for_round] [BTC][ClaimReward] No entry in claim_reward_pending_transactions_btc for round {}", round);
                         (None, None, None)
                     }
                 } else if is_withdraw_round {
@@ -745,8 +560,11 @@ impl SigningNode {
                         (None, None, None)
                     }
                 } else if is_claim_reward_round {
-                    let claim_reward_pending_btc =
-                        self.pending.claim_reward_pending_transactions_btc.read().await;
+                    let claim_reward_pending_btc = self
+                        .pending
+                        .claim_reward_pending_transactions_btc
+                        .read()
+                        .await;
                     if let Some((_tx, _tx_bytes, identifiers, transaction_type, _extras)) =
                         claim_reward_pending_btc.get(&round)
                     {
@@ -780,41 +598,8 @@ impl SigningNode {
             }
         };
 
-        // Reward transactions should never have an intent_hash
-        // If transaction_type is RewardTxn but we have an intent_hash, log a warning
-        if matches!(
-            transaction_type,
-            Some(crate::types::TransactionType::RewardTxn)
-        ) && intent_hash.is_some()
-        {
-            warn!(
-                "⚠️ [SIGNING] RewardTxn transaction type found with intent_hash (round={}, tx_id={}); clearing intent hash path is expected",
-                round,
-                tx_id
-            );
-        }
-
         match (intent_hash, &self.user_intent_manager) {
             (Some(ref intent_hash), Some(_user_intent_manager)) => {
-                // Handle reward transactions first (transaction_type is None but we have solver_address)
-                // These should not have an intent_hash, but if they do, handle them here
-                // Don't store transaction ID here - let handle_reward_transaction_id_storage handle it after broadcast
-                if transaction_type.is_none() && retrieved_solver_address.is_some() {
-                    info!(
-                        "📡 [SIGNING] Broadcasting reward transaction ID {} for solver {:?} (round {}) - storage will be handled by message handler",
-                        tx_id, retrieved_solver_address, round
-                    );
-
-                    self.broadcast_transaction_id(
-                        vec![],
-                        tx_id,
-                        "reward_txn",
-                        retrieved_solver_address.as_deref(),
-                    )
-                    .await;
-                    return;
-                }
-
                 // For UserToVault, NetworkToTarget, and Refund, just broadcast without storing
                 // Storage will be handled by handle_transaction_id_storage when the broadcast message is received
                 let transaction_type_str = match transaction_type {
@@ -851,13 +636,7 @@ impl SigningNode {
                         );
                         "intent_status_update"
                     }
-                    Some(crate::types::TransactionType::Refund) => {
-                        info!(
-                            "📡 [SIGNING] Broadcasting refund transaction ID {} for intent {} (round {}) - storage will be handled by message handler",
-                            tx_id, intent_hash, round
-                        );
-                        "refund"
-                    }
+
                     Some(crate::types::TransactionType::WithdrawLiquidity) => {
                         // Withdraw liquidity transactions should never have an intent_hash
                         error!(
@@ -865,17 +644,10 @@ impl SigningNode {
                         );
                         return;
                     }
-                    Some(crate::types::TransactionType::RewardTxn) => {
-                        // Reward transactions should never have an intent_hash
+                    Some(crate::types::TransactionType::ClaimReward) => {
+                        // ClaimReward transactions should never have an intent_hash
                         error!(
-                            "❌ [SIGNING] RewardTxn transaction type found with intent_hash - this is invalid."
-                        );
-                        return;
-                    }
-                    Some(crate::types::TransactionType::ClaimRewardBtc) => {
-                        // ClaimRewardBtc transactions should never have an intent_hash
-                        error!(
-                            "❌ [SIGNING] ClaimRewardBtc transaction type found with intent_hash - this is invalid."
+                            "❌ [SIGNING] ClaimReward transaction type found with intent_hash - this is invalid."
                         );
                         return;
                     }
@@ -943,102 +715,158 @@ impl SigningNode {
                 .await;
             }
             (None, Some(_)) => {
-                // Handle reward transactions (RewardTxn) - they should always have None for intent_hash
-                // Also handle cases where transaction_type is None but we have a solver_address (legacy reward transactions)
-                // Don't store transaction ID here - let handle_reward_transaction_id_storage handle it after broadcast
                 if matches!(
                     transaction_type,
-                    Some(crate::types::TransactionType::RewardTxn)
-                ) || (transaction_type.is_none() && retrieved_solver_address.is_some())
-                {
-                    info!(
-                        "🧾 [SIGNING] Reward path (round {}, network {:?}) solver_address_present={} tx_id={}",
-                        round,
-                        txn_network,
-                        retrieved_solver_address.is_some(),
-                        tx_id
-                    );
-                    if let Some(solver_addr) = retrieved_solver_address.as_ref() {
-                        info!(
-                            "📡 [SIGNING] Broadcasting reward transaction ID {} for solver {} (round {}) - storage will be handled by message handler",
-                            tx_id, solver_addr, round
-                        );
-
-                        self.broadcast_transaction_id(
-                            vec![],
-                            tx_id,
-                            "reward_txn",
-                            Some(solver_addr),
-                        )
-                        .await;
-                    } else if matches!(
-                        transaction_type,
-                        Some(crate::types::TransactionType::RewardTxn)
-                    ) {
-                        error!(
-                            "❌ [SIGNING] RewardTxn transaction type requires solver_address, but none was found in round {} (tx_id={})",
-                            round,
-                            tx_id
-                        );
-                    } else {
-                        info!(
-                            "ℹ️ [SIGNING] No solver address available for reward transaction in round {}",
-                            round
-                        );
-                    }
-                } else if matches!(
-                    transaction_type,
-                    Some(crate::types::TransactionType::ClaimRewardBtc)
+                    Some(crate::types::TransactionType::ClaimReward)
                 ) {
-                    // BTC claim-reward batch: send ClaimRewardTxIdBroadcast so handlers store tx_id on PendingClaimRewardRequest (do not mark done).
-                    let claim_reward_pending_btc =
-                        self.pending.claim_reward_pending_transactions_btc.read().await;
-                    if let Some((_tx, _tx_bytes, identifiers, _tx_type, _extras)) =
-                        claim_reward_pending_btc.get(&round)
-                    {
-                        let batch_requests: Vec<(String, String)> = identifiers
-                            .as_ref()
-                            .map(|list| {
-                                list.iter()
-                                    .filter_map(|encoded| {
-                                        encoded.split_once('|').map(|(req_id, solver)| {
-                                            (req_id.to_string(), solver.to_string())
-                                        })
-                                    })
-                                    .collect()
-                            })
-                            .unwrap_or_default();
-
-                        if !batch_requests.is_empty() {
+                    // ClaimReward: TICS vs BTC determined by which pending store has the round (same as WithdrawLiquidity).
+                    let tics_has_round = self
+                        .pending
+                        .claim_reward_pending_transactions_tics
+                        .read()
+                        .await
+                        .contains_key(&round);
+                    if tics_has_round {
+                        let claim_reward_pending_tics = self
+                            .pending
+                            .claim_reward_pending_transactions_tics
+                            .read()
+                            .await;
+                        if let Some((
+                            _tx,
+                            _tx_bytes,
+                            identifiers,
+                            _tx_type,
+                            _request_id,
+                            _original_request,
+                        )) = claim_reward_pending_tics.get(&round)
+                        {
                             let network_label = crate::types::network::network_type().as_str();
-                            info!(
-                                "📡 [SIGNING] Broadcasting BTC claim-reward txid {} for round {} with {} requests via ClaimRewardTxIdBroadcast",
+                            let batch_requests: Vec<(String, String)> = identifiers
+                                .as_ref()
+                                .map(|list| {
+                                    list.iter()
+                                        .filter_map(|encoded| {
+                                            encoded.split_once('|').map(|(req_id, solver)| {
+                                                (req_id.to_string(), solver.to_string())
+                                            })
+                                        })
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+
+                            if !batch_requests.is_empty() {
+                                info!(
+                                "📡 [SIGNING] Broadcasting TICS claim-reward txid {} for round {} with {} requests via ClaimRewardTxIdBroadcast (batch)",
                                 tx_id, round, batch_requests.len()
                             );
-                            let msg = crate::types::ChannelMessage::ClaimRewardTxIdBroadcast {
-                                txid: tx_id.to_string(),
-                                network: network_label.to_string(),
-                                batch_id: format!("btc-claim-reward-round-{}", round),
-                                requests: batch_requests,
-                                node_id: self.id.clone(),
-                            };
-                            if let Err(e) = self.message_tx.send(msg).await {
-                                error!(
-                                    "❌ [SIGNING] Failed to send ClaimRewardTxIdBroadcast for round {}: {}",
+                                let msg = crate::types::ChannelMessage::ClaimRewardTxIdBroadcast {
+                                    txid: tx_id.to_string(),
+                                    network: network_label.to_string(),
+                                    batch_id: format!("tics-claim-reward-round-{}", round),
+                                    solver_address: None,
+                                    requests: batch_requests,
+                                    node_id: self.id.clone(),
+                                };
+                                if let Err(e) = self.message_tx.send(msg).await {
+                                    error!(
+                                    "❌ [SIGNING] Failed to send ClaimRewardTxIdBroadcast (TICS batch) for round {}: {}",
                                     round, e
                                 );
+                                }
+                            } else if let Some((_req_id, solver_addr)) = identifiers
+                                .as_ref()
+                                .and_then(|list| list.first())
+                                .and_then(|s| {
+                                    s.split_once('|')
+                                        .map(|(a, b)| (a.to_string(), b.to_string()))
+                                })
+                            {
+                                info!(
+                                "📡 [SIGNING] Broadcasting TICS claim-reward txid {} for solver {} (round {}) via ClaimRewardTxIdBroadcast (single)",
+                                tx_id, solver_addr, round
+                            );
+                                let msg = crate::types::ChannelMessage::ClaimRewardTxIdBroadcast {
+                                    txid: tx_id.to_string(),
+                                    network: network_label.to_string(),
+                                    batch_id: format!("tics-claim-reward-round-{}", round),
+                                    solver_address: Some(solver_addr),
+                                    requests: Vec::new(),
+                                    node_id: self.id.clone(),
+                                };
+                                if let Err(e) = self.message_tx.send(msg).await {
+                                    error!(
+                                    "❌ [SIGNING] Failed to send ClaimRewardTxIdBroadcast (TICS single) for round {}: {}",
+                                    round, e
+                                );
+                                }
+                            } else {
+                                warn!(
+                                "⚠️ [SIGNING] TICS ClaimReward round {} has no batch identifiers and no single solver; skipping ClaimRewardTxIdBroadcast for tx_id={}",
+                                round, tx_id
+                            );
                             }
                         } else {
                             warn!(
-                                "⚠️ [SIGNING] BTC ClaimReward round {} has no batch identifiers; skipping ClaimRewardTxIdBroadcast for tx_id={}",
+                                "⚠️ [SIGNING] ClaimReward (TICS) but no claim_reward_pending_transactions_tics entry for round {} (tx_id={})",
                                 round, tx_id
                             );
                         }
                     } else {
-                        warn!(
-                            "⚠️ [SIGNING] ClaimRewardBtc but no claim_reward_pending_transactions_btc entry for round {} (tx_id={})",
-                            round, tx_id
-                        );
+                        // BTC claim-reward batch: send ClaimRewardTxIdBroadcast (unified) so handlers store tx_id on PendingClaimRewardRequest (do not mark done).
+                        let claim_reward_pending_btc = self
+                            .pending
+                            .claim_reward_pending_transactions_btc
+                            .read()
+                            .await;
+                        if let Some((_tx, _tx_bytes, identifiers, _tx_type, _extras)) =
+                            claim_reward_pending_btc.get(&round)
+                        {
+                            let batch_requests: Vec<(String, String)> = identifiers
+                                .as_ref()
+                                .map(|list| {
+                                    list.iter()
+                                        .filter_map(|encoded| {
+                                            encoded.split_once('|').map(|(req_id, solver)| {
+                                                (req_id.to_string(), solver.to_string())
+                                            })
+                                        })
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+
+                            if !batch_requests.is_empty() {
+                                let network_label = crate::types::network::network_type().as_str();
+                                info!(
+                                "📡 [SIGNING] Broadcasting BTC claim-reward txid {} for round {} with {} requests via ClaimRewardTxIdBroadcast",
+                                tx_id, round, batch_requests.len()
+                            );
+                                let msg = crate::types::ChannelMessage::ClaimRewardTxIdBroadcast {
+                                    txid: tx_id.to_string(),
+                                    network: network_label.to_string(),
+                                    batch_id: format!("btc-claim-reward-round-{}", round),
+                                    solver_address: None,
+                                    requests: batch_requests,
+                                    node_id: self.id.clone(),
+                                };
+                                if let Err(e) = self.message_tx.send(msg).await {
+                                    error!(
+                                    "❌ [SIGNING] Failed to send ClaimRewardTxIdBroadcast (BTC) for round {}: {}",
+                                    round, e
+                                );
+                                }
+                            } else {
+                                warn!(
+                                "⚠️ [SIGNING] BTC ClaimReward round {} has no batch identifiers; skipping ClaimRewardTxIdBroadcast for tx_id={}",
+                                round, tx_id
+                            );
+                            }
+                        } else {
+                            warn!(
+                                "⚠️ [SIGNING] ClaimReward (BTC) but no claim_reward_pending_transactions_btc entry for round {} (tx_id={})",
+                                round, tx_id
+                            );
+                        }
                     }
                 } else if matches!(
                     transaction_type,
@@ -1073,15 +901,14 @@ impl SigningNode {
                                     "📡 [SIGNING] Broadcasting TICS withdraw-liquidity txid {} for {} request(s) (round {}) via WithdrawTxIdBroadcast",
                                     tx_id, batch_requests.len(), round
                                 );
-                                let msg =
-                                    crate::types::ChannelMessage::WithdrawTxIdBroadcast {
-                                        txid: tx_id.to_string(),
-                                        network: network_label,
-                                        batch_id: format!("tics-withdraw-round-{}", round),
-                                        solver_address: None,
-                                        requests: batch_requests,
-                                        node_id: self.id.clone(),
-                                    };
+                                let msg = crate::types::ChannelMessage::WithdrawTxIdBroadcast {
+                                    txid: tx_id.to_string(),
+                                    network: network_label,
+                                    batch_id: format!("tics-withdraw-round-{}", round),
+                                    solver_address: None,
+                                    requests: batch_requests,
+                                    node_id: self.id.clone(),
+                                };
                                 if let Err(e) = self.message_tx.send(msg).await {
                                     error!(
                                         "❌ [SIGNING] Failed to send WithdrawTxIdBroadcast (TICS batch) over channel for round {}: {}",
@@ -1093,15 +920,14 @@ impl SigningNode {
                                     "📡 [SIGNING] Broadcasting TICS withdraw-liquidity txid {} for solver {} (round {}) via WithdrawTxIdBroadcast",
                                     tx_id, solver_addr, round
                                 );
-                                let msg =
-                                    crate::types::ChannelMessage::WithdrawTxIdBroadcast {
-                                        txid: tx_id.to_string(),
-                                        network: network_label,
-                                        batch_id: format!("tics-withdraw-round-{}", round),
-                                        solver_address: Some(solver_addr.to_string()),
-                                        requests: Vec::new(),
-                                        node_id: self.id.clone(),
-                                    };
+                                let msg = crate::types::ChannelMessage::WithdrawTxIdBroadcast {
+                                    txid: tx_id.to_string(),
+                                    network: network_label,
+                                    batch_id: format!("tics-withdraw-round-{}", round),
+                                    solver_address: Some(solver_addr.to_string()),
+                                    requests: Vec::new(),
+                                    node_id: self.id.clone(),
+                                };
                                 if let Err(e) = self.message_tx.send(msg).await {
                                     error!(
                                         "❌ [SIGNING] Failed to send WithdrawTxIdBroadcast (TICS) over channel for round {}: {}",
@@ -1128,14 +954,9 @@ impl SigningNode {
                                     .map(|list| {
                                         list.iter()
                                             .filter_map(|encoded| {
-                                                encoded.split_once('|').map(
-                                                    |(req_id, solver)| {
-                                                        (
-                                                            req_id.to_string(),
-                                                            solver.to_string(),
-                                                        )
-                                                    },
-                                                )
+                                                encoded.split_once('|').map(|(req_id, solver)| {
+                                                    (req_id.to_string(), solver.to_string())
+                                                })
                                             })
                                             .collect()
                                     })

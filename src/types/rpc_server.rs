@@ -132,6 +132,31 @@ pub struct SolverLiquidityResponse {
     pub error_message: Option<String>,
 }
 
+/// Query for unclaimed (pending/batched) solver rewards.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetSolverRewardsRequest {
+    pub solver_address: String,
+}
+
+/// One unclaimed reward entry (subset of PendingClaimRewardRequest; no message/signature).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UnclaimedRewardEntry {
+    pub request_id: String,
+    pub status: String,
+    pub tx_id: Option<String>,
+    pub ethereum_address: Option<String>,
+    pub btc_address: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetSolverRewardsResponse {
+    pub status: String,
+    pub solver_address: String,
+    pub unclaimed_rewards: Vec<UnclaimedRewardEntry>,
+    pub message: String,
+    pub error_message: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClaimRewardRequest {
     pub signature: String,

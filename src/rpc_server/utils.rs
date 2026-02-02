@@ -353,19 +353,6 @@ pub(crate) async fn wait_for_transaction_result(
     best_result
 }
 
-/// Reward and tx ids are fetched from contract; no local storage to poll.
-/// Returns (None, None) so claim response does not block on local tx id storage.
-pub(crate) async fn wait_for_reward_transaction_ids(
-    _user_intent_manager: &UserIntentManager,
-    _solver_address: &str,
-    _expect_tics: bool,
-    _expect_btc: bool,
-    _previous_tics_tx_id: Option<String>,
-    _previous_btc_tx_id: Option<String>,
-    _timeout_secs: u64,
-) -> (Option<String>, Option<String>) {
-    (None, None)
-}
 // Helper function to get the actual DKG secret share from shared state
 pub(crate) async fn get_actual_dkg_secret_share(dkg_storage: Arc<DkgStorage>) -> Option<Scalar> {
     match dkg_storage.get_final_secret().await {

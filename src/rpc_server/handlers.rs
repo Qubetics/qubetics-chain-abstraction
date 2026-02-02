@@ -18,10 +18,11 @@ use crate::{
         messaging::ChannelMessage,
         rpc_server::{
             AddLiquidityRequest, AddLiquidityResponse, ClaimRewardRequest, ClaimRewardResponse,
-            DKGStatusResponse, EnhancedUserRegistrationResponse, HeartbeatResponse,
-            IntentsSolvedCountResponse, NodeIdResponse,
+            DKGStatusResponse, EnhancedUserRegistrationResponse, GetSolverRewardsRequest,
+            GetSolverRewardsResponse, HeartbeatResponse, IntentsSolvedCountResponse, NodeIdResponse,
             PendingClaimRewardRequest, PendingWithdrawRequest, RequestContext,
-            SolverLiquidityRequest, SolverLiquidityResponse, UptimeResponse, UserInfoResponse,
+            SolverLiquidityRequest, SolverLiquidityResponse, UnclaimedRewardEntry, UptimeResponse,
+            UserInfoResponse,
             UserMpcDepositRequest, UserMpcDepositVerifyResponse, UserRegistrationRequest,
             WithdrawLiquidityRequest, WithdrawLiquidityResponse,
         },
@@ -42,6 +43,7 @@ pub(crate) async fn handle_deposit_intent(
     message_tx: Arc<Mutex<mpsc::Sender<ChannelMessage>>>,
     transaction_type: TransactionType,
     _dkg_storage: Arc<DkgStorage>,
+    signature: Option<String>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
     info!("📝 HTTP: Received deposit intent request");
     if let Some(addr) = &user_eth_address {
@@ -65,6 +67,7 @@ pub(crate) async fn handle_deposit_intent(
         user_eth_address: user_eth_address.as_ref().map(|s| s.clone()).unwrap_or_else(|| "unknown".to_string()),
         transaction_type: transaction_type.clone(),
         amount: required_amount_u128,
+        signature,
     };
 
     let tx_sender = message_tx.lock().await;
@@ -685,13 +688,12 @@ pub(crate) async fn handle_user_mpc_deposit(
 
     info!("🧾 HTTP: user_mpc_deposit received");
 
-    // CRITICAL: Only support UserToVault transaction type
-    // Reject immediately if intent_hash already exists in database
+    // CRITICAL: Reject duplicate intent hash immediately - do no further processing (no signature verify, no user lookup, no channel send).
     if user_intent_manager.get_intent(&intent_hash_hex).await.is_some() {
         warn!(
             request_id = %request_context.request_id,
             intent_hash = %intent_hash_hex,
-            "⚠️ HTTP: Rejecting deposit - intent hash already exists in database"
+            "⚠️ HTTP: Rejecting deposit - intent hash already exists (duplicate); no processing"
         );
         return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
             status: "error".to_string(),
@@ -864,6 +866,7 @@ pub(crate) async fn handle_user_mpc_deposit(
         message_tx,
         transaction_type,
         dkg_storage.clone(),
+        req.signature.clone(),
     )
     .await
     {
@@ -1340,6 +1343,90 @@ pub(crate) async fn handle_get_solver_liquidity(
         liquidity_btc,
         liquidity_tics,
         message: "Solver liquidity retrieved successfully".to_string(),
+        error_message: None,
+    }))
+}
+
+/// Return unclaimed rewards for a solver (pending claim-reward requests: Pending, Batched; not Completed).
+pub(crate) async fn handle_get_solver_rewards(
+    req: GetSolverRewardsRequest,
+    user_intent_manager: Arc<UserIntentManager>,
+) -> Result<impl warp::Reply, warp::Rejection> {
+    info!(
+        "🎁 HTTP: get_solver_rewards request for solver: {}",
+        req.solver_address
+    );
+
+    if req.solver_address.trim().is_empty() {
+        return Ok(warp::reply::json(&GetSolverRewardsResponse {
+            status: "error".to_string(),
+            solver_address: req.solver_address,
+            unclaimed_rewards: vec![],
+            message: "Solver address is required".to_string(),
+            error_message: Some("solver_address cannot be empty".to_string()),
+        }));
+    }
+
+    let normalized_address = match checksum_from_any(req.solver_address.trim()) {
+        Ok(addr) => addr,
+        Err(e) => {
+            warn!("❌ Invalid solver address format: {}", e);
+            return Ok(warp::reply::json(&GetSolverRewardsResponse {
+                status: "error".to_string(),
+                solver_address: req.solver_address,
+                unclaimed_rewards: vec![],
+                message: "Invalid solver address format".to_string(),
+                error_message: Some(format!("Invalid address format: {e}")),
+            }));
+        }
+    };
+
+    let db = user_intent_manager.get_database();
+    let prefix = format!("pending_claim_reward:{}:", normalized_address.to_lowercase());
+    let entries: Vec<(String, PendingClaimRewardRequest)> = match db.get_values_with_prefix(&prefix) {
+        Ok(e) => e,
+        Err(e) => {
+            warn!(
+                "⚠️ [SOLVER_REWARDS] Failed to load pending claim rewards for solver {}: {}",
+                normalized_address, e
+            );
+            return Ok(warp::reply::json(&GetSolverRewardsResponse {
+                status: "error".to_string(),
+                solver_address: normalized_address.clone(),
+                unclaimed_rewards: vec![],
+                message: "Failed to load pending claim rewards".to_string(),
+                error_message: Some(e.to_string()),
+            }));
+        }
+    };
+
+    // Unclaimed = not yet Completed (Pending, Batched, or Failed that can be retried)
+    let unclaimed_rewards: Vec<UnclaimedRewardEntry> = entries
+        .into_iter()
+        .filter(|(_, r)| r.status != "Completed")
+        .map(|(_, r)| UnclaimedRewardEntry {
+            request_id: r.request_id,
+            status: r.status,
+            tx_id: r.tx_id,
+            ethereum_address: r.ethereum_address,
+            btc_address: r.btc_address,
+        })
+        .collect();
+
+    let count = unclaimed_rewards.len();
+    info!(
+        "✅ Solver {} has {} unclaimed reward request(s)",
+        normalized_address, count
+    );
+
+    Ok(warp::reply::json(&GetSolverRewardsResponse {
+        status: "success".to_string(),
+        solver_address: normalized_address,
+        unclaimed_rewards,
+        message: format!(
+            "{} unclaimed reward request(s) (use claim_reward to submit a new claim)",
+            count
+        ),
         error_message: None,
     }))
 }

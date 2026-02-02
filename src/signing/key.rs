@@ -122,6 +122,22 @@ impl KeyStore {
         self.vault_group_key
     }
 
+    /// Helper: Encode group key to compressed bytes with logging
+    fn encode_and_log_group_key(
+        group_key: ProjectivePoint,
+        transaction_type_name: &str,
+    ) -> Result<Vec<u8>> {
+        let affine_point = group_key.to_affine();
+        let encoded_point = EncodedPoint::from(affine_point);
+        let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
+
+        info!(
+            "🔑 [SIGNING] {}: Using DKG group public key",
+            transaction_type_name
+        );
+        Ok(compressed_bytes)
+    }
+
     pub async fn get_group_public_key_bytes(
         &self,
         transaction_type: Option<TransactionType>,
@@ -162,84 +178,32 @@ impl KeyStore {
                     Err(anyhow!("UserToVault transaction requires user_eth_address"))
                 }
             }
-            Some(TransactionType::NetworkToTarget) | Some(TransactionType::Refund) | Some(TransactionType::IntentStatusUpdate) => {
-                // Refund and IntentStatusUpdate use network group key (same as NetworkToTarget)
-                if let Some(group_key) = self.group_public_key {
-                    let affine_point = group_key.to_affine();
-                    let encoded_point = EncodedPoint::from(affine_point);
-                    let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
+            Some(TransactionType::NetworkToTarget)
+            | Some(TransactionType::IntentStatusUpdate)
+            | Some(TransactionType::WithdrawLiquidity)
+            | Some(TransactionType::ClaimReward) => {
+                // All these transaction types use network group key
+                let type_name = match transaction_type {
+                    Some(TransactionType::NetworkToTarget) => "NetworkToTarget",
+                    Some(TransactionType::IntentStatusUpdate) => "IntentStatusUpdate",
+                    Some(TransactionType::WithdrawLiquidity) => "WithdrawLiquidity",
+                    Some(TransactionType::ClaimReward) => "ClaimReward (BTC)",
+                    _ => unreachable!(),
+                };
 
-                    info!("🔑 [SIGNING] NetworkToTarget/Refund/IntentStatusUpdate: Using DKG group public key");
-                    Ok(compressed_bytes)
-                } else {
-                    Err(anyhow!(
-                        "DKG group public key not available for NetworkToTarget/Refund/IntentStatusUpdate transaction - ensure DKG process is completed"
+                self.group_public_key
+                    .ok_or_else(|| anyhow!(
+                        "DKG group public key not available for {} transaction - ensure DKG process is completed",
+                        type_name
                     ))
-                }
+                    .and_then(|key| Self::encode_and_log_group_key(key, type_name))
             }
-            Some(TransactionType::RewardTxn) => {
-                // IMPORTANT: RewardTxn and WithdrawLiquidity must use the same network group public key
-                // Both transactions are signed by the network group key (via network DKG secret share)
-                // and verified against individual partial public keys (network share pubkeys)
-                if let Some(group_key) = self.group_public_key {
-                    let affine_point = group_key.to_affine();
-                    let encoded_point = EncodedPoint::from(affine_point);
-                    let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
-
-                    info!("🔑 [SIGNING] RewardTxn: Using DKG group public key");
-                    Ok(compressed_bytes)
-                } else {
-                    Err(anyhow!(
-                        "DKG group public key not available for RewardTxn transaction - ensure DKG process is completed"
-                    ))
-                }
-            }
-            Some(TransactionType::WithdrawLiquidity) => {
-                // IMPORTANT: RewardTxn and WithdrawLiquidity must use the same network group public key
-                // Both transactions are signed by the network group key (via network DKG secret share)
-                // and verified against individual partial public keys (network share pubkeys)
-                if let Some(group_key) = self.group_public_key {
-                    let affine_point = group_key.to_affine();
-                    let encoded_point = EncodedPoint::from(affine_point);
-                    let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
-
-                    info!("🔑 [SIGNING] WithdrawLiquidity: Using DKG group public key");
-                    Ok(compressed_bytes)
-                } else {
-                    Err(anyhow!(
-                        "DKG group public key not available for WithdrawLiquidity transaction - ensure DKG process is completed"
-                    ))
-                }
-            }
-            Some(TransactionType::ClaimRewardBtc) => {
-                // ClaimRewardBtc is BTC-only; use network group key (same as WithdrawLiquidity)
-                if let Some(group_key) = self.group_public_key {
-                    let affine_point = group_key.to_affine();
-                    let encoded_point = EncodedPoint::from(affine_point);
-                    let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
-
-                    info!("🔑 [SIGNING] ClaimRewardBtc: Using DKG group public key");
-                    Ok(compressed_bytes)
-                } else {
-                    Err(anyhow!(
-                        "DKG group public key not available for ClaimRewardBtc transaction - ensure DKG process is completed"
-                    ))
-                }
-            }
-            None => {
-                if let Some(group_key) = self.group_public_key {
-                    let affine_point = group_key.to_affine();
-                    let encoded_point = EncodedPoint::from(affine_point);
-                    let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
-
-                    info!("🔑 [SIGNING] Fallback: Using DKG group public key");
-                    Ok(compressed_bytes)
-                } else {
-                    Err(anyhow!(
-                        "DKG group public key not available - ensure DKG process is completed"
-                    ))
-                }
-            }
+            None => self
+                .group_public_key
+                .ok_or_else(|| {
+                    anyhow!("DKG group public key not available - ensure DKG process is completed")
+                })
+                .and_then(|key| Self::encode_and_log_group_key(key, "Fallback")),
         }
     }
 }
