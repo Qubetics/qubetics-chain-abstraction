@@ -35,6 +35,20 @@ function log(message, color = 'reset') {
   console.log(`${colors[color]}${message}${colors.reset}`);
 }
 
+/** Serialize deposit intent for signing; must match server serde_json key order and amount-as-string. */
+function serializeDepositIntentForSigning(intent) {
+  return JSON.stringify({
+    source_address: intent.source_address,
+    target_address: intent.target_address,
+    source_chain: intent.source_chain,
+    target_chain: intent.target_chain,
+    amount: String(intent.amount),
+    source_token: intent.source_token,
+    target_token: intent.target_token,
+    timestamp: typeof intent.timestamp === 'number' ? intent.timestamp : Number(intent.timestamp),
+  });
+}
+
 // =========================
 // Transaction Storage Functions
 // =========================
@@ -111,22 +125,20 @@ async function testUserMpcDeposit({ wallet, amount, timestamp, idempotencyKey })
       throw new Error('Failed to fetch user info');
     }
 
-    // Construct DepositIntent
+    // Construct DepositIntent (amount as string to match server)
     const depositIntent = {
       source_address: userInfo.data.derived_eth_address,
       target_address: userInfo.data.derived_eth_address,
       source_chain: 'qubetics',
       target_chain: 'qubetics',
-      amount: amount,
+      amount: String(amount),
       source_token: 'TICS',
       target_token: 'TICS',
-      timestamp: timestamp,
+      timestamp,
     };
 
-    // Serialize DepositIntent for signing
-    const msg = JSON.stringify(depositIntent);
-
-    // EIP-191 personal_sign  
+    // Sign the serialized intent (same bytes the server uses for hash/recovery)
+    const msg = serializeDepositIntentForSigning(depositIntent);
     const signature = await wallet.signMessage(msg);
     log(`✍️  Signature generated`, 'cyan');
 

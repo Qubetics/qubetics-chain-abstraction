@@ -2120,10 +2120,17 @@ impl MpcNetworkLayer {
                 user_eth_address,
                 transaction_type,
                 amount,
+                signature,
             } => {
+                // Log key fields explicitly so timestamp is clearly a number (used in intent hash)
                 info!(
-                    "📝 [NETWORK] Processing deposit intent locally: {:?}",
-                    intent
+                    "📝 [NETWORK] Processing deposit intent locally: source={} target={} source_chain={} target_chain={} amount={} timestamp={}",
+                    intent.source_address,
+                    intent.target_address,
+                    intent.source_chain,
+                    intent.target_chain,
+                    intent.amount,
+                    intent.timestamp
                 );
 
                 // Only broadcast UserToVault deposits via gossipsub
@@ -2138,6 +2145,7 @@ impl MpcNetworkLayer {
                     intent_id: intent_id.clone(),
                     user_eth_address: user_eth_address.clone(),
                     amount,
+                    signature: signature.clone(),
                 };
                 let msg_bytes = serde_json::to_vec(&deposit_intent_msg)
                     .map_err(|e| anyhow::anyhow!("Failed to serialize deposit intent: {}", e))?;

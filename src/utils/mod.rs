@@ -136,10 +136,11 @@ pub fn get_btc_address_from_group_key(pubkey: ProjectivePoint) -> String {
         .unwrap_or_else(|_| "Error generating P2PKH address".to_string())
 }
 
-/// Calculate intent hash from DepositIntent using the same method as in RPC server
+/// Intent hash = Keccak256(serde_json::to_string(intent)).
+/// Serde serializes all struct fields in definition order, so the hashed bytes include
+/// source_address, target_address, source_chain, target_chain, amount, source_token,
+/// target_token, and timestamp. Timestamp is therefore part of the hash.
 pub fn calculate_intent_hash(intent: &DepositIntent) -> Result<String> {
-    // Serialize the DepositIntent to match the client's JSON.stringify() format
-    // Use compact JSON serialization (no spaces) to match JavaScript's JSON.stringify()
     let intent_json = serde_json::to_string(intent)
         .map_err(|e| anyhow!("Failed to serialize DepositIntent: {}", e))?;
     let intent_bytes = intent_json.as_bytes();
