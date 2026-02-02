@@ -347,20 +347,42 @@ impl UserIntentManager {
     /// // Get only intents not updated in the last 10 seconds
     /// let stale = user_intent_manager.get_intents_awaiting_network_fulfillment(Some(10)).await;
     /// ```
+    /// Returns intents that have user_to_network_tx_id but no network_to_target_tx_id yet,
+    /// and whose status is NOT Solved (so already-solved intents are excluded from batching).
     pub async fn get_intents_awaiting_network_fulfillment(
         &self,
         minimum_wait_seconds: Option<i64>,
     ) -> Vec<(String, DepositIntent, IntentTransactionIds)> {
-        match self
+        let intents = match self
             .intent_storage
             .get_intents_awaiting_network_fulfillment(minimum_wait_seconds)
             .await
         {
-            Ok(intents) => intents,
+            Ok(list) => list,
             Err(e) => {
                 tracing::error!("Failed to get intents awaiting network fulfillment: {}", e);
-                Vec::new()
+                return Vec::new();
             }
+        };
+        // Exclude intents already marked Solved (TICS-TICS and others get marked Solved after fulfillment)
+        let mut filtered = Vec::new();
+        for (intent_hash, intent, tx_ids) in intents {
+            if let Ok(Some(user)) = self.user_storage.get_user_by_intent_hash(&intent_hash).await {
+                if let Some(status) = user.intent_hashes.get(&intent_hash) {
+                    if *status == IntentStatus::Solved {
+                        continue; // Skip solved intents so they are not included in the batch again
+                    }
+                }
+            }
+            filtered.push((intent_hash, intent, tx_ids));
         }
+        if filtered.len() < intents.len() {
+            info!(
+                "📋 [INTENT_MANAGER] Excluded {} already-solved intents from awaiting list ({} remaining)",
+                intents.len() - filtered.len(),
+                filtered.len()
+            );
+        }
+        filtered
     }
 }
