@@ -26,7 +26,7 @@ const API_KEY = "2919cd546f2c4338bccb4794a3d6afba2282e5729653fc2c2ff6c5e0e194ar4
 // ============================================
 const PRIVATE_KEYS = [
   '11d281397918948a90ce5ce2a72945ee7929a5a932e5bb3d22664ba98f86755e',
-  'e41af1d4f1413ed18e0200d225fa810287c5d90d3d11d6fc9723f93538718fc1',
+  // 'e41af1d4f1413ed18e0200d225fa810287c5d90d3d11d6fc9723f93538718fc1',
   // "b61b1415e8b5e5a3144c0d7b8c556b23baed0366586931011c9d858ecf39bd37",
   // "005c880d2bc9c6f560eef60faa20991b68ee25b3b24f3a037c4af5e078cda77a",
   // "03c2a0cbaf3a88ddbca8aec76259ff01c9165816794dbcda330ecda5c6008c80",
@@ -77,6 +77,20 @@ const colors = {
 function log(message, color = 'reset') {
   const timestamp = new Date().toISOString();
   console.log(`${colors[color]}[${timestamp}] ${message}${colors.reset}`);
+}
+
+/** Serialize deposit intent for signing; must match server serde_json key order and amount-as-string. */
+function serializeDepositIntentForSigning(intent) {
+  return JSON.stringify({
+    source_address: intent.source_address,
+    target_address: intent.target_address,
+    source_chain: intent.source_chain,
+    target_chain: intent.target_chain,
+    amount: String(intent.amount),
+    source_token: intent.source_token,
+    target_token: intent.target_token,
+    timestamp: typeof intent.timestamp === 'number' ? intent.timestamp : Number(intent.timestamp),
+  });
 }
 
 // Register a user (like test_register_user.js)
@@ -175,13 +189,13 @@ async function testUserMpcDeposit({ wallet, amount, userId }) {
       throw new Error('Derived addresses not available yet. Please wait and try again.');
     }
 
-    // Construct DepositIntent (EXACTLY like test_register_user.js)
+    // Construct DepositIntent (amount as string to match server)
     const depositIntent = {
-      source_address: userInfo.data.derived_eth_address,  // ETH address
+      source_address: userInfo.data.derived_eth_address,
       target_address: userInfo.data.derived_eth_address,
       source_chain: 'qubetics',
       target_chain: 'qubetics',
-      amount: amount,
+      amount: String(amount),
       source_token: 'TICS',
       target_token: 'TICS',
       timestamp: new Date().getTime(),
@@ -189,10 +203,8 @@ async function testUserMpcDeposit({ wallet, amount, userId }) {
 
     log(`[User ${userId}]   Deposit Intent: ${JSON.stringify(depositIntent)}`, 'cyan');
 
-    // Serialize DepositIntent for signing
-    const msg = JSON.stringify(depositIntent);
-
-    // EIP-191 personal_sign  
+    // Sign the serialized intent (same bytes the server uses for hash/recovery)
+    const msg = serializeDepositIntentForSigning(depositIntent);
     const signature = await wallet.signMessage(msg);
     log(`[User ${userId}]   Signature: ${signature}`, 'cyan');
 

@@ -28,6 +28,9 @@ pub struct DepositIntent {
     pub amount: String,
     pub source_token: String,
     pub target_token: String,
+    /// Timestamp (numeric only). Must be a number in JSON so intent hash matches client-signed payload.
+    /// Plain u128 so bincode (used when loading intents from storage) can deserialize; default
+    /// serde rejects JSON object for u128.
     pub timestamp: u128,
 }
 

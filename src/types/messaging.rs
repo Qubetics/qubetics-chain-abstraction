@@ -71,6 +71,8 @@ pub enum ChannelMessage {
         user_eth_address: String,
         transaction_type: TransactionType,
         amount: u128,
+        /// Signature over the serialized intent (required for gossip verification)
+        signature: Option<String>,
     },
     /// Propagate a new pending claim-reward request to all nodes so they store it in DB.
     PendingClaimRewardRequestBroadcast {
@@ -340,6 +342,8 @@ pub enum GossipsubMessage {
         user_eth_address: String,
         /// Note: Gossiped DepositIntent is always processed as UserToVault
         amount: u128,
+        /// Signature over the serialized intent (required for gossip-level verification)
+        signature: Option<String>,
     },
     /// Propagate a new pending claim-reward request to all nodes so they store it in DB.
     PendingClaimRewardRequestBroadcast {

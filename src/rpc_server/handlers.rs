@@ -43,6 +43,7 @@ pub(crate) async fn handle_deposit_intent(
     message_tx: Arc<Mutex<mpsc::Sender<ChannelMessage>>>,
     transaction_type: TransactionType,
     _dkg_storage: Arc<DkgStorage>,
+    signature: Option<String>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
     info!("📝 HTTP: Received deposit intent request");
     if let Some(addr) = &user_eth_address {
@@ -66,6 +67,7 @@ pub(crate) async fn handle_deposit_intent(
         user_eth_address: user_eth_address.as_ref().map(|s| s.clone()).unwrap_or_else(|| "unknown".to_string()),
         transaction_type: transaction_type.clone(),
         amount: required_amount_u128,
+        signature,
     };
 
     let tx_sender = message_tx.lock().await;
@@ -686,13 +688,12 @@ pub(crate) async fn handle_user_mpc_deposit(
 
     info!("🧾 HTTP: user_mpc_deposit received");
 
-    // CRITICAL: Only support UserToVault transaction type
-    // Reject immediately if intent_hash already exists in database
+    // CRITICAL: Reject duplicate intent hash immediately - do no further processing (no signature verify, no user lookup, no channel send).
     if user_intent_manager.get_intent(&intent_hash_hex).await.is_some() {
         warn!(
             request_id = %request_context.request_id,
             intent_hash = %intent_hash_hex,
-            "⚠️ HTTP: Rejecting deposit - intent hash already exists in database"
+            "⚠️ HTTP: Rejecting deposit - intent hash already exists (duplicate); no processing"
         );
         return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
             status: "error".to_string(),
@@ -865,6 +866,7 @@ pub(crate) async fn handle_user_mpc_deposit(
         message_tx,
         transaction_type,
         dkg_storage.clone(),
+        req.signature.clone(),
     )
     .await
     {

@@ -566,48 +566,111 @@ impl MpcNetworkLayer {
                 intent_id: _intent_id,
                 user_eth_address,
                 amount,
+                signature,
             } => {
                 // user_eth_address is now mandatory (not Option)
                 let user_eth_addr = user_eth_address;
 
-                // Calculate intent hash from the intent
+                // Calculate intent hash from the intent (valid intent = same hash as RPC originator)
                 let intent_hash = match crate::utils::calculate_intent_hash(&intent) {
                     Ok(hash) => hash,
                     Err(e) => {
-                        warn!("❌ [GOSSIPSUB] Failed to calculate intent hash: {}", e);
+                        warn!("❌ [GOSSIPSUB] Failed to calculate intent hash (invalid intent): {}", e);
                         return Ok(());
                     }
                 };
                 info!("🔐 [GOSSIPSUB] Calculated intent hash: {}", intent_hash);
 
-                // CRITICAL: Reject immediately if intent_hash already exists in database
-                if let Some(user_intent_manager) = &self.user_intent_manager {
-                    if user_intent_manager.get_intent(&intent_hash).await.is_some() {
+                // CRITICAL: Reject duplicate intent hash immediately - do no further processing (no signature verify, no user lookup).
+                let user_intent_manager = match &self.user_intent_manager {
+                    Some(uim) => uim,
+                    None => {
+                        warn!("❌ [GOSSIPSUB] User intent manager not available - cannot validate deposit intent");
+                        return Ok(());
+                    }
+                };
+                if user_intent_manager.get_intent(&intent_hash).await.is_some() {
+                    warn!(
+                        "⚠️ [GOSSIPSUB] Rejecting DepositIntent - intent hash {} already exists (duplicate); no processing",
+                        intent_hash
+                    );
+                    return Ok(());
+                }
+
+                // CRITICAL (protocol): Signature is mandatory at gossip level; verify recovered signer matches claimed user.
+                let signature = match signature.as_ref() {
+                    Some(s) => s.as_str(),
+                    None => {
                         warn!(
-                            "⚠️ [GOSSIPSUB] Rejecting DepositIntent - intent hash {} already exists in database",
+                            "⚠️ [GOSSIPSUB] Rejecting DepositIntent - signature required for gossip verification (intent hash: {})",
                             intent_hash
                         );
                         return Ok(());
                     }
-
-                    // Store the intent in database
-                    if let Ok(intent_hash_bytes) = hex::decode(&intent_hash) {
-                        if let Err(e) = user_intent_manager
-                            .store_intent_hash(intent_hash_bytes, &user_eth_addr, &intent)
-                            .await
-                        {
+                };
+                // Deposit intent is the message: same serialization the client signed.
+                let intent_bytes: Vec<u8> = match serde_json::to_string(&intent) {
+                    Ok(s) => s.into_bytes(),
+                    Err(e) => {
+                        warn!("❌ [GOSSIPSUB] Failed to serialize intent for signature verification: {}", e);
+                        return Ok(());
+                    }
+                };
+                use crate::rpc_server::utils::{normalize_eth_signature, recover_eth_address_secp};
+                let (compact, v) = match normalize_eth_signature(signature) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        warn!(
+                            "⚠️ [GOSSIPSUB] Invalid signature format for DepositIntent {}: {}",
+                            intent_hash, e
+                        );
+                        return Ok(());
+                    }
+                };
+                let recovered_signer = match recover_eth_address_secp(&intent_bytes, &compact, v, true) {
+                    Ok(addr) => addr,
+                    Err(e1) => match recover_eth_address_secp(&intent_bytes, &compact, v, false) {
+                        Ok(addr) => addr,
+                        Err(e2) => {
                             warn!(
-                                "❌ [GOSSIPSUB] Failed to store intent hash {}: {}",
-                                intent_hash, e
+                                "⚠️ [GOSSIPSUB] Failed to recover signer for DepositIntent {}: personal_sign={}, raw={}",
+                                intent_hash, e1, e2
                             );
                             return Ok(());
                         }
-                    } else {
-                        warn!("❌ [GOSSIPSUB] Invalid intent hash format: {}", intent_hash);
+                    },
+                };
+                if recovered_signer.to_lowercase() != user_eth_addr.to_lowercase() {
+                    warn!(
+                        "⚠️ [GOSSIPSUB] Rejecting DepositIntent - signature signer {} does not match claimed user {}",
+                        recovered_signer, user_eth_addr
+                    );
+                    return Ok(());
+                }
+
+                // CRITICAL (protocol): Only accept deposit intents for registered users.
+                if user_intent_manager.get_user_by_address(&user_eth_addr).await.is_none() {
+                    warn!(
+                        "⚠️ [GOSSIPSUB] Rejecting DepositIntent - user {} is not registered (valid intent requires registered user)",
+                        user_eth_addr
+                    );
+                    return Ok(());
+                }
+
+                // Store the intent in database (duplicate already rejected above)
+                if let Ok(intent_hash_bytes) = hex::decode(&intent_hash) {
+                    if let Err(e) = user_intent_manager
+                        .store_intent_hash(intent_hash_bytes, &user_eth_addr, &intent)
+                        .await
+                    {
+                        warn!(
+                            "❌ [GOSSIPSUB] Failed to store intent hash {}: {}",
+                            intent_hash, e
+                        );
                         return Ok(());
                     }
                 } else {
-                    warn!("❌ [GOSSIPSUB] User intent manager not available to store intent");
+                    warn!("❌ [GOSSIPSUB] Invalid intent hash format: {}", intent_hash);
                     return Ok(());
                 }
 

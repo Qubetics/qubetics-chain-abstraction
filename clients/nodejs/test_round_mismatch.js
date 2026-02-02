@@ -50,6 +50,20 @@ function log(message, color = 'reset') {
   console.log(`${colors[color]}[${timestamp}] ${message}${colors.reset}`);
 }
 
+/** Serialize deposit intent for signing; must match server serde_json key order and amount-as-string. */
+function serializeDepositIntentForSigning(intent) {
+  return JSON.stringify({
+    source_address: intent.source_address,
+    target_address: intent.target_address,
+    source_chain: intent.source_chain,
+    target_chain: intent.target_chain,
+    amount: String(intent.amount),
+    source_token: intent.source_token,
+    target_token: intent.target_token,
+    timestamp: typeof intent.timestamp === 'number' ? intent.timestamp : Number(intent.timestamp),
+  });
+}
+
 // =========================
 // Helper Functions
 // =========================
@@ -108,8 +122,7 @@ async function registerUser(ethereumAddress, wallet, nodeUrl, nodeLabel) {
 }
 
 async function submitDepositIntent(wallet, amount, nodeUrl, nodeLabel, intentId) {
-  // Ensure amount is a number (not string) for JSON serialization
-  const amountNum = typeof amount === 'string' ? parseInt(amount, 10) : amount;
+  const amountStr = typeof amount === 'string' ? amount : String(amount);
   try {
     const signerAddr = await wallet.getAddress();
     log(`[${nodeLabel}] 🔐 Submitting deposit intent ${intentId} for signer: ${signerAddr}`, 'blue');
@@ -121,23 +134,23 @@ async function submitDepositIntent(wallet, amount, nodeUrl, nodeLabel, intentId)
       throw new Error('User not registered on this node');
     }
 
-    // Construct DepositIntent with unique timestamp to ensure different intent hashes
-    const timestamp = Date.now(); // Use current timestamp for uniqueness
+    // Construct DepositIntent (amount as string to match server DepositIntent.amount)
+    const timestamp = Date.now();
     const depositIntent = {
       source_address: userInfo.data.derived_eth_address,
       target_address: userInfo.data.derived_eth_address,
       source_chain: 'qubetics',
       target_chain: 'qubetics',
-      amount: amountNum, // Use number, not string
+      amount: amountStr,
       source_token: 'TICS',
       target_token: 'TICS',
-      timestamp: timestamp,
+      timestamp,
     };
 
     log(`[${nodeLabel}] 📊 Deposit Intent ${intentId}: ${JSON.stringify(depositIntent)}`, 'cyan');
 
-    // Serialize DepositIntent for signing
-    const msg = JSON.stringify(depositIntent);
+    // Sign the serialized intent (same bytes the server uses for hash/recovery)
+    const msg = serializeDepositIntentForSigning(depositIntent);
     const signature = await wallet.signMessage(msg);
 
     log(`[${nodeLabel}] ✍️  Signature for intent ${intentId}: ${signature.substring(0, 20)}...`, 'cyan');
