@@ -32,7 +32,7 @@ impl MigrationRunner {
     pub fn new(db: Database) -> Self {
         // Register all migrations in order
         let migrations: Vec<Box<dyn Migration>> = vec![
-            Box::new(Migration_v0_1_0_to_v0_2_0),
+            Box::new(MigrationV0_1_0ToV0_2_0),
             // Add future migrations here
         ];
 
@@ -171,9 +171,9 @@ impl MigrationRunner {
 // ============================================================================
 
 /// Migration from 0.1.0 to 0.2.0
-struct Migration_v0_1_0_to_v0_2_0;
+struct MigrationV0_1_0ToV0_2_0;
 
-impl Migration for Migration_v0_1_0_to_v0_2_0 {
+impl Migration for MigrationV0_1_0ToV0_2_0 {
     fn version(&self) -> &str {
         "0.2.0"
     }

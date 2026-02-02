@@ -3,7 +3,7 @@ use crate::database::Database;
 use anyhow::{anyhow, Result};
 use chrono::Utc;
 use std::path::{Path, PathBuf};
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 pub struct StatePreservationManager {
     db: Database,

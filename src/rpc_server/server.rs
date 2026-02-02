@@ -9,7 +9,7 @@ use tracing::{error, info};
 use warp::{Filter, Reply};
 
 use crate::{
-    database::{Database, DkgStorage, RewardStorage},
+    database::{Database, DkgStorage},
     types::ChannelMessage,
     user_intent_manager::UserIntentManager,
 };
@@ -19,7 +19,7 @@ use super::{
     handlers::{
         handle_add_liquidity, handle_claim_reward, handle_get_dkg_status,
         handle_get_intents_solved_count, handle_get_network_addresses, handle_get_node_id,
-        handle_get_node_info, handle_get_reward_solver, handle_get_solver_liquidity,
+        handle_get_node_info, handle_get_solver_liquidity, handle_get_solver_rewards,
         handle_get_status, handle_get_uptime, handle_get_user_info, handle_heartbeat,
         handle_log_partial_pubkeys, handle_register_user, handle_user_mpc_deposit,
         handle_withdraw_liquidity,
@@ -32,7 +32,7 @@ use super::{
     },
 };
 use crate::types::rpc_server::{
-    AddLiquidityRequest, ClaimRewardRequest, GetRewardSolverRequest, RequestContext,
+    AddLiquidityRequest, ClaimRewardRequest, GetSolverRewardsRequest, RequestContext,
     SolverLiquidityRequest, UserMpcDepositRequest, UserMpcDepositVerifyResponse,
     UserRegistrationRequest, WithdrawLiquidityRequest,
 };
@@ -48,7 +48,6 @@ pub async fn start_http_server(
     port: u16,
     user_intent_manager: Arc<UserIntentManager>,
     dkg_storage: DkgStorage,
-    reward_storage: RewardStorage,
     database: Database,
     node_id: String,
     start_time: Instant,
@@ -60,7 +59,6 @@ pub async fn start_http_server(
 
     let message_tx = Arc::new(Mutex::new(message_tx));
     let dkg_storage = Arc::new(dkg_storage);
-    let reward_storage = Arc::new(reward_storage);
     let database = Arc::new(database);
     let start_time = Arc::new(start_time);
 
@@ -139,24 +137,22 @@ pub async fn start_http_server(
             }
         });
 
-    let get_reward_solver = warp::path("get_reward_solver")
-        .and(warp::get())
-        .and(warp::query::<GetRewardSolverRequest>())
-        .and(with_user_intent_manager(user_intent_manager.clone()))
-        .and_then(handle_get_reward_solver);
-
     let get_solver_liquidity = warp::path("solver_liquidity")
         .and(warp::get())
         .and(warp::query::<SolverLiquidityRequest>())
-        .and(with_user_intent_manager(user_intent_manager.clone()))
         .and_then(handle_get_solver_liquidity);
+
+    let get_solver_rewards = warp::path("solver_rewards")
+        .and(warp::get())
+        .and(warp::query::<GetSolverRewardsRequest>())
+        .and(with_user_intent_manager(user_intent_manager.clone()))
+        .and_then(handle_get_solver_rewards);
 
     let claim_reward = warp::path("claim_reward")
         .and(warp::post())
         .and(with_rate_limit(rate_limiter.clone()))
         .and(limited_json_body::<ClaimRewardRequest>())
         .and(with_user_intent_manager(user_intent_manager.clone()))
-        .and(with_reward_storage(reward_storage.clone()))
         .and(with_message_tx(message_tx.clone()))
         .and(with_dkg_storage(dkg_storage.clone()))
         .and(with_auth())
@@ -284,8 +280,8 @@ pub async fn start_http_server(
         .or(get_status)
         .or(get_dkg_status)
         .or(user_mpc_deposit)
-        .or(get_reward_solver)
         .or(get_solver_liquidity)
+        .or(get_solver_rewards)
         .or(claim_reward)
         .or(add_liquidity)
         .or(withdraw_liquidity)
@@ -421,12 +417,6 @@ fn with_dkg_storage(
     dkg_storage: Arc<DkgStorage>,
 ) -> impl Filter<Extract = (Arc<DkgStorage>,), Error = Infallible> + Clone {
     warp::any().map(move || dkg_storage.clone())
-}
-
-fn with_reward_storage(
-    reward_storage: Arc<RewardStorage>,
-) -> impl Filter<Extract = (Arc<RewardStorage>,), Error = Infallible> + Clone {
-    warp::any().map(move || reward_storage.clone())
 }
 
 fn with_database(

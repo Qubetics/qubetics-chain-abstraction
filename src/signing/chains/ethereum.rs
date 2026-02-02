@@ -17,7 +17,7 @@ use k256::Scalar;
 use reqwest::Client;
 use secp256k1::{ecdsa::RecoverableSignature, Message, PublicKey, Secp256k1, SecretKey};
 use sha3::Digest;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{error, info, warn};
 
@@ -77,6 +77,8 @@ impl<'a> EthereumSigner<'a> {
         signing_key_override: Option<Scalar>,
         request_id: Option<String>,
         original_request: Option<()>,
+        tics_withdraw_identifiers: Option<Vec<String>>,
+        tics_claim_reward_identifiers: Option<Vec<String>>,
     ) -> Result<()> {
         self.node
             .sign_contract_message(
@@ -89,6 +91,8 @@ impl<'a> EthereumSigner<'a> {
                 signing_key_override,
                 request_id,
                 original_request,
+                tics_withdraw_identifiers,
+                tics_claim_reward_identifiers,
             )
             .await
     }
@@ -138,6 +142,20 @@ impl SigningNode {
             error!("❌ Failed to fetch nonce: {}", error_text);
             Err(anyhow!("Nonce fetch failed: {}", error_text))
         }
+    }
+
+    /// Helper: Fetch nonce for address and log with description
+    async fn fetch_nonce_and_log(
+        address: &str,
+        chain_id: u64,
+        description: &str,
+    ) -> Result<String> {
+        let nonce = Self::fetch_ethereum_nonce(address, chain_id).await?;
+        info!(
+            "🔢 [SIGNING] {}: fetching nonce {} from address {}",
+            description, nonce, address
+        );
+        Ok(address.to_string())
     }
 
     /// Wait for transaction receipt with timeout
@@ -324,16 +342,6 @@ impl SigningNode {
         solver_address: Option<String>,
         signing_key_override: Option<Scalar>,
     ) -> Result<()> {
-        // Validate parameters: if transaction_type is RewardTxn, solver_address must be provided
-        if let Some(TransactionType::RewardTxn) = transaction_type {
-            if solver_address.is_none() {
-                error!("❌ [SIGNING] Invalid parameters: solver_address is required when transaction_type is RewardTxn");
-                return Err(anyhow!(
-                    "Solver address is required when transaction_type is RewardTxn"
-                ));
-            }
-        }
-
         info!(
             "🔗 [SIGNING] Using {} chain handler for EVM signing",
             chain_handler.chain_type()
@@ -535,53 +543,7 @@ impl SigningNode {
         }
 
         // Store original transaction for reconstruction after aggregation
-        // Use reward pending transactions if transaction_type is RewardTxn, otherwise use regular pending transactions
-        if let Some(TransactionType::RewardTxn) = transaction_type {
-            // This is a reward transaction - store in reward pending transactions
-            // solver_address is guaranteed to be Some due to validation above
-            let solver_addr = solver_address.expect("Solver address should be validated above");
-            let chain_tx =
-                ChainTransaction::Ethereum(crate::chain_abstraction::EthereumTransaction {
-                    to: transaction.to.clone(),
-                    value: transaction.value.clone(),
-                    gas_limit: transaction.gas_limit,
-                    gas_price: transaction.gas_price.clone(),
-                    nonce: transaction.nonce,
-                    data: None,
-                    chain_id: transaction.chain_id,
-                });
-
-            // Ethereum handler always stores to TICS (EVM network)
-            // Bitcoin transactions would be handled by the Bitcoin handler
-            info!(
-                "💰 [REWARD] Storing TICS reward transaction for round {} (solver: {})",
-                round, solver_addr
-            );
-
-            self.store_reward_transaction_tics(
-                round,
-                chain_tx,
-                tx_bytes.clone(),
-                solver_addr.clone(),
-            )
-            .await;
-
-            // Insert round number into reward_rounds for reward transactions
-            {
-                let mut reward_rounds: tokio::sync::RwLockWriteGuard<'_, HashSet<u64>> =
-                    self.pending.reward_rounds.write().await;
-                reward_rounds.insert(round);
-                info!(
-                    "🎁 [SIGNING] Node {} added round {} to reward_rounds",
-                    self.id, round
-                );
-            }
-
-            info!(
-                "💾 [SIGNING] Node {} stored reward transaction for round {} with solver address: {}",
-                self.id, round, solver_addr
-            );
-        } else if let Some(TransactionType::WithdrawLiquidity) = transaction_type {
+        if let Some(TransactionType::WithdrawLiquidity) = transaction_type {
             let solver_addr = solver_address.expect("Solver address should be validated above");
             let chain_tx =
                 ChainTransaction::Ethereum(crate::chain_abstraction::EthereumTransaction {
@@ -656,6 +618,7 @@ impl SigningNode {
     }
 
     /// Sign a contract transaction message (overload for ContractTransaction)
+    /// When tics_withdraw_identifiers is Some(non-empty), stores in withdraw_pending_transactions_tics for batch TICS withdraw.
     pub async fn sign_contract_message(
         &mut self,
         _message: Vec<u8>,
@@ -667,6 +630,8 @@ impl SigningNode {
         signing_key_override: Option<Scalar>,
         request_id: Option<String>,
         original_request: Option<()>,
+        tics_withdraw_identifiers: Option<Vec<String>>,
+        tics_claim_reward_identifiers: Option<Vec<String>>,
     ) -> Result<()> {
         // Determine which key to use for signing
         // Redacted user_tweaked_share from logs
@@ -838,6 +803,66 @@ impl SigningNode {
         }
 
         // Store original transaction for reconstruction after aggregation (contract-specific path)
+        // TICS withdraw batch: store in withdraw_pending_transactions_tics with identifiers for tx-id broadcast
+        if let Some(ref identifiers) = tics_withdraw_identifiers {
+            if !identifiers.is_empty() {
+                self.store_withdraw_transaction_tics_batch(
+                    round,
+                    chain_transaction.clone(),
+                    tx_bytes.clone(),
+                    identifiers.clone(),
+                )
+                .await;
+                {
+                    let mut withdraw_rounds = self.pending.withdraw_rounds.write().await;
+                    withdraw_rounds.insert(round);
+                    info!(
+                        "💧 [SIGNING] Node {} added round {} to withdraw_rounds (TICS batch, {} request(s))",
+                        self.id, round, identifiers.len()
+                    );
+                }
+                info!(
+                    "💾 [SIGNING] Node {} stored TICS withdraw batch contract transaction for round {} ({} request(s))",
+                    self.id, round, identifiers.len()
+                );
+                info!(
+                    "📤 [SIGNING] Node {} broadcasted Ethereum contract signature",
+                    self.id
+                );
+                return Ok(());
+            }
+        }
+
+        // TICS claim-reward batch: store in claim_reward_pending_transactions_tics with identifiers for tx-id broadcast
+        if let Some(ref identifiers) = tics_claim_reward_identifiers {
+            if !identifiers.is_empty() {
+                self.store_claim_reward_transaction_tics_batch(
+                    round,
+                    chain_transaction.clone(),
+                    tx_bytes.clone(),
+                    identifiers.clone(),
+                )
+                .await;
+                {
+                    let mut claim_reward_rounds = self.pending.claim_reward_rounds.write().await;
+                    claim_reward_rounds.insert(round);
+                    info!(
+                        "🎁 [SIGNING] Node {} added round {} to claim_reward_rounds (TICS batch, {} request(s))",
+                        self.id, round, identifiers.len()
+                    );
+                }
+                info!(
+                    "💾 [SIGNING] Node {} stored TICS claim-reward batch contract transaction for round {} ({} request(s))",
+                    self.id, round, identifiers.len()
+                );
+                info!(
+                    "📤 [SIGNING] Node {} broadcasted Ethereum contract signature",
+                    self.id
+                );
+                return Ok(());
+            }
+        }
+
         let mut pending_transactions = self.pending.pending_transactions.write().await;
         let primary_intent_hash = intent_hashes.first().cloned();
 
@@ -848,7 +873,7 @@ impl SigningNode {
         let tx_type_for_round = if !intent_hashes.is_empty() {
             // Check if this is an add_liquidity transaction (request_id starts with "addliq:")
             let is_add_liquidity = intent_hashes.iter().any(|h| h.starts_with("addliq:"));
-            
+
             if is_add_liquidity {
                 // add_liquidity uses vault key - don't set transaction type
                 // This prevents the verification from using the wrong pubkey
@@ -923,10 +948,6 @@ impl SigningNode {
         aggregated_signature: &[u8],
         recovery_id: u8,
     ) -> Result<Option<String>> {
-        let is_reward_round = {
-            let reward_rounds = self.pending.reward_rounds.read().await;
-            reward_rounds.contains(&round)
-        };
         let is_withdraw_round = {
             let withdraw_rounds = self.pending.withdraw_rounds.read().await;
             withdraw_rounds.contains(&round)
@@ -944,23 +965,7 @@ impl SigningNode {
             }
         };
 
-        let (chain_tx, transaction_type) = if is_reward_round {
-            let reward_pending_transactions =
-                self.pending.reward_pending_transactions_tics.read().await;
-            if let Some((
-                chain_tx,
-                _tx_bytes,
-                _solver_address,
-                transaction_type,
-                _request_id,
-                _original_request,
-            )) = reward_pending_transactions.get(&round)
-            {
-                (Some(chain_tx.clone()), transaction_type.clone())
-            } else {
-                (None, None)
-            }
-        } else if is_withdraw_round {
+        let (chain_tx, transaction_type) = if is_withdraw_round {
             let withdraw_pending_transactions =
                 self.pending.withdraw_pending_transactions_tics.read().await;
             if let Some((
@@ -1028,11 +1033,12 @@ impl SigningNode {
                                     user_intent_manager.get_user_by_address(user_addr).await
                                 {
                                     if let Some(derived_eth_addr) = &user.derived_eth_address {
-                                        let nonce =
-                                            Self::fetch_ethereum_nonce(derived_eth_addr, chain_id)
-                                                .await?;
-                                        info!("🔢 [SIGNING] UserToVault transaction: fetching nonce {} from user's derived address {}", nonce, derived_eth_addr);
-                                        derived_eth_addr.clone()
+                                        Self::fetch_nonce_and_log(
+                                            derived_eth_addr,
+                                            chain_id,
+                                            "UserToVault transaction",
+                                        )
+                                        .await?
                                     } else {
                                         return Err(anyhow!(
                                             "User {} has no derived Ethereum address",
@@ -1057,33 +1063,35 @@ impl SigningNode {
                         }
                     }
                     Some(crate::types::TransactionType::NetworkToTarget)
-                    | Some(crate::types::TransactionType::Refund)
                     | Some(crate::types::TransactionType::IntentStatusUpdate) => {
-                        // Refund and IntentStatusUpdate use network group key (same as NetworkToTarget)
                         let group_key = self.get_network_group_public_key().await?;
                         let group_address = get_eth_address_from_group_key(group_key);
-
-                        let nonce = Self::fetch_ethereum_nonce(&group_address, chain_id).await?;
-                        info!("🔢 [SIGNING] NetworkToTarget/Refund/IntentStatusUpdate transaction: fetching nonce {} from network group address {}", nonce, group_address);
-                        group_address
-                    }
-                    Some(crate::types::TransactionType::RewardTxn) => {
-                        // For reward transactions, use network group address
-                        let group_address = get_eth_address_from_group_key(
-                            self.get_network_group_public_key().await?,
-                        );
-                        let nonce = Self::fetch_ethereum_nonce(&group_address, chain_id).await?;
-                        info!("🔢 [SIGNING] RewardTxn transaction: fetching nonce {} from network group address {}", nonce, group_address);
-                        group_address
+                        Self::fetch_nonce_and_log(
+                            &group_address,
+                            chain_id,
+                            "NetworkToTarget/IntentStatusUpdate transaction",
+                        )
+                        .await?
                     }
                     Some(crate::types::TransactionType::WithdrawLiquidity) => {
-                        // Withdraw liquidity payouts reuse the network group key path (same as rewards)
-                        let group_address = get_eth_address_from_group_key(
-                            self.get_network_group_public_key().await?,
-                        );
-                        let nonce = Self::fetch_ethereum_nonce(&group_address, chain_id).await?;
-                        info!("🔢 [SIGNING] WithdrawLiquidity transaction: fetching nonce {} from network group address {}", nonce, group_address);
-                        group_address
+                        let group_key = self.get_vault_group_public_key().await?;
+                        let group_address = get_eth_address_from_group_key(group_key);
+                        Self::fetch_nonce_and_log(
+                            &group_address,
+                            chain_id,
+                            "WithdrawLiquidity (TICS) transaction",
+                        )
+                        .await?
+                    }
+                    Some(crate::types::TransactionType::ClaimReward) => {
+                        let group_key = self.get_vault_group_public_key().await?;
+                        let group_address = get_eth_address_from_group_key(group_key);
+                        Self::fetch_nonce_and_log(
+                            &group_address,
+                            chain_id,
+                            "ClaimReward (TICS) transaction",
+                        )
+                        .await?
                     }
                     None => {
                         if let Some(user_addr) = &user_eth_address {
@@ -1092,11 +1100,12 @@ impl SigningNode {
                                     user_intent_manager.get_user_by_address(user_addr).await
                                 {
                                     if let Some(derived_eth_addr) = &user.derived_eth_address {
-                                        let nonce =
-                                            Self::fetch_ethereum_nonce(derived_eth_addr, chain_id)
-                                                .await?;
-                                        info!("🔢 [SIGNING] User transaction (fallback): fetching nonce {} from user's derived address {}", nonce, derived_eth_addr);
-                                        derived_eth_addr.clone()
+                                        Self::fetch_nonce_and_log(
+                                            derived_eth_addr,
+                                            chain_id,
+                                            "User transaction (fallback)",
+                                        )
+                                        .await?
                                     } else {
                                         return Err(anyhow!(
                                             "User {} has no derived Ethereum address",
@@ -1118,11 +1127,12 @@ impl SigningNode {
                             let group_address = get_eth_address_from_group_key(
                                 self.get_network_group_public_key().await?,
                             );
-
-                            let nonce =
-                                Self::fetch_ethereum_nonce(&group_address, chain_id).await?;
-                            info!("🔢 [SIGNING] Network/Vault transaction (fallback): fetching nonce {} from group address {}", nonce, group_address);
-                            group_address
+                            Self::fetch_nonce_and_log(
+                                &group_address,
+                                chain_id,
+                                "Network/Vault transaction (fallback)",
+                            )
+                            .await?
                         }
                     }
                 };
@@ -1196,30 +1206,5 @@ impl SigningNode {
         signing_key: &SecretKey,
     ) -> Result<RecoverableSignature> {
         self.create_ecdsa_signature_with_signing_key(message, signing_key)
-    }
-
-    async fn store_reward_transaction_tics(
-        &self,
-        round: u64,
-        chain_tx: ChainTransaction,
-        tx_bytes: Vec<u8>,
-        solver_address: String,
-    ) {
-        let mut pending = self.pending.reward_pending_transactions_tics.write().await;
-        pending.insert(
-            round,
-            (
-                chain_tx,
-                tx_bytes,
-                Some(solver_address),
-                Some(crate::types::TransactionType::RewardTxn),
-                None, // No request_id for reward transactions
-                None, // No original_request for reward transactions
-            ),
-        );
-        info!(
-            "🎁 [SIGNING] Stored TICS reward transaction for round {} with solver address",
-            round
-        );
     }
 }

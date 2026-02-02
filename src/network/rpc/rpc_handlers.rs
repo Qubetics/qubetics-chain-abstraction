@@ -219,6 +219,7 @@ impl MpcNetworkLayer {
         None
     }
 
+    #[allow(dead_code)]
     pub(crate) async fn get_local_vrf_round(&self) -> Option<u64> {
         self.get_local_vrf_round_for_domain(VrfDomain::Signing, None)
             .await
@@ -317,7 +318,7 @@ impl MpcNetworkLayer {
     /// Handle GetPeerList RPC request
     async fn handle_get_peer_list_request(
         &mut self,
-        peer: PeerId,
+        _peer: PeerId,
         swarm: &libp2p::Swarm<MpcNetworkBehaviour>,
     ) -> RPCResponse {
 
@@ -796,7 +797,7 @@ impl MpcNetworkLayer {
     /// Handle incoming transaction data from signing nodes to final node
     async fn handle_incoming_transaction_data(
         &mut self,
-        from_node_id: String,
+        _from_node_id: String,
         transaction_data: Vec<u8>,
         round: u64,
     ) -> RPCResponse {
@@ -879,7 +880,7 @@ impl MpcNetworkLayer {
     }
 
     /// Handle RequestCurrentVrfRound RPC request
-    async fn handle_request_current_vrf_round(&self, peer: PeerId) -> RPCResponse {
+    async fn handle_request_current_vrf_round(&self, _peer: PeerId) -> RPCResponse {
         let current_round = self
             .get_local_vrf_round_for_domain(VrfDomain::Signing, None)
             .await;
@@ -921,7 +922,7 @@ impl MpcNetworkLayer {
     async fn handle_request_database_sync(
         &self,
         _peer: PeerId,
-        requester_id: SerializablePeerId,
+        _requester_id: SerializablePeerId,
     ) -> RPCResponse {
         match self
             .db
@@ -945,7 +946,7 @@ impl MpcNetworkLayer {
     /// Handle RequestDatabaseBatch RPC request
     async fn handle_request_database_batch(
         &self,
-        peer: PeerId,
+        _peer: PeerId,
         batch_index: usize,
         batch_size: usize,
     ) -> RPCResponse {
@@ -994,7 +995,7 @@ impl MpcNetworkLayer {
                     .await?;
             }
             RPCResponse::PeerInfo(peer_info) => {
-                let addr_count = peer_info.addresses.len();
+                let _addr_count = peer_info.addresses.len();
                 for addr in peer_info.addresses {
                     // Extract PeerId from the /p2p/ component of the multiaddr string
                     let maybe_peer = addr

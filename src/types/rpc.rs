@@ -334,10 +334,10 @@ impl RequestResponseCodec for MPCCodec {
 /// Build a libp2p request‑response behaviour using our MPCCodec + CBOR.
 /// You can then add this to your Swarm.
 pub fn build_mpc_behaviour() -> CborReqRespBehaviour<MPCCodecRequest, MPCCodecResponse> {
-    let mut cfg = RequestResponseConfig::default();
     // Increased from 180s to 300s to support 50 parallel intents with paced sends and receiver concurrency
     // This prevents timeouts when the final node is processing many parallel RPCs
-    cfg.set_request_timeout(std::time::Duration::from_secs(300));
+    let cfg = RequestResponseConfig::default()
+        .with_request_timeout(std::time::Duration::from_secs(300));
 
     let proto = StreamProtocol::new(MPCProtocol.as_ref());
     let protocols = std::iter::once((proto, ProtocolSupport::Full));

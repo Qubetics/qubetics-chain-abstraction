@@ -1,7 +1,7 @@
 use anyhow::{anyhow, bail, Result};
 use bitcoin::{
     hashes::Hash, // For as_byte_array
-    secp256k1::{self, ecdsa::RecoverableSignature, Secp256k1},
+    secp256k1::{ecdsa::RecoverableSignature},
     Address,
     Amount,
     OutPoint,
@@ -279,7 +279,6 @@ pub fn attach_signatures_and_finalize(
         );
     }
 
-    let secp = Secp256k1::new();
     let pubkey_bytes = public_key.inner.serialize(); // Compressed 33 bytes
 
     for (i, sig) in signatures.iter().enumerate() {

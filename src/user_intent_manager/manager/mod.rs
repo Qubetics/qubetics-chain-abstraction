@@ -1,6 +1,4 @@
 use chrono::Utc;
-use ethereum_types::U256;
-use ethers::types::U256 as EthersU256;
 use ff::PrimeField;
 use k256::{ProjectivePoint, Scalar};
 use std::{collections::HashMap, sync::Arc};
@@ -11,7 +9,6 @@ use super::checksum_from_any;
 use crate::database::{
     Database, DatabaseModule, IntentStorage, TransactionStatusStorage, UserStorage,
 };
-use crate::database::{LiquidityStorage, RewardStorage};
 pub use crate::types::{
     DepositIntent, IntentStatus, IntentTransactionIds, SerializablePoint, SerializableScalar,
     TransactionStatus, UserRegistration,
@@ -21,18 +18,16 @@ use tracing::info;
 
 mod intent;
 mod registration;
-mod rewards;
 mod transactions;
 
-/// Database-backed user registry for managing user registrations and intent tracking
+/// Database-backed user registry for managing user registrations and intent tracking.
+/// Reward and liquidity data are fetched directly from the contract when required.
 #[derive(Clone)]
 pub struct UserIntentManager {
     database_module: DatabaseModule,
     user_storage: UserStorage,
     intent_storage: IntentStorage,
     tx_status_storage: TransactionStatusStorage,
-    reward_storage: RewardStorage,
-    liquidity_storage: LiquidityStorage,
     chain_code: [u8; 32],
     idempotency_index: Arc<Mutex<HashMap<String, String>>>,
     intent_reward_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
@@ -59,8 +54,6 @@ impl UserIntentManager {
             user_storage: database_module.user_storage(),
             intent_storage: database_module.intent_storage(),
             tx_status_storage: database_module.transaction_status_storage(),
-            reward_storage: database_module.reward_storage(),
-            liquidity_storage: database_module.liquidity_storage(),
             chain_code,
             idempotency_index: Arc::new(Mutex::new(HashMap::new())),
             intent_reward_locks: Arc::new(Mutex::new(HashMap::new())),

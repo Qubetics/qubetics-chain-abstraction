@@ -132,6 +132,31 @@ pub struct SolverLiquidityResponse {
     pub error_message: Option<String>,
 }
 
+/// Query for unclaimed (pending/batched) solver rewards.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetSolverRewardsRequest {
+    pub solver_address: String,
+}
+
+/// One unclaimed reward entry (subset of PendingClaimRewardRequest; no message/signature).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UnclaimedRewardEntry {
+    pub request_id: String,
+    pub status: String,
+    pub tx_id: Option<String>,
+    pub ethereum_address: Option<String>,
+    pub btc_address: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetSolverRewardsResponse {
+    pub status: String,
+    pub solver_address: String,
+    pub unclaimed_rewards: Vec<UnclaimedRewardEntry>,
+    pub message: String,
+    pub error_message: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClaimRewardRequest {
     pub signature: String,
@@ -205,6 +230,44 @@ pub struct WithdrawLiquidityResponse {
     pub btc_withdraw_tx_id: Option<String>,
     pub message: String,
     pub error_message: Option<String>,
+}
+
+/// Internal representation of a queued withdraw-liquidity request.
+/// Stored in RocksDB under keys with prefix "pending_withdraw_liquidity:".
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingWithdrawRequest {
+    pub request_id: String,
+    pub solver_address: String,
+    /// "TICS" or "BTC"
+    pub asset: String,
+    /// Amount as decimal string in smallest units for the asset chain
+    pub amount: String,
+    pub ethereum_address: Option<String>,
+    pub btc_address: Option<String>,
+    /// Original signed message payload from the HTTP request
+    pub message: String,
+    /// Optional on-chain batch transaction ID once processed
+    pub tx_id: Option<String>,
+    /// Logical status of this withdraw request: "Pending", "Batched", "Completed", "Failed", etc.
+    pub status: String,
+}
+
+/// Internal representation of a queued claim-reward request.
+/// Stored in RocksDB under keys with prefix "pending_claim_reward:".
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingClaimRewardRequest {
+    pub request_id: String,
+    pub solver_address: String,
+    pub ethereum_address: Option<String>,
+    pub btc_address: Option<String>,
+    /// Original signed message payload from the HTTP request
+    pub message: String,
+    pub signature: String,
+    /// Optional BTC transaction ID once the claim-reward BTC batch is broadcast (stored on tx-id broadcast; do not mark done).
+    #[serde(default)]
+    pub tx_id: Option<String>,
+    /// Logical status: "Pending", "Batched", "Completed", "Failed", etc.
+    pub status: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
