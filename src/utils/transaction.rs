@@ -1604,7 +1604,7 @@ pub async fn create_solver_add_liquidity_batch_transaction(
         from_address,
         &normalized_contract_address,
         &calldata_hex,
-        chain_id,
+        9029u64,
     )
     .await?; // Abort if gas estimation fails - indicates transaction would revert
     let gas_limit = estimated_gas + (estimated_gas / 10);

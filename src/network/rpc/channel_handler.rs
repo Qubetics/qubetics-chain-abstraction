@@ -3152,6 +3152,15 @@ impl MpcNetworkLayer {
                     request_id, solver_id, solver_address, amount, chain_id
                 );
 
+                // Validate chainId before persisting (must match RPC rules: 0 = BTC, 9029 = EVM).
+                if chain_id != 0 && chain_id != 9029 {
+                    warn!(
+                        "⚠️ [ADD_LIQUIDITY] Unsupported chain_id {} for request_id={}, dropping (allowed: 0=BTC, 9029=EVM)",
+                        chain_id, request_id
+                    );
+                    return Ok(());
+                }
+
                 // Also persist locally to RocksDB so the origin node has the same pending view.
                 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
                 struct PendingAddLiquidityRecord {
