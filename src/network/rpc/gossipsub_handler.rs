@@ -1745,14 +1745,13 @@ impl MpcNetworkLayer {
                             batch_intent_inputs.len()
                         );
 
-                        // Create processBatchIntents calldata
-                        let batch_timestamp = chrono::Utc::now().timestamp().to_string();
-
+                        // Create processBatchIntents calldata using timestamp from the batch broadcast
+                        // so all nodes build the same calldata and tx digest.
                         if let Some(calldata) =
                             crate::utils::transaction::encode_process_batch_intents_calldata(
                                 &batch_intent_inputs,
                                 crate::types::BatchType::TICS,
-                                &batch_timestamp,
+                                &timestamp,
                             )
                         {
                             info!(
