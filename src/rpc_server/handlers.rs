@@ -2719,8 +2719,12 @@ pub(crate) async fn handle_add_liquidity(
         }));
     }
 
-    // Basic chainId validation (0 = BTC, 9029 = EVM / Qubetics).
+    // Validate chainId before persisting (must match RPC rules: 0 = BTC, 9029 = EVM).
     if payload.chain_id != 0 && payload.chain_id != 9029 {
+        warn!(
+            "⚠️ [ADD_LIQUIDITY] Unsupported chain_id {} for add_liquidity request, rejecting (allowed: 0=BTC, 9029=EVM)",
+            payload.chain_id
+        );
         return Ok(warp::reply::json(&AddLiquidityResponse {
             status: "error".to_string(),
             message: "Unsupported chainId".to_string(),

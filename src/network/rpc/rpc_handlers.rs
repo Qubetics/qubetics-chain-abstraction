@@ -3,7 +3,8 @@
 use anyhow::Result;
 use libp2p::gossipsub::{IdentTopic, Message};
 use libp2p::PeerId;
-use tracing::{error, warn};
+use std::collections::HashSet;
+use tracing::{error, info, warn};
 
 use crate::database::key_utils::{self, peer_addr_key};
 use crate::types::p2p::SerializablePeerId;
@@ -1236,15 +1237,15 @@ impl MpcNetworkLayer {
             .map(|dkg| matches!(dkg.get_status(), DKGStatus::Completed))
             .unwrap_or(false);
 
-        if !dkg_completed {
-            // New node joining - check if we've already processed a PeerList
-            if self.peer_discovery.peer_list_processed {
-                return Ok(());
-            }
-
-            // Mark as processed for this joining session
-            self.peer_discovery.peer_list_processed = true;
+        // if !dkg_completed {
+        // New node joining - check if we've already processed a PeerList
+        if self.peer_discovery.peer_list_processed {
+            return Ok(());
         }
+
+        // Mark as processed for this joining session
+        self.peer_discovery.peer_list_processed = true;
+        // }
 
         // After learning about all peers, check if this is a new node joining existing network
         self.handle_new_node_joining_check(swarm).await?;
@@ -1257,68 +1258,44 @@ impl MpcNetworkLayer {
         &mut self,
         swarm: &mut libp2p::Swarm<MpcNetworkBehaviour>,
     ) -> Result<()> {
+        let total = self.node_manager.get_total_nodes();
+        let threshold = self.node_manager.get_threshold();
+        let new_node_index = self.resolve_new_node_index().await;
+
         let (should_sync, sync_peer_opt, new_node_index_opt, needs_retry) = if let Some(dkg_node) =
             &mut self.dkg_node
         {
-            let total = self.node_manager.get_total_nodes();
-            let threshold = self.node_manager.get_threshold();
-
-            // Update DKG node parameters with current network size
             dkg_node.update_node_params(total, threshold)?;
-
             let has_dkg_data = dkg_node.get_final_secret_share().await.is_some();
 
-            // Check if peer list includes nodes with assigned indices (indicates established network)
-            let peers_have_indices = !self.peer_discovery.peer_indices.is_empty();
-            let max_peer_index = self
-                .peer_discovery
-                .peer_indices
-                .values()
-                .max()
-                .cloned()
-                .unwrap_or(0);
-
-            // Count connected peers (not including self)
-            let connected_peer_count = swarm.connected_peers().count();
-
-
-            // NEW NODE DETECTION (more robust):
-            // A node is a "new node joining established network" if:
-            // 1. It has NO DKG data (no secret share)
-            // 2. AND the network has 4+ total nodes (meaning 3 existing + this new one)
-            //
-            // IMPORTANT: We use `total >= 4` (not connected_peer_count) because:
-            // - When we receive PeerList, we've already added those peers to node_manager
-            // - But we might not be CONNECTED to all of them yet (dialing happens after)
-            // - Initial 3-node DKG happens at EXACTLY total==3 (handled in swarm_events.rs)
-            // - So if total >= 4 and we have no DKG data, we're definitely a new node joining
-            let is_new_node_joining = !has_dkg_data && total >= 4;
-
-            if is_new_node_joining {
-
-                let connected_peers: Vec<PeerId> = swarm.connected_peers().cloned().collect();
-
-                // Find first connected peer for sync (excluding ourselves)
-                let sync_peer = connected_peers
-                    .iter()
+            if has_dkg_data && total >= 4 {
+                info!(
+                    "🔄 [RECONNECT] Node has existing DB with total={} - clearing DKG state and treating as fresh node",
+                    total
+                );
+                if let Err(e) = dkg_node.clear_state_for_reconnect().await {
+                    warn!("⚠️ [RECONNECT] Failed to clear state: {:?}", e);
+                    (false, None, None, false)
+                } else {
+                    let sync_peer = swarm
+                        .connected_peers()
+                        .find(|pid| **pid != self.local_peer_id)
+                        .cloned();
+                    info!("🔢 [NEW_NODE] New node index: {} (from PeerList or first free slot)", new_node_index);
+                    (
+                        sync_peer.is_some(),
+                        sync_peer,
+                        Some(new_node_index),
+                        !sync_peer.is_some(),
+                    )
+                }
+            } else if !has_dkg_data && total >= 4 {
+                let sync_peer = swarm
+                    .connected_peers()
                     .find(|pid| **pid != self.local_peer_id)
                     .cloned();
-
                 let should_proceed = sync_peer.is_some();
-
-                // CRITICAL: Check if this is a REJOINING node or a truly NEW node
-                let new_node_index = if let Some(existing_index) =
-                    self.get_index_from_db_async(&self.local_peer_id).await
-                {
-                    existing_index
-                } else {
-                    // This is a truly NEW node - assign max_index + 1
-                    let all_assigned_indices: Vec<usize> =
-                        self.peer_discovery.peer_indices.values().cloned().collect();
-                    let max_index = all_assigned_indices.iter().max().cloned().unwrap_or(0);
-                    max_index + 1
-                };
-
+                info!("🔢 [NEW_NODE] New node index: {} (from PeerList, DB, or first free slot)", new_node_index);
                 (
                     should_proceed,
                     sync_peer,
@@ -1336,18 +1313,13 @@ impl MpcNetworkLayer {
             self.needs_database_sync = true;
         }
 
-        // Now handle sync and DKG request outside of the dkg_node borrow
         if should_sync {
-            // First, sync database from an existing peer
             if let Some(sync_peer) = sync_peer_opt {
                 if let Err(e) = self.sync_database_from_peer(swarm, sync_peer).await {
                     warn!("❌ [NEW_NODE] Failed to start database sync: {:?}", e);
                 }
             }
-
-            // Request DKG shares
-            if let (Some(dkg_node), Some(new_node_index)) = (&mut self.dkg_node, new_node_index_opt)
-            {
+            if let (Some(dkg_node), Some(new_node_index)) = (&mut self.dkg_node, new_node_index_opt) {
                 if let Err(e) = dkg_node.request_shares_as_new_node(new_node_index).await {
                     warn!("❌ [NEW_NODE] Failed to request shares: {:?}", e);
                 }
@@ -1355,6 +1327,25 @@ impl MpcNetworkLayer {
         }
 
         Ok(())
+    }
+
+    /// Resolve this node's index when joining: use PeerList assignment, else DB, else first free slot.
+    async fn resolve_new_node_index(&self) -> usize {
+        let assigned = self.peer_discovery.peer_indices.get(&self.local_peer_id).cloned();
+        if let Some(idx) = assigned {
+            return idx;
+        }
+        if let Some(idx) = self.get_index_from_db_async(&self.local_peer_id).await {
+            return idx;
+        }
+        let other: HashSet<usize> = self
+            .peer_discovery
+            .peer_indices
+            .iter()
+            .filter(|(pid, _)| **pid != self.local_peer_id)
+            .map(|(_, i)| *i)
+            .collect();
+        (1..).find(|k| !other.contains(k)).unwrap_or(1)
     }
 
     /// Handle CurrentVrfRoundResponse

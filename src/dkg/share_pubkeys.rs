@@ -65,12 +65,13 @@ impl DKGNode {
 
         info!("🔑 [SHARE_PUBKEYS] Aggregated {} commitment coefficients", max_degree);
 
-        // Step 2: Evaluate aggregated polynomial at each peer's index
+        // Step 2: Evaluate aggregated polynomial at each peer's index.
+        // Only process keys that are peer IDs (in peer_indices). Skip refresh_* and disconnected peers.
         for (peer_id, _) in commitments.iter() {
-            let dkg_index = peer_indices
-                .get(peer_id)
-                .copied()
-                .ok_or_else(|| anyhow!("No DKG index found for peer {}", peer_id))?;
+            let dkg_index = match peer_indices.get(peer_id) {
+                Some(&idx) => idx,
+                None => continue, // skip refresh_* keys and peers no longer in DB (e.g. disconnected)
+            };
 
             info!("🔑 [SHARE_PUBKEYS] Processing peer: {} (DKG index: {})", peer_id, dkg_index);
 

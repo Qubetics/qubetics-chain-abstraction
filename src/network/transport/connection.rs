@@ -91,7 +91,7 @@ impl MpcNetworkLayer {
             );
         }
 
-        // Remove from database as well
+        // Remove from database as well (peer index and commitments so share_pubkey recompute doesn't fail)
         let peer_index_key = format!("{}{}", keys::PEER_INDEX, peer_id);
         if let Err(e) = self.db.delete_string(&peer_index_key) {
             warn!(
@@ -100,6 +100,17 @@ impl MpcNetworkLayer {
             );
         } else {
             info!("✅ [DISCONNECT] Removed peer {} from database", peer_id);
+        }
+
+        // Remove disconnected peer's commitments so compute_and_store_all_share_pubkeys doesn't look up their (deleted) index
+        let commitment_key = format!("{}{}", keys::DKG_COMMITMENT, peer_id);
+        if let Err(e) = self.db.delete_string(&commitment_key) {
+            warn!(
+                "⚠️ [DISCONNECT] Failed to remove commitments for peer {}: {}",
+                peer_id, e
+            );
+        } else {
+            info!("✅ [DISCONNECT] Removed commitments for peer {} from database", peer_id);
         }
 
         // Update network parameters

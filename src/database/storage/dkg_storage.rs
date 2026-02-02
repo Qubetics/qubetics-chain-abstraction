@@ -382,6 +382,27 @@ impl DkgStorage {
         Ok(result)
     }
 
+    /// Delete my permanent index (used when reconnecting so we get a new index from NewNode flow).
+    pub fn delete_my_permanent_index(&self) -> Result<()> {
+        self.db.delete_string(keys::DKG_MY_PERMANENT_INDEX)?;
+        tracing::info!("🗑️ [DKG_STORAGE] Deleted permanent index");
+        Ok(())
+    }
+
+    /// Store a peer's index in DB (used when a new node joins so all nodes use the canonical DKG index).
+    pub fn set_peer_index(&self, peer_id: &str, index: usize) -> Result<()> {
+        let key = format!("{}{}", keys::PEER_INDEX, peer_id);
+        self.db.put_string(&key, &index)?;
+        Ok(())
+    }
+
+    /// Delete a peer's index from DB (used when this node reconnects to remove its own stale index).
+    pub fn delete_peer_index(&self, peer_id: &str) -> Result<()> {
+        let key = format!("{}{}", keys::PEER_INDEX, peer_id);
+        self.db.delete_string(&key)?;
+        Ok(())
+    }
+
     /// Get peer indices from database for deterministic ordering
     pub async fn get_peer_indices(&self) -> Result<HashMap<String, usize>> {
         let prefix = crate::database::keys::PEER_INDEX;

@@ -27,6 +27,19 @@ impl DKGNode {
             new_node_id, new_node_index
         );
 
+        // Store the new node's canonical index so refresh and share_pubkeys use it (overwrites any gossipsub-assigned index).
+        if let Err(e) = self.storage.set_peer_index(&new_node_id, new_node_index) {
+            warn!(
+                "⚠️ [NEW_NODE] Failed to store peer_index for {}: {}",
+                new_node_id, e
+            );
+        } else {
+            info!(
+                "🔢 [NEW_NODE] Stored peer_index {} for new node {} (canonical for refresh)",
+                new_node_index, new_node_id
+            );
+        }
+
         // Get the stored polynomial (existing, unmodified)
         let polynomial = match self.storage.get_polynomial().await? {
             Some(poly) => poly,
