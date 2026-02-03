@@ -103,20 +103,6 @@ pub enum RPCRequest {
         commitments: Vec<SerializablePoint>,
     },
 
-    /// Unicast an ECDSA signature to the final node (P2P, not broadcast)
-    SendECDSASignature {
-        from_node_id: String,
-        signature_data: Vec<u8>,
-        round: u64,
-    },
-
-    /// Unicast BTC signatures to the final node (P2P, not broadcast)
-    SendBtcSignatures {
-        from_node_id: String,
-        signature_data: Vec<u8>,
-        round: u64,
-    },
-
     /// Unicast transaction data to the final node (P2P, not broadcast)
     SendTransactionData {
         from_node_id: String,
@@ -203,22 +189,6 @@ pub enum RPCResponse {
         from_node_id: String,
         receiver_node_id: String,
         share_index: usize,
-        success: bool,
-    },
-
-    /// Acknowledge receipt of an ECDSA signature via unicast
-    ECDSASignatureReceived {
-        from_node_id: String,
-        receiver_node_id: String,
-        round: u64,
-        success: bool,
-    },
-
-    /// Acknowledge receipt of BTC signatures via unicast
-    BtcSignaturesReceived {
-        from_node_id: String,
-        receiver_node_id: String,
-        round: u64,
         success: bool,
     },
 

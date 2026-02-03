@@ -40,6 +40,7 @@ use secp256k1::{constants::CURVE_ORDER, ecdsa::RecoveryId};
 
 use crate::chain_abstraction::{ChainHandler, ChainTransaction};
 use crate::protocols::{VrfSelectedNodesBroadcast, VrfService};
+use crate::network::transport::types::TOPIC_SIGNING;
 use crate::types::{
     p2p::SerializablePeerId, ChannelMessage, ConsensusMessage, ConsensusResult, GossipsubMessage,
     TransactionType,
@@ -305,25 +306,23 @@ impl SigningNode {
     }
 
     /// Send ECDSA signature directly to a specific peer via unicast
+    /// Broadcast ECDSA signature to all nodes (replaces unicast to final node).
     pub async fn send_ecdsa_signature_direct(
         &self,
-        final_node_id: &str,
+        _final_node_id: &str,
         signature_data: &[u8],
         round: u64,
     ) -> Result<()> {
         self.message_tx
-            .send(ChannelMessage::UnicastECDSASignature {
-                target_peer_id: final_node_id.to_string(),
-                from_node_id: self.id.clone(),
-                signature_data: signature_data.to_vec(),
-                round,
-                retry_count: 0,
+            .send(ChannelMessage::Broadcast {
+                topic: TOPIC_SIGNING.to_string(),
+                data: signature_data.to_vec(),
             })
             .await?;
 
         debug!(
-            "📤 [SIGNING-SECURE] Queued unicast ECDSA signature for round {} to final node {}",
-            round, final_node_id
+            "📤 [SIGNING] Broadcast ECDSA signature for round {} to all nodes",
+            round
         );
         Ok(())
     }
@@ -352,26 +351,23 @@ impl SigningNode {
         Ok(())
     }
 
-    /// Send BTC signatures directly to a specific peer via unicast
+    /// Broadcast BTC signatures to all nodes (replaces unicast to final node).
     pub async fn send_btc_signatures_direct(
         &self,
-        final_node_id: &str,
+        _final_node_id: &str,
         signature_data: &[u8],
         round: u64,
     ) -> Result<()> {
         self.message_tx
-            .send(ChannelMessage::UnicastBtcSignatures {
-                target_peer_id: final_node_id.to_string(),
-                from_node_id: self.id.clone(),
-                signature_data: signature_data.to_vec(),
-                round,
-                retry_count: 0,
+            .send(ChannelMessage::Broadcast {
+                topic: TOPIC_SIGNING.to_string(),
+                data: signature_data.to_vec(),
             })
             .await?;
 
         debug!(
-            "📤 [SIGNING-SECURE] Queued unicast BTC signatures for round {} to final node {}",
-            round, final_node_id
+            "📤 [SIGNING] Broadcast BTC signatures for round {} to all nodes",
+            round
         );
         Ok(())
     }
@@ -460,19 +456,33 @@ impl SigningNode {
                 message_hash: _message_hash,
             } => {}
             SigningMessage::ECDSASignature {
-                from: _from,
-                signature: _signature,
-                round: _round,
+                from,
+                signature,
+                round,
                 timestamp: _timestamp,
                 user_eth_address: _user_eth_address,
-            } => {}
+            } => {
+                info!(
+                    "📥 [SIGNING-BROADCAST] Node {} received ECDSA signature from {} for round {} via broadcast",
+                    self.id, from, round
+                );
+                self.handle_signature_to_final_node(from, signature, round)
+                    .await?;
+            }
             SigningMessage::BtcSignaturesMessage {
-                from: _from,
-                signatures: _signatures,
-                round: _round,
+                from,
+                signatures,
+                round,
                 timestamp: _timestamp,
                 user_eth_address: _user_eth_address,
-            } => {}
+            } => {
+                info!(
+                    "📥 [SIGNING-BROADCAST] Node {} received {} BTC signatures from {} for round {} via broadcast",
+                    self.id, signatures.len(), from, round
+                );
+                self.handle_btc_signatures_to_final_node(from, signatures, round)
+                    .await?;
+            }
             SigningMessage::SignedMessage {
                 from,
                 signed_message,
@@ -2559,8 +2569,8 @@ impl SigningNode {
                     .await?;
 
                 info!(
-                    "✅ [SIGNING] Sent signature for round {} to final node {}",
-                    round, final_node_id
+                    "✅ [SIGNING] Broadcast signature for round {} to all nodes",
+                    round
                 );
             } else {
                 info!(

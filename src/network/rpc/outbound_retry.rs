@@ -35,18 +35,6 @@ pub enum RetryableUnicast {
         message_type: String,
         message_id: String,
     },
-    UnicastECDSASignature {
-        target_peer_id: String,
-        from_node_id: String,
-        signature_data: Vec<u8>,
-        round: u64,
-    },
-    UnicastBtcSignatures {
-        target_peer_id: String,
-        from_node_id: String,
-        signature_data: Vec<u8>,
-        round: u64,
-    },
     UnicastTransactionData {
         target_peer_id: String,
         from_node_id: String,

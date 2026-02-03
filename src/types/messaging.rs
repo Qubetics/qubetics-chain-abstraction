@@ -288,24 +288,6 @@ pub enum ChannelMessage {
         message_id: String,
         retry_count: u8,
     },
-    /// Send ECDSA signature to final node via P2P RPC unicast
-    UnicastECDSASignature {
-        target_peer_id: String,
-        from_node_id: String,
-        signature_data: Vec<u8>,
-        round: u64,
-        retry_count: u8,
-    },
-
-    /// Send BTC signatures to final node via P2P RPC unicast
-    UnicastBtcSignatures {
-        target_peer_id: String,
-        from_node_id: String,
-        signature_data: Vec<u8>,
-        round: u64,
-        retry_count: u8,
-    },
-
     /// Send transaction data to final node via P2P RPC unicast
     UnicastTransactionData {
         target_peer_id: String,

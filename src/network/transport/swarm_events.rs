@@ -349,30 +349,6 @@ impl MpcNetworkLayer {
                                     message_id,
                                     retry_count: entry.retry_count + 1,
                                 },
-                                RetryableUnicast::UnicastECDSASignature {
-                                    target_peer_id,
-                                    from_node_id,
-                                    signature_data,
-                                    round,
-                                } => ChannelMessage::UnicastECDSASignature {
-                                    target_peer_id,
-                                    from_node_id,
-                                    signature_data,
-                                    round,
-                                    retry_count: entry.retry_count + 1,
-                                },
-                                RetryableUnicast::UnicastBtcSignatures {
-                                    target_peer_id,
-                                    from_node_id,
-                                    signature_data,
-                                    round,
-                                } => ChannelMessage::UnicastBtcSignatures {
-                                    target_peer_id,
-                                    from_node_id,
-                                    signature_data,
-                                    round,
-                                    retry_count: entry.retry_count + 1,
-                                },
                                 RetryableUnicast::UnicastTransactionData {
                                     target_peer_id,
                                     from_node_id,
