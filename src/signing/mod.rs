@@ -1386,6 +1386,14 @@ impl SigningNode {
                             );
                         }
 
+                        // Pick a batch of pending BTC-source intents (UserToVault not done) and broadcast for signing
+                        if let Err(e) = self.process_btc_user_to_vault_intent_batch_for_round(round).await {
+                            warn!(
+                                "⚠️ [CLOCK][BTC_UTV_BATCH] Failed to process BTC UserToVault intent batch for round {}: {}",
+                                round, e
+                            );
+                        }
+
                         // Trigger aggregate signature for the final node
                         self.trigger_aggregate_signature_for_final_node(round)
                             .await?;
@@ -1764,6 +1772,62 @@ impl SigningNode {
         for (hash, intent, user) in &pending {
             info!(
                 "  📋 [TICS_UTV_BATCH] Intent {}: amount={}, user={}",
+                hash, intent.amount, user
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Pick a batch of pending BTC-source intents (UserToVault not yet done) and broadcast
+    /// BtcUserToVaultIntentBatch so all nodes sign each intent with the respective user key (epoch_2).
+    async fn process_btc_user_to_vault_intent_batch_for_round(&self, round: u64) -> Result<()> {
+        let user_intent_manager = self
+            .user_intent_manager
+            .as_ref()
+            .ok_or_else(|| anyhow!("User intent manager not available"))?;
+
+        let max_per_batch = std::env::var("MAX_BTC_USER_TO_VAULT_INTENTS_PER_BATCH")
+            .ok()
+            .and_then(|val| val.parse::<usize>().ok())
+            .unwrap_or(10);
+
+        let pending = user_intent_manager
+            .get_pending_user_to_vault_intents_by_source_chain("bitcoin", max_per_batch)
+            .await;
+
+        if pending.is_empty() {
+            info!(
+                "ℹ️  [CLOCK][BTC_UTV_BATCH] No pending BTC-source intents (UserToVault not done) for round {}",
+                round
+            );
+            return Ok(());
+        }
+
+        let intent_hashes: Vec<String> = pending
+            .iter()
+            .map(|(hash, _, _)| hash.clone())
+            .collect();
+
+        let batch_timestamp = chrono::Utc::now().to_rfc3339();
+        info!(
+            "📤 [CLOCK][BTC_UTV_BATCH] Broadcasting BTC UserToVault intent batch for round {} ({} intents)",
+            round,
+            intent_hashes.len()
+        );
+
+        self.message_tx
+            .send(crate::types::ChannelMessage::BtcUserToVaultIntentBatch {
+                intent_hashes: intent_hashes.clone(),
+                round,
+                timestamp: batch_timestamp.clone(),
+                node_id: self.id.clone(),
+            })
+            .await?;
+
+        for (hash, intent, user) in &pending {
+            info!(
+                "  📋 [BTC_UTV_BATCH] Intent {}: amount={}, user={}",
                 hash, intent.amount, user
             );
         }
@@ -2594,13 +2658,27 @@ impl SigningNode {
             round, final_node_id
         );
 
-        // TICS UserToVault batch: send one ECDSASignature per slot with slot_id
+        // TICS or BTC UserToVault batch: send one ECDSASignature per slot with slot_id
         let slot_ids: Vec<String> = {
-            let batch = self.pending.user_to_vault_tics_batch.read().await;
-            batch
+            let tics: Vec<String> = self
+                .pending
+                .user_to_vault_tics_batch
+                .read()
+                .await
                 .get(&round)
                 .map(|entries| entries.iter().map(|(h, _, _, _)| h.clone()).collect())
-                .unwrap_or_default()
+                .unwrap_or_default();
+            if !tics.is_empty() {
+                tics
+            } else {
+                self.pending
+                    .user_to_vault_btc_batch
+                    .read()
+                    .await
+                    .get(&round)
+                    .map(|entries| entries.iter().map(|(h, _, _, _)| h.clone()).collect())
+                    .unwrap_or_default()
+            }
         };
         if !slot_ids.is_empty() {
             let by_slot = self.signatures.signatures_by_round_slot.read().await;
@@ -3429,10 +3507,46 @@ impl SigningNode {
                 }
             }
         } else {
-            warn!(
-                "❌ [SIGNING] Failed to reconstruct signed tx for batch slot {} round {}",
-                slot_id, round
-            );
+            let is_btc_slot = {
+                let btc_batch = self.pending.user_to_vault_btc_batch.read().await;
+                btc_batch
+                    .get(&round)
+                    .map(|e| e.iter().any(|(h, ..)| h == &slot_id))
+                    .unwrap_or(false)
+            };
+            if is_btc_slot {
+                if let Ok(Some(txid_hex)) = self
+                    .reconstruct_signed_bitcoin_transaction_for_batch_slot(
+                        round,
+                        &slot_id,
+                        &canonical_signature_bytes,
+                        recid_u8,
+                    )
+                    .await
+                {
+                    info!(
+                        "🎉 [SIGNING] BTC UserToVault batch slot {} (round {}) ready, broadcasting",
+                        slot_id, round
+                    );
+                    self.store_transaction_id_for_round(
+                        round,
+                        &txid_hex,
+                        crate::types::TransactionNetwork::BTC,
+                        Some(slot_id.clone()),
+                    )
+                    .await;
+                } else {
+                    warn!(
+                        "❌ [SIGNING] Failed to reconstruct/broadcast BTC signed tx for batch slot {} round {}",
+                        slot_id, round
+                    );
+                }
+            } else {
+                warn!(
+                    "❌ [SIGNING] Failed to reconstruct signed tx for batch slot {} round {}",
+                    slot_id, round
+                );
+            }
         }
         Ok(())
     }
@@ -5067,6 +5181,7 @@ impl SigningNode {
         slot_id: Option<&str>,
     ) -> Result<(Vec<u8>, Option<TransactionType>, Option<String>)> {
         // TICS UserToVault batch: slot_id is intent_hash; get tx from user_to_vault_tics_batch
+        // BTC UserToVault batch: same slot_id; get tx from user_to_vault_btc_batch, digest = sighash
         if let Some(slot) = slot_id {
             let batch = self.pending.user_to_vault_tics_batch.read().await;
             if let Some(entries) = batch.get(&round) {
@@ -5083,8 +5198,33 @@ impl SigningNode {
                     ));
                 }
             }
+            let btc_batch = self.pending.user_to_vault_btc_batch.read().await;
+            if let Some(entries) = btc_batch.get(&round) {
+                if let Some((_intent_hash, user_eth, chain_tx, _)) =
+                    entries.iter().find(|(h, ..)| h == slot)
+                {
+                    if let crate::chain_abstraction::ChainTransaction::Bitcoin(btc_tx) = chain_tx {
+                        let inp0 = btc_tx
+                            .inputs
+                            .get(0)
+                            .ok_or_else(|| anyhow!("BTC batch slot {} has no inputs", slot))?;
+                        let prev_spk = inp0
+                            .witness_utxo
+                            .as_ref()
+                            .ok_or_else(|| anyhow!("Input 0 missing witness_utxo for slot {}", slot))?
+                            .script_pubkey
+                            .clone();
+                        let digest = self.compute_legacy_sighash_all_p2pkh(btc_tx, 0, &prev_spk)?;
+                        return Ok((
+                            digest.to_vec(),
+                            Some(TransactionType::UserToVault),
+                            Some(user_eth.clone()),
+                        ));
+                    }
+                }
+            }
             return Err(anyhow!(
-                "No TICS UserToVault batch slot {} for round {}",
+                "No TICS or BTC UserToVault batch slot {} for round {}",
                 slot,
                 round
             ));

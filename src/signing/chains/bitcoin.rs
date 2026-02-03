@@ -1,4 +1,4 @@
-use crate::signing::{state::BtcRoundExtras, SigningNode};
+use crate::signing::{state::BtcRoundExtras, state::RoundSlotKey, SigningNode};
 use crate::{
     chain_abstraction::{BitcoinTransaction, ChainTransaction},
     types::{
@@ -12,6 +12,7 @@ use hex;
 use k256::Scalar;
 use reqwest::Client;
 use secp256k1::ecdsa::RecoverableSignature;
+use secp256k1::Message;
 use std::{
     collections::HashMap,
     sync::Arc,
@@ -93,6 +94,130 @@ impl<'a> BitcoinSigner<'a> {
         pubkey33: &[u8],
     ) -> Result<(Vec<u8>, [u8; 32], Option<[u8; 32]>)> {
         SigningNode::finalize_and_serialize_tx(tx, from_kind, per_input_sigs, pubkey33)
+    }
+
+    /// BTC UserToVault batch: one round, multiple slots. Store batch, create partial per slot (sighash then ECDSA), store in
+    /// signatures_by_round_slot, and send each partial to the final node with slot_id.
+    pub async fn sign_btc_user_to_vault_batch(
+        &mut self,
+        round: u64,
+        batch: Vec<(
+            String,
+            String,
+            ChainTransaction,
+            Vec<u8>,
+            Option<Scalar>,
+        )>,
+    ) -> Result<()> {
+        if batch.is_empty() {
+            return Ok(());
+        }
+        let final_node_id = {
+            let final_nodes = self.node.signatures.final_nodes_by_round.read().await;
+            final_nodes
+                .get(&round)
+                .cloned()
+                .ok_or_else(|| anyhow!("No final node for BTC UserToVault batch round {}", round))?
+        };
+
+        let batch_storage: Vec<(String, String, ChainTransaction, Vec<u8>)> = batch
+            .iter()
+            .map(|(h, u, tx, bytes, _key)| (h.clone(), u.clone(), tx.clone(), bytes.clone()))
+            .collect();
+        {
+            let mut store = self.node.pending.user_to_vault_btc_batch.write().await;
+            store.insert(round, batch_storage);
+        }
+
+        info!(
+            "📦 [BTC_UTV_BATCH] Node {} signing {} slots for round {} (final node: {})",
+            self.node.id,
+            batch.len(),
+            round,
+            final_node_id
+        );
+
+        for (intent_hash, user_eth, chain_tx, _tx_bytes, key_opt) in batch {
+            let signing_key = match key_opt {
+                Some(scalar) => SigningNode::derive_secp_secret(&scalar)?,
+                None => {
+                    warn!(
+                        "⚠️ [BTC_UTV_BATCH] No signing key for intent {} (user {}), skipping",
+                        intent_hash, user_eth
+                    );
+                    continue;
+                }
+            };
+            let btc_tx = match &chain_tx {
+                ChainTransaction::Bitcoin(t) => t,
+                _ => {
+                    warn!(
+                        "⚠️ [BTC_UTV_BATCH] Intent {} is not Bitcoin, skipping",
+                        intent_hash
+                    );
+                    continue;
+                }
+            };
+            let inp0 = btc_tx.inputs.get(0).ok_or_else(|| {
+                anyhow!("BTC UserToVault batch slot {} has no inputs", intent_hash)
+            })?;
+            let prev_spk = inp0
+                .witness_utxo
+                .as_ref()
+                .ok_or_else(|| anyhow!("Input 0 missing witness_utxo for slot {}", intent_hash))?
+                .script_pubkey
+                .clone();
+            if prev_spk.len() != 25 {
+                bail!(
+                    "Slot {}: prev_script_pubkey is not canonical P2PKH (len={})",
+                    intent_hash,
+                    prev_spk.len()
+                );
+            }
+            let digest = self
+                .node
+                .compute_legacy_sighash_all_p2pkh(btc_tx, 0, &prev_spk)?;
+            let msg = Message::from_digest_slice(&digest)?;
+            let sig = self
+                .node
+                .create_ecdsa_signature_with_signing_key(&msg, &signing_key)?;
+            let (recovery_id, sig_bytes) = sig.serialize_compact();
+            let ecdsa_sig = ECDSASignature {
+                signature: sig_bytes.to_vec(),
+                signer_id: self.node.id.clone(),
+                recovery_id: recovery_id.to_i32() as u8,
+                user_eth_address: Some(user_eth.clone()),
+            };
+
+            let slot_key: RoundSlotKey = (round, intent_hash.clone());
+            {
+                let mut by_slot = self
+                    .node
+                    .signatures
+                    .signatures_by_round_slot
+                    .write()
+                    .await;
+                let entry = by_slot.entry(slot_key).or_default();
+                entry.insert(self.node.id.clone(), ecdsa_sig.clone());
+            }
+
+            let signature_msg = SigningMessage::ECDSASignature {
+                from: self.node.id.clone(),
+                signature: ecdsa_sig,
+                round,
+                timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis(),
+                user_eth_address: Some(user_eth),
+                slot_id: Some(intent_hash.clone()),
+            };
+            let gossipsub_msg = GossipsubMessage::Signing(signature_msg);
+            let signature_data = serde_json::to_vec(&gossipsub_msg)?;
+            self.node.broadcast("signing", &signature_data).await?;
+            info!(
+                "✅ [BTC_UTV_BATCH] Broadcasting partial for slot {} (round {}): final node {} will aggregate",
+                intent_hash, round, final_node_id
+            );
+        }
+        Ok(())
     }
 }
 
@@ -928,5 +1053,78 @@ impl SigningNode {
             round
         );
         Ok(())
+    }
+
+    /// Reconstruct signed Bitcoin tx for one BTC UserToVault batch slot (round, intent_hash).
+    /// Returns Ok(Some(txid_hex)) on success for the final node to broadcast and store.
+    pub async fn reconstruct_signed_bitcoin_transaction_for_batch_slot(
+        &self,
+        round: u64,
+        slot_id: &str,
+        aggregated_signature: &[u8],
+        recovery_id: u8,
+    ) -> Result<Option<String>> {
+        use secp256k1::ecdsa::{RecoverableSignature, RecoveryId};
+
+        let (_intent_hash, user_eth, chain_tx, _) = {
+            let batch = self.pending.user_to_vault_btc_batch.read().await;
+            let entries = batch
+                .get(&round)
+                .ok_or_else(|| anyhow!("No BTC UserToVault batch for round {}", round))?;
+            entries
+                .iter()
+                .find(|(h, ..)| h == slot_id)
+                .map(|(a, b, c, d)| (a.clone(), b.clone(), c.clone(), d.clone()))
+                .ok_or_else(|| anyhow!("No slot {} in BTC batch for round {}", slot_id, round))?
+        };
+        let btc_tx = match &chain_tx {
+            ChainTransaction::Bitcoin(t) => t.clone(),
+            _ => return Ok(None),
+        };
+
+        let pubkey33 = self
+            .get_group_public_key_bytes(
+                Some(TransactionType::UserToVault),
+                Some(user_eth.clone()),
+            )
+            .await?;
+        if pubkey33.len() != 33 {
+            return Err(anyhow!(
+                "Invalid pubkey length for BTC batch slot {}: {}",
+                slot_id,
+                pubkey33.len()
+            ));
+        }
+
+        let recid = RecoveryId::from_i32(recovery_id as i32)?;
+        let recov_sig = RecoverableSignature::from_compact(aggregated_signature, recid)
+            .map_err(|e| anyhow!("Invalid aggregated signature for slot {}: {}", slot_id, e))?;
+        let per_input_sigs = vec![(0usize, recov_sig)];
+
+        let (raw_tx, txid, _) = Self::finalize_and_serialize_tx(
+            btc_tx,
+            SpendKind::P2PKH,
+            &per_input_sigs,
+            &pubkey33,
+        )?;
+
+        let raw_tx_hex = hex::encode(&raw_tx);
+        let is_testnet = network_cfg::network_type().is_testnet();
+        if let Ok(Some(broadcast_txid)) =
+            Self::broadcast_transaction(&raw_tx_hex, is_testnet).await
+        {
+            info!(
+                "✅ [SIGNING] Reconstructed and broadcast BTC tx for batch slot {} (round {}): {}",
+                slot_id, round, broadcast_txid
+            );
+            Ok(Some(broadcast_txid))
+        } else {
+            let txid_hex = hex::encode(txid);
+            info!(
+                "✅ [SIGNING] Reconstructed signed BTC tx for batch slot {} (round {}), txid: {}",
+                slot_id, round, txid_hex
+            );
+            Ok(Some(txid_hex))
+        }
     }
 }

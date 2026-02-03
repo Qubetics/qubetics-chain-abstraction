@@ -135,6 +135,20 @@ pub struct PendingStore {
             >,
         >,
     >,
+    /// BTC UserToVault batch: round -> [(intent_hash, user_eth, chain_tx, tx_bytes)]. Same round, multiple txs.
+    pub user_to_vault_btc_batch: Arc<
+        RwLock<
+            HashMap<
+                u64,
+                Vec<(
+                    String,           // intent_hash
+                    String,           // user_eth_address
+                    ChainTransaction,
+                    Vec<u8>,          // tx_bytes
+                )>,
+            >,
+        >,
+    >,
 }
 
 impl Default for PendingStore {
@@ -156,6 +170,7 @@ impl PendingStore {
             claim_reward_rounds: Arc::new(RwLock::new(HashSet::new())),
             intent_hashes_by_round: Arc::new(RwLock::new(HashMap::new())),
             user_to_vault_tics_batch: Arc::new(RwLock::new(HashMap::new())),
+            user_to_vault_btc_batch: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 }

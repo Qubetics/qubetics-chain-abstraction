@@ -1854,6 +1854,177 @@ impl MpcNetworkLayer {
                     warn!("❌ [TICS_UTV_BATCH] User intent manager not available");
                 }
             }
+            GossipsubMessage::BtcUserToVaultIntentBatch {
+                intent_hashes,
+                round,
+                timestamp,
+                node_id,
+            } => {
+                info!(
+                    "📦 [BTC_UTV_BATCH] Received BTC UserToVault intent batch from node {} (round {}, {} intents)",
+                    node_id, round, intent_hashes.len()
+                );
+
+                if let Some(user_intent_manager) = &self.user_intent_manager {
+                    let mut batch_intents = Vec::new();
+                    for intent_hash in &intent_hashes {
+                        if let Some(intent) = user_intent_manager.get_intent(intent_hash).await {
+                            let tx_ids = user_intent_manager
+                                .get_intent_transaction_ids(intent_hash)
+                                .await;
+                            let no_user_tx = tx_ids
+                                .as_ref()
+                                .map(|ids| ids.user_to_network_tx_id.is_none())
+                                .unwrap_or(true);
+                            if !no_user_tx {
+                                warn!(
+                                    "⚠️ [BTC_UTV_BATCH] Intent {} already has UserToVault tx, skipping",
+                                    intent_hash
+                                );
+                                continue;
+                            }
+                            let source_ok = intent.source_chain.eq_ignore_ascii_case("bitcoin")
+                                || intent.source_chain.eq_ignore_ascii_case("btc");
+                            if !source_ok {
+                                warn!(
+                                    "⚠️ [BTC_UTV_BATCH] Intent {} source_chain is not Bitcoin, skipping",
+                                    intent_hash
+                                );
+                                continue;
+                            }
+                            if let Some(user) = user_intent_manager.get_user_by_intent_hash(intent_hash).await {
+                                batch_intents.push((intent_hash.clone(), intent, user.ethereum_address));
+                            } else {
+                                warn!(
+                                    "⚠️ [BTC_UTV_BATCH] Intent {} has no registered user, skipping",
+                                    intent_hash
+                                );
+                            }
+                        } else {
+                            warn!("⚠️ [BTC_UTV_BATCH] Intent {} not found in database", intent_hash);
+                        }
+                    }
+
+                    if batch_intents.is_empty() {
+                        warn!("⚠️ [BTC_UTV_BATCH] No valid BTC UserToVault intents to process");
+                        return Ok(());
+                    }
+
+                    info!(
+                        "✅ [BTC_UTV_BATCH] Fetched {} intents for BTC UserToVault batch (round {})",
+                        batch_intents.len(),
+                        round
+                    );
+
+                    let liquidity_operator_eth_addr = user_intent_manager
+                        .get_database()
+                        .get_string(crate::database::keys::DKG_LIQUIDITY_OPERATOR_ETH_ADDRESS)
+                        .ok()
+                        .flatten();
+
+                    let mut batch: Vec<(
+                        String,
+                        String,
+                        crate::chain_abstraction::ChainTransaction,
+                        Vec<u8>,
+                        Option<k256::Scalar>,
+                    )> = Vec::new();
+                    for (intent_hash, intent, user_eth_addr) in &batch_intents {
+                        let target_amount = user_intent_manager
+                            .get_intent_target_amount(intent_hash)
+                            .await
+                            .unwrap_or_else(|| intent.amount.parse().unwrap_or(0u128));
+                        let amount = target_amount + (target_amount / 20);
+
+                        let user = match user_intent_manager.get_user_by_address(user_eth_addr).await {
+                            Some(u) => u,
+                            None => {
+                                warn!("⚠️ [BTC_UTV_BATCH] User {} not found for intent {}", user_eth_addr, intent_hash);
+                                continue;
+                            }
+                        };
+                        let derived_eth_addr = user.derived_eth_address.clone();
+                        let derived_btc_addr = user.derived_btc_address.clone();
+
+                        let chain_tx_result =
+                            crate::utils::transaction::create_chain_transaction_from_deposit_intent(
+                                intent,
+                                None,
+                                derived_eth_addr.as_ref(),
+                                derived_btc_addr.as_ref(),
+                                crate::types::TransactionType::UserToVault,
+                                liquidity_operator_eth_addr.as_ref(),
+                                None,
+                                amount,
+                            )
+                            .await;
+
+                        let chain_transaction = match chain_tx_result {
+                            Ok(tx) => tx,
+                            Err(e) => {
+                                warn!(
+                                    "❌ [BTC_UTV_BATCH] Failed to create chain tx for intent {}: {}",
+                                    intent_hash, e
+                                );
+                                continue;
+                            }
+                        };
+
+                        let tx_bytes: Vec<u8> = match &chain_transaction {
+                            crate::chain_abstraction::ChainTransaction::Bitcoin(_) => {
+                                vec![] // Digest is computed from chain_tx (sighash) in get_message_and_type
+                            }
+                            _ => {
+                                warn!("❌ [BTC_UTV_BATCH] Intent {} is not Bitcoin (expected Bitcoin)", intent_hash);
+                                continue;
+                            }
+                        };
+
+                        let signing_key = self.get_signing_key_for_user(Some(user_eth_addr)).await;
+                        batch.push((
+                            intent_hash.clone(),
+                            user_eth_addr.clone(),
+                            chain_transaction,
+                            tx_bytes,
+                            signing_key,
+                        ));
+                    }
+
+                    if batch.is_empty() {
+                        warn!("⚠️ [BTC_UTV_BATCH] No valid batch entries (missing users/keys/txs)");
+                        return Ok(());
+                    }
+
+                    let available_nodes: Vec<PeerId> =
+                        self.node_manager.get_active_nodes().into_iter().collect();
+
+                    if let Some(signing_node) = &mut self.signing_node {
+                        signing_node.set_available_nodes(available_nodes);
+
+                        use crate::signing::chains::BitcoinSigner;
+                        let mut btc_signer = BitcoinSigner::new(signing_node);
+                        let n_slots = batch.len();
+                        if let Err(e) = btc_signer
+                            .sign_btc_user_to_vault_batch(round, batch)
+                            .await
+                        {
+                            warn!(
+                                "❌ [BTC_UTV_BATCH] Batch signing failed for round {}: {}",
+                                round, e
+                            );
+                        } else {
+                            info!(
+                                "✅ [BTC_UTV_BATCH] Initiated batch signing for round {} ({} slots)",
+                                round, n_slots
+                            );
+                        }
+                    } else {
+                        warn!("❌ [BTC_UTV_BATCH] Signing node not available");
+                    }
+                } else {
+                    warn!("❌ [BTC_UTV_BATCH] User intent manager not available");
+                }
+            }
             GossipsubMessage::BtcWithdrawBatch {
                 batch_id,
                 requests,
