@@ -18,8 +18,8 @@ use super::{
     errors::RpcError,
     handlers::{
         handle_add_liquidity, handle_claim_reward, handle_get_dkg_status,
-        handle_get_intents_solved_count, handle_get_network_addresses, handle_get_node_id,
-        handle_get_pending_intents_count,
+        handle_get_intent_details, handle_get_intents_solved_count, handle_get_network_addresses,
+        handle_get_node_id, handle_get_pending_intents_count,
         handle_get_node_info, handle_get_solver_liquidity, handle_get_solver_rewards,
         handle_get_status, handle_get_uptime, handle_get_user_info, handle_heartbeat,
         handle_log_partial_pubkeys, handle_register_user, handle_user_mpc_deposit,
@@ -121,12 +121,7 @@ pub async fn start_http_server(
                     let timeout_reply = warp::reply::with_status(
                         warp::reply::json(&UserMpcDepositVerifyResponse {
                             status: "timeout".to_string(),
-                            signer_address: "".to_string(),
-                            is_registered: false,
-                            amount: "0".to_string(),
-                            user_to_network_tx_id: None,
-                            network_to_target_tx_id: None,
-                            final_solver_id: None,
+                            intent_hash: "".to_string(),
                             error_message: Some(
                                 "Request timed out before processing could complete".to_string(),
                             ),
@@ -182,6 +177,12 @@ pub async fn start_http_server(
         .and(warp::get())
         .and(with_user_intent_manager(user_intent_manager.clone()))
         .and_then(handle_get_user_info);
+
+    let get_intent_details = warp::path("intent_details")
+        .and(warp::path::param())
+        .and(warp::get())
+        .and(with_user_intent_manager(user_intent_manager.clone()))
+        .and_then(handle_get_intent_details);
 
     let get_node_id = warp::path("node_id")
         .and(warp::get())
@@ -281,6 +282,7 @@ pub async fn start_http_server(
 
     let routes = register_user
         .or(get_user_info)
+        .or(get_intent_details)
         .or(get_node_id)
         .or(get_node_info)
         .or(get_status)
