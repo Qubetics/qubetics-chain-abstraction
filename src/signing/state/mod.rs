@@ -27,13 +27,20 @@ pub type PendingValue = (
     Option<BtcRoundExtras>, // <-- NEW
 );
 
+/// Per-slot partials for TICS UserToVault batch: (round, slot_id) -> node_id -> signature.
+pub type RoundSlotKey = (u64, String);
+
 #[derive(Clone)]
 pub struct SignatureStore {
     pub public_keys: Arc<RwLock<HashMap<String, PublicKey>>>, // Other nodes' public keys
     pub signatures: Arc<RwLock<HashMap<String, ECDSASignature>>>,
     pub signatures_by_round: Arc<RwLock<HashMap<u64, HashMap<String, ECDSASignature>>>>, // round -> node_id -> signature
+    /// TICS UserToVault batch: (round, intent_hash) -> node_id -> signature. One aggregation per slot.
+    pub signatures_by_round_slot: Arc<RwLock<HashMap<RoundSlotKey, HashMap<String, ECDSASignature>>>>,
     pub final_nodes_by_round: Arc<RwLock<HashMap<u64, String>>>, // round -> final_node_id
     pub aggregated_rounds: Arc<RwLock<HashSet<u64>>>, // Track rounds that have been aggregated
+    /// Rounds/slots that have been aggregated for TICS UserToVault batch.
+    pub aggregated_round_slots: Arc<RwLock<HashSet<RoundSlotKey>>>,
 }
 
 impl Default for SignatureStore {
@@ -48,8 +55,10 @@ impl SignatureStore {
             public_keys: Arc::new(RwLock::new(HashMap::new())),
             signatures: Arc::new(RwLock::new(HashMap::new())),
             signatures_by_round: Arc::new(RwLock::new(HashMap::new())),
+            signatures_by_round_slot: Arc::new(RwLock::new(HashMap::new())),
             final_nodes_by_round: Arc::new(RwLock::new(HashMap::new())),
             aggregated_rounds: Arc::new(RwLock::new(HashSet::new())),
+            aggregated_round_slots: Arc::new(RwLock::new(HashSet::new())),
         }
     }
 }
@@ -112,6 +121,20 @@ pub struct PendingStore {
     pub claim_reward_rounds: Arc<RwLock<HashSet<u64>>>,
     /// Per-round list of intent hashes (single intent = len 1, batch = len >1, solver-only = empty)
     pub intent_hashes_by_round: Arc<RwLock<HashMap<u64, Vec<String>>>>,
+    /// TICS UserToVault batch: round -> [(intent_hash, user_eth, chain_tx, tx_bytes)]. Same round, multiple txs.
+    pub user_to_vault_tics_batch: Arc<
+        RwLock<
+            HashMap<
+                u64,
+                Vec<(
+                    String,           // intent_hash
+                    String,           // user_eth_address
+                    ChainTransaction,
+                    Vec<u8>,          // tx_bytes
+                )>,
+            >,
+        >,
+    >,
 }
 
 impl Default for PendingStore {
@@ -132,6 +155,7 @@ impl PendingStore {
             claim_reward_pending_transactions_tics: Arc::new(RwLock::new(HashMap::new())),
             claim_reward_rounds: Arc::new(RwLock::new(HashSet::new())),
             intent_hashes_by_round: Arc::new(RwLock::new(HashMap::new())),
+            user_to_vault_tics_batch: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 }

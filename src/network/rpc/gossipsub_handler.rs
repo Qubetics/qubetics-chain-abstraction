@@ -3,10 +3,9 @@
 ///
 /// NOTE: This module contains the gossipsub message handling logic from the original network/mod.rs
 /// The implementation should be ported from lines ~2038-3559 of the original file
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use ff::PrimeField;
 use libp2p::{gossipsub::Message, PeerId};
-use std::sync::Arc;
 use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info, warn};
@@ -16,7 +15,7 @@ use crate::{
     rpc_server::utils::{
         convert_src_smallest_to_dst_smallest, fetch_crypto_prices, fetch_network_balance,
     },
-    signing::{BitcoinSigner, EthereumSigner},
+    signing::EthereumSigner,
     types::{
         p2p::SerializablePeerId, signing::SigningMessage, vrf::VrfRoundSyncResponse,
         ChannelMessage, GossipsubMessage,
@@ -104,6 +103,7 @@ impl MpcNetworkLayer {
                             round,
                             timestamp: _timestamp,
                             user_eth_address,
+                            slot_id: _,
                         } => {
                             let tx_type = if user_eth_address.is_some() {
                                 "user-to-network"
@@ -805,233 +805,16 @@ impl MpcNetworkLayer {
                     return Ok(());
                 }
 
-                // UserToVault: use source_chain (user is depositing FROM this chain)
-                let chain_to_use = &intent.source_chain.to_lowercase();
+                // At this stage, the intent has been fully validated, stored, and its target
+                // amount persisted. To align with withdraw/claim flows, we *do not* immediately
+                // create or sign a UserToVault transaction here. Instead, the intent remains
+                // in Pending status and will be picked up by the dedicated processing flow.
+                info!(
+                    "⏸️ [GOSSIPSUB] Deposit intent {} marked as Pending; skipping immediate UserToVault processing",
+                    intent_hash
+                );
 
-                // For UserToVault, use user's tweaked secret share
-                let signing_key: Option<k256::Scalar> =
-                    self.get_signing_key_for_user(Some(&user_eth_addr)).await;
-
-                if let Some(signing_node) = &mut self.signing_node {
-                    let chain_handler: Option<Arc<dyn crate::chain_abstraction::ChainHandler>> =
-                        if crate::utils::transaction::is_evm_chain(chain_to_use) {
-                            crate::utils::transaction::get_chain_id_from_name(chain_to_use)
-                                .map(|chain_id| {
-                                    let handler = crate::chain_abstraction::ChainHandlerFactory::create_ethereum_handler(chain_id);
-                                    Arc::from(handler) as Arc<dyn crate::chain_abstraction::ChainHandler>
-                                })
-                        } else if chain_to_use == "bitcoin" || chain_to_use == "btc" {
-                            let mut handler =
-                                crate::chain_abstraction::ChainHandlerFactory::create_bitcoin_handler(
-                                    crate::types::network::network_type()
-                                        .bitcoin_network_label()
-                                        .to_string(),
-                                );
-
-                            // UserToVault: set user's group public key for Bitcoin
-                            if let Some(user_intent_manager) = &self.user_intent_manager {
-                                if let Some(user) = user_intent_manager
-                                    .get_user_by_address(&user_eth_addr)
-                                    .await
-                                {
-                                    if let Some(user_group_key) = &user.user_group_key {
-                                        let affine_point = user_group_key.0;
-                                        let encoded_point = k256::EncodedPoint::from(affine_point);
-                                        let compressed_bytes =
-                                            encoded_point.compress().to_bytes().to_vec();
-
-                                        if let Some(btc_handler) = handler.as_any_mut().downcast_mut::<crate::chain_abstraction::BitcoinChainHandler>() {
-                                            btc_handler.set_group_public_key(compressed_bytes);
-                                        }
-                                    } else {
-                                        warn!("❌ [GOSSIPSUB] User {} has no group key for Bitcoin transaction", user_eth_addr);
-                                    }
-                                } else {
-                                    warn!(
-                                        "❌ [GOSSIPSUB] User {} not found for Bitcoin transaction",
-                                        user_eth_addr
-                                    );
-                                }
-                            } else {
-                                warn!("❌ [GOSSIPSUB] User registry not available for Bitcoin transaction");
-                            }
-
-                            Some(Arc::from(handler)
-                                as Arc<dyn crate::chain_abstraction::ChainHandler>)
-                        } else {
-                            error!(
-                                "❌ [GOSSIPSUB] Unsupported chain requested: {}",
-                                chain_to_use
-                            );
-                            None
-                        };
-
-                    let Some(chain_handler) = chain_handler else {
-                        return Err(anyhow!("Unsupported chain: {}", chain_to_use));
-                    };
-                    // For UserToVault, use user's derived addresses
-                    let (derived_eth_addr, derived_btc_addr) =
-                        if let Some(user_intent_manager) = &self.user_intent_manager {
-                            if let Some(user) = user_intent_manager
-                                .get_user_by_address(&user_eth_addr)
-                                .await
-                            {
-                                (
-                                    user.derived_eth_address.clone(),
-                                    user.derived_btc_address.clone(),
-                                )
-                            } else {
-                                warn!(
-                                    "❌ [GOSSIPSUB] User {} not found in registry",
-                                    user_eth_addr
-                                );
-                                (None, None)
-                            }
-                        } else {
-                            warn!("❌ [GOSSIPSUB] User registry not available");
-                            (None, None)
-                        };
-
-                    let group_public_key = if let Some(dkg_node) = &self.dkg_node {
-                        dkg_node.get_final_public_key().await
-                    } else {
-                        None
-                    };
-
-                    // Get liquidity operator addresses from database
-                    let (liquidity_operator_eth_addr, liquidity_operator_btc_addr) =
-                        if let Some(registry) = &self.user_intent_manager {
-                            let database = registry.get_database();
-                            let liquidity_operator_eth = database
-                                .get_string(
-                                    crate::database::keys::DKG_LIQUIDITY_OPERATOR_ETH_ADDRESS,
-                                )
-                                .ok()
-                                .flatten();
-                            let liquidity_operator_btc = database
-                                .get_string(
-                                    crate::database::keys::DKG_LIQUIDITY_OPERATOR_BTC_ADDRESS,
-                                )
-                                .ok()
-                                .flatten();
-                            (liquidity_operator_eth, liquidity_operator_btc)
-                        } else {
-                            return Err(anyhow::anyhow!("User registry not available"));
-                        };
-
-                    let chain_transaction_result =
-                        crate::utils::transaction::create_chain_transaction_from_deposit_intent(
-                            &intent,
-                            group_public_key,
-                            derived_eth_addr.as_ref(),
-                            derived_btc_addr.as_ref(),
-                            crate::types::TransactionType::UserToVault,
-                            liquidity_operator_eth_addr.as_ref(),
-                            liquidity_operator_btc_addr.as_ref(),
-                            amount,
-                        )
-                        .await;
-
-                    match chain_transaction_result {
-                        Ok(chain_transaction) => {
-                            info!(
-                                "📝 [GOSSIPSUB] Created {} transaction from deposit intent",
-                                chain_handler.chain_type()
-                            );
-
-                            // Set available nodes from node manager before signing
-                            let available_nodes: Vec<PeerId> =
-                                self.node_manager.get_active_nodes().into_iter().collect();
-                            signing_node.set_available_nodes(available_nodes);
-
-                            // Use the signing key we got earlier
-                            if signing_key.is_some() {
-                            } else {
-                                info!(
-                                    "❌ [GOSSIPSUB] Could not get signing key for deposit intent"
-                                );
-                                return Ok(());
-                            }
-
-                            // Create transaction bytes using the chain handler
-                            let tx_bytes = chain_handler
-                                .create_transaction_bytes(&chain_transaction)
-                                .unwrap_or_else(|e| {
-                                    warn!("Failed to create transaction bytes: {}", e);
-                                    vec![]
-                                });
-                            info!(
-                                "🔐 [GOSSIPSUB] Starting {} signing process for deposit intent: 0x{}",
-                                chain_handler.chain_type(),
-                                hex::encode(tx_bytes.clone())
-                            );
-
-                            // Handle Bitcoin and EVM differently - DummyTransaction is only for EVM!
-                            match chain_transaction {
-                                crate::chain_abstraction::ChainTransaction::Bitcoin(ref btc_tx) => {
-                                    // For Bitcoin, use direct signing with tx_bytes and original transaction
-                                    {
-                                        let mut btc_signer = BitcoinSigner::new(signing_node);
-                                        btc_signer
-                                            .sign_transaction(
-                                                tx_bytes.clone(),
-                                                &chain_handler,
-                                                Some(btc_tx.clone()),
-                                                Some(user_eth_addr.clone()),
-                                                vec![intent_hash.clone()],
-                                                Some(crate::types::TransactionType::UserToVault),
-                                                signing_key,
-                                                None,
-                                                signing_key,
-                                            )
-                                            .await?;
-                                    }
-                                }
-                                crate::chain_abstraction::ChainTransaction::Ethereum(
-                                    ref eth_tx,
-                                ) => {
-                                    let tx_bytes =
-                                        crate::utils::transaction::create_transaction_for_signing(
-                                            eth_tx,
-                                        );
-                                    debug!("→ RLP payload: 0x{}", hex::encode(&tx_bytes));
-
-                                    // Use the signing_key that was already fetched earlier to avoid redundant fetching
-                                    let user_tweaked_share = signing_key;
-
-                                    {
-                                        let mut eth_signer = EthereumSigner::new(signing_node);
-                                        eth_signer
-                                            .sign_transaction(
-                                                tx_bytes.clone(),
-                                                &chain_handler,
-                                                eth_tx,
-                                                user_tweaked_share,
-                                                Some(user_eth_addr.clone()),
-                                                vec![intent_hash.clone()],
-                                                Some(crate::types::TransactionType::UserToVault),
-                                                None,
-                                                signing_key,
-                                            )
-                                            .await?;
-                                    }
-                                }
-                            }
-                            info!(
-                                "✅ [GOSSIPSUB] {} deposit intent signing completed",
-                                signing_node.get_chain_type()
-                            );
-                        }
-                        Err(e) => {
-                            warn!("❌ [GOSSIPSUB] Failed to create chain transaction: {}", e);
-                            return Ok(());
-                        }
-                    }
-                } else {
-                    warn!(
-                        "❌ [GOSSIPSUB] Signing node not available for deposit intent processing"
-                    );
-                }
+                return Ok(());
             }
             GossipsubMessage::SolverAddLiquidity {
                 request_id,
@@ -1896,6 +1679,179 @@ impl MpcNetworkLayer {
                     }
                 } else {
                     warn!("❌ [BATCH] User intent manager not available");
+                }
+            }
+            GossipsubMessage::TicsUserToVaultIntentBatch {
+                intent_hashes,
+                round,
+                timestamp,
+                node_id,
+            } => {
+                info!(
+                    "📦 [TICS_UTV_BATCH] Received TICS UserToVault intent batch from node {} (round {}, {} intents)",
+                    node_id, round, intent_hashes.len()
+                );
+
+                if let Some(user_intent_manager) = &self.user_intent_manager {
+                    let mut batch_intents = Vec::new();
+                    for intent_hash in &intent_hashes {
+                        if let Some(intent) = user_intent_manager.get_intent(intent_hash).await {
+                            let tx_ids = user_intent_manager
+                                .get_intent_transaction_ids(intent_hash)
+                                .await;
+                            let no_user_tx = tx_ids
+                                .as_ref()
+                                .map(|ids| ids.user_to_network_tx_id.is_none())
+                                .unwrap_or(true);
+                            if !no_user_tx {
+                                warn!(
+                                    "⚠️ [TICS_UTV_BATCH] Intent {} already has UserToVault tx, skipping",
+                                    intent_hash
+                                );
+                                continue;
+                            }
+                            let source_ok = intent.source_chain.eq_ignore_ascii_case("tics")
+                                || intent.source_chain.eq_ignore_ascii_case("qubetics");
+                            if !source_ok {
+                                warn!(
+                                    "⚠️ [TICS_UTV_BATCH] Intent {} source_chain is not TICS, skipping",
+                                    intent_hash
+                                );
+                                continue;
+                            }
+                            if let Some(user) = user_intent_manager.get_user_by_intent_hash(intent_hash).await {
+                                batch_intents.push((intent_hash.clone(), intent, user.ethereum_address));
+                            } else {
+                                warn!(
+                                    "⚠️ [TICS_UTV_BATCH] Intent {} has no registered user, skipping",
+                                    intent_hash
+                                );
+                            }
+                        } else {
+                            warn!("⚠️ [TICS_UTV_BATCH] Intent {} not found in database", intent_hash);
+                        }
+                    }
+
+                    if batch_intents.is_empty() {
+                        warn!("⚠️ [TICS_UTV_BATCH] No valid TICS UserToVault intents to process");
+                        return Ok(());
+                    }
+
+                    info!(
+                        "✅ [TICS_UTV_BATCH] Fetched {} intents for TICS UserToVault batch (round {})",
+                        batch_intents.len(),
+                        round
+                    );
+
+                    // One VRF round; batch stored and signed per-slot; final node aggregates each slot and broadcasts one-by-one.
+                    // UserToVault on TICS: from user derived_eth -> to treasury vault (env); liquidity_operator_eth is fallback. No group key or BTC addr needed.
+                    let liquidity_operator_eth_addr = user_intent_manager
+                        .get_database()
+                        .get_string(crate::database::keys::DKG_LIQUIDITY_OPERATOR_ETH_ADDRESS)
+                        .ok()
+                        .flatten();
+
+                    let mut batch: Vec<(
+                        String,
+                        String,
+                        crate::chain_abstraction::ChainTransaction,
+                        Vec<u8>,
+                        Option<k256::Scalar>,
+                    )> = Vec::new();
+                    for (intent_hash, intent, user_eth_addr) in &batch_intents {
+                        let target_amount = user_intent_manager
+                            .get_intent_target_amount(intent_hash)
+                            .await
+                            .unwrap_or_else(|| intent.amount.parse().unwrap_or(0u128));
+                        let amount = target_amount + (target_amount / 20);
+
+                        let user = match user_intent_manager.get_user_by_address(user_eth_addr).await {
+                            Some(u) => u,
+                            None => {
+                                warn!("⚠️ [TICS_UTV_BATCH] User {} not found for intent {}", user_eth_addr, intent_hash);
+                                continue;
+                            }
+                        };
+                        let derived_eth_addr = user.derived_eth_address.clone();
+                        let derived_btc_addr = user.derived_btc_address.clone();
+
+                        let chain_tx_result =
+                            crate::utils::transaction::create_chain_transaction_from_deposit_intent(
+                                intent,
+                                None, // UserToVault on EVM does not use group key
+                                derived_eth_addr.as_ref(),
+                                derived_btc_addr.as_ref(),
+                                crate::types::TransactionType::UserToVault,
+                                liquidity_operator_eth_addr.as_ref(),
+                                None, // EVM only
+                                amount,
+                            )
+                            .await;
+
+                        let chain_transaction = match chain_tx_result {
+                            Ok(tx) => tx,
+                            Err(e) => {
+                                warn!(
+                                    "❌ [TICS_UTV_BATCH] Failed to create chain tx for intent {}: {}",
+                                    intent_hash, e
+                                );
+                                continue;
+                            }
+                        };
+
+                        let tx_bytes = match &chain_transaction {
+                            crate::chain_abstraction::ChainTransaction::Ethereum(eth_tx) => {
+                                crate::utils::transaction::create_transaction_for_signing(eth_tx)
+                            }
+                            _ => {
+                                warn!("❌ [TICS_UTV_BATCH] Intent {} is not EVM (expected TICS)", intent_hash);
+                                continue;
+                            }
+                        };
+
+                        let signing_key = self.get_signing_key_for_user(Some(user_eth_addr)).await;
+                        batch.push((
+                            intent_hash.clone(),
+                            user_eth_addr.clone(),
+                            chain_transaction,
+                            tx_bytes,
+                            signing_key,
+                        ));
+                    }
+
+                    if batch.is_empty() {
+                        warn!("⚠️ [TICS_UTV_BATCH] No valid batch entries (missing users/keys/txs)");
+                        return Ok(());
+                    }
+
+                    let available_nodes: Vec<PeerId> =
+                        self.node_manager.get_active_nodes().into_iter().collect();
+
+                    if let Some(signing_node) = &mut self.signing_node {
+                        signing_node.set_available_nodes(available_nodes);
+
+                        use crate::signing::chains::EthereumSigner;
+                        let mut eth_signer = EthereumSigner::new(signing_node);
+                        let n_slots = batch.len();
+                        if let Err(e) = eth_signer
+                            .sign_tics_user_to_vault_batch(round, batch)
+                            .await
+                        {
+                            warn!(
+                                "❌ [TICS_UTV_BATCH] Batch signing failed for round {}: {}",
+                                round, e
+                            );
+                        } else {
+                            info!(
+                                "✅ [TICS_UTV_BATCH] Initiated batch signing for round {} ({} slots)",
+                                round, n_slots
+                            );
+                        }
+                    } else {
+                        warn!("❌ [TICS_UTV_BATCH] Signing node not available");
+                    }
+                } else {
+                    warn!("❌ [TICS_UTV_BATCH] User intent manager not available");
                 }
             }
             GossipsubMessage::BtcWithdrawBatch {
@@ -3543,9 +3499,6 @@ impl MpcNetworkLayer {
                 self.channel_health.record_send_success();
             }
             Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                debug!("⚠️ [RETRY] Channel full - ACK queued for later delivery");
-                debug!("⚠️ [RETRY] Sender will retry anyway - no message loss");
-                debug!("⚠️ [RETRY] High load detected: 11+ parallel users");
                 // Channel is full but not closed - sender will retry this message
                 // So the ACK will be sent again when we receive the retry
                 // Record for monitoring

@@ -37,11 +37,6 @@ impl ConsensusNode {
 
     /// Add selected nodes for a specific round
     pub fn add_selected_nodes(&mut self, round: u64, selected_nodes: Vec<SerializablePeerId>) {
-        info!(
-            "📋 [CONSENSUS] Adding {} selected nodes for round {}",
-            selected_nodes.len(),
-            round
-        );
         self.selected_nodes_by_round.insert(round, selected_nodes);
 
         // If a consensus result arrived before we had selected_nodes, validate and store it now.
@@ -78,11 +73,6 @@ impl ConsensusNode {
         self.consensus_results.insert(round, result.clone());
         self.current_round = round;
 
-        info!(
-            "✅ [CONSENSUS] Consensus completed for round {}: final node = {:?}",
-            round, result.final_node
-        );
-
         Ok(result)
     }
 
@@ -117,11 +107,6 @@ impl ConsensusNode {
     pub async fn handle_message(&mut self, msg: ConsensusMessage) -> Result<()> {
         match msg {
             ConsensusMessage::FinalNodeResult { result, round } => {
-                info!(
-                    "📥 [CONSENSUS] Received final node result for round {}: {:?}",
-                    round, result.final_node
-                );
-
                 // SECURITY CHECK 1: Validate round parameter matches result.round
                 if result.round != round {
                     return Err(anyhow::anyhow!(
@@ -181,11 +166,6 @@ impl ConsensusNode {
                         round
                     ));
                 }
-                info!(
-                    "✅ [CONSENSUS] Using existing selected nodes for round {}: {} nodes",
-                    round,
-                    nodes.len()
-                );
                 nodes.clone()
             }
             None => {
@@ -283,11 +263,6 @@ impl ConsensusNode {
             *node_frequencies.entry(node.clone()).or_insert(0) += 1;
         }
 
-        info!(
-            "📊 [CONSENSUS] Node frequencies for round {}: {:?}",
-            round, node_frequencies
-        );
-
         let mut max_frequency = 0;
         let mut most_frequent_node = None;
         let mut all_same_frequency = true;
@@ -305,11 +280,6 @@ impl ConsensusNode {
                 most_frequent_node = Some(node.clone());
             }
         }
-
-        info!(
-            "🔍 [CONSENSUS] Most frequent node: {:?} with frequency {} and all same or not {}",
-            most_frequent_node, max_frequency, all_same_frequency
-        );
 
         let mut candidates: Vec<SerializablePeerId> = if all_same_frequency {
             // All nodes have the same frequency - use all unique nodes as candidates
@@ -330,25 +300,8 @@ impl ConsensusNode {
             let hash_b = Self::tie_breaker_hash(round, &b.0);
             hash_a.cmp(&hash_b)
         });
-        info!(
-            "📋 [CONSENSUS] Candidates with max frequency {}: {:?}",
-            max_frequency, candidates
-        );
 
         let final_node = candidates[0].clone();
-
-        if all_same_frequency {
-            info!(
-                "⚖️ [CONSENSUS] All nodes tied ({} each), picking by hash-based tie-breaker: {:?}",
-                first_frequency.unwrap_or(0),
-                final_node
-            );
-        } else {
-            info!(
-                "🏆 [CONSENSUS] Picking from freq‐{} candidates by hash-based tie-breaker: {:?}",
-                max_frequency, final_node
-            );
-        }
 
         Ok(ConsensusResult {
             final_node,

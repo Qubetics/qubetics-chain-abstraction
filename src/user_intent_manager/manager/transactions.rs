@@ -266,6 +266,50 @@ impl UserIntentManager {
         }
     }
 
+    /// Get pending intents that have not yet completed UserToVault (no user_to_network_tx_id),
+    /// filtered by source chain. Used by the final node to pick a batch for TICS UserToVault signing.
+    /// Returns (intent_hash, intent, user_eth_address) for each intent; only intents with a
+    /// registered user are included.
+    pub async fn get_pending_user_to_vault_intents_by_source_chain(
+        &self,
+        source_chain: &str,
+        limit: usize,
+    ) -> Vec<(String, DepositIntent, String)> {
+        let pending = self.get_pending_transaction_intents().await;
+        let source_lower = source_chain.to_lowercase();
+        let mut out = Vec::with_capacity(limit.min(pending.len()));
+        for (intent_hash, intent, tx_ids) in pending {
+            if out.len() >= limit {
+                break;
+            }
+            let no_user_tx = tx_ids
+                .as_ref()
+                .map(|ids| ids.user_to_network_tx_id.is_none())
+                .unwrap_or(true);
+            if !no_user_tx {
+                continue;
+            }
+            let chain_ok = intent.source_chain.eq_ignore_ascii_case("tics")
+                || intent.source_chain.eq_ignore_ascii_case("qubetics");
+            if !chain_ok && source_lower != intent.source_chain.to_lowercase() {
+                continue;
+            }
+            if source_lower == "tics" || source_lower == "qubetics" {
+                if !intent.source_chain.eq_ignore_ascii_case("tics")
+                    && !intent.source_chain.eq_ignore_ascii_case("qubetics")
+                {
+                    continue;
+                }
+            } else if intent.source_chain.to_lowercase() != source_lower {
+                continue;
+            }
+            if let Some(user) = self.get_user_by_intent_hash(&intent_hash).await {
+                out.push((intent_hash, intent, user.ethereum_address));
+            }
+        }
+        out
+    }
+
     /// Check if an intent has both transaction IDs
     pub async fn is_intent_transaction_complete(&self, intent_hash: &str) -> bool {
         match self.get_intent_transaction_ids(intent_hash).await {

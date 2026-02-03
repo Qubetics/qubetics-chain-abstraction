@@ -55,6 +55,8 @@ pub enum SigningMessage {
         round: u64,
         timestamp: u128,
         user_eth_address: Option<String>,
+        /// For TICS UserToVault batch: intent_hash slot. When set, store/aggregate by (round, slot_id).
+        slot_id: Option<String>,
     },
     BtcSignaturesMessage {
         from: String,

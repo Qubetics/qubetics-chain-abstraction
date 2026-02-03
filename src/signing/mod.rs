@@ -32,7 +32,7 @@ pub use db_signing::DatabaseSigningNode;
 pub use key::KeyStore;
 pub use state::{
     BroadcastPolicy, BtcAggregationState, BtcRoundExtras, PendingStore, PendingValue,
-    SignatureStore, SigningEnvironmentBuilder,
+    RoundSlotKey, SignatureStore, SigningEnvironmentBuilder,
 };
 
 use num_bigint::{BigInt, ToBigInt};
@@ -465,6 +465,7 @@ impl SigningNode {
                 round: _round,
                 timestamp: _timestamp,
                 user_eth_address: _user_eth_address,
+                slot_id: _slot_id,
             } => {}
             SigningMessage::BtcSignaturesMessage {
                 from: _from,
@@ -1315,10 +1316,6 @@ impl SigningNode {
 
                 // Check if this node is the final selected node
                 if is_final_node {
-                    info!(
-                        "\x1b[32m🏆 [CONSENSUS] This node is the final selected node for round {}!\x1b[0m",
-                        round
-                    );
                   // NEW: Dispatch by internal epoch operation type for this round.
                     if operation_type.as_deref() == Some("epoch_1") {
                         info!(
@@ -1356,9 +1353,17 @@ impl SigningNode {
                             );
                         }
 
+                        // Pick a batch of pending TICS-source intents (UserToVault not done) and broadcast for signing
+                        if let Err(e) = self.process_tics_user_to_vault_intent_batch_for_round(round).await {
+                            warn!(
+                                "⚠️ [CLOCK][TICS_UTV_BATCH] Failed to process TICS UserToVault intent batch for round {}: {}",
+                                round, e
+                            );
+                        }
+
                         // Trigger aggregate signature for the final node
-                        self.trigger_aggregate_signature_for_final_node(round)
-                            .await?;
+                        // self.trigger_aggregate_signature_for_final_node(round)
+                        //     .await?;
                     } else if operation_type.as_deref() == Some("epoch_2") {
                         info!(
                             "⏰ [CLOCK] Round {} is epoch_2 (BTC batch + contract updates + withdraw), processing phase 1 intents...",
@@ -1374,8 +1379,8 @@ impl SigningNode {
                         }
 
                         // Trigger aggregate signature for the final node
-                        self.trigger_aggregate_signature_for_final_node(round)
-                            .await?;
+                        // self.trigger_aggregate_signature_for_final_node(round)
+                        //     .await?;
                     } else if operation_type.as_deref() == Some("epoch_3") {
                         info!(
                             "⏰ [CLOCK] Round {} is epoch_3 (withdraw settlement), finalizing withdraw request statuses...",
@@ -1394,6 +1399,13 @@ impl SigningNode {
                                 round, e
                             );
                         }
+                        // Pick a batch of pending TICS-source intents (UserToVault not done) and broadcast for signing
+                        if let Err(e) = self.process_tics_user_to_vault_intent_batch_for_round(round).await {
+                            warn!(
+                                "⚠️ [CLOCK][TICS_UTV_BATCH] Failed to process TICS UserToVault intent batch for round {}: {}",
+                                round, e
+                            );
+                        }
                     } else if operation_type.as_deref() == Some("btc_intent_manager_update") {
                         info!("🔄 [BTC_CONTRACT_UPDATE] Round {} was triggered by BTC intent manager update, processing contract update batch...", round);
                         // Process BTC contract update batch (intents with network_to_target_tx_id but not Solved)
@@ -1404,26 +1416,21 @@ impl SigningNode {
                             // After broadcasting the batch, trigger aggregation request immediately
                             // All nodes will receive the batch and start signing, then send signatures when requested
                             // The final node will aggregate when enough signatures arrive
-                            if let Err(e) = self
-                                .trigger_aggregate_signature_for_final_node(round)
-                                .await
-                            {
-                                warn!("⚠️ [BTC_CONTRACT_UPDATE] Failed to trigger aggregate signature for round {}: {}", round, e);
-                            } else {
-                                info!("✅ [BTC_CONTRACT_UPDATE] Triggered aggregate signature request for contract call (round {})", round);
-                            }
+                            // if let Err(e) = self
+                            //     .trigger_aggregate_signature_for_final_node(round)
+                            //     .await
+                            // {
+                            //     warn!("⚠️ [BTC_CONTRACT_UPDATE] Failed to trigger aggregate signature for round {}: {}", round, e);
+                            // } else {
+                            //     info!("✅ [BTC_CONTRACT_UPDATE] Triggered aggregate signature request for contract call (round {})", round);
+                            // }
                         }
                     } else {
                         info!("ℹ️  [CONSENSUS] Round {} operation_type={:?}, skipping intent processing", round, operation_type);
                         // Trigger aggregate signature for the final node
-                        self.trigger_aggregate_signature_for_final_node(round)
-                            .await?;
+                        // self.trigger_aggregate_signature_for_final_node(round)
+                        //     .await?;
                     }
-                } else {
-                    info!(
-                        "\x1b[31m📋 [CONSENSUS] This node is not the final selected node for round {}\x1b[0m",
-                        round
-                    );
                 }
 
                 Ok(Some(result))
@@ -1695,6 +1702,62 @@ impl SigningNode {
                         .await?;
                 }
             }
+        }
+
+        Ok(())
+    }
+
+    /// Pick a batch of pending TICS-source intents (UserToVault not yet done) and broadcast
+    /// TicsUserToVaultIntentBatch so all nodes sign each intent with the respective user key (epoch_1).
+    async fn process_tics_user_to_vault_intent_batch_for_round(&self, round: u64) -> Result<()> {
+        let user_intent_manager = self
+            .user_intent_manager
+            .as_ref()
+            .ok_or_else(|| anyhow!("User intent manager not available"))?;
+
+        let max_per_batch = std::env::var("MAX_TICS_USER_TO_VAULT_INTENTS_PER_BATCH")
+            .ok()
+            .and_then(|val| val.parse::<usize>().ok())
+            .unwrap_or(10);
+
+        let pending = user_intent_manager
+            .get_pending_user_to_vault_intents_by_source_chain("tics", max_per_batch)
+            .await;
+
+        if pending.is_empty() {
+            info!(
+                "ℹ️  [CLOCK][TICS_UTV_BATCH] No pending TICS-source intents (UserToVault not done) for round {}",
+                round
+            );
+            return Ok(());
+        }
+
+        let intent_hashes: Vec<String> = pending
+            .iter()
+            .map(|(hash, _, _)| hash.clone())
+            .collect();
+
+        let batch_timestamp = chrono::Utc::now().to_rfc3339();
+        info!(
+            "📤 [CLOCK][TICS_UTV_BATCH] Broadcasting TICS UserToVault intent batch for round {} ({} intents)",
+            round,
+            intent_hashes.len()
+        );
+
+        self.message_tx
+            .send(crate::types::ChannelMessage::TicsUserToVaultIntentBatch {
+                intent_hashes: intent_hashes.clone(),
+                round,
+                timestamp: batch_timestamp.clone(),
+                node_id: self.id.clone(),
+            })
+            .await?;
+
+        for (hash, intent, user) in &pending {
+            info!(
+                "  📋 [TICS_UTV_BATCH] Intent {}: amount={}, user={}",
+                hash, intent.amount, user
+            );
         }
 
         Ok(())
@@ -2523,9 +2586,44 @@ impl SigningNode {
             round, final_node_id
         );
 
-        // Get signature for this specific round
-        let signatures_by_round = self.signatures.signatures_by_round.read().await;
+        // TICS UserToVault batch: send one ECDSASignature per slot with slot_id
+        let slot_ids: Vec<String> = {
+            let batch = self.pending.user_to_vault_tics_batch.read().await;
+            batch
+                .get(&round)
+                .map(|entries| entries.iter().map(|(h, _, _, _)| h.clone()).collect())
+                .unwrap_or_default()
+        };
+        if !slot_ids.is_empty() {
+            let by_slot = self.signatures.signatures_by_round_slot.read().await;
+            for intent_hash in slot_ids {
+                let slot_key = (round, intent_hash.clone());
+                if let Some(slot_sigs) = by_slot.get(&slot_key) {
+                    if let Some(our_sig) = slot_sigs.get(&self.id) {
+                        let signature_msg = SigningMessage::ECDSASignature {
+                            from: self.id.clone(),
+                            signature: our_sig.clone(),
+                            round,
+                            timestamp: SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis(),
+                            user_eth_address: our_sig.user_eth_address.clone(),
+                            slot_id: Some(intent_hash.clone()),
+                        };
+                        let gossipsub_msg = crate::types::GossipsubMessage::Signing(signature_msg);
+                        let signature_data = serde_json::to_vec(&gossipsub_msg)?;
+                        self.send_ecdsa_signature_direct(final_node_id, &signature_data, round)
+                            .await?;
+                        info!(
+                            "✅ [SIGNING] Sent batch slot {} signature for round {} to final node {}",
+                            intent_hash, round, final_node_id
+                        );
+                    }
+                }
+            }
+            return Ok(());
+        }
 
+        // Single-tx round: send from signatures_by_round
+        let signatures_by_round = self.signatures.signatures_by_round.read().await;
         if let Some(round_signatures) = signatures_by_round.get(&round) {
             if let Some(our_signature) = round_signatures.get(&self.id) {
                 info!(
@@ -2548,10 +2646,10 @@ impl SigningNode {
                     signature: our_signature.clone(),
                     round,
                     timestamp: SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis(),
-                    user_eth_address: our_signature.user_eth_address.clone(), // Use user_eth_address from stored signature
+                    user_eth_address: our_signature.user_eth_address.clone(),
+                    slot_id: None,
                 };
 
-                // Wrap in GossipsubMessage::Signing for proper message handling
                 let gossipsub_msg = crate::types::GossipsubMessage::Signing(signature_msg);
                 let signature_data = serde_json::to_vec(&gossipsub_msg)?;
 
@@ -2656,11 +2754,19 @@ impl SigningNode {
         from: String,
         signature: ECDSASignature,
         round: u64,
+        slot_id: Option<String>,
     ) -> Result<()> {
         info!(
-            "📥 [SIGNING] Final node {} received signature from {} for round {}",
-            self.id, from, round
+            "📥 [SIGNING] Final node {} received signature from {} for round {} (slot: {:?})",
+            self.id, from, round, slot_id
         );
+
+        // TICS UserToVault batch: per-slot aggregation
+        if let Some(slot) = slot_id {
+            return self
+                .handle_signature_for_round_slot(from, signature, round, slot)
+                .await;
+        }
 
         // Check if this round has already been aggregated
         let already_aggregated = {
@@ -2705,7 +2811,7 @@ impl SigningNode {
         // Always verify signature before storing
         // For contract transactions (transaction_type = None), use vault share pubkey
         if let Err(e) = self
-            .verify_signature_for_round(&from, &signature, round)
+            .verify_signature_for_round(&from, &signature, round, None)
             .await
         {
             error!(
@@ -3042,6 +3148,7 @@ impl SigningNode {
                                         round,
                                         &tx_hash,
                                         crate::types::TransactionNetwork::TICS,
+                                        None,
                                     )
                                     .await;
                                     
@@ -3154,6 +3261,177 @@ impl SigningNode {
 
         Ok(())
     }
+
+    /// TICS UserToVault batch: handle one partial for (round, slot_id). Aggregate when threshold reached.
+    async fn handle_signature_for_round_slot(
+        &mut self,
+        from: String,
+        signature: ECDSASignature,
+        round: u64,
+        slot_id: String,
+    ) -> Result<()> {
+        use crate::signing::state::RoundSlotKey;
+
+        let slot_key: RoundSlotKey = (round, slot_id.clone());
+        let already_aggregated = {
+            let agg = self.signatures.aggregated_round_slots.read().await;
+            agg.contains(&slot_key)
+        };
+        if already_aggregated {
+            info!(
+                "⏭️ [SIGNING] Slot {} for round {} already aggregated, ignoring signature from {}",
+                slot_id, round, from
+            );
+            return Ok(());
+        }
+
+        if let Err(e) = self
+            .verify_signature_for_round(&from, &signature, round, Some(&slot_id))
+            .await
+        {
+            error!(
+                "❌ [SIGNING] Slot {} verification failed for peer {} in round {}: {}",
+                slot_id, from, round, e
+            );
+            return Err(anyhow!(
+                "Signature verification failed for slot {} round {}: {}",
+                slot_id,
+                round,
+                e
+            ));
+        }
+
+        {
+            let mut by_slot = self.signatures.signatures_by_round_slot.write().await;
+            let entry = by_slot.entry(slot_key.clone()).or_default();
+            entry.insert(from.clone(), signature.clone());
+            info!(
+                "💾 [SIGNING] Stored signature from {} for slot {} round {} (total: {})",
+                from,
+                slot_id,
+                round,
+                entry.len()
+            );
+        }
+
+        let round_slot_signatures = {
+            let by_slot = self.signatures.signatures_by_round_slot.read().await;
+            by_slot.get(&slot_key).cloned()
+        };
+        let Some(round_slot_signatures) = round_slot_signatures else {
+            return Ok(());
+        };
+        if round_slot_signatures.len() < self.threshold as usize {
+            info!(
+                "⏳ [SIGNING] Slot {} round {}: {}/{} signatures",
+                slot_id, round, round_slot_signatures.len(), self.threshold
+            );
+            return Ok(());
+        }
+
+        let mut sorted: Vec<_> = round_slot_signatures.iter().collect();
+        sorted.sort_by(|a, b| a.0.cmp(b.0));
+        let sigs_result: Result<Vec<RecoverableSignature>> = sorted
+            .iter()
+            .take(self.threshold as usize)
+            .map(|(signer_id, ecdsa_sig)| {
+                RecoverableSignature::from_compact(
+                    &ecdsa_sig.signature,
+                    RecoveryId::from_i32(ecdsa_sig.recovery_id as i32)?,
+                )
+                .map_err(|_| anyhow::anyhow!("Invalid signature from signer {}", signer_id))
+            })
+            .collect();
+        let threshold_sigs = sigs_result?;
+        let mut peer_to_dkg_index = Vec::new();
+        for (id, _) in sorted.iter().take(self.threshold as usize) {
+            let idx = self.calculate_dkg_index_for_peer(id).await;
+            peer_to_dkg_index.push(((*id).clone(), idx));
+        }
+        let aggregated_signature = self
+            .aggregate_signatures(threshold_sigs, peer_to_dkg_index)
+            .await?;
+
+        {
+            let mut agg = self.signatures.aggregated_round_slots.write().await;
+            agg.insert(slot_key);
+        }
+
+        let (recovery_id, sig_bytes) = aggregated_signature.serialize_compact();
+        let chain_id_for_v = std::env::var("MPC_ETHEREUM_CHAIN_ID")
+            .ok()
+            .and_then(|id| id.parse::<u64>().ok())
+            .unwrap_or(9029);
+        let r_biguint = num_bigint::BigUint::from_bytes_be(&sig_bytes[0..32]);
+        let s_biguint = num_bigint::BigUint::from_bytes_be(&sig_bytes[32..64]);
+        let mut r = [0u8; 32];
+        let mut s = [0u8; 32];
+        let r_canonical = r_biguint.to_bytes_be();
+        let s_canonical = s_biguint.to_bytes_be();
+        if r_canonical.len() <= 32 {
+            r[32 - r_canonical.len()..].copy_from_slice(&r_canonical);
+        }
+        if s_canonical.len() <= 32 {
+            s[32 - s_canonical.len()..].copy_from_slice(&s_canonical);
+        }
+        let mut canonical_signature_bytes = [0u8; 64];
+        canonical_signature_bytes[0..32].copy_from_slice(&r);
+        canonical_signature_bytes[32..64].copy_from_slice(&s);
+        let recid_u8 = recovery_id.to_i32() as u8;
+
+        if let Ok(Some(signed_tx_hex)) = self
+            .reconstruct_signed_ethereum_transaction_for_batch_slot(
+                round,
+                &slot_id,
+                &canonical_signature_bytes,
+                recid_u8,
+            )
+            .await
+        {
+            let chain_id = chain_id_for_v;
+            info!(
+                "🎉 [SIGNING] TICS UserToVault batch slot {} (round {}) ready, broadcasting",
+                slot_id, round
+            );
+            match Self::broadcast_ethereum_transaction(&signed_tx_hex, chain_id).await {
+                Ok(Some(tx_hash)) => {
+                    info!(
+                        "✅ [SIGNING] Batch slot {} broadcasted: {}",
+                        slot_id, tx_hash
+                    );
+                    self.store_transaction_id_for_round(
+                        round,
+                        &tx_hash,
+                        crate::types::TransactionNetwork::TICS,
+                        Some(slot_id.clone()),
+                    )
+                    .await;
+                }
+                Ok(None) => {
+                    warn!("⚠️ [SIGNING] Batch slot {} broadcasted but no tx_hash", slot_id);
+                }
+                Err(e) => {
+                    error!(
+                        "❌ [SIGNING] Failed to broadcast batch slot {}: {}",
+                        slot_id, e
+                    );
+                    self.store_transaction_error_for_round(
+                        round,
+                        &e.to_string(),
+                        crate::types::TransactionNetwork::TICS,
+                    )
+                    .await;
+                }
+            }
+        } else {
+            warn!(
+                "❌ [SIGNING] Failed to reconstruct signed tx for batch slot {} round {}",
+                slot_id, round
+            );
+        }
+        Ok(())
+    }
+
     /// Bitcoin-only, per-input aware (BATCH).
     /// Ingest a whole vector of per-input signatures from one peer, then:
     /// 1) store them under (round → input_index → peer)
@@ -3767,6 +4045,7 @@ impl SigningNode {
                     round,
                     &txid,
                     crate::types::TransactionNetwork::BTC,
+                    None,
                 )
                 .await;
             }
@@ -3793,10 +4072,11 @@ impl SigningNode {
         from: String,
         signature: ECDSASignature,
         round: u64,
+        slot_id: Option<String>,
     ) -> Result<()> {
         info!(
-            "📥 [SIGNING] Final node {} received signature from {} via unicast P2P RPC",
-            self.id, from
+            "📥 [SIGNING] Final node {} received signature from {} via unicast P2P RPC (round {}, slot_id: {:?})",
+            self.id, from, round, slot_id
         );
 
         // Check if this node is the final node for the specific round
@@ -3814,7 +4094,7 @@ impl SigningNode {
                 self.id, round
             );
             return self
-                .handle_signature_for_round(from, signature, round)
+                .handle_signature_for_round(from, signature, round, slot_id)
                 .await;
         }
 
@@ -4041,17 +4321,18 @@ impl SigningNode {
         peer_id: &str,
         signature: &ECDSASignature,
         round: u64,
+        slot_id: Option<&str>,
     ) -> Result<()> {
         use k256::elliptic_curve::sec1::ToEncodedPoint;
 
         info!(
-            "🔍 [SIGNING] Verifying PARTIAL signature from peer {} for round {}",
-            peer_id, round
+            "🔍 [SIGNING] Verifying PARTIAL signature from peer {} for round {} (slot: {:?})",
+            peer_id, round, slot_id
         );
 
-        // Get message/digest and transaction type for this round
+        // Get message/digest and transaction type for this round (and slot for TICS batch)
         let (expected_digest, transaction_type, user_eth_address) =
-            self.get_message_and_type_for_round(round).await?;
+            self.get_message_and_type_for_round(round, slot_id).await?;
 
         info!(
             "🔍 [SIGNING] Expected digest for round {}: 0x{}",
@@ -4778,7 +5059,31 @@ impl SigningNode {
     async fn get_message_and_type_for_round(
         &self,
         round: u64,
+        slot_id: Option<&str>,
     ) -> Result<(Vec<u8>, Option<TransactionType>, Option<String>)> {
+        // TICS UserToVault batch: slot_id is intent_hash; get tx from user_to_vault_tics_batch
+        if let Some(slot) = slot_id {
+            let batch = self.pending.user_to_vault_tics_batch.read().await;
+            if let Some(entries) = batch.get(&round) {
+                if let Some((_intent_hash, user_eth, _chain_tx, tx_bytes)) =
+                    entries.iter().find(|(h, ..)| h == slot)
+                {
+                    let mut hasher = sha3::Keccak256::new();
+                    hasher.update(tx_bytes);
+                    let digest = hasher.finalize().to_vec();
+                    return Ok((
+                        digest,
+                        Some(TransactionType::UserToVault),
+                        Some(user_eth.clone()),
+                    ));
+                }
+            }
+            return Err(anyhow!(
+                "No TICS UserToVault batch slot {} for round {}",
+                slot,
+                round
+            ));
+        }
 
         // Check if it's a claim-reward, withdraw, or regular round
         let is_claim_reward_round = {

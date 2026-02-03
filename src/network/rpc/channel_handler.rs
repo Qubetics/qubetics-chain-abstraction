@@ -1,5 +1,4 @@
 use libp2p::Multiaddr;
-use std::sync::Arc;
 
 impl MpcNetworkLayer {
    
@@ -105,7 +104,6 @@ use crate::{
     rpc_server::utils::{
         convert_src_smallest_to_dst_smallest, fetch_crypto_prices, fetch_network_balance,
     },
-    signing::{BitcoinSigner, EthereumSigner},
     types::{
         rpc::RPCRequest, rpc_server::NodeStatus, ChannelMessage,
         GossipsubMessage,
@@ -362,6 +360,70 @@ impl MpcNetworkLayer {
                 } else {
                     warn!(
                         "⚠️ [INTENT_BATCH] No peers available for broadcasting IntentBatchBroadcast"
+                    );
+                }
+            }
+            // TICS UserToVault intent batch: final node broadcasts pending TICS-source intents for signing
+            ChannelMessage::TicsUserToVaultIntentBatch {
+                intent_hashes,
+                round,
+                timestamp,
+                node_id,
+            } => {
+                use libp2p::gossipsub::{IdentTopic, Message as GossipMessage};
+
+                let gossip_msg = crate::types::GossipsubMessage::TicsUserToVaultIntentBatch {
+                    intent_hashes: intent_hashes.clone(),
+                    round,
+                    timestamp: timestamp.clone(),
+                    node_id: node_id.clone(),
+                };
+
+                let data = match serde_json::to_vec(&gossip_msg) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        warn!(
+                            "❌ [TICS_UTV_BATCH] Failed to serialize TicsUserToVaultIntentBatch: {}",
+                            e
+                        );
+                        return Ok(());
+                    }
+                };
+
+                let topic =
+                    crate::network::transport::types::TOPIC_TICS_USER_TO_VAULT_BATCH.to_string();
+                let topic_hash = IdentTopic::new(topic.clone());
+                let local_msg = GossipMessage {
+                    source: Some(self.local_peer_id),
+                    data: data.clone(),
+                    sequence_number: None,
+                    topic: topic_hash.hash(),
+                };
+
+                if let Err(e) = self.handle_gossipsub_message(&local_msg).await {
+                    warn!(
+                        "❌ [TICS_UTV_BATCH] Failed to process local TicsUserToVaultIntentBatch: {}",
+                        e
+                    );
+                }
+
+                let swarm_mut = swarm.behaviour_mut();
+                let peer_count = swarm_mut.gossipsub.all_peers().count();
+                if peer_count > 0 {
+                    if let Err(e) = swarm_mut.gossipsub.publish(topic_hash, data) {
+                        warn!(
+                            "❌ [TICS_UTV_BATCH] Failed to publish TicsUserToVaultIntentBatch to topic {}: {:?}",
+                            topic, e
+                        );
+                    } else {
+                        info!(
+                            "📡 [TICS_UTV_BATCH] Published TicsUserToVaultIntentBatch (round {}, {} intents) to {} peers",
+                            round, intent_hashes.len(), peer_count
+                        );
+                    }
+                } else {
+                    warn!(
+                        "⚠️ [TICS_UTV_BATCH] No peers available for broadcasting TicsUserToVaultIntentBatch"
                     );
                 }
             }
@@ -2314,489 +2376,11 @@ impl MpcNetworkLayer {
                     return Ok(());
                 }
 
-                // Determine chain type based on transaction type:
-                // - UserToVault: use source_chain (user is depositing FROM this chain)
-                // - NetworkToTarget: use target_chain (network is withdrawing TO this chain)
-                let chain_to_use = match transaction_type {
-                    crate::types::TransactionType::UserToVault => {
-                        &intent.source_chain.to_lowercase()
-                    }
-                    crate::types::TransactionType::NetworkToTarget => {
-                        &intent.target_chain.to_lowercase()
-                    }
-
-                    crate::types::TransactionType::IntentStatusUpdate => {
-                        // IntentStatusUpdate is a contract call on Qubetics chain (TICS)
-                        "qubetics"
-                    }
-                    crate::types::TransactionType::WithdrawLiquidity => {
-                        warn!(
-                            "❌ [LOCAL] WithdrawLiquidity is not supported in deposit intent flow"
-                        );
-                        return Ok(());
-                    }
-                    crate::types::TransactionType::ClaimReward => {
-                        warn!(
-                            "❌ [LOCAL] ClaimReward is not supported in deposit intent flow"
-                        );
-                        return Ok(());
-                    }
-                };
+                // Intent is broadcast and stored as Pending; skip immediate UserToVault processing.
                 info!(
-                    "🔗 [LOCAL] Processing deposit intent for chain: {} (transaction_type: {:?})",
-                    chain_to_use, transaction_type
+                    "⏸️ [LOCAL] Deposit intent {} stored as Pending; skipping immediate UserToVault processing",
+                    intent_hash
                 );
-
-                // Get the appropriate signing key based on transaction type
-                let signing_key: Option<k256::Scalar> = match transaction_type {
-                    crate::types::TransactionType::UserToVault => {
-                        // For user deposits, use user's tweaked secret share
-                        self.get_signing_key_for_user(Some(&user_eth_address))
-                            .await
-                    }
-                    crate::types::TransactionType::NetworkToTarget => {
-                        // For network withdrawals, use network's DKG secret share
-                        if let Some(dkg_node) = &self.dkg_node {
-                            dkg_node.get_final_secret_share().await
-                        } else {
-                            None
-                        }
-                    }
-
-                    crate::types::TransactionType::IntentStatusUpdate => {
-                        // For intent status update, use network's DKG secret share (same as NetworkToTarget)
-                        if let Some(dkg_node) = &self.dkg_node {
-                            dkg_node.get_final_secret_share().await
-                        } else {
-                            None
-                        }
-                    }
-                    crate::types::TransactionType::WithdrawLiquidity => {
-                        warn!(
-                            "❌ [LOCAL] WithdrawLiquidity is not supported for deposit intent signing"
-                        );
-                        None
-                    }
-                    crate::types::TransactionType::ClaimReward => {
-                        warn!(
-                            "❌ [LOCAL] ClaimReward is not supported for deposit intent signing"
-                        );
-                        None
-                    }
-                };
-
-                if signing_key.is_some() {
-                    info!(
-                        "🔐 [LOCAL] Successfully retrieved signing key for transaction type: {:?}",
-                        transaction_type
-                    );
-                } else {
-                    warn!(
-                        "❌ [LOCAL] Failed to retrieve signing key for transaction type: {:?}",
-                        transaction_type
-                    );
-                }
-
-                // Process locally first (this node will sign it)
-                if let Some(signing_node) = &mut self.signing_node {
-                    let chain_handler: Option<Arc<dyn crate::chain_abstraction::ChainHandler>> =
-                        if crate::utils::transaction::is_evm_chain(chain_to_use) {
-                            crate::utils::transaction::get_chain_id_from_name(chain_to_use)
-                                .map(|chain_id| {
-                                    info!(
-                                        "🔗 [LOCAL] Using Ethereum chain handler for chain: {} (ID: {})",
-                                        chain_to_use, chain_id
-                                    );
-                                    let handler =
-                                        crate::chain_abstraction::ChainHandlerFactory::create_ethereum_handler(
-                                            chain_id,
-                                        );
-                                    Arc::from(handler)
-                                        as Arc<dyn crate::chain_abstraction::ChainHandler>
-                                })
-                        } else if chain_to_use == "bitcoin" || chain_to_use == "btc" {
-                            let mut handler =
-                                crate::chain_abstraction::ChainHandlerFactory::create_bitcoin_handler(
-                                    crate::types::network::network_type()
-                                        .bitcoin_network_label()
-                                        .to_string(),
-                                );
-
-                            // Set appropriate group public key in Bitcoin chain handler based on transaction type
-                            match transaction_type {
-                                crate::types::TransactionType::UserToVault => {
-                                    // For user deposits, use user's specific group key
-                                    {
-                                        let eth_addr = &user_eth_address;
-                                        if let Some(user_intent_manager) = &self.user_intent_manager
-                                        {
-                                            if let Some(user) = user_intent_manager
-                                                .get_user_by_address(eth_addr)
-                                                .await
-                                            {
-                                                if let Some(user_group_key) = &user.user_group_key {
-                                                    let affine_point = user_group_key.0; // user_group_key is SerializablePoint(AffinePoint)
-                                                    let encoded_point =
-                                                        k256::EncodedPoint::from(affine_point);
-                                                    let compressed_bytes = encoded_point
-                                                        .compress()
-                                                        .to_bytes()
-                                                        .to_vec();
-
-                                                    if let Some(btc_handler) = handler
-                                                        .as_any_mut()
-                                                        .downcast_mut::<crate::chain_abstraction::BitcoinChainHandler>()
-                                                    {
-                                                        btc_handler
-                                                            .set_group_public_key(compressed_bytes);
-                                                        info!("🔑 [LOCAL] Set user-specific group public key in Bitcoin chain handler for user: {}", eth_addr);
-                                                    }
-                                                } else {
-                                                    warn!(
-                                                        "❌ [LOCAL] User {} has no group key for Bitcoin transaction",
-                                                        eth_addr
-                                                    );
-                                                }
-                                            } else {
-                                                warn!(
-                                                    "❌ [LOCAL] User {} not found for Bitcoin transaction",
-                                                    eth_addr
-                                                );
-                                            }
-                                        } else {
-                                            warn!(
-                                                "❌ [LOCAL] User registry not available for Bitcoin transaction"
-                                            );
-                                        }
-                                    }
-                                }
-                                crate::types::TransactionType::NetworkToTarget
-                                | crate::types::TransactionType::IntentStatusUpdate => {
-                                    // For network withdrawals, refunds, and intent status updates, use network's DKG group key
-                                    if let Some(dkg_node) = &self.dkg_node {
-                                        if let Some(group_key) =
-                                            dkg_node.get_final_public_key().await
-                                        {
-                                            let affine_point = group_key.to_affine();
-                                            let encoded_point =
-                                                k256::EncodedPoint::from(affine_point);
-                                            let compressed_bytes =
-                                                encoded_point.compress().to_bytes().to_vec();
-
-                                            if let Some(btc_handler) = handler
-                                                .as_any_mut()
-                                                .downcast_mut::<crate::chain_abstraction::BitcoinChainHandler>()
-                                            {
-                                                btc_handler.set_group_public_key(compressed_bytes);
-                                                info!("🔑 [LOCAL] Set network DKG group public key in Bitcoin chain handler");
-                                            }
-                                        }
-                                    }
-                                }
-                                crate::types::TransactionType::WithdrawLiquidity => {
-                                    warn!(
-                                        "❌ [LOCAL] WithdrawLiquidity is not supported for Bitcoin group key selection"
-                                    );
-                                }
-                                crate::types::TransactionType::ClaimReward => {
-                                    warn!(
-                                        "❌ [LOCAL] ClaimReward is not supported for Bitcoin group key selection"
-                                    );
-                                }
-                            }
-
-                            Some(Arc::from(handler)
-                                as Arc<dyn crate::chain_abstraction::ChainHandler>)
-                        } else {
-                            warn!(
-                                "❌ [LOCAL] Unsupported chain: {}, using default Ethereum handler",
-                                chain_to_use
-                            );
-                            None
-                        };
-
-                    let Some(chain_handler) = chain_handler else {
-                        return Ok(());
-                    };
-                    // Get derived addresses based on transaction type
-                    let (derived_eth_addr, derived_btc_addr) = match transaction_type {
-                        crate::types::TransactionType::UserToVault => {
-                            // For user deposits, use user's derived addresses
-                            let eth_addr = &user_eth_address;
-                            if let Some(user_intent_manager) = &self.user_intent_manager {
-                                if let Some(user) =
-                                    user_intent_manager.get_user_by_address(eth_addr).await
-                                {
-                                    (
-                                        user.derived_eth_address.clone(),
-                                        user.derived_btc_address.clone(),
-                                    )
-                                } else {
-                                    warn!("❌ [LOCAL] User {} not found in registry", eth_addr);
-                                    (None, None)
-                                }
-                            } else {
-                                warn!("❌ [LOCAL] User registry not available");
-                                (None, None)
-                            }
-                        }
-                        crate::types::TransactionType::NetworkToTarget
-                        | crate::types::TransactionType::IntentStatusUpdate => {
-                            // For network withdrawals, refunds, and intent status updates, no derived addresses needed
-                            (None, None)
-                        }
-                        crate::types::TransactionType::WithdrawLiquidity => {
-                            warn!(
-                                "❌ [LOCAL] WithdrawLiquidity transaction type not supported for derived addresses"
-                            );
-                            (None, None)
-                        }
-                        crate::types::TransactionType::ClaimReward => {
-                            warn!(
-                                "❌ [LOCAL] ClaimReward transaction type not supported for derived addresses"
-                            );
-                            (None, None)
-                        }
-                    };
-
-                    let group_public_key = if let Some(dkg_node) = &self.dkg_node {
-                        dkg_node.get_final_public_key().await
-                    } else {
-                        None
-                    };
-
-                    // Get liquidity operator addresses from database
-                    let (liquidity_operator_eth_addr, liquidity_operator_btc_addr) =
-                        if let Some(registry) = &self.user_intent_manager {
-                            let database = registry.get_database();
-                            let liquidity_operator_eth = database
-                                .get_string(crate::database::keys::DKG_LIQUIDITY_OPERATOR_ETH_ADDRESS)
-                                .ok()
-                                .flatten();
-                            let liquidity_operator_btc = database
-                                .get_string(crate::database::keys::DKG_LIQUIDITY_OPERATOR_BTC_ADDRESS)
-                                .ok()
-                                .flatten();
-                            (liquidity_operator_eth, liquidity_operator_btc)
-                        } else {
-                            return Err(anyhow::anyhow!("User registry not available"));
-                        };
-
-                    let chain_transaction_result =
-                        crate::utils::transaction::create_chain_transaction_from_deposit_intent(
-                            &intent,
-                            group_public_key,
-                            derived_eth_addr.as_ref(),
-                            derived_btc_addr.as_ref(),
-                            transaction_type.clone(),
-                            liquidity_operator_eth_addr.as_ref(),
-                            liquidity_operator_btc_addr.as_ref(),
-                            amount,
-                        )
-                        .await;
-
-                    match chain_transaction_result {
-                        Ok(chain_transaction) => {
-                            info!(
-                                "📝 [LOCAL] Created {} transaction from deposit intent",
-                                chain_handler.chain_type()
-                            );
-
-                            // Set available nodes from node manager before signing
-                            let available_nodes: Vec<PeerId> =
-                                self.node_manager.get_active_nodes().into_iter().collect();
-                            signing_node.set_available_nodes(available_nodes);
-
-                            // Use the signing key we got earlier
-                            if let Some(_key) = signing_key {
-                                info!("🔐 [LOCAL] Got signing key for deposit intent");
-                            } else {
-                                info!("❌ [LOCAL] Could not get signing key for deposit intent");
-                                return Ok(());
-                            }
-
-                            // Create transaction bytes using the chain handler
-                            let tx_bytes = chain_handler
-                                .create_transaction_bytes(&chain_transaction)
-                                .unwrap_or_else(|e| {
-                                    warn!("Failed to create transaction bytes: {}", e);
-                                    vec![]
-                                });
-                            info!(
-                                "🔐 [LOCAL] Starting {} signing process for deposit intent: 0x{}",
-                                chain_handler.chain_type(),
-                                hex::encode(tx_bytes.clone())
-                            );
-
-                            // Handle Bitcoin and EVM differently - DummyTransaction is only for EVM!
-                            match chain_transaction {
-                                crate::chain_abstraction::ChainTransaction::Bitcoin(ref btc_tx) => {
-                                    // For Bitcoin, use direct signing with tx_bytes and original transaction
-                                    {
-                                        let mut btc_signer = BitcoinSigner::new(signing_node);
-                                        btc_signer
-                                            .sign_transaction(
-                                                tx_bytes.clone(),
-                                                &chain_handler,
-                                                Some(btc_tx.clone()),
-                                                Some(user_eth_address.clone()),
-                                                vec![intent_hash.clone()],
-                                                Some(transaction_type.clone()),
-                                                signing_key,
-                                                None,
-                                                signing_key,
-                                            )
-                                            .await?;
-                                    }
-                                }
-                                crate::chain_abstraction::ChainTransaction::Ethereum(
-                                    ref eth_tx,
-                                ) => {
-                                    let tx_bytes =
-                                        crate::utils::transaction::create_transaction_for_signing(
-                                            eth_tx,
-                                        );
-                                    debug!("→ RLP payload: 0x{}", hex::encode(&tx_bytes));
-
-                                    // Use the signing_key that was already fetched earlier to avoid redundant fetching
-                                    let user_tweaked_share = signing_key;
-
-                                    // For NetworkToTarget, use transaction helper function (sequencer removed, pool approach pending)
-                                    if matches!(
-                                        transaction_type,
-                                        crate::types::TransactionType::NetworkToTarget
-                                    ) {
-                                        info!(
-                                            "📝 [LOCAL] NetworkToTarget (EVM) detected - using transaction helper (sequencer removed, pool approach pending) (intent_hash={})",
-                                            intent_hash
-                                        );
-                                        match self.submit_network_to_target_to_sequencer(
-                                            &intent,
-                                            &intent_hash,
-                                            amount,
-                                            tx_bytes.clone(),
-                                            eth_tx.clone(),
-                                            user_tweaked_share,
-                                            Some(user_eth_address.clone()),
-                                        )
-                                        .await
-                                        {
-                                            Ok(()) => {
-                                                return Ok(());
-                                            }
-                                            Err(e) => {
-                                                let error_message = format!(
-                                                    "Failed to submit NetworkToTarget transaction: {}",
-                                                    e
-                                                );
-                                                error!("❌ [LOCAL] {}", error_message);
-                                                
-                                                // Store transaction error and trigger refund
-                                                if let Some(user_intent_manager) = &self.user_intent_manager {
-                                                    // Store the error
-                                                    if let Err(store_err) = user_intent_manager
-                                                        .store_transaction_error(&intent_hash, &error_message, None)
-                                                        .await
-                                                    {
-                                                        warn!(
-                                                            "❌ [LOCAL] Failed to store transaction error for intent {}: {}",
-                                                            intent_hash, store_err
-                                                        );
-                                                    } else {
-                                                        info!(
-                                                            "💥 [LOCAL] Stored transaction error for intent {}: {}",
-                                                            intent_hash, error_message
-                                                        );
-                                                    }
-                                                    
-                                                    // Broadcast the error (batch-aware: single intent as one-element vec)
-                                                    if let Some(signing_node) = &self.signing_node {
-                                                        signing_node.broadcast_transaction_error(
-                                                            Some(vec![intent_hash.clone()]),
-                                                            &error_message,
-                                                            "network_to_target",
-                                                            None,
-                                                        )
-                                                        .await;
-                                                    }
-                                                    
-                                                } else {
-                                                    warn!("❌ [LOCAL] User intent manager not available to handle transaction error");
-                                                }
-                                                
-                                                return Ok(());
-                                            }
-                                        }
-                                    }
-
-                                    {
-                                        let mut eth_signer = EthereumSigner::new(signing_node);
-                                        eth_signer
-                                            .sign_transaction(
-                                                tx_bytes.clone(),
-                                                &chain_handler,
-                                                eth_tx,
-                                                user_tweaked_share,
-                                                Some(user_eth_address.clone()),
-                                                vec![intent_hash.clone()],
-                                                Some(transaction_type.clone()),
-                                                None,
-                                                signing_key,
-                                            )
-                                            .await?;
-                                    }
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            let error_message = format!("Failed to create chain transaction from deposit intent: {}", e);
-                            error!("❌ [LOCAL] {}", error_message);
-                            
-                            // Store transaction error and trigger refund for NetworkToTarget transactions
-                            if let Some(user_intent_manager) = &self.user_intent_manager {
-                                // Store the error
-                                if let Err(store_err) = user_intent_manager
-                                    .store_transaction_error(&intent_hash, &error_message, None)
-                                    .await
-                                {
-                                    warn!(
-                                        "❌ [LOCAL] Failed to store transaction error for intent {}: {}",
-                                        intent_hash, store_err
-                                    );
-                                } else {
-                                    info!(
-                                        "💥 [LOCAL] Stored transaction error for intent {}: {}",
-                                        intent_hash, error_message
-                                    );
-                                }
-                                
-                                // Broadcast the error
-                                if let Some(signing_node) = &self.signing_node {
-                                    let transaction_type_str = match transaction_type {
-                                        crate::types::TransactionType::UserToVault => "user_to_vault",
-                                        crate::types::TransactionType::NetworkToTarget => "network_to_target",
-
-                                        crate::types::TransactionType::IntentStatusUpdate => "intent_status_update",
-                                        crate::types::TransactionType::WithdrawLiquidity => "withdraw_liquidity",
-                                        crate::types::TransactionType::ClaimReward => "claim_reward",
-                                    };
-                                    
-                                    signing_node.broadcast_transaction_error(
-                                        Some(vec![intent_hash.clone()]),
-                                        &error_message,
-                                        transaction_type_str,
-                                        None,
-                                    )
-                                    .await;
-                                }
-                            } else {
-                                warn!("❌ [LOCAL] User intent manager not available to handle transaction error");
-                            }
-                        }
-                    }
-                } else {
-                    warn!("❌ [LOCAL] Signing node not available for deposit intent");
-                }
             }
             ChannelMessage::TransactionFailure {
                 sequencer_request_id,

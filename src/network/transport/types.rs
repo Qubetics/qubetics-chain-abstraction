@@ -85,6 +85,7 @@ pub const TOPIC_LEGACY_DKG: &str = "dkg";
 pub const TOPIC_TRANSACTION_BROADCAST: &str = "transaction-broadcast";
 pub const TOPIC_TRANSACTION_FAILURE: &str = "transaction-failure";
 pub const TOPIC_INTENT_BATCH_BROADCAST: &str = "intent-batch-broadcast";
+pub const TOPIC_TICS_USER_TO_VAULT_BATCH: &str = "tics-user-to-vault-batch";
 pub const TOPIC_BTC_INTENT_MANAGER_TX_UPDATE: &str = "btc-intent-manager-tx-update";
 
 /// Typed view of the gossipsub topics this MPC node participates in.
@@ -99,6 +100,7 @@ pub enum GossipTopic {
     Transactions,
     DepositIntents,
     IntentBatchBroadcast,
+    TicsUserToVaultBatch,
     DkgCommands,
     UserRegistrations,
     SolverRewards,
@@ -128,6 +130,7 @@ impl GossipTopic {
         GossipTopic::DepositIntents,
         GossipTopic::DkgCommands,
         GossipTopic::IntentBatchBroadcast,
+        GossipTopic::TicsUserToVaultBatch,
         GossipTopic::UserRegistrations,
         GossipTopic::SolverRewards,
         GossipTopic::ClaimRewards,
@@ -155,6 +158,7 @@ impl GossipTopic {
             GossipTopic::Transactions => TOPIC_TRANSACTIONS,
             GossipTopic::DepositIntents => TOPIC_DEPOSIT_INTENTS,
             GossipTopic::IntentBatchBroadcast => TOPIC_INTENT_BATCH_BROADCAST,
+            GossipTopic::TicsUserToVaultBatch => TOPIC_TICS_USER_TO_VAULT_BATCH,
             GossipTopic::DkgCommands => TOPIC_DKG_COMMANDS,
             GossipTopic::UserRegistrations => TOPIC_USER_REGISTRATIONS,
             GossipTopic::SolverRewards => TOPIC_SOLVER_REWARDS,

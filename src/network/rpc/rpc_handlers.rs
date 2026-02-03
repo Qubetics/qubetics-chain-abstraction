@@ -624,13 +624,14 @@ impl MpcNetworkLayer {
             }
         };
 
-        let (from, signature, msg_round) = match signing_message {
+        let (from, signature, msg_round, slot_id) = match signing_message {
             SigningMessage::ECDSASignature {
                 from,
                 signature,
                 round,
+                slot_id,
                 ..
-            } => (from, signature, round),
+            } => (from, signature, round, slot_id),
             _ => {
                 warn!(
                     "❌ [SIGNING-SECURE] Received signing message that is not an ECDSA signature"
@@ -655,7 +656,7 @@ impl MpcNetworkLayer {
         let result = if let Some(signing_node) = &mut self.signing_node {
             receiver_node_id = signing_node.get_node_id().to_string();
             signing_node
-                .handle_signature_to_final_node(from.clone(), signature.clone(), round)
+                .handle_signature_to_final_node(from.clone(), signature.clone(), round, slot_id)
                 .await
         } else {
             warn!("❌ [SIGNING-SECURE] Signing node not initialized to process ECDSA signature");
