@@ -192,7 +192,7 @@ pub struct MpcNetworkLayer {
     pub(crate) message_rx: mpsc::Receiver<ChannelMessage>,
     pub(crate) topics: HashSet<TopicHash>,
     pub(crate) dkg_node: Option<DKGNode>,
-    pub(crate) signing_node: Option<SigningNode>,
+    pub(crate) signing_node: Option<Arc<Mutex<SigningNode>>>,
     pub(crate) db_signing_node: Option<Arc<Mutex<DatabaseSigningNode>>>,
     pub(crate) consensus_node: Option<ConsensusNode>,
     pub(crate) command_processor: Option<CommandProcessor>,

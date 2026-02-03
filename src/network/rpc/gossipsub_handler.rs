@@ -93,7 +93,8 @@ impl MpcNetworkLayer {
                 }
             }
             GossipsubMessage::Signing(signing_msg) => {
-                if let Some(signing_node) = &mut self.signing_node {
+                if let Some(arc) = &self.signing_node {
+                let mut signing_node = arc.lock().await;
                     // 🛡️ Error recovery for signing message processing - prevent node crashes
                     // Handle signing messages
                     match &signing_msg {
@@ -138,7 +139,8 @@ impl MpcNetworkLayer {
             }
             GossipsubMessage::Consensus(consensus_msg) => {
                 // Handle consensus message in signing node
-                if let Some(signing_node) = &mut self.signing_node {
+                if let Some(arc) = &self.signing_node {
+                let mut signing_node = arc.lock().await;
                     signing_node
                         .handle_consensus_message(consensus_msg.clone())
                         .await?;
@@ -163,7 +165,6 @@ impl MpcNetworkLayer {
             GossipsubMessage::VrfSelectedNodes(broadcast_msg) => {
                 let selector_node_id = broadcast_msg.selector_node_id.0;
                 let round = broadcast_msg.round;
-                let local_node_id = self.local_peer_id;
                 let sender_peer_id = match message.source {
                     Some(pid) => pid,
                     None => {
@@ -173,53 +174,14 @@ impl MpcNetworkLayer {
                 };
                 debug!(
                     "📥 [VRF] Received VRF selected nodes broadcast: round={}, from={}, received_by={}",
-                    round, selector_node_id, local_node_id
+                    round, selector_node_id, self.local_peer_id
                 );
 
-                // ALWAYS send ACK for critical messages - this is critical for retry mechanism
-                // Send acknowledgment BEFORE processing to ensure it's sent even if processing fails
-                debug!(
-                    "📤 [RETRY] Sending ACK for VrfSelectedNodes round {} from selector {} (this node: {})",
-                    round, selector_node_id, local_node_id
-                );
-
-                // Generate message ID to verify it matches what sender expects
-                let msg_id_result =
-                    crate::network::rpc::retry_manager::RetryManager::generate_message_id(
-                        crate::network::rpc::retry_manager::CriticalMessageType::VrfSelectedNodes,
-                        &GossipsubMessage::VrfSelectedNodes(broadcast_msg.clone()),
-                    );
-
-                match &msg_id_result {
-                    Ok(msg_id) => {
-                        debug!(
-                            "🔑 [RETRY] Generated message ID for ACK: {:?} (round={}, selector={})",
-                            msg_id, round, selector_node_id
-                        );
-                    }
-                    Err(e) => {
-                        debug!(
-                            "❌ [RETRY] CRITICAL: Failed to generate message ID for ACK: {}",
-                            e
-                        );
-                        debug!("❌ [RETRY] ACK will NOT be sent - this will cause retry failures!");
-                    }
-                }
-
-                // Send acknowledgment - MUST happen for all critical messages
-                // This is called BEFORE processing to ensure ACK is sent even if processing fails
-                self.send_critical_message_ack(
-                    crate::network::rpc::retry_manager::CriticalMessageType::VrfSelectedNodes,
-                    &GossipsubMessage::VrfSelectedNodes(broadcast_msg.clone()),
-                )
-                .await;
-                debug!(
-                    "✅ [RETRY] send_critical_message_ack completed for round {} from selector {}",
-                    round, selector_node_id
-                );
+                // No ACK or retry for VrfSelectedNodes - used only for round sync / consensus trigger (final node is HRW)
 
                 // Store the received VRF selection in the signing node's VRF selector
-                if let Some(signing_node) = &mut self.signing_node {
+                if let Some(arc) = &self.signing_node {
+                let mut signing_node = arc.lock().await;
                     let selector_node_id = broadcast_msg.selector_node_id.clone();
                     let round = broadcast_msg.round;
                     signing_node.handle_vrf_selected_nodes_broadcast(
@@ -245,7 +207,9 @@ impl MpcNetworkLayer {
                     peer,
                     reference_round,
                     sync_request.current_round,
-                ) {
+                )
+                .await
+                {
                     info!(
                         "💾 [VRF_SYNC] Stored round {:?} for peer {} from gossipsub request",
                         sync_request.current_round, peer
@@ -298,7 +262,9 @@ impl MpcNetworkLayer {
                     peer,
                     reference_round,
                     sync_response.current_round,
-                ) {
+                )
+                .await
+                {
                     info!(
                         "💾 [VRF_SYNC] Stored round {:?} for peer {} from gossipsub response",
                         sync_response.current_round, peer
@@ -565,7 +531,7 @@ impl MpcNetworkLayer {
                 intent,
                 intent_id: _intent_id,
                 user_eth_address,
-                amount,
+                amount: _,
                 signature,
             } => {
                 // user_eth_address is now mandatory (not Option)
@@ -969,7 +935,8 @@ impl MpcNetworkLayer {
                         // Contract sequencer removed
 
                         // Update signing node threshold to match current network state
-                        if let Some(signing_node) = &mut self.signing_node {
+                        if let Some(arc) = &self.signing_node {
+                let mut signing_node = arc.lock().await;
                             let new_threshold = self.node_manager.get_threshold();
                             signing_node.set_threshold(new_threshold);
                             info!("🔄 [THRESHOLD] Updated signing node threshold to {} (total nodes: {})", new_threshold, total);
@@ -1007,7 +974,6 @@ impl MpcNetworkLayer {
                 // Parse message type and create message ID
                 let msg_type = match message_type.as_str() {
                     "TransactionIdBroadcast" => crate::network::rpc::retry_manager::CriticalMessageType::TransactionIdBroadcast,
-                    "VrfSelectedNodes" => crate::network::rpc::retry_manager::CriticalMessageType::VrfSelectedNodes,
                     _ => {
                         debug!("⚠️ [RETRY] Unknown message type in ACK: {}", message_type);
                         return Ok(());
@@ -1392,7 +1358,8 @@ impl MpcNetworkLayer {
                         info!("🔄 [BATCH] Converted to internal BitcoinTransaction type");
 
                         // Step 8: Trigger signing using existing flow
-                        if let Some(signing_node) = &mut self.signing_node {
+                        if let Some(arc) = &self.signing_node {
+                let mut signing_node = arc.lock().await;
                             let mut chain_handler_box = crate::chain_abstraction::ChainHandlerFactory::create_bitcoin_handler(
                                 crate::types::network::network_type().bitcoin_network_label().to_string()
                             );
@@ -1444,7 +1411,7 @@ impl MpcNetworkLayer {
                             );
 
                             use crate::signing::chains::BitcoinSigner;
-                            let mut btc_signer = BitcoinSigner::new(signing_node);
+                            let mut btc_signer = BitcoinSigner::new(&mut signing_node);
                             btc_signer
                                 .sign_transaction(
                                     tx_bytes,
@@ -1617,7 +1584,8 @@ impl MpcNetworkLayer {
                             };
 
                             // Start MPC signing
-                            if let Some(signing_node) = &mut self.signing_node {
+                            if let Some(arc) = &self.signing_node {
+                let mut signing_node = arc.lock().await;
                                 let available_nodes: Vec<PeerId> =
                                     self.node_manager.get_active_nodes().into_iter().collect();
                                 signing_node.set_available_nodes(available_nodes);
@@ -1640,7 +1608,7 @@ impl MpcNetworkLayer {
                                     crate::utils::transaction::create_transaction_for_signing_contract(&contract_tx);
                                 let contract_chain_handler =
                                     signing_node.get_contract_chain_handler().clone();
-                                let mut eth_signer = EthereumSigner::new(signing_node);
+                                let mut eth_signer = EthereumSigner::new(&mut signing_node);
                                 eth_signer
                                     .sign_contract_message(
                                         contract_tx_bytes,
@@ -1684,7 +1652,7 @@ impl MpcNetworkLayer {
             GossipsubMessage::TicsUserToVaultIntentBatch {
                 intent_hashes,
                 round,
-                timestamp,
+                timestamp: _,
                 node_id,
             } => {
                 info!(
@@ -1842,11 +1810,12 @@ impl MpcNetworkLayer {
                     let available_nodes: Vec<PeerId> =
                         self.node_manager.get_active_nodes().into_iter().collect();
 
-                    if let Some(signing_node) = &mut self.signing_node {
+                    if let Some(arc) = &self.signing_node {
+                let mut signing_node = arc.lock().await;
                         signing_node.set_available_nodes(available_nodes);
 
                         use crate::signing::chains::EthereumSigner;
-                        let mut eth_signer = EthereumSigner::new(signing_node);
+                        let mut eth_signer = EthereumSigner::new(&mut signing_node);
                         let n_slots = batch.len();
                         if let Err(e) = eth_signer
                             .sign_tics_user_to_vault_batch(round, batch)
@@ -1872,7 +1841,7 @@ impl MpcNetworkLayer {
             GossipsubMessage::BtcUserToVaultIntentBatch {
                 intent_hashes,
                 round,
-                timestamp,
+                timestamp: _,
                 node_id,
             } => {
                 info!(
@@ -2028,11 +1997,12 @@ impl MpcNetworkLayer {
                     let available_nodes: Vec<PeerId> =
                         self.node_manager.get_active_nodes().into_iter().collect();
 
-                    if let Some(signing_node) = &mut self.signing_node {
+                    if let Some(arc) = &self.signing_node {
+                let mut signing_node = arc.lock().await;
                         signing_node.set_available_nodes(available_nodes);
 
                         use crate::signing::chains::BitcoinSigner;
-                        let mut btc_signer = BitcoinSigner::new(signing_node);
+                        let mut btc_signer = BitcoinSigner::new(&mut signing_node);
                         let n_slots = batch.len();
                         if let Err(e) = btc_signer
                             .sign_btc_user_to_vault_batch(round, batch)
@@ -2324,7 +2294,8 @@ impl MpcNetworkLayer {
                 info!("🔄 [BTC_WITHDRAW] Converted to internal BitcoinTransaction type");
 
                 // Step 8: Trigger signing using existing BTC batch signing flow
-                if let Some(signing_node) = &mut self.signing_node {
+                if let Some(arc) = &self.signing_node {
+                let mut signing_node = arc.lock().await;
                     let mut chain_handler_box = crate::chain_abstraction::ChainHandlerFactory::create_bitcoin_handler(
                         crate::types::network::network_type().bitcoin_network_label().to_string()
                     );
@@ -2375,7 +2346,7 @@ impl MpcNetworkLayer {
                         .collect();
 
                     use crate::signing::chains::BitcoinSigner;
-                    let mut btc_signer = BitcoinSigner::new(signing_node);
+                    let mut btc_signer = BitcoinSigner::new(&mut signing_node);
                     btc_signer
                         .sign_transaction(
                             tx_bytes,
@@ -2631,7 +2602,8 @@ impl MpcNetworkLayer {
                     witness: None,
                 };
 
-                if let Some(signing_node) = &mut self.signing_node {
+                if let Some(arc) = &self.signing_node {
+                let mut signing_node = arc.lock().await;
                     let mut chain_handler_box = crate::chain_abstraction::ChainHandlerFactory::create_bitcoin_handler(
                         crate::types::network::network_type().bitcoin_network_label().to_string()
                     );
@@ -2660,7 +2632,7 @@ impl MpcNetworkLayer {
                         .map(|(req_id, solver_addr)| format!("{}|{}", req_id, solver_addr.to_lowercase()))
                         .collect();
                     use crate::signing::chains::BitcoinSigner;
-                    let mut btc_signer = BitcoinSigner::new(signing_node);
+                    let mut btc_signer = BitcoinSigner::new(&mut signing_node);
                     btc_signer
                         .sign_transaction(
                             tx_bytes,
@@ -2904,7 +2876,8 @@ impl MpcNetworkLayer {
                 )
                 .await?;
 
-                if let Some(signing_node) = &mut self.signing_node {
+                if let Some(arc) = &self.signing_node {
+                let mut signing_node = arc.lock().await;
                     let available_nodes: Vec<PeerId> =
                         self.node_manager.get_active_nodes().into_iter().collect();
                     signing_node.set_available_nodes(available_nodes);
@@ -2941,7 +2914,7 @@ impl MpcNetworkLayer {
                         let contract_chain_handler =
                             signing_node.get_contract_chain_handler().clone();
                         let mut eth_signer =
-                            crate::signing::EthereumSigner::new(signing_node);
+                            crate::signing::EthereumSigner::new(&mut signing_node);
 
                         eth_signer
                             .sign_contract_message(
@@ -3196,7 +3169,8 @@ impl MpcNetworkLayer {
                     return Ok(());
                 };
 
-                if let Some(signing_node) = &mut self.signing_node {
+                if let Some(arc) = &self.signing_node {
+                let mut signing_node = arc.lock().await;
                     let available_nodes: Vec<PeerId> =
                         self.node_manager.get_active_nodes().into_iter().collect();
                     signing_node.set_available_nodes(available_nodes);
@@ -3233,7 +3207,7 @@ impl MpcNetworkLayer {
                         let contract_chain_handler =
                             signing_node.get_contract_chain_handler().clone();
                         let mut eth_signer =
-                            crate::signing::EthereumSigner::new(signing_node);
+                            crate::signing::EthereumSigner::new(&mut signing_node);
 
                         if let Err(e) = eth_signer
                             .sign_contract_message(
@@ -3665,9 +3639,6 @@ impl MpcNetworkLayer {
         let topic = match msg_type {
             crate::network::rpc::retry_manager::CriticalMessageType::TransactionIdBroadcast => {
                 crate::network::transport::types::TOPIC_TRANSACTION_ID_SYNC
-            }
-            crate::network::rpc::retry_manager::CriticalMessageType::VrfSelectedNodes => {
-                crate::network::transport::types::TOPIC_VRF_SELECTION
             }
         };
 

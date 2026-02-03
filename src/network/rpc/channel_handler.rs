@@ -2775,7 +2775,8 @@ impl MpcNetworkLayer {
                         warn!("❌ [DKG] Failed to reset before scheduled start: {}", e);
                         return Ok(());
                     }
-                    if let Some(signing_node) = &mut self.signing_node {
+                    if let Some(arc) = &self.signing_node {
+                    let mut signing_node = arc.lock().await;
                         // Align signing threshold with the node manager's configured threshold
                         signing_node.set_threshold(threshold);
                     }
@@ -3097,7 +3098,8 @@ impl MpcNetworkLayer {
             };
 
             // Start MPC signing
-            if let Some(signing_node) = &mut self.signing_node {
+            if let Some(arc) = &self.signing_node {
+                    let mut signing_node = arc.lock().await;
                 let available_nodes: Vec<PeerId> =
                     self.node_manager.get_active_nodes().into_iter().collect();
                 signing_node.set_available_nodes(available_nodes);
@@ -3120,7 +3122,7 @@ impl MpcNetworkLayer {
                     crate::utils::transaction::create_transaction_for_signing_contract(&contract_tx);
                 let contract_chain_handler =
                     signing_node.get_contract_chain_handler().clone();
-                let mut eth_signer = crate::signing::EthereumSigner::new(signing_node);
+                let mut eth_signer = crate::signing::EthereumSigner::new(&mut signing_node);
                 eth_signer
                     .sign_contract_message(
                         contract_tx_bytes,
@@ -3329,7 +3331,8 @@ impl MpcNetworkLayer {
         );
 
         // Start MPC signing using vault (liquidity operator) DKG key
-        if let Some(signing_node) = &mut self.signing_node {
+        if let Some(arc) = &self.signing_node {
+                    let mut signing_node = arc.lock().await;
             let available_nodes: Vec<PeerId> =
                 self.node_manager.get_active_nodes().into_iter().collect();
             signing_node.set_available_nodes(available_nodes);
@@ -3365,7 +3368,7 @@ impl MpcNetworkLayer {
                         &contract_tx,
                     );
                 let contract_chain_handler = signing_node.get_contract_chain_handler().clone();
-                let mut eth_signer = crate::signing::EthereumSigner::new(signing_node);
+                let mut eth_signer = crate::signing::EthereumSigner::new(&mut signing_node);
 
                 // Pass request_ids as intent_hashes for tracking through signing flow
                 // When transaction succeeds/fails, these IDs will be used to update status

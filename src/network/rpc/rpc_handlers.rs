@@ -172,8 +172,8 @@ impl MpcNetworkLayer {
             VrfDomain::Signing => self
                 .signing_node
                 .as_ref()
-                .and_then(|node| node.vrf_service())
-                .map(|svc| svc.context().to_string())
+                .and_then(|arc| arc.try_lock().ok())
+                .and_then(|guard| guard.vrf_service().map(|svc| svc.context().to_string()))
                 .or_else(|| {
                     if let Some(db_signing_node) = &self.db_signing_node {
                         if let Ok(guard) = db_signing_node.try_lock() {
@@ -196,7 +196,8 @@ impl MpcNetworkLayer {
         let context = self.resolve_context(domain, context);
         match domain {
             VrfDomain::Signing => {
-                if let Some(signing_node) = &self.signing_node {
+                if let Some(arc) = &self.signing_node {
+                    let signing_node = arc.lock().await;
                     if let Some(vrf_service) = signing_node.vrf_service() {
                         if vrf_service.context() == context {
                             return Some(vrf_service.get_current_round().await);
@@ -224,13 +225,14 @@ impl MpcNetworkLayer {
             .await
     }
 
-    fn get_vrf_storage_for_domain(&self, domain: VrfDomain, context: &str) -> Option<VrfStorage> {
+    async fn get_vrf_storage_for_domain(&self, domain: VrfDomain, context: &str) -> Option<VrfStorage> {
         let context = self.resolve_context(domain, Some(context));
 
         match domain {
             VrfDomain::Signing => {
                 // Prefer in-memory signing node VRF service if context matches
-                if let Some(signing_node) = &self.signing_node {
+                if let Some(arc) = &self.signing_node {
+                    let signing_node = arc.lock().await;
                     if let Some(vrf_service) = signing_node.vrf_service() {
                         if vrf_service.context() == context {
                             return vrf_service.storage();
@@ -263,7 +265,7 @@ impl MpcNetworkLayer {
             .unwrap_or(true)
     }
 
-    pub(crate) fn store_peer_round_if_valid(
+    pub(crate) async fn store_peer_round_if_valid(
         &mut self,
         domain: VrfDomain,
         context: &str,
@@ -291,7 +293,7 @@ impl MpcNetworkLayer {
             entry.insert(peer, round);
 
             // Persist to database as single source of truth
-            if let Some(vrf_storage) = self.get_vrf_storage_for_domain(domain, &normalized_context)
+            if let Some(vrf_storage) = self.get_vrf_storage_for_domain(domain, &normalized_context).await
             {
                 if let Err(e) = vrf_storage.set_peer_round_for_context(
                     &normalized_context,
@@ -653,7 +655,8 @@ impl MpcNetworkLayer {
         }
 
         let mut receiver_node_id = self.get_local_peer_id().to_string();
-        let result = if let Some(signing_node) = &mut self.signing_node {
+        let result = if let Some(arc) = &self.signing_node {
+                    let mut signing_node = arc.lock().await;
             receiver_node_id = signing_node.get_node_id().to_string();
             signing_node
                 .handle_signature_to_final_node(from.clone(), signature.clone(), round, slot_id)
@@ -755,7 +758,8 @@ impl MpcNetworkLayer {
         }
 
         let mut receiver_node_id = self.get_local_peer_id().to_string();
-        let result = if let Some(signing_node) = &mut self.signing_node {
+        let result = if let Some(arc) = &self.signing_node {
+                    let mut signing_node = arc.lock().await;
             receiver_node_id = signing_node.get_node_id().to_string();
             signing_node
                 .handle_btc_signatures_to_final_node(from.clone(), signatures.clone(), round)
@@ -851,7 +855,8 @@ impl MpcNetworkLayer {
             );
         }
 
-        let result = if let Some(signing_node) = &mut self.signing_node {
+        let result = if let Some(arc) = &self.signing_node {
+                    let mut signing_node = arc.lock().await;
             signing_node
                 .handle_transaction_data_for_final_node(
                     from.clone(),
@@ -909,7 +914,8 @@ impl MpcNetworkLayer {
             peer,
             local_round,
             request.current_round,
-        );
+        )
+        .await;
 
         RPCResponse::VrfRoundSync(VrfRoundSyncResponse {
             from: SerializablePeerId(self.local_peer_id),
@@ -1033,7 +1039,8 @@ impl MpcNetworkLayer {
                     peer,
                     reference_round,
                     current_round,
-                );
+                )
+                .await;
                 self.handle_current_vrf_round_response(current_round).await;
             }
             RPCResponse::VrfRoundSync(sync_response) => {
@@ -1087,9 +1094,6 @@ impl MpcNetworkLayer {
                 let msg_type = match message_type.as_str() {
                     "TransactionIdBroadcast" => {
                         crate::network::rpc::retry_manager::CriticalMessageType::TransactionIdBroadcast
-                    }
-                    "VrfSelectedNodes" => {
-                        crate::network::rpc::retry_manager::CriticalMessageType::VrfSelectedNodes
                     }
                     _ => {
                         warn!(
@@ -1206,7 +1210,8 @@ impl MpcNetworkLayer {
         // 2️⃣ Update threshold **only if new peers were added**
         if new_peers_added {
             let new_threshold = self.node_manager.get_threshold(); // Compute once
-            if let Some(signing_node) = &mut self.signing_node {
+            if let Some(arc) = &self.signing_node {
+                    let mut signing_node = arc.lock().await;
                 signing_node.set_threshold(new_threshold);
             }
         }
@@ -1363,7 +1368,8 @@ impl MpcNetworkLayer {
     async fn handle_current_vrf_round_response(&mut self, current_round: Option<u64>) {
         if let Some(network_round) = current_round {
             // Simple VRF round sync for both signing nodes
-            if let Some(signing_node) = &mut self.signing_node {
+            if let Some(arc) = &self.signing_node {
+                    let mut signing_node = arc.lock().await;
                 signing_node
                     .sync_vrf_round_with_network(network_round)
                     .await;
@@ -1396,7 +1402,9 @@ impl MpcNetworkLayer {
             peer,
             reference_round,
             response.current_round,
-        ) {
+        )
+        .await
+        {
             // VRF round sync applied
         }
     }
@@ -1437,7 +1445,7 @@ mod tests {
         let peer = PeerId::random();
 
         let stored =
-            layer.store_peer_round_if_valid(VrfDomain::Signing, "", peer, Some(5), Some(6));
+            layer.store_peer_round_if_valid(VrfDomain::Signing, "", peer, Some(5), Some(6)).await;
 
         assert!(stored, "valid rounds should be stored");
         assert_eq!(
@@ -1461,7 +1469,8 @@ mod tests {
             peer,
             Some(1),
             Some(1 + super::MAX_VRF_ROUND_SKEW + 10),
-        );
+        )
+        .await;
 
         assert!(layer
             .peer_rounds

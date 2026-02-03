@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, error, info, warn};
 
 pub mod chains;
@@ -43,11 +43,17 @@ use crate::protocols::{VrfSelectedNodesBroadcast, VrfService};
 use crate::hrw;
 use crate::types::{
     p2p::SerializablePeerId, ChannelMessage, ConsensusMessage, ConsensusResult, GossipsubMessage,
-    IntentStatus, TransactionType,
+    TransactionType,
 };
 use crate::user_intent_manager::UserIntentManager;
 use num_traits::Zero;
 
+/// Slot type for per-slot aggregation (TICS vs BTC UserToVault batch).
+#[derive(Clone, Debug)]
+pub enum SlotKind {
+    TicsUserToVault,
+    BtcUserToVault,
+}
 
 #[derive(Clone)]
 pub struct SigningNode {
@@ -69,6 +75,8 @@ pub struct SigningNode {
     dkg_storage: Option<crate::database::DkgStorage>,
     // Dynamic broadcast configuration
     broadcast_policy: BroadcastPolicy,
+    /// Self-reference for spawning non-blocking aggregation tasks (set after wrapping in Arc<Mutex<SigningNode>>).
+    self_ref: Option<Arc<Mutex<SigningNode>>>,
 }
 
 impl SigningNode {
@@ -105,7 +113,13 @@ impl SigningNode {
             database: None,            // Will be set later via set_database
             dkg_storage: None,         // Will be set later via set_database (for HRW candidates)
             broadcast_policy: environment.broadcast_policy,
+            self_ref: None,            // Set via set_self_arc after wrapping in Arc<Mutex<SigningNode>>
         }
+    }
+
+    /// Set self-reference so the node can spawn aggregation tasks. Call after wrapping in Arc<Mutex<SigningNode>>.
+    pub fn set_self_arc(&mut self, arc: Arc<Mutex<SigningNode>>) {
+        self.self_ref = Some(arc);
     }
 }
 
@@ -1386,7 +1400,7 @@ impl SigningNode {
                         }
 
                         // Pick a batch of pending TICS-source intents (UserToVault not done) and broadcast for signing
-                        if let Err(e) = self.process_tics_user_to_vault_intent_batch_for_round(round).await {
+                        if let Err(e) = self.process_tics_user_to_vault_intent_batch_for_round(round, None).await {
                             warn!(
                                 "⚠️ [CLOCK][TICS_UTV_BATCH] Failed to process TICS UserToVault intent batch for round {}: {}",
                                 round, e
@@ -1411,7 +1425,7 @@ impl SigningNode {
                         }
 
                         // Pick a batch of pending BTC-source intents (UserToVault not done) and broadcast for signing
-                        if let Err(e) = self.process_btc_user_to_vault_intent_batch_for_round(round).await {
+                        if let Err(e) = self.process_btc_user_to_vault_intent_batch_for_round(round, None).await {
                             warn!(
                                 "⚠️ [CLOCK][BTC_UTV_BATCH] Failed to process BTC UserToVault intent batch for round {}: {}",
                                 round, e
@@ -1440,12 +1454,14 @@ impl SigningNode {
                             );
                         }
                         // Pick a batch of pending TICS-source intents (UserToVault not done) and broadcast for signing
-                        if let Err(e) = self.process_tics_user_to_vault_intent_batch_for_round(round).await {
+                        if let Err(e) = self.process_tics_user_to_vault_intent_batch_for_round(round, Some(true)).await {
                             warn!(
                                 "⚠️ [CLOCK][TICS_UTV_BATCH] Failed to process TICS UserToVault intent batch for round {}: {}",
                                 round, e
                             );
                         }
+                        self.trigger_aggregate_signature_for_final_node(round)
+                            .await?;
                     } else if operation_type.as_deref() == Some("btc_intent_manager_update") {
                         info!("🔄 [BTC_CONTRACT_UPDATE] Round {} was triggered by BTC intent manager update, processing contract update batch...", round);
                         // Process BTC contract update batch (intents with network_to_target_tx_id but not Solved)
@@ -1496,7 +1512,7 @@ impl SigningNode {
 
     /// Handle consensus messages
     pub async fn handle_consensus_message(&mut self, msg: ConsensusMessage) -> Result<()> {
-        if let ConsensusMessage::FinalNodeResult { ref result, round } = msg {
+        let ConsensusMessage::FinalNodeResult { ref result, round } = msg;
             if let Some(ref dkg) = self.dkg_storage {
                 if let Ok(candidates) = hrw::candidates::get_hrw_candidates(dkg) {
                     if let Some(our_winner) =
@@ -1512,7 +1528,6 @@ impl SigningNode {
                     }
                 }
             }
-        }
         if let Some(consensus_node) = self.coordination.consensus_node_mut() {
             consensus_node.handle_message(msg).await?;
         }
@@ -1766,7 +1781,12 @@ impl SigningNode {
 
     /// Pick a batch of pending TICS-source intents (UserToVault not yet done) and broadcast
     /// TicsUserToVaultIntentBatch so all nodes sign each intent with the respective user key (epoch_1).
-    async fn process_tics_user_to_vault_intent_batch_for_round(&self, round: u64) -> Result<()> {
+    /// When `batched_only` is `Some(true)`, only Batched intents that don't have a user_to_vault tx-id are picked.
+    async fn process_tics_user_to_vault_intent_batch_for_round(
+        &self,
+        round: u64,
+        batched_only: Option<bool>,
+    ) -> Result<()> {
         let user_intent_manager = self
             .user_intent_manager
             .as_ref()
@@ -1778,7 +1798,7 @@ impl SigningNode {
             .unwrap_or(20);
 
         let pending = user_intent_manager
-            .get_pending_user_to_vault_intents_by_source_chain("tics", max_per_batch)
+            .get_pending_user_to_vault_intents_by_source_chain("tics", max_per_batch, batched_only)
             .await;
 
         if pending.is_empty() {
@@ -1787,19 +1807,6 @@ impl SigningNode {
                 round
             );
             return Ok(());
-        }
-
-        // Mark selected intents as Batched on this node before broadcast so they are not re-picked; other nodes will mark on receive
-        for (hash, _, user_eth) in &pending {
-            if let Err(e) = user_intent_manager
-                .update_intent_status(user_eth, hash, IntentStatus::Batched)
-                .await
-            {
-                warn!(
-                    "⚠️ [CLOCK][TICS_UTV_BATCH] Failed to mark intent {} as Batched: {}",
-                    hash, e
-                );
-            }
         }
 
         let intent_hashes: Vec<String> = pending
@@ -1835,7 +1842,12 @@ impl SigningNode {
 
     /// Pick a batch of pending BTC-source intents (UserToVault not yet done) and broadcast
     /// BtcUserToVaultIntentBatch so all nodes sign each intent with the respective user key (epoch_2).
-    async fn process_btc_user_to_vault_intent_batch_for_round(&self, round: u64) -> Result<()> {
+    /// When `batched_only` is `Some(true)`, only Batched intents that don't have a user_to_vault tx-id are picked.
+    async fn process_btc_user_to_vault_intent_batch_for_round(
+        &self,
+        round: u64,
+        batched_only: Option<bool>,
+    ) -> Result<()> {
         let user_intent_manager = self
             .user_intent_manager
             .as_ref()
@@ -1847,7 +1859,7 @@ impl SigningNode {
             .unwrap_or(10);
 
         let pending = user_intent_manager
-            .get_pending_user_to_vault_intents_by_source_chain("bitcoin", max_per_batch)
+            .get_pending_user_to_vault_intents_by_source_chain("bitcoin", max_per_batch, batched_only)
             .await;
 
         if pending.is_empty() {
@@ -1856,19 +1868,6 @@ impl SigningNode {
                 round
             );
             return Ok(());
-        }
-
-        // Mark selected intents as Batched on this node before broadcast so they are not re-picked; other nodes will mark on receive
-        for (hash, _, user_eth) in &pending {
-            if let Err(e) = user_intent_manager
-                .update_intent_status(user_eth, hash, IntentStatus::Batched)
-                .await
-            {
-                warn!(
-                    "⚠️ [CLOCK][BTC_UTV_BATCH] Failed to mark intent {} as Batched: {}",
-                    hash, e
-                );
-            }
         }
 
         let intent_hashes: Vec<String> = pending
@@ -3412,6 +3411,142 @@ impl SigningNode {
         Ok(())
     }
 
+    /// Per-slot aggregation + broadcast (run in a spawned task). Call with owned data after threshold is reached.
+    pub async fn do_aggregate_and_broadcast_for_slot(
+        &mut self,
+        round: u64,
+        slot_id: String,
+        round_slot_signatures: Vec<(String, ECDSASignature)>,
+        chain_id: u64,
+        slot_kind: SlotKind,
+    ) -> Result<()> {
+
+        let threshold = self.threshold;
+        let mut sorted: Vec<_> = round_slot_signatures.into_iter().collect();
+        sorted.sort_by(|a, b| a.0.cmp(&b.0));
+        let sigs_result: Result<Vec<RecoverableSignature>> = sorted
+            .iter()
+            .take(threshold)
+            .map(|(signer_id, ecdsa_sig)| {
+                RecoverableSignature::from_compact(
+                    &ecdsa_sig.signature,
+                    RecoveryId::from_i32(ecdsa_sig.recovery_id as i32)?,
+                )
+                .map_err(|_| anyhow::anyhow!("Invalid signature from signer {}", signer_id))
+            })
+            .collect();
+        let threshold_sigs = sigs_result?;
+        let mut peer_to_dkg_index = Vec::new();
+        for (id, _) in sorted.iter().take(threshold) {
+            let idx = self.calculate_dkg_index_for_peer(id).await;
+            peer_to_dkg_index.push((id.clone(), idx));
+        }
+        let aggregated_signature = self
+            .aggregate_signatures(threshold_sigs, peer_to_dkg_index)
+            .await?;
+
+        let (recovery_id, sig_bytes) = aggregated_signature.serialize_compact();
+        let r_biguint = num_bigint::BigUint::from_bytes_be(&sig_bytes[0..32]);
+        let s_biguint = num_bigint::BigUint::from_bytes_be(&sig_bytes[32..64]);
+        let mut r = [0u8; 32];
+        let mut s = [0u8; 32];
+        let r_canonical = r_biguint.to_bytes_be();
+        let s_canonical = s_biguint.to_bytes_be();
+        if r_canonical.len() <= 32 {
+            r[32 - r_canonical.len()..].copy_from_slice(&r_canonical);
+        }
+        if s_canonical.len() <= 32 {
+            s[32 - s_canonical.len()..].copy_from_slice(&s_canonical);
+        }
+        let mut canonical_signature_bytes = [0u8; 64];
+        canonical_signature_bytes[0..32].copy_from_slice(&r);
+        canonical_signature_bytes[32..64].copy_from_slice(&s);
+        let recid_u8 = recovery_id.to_i32() as u8;
+
+        match slot_kind {
+            SlotKind::TicsUserToVault => {
+                if let Ok(Some(signed_tx_hex)) = self
+                    .reconstruct_signed_ethereum_transaction_for_batch_slot(
+                        round,
+                        &slot_id,
+                        &canonical_signature_bytes,
+                        recid_u8,
+                    )
+                    .await
+                {
+                    info!(
+                        "🎉 [SIGNING] TICS UserToVault batch slot {} (round {}) ready, broadcasting",
+                        slot_id, round
+                    );
+                    match Self::broadcast_ethereum_transaction(&signed_tx_hex, chain_id).await {
+                        Ok(Some(tx_hash)) => {
+                            info!(
+                                "✅ [SIGNING] Batch slot {} broadcasted: {}",
+                                slot_id, tx_hash
+                            );
+                            self.store_transaction_id_for_round(
+                                round,
+                                &tx_hash,
+                                crate::types::TransactionNetwork::TICS,
+                                Some(slot_id.clone()),
+                            )
+                            .await;
+                        }
+                        Ok(None) => {
+                            warn!("⚠️ [SIGNING] Batch slot {} broadcasted but no tx_hash", slot_id);
+                        }
+                        Err(e) => {
+                            error!(
+                                "❌ [SIGNING] Failed to broadcast batch slot {}: {}",
+                                slot_id, e
+                            );
+                            self.store_transaction_error_for_round(
+                                round,
+                                &e.to_string(),
+                                crate::types::TransactionNetwork::TICS,
+                            )
+                            .await;
+                        }
+                    }
+                } else {
+                    return Err(anyhow!(
+                        "Failed to reconstruct TICS signed tx for slot {} round {}",
+                        slot_id, round
+                    ));
+                }
+            }
+            SlotKind::BtcUserToVault => {
+                if let Ok(Some(txid_hex)) = self
+                    .reconstruct_signed_bitcoin_transaction_for_batch_slot(
+                        round,
+                        &slot_id,
+                        &canonical_signature_bytes,
+                        recid_u8,
+                    )
+                    .await
+                {
+                    info!(
+                        "🎉 [SIGNING] BTC UserToVault batch slot {} (round {}) ready, broadcasting",
+                        slot_id, round
+                    );
+                    self.store_transaction_id_for_round(
+                        round,
+                        &txid_hex,
+                        crate::types::TransactionNetwork::BTC,
+                        Some(slot_id.clone()),
+                    )
+                    .await;
+                } else {
+                    return Err(anyhow!(
+                        "Failed to reconstruct/broadcast BTC signed tx for slot {} round {}",
+                        slot_id, round
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// TICS UserToVault batch: handle one partial for (round, slot_id). Aggregate when threshold reached.
     async fn handle_signature_for_round_slot(
         &mut self,
@@ -3479,142 +3614,63 @@ impl SigningNode {
             return Ok(());
         }
 
-        let mut sorted: Vec<_> = round_slot_signatures.iter().collect();
-        sorted.sort_by(|a, b| a.0.cmp(b.0));
-        let sigs_result: Result<Vec<RecoverableSignature>> = sorted
-            .iter()
-            .take(self.threshold as usize)
-            .map(|(signer_id, ecdsa_sig)| {
-                RecoverableSignature::from_compact(
-                    &ecdsa_sig.signature,
-                    RecoveryId::from_i32(ecdsa_sig.recovery_id as i32)?,
-                )
-                .map_err(|_| anyhow::anyhow!("Invalid signature from signer {}", signer_id))
-            })
-            .collect();
-        let threshold_sigs = sigs_result?;
-        let mut peer_to_dkg_index = Vec::new();
-        for (id, _) in sorted.iter().take(self.threshold as usize) {
-            let idx = self.calculate_dkg_index_for_peer(id).await;
-            peer_to_dkg_index.push(((*id).clone(), idx));
-        }
-        let aggregated_signature = self
-            .aggregate_signatures(threshold_sigs, peer_to_dkg_index)
-            .await?;
-
+        // Mark aggregated immediately so no duplicate work; then spawn non-blocking task for aggregate + broadcast
         {
             let mut agg = self.signatures.aggregated_round_slots.write().await;
-            agg.insert(slot_key);
+            agg.insert(slot_key.clone());
         }
 
-        let (recovery_id, sig_bytes) = aggregated_signature.serialize_compact();
-        let chain_id_for_v = std::env::var("MPC_ETHEREUM_CHAIN_ID")
+        let slot_kind = {
+            let btc_batch = self.pending.user_to_vault_btc_batch.read().await;
+            let is_btc = btc_batch
+                .get(&round)
+                .map(|e| e.iter().any(|(h, ..)| h == &slot_id))
+                .unwrap_or(false);
+            if is_btc {
+                SlotKind::BtcUserToVault
+            } else {
+                SlotKind::TicsUserToVault
+            }
+        };
+
+        let chain_id = std::env::var("MPC_ETHEREUM_CHAIN_ID")
             .ok()
             .and_then(|id| id.parse::<u64>().ok())
             .unwrap_or(9029);
-        let r_biguint = num_bigint::BigUint::from_bytes_be(&sig_bytes[0..32]);
-        let s_biguint = num_bigint::BigUint::from_bytes_be(&sig_bytes[32..64]);
-        let mut r = [0u8; 32];
-        let mut s = [0u8; 32];
-        let r_canonical = r_biguint.to_bytes_be();
-        let s_canonical = s_biguint.to_bytes_be();
-        if r_canonical.len() <= 32 {
-            r[32 - r_canonical.len()..].copy_from_slice(&r_canonical);
-        }
-        if s_canonical.len() <= 32 {
-            s[32 - s_canonical.len()..].copy_from_slice(&s_canonical);
-        }
-        let mut canonical_signature_bytes = [0u8; 64];
-        canonical_signature_bytes[0..32].copy_from_slice(&r);
-        canonical_signature_bytes[32..64].copy_from_slice(&s);
-        let recid_u8 = recovery_id.to_i32() as u8;
 
-        if let Ok(Some(signed_tx_hex)) = self
-            .reconstruct_signed_ethereum_transaction_for_batch_slot(
-                round,
-                &slot_id,
-                &canonical_signature_bytes,
-                recid_u8,
-            )
-            .await
-        {
-            let chain_id = chain_id_for_v;
-            info!(
-                "🎉 [SIGNING] TICS UserToVault batch slot {} (round {}) ready, broadcasting",
-                slot_id, round
-            );
-            match Self::broadcast_ethereum_transaction(&signed_tx_hex, chain_id).await {
-                Ok(Some(tx_hash)) => {
-                    info!(
-                        "✅ [SIGNING] Batch slot {} broadcasted: {}",
-                        slot_id, tx_hash
-                    );
-                    self.store_transaction_id_for_round(
+        let mut sorted: Vec<_> = round_slot_signatures.iter().collect();
+        sorted.sort_by(|a, b| a.0.cmp(b.0));
+        let round_slot_signatures_owned: Vec<(String, ECDSASignature)> = sorted
+            .iter()
+            .take(self.threshold)
+            .map(|(id, sig)| ((*id).clone(), (*sig).clone()))
+            .collect();
+
+        let self_ref = self.self_ref.clone();
+        let round = round;
+        let slot_id = slot_id.clone();
+
+        tokio::spawn(async move {
+            if let Some(arc) = self_ref {
+                let mut node = arc.lock().await;
+                if let Err(e) = node
+                    .do_aggregate_and_broadcast_for_slot(
                         round,
-                        &tx_hash,
-                        crate::types::TransactionNetwork::TICS,
-                        Some(slot_id.clone()),
-                    )
-                    .await;
-                }
-                Ok(None) => {
-                    warn!("⚠️ [SIGNING] Batch slot {} broadcasted but no tx_hash", slot_id);
-                }
-                Err(e) => {
-                    error!(
-                        "❌ [SIGNING] Failed to broadcast batch slot {}: {}",
-                        slot_id, e
-                    );
-                    self.store_transaction_error_for_round(
-                        round,
-                        &e.to_string(),
-                        crate::types::TransactionNetwork::TICS,
-                    )
-                    .await;
-                }
-            }
-        } else {
-            let is_btc_slot = {
-                let btc_batch = self.pending.user_to_vault_btc_batch.read().await;
-                btc_batch
-                    .get(&round)
-                    .map(|e| e.iter().any(|(h, ..)| h == &slot_id))
-                    .unwrap_or(false)
-            };
-            if is_btc_slot {
-                if let Ok(Some(txid_hex)) = self
-                    .reconstruct_signed_bitcoin_transaction_for_batch_slot(
-                        round,
-                        &slot_id,
-                        &canonical_signature_bytes,
-                        recid_u8,
+                        slot_id.clone(),
+                        round_slot_signatures_owned,
+                        chain_id,
+                        slot_kind,
                     )
                     .await
                 {
-                    info!(
-                        "🎉 [SIGNING] BTC UserToVault batch slot {} (round {}) ready, broadcasting",
-                        slot_id, round
-                    );
-                    self.store_transaction_id_for_round(
-                        round,
-                        &txid_hex,
-                        crate::types::TransactionNetwork::BTC,
-                        Some(slot_id.clone()),
-                    )
-                    .await;
-                } else {
-                    warn!(
-                        "❌ [SIGNING] Failed to reconstruct/broadcast BTC signed tx for batch slot {} round {}",
-                        slot_id, round
+                    error!(
+                        "❌ [SIGNING] Async aggregation failed for slot {} round {}: {}",
+                        slot_id, round, e
                     );
                 }
-            } else {
-                warn!(
-                    "❌ [SIGNING] Failed to reconstruct signed tx for batch slot {} round {}",
-                    slot_id, round
-                );
             }
-        }
+        });
+
         Ok(())
     }
 

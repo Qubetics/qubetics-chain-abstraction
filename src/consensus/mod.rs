@@ -269,7 +269,6 @@ impl ConsensusNode {
         }
 
         let mut max_frequency = 0;
-        let mut most_frequent_node = None;
         let mut all_same_frequency = true;
         let mut first_frequency = None;
 
@@ -282,7 +281,6 @@ impl ConsensusNode {
 
             if *frequency > max_frequency {
                 max_frequency = *frequency;
-                most_frequent_node = Some(node.clone());
             }
         }
 

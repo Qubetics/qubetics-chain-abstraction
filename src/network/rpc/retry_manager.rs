@@ -24,11 +24,10 @@ pub struct MessageId {
 }
 
 /// Types of critical messages that need retry
-/// Reduced from 7 to 5 types - removed SELECT messages that have ACK/MISSING fallback
+/// VrfSelectedNodes is not included: used only for round sync / consensus trigger; no ACK or unicast retry.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum CriticalMessageType {
     TransactionIdBroadcast,
-    VrfSelectedNodes,
 }
 
 /// State of a message retry
@@ -62,13 +61,12 @@ impl RetryManager {
     }
 
     /// Check if a message type is critical and needs retry
-    /// Reduced from 7 to 5 types - SELECT messages have ACK/MISSING fallback
+    /// VrfSelectedNodes is not critical: round sync only, no retry/ACK.
     pub fn is_critical_message(msg: &GossipsubMessage) -> Option<CriticalMessageType> {
         match msg {
             GossipsubMessage::TransactionIdBroadcast { .. } => {
                 Some(CriticalMessageType::TransactionIdBroadcast)
             }
-            GossipsubMessage::VrfSelectedNodes(_) => Some(CriticalMessageType::VrfSelectedNodes),
             _ => None,
         }
     }
@@ -81,9 +79,6 @@ impl RetryManager {
         let unique_id = match msg {
             GossipsubMessage::TransactionIdBroadcast { transaction_id, .. } => {
                 transaction_id.clone()
-            }
-            GossipsubMessage::VrfSelectedNodes(broadcast) => {
-                format!("vrf_{}_{}", broadcast.round, broadcast.selector_node_id.0)
             }
             _ => return Err(anyhow!("Not a critical message type")),
         };
@@ -260,11 +255,9 @@ impl RetryManager {
     }
 
     /// Helper: Check if message type is VRF-related (needs aggressive retry)
-    fn is_vrf_message(msg_type: &CriticalMessageType) -> bool {
-        matches!(
-            msg_type,
-            CriticalMessageType::VrfSelectedNodes
-        )
+    /// VrfSelectedNodes no longer tracked, so always false.
+    fn is_vrf_message(_msg_type: &CriticalMessageType) -> bool {
+        false
     }
 
     async fn remove_peer_from_retries(
