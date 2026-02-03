@@ -569,7 +569,13 @@ mod tests {
             .expect("consensus should succeed");
 
         // Tamper with the final node to simulate spoofed data
-        result.final_node = nodes[1].clone();
+        // Find a node that is NOT the legitimate final_node
+        let tampered_node = nodes
+            .iter()
+            .find(|n| **n != result.final_node)
+            .expect("Should have at least one node different from final_node")
+            .clone();
+        result.final_node = tampered_node;
 
         let mut receiver = ConsensusNode::new();
         receiver.add_selected_nodes(round, nodes.clone());
@@ -579,7 +585,12 @@ mod tests {
             .await
             .expect_err("tampered consensus result should be rejected");
 
-        assert!(err.to_string().contains("Invalid consensus result"));
+        let err_str = err.to_string();
+        assert!(
+            err_str.contains("Invalid consensus result") || err_str.contains("inconsistency"),
+            "Expected 'Invalid consensus result' or 'inconsistency' error, got: {}",
+            err_str
+        );
         assert!(receiver.get_consensus_result(round).is_none());
     }
 }

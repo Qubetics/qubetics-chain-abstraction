@@ -12,8 +12,8 @@ dotenv.config({ path: join(__dirname, '../../.env') });
 
 // -------- CONFIG --------
 const RPC_URL = process.env.RPC_URL;
-// const MPC_RPC_URL = process.env.MPC_RPC_URL || 'http://127.0.0.1:8082';
-const MPC_RPC_URL = process.env.MPC_RPC_URL || 'http://172.16.12.140:8082';
+const MPC_RPC_URL = process.env.MPC_RPC_URL || 'http://127.0.0.1:8082';
+// const MPC_RPC_URL = process.env.MPC_RPC_URL || 'http://172.16.12.140:8082';
 const API_KEY = process.env.RPC_API_KEY || '2919cd546f2c4338bccb4794a3d6afba2282e5729653fc2c2ff6c5e0e194ar45';
 const CONTRACT_ADDRESS = process.env.SOLVER_MANAGER_ADDRESS;
 

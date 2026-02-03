@@ -320,6 +320,9 @@ impl BlameManager {
             blame.blame_nodes.len()
         );
 
+        // Update blame counts before recording
+        self.update_blame_counts(&blame).await;
+
         let mut blames = self.blames.write().await;
         blames.push(blame);
     }

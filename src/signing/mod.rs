@@ -1159,6 +1159,8 @@ impl SigningNode {
     }
 
     /// Start consensus for a specific round
+    /// Uses leader-based party coordination (THORChain pattern) to ensure all nodes
+    /// have the same view of selected nodes before computing consensus.
     pub async fn start_consensus_for_round(
         &mut self,
         round: u64,
@@ -1166,7 +1168,8 @@ impl SigningNode {
         // Get the node ID first to avoid borrow checker issues
         let own_node_id = SerializablePeerId(PeerId::from_str(&self.id)?);
 
-        let all_selected_nodes = {
+        // Get initial VRF selections (these may differ between nodes due to network timing)
+        let local_selected_nodes = {
             let vrf_service = self
                 .coordination
                 .vrf_service()
@@ -1174,6 +1177,60 @@ impl SigningNode {
             vrf_service
                 .get_all_selected_nodes_with_frequencies(round)
                 .await
+        };
+
+        // Use leader-based party coordination to get canonical member list
+        // This ensures all nodes agree on the same participant set
+        let all_selected_nodes = if let Some(party_coordinator) = self.coordination.party_coordinator() {
+            // Get block height for leader election (use round as proxy if no chain data)
+            let block_height = round; // TODO: Get actual block height from chain
+
+            // Convert to SerializablePeerId for leader election
+            let peers: Vec<SerializablePeerId> = local_selected_nodes.clone();
+
+            if peers.is_empty() {
+                debug!(
+                    "📋 [PARTY] No local VRF selections for round {}, using empty list",
+                    round
+                );
+                local_selected_nodes
+            } else {
+                // Try to use party coordinator for canonical member list
+                match party_coordinator
+                    .join_party_with_leader(
+                        round,
+                        block_height,
+                        &peers,
+                        self.threshold,
+                        "consensus", // operation type for party coordination
+                    )
+                    .await
+                {
+                    Ok(canonical_members) => {
+                        info!(
+                            "✅ [PARTY] Got canonical member list for round {}: {} members",
+                            round,
+                            canonical_members.len()
+                        );
+                        canonical_members
+                    }
+                    Err(e) => {
+                        // Fall back to local selections if party coordination fails
+                        warn!(
+                            "⚠️ [PARTY] Party coordination failed for round {}: {}. Using local VRF selections.",
+                            round, e
+                        );
+                        local_selected_nodes
+                    }
+                }
+            }
+        } else {
+            // No party coordinator available, use local selections
+            debug!(
+                "📋 [CONSENSUS] No party coordinator, using local VRF selections for round {}",
+                round
+            );
+            local_selected_nodes
         };
         
         // Extract operation_type from VRF broadcast for this round (if available)

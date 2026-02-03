@@ -18,9 +18,9 @@ import fs from 'fs';
 import path from 'path';
 
 // Configuration
-// const RPC_BASE_URL = 'http://127.0.0.1:8082';
+const RPC_BASE_URL = 'http://127.0.0.1:8082';
 // const RPC_BASE_URL = 'http://172.16.12.140:8082';
-const RPC_BASE_URL = 'http://172.16.14.223:8082';
+// const RPC_BASE_URL = 'http://172.16.14.223:8082';
 const API_KEY = "2919cd546f2c4338bccb4794a3d6afba2282e5729653fc2c2ff6c5e0e194ar45";
 
 // ============================================
@@ -667,7 +667,7 @@ async function step2_SubmitTransactions() {
 
   // Submit all transactions in parallel
   const depositPromises = wallets.map(({ wallet, userId }) => {
-    const amount = "13000000000000000000";  // 5 TICS (reduced from 44 to fit 10 TICS balance)
+    const amount = "7000000000000000000";  // 5 TICS (reduced from 44 to fit 10 TICS balance)
     return testUserMpcDeposit({ wallet, amount, userId });
   });
 
