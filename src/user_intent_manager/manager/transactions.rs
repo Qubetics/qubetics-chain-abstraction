@@ -267,7 +267,9 @@ impl UserIntentManager {
     }
 
     /// Get pending intents that have not yet completed UserToVault (no user_to_network_tx_id),
-    /// filtered by source chain. Used by the final node to pick a batch for TICS UserToVault signing.
+    /// filtered by source chain. Only intents with status Pending are included (Batched intents
+    /// that do not have user_to_network_tx_id yet are excluded). Used by the final node to pick
+    /// a batch for TICS/BTC UserToVault signing.
     /// Returns (intent_hash, intent, user_eth_address) for each intent; only intents with a
     /// registered user are included.
     pub async fn get_pending_user_to_vault_intents_by_source_chain(
@@ -304,6 +306,11 @@ impl UserIntentManager {
                 continue;
             }
             if let Some(user) = self.get_user_by_intent_hash(&intent_hash).await {
+                // Only pick Pending intents; exclude Batched (and others) so we don't re-pick intents already in a batch
+                let status = user.intent_hashes.get(&intent_hash);
+                if matches!(status, Some(IntentStatus::Batched) | Some(IntentStatus::Processing) | Some(IntentStatus::Solved) | Some(IntentStatus::Rejected)) {
+                    continue;
+                }
                 out.push((intent_hash, intent, user.ethereum_address));
             }
         }

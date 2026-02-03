@@ -18,7 +18,7 @@ use crate::{
     signing::EthereumSigner,
     types::{
         p2p::SerializablePeerId, signing::SigningMessage, vrf::VrfRoundSyncResponse,
-        ChannelMessage, GossipsubMessage,
+        ChannelMessage, GossipsubMessage, IntentStatus,
     },
 };
 
@@ -1693,8 +1693,23 @@ impl MpcNetworkLayer {
                 );
 
                 if let Some(user_intent_manager) = &self.user_intent_manager {
+                    // Mark all intents in this batch as Batched on this node so they are not re-picked for future batches
+                    for intent_hash in intent_hashes.iter() {
+                        if let Some(user) = user_intent_manager.get_user_by_intent_hash(intent_hash).await {
+                            if let Err(e) = user_intent_manager
+                                .update_intent_status(&user.ethereum_address, intent_hash, IntentStatus::Batched)
+                                .await
+                            {
+                                warn!(
+                                    "⚠️ [TICS_UTV_BATCH] Failed to mark intent {} as Batched on receive: {}",
+                                    intent_hash, e
+                                );
+                            }
+                        }
+                    }
+
                     let mut batch_intents = Vec::new();
-                    for intent_hash in &intent_hashes {
+                    for intent_hash in intent_hashes.iter() {
                         if let Some(intent) = user_intent_manager.get_intent(intent_hash).await {
                             let tx_ids = user_intent_manager
                                 .get_intent_transaction_ids(intent_hash)
@@ -1866,8 +1881,23 @@ impl MpcNetworkLayer {
                 );
 
                 if let Some(user_intent_manager) = &self.user_intent_manager {
+                    // Mark all intents in this batch as Batched on this node so they are not re-picked for future batches
+                    for intent_hash in intent_hashes.iter() {
+                        if let Some(user) = user_intent_manager.get_user_by_intent_hash(intent_hash).await {
+                            if let Err(e) = user_intent_manager
+                                .update_intent_status(&user.ethereum_address, intent_hash, IntentStatus::Batched)
+                                .await
+                            {
+                                warn!(
+                                    "⚠️ [BTC_UTV_BATCH] Failed to mark intent {} as Batched on receive: {}",
+                                    intent_hash, e
+                                );
+                            }
+                        }
+                    }
+
                     let mut batch_intents = Vec::new();
-                    for intent_hash in &intent_hashes {
+                    for intent_hash in intent_hashes.iter() {
                         if let Some(intent) = user_intent_manager.get_intent(intent_hash).await {
                             let tx_ids = user_intent_manager
                                 .get_intent_transaction_ids(intent_hash)

@@ -149,32 +149,48 @@ impl ConsensusNode {
         Ok(())
     }
 
-    /// Validate a consensus result using selected_nodes we already have for that round
+    /// Validate a consensus result using selected_nodes we already have for that round,
+    /// or accept HRW-origin results (no selected_nodes) when well-formed.
     fn validate_consensus_result_with_selected(
         &self,
         round: u64,
         result: &ConsensusResult,
     ) -> Result<()> {
-        // SECURITY CHECK 3: Require that we have selected_nodes for this round
-        // This ensures we participated in the round and can validate the result
-        // DO NOT reconstruct from untrusted node_frequencies - this is a security vulnerability
-        let selected_nodes = match self.selected_nodes_by_round.get(&round) {
-            Some(nodes) => {
-                if nodes.is_empty() {
-                    return Err(anyhow::anyhow!(
-                        "Selected nodes list for round {} is empty",
-                        round
-                    ));
-                }
-                nodes.clone()
-            }
-            None => {
+        // HRW path: no selected_nodes (final node was chosen by HRW, not VRF).
+        // Accept if well-formed: round matches, final_node in node_frequencies, internally consistent.
+        let selected_nodes_opt = self.selected_nodes_by_round.get(&round);
+        if selected_nodes_opt.map(|n| n.is_empty()).unwrap_or(true) {
+            // No selected nodes for this round - allow HRW-style result
+            if result.round != round {
                 return Err(anyhow::anyhow!(
-                    "Cannot validate consensus result for round {}: no selected nodes available. This node must have participated in the round to validate results.",
+                    "Consensus round mismatch: result.round={} wrapper={}",
+                    result.round,
                     round
                 ));
             }
-        };
+            if !result.node_frequencies.contains_key(&result.final_node) {
+                return Err(anyhow::anyhow!(
+                    "Invalid HRW consensus result for round {}: final_node {:?} not in node_frequencies",
+                    round,
+                    result.final_node
+                ));
+            }
+            let received_final_node =
+                Self::calculate_final_node_from_frequencies(&result.node_frequencies, round)?;
+            if received_final_node != result.final_node {
+                return Err(anyhow::anyhow!(
+                    "Consensus result inconsistency for round {}: final_node doesn't match node_frequencies",
+                    round
+                ));
+            }
+            info!(
+                "✅ [CONSENSUS] Accepting HRW consensus result for round {}: final_node={:?}",
+                round, result.final_node
+            );
+            return Ok(());
+        }
+
+        let selected_nodes = selected_nodes_opt.expect("non-empty").clone();
 
         // SECURITY CHECK 4: Verify final_node is actually in the selected_nodes
         let final_node_in_selected = selected_nodes.iter().any(|node| *node == result.final_node);
@@ -193,16 +209,10 @@ impl ConsensusNode {
                 "⚠️ [CONSENSUS] Already have consensus result for round {}: existing={:?}, received={:?}. Validating before overwriting...",
                 round, existing_result.final_node, result.final_node
             );
-            // Continue with full validation below
         }
 
         // SECURITY CHECK 6: Compute expected result from our selected_nodes
-        // This is the ground truth - we trust our own selected_nodes
         let expected_result = Self::calculate_consensus_result(&selected_nodes, round)?;
-
-        // STRICT VALIDATION: Ensure consensus results match exactly
-        // With aggressive VRF retries (100-500ms), all nodes should receive complete
-        // VRF data before consensus calculation, so strict validation is safe.
 
         // Validate that the received result is internally consistent
         let received_final_node =
@@ -214,7 +224,6 @@ impl ConsensusNode {
             ));
         }
 
-        // Strict validation: final_node must match exactly
         if expected_result.final_node != result.final_node {
             return Err(anyhow::anyhow!(
                 "Invalid consensus result received for round {}: final_node mismatch. Expected: {:?} (total={}, frequencies={:?}). Received: {:?} (total={}, frequencies={:?})",
@@ -228,10 +237,6 @@ impl ConsensusNode {
             ));
         }
 
-        // Final node matches - accept the result
-        // Note: total_selections and frequencies may differ slightly if nodes received
-        // VRF broadcasts in different orders, but as long as final_node matches,
-        // the consensus is valid
         if expected_result.total_selections != result.total_selections
             || expected_result.node_frequencies != result.node_frequencies
         {

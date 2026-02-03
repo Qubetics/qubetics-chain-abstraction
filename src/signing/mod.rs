@@ -40,9 +40,10 @@ use secp256k1::{constants::CURVE_ORDER, ecdsa::RecoveryId};
 
 use crate::chain_abstraction::{ChainHandler, ChainTransaction};
 use crate::protocols::{VrfSelectedNodesBroadcast, VrfService};
+use crate::hrw;
 use crate::types::{
     p2p::SerializablePeerId, ChannelMessage, ConsensusMessage, ConsensusResult, GossipsubMessage,
-    TransactionType,
+    IntentStatus, TransactionType,
 };
 use crate::user_intent_manager::UserIntentManager;
 use num_traits::Zero;
@@ -64,6 +65,8 @@ pub struct SigningNode {
     user_intent_manager: Option<Arc<UserIntentManager>>,
     // Database for storing solver amounts
     database: Option<Arc<crate::database::Database>>,
+    /// DKG storage for HRW candidate set (canonical final-node selection). Not used for peer_indices.
+    dkg_storage: Option<crate::database::DkgStorage>,
     // Dynamic broadcast configuration
     broadcast_policy: BroadcastPolicy,
 }
@@ -100,6 +103,7 @@ impl SigningNode {
             btc_state: BtcAggregationState::new(),
             user_intent_manager: None, // Will be set later via set_user_intent_manager
             database: None,            // Will be set later via set_database
+            dkg_storage: None,         // Will be set later via set_database (for HRW candidates)
             broadcast_policy: environment.broadcast_policy,
         }
     }
@@ -1025,12 +1029,13 @@ impl SigningNode {
 
     pub fn set_database(&mut self, database: Arc<crate::database::Database>) {
         self.database = Some(database.clone());
+        self.dkg_storage = Some(crate::database::DkgStorage::new((*database).clone()));
 
         // Update Coordination with database so VrfService can use it
         self.coordination.set_database(database);
 
         info!(
-            "🗄️ [SIGNING] Node {} database set with VRF storage",
+            "🗄️ [SIGNING] Node {} database set with VRF storage and HRW DKG candidates",
             self.id
         );
     }
@@ -1166,54 +1171,73 @@ impl SigningNode {
         }
     }
 
-    /// Start consensus for a specific round
+    /// Start consensus for a specific round.
+    /// Final node is chosen by HRW (DKG-based candidates) when dkg_storage is set; otherwise no-op.
     pub async fn start_consensus_for_round(
         &mut self,
         round: u64,
     ) -> Result<Option<ConsensusResult>> {
-        // Get the node ID first to avoid borrow checker issues
         let own_node_id = SerializablePeerId(PeerId::from_str(&self.id)?);
 
-        let all_selected_nodes = {
-            let vrf_service = self
-                .coordination
-                .vrf_service()
-                .ok_or_else(|| anyhow::anyhow!("VRF selector not available"))?;
-            vrf_service
-                .get_all_selected_nodes_with_frequencies(round)
+        // Extract operation_type from VRF broadcast for this round (if available) for epoch mapping
+        let operation_type = if let Some(vrf) = self.coordination.vrf_service() {
+            vrf.create_broadcast_for_round(round)
                 .await
-        };
-        
-        // Extract operation_type from VRF broadcast for this round (if available)
-        let operation_type = {
-            let vrf_service = self
-                .coordination
-                .vrf_service()
-                .ok_or_else(|| anyhow::anyhow!("VRF selector not available"))?;
-            vrf_service.create_broadcast_for_round(round).await
                 .and_then(|b| b.operation_type)
+        } else {
+            None
         };
-
-        if all_selected_nodes.is_empty() {
-            info!(
-                "⚠️ [CONSENSUS] No selected nodes available for consensus round {}",
-                round
-            );
-            return Ok(None);
-        }
 
         let consensus_node = self
             .coordination
             .consensus_node_mut()
             .ok_or_else(|| anyhow::anyhow!("Consensus node not available"))?;
 
+        // HRW path: canonical final node from DKG candidate set (no VRF selection for final node)
+        let all_selected_nodes: Vec<SerializablePeerId> = if let Some(ref dkg) = self.dkg_storage {
+            let candidates = match hrw::candidates::get_hrw_candidates(dkg) {
+                Ok(c) if !c.is_empty() => c,
+                Ok(_) => {
+                    info!(
+                        "⚠️ [CONSENSUS] No HRW candidates for round {} (empty DKG peer set)",
+                        round
+                    );
+                    return Ok(None);
+                }
+                Err(e) => {
+                    warn!(
+                        "⚠️ [CONSENSUS] Failed to get HRW candidates for round {}: {}",
+                        round, e
+                    );
+                    return Ok(None);
+                }
+            };
+            match hrw::select_final(round, &candidates, hrw::HRW_DOMAIN_FINAL_NODE) {
+                Some(winner) => {
+                    info!(
+                        "🎯 [CONSENSUS] HRW selected final node {} for round {} ({} candidates)",
+                        winner, round, candidates.len()
+                    );
+                    vec![SerializablePeerId(winner)]
+                }
+                None => {
+                    info!("⚠️ [CONSENSUS] HRW returned no winner for round {}", round);
+                    return Ok(None);
+                }
+            }
+        } else {
+            info!(
+                "⚠️ [CONSENSUS] No DKG storage for HRW; skipping consensus for round {}",
+                round
+            );
+            return Ok(None);
+        };
+
         info!(
-            "🎯 [CONSENSUS] Starting consensus for round {} with {} selected nodes",
-            round,
-            all_selected_nodes.len()
+            "🎯 [CONSENSUS] Starting consensus for round {} with final node from HRW",
+            round
         );
 
-        // Add selected nodes to consensus
         consensus_node.add_selected_nodes(round, all_selected_nodes);
 
         // Store internal operation type for this round.
@@ -1472,6 +1496,23 @@ impl SigningNode {
 
     /// Handle consensus messages
     pub async fn handle_consensus_message(&mut self, msg: ConsensusMessage) -> Result<()> {
+        if let ConsensusMessage::FinalNodeResult { ref result, round } = msg {
+            if let Some(ref dkg) = self.dkg_storage {
+                if let Ok(candidates) = hrw::candidates::get_hrw_candidates(dkg) {
+                    if let Some(our_winner) =
+                        hrw::select_final(round, &candidates, hrw::HRW_DOMAIN_FINAL_NODE)
+                    {
+                        if result.final_node.0 != our_winner {
+                            warn!(
+                                "⚠️ [CONSENSUS] Rejecting consensus result for round {}: HRW winner is {} but received {:?}",
+                                round, our_winner, result.final_node
+                            );
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+        }
         if let Some(consensus_node) = self.coordination.consensus_node_mut() {
             consensus_node.handle_message(msg).await?;
         }
@@ -1734,7 +1775,7 @@ impl SigningNode {
         let max_per_batch = std::env::var("MAX_TICS_USER_TO_VAULT_INTENTS_PER_BATCH")
             .ok()
             .and_then(|val| val.parse::<usize>().ok())
-            .unwrap_or(10);
+            .unwrap_or(20);
 
         let pending = user_intent_manager
             .get_pending_user_to_vault_intents_by_source_chain("tics", max_per_batch)
@@ -1746,6 +1787,19 @@ impl SigningNode {
                 round
             );
             return Ok(());
+        }
+
+        // Mark selected intents as Batched on this node before broadcast so they are not re-picked; other nodes will mark on receive
+        for (hash, _, user_eth) in &pending {
+            if let Err(e) = user_intent_manager
+                .update_intent_status(user_eth, hash, IntentStatus::Batched)
+                .await
+            {
+                warn!(
+                    "⚠️ [CLOCK][TICS_UTV_BATCH] Failed to mark intent {} as Batched: {}",
+                    hash, e
+                );
+            }
         }
 
         let intent_hashes: Vec<String> = pending
@@ -1802,6 +1856,19 @@ impl SigningNode {
                 round
             );
             return Ok(());
+        }
+
+        // Mark selected intents as Batched on this node before broadcast so they are not re-picked; other nodes will mark on receive
+        for (hash, _, user_eth) in &pending {
+            if let Err(e) = user_intent_manager
+                .update_intent_status(user_eth, hash, IntentStatus::Batched)
+                .await
+            {
+                warn!(
+                    "⚠️ [CLOCK][BTC_UTV_BATCH] Failed to mark intent {} as Batched: {}",
+                    hash, e
+                );
+            }
         }
 
         let intent_hashes: Vec<String> = pending
