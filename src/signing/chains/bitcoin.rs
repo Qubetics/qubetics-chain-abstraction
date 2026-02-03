@@ -845,12 +845,11 @@ impl SigningNode {
                 user_eth_address: None,
             };
 
-            // Wrap in GossipsubMessage::Signing for proper message handling
+            // Wrap in GossipsubMessage::Signing and broadcast (final node picks from gossipsub)
             let gossipsub_msg = GossipsubMessage::Signing(signature_msg);
             let signature_data = serde_json::to_vec(&gossipsub_msg)?;
 
-            self.send_btc_signatures_direct(final_node_id, &signature_data, round)
-                .await?;
+            self.broadcast("signing", &signature_data).await?;
         } else {
             info!(
                 "⚠️ [SIGNING] No BTC per-input signatures found for round {} for this node",
@@ -885,7 +884,7 @@ impl SigningNode {
         Ok(())
     }
 
-    /// Handle BTC signatures received via unicast P2P RPC
+    /// Handle BTC signatures received via broadcast (gossipsub); only final node aggregates.
     pub async fn handle_btc_signatures_to_final_node(
         &mut self,
         from: String,
@@ -893,7 +892,7 @@ impl SigningNode {
         round: u64,
     ) -> Result<()> {
         info!(
-            "📥 [SIGNING] Final node {} received {} BTC signatures from {} via unicast P2P RPC",
+            "📥 [SIGNING] Final node {} received {} BTC signatures from {} via broadcast/gossipsub",
             self.id,
             signatures.len(),
             from

@@ -460,20 +460,28 @@ impl SigningNode {
                 message_hash: _message_hash,
             } => {}
             SigningMessage::ECDSASignature {
-                from: _from,
-                signature: _signature,
-                round: _round,
+                from,
+                signature,
+                round,
                 timestamp: _timestamp,
                 user_eth_address: _user_eth_address,
-                slot_id: _slot_id,
-            } => {}
+                slot_id,
+            } => {
+                // Final node picks signatures from broadcast (gossipsub) for aggregation
+                self.handle_signature_to_final_node(from, signature, round, slot_id)
+                    .await?;
+            }
             SigningMessage::BtcSignaturesMessage {
-                from: _from,
-                signatures: _signatures,
-                round: _round,
+                from,
+                signatures,
+                round,
                 timestamp: _timestamp,
                 user_eth_address: _user_eth_address,
-            } => {}
+            } => {
+                // Final node picks BTC signatures from broadcast (gossipsub) for aggregation
+                self.handle_btc_signatures_to_final_node(from, signatures, round)
+                    .await?;
+            }
             SigningMessage::SignedMessage {
                 from,
                 signed_message,
@@ -1362,8 +1370,8 @@ impl SigningNode {
                         }
 
                         // Trigger aggregate signature for the final node
-                        // self.trigger_aggregate_signature_for_final_node(round)
-                        //     .await?;
+                        self.trigger_aggregate_signature_for_final_node(round)
+                            .await?;
                     } else if operation_type.as_deref() == Some("epoch_2") {
                         info!(
                             "⏰ [CLOCK] Round {} is epoch_2 (BTC batch + contract updates + withdraw), processing phase 1 intents...",
@@ -1379,8 +1387,8 @@ impl SigningNode {
                         }
 
                         // Trigger aggregate signature for the final node
-                        // self.trigger_aggregate_signature_for_final_node(round)
-                        //     .await?;
+                        self.trigger_aggregate_signature_for_final_node(round)
+                            .await?;
                     } else if operation_type.as_deref() == Some("epoch_3") {
                         info!(
                             "⏰ [CLOCK] Round {} is epoch_3 (withdraw settlement), finalizing withdraw request statuses...",
@@ -1416,20 +1424,20 @@ impl SigningNode {
                             // After broadcasting the batch, trigger aggregation request immediately
                             // All nodes will receive the batch and start signing, then send signatures when requested
                             // The final node will aggregate when enough signatures arrive
-                            // if let Err(e) = self
-                            //     .trigger_aggregate_signature_for_final_node(round)
-                            //     .await
-                            // {
-                            //     warn!("⚠️ [BTC_CONTRACT_UPDATE] Failed to trigger aggregate signature for round {}: {}", round, e);
-                            // } else {
-                            //     info!("✅ [BTC_CONTRACT_UPDATE] Triggered aggregate signature request for contract call (round {})", round);
-                            // }
+                            if let Err(e) = self
+                                .trigger_aggregate_signature_for_final_node(round)
+                                .await
+                            {
+                                warn!("⚠️ [BTC_CONTRACT_UPDATE] Failed to trigger aggregate signature for round {}: {}", round, e);
+                            } else {
+                                info!("✅ [BTC_CONTRACT_UPDATE] Triggered aggregate signature request for contract call (round {})", round);
+                            }
                         }
                     } else {
                         info!("ℹ️  [CONSENSUS] Round {} operation_type={:?}, skipping intent processing", round, operation_type);
                         // Trigger aggregate signature for the final node
-                        // self.trigger_aggregate_signature_for_final_node(round)
-                        //     .await?;
+                        self.trigger_aggregate_signature_for_final_node(round)
+                            .await?;
                     }
                 }
 
@@ -2610,11 +2618,10 @@ impl SigningNode {
                         };
                         let gossipsub_msg = crate::types::GossipsubMessage::Signing(signature_msg);
                         let signature_data = serde_json::to_vec(&gossipsub_msg)?;
-                        self.send_ecdsa_signature_direct(final_node_id, &signature_data, round)
-                            .await?;
+                        self.broadcast("signing", &signature_data).await?;
                         info!(
-                            "✅ [SIGNING] Sent batch slot {} signature for round {} to final node {}",
-                            intent_hash, round, final_node_id
+                            "✅ [SIGNING] Broadcast batch slot {} signature for round {} to final node {} ({} will aggregate)",
+                            intent_hash, round, final_node_id, final_node_id
                         );
                     }
                 }
@@ -2627,13 +2634,13 @@ impl SigningNode {
         if let Some(round_signatures) = signatures_by_round.get(&round) {
             if let Some(our_signature) = round_signatures.get(&self.id) {
                 info!(
-                    "📤 [SIGNING] Unicasting signature to final node {}: \n\
+                    "📤 [SIGNING] Broadcasting signature for round {} (final node picks from gossipsub): \n\
                      \tFrom: {}\n\
                      \tRound: {}\n\
                      \tSig(r): 0x{}\n\
                      \tSig(s): 0x{}\n\
                      \tRecovID: {}",
-                    final_node_id,
+                    round,
                     self.id,
                     round,
                     hex::encode(&our_signature.signature[0..32]),
@@ -2653,12 +2660,11 @@ impl SigningNode {
                 let gossipsub_msg = crate::types::GossipsubMessage::Signing(signature_msg);
                 let signature_data = serde_json::to_vec(&gossipsub_msg)?;
 
-                self.send_ecdsa_signature_direct(final_node_id, &signature_data, round)
-                    .await?;
+                self.broadcast("signing", &signature_data).await?;
 
                 info!(
-                    "✅ [SIGNING] Sent signature for round {} to final node {}",
-                    round, final_node_id
+                    "✅ [SIGNING] Broadcast signature for round {} to final node {} ({} will aggregate)",
+                    round, final_node_id, final_node_id
                 );
             } else {
                 info!(
@@ -2697,16 +2703,15 @@ impl SigningNode {
                 request_id: request_id.clone(),
             };
             
-            // Wrap and send via unicast
+            // Wrap and broadcast via gossipsub (final node picks from topic)
             let gossipsub_msg = crate::types::GossipsubMessage::Signing(tx_data_msg);
             let data = serde_json::to_vec(&gossipsub_msg)?;
             
-            self.send_transaction_data_direct(final_node_id, &data, round)
-                .await?;
+            self.broadcast("signing", &data).await?;
             
             info!(
-                "✅ [SIGNING] Sent transaction data for round {} to final node {}",
-                round, final_node_id
+                "✅ [SIGNING] Broadcast transaction data for round {} (final node picks from gossipsub)",
+                round
             );
         } else {
             // No transaction data - this is expected if we also weren't selected
@@ -4066,7 +4071,7 @@ impl SigningNode {
         Ok(())
     }
     /// Broadcast transaction to Bitcoin network
-    /// Handle signature received via unicast P2P RPC
+    /// Handle signature received via broadcast (gossipsub); only final node aggregates.
     pub async fn handle_signature_to_final_node(
         &mut self,
         from: String,
@@ -4075,7 +4080,7 @@ impl SigningNode {
         slot_id: Option<String>,
     ) -> Result<()> {
         info!(
-            "📥 [SIGNING] Final node {} received signature from {} via unicast P2P RPC (round {}, slot_id: {:?})",
+            "📥 [SIGNING] Final node {} received signature from {} via broadcast/gossipsub (round {}, slot_id: {:?})",
             self.id, from, round, slot_id
         );
 

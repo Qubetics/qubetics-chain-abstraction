@@ -1406,11 +1406,10 @@ impl SigningNode {
             };
             let gossipsub_msg = crate::types::GossipsubMessage::Signing(signature_msg);
             let signature_data = serde_json::to_vec(&gossipsub_msg)?;
-            self.send_ecdsa_signature_direct(&final_node_id, &signature_data, round)
-                .await?;
+            self.broadcast("signing", &signature_data).await?;
             info!(
-                "✅ [TICS_UTV_BATCH] Sent partial for slot {} (round {}) to final node",
-                intent_hash, round
+                "✅ [TICS_UTV_BATCH] Broadcasting partial for slot {} (round {}): final node {} will aggregate",
+                intent_hash, round, final_node_id
             );
         }
         Ok(())
