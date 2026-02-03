@@ -366,6 +366,7 @@ impl UserIntentManager {
         };
         let original_len = intents.len();
         // Exclude intents already marked Solved (TICS-TICS and others get marked Solved after fulfillment)
+        let original_len = intents.len();
         let mut filtered = Vec::new();
         for (intent_hash, intent, tx_ids) in intents {
             if let Ok(Some(user)) = self.user_storage.get_user_by_intent_hash(&intent_hash).await {

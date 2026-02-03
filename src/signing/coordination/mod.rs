@@ -1,4 +1,4 @@
-use crate::consensus::ConsensusNode;
+use crate::consensus::{BlameManager, ConsensusNode, PartyCoordinator};
 use crate::database::VrfStorage;
 use crate::protocols::{VrfSelectionFacade, VrfService};
 use crate::types::ChannelMessage;
@@ -33,6 +33,9 @@ pub struct Coordination {
     // Store these to recreate VrfService when database is set
     node_id: Option<PeerId>,
     message_tx: Option<mpsc::Sender<ChannelMessage>>,
+    // THORChain-style party coordination and blame tracking
+    pub party_coordinator: Option<PartyCoordinator>,
+    pub blame_manager: Option<BlameManager>,
 }
 
 impl Coordination {
@@ -47,7 +50,12 @@ impl Coordination {
             available_nodes: None,
             vrf_storage: None,
             node_id: Some(peer_id),
-            message_tx: Some(message_tx),
+            message_tx: Some(message_tx.clone()),
+            party_coordinator: Some(PartyCoordinator::new(
+                peer_id,
+                message_tx,
+            )),
+            blame_manager: Some(BlameManager::new()),
         }
     }
 
@@ -69,7 +77,12 @@ impl Coordination {
             available_nodes: None,
             vrf_storage: Some(vrf_storage),
             node_id: Some(peer_id),
-            message_tx: Some(message_tx),
+            message_tx: Some(message_tx.clone()),
+            party_coordinator: Some(PartyCoordinator::new(
+                peer_id,
+                message_tx,
+            )),
+            blame_manager: Some(BlameManager::new()),
         }
     }
 
@@ -162,5 +175,25 @@ impl Coordination {
         }
 
         self.vrf_service = Some(vrf_service);
+    }
+
+    /// Get reference to party coordinator
+    pub fn party_coordinator(&self) -> Option<&PartyCoordinator> {
+        self.party_coordinator.as_ref()
+    }
+
+    /// Get mutable reference to party coordinator
+    pub fn party_coordinator_mut(&mut self) -> Option<&mut PartyCoordinator> {
+        self.party_coordinator.as_mut()
+    }
+
+    /// Get reference to blame manager
+    pub fn blame_manager(&self) -> Option<&BlameManager> {
+        self.blame_manager.as_ref()
+    }
+
+    /// Get mutable reference to blame manager
+    pub fn blame_manager_mut(&mut self) -> Option<&mut BlameManager> {
+        self.blame_manager.as_mut()
     }
 }

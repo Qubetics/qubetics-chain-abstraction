@@ -1,0 +1,405 @@
+import dotenv from 'dotenv';
+import { ethers } from 'ethers';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+// Load .env from project root (two levels up)
+dotenv.config({ path: join(__dirname, '../../.env') });
+
+// -------- CONFIG --------
+const RPC_URL = process.env.RPC_URL;
+const CONTRACT_ADDRESS = process.env.SOLVER_MANAGER_ADDRESS;
+
+const provider = new ethers.providers.JsonRpcProvider(RPC_URL);
+
+const solver1 = new ethers.Wallet(process.env.SOLVER1_PK, provider);
+
+// -------- ABI (ONLY WHAT WE USE) --------
+const ABI = [
+  "function getNonce(address) view returns (uint256)",
+  "function onboardSolver(string,string,uint256[],string[],uint256,bytes)",
+  "function addLiquidityBatch(tuple(string solverId, uint256 amount, uint8 chainType)[])",
+  "function validateSolverId(uint256,bytes)",
+  "function isSolverActive(string) view returns (bool)",
+  "function isSolverIdValidated(address) view returns (bool)",
+  "function isSolverOnboarded(string) view returns (bool)",
+  "function getSolverChainAmount(string,uint256) view returns (uint256)",
+  "function getSolver(string) view returns (tuple(string,string,uint256[],string[],bool,bool,uint256,uint256))",
+  "function MPC_ROLE() view returns (bytes32)",
+  "function hasRole(bytes32,address) view returns (bool)",
+  "function grantRole(bytes32,address)"
+];
+
+// -------- CONTRACT --------
+const solverManager = new ethers.Contract(
+  CONTRACT_ADDRESS,
+  ABI,
+  provider
+);
+
+// =====================================================
+// UTILITY FUNCTIONS
+// =====================================================
+
+/**
+ * Check if a solver is onboarded and active
+ */
+async function checkSolverStatus(solverId) {
+  console.log(`\n🔍 Checking status for solver: ${solverId}\n`);
+  
+  try {
+    const isOnboarded = await solverManager.isSolverOnboarded(solverId);
+    const isActive = await solverManager.isSolverActive(solverId);
+    
+    console.log("Onboarded:", isOnboarded);
+    console.log("Active:", isActive);
+    
+    if (isOnboarded && isActive) {
+      const solverInfo = await solverManager.getSolver(solverId);
+      console.log("\nSolver Info:");
+      console.log("  Solver ID:", solverInfo[0]);
+      console.log("  Solver Name:", solverInfo[1]);
+      console.log("  Chain IDs:", solverInfo[2].map(id => id.toString()));
+      console.log("  Addresses:", solverInfo[3]);
+      console.log("  Active:", solverInfo[4]);
+      console.log("  Validated:", solverInfo[5]);
+      console.log("  Onboarded At:", new Date(solverInfo[6].toNumber() * 1000).toISOString());
+      
+      // Check liquidity amounts for each chain
+      console.log("\n💰 Liquidity by Chain:");
+      for (const chainId of solverInfo[2]) {
+        const amount = await solverManager.getSolverChainAmount(solverId, chainId);
+        console.log(`  Chain ${chainId}: ${amount.toString()}`);
+      }
+    }
+    
+    return { isOnboarded, isActive };
+  } catch (e) {
+    console.error("❌ Error checking solver:", e.message);
+    return { isOnboarded: false, isActive: false };
+  }
+}
+
+/**
+ * Check if an address has MPC role
+ */
+async function checkMPCRole(address) {
+  console.log(`\n🔐 Checking MPC role for: ${address}\n`);
+  
+  try {
+    const mpcRole = await solverManager.MPC_ROLE();
+    const hasRole = await solverManager.hasRole(mpcRole, address);
+    
+    console.log("MPC Role Hash:", mpcRole);
+    console.log("Has MPC Role:", hasRole);
+    
+    return hasRole;
+  } catch (e) {
+    console.error("❌ Error checking role:", e.message);
+    return false;
+  }
+}
+
+/**
+ * Grant MPC role to an address (requires admin)
+ */
+async function grantMPCRole(targetAddress) {
+  console.log(`\n🔑 Granting MPC role to: ${targetAddress}\n`);
+  
+  try {
+    const mpcRole = await solverManager.MPC_ROLE();
+    const solverManagerWithSigner = solverManager.connect(solver1);
+    
+    const tx = await solverManagerWithSigner.grantRole(mpcRole, targetAddress);
+    console.log("Transaction Hash:", tx.hash);
+    console.log("Waiting for confirmation...");
+    
+    const receipt = await tx.wait();
+    console.log("✅ Role granted! Block:", receipt.blockNumber);
+    
+    return true;
+  } catch (e) {
+    console.error("❌ Error granting role:", e.message);
+    return false;
+  }
+}
+
+/**
+ * Onboard a solver
+ */
+async function onboardSolver(solverId, solverName, chainIds, solverAddresses) {
+  console.log(`\n📝 Onboarding solver: ${solverId}\n`);
+  
+  const network = await provider.getNetwork();
+  const chainId = Number(network.chainId);
+  
+  const domain = {
+    name: "SolverManager",
+    version: "1",
+    chainId,
+    verifyingContract: CONTRACT_ADDRESS
+  };
+  
+  // Check if solver already exists
+  try {
+    const status = await checkSolverStatus(solverId);
+    if (status.isActive) {
+      console.log("\n⚠️  WARNING: This solver ID is already onboarded and active!");
+      console.log("Skipping onboarding.\n");
+      return false;
+    }
+  } catch (e) {
+    console.log("✓ Solver ID is available for onboarding\n");
+  }
+  
+  let nonce = await solverManager.getNonce(solver1.address);
+  const deadline = Math.floor(Date.now() / 1000) + 3600;
+  
+  console.log("Nonce:", nonce.toString());
+  console.log("Deadline:", deadline.toString());
+  
+  const onboardTypes = {
+    OnboardSolver: [
+      { name: "solverId", type: "string" },
+      { name: "solverName", type: "string" },
+      { name: "chainIds", type: "uint256[]" },
+      { name: "solverAddresses", type: "string[]" },
+      { name: "nonce", type: "uint256" },
+      { name: "deadline", type: "uint256" }
+    ]
+  };
+  
+  const onboardMessage = {
+    solverId,
+    solverName,
+    chainIds,
+    solverAddresses,
+    nonce,
+    deadline
+  };
+  
+  const onboardSig = await solver1._signTypedData(domain, onboardTypes, onboardMessage);
+  console.log("Onboard Signature:", onboardSig);
+  
+  console.log("\n🚀 Sending onboard transaction...\n");
+  
+  const solverManagerWithSigner = solverManager.connect(solver1);
+  const tx = await solverManagerWithSigner.onboardSolver(
+    solverId,
+    solverName,
+    chainIds,
+    solverAddresses,
+    deadline,
+    onboardSig
+  );
+  
+  console.log("Transaction Hash:", tx.hash);
+  console.log("Waiting for confirmation...");
+  
+  const receipt = await tx.wait();
+  console.log("✅ Onboarded! Block:", receipt.blockNumber);
+  console.log("Gas Used:", receipt.gasUsed.toString());
+  
+  // Check final status
+  await checkSolverStatus(solverId);
+  
+  return true;
+}
+
+/**
+ * Validate a solver (makes it active)
+ */
+async function validateSolver(solverId) {
+  console.log(`\n🔐 Validating solver: ${solverId}\n`);
+  
+  const network = await provider.getNetwork();
+  const chainId = Number(network.chainId);
+  
+  const domain = {
+    name: "SolverManager",
+    version: "1",
+    chainId,
+    verifyingContract: CONTRACT_ADDRESS
+  };
+  
+  let nonce = await solverManager.getNonce(solver1.address);
+  const deadline = Math.floor(Date.now() / 1000) + 3600;
+  
+  console.log("Nonce:", nonce.toString());
+  console.log("Deadline:", deadline.toString());
+  
+  const validateTypes = {
+    ValidateSolver: [
+      { name: "solverId", type: "string" },
+      { name: "nonce", type: "uint256" },
+      { name: "deadline", type: "uint256" }
+    ]
+  };
+  
+  const validateMessage = {
+    solverId,
+    nonce,
+    deadline
+  };
+  
+  const validateSig = await solver1._signTypedData(domain, validateTypes, validateMessage);
+  console.log("Validate Signature:", validateSig);
+  
+  console.log("\n🚀 Sending validate transaction...\n");
+  
+  const solverManagerWithSigner = solverManager.connect(solver1);
+  const tx = await solverManagerWithSigner.validateSolverId(deadline, validateSig);
+  
+  console.log("Transaction Hash:", tx.hash);
+  console.log("Waiting for confirmation...");
+  
+  const receipt = await tx.wait();
+  console.log("✅ Validated! Block:", receipt.blockNumber);
+  console.log("Gas Used:", receipt.gasUsed.toString());
+  
+  // Check if solver is now active
+  await checkSolverStatus(solverId);
+  
+  return true;
+}
+
+/**
+ * Test addLiquidityBatch function
+ */
+async function testAddLiquidityBatch(deposits) {
+  console.log(`\n💧 Testing addLiquidityBatch with ${deposits.length} deposit(s)\n`);
+  
+  try {
+    const solverManagerWithSigner = solverManager.connect(solver1);
+    
+    console.log("Deposits:");
+    deposits.forEach((deposit, i) => {
+      console.log(`  ${i + 1}. Solver: ${deposit.solverId}, Amount: ${deposit.amount}, ChainType: ${deposit.chainType}`);
+    });
+    
+    console.log("\n🚀 Sending addLiquidityBatch transaction...\n");
+    
+    const tx = await solverManagerWithSigner.addLiquidityBatch(deposits);
+    console.log("Transaction Hash:", tx.hash);
+    console.log("Waiting for confirmation...");
+    
+    const receipt = await tx.wait();
+    console.log("✅ Batch added! Block:", receipt.blockNumber);
+    console.log("Gas Used:", receipt.gasUsed.toString());
+    
+    // Check updated liquidity amounts
+    console.log("\n💰 Updated Liquidity:");
+    for (const deposit of deposits) {
+      const chainId = deposit.chainType === 0 ? 0 : 9029; // 0=BTC, 1=EVM(9029)
+      const amount = await solverManager.getSolverChainAmount(deposit.solverId, chainId);
+      console.log(`  ${deposit.solverId} on chain ${chainId}: ${amount.toString()}`);
+    }
+    
+    return true;
+  } catch (e) {
+    console.error("❌ Error calling addLiquidityBatch:", e.message);
+    if (e.error && e.error.data) {
+      console.error("Revert reason:", e.error.data);
+    }
+    return false;
+  }
+}
+
+// =====================================================
+// MAIN FUNCTION
+// =====================================================
+
+async function main() {
+  console.log("🚀 SolverManager Utility Script\n");
+  
+  const network = await provider.getNetwork();
+  const chainId = Number(network.chainId);
+  
+  console.log("Chain ID:", chainId);
+  console.log("SolverManager:", CONTRACT_ADDRESS);
+  console.log("Wallet:", solver1.address);
+  console.log("\n" + "=".repeat(80) + "\n");
+  
+  // ⚠️ CONFIGURE YOUR SOLVER DETAILS HERE
+  // SOLVER_003 config - uses private key 0xaa5d2e1f7fc11bbe6f19b12316c7a9acb2d633bba798fc5a3fea547f1cf99b0a
+  const solverId = "SOLVER_003";
+  const solverName = "Test_Solver_003";
+  const chainIds = [0, 9029];  // 0 = BTC, 9029 = EVM/Qubetics
+  const solverAddresses = [
+    "tb1qy2hqhhnv645vrfkusy5jga8pppytq3dw6awdn8",  // BTC address (testnet) - derived from private key
+    "0xbac113cebd9CB2fBD2a01B5CBC43D0fC0EBed5e9"   // EVM address - derived from private key
+  ];
+
+  // // SOLVER_002 config:
+  // const solverId = "SOLVER_002";
+  // const solverName = "Alpha_ayush";
+  // const chainIds = [0, 9029];  // 0 = BTC, 9029 = EVM/Qubetics
+  // const solverAddresses = [
+  //   "tb1q2nd0utgnrseanclhq2tr7hqhqtuc389mmjm2fs",  // BTC address (testnet)
+  //   "0xB1Bd33e2021307FE723C6ad795fE7c37Fab60F26"   // EVM address
+  // ];
+
+  // // arpit1 config (requires validator key):
+  // const solverId = "arpit1";
+  // const solverName = "Arpit Solver";
+  // const chainIds = [0, 9029];  // 0 = BTC, 9029 = EVM/Qubetics
+  // const solverAddresses = [
+  //   "mxvHBCNoT8mCP7MFaERVuBy9GMzmHcR9hj",  // BTC address (testnet)
+  //   "0xf71736a05f5673da815c1853378ff12c1aad4ff6"   // EVM address (arpit1)
+  // ];
+
+  // UNCOMMENT THE FUNCTION YOU WANT TO RUN:
+
+  // 1. Check solver status
+  await checkSolverStatus(solverId);
+
+  // 2. Onboard solver (if not already onboarded)
+  // await onboardSolver(solverId, solverName, chainIds, solverAddresses);
+
+  // 2b. Validate solver (REQUIRED to make it active!)
+  // Note: Validation requires solver to be running an MPC node
+  // await validateSolver(solverId);
+
+  // 3. Check MPC role for an address
+  // const mpcAddress = "0xa37117b7285cfbc429dac7067009d6f18c73332d";
+  // await checkMPCRole(mpcAddress);
+
+  // 4. Grant MPC role (requires admin privileges)
+  // const mpcAddress = "0xa37117b7285cfbc429dac7067009d6f18c73332d";
+  // await grantMPCRole(mpcAddress);
+
+  // 5. Test addLiquidityBatch - Add BTC and TICS liquidity for SOLVER_003 directly
+  // chainType: 0 = BTC, 1 = EVM/TICS
+  // const deposits = [
+  //   {
+  //     solverId: "SOLVER_003",
+  //     amount: "1000000000",  // 10 BTC = 1,000,000,000 sats
+  //     chainType: 0  // 0 = BTC
+  //   },
+  //   {
+  //     solverId: "SOLVER_003",
+  //     amount: "1000000000000000000000",  // 1000 TICS (in wei)
+  //     chainType: 1  // 1 = EVM/TICS
+  //   }
+  // ];
+  // await testAddLiquidityBatch(deposits);
+
+  // 6. Check liquidity amounts for both chains
+  console.log(`\n💰 Checking Liquidity for ${solverId}:`);
+  const btcAmount = await solverManager.getSolverChainAmount(solverId, 0);  // 0 = BTC
+  const evmAmount = await solverManager.getSolverChainAmount(solverId, 9029);  // 9029 = EVM
+  console.log(`  BTC (chain 0): ${btcAmount.toString()}`);
+  console.log(`  EVM (chain 9029): ${evmAmount.toString()}`);
+  
+  console.log("\n" + "=".repeat(80));
+  console.log("✅ DONE!");
+  console.log("=".repeat(80));
+}
+
+main().catch((err) => {
+  console.error("❌ Error:", err);
+  process.exit(1);
+});

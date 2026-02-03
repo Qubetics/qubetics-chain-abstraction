@@ -192,8 +192,8 @@ impl MpcNetworkLayer {
                 warn!("❌ Failed to broadcast peer discovery: {:?}", e);
                 // Retry once after a short delay
                 tokio::time::sleep(Duration::from_millis(500)).await;
-                if let Err(retry_e) = self.broadcast(MSG_TOPIC_PEER_DISCOVERY, &payload).await {
-                    warn!("❌ Retry failed to broadcast peer discovery: {:?}", retry_e);
+                if let Err(_retry_e) = self.broadcast(MSG_TOPIC_PEER_DISCOVERY, &payload).await {
+                    // warn!("❌ Retry failed to broadcast peer discovery: {:?}", retry_e);
                 }
             }
         }

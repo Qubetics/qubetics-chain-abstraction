@@ -1,5 +1,6 @@
 use crate::{
     commands::Command,
+    consensus::PartyCoordinationMessage,
     protocols::{DKGMessage, VrfSelectedNodesBroadcast, VrfSelectionMessage},
     types::{
         intent::{DepositIntent, TransactionType},
@@ -330,6 +331,8 @@ pub enum GossipsubMessage {
     VrfSelectedNodes(VrfSelectedNodesBroadcast),
     VrfRoundSyncRequest(VrfRoundSyncRequest),
     VrfRoundSyncResponse(VrfRoundSyncResponse),
+    /// Party coordination messages for leader-based consensus (THORChain pattern)
+    PartyCoordination(PartyCoordinationMessage),
     PeerDiscovered {
         peer: PeerId,
         sequence: Option<u64>,

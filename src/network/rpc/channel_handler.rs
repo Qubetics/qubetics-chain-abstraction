@@ -190,7 +190,7 @@ impl MpcNetworkLayer {
                                 if let Ok(message_id) = crate::network::rpc::retry_manager::RetryManager::generate_message_id(msg_type, &gossip_msg) {
                                     // Check if already being tracked (this is a retry, skip registration)
                                     if retry_mgr.is_message_tracked(&message_id).await {
-                                        debug!("🔄 [RETRY] Message {:?} already tracked, skipping registration (this is a retry)", message_id);
+                                        // debug!("🔄 [RETRY] Message {:?} already tracked, skipping registration (this is a retry)", message_id);
                                     } else {
                                         // Get expected nodes (all active nodes except ourselves)
                                         let expected_nodes: std::collections::HashSet<PeerId> = self
@@ -203,27 +203,27 @@ impl MpcNetworkLayer {
                                         if !expected_nodes.is_empty() {
                                             // Check if already tracked (retry case)
                                             if retry_mgr.is_message_tracked(&message_id).await {
-                                                debug!("🔄 [RETRY] Message {:?} already tracked, skipping registration (this is a retry)", message_id);
+                                                // debug!("🔄 [RETRY] Message {:?} already tracked, skipping registration (this is a retry)", message_id);
                                             } else {
                                                 // Log expected nodes for debugging
-                                                let expected_list: Vec<String> = expected_nodes.iter().map(|p| p.to_string()).collect();
-                                                debug!(
-                                                    "📋 [RETRY] Registering message {:?} - expecting ACKs from {} nodes: {:?}",
-                                                    message_id, expected_nodes.len(), expected_list
-                                                );
-                                                
+                                                let _expected_list: Vec<String> = expected_nodes.iter().map(|p| p.to_string()).collect();
+                                                // debug!(
+                                                //     "📋 [RETRY] Registering message {:?} - expecting ACKs from {} nodes: {:?}",
+                                                //     message_id, expected_nodes.len(), expected_list
+                                                // );
+
                                                 // Register with retry manager (first time only)
-                                                if let Err(e) = retry_mgr.register_message(
+                                                if let Err(_e) = retry_mgr.register_message(
                                                     message_id.clone(),
                                                     topic.clone(),
                                                     data.clone(),
                                                     expected_nodes.clone(),
                                                 ).await {
-                                                    debug!("❌ [RETRY] Failed to register critical message for retry: {}", e);
+                                                    // debug!("❌ [RETRY] Failed to register critical message for retry: {}", e);
                                                 }
                                             }
                                         } else {
-                                            debug!("⚠️ [RETRY] No expected nodes - skipping retry registration for {:?}", message_id);
+                                            // debug!("⚠️ [RETRY] No expected nodes - skipping retry registration for {:?}", message_id);
                                         }
                                     }
                                 }
@@ -269,10 +269,11 @@ impl MpcNetworkLayer {
                         Ok(_) => {}
                         Err(e) => {
                             if is_retry {
-                                debug!(
-                                    "❌ [RETRY] CRITICAL: Failed to publish retry message to topic {}: {:?}",
-                                    topic, e
-                                );
+                                // debug!(
+                                //     "❌ [RETRY] CRITICAL: Failed to publish retry message to topic {}: {:?}",
+                                //     topic, e
+                                // );
+                                let _ = e; // suppress unused warning
                                 // For retries, this is critical - log as debug (retry path)
                             } else {
                                 warn!(
@@ -285,10 +286,10 @@ impl MpcNetworkLayer {
                     }
                 } else {
                     if is_retry {
-                        debug!(
-                            "❌ [RETRY] No peers available for retry broadcast to topic: {}",
-                            topic
-                        );
+                        // debug!(
+                        //     "❌ [RETRY] No peers available for retry broadcast to topic: {}",
+                        //     topic
+                        // );
                     } else {
                         warn!(
                             "⚠️ [BROADCAST] No peers available for broadcasting to topic: {}",
@@ -2133,6 +2134,11 @@ impl MpcNetworkLayer {
                     intent.timestamp
                 );
 
+                 info!(
+                    "📝 [!!NETWORK TIMESTAMP!!]==== Processing deposit intent locally with timestamp=====: {:?}",
+                    intent.timestamp
+                );
+
                 // Only broadcast UserToVault deposits via gossipsub
                 // Note: Gossiped DepositIntent is always processed as UserToVault
                 if !matches!(transaction_type, crate::types::TransactionType::UserToVault) {
@@ -2898,28 +2904,28 @@ impl MpcNetworkLayer {
                                     .collect();
 
                                 if !expected_nodes.is_empty() {
-                                    let expected_list: Vec<String> = expected_nodes.iter().map(|p| p.to_string()).collect();
-                                    debug!(
-                                        "📋 [RETRY] Registering TransactionIdBroadcast {:?} - expecting ACKs from {} nodes: {:?}",
-                                        message_id, expected_nodes.len(), expected_list
-                                    );
-                                    
+                                    let _expected_list: Vec<String> = expected_nodes.iter().map(|p| p.to_string()).collect();
+                                    // debug!(
+                                    //     "📋 [RETRY] Registering TransactionIdBroadcast {:?} - expecting ACKs from {} nodes: {:?}",
+                                    //     message_id, expected_nodes.len(), expected_list
+                                    // );
+
                                     // Register with retry manager (first time only)
-                                    if let Err(e) = retry_mgr.register_message(
+                                    if let Err(_e) = retry_mgr.register_message(
                                         message_id.clone(),
                                         topic_str.to_string(),
                                         msg_bytes.clone(),
                                         expected_nodes.clone(),
                                     ).await {
-                                        debug!("❌ [RETRY] Failed to register TransactionIdBroadcast for retry: {}", e);
+                                        // debug!("❌ [RETRY] Failed to register TransactionIdBroadcast for retry: {}", e);
                                     } else {
-                                        debug!("✅ [RETRY] Successfully registered TransactionIdBroadcast {:?} for retry tracking", message_id);
+                                        // debug!("✅ [RETRY] Successfully registered TransactionIdBroadcast {:?} for retry tracking", message_id);
                                     }
                                 } else {
-                                    debug!("⚠️ [RETRY] No expected nodes - skipping retry registration for TransactionIdBroadcast {:?}", message_id);
+                                    // debug!("⚠️ [RETRY] No expected nodes - skipping retry registration for TransactionIdBroadcast {:?}", message_id);
                                 }
                             } else {
-                                debug!("🔄 [RETRY] TransactionIdBroadcast {:?} already tracked, skipping registration (this is a retry)", message_id);
+                                // debug!("🔄 [RETRY] TransactionIdBroadcast {:?} already tracked, skipping registration (this is a retry)", message_id);
                             }
                         }
                     }

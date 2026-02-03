@@ -39,6 +39,7 @@ use num_bigint::{BigInt, ToBigInt};
 use secp256k1::{constants::CURVE_ORDER, ecdsa::RecoveryId};
 
 use crate::chain_abstraction::{ChainHandler, ChainTransaction};
+use crate::consensus::PartyCoordinationMessage;
 use crate::protocols::{VrfSelectedNodesBroadcast, VrfService};
 use crate::types::{
     p2p::SerializablePeerId, ChannelMessage, ConsensusMessage, ConsensusResult, GossipsubMessage,
@@ -1453,6 +1454,48 @@ impl SigningNode {
             consensus_node.handle_message(msg).await?;
         }
         Ok(())
+    }
+
+    /// Handle party coordination messages (THORChain-style leader-based coordination)
+    pub async fn handle_party_coordination_message(
+        &mut self,
+        msg: PartyCoordinationMessage,
+        sender_peer_id: PeerId,
+    ) -> Result<()> {
+        debug!(
+            "📥 [PARTY] Handling party coordination message from {}: {:?}",
+            sender_peer_id,
+            match &msg {
+                PartyCoordinationMessage::JoinRequest { round, .. } => format!("JoinRequest(round={})", round),
+                PartyCoordinationMessage::PartyComposition { round, members, .. } =>
+                    format!("PartyComposition(round={}, members={})", round, members.len()),
+                PartyCoordinationMessage::JoinAck { round, .. } => format!("JoinAck(round={})", round),
+            }
+        );
+
+        if let Some(party_coordinator) = self.coordination.party_coordinator_mut() {
+            party_coordinator
+                .handle_message(msg, sender_peer_id)
+                .await?;
+        } else {
+            warn!("⚠️ [PARTY] Party coordinator not available");
+        }
+        Ok(())
+    }
+
+    /// Get reference to party coordinator
+    pub fn party_coordinator(&self) -> Option<&crate::consensus::PartyCoordinator> {
+        self.coordination.party_coordinator()
+    }
+
+    /// Get mutable reference to party coordinator
+    pub fn party_coordinator_mut(&mut self) -> Option<&mut crate::consensus::PartyCoordinator> {
+        self.coordination.party_coordinator_mut()
+    }
+
+    /// Get reference to blame manager
+    pub fn blame_manager(&self) -> Option<&crate::consensus::BlameManager> {
+        self.coordination.blame_manager()
     }
 
     /// Trigger aggregate signature for the final selected node

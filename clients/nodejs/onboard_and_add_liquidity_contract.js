@@ -130,7 +130,8 @@ async function runOnboard(provider, contract, wallet) {
   );
 
   console.log(`${colors.blue}Onboarding solver ${solverId}...${colors.reset}`);
-  const tx = await contract.onboardSolver(
+  const signerContract = contract.connect(wallet);
+  const tx = await signerContract.onboardSolver(
     solverId,
     solverName,
     chainIds,

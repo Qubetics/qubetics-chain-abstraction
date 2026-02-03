@@ -15,6 +15,7 @@ use crate::types::p2p::SerializablePeerId;
 use crate::types::rpc::RPCRequest;
 use crate::types::vrf::VrfRoundSyncRequest;
 use crate::types::{ChannelMessage, GossipsubMessage};
+#[allow(unused_imports)]
 use tracing::debug;
 
 use super::types::{MpcNetworkBehaviour, MpcNetworkLayer, NetworkEvent, VrfDomain};
@@ -295,13 +296,13 @@ impl MpcNetworkLayer {
                     if let Some(entry) = self.outbound_retry.lock().await.remove(&request_id) {
                         if entry.retry_count < MAX_OUTBOUND_RETRIES {
                             let delay_ms = 2000 + (entry.retry_count as u64) * 1500;
-                            debug!(
-                                "🔄 [RETRY] Timeout on request {:?} to {}, retry {} in {}ms",
-                                request_id,
-                                peer,
-                                entry.retry_count + 1,
-                                delay_ms
-                            );
+                            // debug!(
+                            //     "🔄 [RETRY] Timeout on request {:?} to {}, retry {} in {}ms",
+                            //     request_id,
+                            //     peer,
+                            //     entry.retry_count + 1,
+                            //     delay_ms
+                            // );
 
                             // Convert RetryableUnicast back to ChannelMessage with incremented retry_count
                             let msg = match entry.msg {
@@ -391,15 +392,15 @@ impl MpcNetworkLayer {
                             let tx = self.message_tx.clone();
                             tokio::spawn(async move {
                                 tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-                                if let Err(e) = tx.send(msg).await {
-                                    debug!("❌ [RETRY] Failed to re-enqueue message: {}", e);
+                                if let Err(_e) = tx.send(msg).await {
+                                    // debug!("❌ [RETRY] Failed to re-enqueue message: {}", e);
                                 }
                             });
                         } else {
-                            debug!(
-                                "❌ [RETRY] Max retries ({}) exceeded for request {:?} to {}",
-                                MAX_OUTBOUND_RETRIES, request_id, peer
-                            );
+                            // debug!(
+                            //     "❌ [RETRY] Max retries ({}) exceeded for request {:?} to {}",
+                            //     MAX_OUTBOUND_RETRIES, request_id, peer
+                            // );
                         }
                     }
                 } else {

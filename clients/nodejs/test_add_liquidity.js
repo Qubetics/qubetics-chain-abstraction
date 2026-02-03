@@ -14,16 +14,23 @@ import crypto from 'crypto';
 import secp256k1 from 'secp256k1';
 import keccak from 'keccak';
 
-const RPC_BASE_URL = process.env.QUBETICS_RPC_URL ?? 'http://127.0.0.1:8083';
-const ADD_ENDPOINT = `${RPC_BASE_URL}/add_liquidity`;
+const RPC_BASE_URL = process.env.QUBETICS_RPC_URL ?? 'http://127.0.0.1:8082';
+const ADD_ENDPOINT = `${RPC_BASE_URL}/solver_add_liquidity`;
 
-const SOLVER_ID = process.env.SOLVER_ID ?? 'arpit1';
+// SOLVER_003 configuration - private key derives to 0xbac113cebd9CB2fBD2a01B5CBC43D0fC0EBed5e9
+const SOLVER_ID = process.env.SOLVER_ID ?? 'SOLVER_003';
 const TEST_PRIVATE_KEY =
   process.env.SOLVER_PRIVATE_KEY ??
-  '0x93cc7fbc4bfd7fcfd83d11c85ba522f8fa1c03ece1a3b5f1782bc164996844d9';
+  '0xaa5d2e1f7fc11bbe6f19b12316c7a9acb2d633bba798fc5a3fea547f1cf99b0a';
 
-const DEFAULT_TICS_AMOUNT = process.env.TICS_AMOUNT ?? '10000000000000000000000';
-const DEFAULT_BTC_AMOUNT = process.env.BTC_AMOUNT ?? null;
+// // SOLVER_002 configuration:
+// const SOLVER_ID = process.env.SOLVER_ID ?? 'SOLVER_002';
+// const TEST_PRIVATE_KEY =
+//   process.env.SOLVER_PRIVATE_KEY ??
+//   '0x7f34bd23befb5f731023c7dbc8c44447df5dd826271aeeca1e3e98d9fcf6b613';
+
+const DEFAULT_TICS_AMOUNT = process.env.TICS_AMOUNT ?? null;  // null for BTC-only test
+const DEFAULT_BTC_AMOUNT = process.env.BTC_AMOUNT ?? '10000';  // 10000 sats matching our BTC deposit
 
 const colors = {
   red: '\x1b[31m',
@@ -89,23 +96,40 @@ function createSignature(message, privateKeyHex) {
   return '0x' + Buffer.concat([r, s, v]).toString('hex');
 }
 
+// SOLVER_003 addresses
+const SOLVER_ETH_ADDRESS = '0xbac113cebd9CB2fBD2a01B5CBC43D0fC0EBed5e9';
+const SOLVER_BTC_ADDRESS = 'tb1qy2hqhhnv645vrfkusy5jga8pppytq3dw6awdn8';
+
 async function runAddLiquidity() {
   console.log(`\n${colors.blue}🧪 Testing add liquidity...${colors.reset}`);
 
-  const message = `add-liquidity:${crypto.randomUUID()}`;
+  // The message must be a JSON object with: solverId, solverAddress, amount, chainId
+  // chainId: 0 = BTC, 9029 = EVM/TICS
+  // Use CHAIN_ID env var to switch: CHAIN_ID=9029 for TICS, CHAIN_ID=0 for BTC (default)
+  const chainId = parseInt(process.env.CHAIN_ID ?? '0');
+  const isTics = chainId === 9029;
+  console.log("chain id:::", chainId);
+
+  const messagePayload = {
+    solverId: SOLVER_ID,
+    solverAddress: isTics ? SOLVER_ETH_ADDRESS : SOLVER_BTC_ADDRESS,
+    amount: isTics ? (process.env.TICS_AMOUNT ?? '1000000000000000000') : DEFAULT_BTC_AMOUNT,  // 1 TICS = 1e18 wei
+    chainId: chainId,
+  };
+
+  const message = JSON.stringify(messagePayload);
   const signature = createSignature(message, TEST_PRIVATE_KEY);
 
   const payload = {
     signature,
     message,
-    solver_id: SOLVER_ID,
-    amount_tics: DEFAULT_TICS_AMOUNT,
-    amount_btc: DEFAULT_BTC_AMOUNT,
   };
 
   console.log(`${colors.yellow}📤 Sending request to ${ADD_ENDPOINT}${colors.reset}`);
   console.log(`${colors.yellow}📋 Payload:${colors.reset}`);
   console.log(JSON.stringify(payload, null, 2));
+  console.log(`${colors.yellow}📋 Message content:${colors.reset}`);
+  console.log(JSON.stringify(messagePayload, null, 2));
 
   try {
     const response = await makeRequest(ADD_ENDPOINT, JSON.stringify(payload));

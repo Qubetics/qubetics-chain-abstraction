@@ -4,8 +4,16 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use tracing::{debug, info, warn};
 
+// New modules following THORChain pattern
+pub mod blame;
 pub mod db_consensus;
+pub mod leader;
+pub mod party_coordinator;
+
+pub use blame::{Blame, BlameManager, BlameNode, BlameStatistics, FailReason};
 pub use db_consensus::DatabaseConsensusNode;
+pub use leader::{consensus_message_id, leader_node, vrf_message_id};
+pub use party_coordinator::{PartyCoordinator, PartyCoordinationMessage};
 
 #[derive(Clone)]
 pub struct ConsensusNode {

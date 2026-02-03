@@ -144,6 +144,34 @@ impl MpcNetworkLayer {
                         .await?;
                 }
             }
+            GossipsubMessage::PartyCoordination(party_msg) => {
+                // Handle party coordination messages for leader-based consensus (THORChain pattern)
+                let sender_peer_id = match message.source {
+                    Some(pid) => pid,
+                    None => {
+                        warn!("🚫 [PARTY] Rejecting party coordination message: no source");
+                        return Ok(());
+                    }
+                };
+
+                debug!(
+                    "📥 [PARTY] Received party coordination message from {}",
+                    sender_peer_id
+                );
+
+                // Handle via signing node's party coordinator
+                if let Some(signing_node) = &mut self.signing_node {
+                    if let Err(e) = signing_node
+                        .handle_party_coordination_message(party_msg, sender_peer_id)
+                        .await
+                    {
+                        warn!(
+                            "⚠️ [PARTY] Failed to handle party coordination message: {}",
+                            e
+                        );
+                    }
+                }
+            }
             GossipsubMessage::VrfSelection(vrf_msg) => {
                 // Handle VRF selection messages
                 if let Some(_vrf_manager) = self
@@ -178,10 +206,10 @@ impl MpcNetworkLayer {
 
                 // ALWAYS send ACK for critical messages - this is critical for retry mechanism
                 // Send acknowledgment BEFORE processing to ensure it's sent even if processing fails
-                debug!(
-                    "📤 [RETRY] Sending ACK for VrfSelectedNodes round {} from selector {} (this node: {})",
-                    round, selector_node_id, local_node_id
-                );
+                // debug!(
+                //     "📤 [RETRY] Sending ACK for VrfSelectedNodes round {} from selector {} (this node: {})",
+                //     round, selector_node_id, local_node_id
+                // );
 
                 // Generate message ID to verify it matches what sender expects
                 let msg_id_result =
@@ -191,18 +219,18 @@ impl MpcNetworkLayer {
                     );
 
                 match &msg_id_result {
-                    Ok(msg_id) => {
-                        debug!(
-                            "🔑 [RETRY] Generated message ID for ACK: {:?} (round={}, selector={})",
-                            msg_id, round, selector_node_id
-                        );
+                    Ok(_msg_id) => {
+                        // debug!(
+                        //     "🔑 [RETRY] Generated message ID for ACK: {:?} (round={}, selector={})",
+                        //     msg_id, round, selector_node_id
+                        // );
                     }
-                    Err(e) => {
-                        debug!(
-                            "❌ [RETRY] CRITICAL: Failed to generate message ID for ACK: {}",
-                            e
-                        );
-                        debug!("❌ [RETRY] ACK will NOT be sent - this will cause retry failures!");
+                    Err(_e) => {
+                        // debug!(
+                        //     "❌ [RETRY] CRITICAL: Failed to generate message ID for ACK: {}",
+                        //     e
+                        // );
+                        // debug!("❌ [RETRY] ACK will NOT be sent - this will cause retry failures!");
                     }
                 }
 
@@ -213,10 +241,10 @@ impl MpcNetworkLayer {
                     &GossipsubMessage::VrfSelectedNodes(broadcast_msg.clone()),
                 )
                 .await;
-                debug!(
-                    "✅ [RETRY] send_critical_message_ack completed for round {} from selector {}",
-                    round, selector_node_id
-                );
+                // debug!(
+                //     "✅ [RETRY] send_critical_message_ack completed for round {} from selector {}",
+                //     round, selector_node_id
+                // );
 
                 // Store the received VRF selection in the signing node's VRF selector
                 if let Some(signing_node) = &mut self.signing_node {
@@ -1216,17 +1244,17 @@ impl MpcNetworkLayer {
                 message_id,
                 node_id,
             } => {
-                debug!(
-                    "✅ [RETRY] Received ACK for message type {} (id: {}) from {}",
-                    message_type, message_id, node_id
-                );
+                // debug!(
+                //     "✅ [RETRY] Received ACK for message type {} (id: {}) from {}",
+                //     message_type, message_id, node_id
+                // );
 
                 // Parse message type and create message ID
                 let msg_type = match message_type.as_str() {
                     "TransactionIdBroadcast" => crate::network::rpc::retry_manager::CriticalMessageType::TransactionIdBroadcast,
                     "VrfSelectedNodes" => crate::network::rpc::retry_manager::CriticalMessageType::VrfSelectedNodes,
                     _ => {
-                        debug!("⚠️ [RETRY] Unknown message type in ACK: {}", message_type);
+                        // debug!("⚠️ [RETRY] Unknown message type in ACK: {}", message_type);
                         return Ok(());
                     }
                 };
@@ -1236,10 +1264,10 @@ impl MpcNetworkLayer {
                     unique_id: message_id.clone(),
                 };
 
-                debug!(
-                    "🔍 [RETRY] Processing ACK: type={:?}, id={}, from={}",
-                    msg_type, message_id, node_id
-                );
+                // debug!(
+                //     "🔍 [RETRY] Processing ACK: type={:?}, id={}, from={}",
+                //     msg_type, message_id, node_id
+                // );
 
                 // Record acknowledgment
                 if let Some(retry_mgr) = &self.retry_manager {
@@ -1248,21 +1276,21 @@ impl MpcNetworkLayer {
                         .await
                     {
                         Ok(true) => {
-                            debug!("🎉 [RETRY] ACK recorded - all nodes have acknowledged!");
+                            // debug!("🎉 [RETRY] ACK recorded - all nodes have acknowledged!");
                         }
                         Ok(false) => {
-                            debug!("📝 [RETRY] ACK recorded - still waiting for more nodes");
+                            // debug!("📝 [RETRY] ACK recorded - still waiting for more nodes");
                         }
-                        Err(e) => {
-                            debug!("❌ [RETRY] Failed to record acknowledgment: {}", e);
-                            debug!(
-                                "❌ [RETRY] This ACK from {} for message {} was NOT recorded!",
-                                node_id, message_id
-                            );
+                        Err(_e) => {
+                            // debug!("❌ [RETRY] Failed to record acknowledgment: {}", e);
+                            // debug!(
+                            //     "❌ [RETRY] This ACK from {} for message {} was NOT recorded!",
+                            //     node_id, message_id
+                            // );
                         }
                     }
                 } else {
-                    debug!("⚠️ [RETRY] Retry manager not available - ACK not recorded");
+                    // debug!("⚠️ [RETRY] Retry manager not available - ACK not recorded");
                 }
             }
             GossipsubMessage::VersionAnnouncement {
@@ -3454,10 +3482,10 @@ impl MpcNetworkLayer {
         msg: &GossipsubMessage,
     ) {
         // Generate message ID - if this fails, we can't send an ACK
-        debug!(
-            "🔍 [RETRY] Starting ACK generation for message type: {:?}",
-            msg_type
-        );
+        // debug!(
+        //     "🔍 [RETRY] Starting ACK generation for message type: {:?}",
+        //     msg_type
+        // );
 
         // Production: Add timeout to message ID generation to prevent hanging
         let gen_timeout = Duration::from_secs(2);
@@ -3470,25 +3498,25 @@ impl MpcNetworkLayer {
         .await
         {
             Ok(Ok(id)) => {
-                debug!("🔑 [RETRY] Generated message ID for ACK: {:?}", id);
+                // debug!("🔑 [RETRY] Generated message ID for ACK: {:?}", id);
                 id
             }
-            Ok(Err(e)) => {
-                debug!(
-                    "❌ [RETRY] CRITICAL: Failed to generate message ID for ACK: {}",
-                    e
-                );
-                debug!(
-                    "❌ [RETRY] Cannot send ACK without message ID - this will cause retry failures!"
-                );
+            Ok(Err(_e)) => {
+                // debug!(
+                //     "❌ [RETRY] CRITICAL: Failed to generate message ID for ACK: {}",
+                //     e
+                // );
+                // debug!(
+                //     "❌ [RETRY] Cannot send ACK without message ID - this will cause retry failures!"
+                // );
                 return;
             }
             Err(_) => {
-                debug!(
-                    "❌ [RETRY] CRITICAL: Timeout generating message ID (>{}s)",
-                    gen_timeout.as_secs()
-                );
-                debug!("❌ [RETRY] Cannot send ACK - this will cause retry failures!");
+                // debug!(
+                //     "❌ [RETRY] CRITICAL: Timeout generating message ID (>{}s)",
+                //     gen_timeout.as_secs()
+                // );
+                // debug!("❌ [RETRY] Cannot send ACK - this will cause retry failures!");
                 return;
             }
         };
@@ -3500,10 +3528,10 @@ impl MpcNetworkLayer {
             node_id: self.local_peer_id,
         };
 
-        debug!(
-            "📝 [RETRY] Created ACK message: type={:?}, id={}, from={}",
-            msg_type, unique_id, self.local_peer_id
-        );
+        // debug!(
+        //     "📝 [RETRY] Created ACK message: type={:?}, id={}, from={}",
+        //     msg_type, unique_id, self.local_peer_id
+        // );
 
         let topic = match msg_type {
             crate::network::rpc::retry_manager::CriticalMessageType::TransactionIdBroadcast => {
@@ -3517,46 +3545,46 @@ impl MpcNetworkLayer {
         // Serialize ACK message
         let data = match serde_json::to_vec(&ack_msg) {
             Ok(d) => d,
-            Err(e) => {
-                debug!("❌ [RETRY] Failed to serialize ACK message: {}", e);
+            Err(_e) => {
+                // debug!("❌ [RETRY] Failed to serialize ACK message: {}", e);
                 return;
             }
         };
 
         // Send ACK via broadcast channel using try_send to avoid blocking
         // If channel is full, ACK delivery is deferred - sender will retry anyway
-        debug!(
-            "📡 [RETRY] Sending ACK to topic {} for message {:?}",
-            topic, message_id
-        );
+        // debug!(
+        //     "📡 [RETRY] Sending ACK to topic {} for message {:?}",
+        //     topic, message_id
+        // );
 
         match self.message_tx.try_send(ChannelMessage::Broadcast {
             topic: topic.to_string(),
             data,
         }) {
             Ok(_) => {
-                debug!(
-                    "✅ [RETRY] ACK sent to channel for {:?} (will be broadcast to topic {})",
-                    message_id, topic
-                );
+                // debug!(
+                //     "✅ [RETRY] ACK sent to channel for {:?} (will be broadcast to topic {})",
+                //     message_id, topic
+                // );
                 // Record successful send for monitoring
                 self.channel_health.record_send_success();
             }
             Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                debug!("⚠️ [RETRY] Channel full - ACK queued for later delivery");
-                debug!("⚠️ [RETRY] Sender will retry anyway - no message loss");
-                debug!("⚠️ [RETRY] High load detected: 11+ parallel users");
+                // debug!("⚠️ [RETRY] Channel full - ACK queued for later delivery");
+                // debug!("⚠️ [RETRY] Sender will retry anyway - no message loss");
+                // debug!("⚠️ [RETRY] High load detected: 11+ parallel users");
                 // Channel is full but not closed - sender will retry this message
                 // So the ACK will be sent again when we receive the retry
                 // Record for monitoring
                 self.channel_health.record_send_full();
             }
             Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                debug!("❌ [RETRY] CRITICAL: Channel closed - cannot send ACK!");
-                debug!(
-                    "❌ [RETRY] ACK for {:?} was NOT sent - system shutting down",
-                    message_id
-                );
+                // debug!("❌ [RETRY] CRITICAL: Channel closed - cannot send ACK!");
+                // debug!(
+                //     "❌ [RETRY] ACK for {:?} was NOT sent - system shutting down",
+                //     message_id
+                // );
                 self.channel_health.record_send_closed();
             }
         }

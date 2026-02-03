@@ -16,11 +16,16 @@ const api = axios.create({
 // Configuration
 const CONFIG = {
     network: bitcoin.networks.testnet,
-    targetAddress: 'myTm4QJWFjzjaCCwq3cazhWofJnCtkcxSv',
+    // FRESH MPC Network addresses (from /get_network_addresses - CHANGES ON EVERY RESTART!):
+    // - Liquidity Operator BTC (for add_liquidity): mskFf9kBMkfyhai2TXqPPh2fFPiiQEnTzX
+    // - Network BTC Address (for withdraw_liquidity): miCPndoCU3aQd1PJRdMRgymDcZ79X6ctPy
+    // targetAddress: 'mskFf9kBMkfyhai2TXqPPh2fFPiiQEnTzX',  // Liquidity Operator BTC address (for add_liquidity)
+    targetAddress: 'miCPndoCU3aQd1PJRdMRgymDcZ79X6ctPy',  // Network BTC address (for withdrawals)
+    // targetAddress: 'tb1qy2hqhhnv645vrfkusy5jga8pppytq3dw6awdn8',  // SOLVER_003 BTC address
     privateKeyWIF: 'cSQR4rCmfeUrwFu6apsMXY3T9jeYYmB16AKZ1dz5zoGRpdocB1P3',
     rpcEndpoint: 'https://mempool.space/testnet/api',
-    amountPerTx: 1000, // satoshis
-    numberOfTx: 10,
+    amountPerTx: 20000, // satoshis (20000 sats for add_liquidity)
+    numberOfTx: 1,
     delayBetweenTx: 2000 // 2 seconds delay between transactions
 };
 
